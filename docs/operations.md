@@ -1,133 +1,155 @@
 # Operations
 
-常见运维动作可以通过 Portainer 完成，也可以在 Swarm manager 节点上用 Docker CLI 执行。生产变更优先走 Git，保持本仓库是部署事实来源。
+Production changes should flow through Git and Portainer.
 
-## 新增服务
+The normal path is:
 
-1. 从 `examples/` 复制一个 service manifest。
-2. 修改 `image`、域名、端口、region、exposure、replicas 和环境变量。
-3. 本地预览：`luma deploy <service>.yaml --dry-run`。
-4. 本地生成但不触发外部系统：`luma deploy <service>.yaml --skip-dns --skip-webhook`。
-5. 真实发布：`luma deploy <service>.yaml --commit --push`。
-6. 运行 `./scripts/validate-stacks.sh`。
+```text
+service.yaml -> luma deploy --commit --push -> Portainer webhook -> Docker Swarm
+```
 
-需要完全手写 stack 时仍可复制 `templates/`，但默认使用 Luma。
+## Add A Service
 
-## 更新镜像 tag
+```bash
+luma service new
+luma deploy <service>.yaml --dry-run
+luma deploy <service>.yaml --commit --push
+luma doctor
+```
 
-优先修改对应 service manifest 的 `image` tag。
+For a hand-written manifest, keep the same fields:
 
 ```yaml
-image: ghcr.io/your-org/your-app:2026-05-29-1
+name: api
+image: ghcr.io/me/api:2026-05-29-1
+region: cn
+public: true
+exposure: cn-edge
+domain: api.itool.tech
+port: 3000
+replicas: 2
 ```
 
-然后执行：
+## Update Image Tag
+
+Change the manifest:
+
+```yaml
+image: ghcr.io/me/api:2026-05-29-2
+```
+
+Then deploy:
 
 ```bash
-luma deploy <service>.yaml --commit --push
+luma deploy api.yaml --commit --push
 ```
 
-如果是手写 stack，提交后在 Portainer 更新 stack，或执行：
+## Scale Replicas
 
-```bash
-docker stack deploy -c stacks/cn/your-app/stack.yml your-app
-```
-
-## 扩缩容 replicas
-
-优先修改 service manifest 的 `replicas` 后重新执行 Luma。
+Change the manifest:
 
 ```yaml
 replicas: 3
 ```
 
+Then deploy:
+
 ```bash
+luma deploy api.yaml --commit --push
+```
+
+Temporary scale from a manager node:
+
+```bash
+sudo docker service scale api_api=3
+```
+
+Temporary commands do not update Git. Commit the manifest change afterward if it should persist.
+
+## View Status
+
+From Portainer, check stacks, services, tasks, logs, and node placement.
+
+From a manager node:
+
+```bash
+sudo docker service ls
+sudo docker service ps <stack>_<service>
+sudo docker service logs --tail 200 -f <stack>_<service>
+```
+
+## Roll Back
+
+Preferred path:
+
+```bash
+git revert <deploy-commit>
 luma deploy <service>.yaml --commit --push
 ```
 
-临时扩缩容也可以执行：
+Emergency Docker rollback:
 
 ```bash
-docker service scale <stack>_<service>=3
+sudo docker service rollback <stack>_<service>
 ```
 
-临时命令不会写回 Git，最终仍应更新本仓库。
+## Remove A Service
 
-## 查看日志
+Remove the stack in Portainer, then remove generated files from Git:
 
 ```bash
-docker service logs -f <stack>_<service>
+rm -rf stacks/<region>/<service>
+rm -f routes/<service>.yml
+git add -A
+git commit -m "remove <service>"
+git push
 ```
 
-查看最近日志：
+If Portainer is unavailable:
 
 ```bash
-docker service logs --tail 200 <stack>_<service>
+sudo docker stack rm <service>
 ```
 
-## 回滚 stack
-
-优先用 Git 回滚 `stack.yml` 到上一个可用版本，然后重新部署。
+## Drain A Node
 
 ```bash
-git revert <commit>
-docker stack deploy -c <stack-file> <stack-name>
+sudo docker node update --availability drain <node-name>
 ```
 
-如果只是单个 service 的镜像更新失败，也可以尝试：
+Restore it:
 
 ```bash
-docker service rollback <stack>_<service>
+sudo docker node update --availability active <node-name>
 ```
 
-## 下线服务
-
-从 Portainer 删除 stack，或执行：
+## Refresh Egress
 
 ```bash
-docker stack rm <stack-name>
+export EGRESS_SUBSCRIPTION_URL='...'
+luma egress refresh aly
 ```
 
-然后从仓库删除对应 `stacks/<region>/<service>/` 目录并提交。
-
-如果服务使用 `tailscale-relay`，还要删除对应 `routes/<service>.yml` 并同步 `/opt/luma/routes`。
-
-## 节点临时摘除
-
-维护节点前先 drain，避免新任务调度到该节点。
+Verify image pulls:
 
 ```bash
-docker node update --availability drain <node-name>
+ssh aly 'sudo docker pull hello-world:latest'
 ```
 
-维护完成后恢复：
+## Repair Control Plane
 
 ```bash
-docker node update --availability active <node-name>
+luma node bootstrap aly --profile single-node
+luma portainer setup aly
+luma doctor
 ```
 
-## 检查服务实际运行在哪个节点
+## Portainer Access
 
-```bash
-docker service ps <stack>_<service>
-```
+Portainer is deployed on `9443` for the first bootstrap experience. For production, prefer accessing it through a trusted network, a restricted source IP, or a private control-plane path. Keep the webhook URL secret because it can trigger deployments.
 
-查看完整任务和节点信息：
+## Tailscale Relay
 
-```bash
-docker service ps --no-trunc <stack>_<service>
-```
+`tailscale-relay` is explicit per service. It is suitable for home tools, previews, or low-frequency internal panels that need a public domain.
 
-## Portainer 安全
-
-Portainer 管理面板不要直接暴露公网。推荐只通过 Tailscale IP、内网地址或受控 VPN 访问。若未来确实需要公网访问，必须额外加认证、访问控制和审计。
-
-## Tailscale relay 安全
-
-`tailscale-relay` 会把公网请求从国内 Traefik 转发到 home 节点。使用时要满足：
-
-- home 服务端口只允许 Tailscale 网络访问；
-- 不用于核心高频业务；
-- 不用于大文件下载；
-- `routes/<service>.yml` 已同步到国内入口节点 `/opt/luma/routes`；
-- 国内入口节点能解析并访问 `relay.host`。
+It is not the default path for normal public traffic.

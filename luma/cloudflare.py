@@ -62,11 +62,13 @@ def sync_dns(config: LumaConfig, service: ServiceSpec) -> str:
     if not zone_id:
         zone_id = dns_config.get("zoneId")
     if not zone_id:
-        raise LumaError("missing Cloudflare zone id: set dns.zoneId or CLOUDFLARE_ZONE_ID")
+        raise LumaError("missing Cloudflare zone id: run luma cloudflare connect --zone <domain> or set providers.dns.zoneId")
 
     target = service.dns.get("target") or dns_config.get("edgeTarget")
     if not target:
-        raise LumaError("missing DNS target: set dns.edgeTarget in luma.yaml or service dns.target")
+        target = config.dns_target_for(exposure=service.exposure, region=service.region)
+    if not target:
+        raise LumaError("missing DNS target: configure an edge node publicIp or set service dns.target")
 
     record_type = str(service.dns.get("type") or dns_config.get("recordType", "A")).upper()
     proxied = bool(service.dns.get("proxied", dns_config.get("proxied", False)))
@@ -90,3 +92,22 @@ def sync_dns(config: LumaConfig, service: ServiceSpec) -> str:
         return f"DNS updated: {name} -> {target}"
     client.request("POST", f"/zones/{zone_id}/dns_records", body)
     return f"DNS created: {name} -> {target}"
+
+
+def get_token(config: LumaConfig) -> tuple[str, str]:
+    dns_config = config.dns
+    token_env = str(dns_config.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
+    token = os.environ.get(token_env)
+    if not token:
+        raise LumaError(f"missing Cloudflare API token env var: {token_env}")
+    return token, token_env
+
+
+def find_zone(config: LumaConfig, zone_name: str) -> Dict[str, Any]:
+    token, _ = get_token(config)
+    client = CloudflareClient(token)
+    query = urllib.parse.urlencode({"name": zone_name})
+    result = client.request("GET", f"/zones?{query}")["result"]
+    if not result:
+        raise LumaError(f"Cloudflare zone not found: {zone_name}")
+    return result[0]

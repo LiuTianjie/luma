@@ -23,3 +23,7 @@ def load_yaml(path: Path) -> Dict[str, Any]:
 
 def dump_yaml(data: Dict[str, Any]) -> str:
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
+
+
+def write_yaml(path: Path, data: Dict[str, Any]) -> None:
+    path.write_text(dump_yaml(data), encoding="utf-8")

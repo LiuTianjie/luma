@@ -1,58 +1,153 @@
 # Luma CLI
 
-Luma is the repository CLI for turning small service manifests into Docker Swarm stacks.
+Luma is the command line interface for installing nodes, wiring providers, generating Swarm stacks, and triggering Portainer deployments.
 
-## Install for local development
+The default path is Portainer-first:
+
+```text
+luma deploy service.yaml -> render stack -> sync DNS -> commit/push -> trigger Portainer webhook
+```
+
+`--direct` exists for bootstrap and emergency recovery only.
+
+## Install
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e .
-```
-
-If editable installation fails on an older system pip, upgrade pip inside the virtualenv first:
-
-```bash
 python -m pip install --upgrade pip
 pip install -e .
-```
-
-After installation, the CLI is available as:
-
-```bash
 luma --help
 ```
 
-## Platform config
+## Configuration
 
-`luma.yaml` stores provider-level defaults:
-
-- `defaults.stackRoot`: where generated stack files are written.
-- `defaults.routesRoot`: where Traefik file-provider routes are written for `tailscale-relay`.
-- `defaults.publicNetwork`: external overlay network used by Traefik.
-- `dns.provider`: currently supports `cloudflare`.
-- `dns.edgeTarget`: the public ingress IP or CNAME target.
-- `portainer.webhookUrlEnv`: environment variable containing the Portainer stack webhook.
-
-Secrets stay in environment variables:
-
-```bash
-export CLOUDFLARE_API_TOKEN=...
-export CLOUDFLARE_ZONE_ID=...
-export PORTAINER_WEBHOOK_URL=...
-```
-
-## Service manifest
+`luma.yaml` is the single project config source:
 
 ```yaml
-name: ai-gateway
-image: ghcr.io/your-org/ai-gateway:latest
-region: global
+project: itool
+
+providers:
+  dns:
+    type: cloudflare
+    zone: itool.tech
+    zoneId: ac7105f330b0107c778ea8769bdfdc00
+    apiTokenEnv: CLOUDFLARE_API_TOKEN
+  portainer:
+    webhookUrlEnv: PORTAINER_WEBHOOK_URL
+
+nodes:
+  aly:
+    host: aly
+    publicIp: 8.130.148.30
+    region: cn
+    roles:
+      - swarm-manager
+      - edge
+      - egress
+
+defaults:
+  exposure: cn-edge
+  registry: ghcr.io/turning4th
+  stackRoot: stacks
+  routesRoot: routes
+  publicNetwork: public
+  egressNetwork: egress
+  entrypoint: websecure
+  certResolver: letsencrypt
+```
+
+Secrets stay outside Git:
+
+```bash
+export CLOUDFLARE_API_TOKEN='...'
+export PORTAINER_WEBHOOK_URL='...'
+export EGRESS_SUBSCRIPTION_URL='...'
+export LUMA_SUDO_PASSWORD='...'
+```
+
+## Commands
+
+Initialize a config:
+
+```bash
+luma init
+```
+
+List configured nodes:
+
+```bash
+luma node list
+```
+
+Bootstrap a node:
+
+```bash
+luma node bootstrap aly --profile single-node
+```
+
+Connect Cloudflare and write `providers.dns.zoneId`:
+
+```bash
+luma cloudflare connect --zone itool.tech
+```
+
+Install or refresh the outbound gateway:
+
+```bash
+luma egress setup aly
+luma egress refresh aly
+```
+
+Repair Portainer:
+
+```bash
+luma portainer setup aly
+```
+
+Generate a service manifest interactively:
+
+```bash
+luma service new
+```
+
+Validate and render:
+
+```bash
+luma validate examples/public-cn-service.yaml
+luma render examples/public-cn-service.yaml
+```
+
+Deploy through Portainer:
+
+```bash
+luma deploy examples/public-cn-service.yaml --commit --push
+```
+
+Emergency direct deploy:
+
+```bash
+luma deploy examples/public-cn-service.yaml --direct --node aly
+```
+
+Run diagnostics:
+
+```bash
+luma doctor
+luma doctor --deep
+```
+
+## Service Manifest
+
+```yaml
+name: app
+image: ghcr.io/me/app:latest
+region: cn
 public: true
-exposure: external-edge
-domain: ai.example.com
+exposure: cn-edge
+domain: app.itool.tech
 port: 3000
-replicas: 1
+replicas: 2
 ```
 
 Required fields:
@@ -60,7 +155,6 @@ Required fields:
 - `name`
 - `image`
 - `region`: `cn`, `global`, or `home`
-- `public`
 - `exposure`: `cn-edge`, `tailscale-relay`, `cloudflare-tunnel`, `external-edge`, or `none`
 
 Public services also require:
@@ -70,100 +164,31 @@ Public services also require:
 
 Optional fields:
 
-- `env`: service environment mapping.
-- `command`: Docker command.
-- `constraints`: extra Swarm placement constraints.
-- `labels`: extra Docker service labels.
-- `networks`: extra external networks.
-- `stackPath`: explicit output path.
-- `dns.target`: per-service DNS target override.
-- `dns.type`: per-service DNS record type override.
-- `dns.proxied`: per-service Cloudflare proxy setting.
-- `publishPort`: host port for `tailscale-relay`.
-- `relay.host`: Tailscale hostname for `tailscale-relay`.
-- `relay.url`: full upstream URL override for `tailscale-relay`.
-- `tunnel.tokenEnv`: environment variable containing the Cloudflare Tunnel token.
+- `env` / `environment`
+- `command`
+- `constraints`
+- `labels`
+- `networks`
+- `stackPath`
+- `routePath`
+- `dns.target`
+- `dns.type`
+- `dns.proxied`
+- `publishPort`
+- `relay.host`
+- `relay.url`
+- `tunnel.tokenEnv`
 
-## Exposure examples
+## Deploy Order
 
-Domestic public service:
+For `luma deploy service.yaml --commit --push`, Luma does:
 
-```bash
-luma deploy examples/public-cn-service.yaml --commit --push
-```
+1. parse and validate the service manifest;
+2. render `stacks/<region>/<service>/stack.yml`;
+3. render `routes/<service>.yml` for `tailscale-relay`;
+4. run local stack validation when Docker is available;
+5. upsert Cloudflare DNS unless skipped;
+6. commit and push generated changes when requested;
+7. trigger the Portainer webhook.
 
-Home service through the CN edge and Tailscale:
-
-```bash
-luma deploy examples/home-tailscale-relay.yaml --commit --push
-```
-
-Cloudflare Tunnel service:
-
-```bash
-luma deploy examples/cloudflare-tunnel-service.yaml --commit --push
-```
-
-Internal/global worker:
-
-```bash
-luma deploy examples/global-worker.yaml --skip-dns --skip-webhook
-```
-
-## Commands
-
-Render a stack without writing it:
-
-```bash
-luma render examples/public-cn-service.yaml
-```
-
-Validate the service manifest and show the rendered stack:
-
-```bash
-luma validate examples/public-cn-service.yaml
-```
-
-Generate stack, sync DNS, optionally commit, and trigger Portainer:
-
-```bash
-luma deploy examples/public-cn-service.yaml --commit --push
-```
-
-Local dry run:
-
-```bash
-luma deploy examples/public-cn-service.yaml --dry-run
-```
-
-Skip external side effects while generating stack files:
-
-```bash
-luma deploy examples/public-cn-service.yaml --skip-dns --skip-webhook
-```
-
-Sync DNS only:
-
-```bash
-luma dns-sync examples/public-cn-service.yaml
-```
-
-If `depoly` is typed by mistake, Luma returns a correction hint.
-
-## Git and Portainer order
-
-When Portainer deploys from a remote Git repository, use:
-
-```bash
-luma deploy service.yaml --commit --push
-```
-
-The order is:
-
-1. write the generated stack file;
-2. validate the generated stack;
-3. sync DNS if enabled;
-4. commit and push Git changes if requested;
-5. trigger the Portainer webhook if configured.
-
-For `tailscale-relay`, Luma also writes `routes/<service>.yml`. The CN Traefik node must have that route directory available at `/opt/luma/routes`.
+If `PORTAINER_WEBHOOK_URL` is missing, default deploy fails with an explicit fix. Use `--direct` only when Portainer is unavailable.

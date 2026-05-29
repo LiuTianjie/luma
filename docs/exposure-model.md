@@ -130,7 +130,7 @@ Luma generates:
 - a service stack containing the app;
 - a `cloudflared` sidecar service using `${CLOUDFLARE_TUNNEL_TOKEN}`.
 
-Cloudflare Tunnel public hostname configuration is still managed in Cloudflare for v0.1. Luma skips normal DNS A-record sync for this mode.
+Cloudflare Tunnel public hostname configuration is still managed in Cloudflare. Luma skips normal DNS A-record sync for this mode.
 
 ### `external-edge`
 

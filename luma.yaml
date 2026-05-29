@@ -1,26 +1,36 @@
-project:
-  name: Luma
+project: itool
+
+providers:
+  dns:
+    type: cloudflare
+    zone: itool.tech
+    zoneId: ac7105f330b0107c778ea8769bdfdc00
+    apiTokenEnv: CLOUDFLARE_API_TOKEN
+    recordType: A
+    ttl: 1
+    proxied: false
+  portainer:
+    webhookUrlEnv: PORTAINER_WEBHOOK_URL
+
+nodes:
+  aly:
+    host: aly
+    publicIp: 8.130.148.30
+    region: cn
+    roles:
+      - swarm-manager
+      - edge
+      - egress
 
 defaults:
+  exposure: cn-edge
+  registry: ghcr.io/turning4th
   stackRoot: stacks
   routesRoot: routes
   publicNetwork: public
+  egressNetwork: egress
   entrypoint: websecure
   certResolver: letsencrypt
-
-dns:
-  provider: cloudflare
-  zone: itool.tech
-  zoneId: ac7105f330b0107c778ea8769bdfdc00
-  zoneIdEnv: CLOUDFLARE_ZONE_ID
-  apiTokenEnv: CLOUDFLARE_API_TOKEN
-  edgeTarget: 8.130.148.30
-  recordType: A
-  ttl: 1
-  proxied: false
-
-portainer:
-  webhookUrlEnv: PORTAINER_WEBHOOK_URL
 
 git:
   autoCommit: false

@@ -1,26 +1,16 @@
-# Luma 使用手册
+# How To Use Luma
 
-这份文档说明日常怎么用 Luma 部署服务，以及 Cloudflare、Tailscale、Traefik 分别承担什么角色。
+This is the operating manual for the first public version of Luma.
 
-## 1. 核心原则
-
-Luma 不让所有业务请求默认走 Tailscale。
-
-默认分工是：
+Luma keeps five concepts visible:
 
 ```text
-Cloudflare: DNS / 可选代理 / 可选 Tunnel
-Traefik: 国内主公网入口
-Tailscale: 控制面网络 + 显式 tailscale-relay
-Portainer: 部署控制台
-Docker: 服务运行环境
+node / region / exposure / egress / service
 ```
 
-请求是否经过 Tailscale，由服务 manifest 里的 `exposure` 决定。
+Portainer is the default deployment control plane. Tailscale is a control-plane network and a relay option for home services. Cloudflare is the DNS provider and optional tunnel provider. Egress Gateway is only for outbound traffic such as pulling images, installing dependencies, or running services that need external network access.
 
-## 2. 安装 CLI
-
-在仓库根目录执行：
+## 1. Install The CLI
 
 ```bash
 cd ~/infra-stacks
@@ -28,242 +18,233 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -e .
-```
-
-验证：
-
-```bash
 luma --help
 ```
 
-## 3. 配置平台
+## 2. Configure `luma.yaml`
 
-编辑 `luma.yaml`。
-
-关键字段：
+`luma.yaml` is the only project config file Luma needs.
 
 ```yaml
+project: itool
+
+providers:
+  dns:
+    type: cloudflare
+    zone: itool.tech
+    zoneId: ac7105f330b0107c778ea8769bdfdc00
+    apiTokenEnv: CLOUDFLARE_API_TOKEN
+    recordType: A
+    ttl: 1
+    proxied: false
+  portainer:
+    webhookUrlEnv: PORTAINER_WEBHOOK_URL
+
+nodes:
+  aly:
+    host: aly
+    publicIp: 8.130.148.30
+    region: cn
+    roles:
+      - swarm-manager
+      - edge
+      - egress
+
 defaults:
+  exposure: cn-edge
+  registry: ghcr.io/turning4th
   stackRoot: stacks
   routesRoot: routes
   publicNetwork: public
+  egressNetwork: egress
   entrypoint: websecure
   certResolver: letsencrypt
+```
 
+Secrets are environment variables:
+
+```bash
+export CLOUDFLARE_API_TOKEN='...'
+export PORTAINER_WEBHOOK_URL='...'
+export EGRESS_SUBSCRIPTION_URL='...'
+export LUMA_SUDO_PASSWORD='...'
+```
+
+Do not commit secrets.
+
+## 3. Bootstrap The First Node
+
+For a single public server that runs Swarm manager, Traefik, Portainer, and egress:
+
+```bash
+luma node bootstrap aly --profile single-node
+```
+
+This does:
+
+- installs Docker and Compose;
+- initializes Docker Swarm if needed;
+- creates `public` and `egress` overlay networks;
+- applies node labels;
+- creates `/opt/luma/routes` and `/opt/luma/egress-gateway`;
+- deploys Traefik;
+- deploys Portainer;
+- configures UFW for SSH, 80, 443, 9443, and blocks inbound 7890.
+
+If only Portainer needs repair:
+
+```bash
+luma portainer setup aly
+```
+
+## 4. Connect Cloudflare
+
+```bash
+export CLOUDFLARE_API_TOKEN='...'
+luma cloudflare connect --zone itool.tech
+```
+
+The command verifies the token, finds the zone, and writes `providers.dns.zoneId` back to `luma.yaml`.
+
+For `cn-edge` services, DNS defaults to the public IP of the configured edge node. A service can override this with:
+
+```yaml
 dns:
-  provider: cloudflare
-  edgeTarget: 203.0.113.10
-  apiTokenEnv: CLOUDFLARE_API_TOKEN
-  zoneIdEnv: CLOUDFLARE_ZONE_ID
-
-portainer:
-  webhookUrlEnv: PORTAINER_WEBHOOK_URL
+  target: 203.0.113.10
 ```
 
-真实使用前设置环境变量：
+## 5. Set Up Egress
 
 ```bash
-export CLOUDFLARE_API_TOKEN=...
-export CLOUDFLARE_ZONE_ID=...
-export PORTAINER_WEBHOOK_URL=...
+export EGRESS_SUBSCRIPTION_URL='...'
+luma egress setup aly
 ```
 
-如果只是本地生成 stack，不需要这些环境变量：
-
-```bash
-luma deploy examples/public-cn-service.yaml --skip-dns --skip-webhook
-```
-
-## 4. 选择 exposure
-
-### 国内主服务：`cn-edge`
-
-链路：
+This downloads the subscription, strips it into a minimal Mihomo config, writes it to `/opt/luma/egress-gateway/config.yaml`, deploys `egress_mihomo`, and configures Docker daemon proxy:
 
 ```text
-用户 -> Cloudflare DNS -> 国内 Traefik -> cn 服务
+HTTP_PROXY=http://127.0.0.1:7890
+HTTPS_PROXY=http://127.0.0.1:7890
 ```
 
-适合主站、核心 API、管理后台。
+Refresh subscription output later:
+
+```bash
+luma egress refresh aly
+```
+
+## 6. Create A Service
+
+Interactive mode:
+
+```bash
+luma service new
+```
+
+Manual manifest:
 
 ```yaml
 name: app
-image: ghcr.io/your-org/app:latest
+image: ghcr.io/me/app:latest
 region: cn
 public: true
 exposure: cn-edge
-domain: app.example.com
+domain: app.itool.tech
 port: 3000
 replicas: 2
 ```
 
-部署：
+## 7. Deploy
+
+Default production path:
 
 ```bash
 luma deploy app.yaml --commit --push
 ```
 
-### Home 服务走 Tailscale：`tailscale-relay`
+This renders the stack, syncs DNS, commits, pushes, and triggers Portainer.
 
-链路：
+Preview without side effects:
+
+```bash
+luma deploy app.yaml --dry-run
+```
+
+Generate local files without DNS or Portainer:
+
+```bash
+luma deploy app.yaml --skip-dns --skip-webhook
+```
+
+Emergency deploy when Portainer is unavailable:
+
+```bash
+luma deploy app.yaml --direct --node aly
+```
+
+## 8. Exposure Modes
+
+`cn-edge`:
 
 ```text
-用户 -> Cloudflare DNS -> 国内 Traefik -> Tailscale -> home 服务
+user -> Cloudflare DNS -> CN Traefik -> cn service
 ```
 
-适合低频工具、预览环境、家里管理面板。
+Use this for domestic public services.
 
-```yaml
-name: home-panel
-image: ghcr.io/your-org/home-panel:latest
-region: home
-public: true
-exposure: tailscale-relay
-domain: panel.example.com
-port: 8080
-publishPort: 8080
-replicas: 1
-relay:
-  host: home-1.your-tailnet.ts.net
-```
-
-Luma 会生成两个文件：
+`tailscale-relay`:
 
 ```text
-stacks/home/home-panel/stack.yml
-routes/home-panel.yml
+user -> Cloudflare DNS -> CN Traefik -> Tailscale -> home service
 ```
 
-要求：
+Use this for low-frequency home services that should still share the same public domain experience.
 
-- 国内 Traefik 节点挂载 `/opt/luma/routes`。
-- 仓库 `routes/` 内容要同步到国内 Traefik 节点 `/opt/luma/routes`。
-- home 节点防火墙只允许 Tailscale 网络访问 `publishPort`。
-
-部署：
-
-```bash
-luma deploy home-panel.yaml --commit --push
-```
-
-### Home 服务走 Cloudflare Tunnel：`cloudflare-tunnel`
-
-链路：
+`cloudflare-tunnel`:
 
 ```text
-用户 -> Cloudflare -> cloudflared -> home 服务
+user -> Cloudflare -> cloudflared -> service
 ```
 
-适合没有公网 IP 的 home 服务，或者你不希望经过国内 Traefik 的工具服务。
+Use this for home services that should not depend on the CN edge.
 
-```yaml
-name: home-tool
-image: ghcr.io/your-org/home-tool:latest
-region: home
-public: true
-exposure: cloudflare-tunnel
-domain: tool.example.com
-port: 8080
-replicas: 1
-tunnel:
-  tokenEnv: CLOUDFLARE_TUNNEL_TOKEN
-```
-
-部署前设置：
-
-```bash
-export CLOUDFLARE_TUNNEL_TOKEN=...
-```
-
-第一版 Luma 会生成 app + `cloudflared` stack。Cloudflare Tunnel public hostname 仍在 Cloudflare 控制台或后续 provider 自动化里配置。
-
-### 海外公开能力：`external-edge`
-
-链路：
+`external-edge`:
 
 ```text
-用户 -> Cloudflare DNS -> 海外/global edge -> global 服务
+user -> Cloudflare DNS -> global edge -> global service
 ```
 
-适合 AI 网关、外网代理、必须在海外执行的低频公开服务。
+Use this for overseas services that need external network access and a public endpoint.
 
-```yaml
-name: ai-gateway
-image: ghcr.io/your-org/ai-gateway:latest
-region: global
-public: true
-exposure: external-edge
-domain: ai.example.com
-port: 3000
-replicas: 1
-dns:
-  target: 198.51.100.10
-```
+`none`:
 
-### 内部服务 / worker：`none`
+No public entrypoint. Use it for workers and internal services.
 
-无公网入口。
-
-```yaml
-name: fetch-worker
-image: ghcr.io/your-org/fetch-worker:latest
-region: global
-public: false
-exposure: none
-replicas: 1
-env:
-  QUEUE_URL: redis://redis:6379/0
-```
-
-## 5. 日常命令
-
-预览生成结果：
+## 9. Diagnose
 
 ```bash
-luma deploy service.yaml --dry-run
+luma doctor
+luma doctor --deep
 ```
 
-只生成 stack，不同步 DNS，不触发 Portainer：
+Each failed check includes a concrete fix command or environment variable.
+
+## 10. First Real Smoke Test
+
+Use the reference node first:
 
 ```bash
-luma deploy service.yaml --skip-dns --skip-webhook
+luma doctor
+luma node bootstrap aly --profile single-node
+luma egress setup aly
+luma deploy examples/public-cn-service.yaml --commit --push
 ```
 
-真实发布：
+Then check:
 
 ```bash
-luma deploy service.yaml --commit --push
+docker service ls
+curl -I https://whoami.itool.tech
 ```
 
-单独同步 DNS：
-
-```bash
-luma dns-sync service.yaml
-```
-
-全仓库校验：
-
-```bash
-python -m unittest discover -s tests
-./scripts/validate-stacks.sh
-```
-
-## 6. 第一次上线建议
-
-按这个顺序验证：
-
-1. 用 `examples/public-cn-service.yaml` 跑通 `cn-edge`。
-2. 用 `examples/global-worker.yaml` 验证 `region=global` 调度。
-3. 用 `examples/home-tailscale-relay.yaml` 验证 home 经 Tailscale relay。
-4. 再考虑 `cloudflare-tunnel`。
-
-不要第一步就上核心业务。先用 `traefik/whoami` 或简单测试镜像验证整条链路。
-
-## 7. 安全边界
-
-- Portainer 不直接暴露公网。
-- Tailscale 默认只做控制面。
-- `tailscale-relay` 只用于低频 home 服务。
-- 主业务走 `cn-edge`。
-- 需要外网能力但不需要同步响应的任务优先做 worker，用队列连接。
-- Cloudflare token、Portainer webhook、Tunnel token 都只放环境变量，不提交到 Git。
+Rotate any token or subscription URL that has been pasted into chat or logs before open-sourcing the repository.

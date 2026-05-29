@@ -1,113 +1,142 @@
-# infra-stacks
+# Luma
 
-多服务器统一部署控制仓库，用 `Portainer + Docker Swarm + Traefik + Tailscale` 管理国内、海外和家庭节点上的服务。
+Luma is a Portainer-first, self-hosted deployment control plane for Docker Swarm.
 
-本仓库配套 CLI 名为 **Luma**。日常新增服务时优先写一个小的 service manifest，再执行 `luma deploy <service>.yaml`，由 Luma 生成 Swarm stack、同步 DNS、触发 Portainer 部署。
+It turns scattered servers into named deployment regions, then lets you deploy a service from a small YAML manifest.
 
-Luma 使用显式 `exposure` 模型决定请求怎么进来。Tailscale 默认只做控制面网络；只有 `exposure: tailscale-relay` 的 home 服务才会把业务请求经由 Tailscale 转发。
+## Core Concepts
 
-## 技术栈
+Luma keeps the user-facing model small:
 
-- Portainer：统一管理 Docker Swarm、Stack、Registry 和 Git 部署。
-- Docker Swarm：提供多节点调度、overlay network、service replicas 和节点标签约束。
-- Traefik：作为公开入口，通过 Swarm labels 自动绑定域名、HTTPS 和反向代理。
-- Tailscale：打通国内、海外、家里服务器之间的私网通信。
-- Egress Gateway：出站代理，用于拉镜像、拉依赖和选定服务访问外网。
+```text
+node / region / exposure / egress / service
+```
 
-暂时不使用 Kubernetes、k3s 或 Rancher。当前目标是轻量、可维护、能统一部署，而不是一开始就引入完整云原生平台。
+The runtime stack is:
 
-## 日常使用姿势
+```text
+Luma CLI        install, configure, generate, diagnose
+Portainer       default deployment control plane and UI
+Docker Swarm    runtime and scheduler
+Traefik         public HTTP/HTTPS ingress
+Cloudflare      DNS and optional Tunnel
+Egress Gateway  outbound proxy for image pulls and selected services
+```
 
-1. 业务项目构建 Docker 镜像并推送到 Registry。
-2. 写一个 service manifest，例如 `examples/public-cn-service.yaml`，并选择 `exposure`。
-3. 执行 `luma deploy <service>.yaml`。
-4. Luma 生成或更新 `stacks/<region>/<service>/stack.yml`。
-5. Luma 可选同步 Cloudflare DNS、提交 Git、触发 Portainer webhook。
-6. Traefik 通过 labels 自动绑定域名和 HTTPS。
-7. Docker Swarm 根据 node labels 把服务调度到 `cn`、`global` 或 `home`。
+## 5 Minute Quickstart
 
-不在业务服务器上 build 镜像，不手动 SSH 登录服务器执行 `docker run`。
-
-## Luma CLI
-
-本地安装：
+Install the CLI:
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -e .
 ```
 
-常用命令：
+Create or edit `luma.yaml`:
+
+```yaml
+project: itool
+
+providers:
+  dns:
+    type: cloudflare
+    zone: itool.tech
+    zoneId: ac7105f330b0107c778ea8769bdfdc00
+    apiTokenEnv: CLOUDFLARE_API_TOKEN
+  portainer:
+    webhookUrlEnv: PORTAINER_WEBHOOK_URL
+
+nodes:
+  aly:
+    host: aly
+    publicIp: 8.130.148.30
+    region: cn
+    roles:
+      - swarm-manager
+      - edge
+      - egress
+```
+
+Bootstrap the first node:
 
 ```bash
-luma render examples/public-cn-service.yaml
-luma deploy examples/public-cn-service.yaml --skip-dns --skip-webhook
+export LUMA_SUDO_PASSWORD='...'
+luma node bootstrap aly --profile single-node
+```
+
+Portainer is part of the default control plane. If it needs repair:
+
+```bash
+luma portainer setup aly
+```
+
+Connect Cloudflare:
+
+```bash
+export CLOUDFLARE_API_TOKEN='...'
+luma cloudflare connect --zone itool.tech
+```
+
+Set up outbound proxy:
+
+```bash
+export EGRESS_SUBSCRIPTION_URL='...'
+luma egress setup aly
+```
+
+Deploy a service:
+
+```bash
 luma deploy examples/public-cn-service.yaml --commit --push
 ```
 
-本地验证：
+Run diagnostics:
 
 ```bash
-python -m unittest discover -s tests
-./scripts/validate-stacks.sh
+luma doctor
+luma doctor --deep
 ```
 
-外部 provider 凭据通过环境变量提供：
+## Daily Workflow
+
+Create a service manifest:
+
+```yaml
+name: app
+image: ghcr.io/me/app:latest
+region: cn
+public: true
+exposure: cn-edge
+domain: app.itool.tech
+port: 3000
+replicas: 2
+```
+
+Deploy through Portainer:
 
 ```bash
-export CLOUDFLARE_API_TOKEN=...
-export CLOUDFLARE_ZONE_ID=...
-export PORTAINER_WEBHOOK_URL=...
+luma deploy app.yaml --commit --push
 ```
 
-详细使用手册见 `docs/how-to-use-luma.md`，CLI 字段说明见 `docs/luma-cli.md`，暴露模式说明见 `docs/exposure-model.md`，出站代理说明见 `docs/egress-gateway.md`。
+Emergency direct deploy:
 
-## 目录结构
-
-```text
-docs/       架构、启动、节点标签、服务模式、Luma CLI 和运维文档
-examples/   Luma service manifest 示例
-luma/       Luma CLI 源码
-stacks/     可由 Portainer 部署的真实 Swarm stacks
-templates/  新服务可复制的 stack 模板
-scripts/    本地校验脚本
+```bash
+luma deploy app.yaml --direct --node aly
 ```
 
-核心 stack 放在 `stacks/core/`，示例业务服务按 region 放在 `stacks/cn/`、`stacks/global/` 和 `stacks/home/`。
+## Docs
 
-## 服务类型选择规则
+- `docs/concepts.md`: node / region / exposure / egress / service.
+- `docs/profiles.md`: built-in bootstrap profiles.
+- `docs/secrets.md`: environment variables and secret handling.
+- `docs/troubleshooting.md`: common failures and fixes.
+- `docs/exposure-model.md`: traffic routing modes.
+- `docs/egress-gateway.md`: outbound proxy gateway.
 
-- 主 Web/API、数据库、Redis、国内公开服务：使用 `public-cn-service`，部署到 `region=cn`。
-- 需要访问外网并自带海外入口的低频公开服务：使用 `public-global-service`，部署到 `region=global`，`exposure=external-edge`。
-- 家里服务需要通过国内入口访问：使用 `exposure=tailscale-relay`，入口在国内 Traefik，后端经 Tailscale 到 home。
-- 家里服务需要直接走 Cloudflare：使用 `exposure=cloudflare-tunnel`。
-- 爬虫、AI 调用、外网 API worker：使用 `global-worker`，不暴露公网域名，通过队列消费任务。
-- 备份、内部工具、低频测试服务：使用 `home-internal-service`，部署到 `region=home`，默认只通过 Tailscale 或内网访问。
+## Safety
 
-核心高频业务默认不要实时强依赖海外 HTTP；跨 region 调用优先走异步队列。
+Do not commit API tokens, Portainer webhooks, or proxy subscription URLs.
 
-## 新增服务流程
-
-1. 从 `examples/` 复制最接近的 service manifest。
-2. 修改 `name`、`image`、`exposure`、`domain`、`port`、`region` 和 `replicas`。
-3. 执行 `luma deploy <service>.yaml --skip-dns --skip-webhook` 做本地生成验证。
-4. 准备真实发布时，配置 Cloudflare 和 Portainer 环境变量后执行 `luma deploy <service>.yaml --commit --push`。
-5. 运行 `./scripts/validate-stacks.sh` 做全仓库 stack 校验。
-
-如果需要完全手写 stack，也可以继续复制 `templates/`，但优先使用 Luma，避免 Traefik labels 和 placement constraints 写散。
-
-## 基础部署前置条件
-
-- 所有服务器已安装 Docker。
-- 所有服务器已登录同一个 Tailscale tailnet。
-- 国内 manager 节点已初始化 Docker Swarm。
-- 海外和家庭节点已加入 Swarm。
-- 已创建 external overlay network：`public`。
-- 如果使用出站代理，已创建 external overlay network：`egress`。
-- 如果使用 `tailscale-relay`，国内 Traefik 节点上 `/opt/luma/routes` 可用，并和仓库 `routes/` 保持同步。
-- 所有节点已按 `docs/node-labels.md` 打标签。
-- Registry 凭据已在 Portainer 中配置。
-- 备案域名 DNS 指向国内公网入口节点。
-
-第一条真实验证链路建议部署 `stacks/cn/whoami/stack.yml`。
+If a token or subscription URL has been pasted into a chat or log, rotate it before publishing the repository.

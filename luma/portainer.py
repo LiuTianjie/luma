@@ -14,7 +14,7 @@ def trigger_webhook(config: LumaConfig, service: ServiceSpec) -> str:
     webhook_env = str(portainer.get("webhookUrlEnv", "PORTAINER_WEBHOOK_URL"))
     webhook_url = webhook_url or os.environ.get(webhook_env)
     if not webhook_url:
-        return "Portainer webhook skipped: no webhook configured"
+        raise LumaError(f"missing Portainer webhook: set {webhook_env}")
 
     req = urllib.request.Request(webhook_url, data=b"", method="POST")
     try:
@@ -24,3 +24,10 @@ def trigger_webhook(config: LumaConfig, service: ServiceSpec) -> str:
         detail = exc.read().decode("utf-8", errors="replace")
         raise LumaError(f"Portainer webhook error {exc.code}: {detail}") from exc
     return f"Portainer webhook triggered for {service.name}: HTTP {status}"
+
+
+def configured_webhook(config: LumaConfig) -> str | None:
+    portainer = config.portainer
+    webhook_url = portainer.get("webhookUrl")
+    webhook_env = str(portainer.get("webhookUrlEnv", "PORTAINER_WEBHOOK_URL"))
+    return webhook_url or os.environ.get(webhook_env)
