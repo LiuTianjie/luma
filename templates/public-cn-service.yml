@@ -3,6 +3,8 @@ version: "3.8"
 services:
   app:
     image: ghcr.io/your-org/your-app:latest
+    # Luma service manifest equivalent:
+    # exposure: cn-edge
     networks:
       - public
     environment:

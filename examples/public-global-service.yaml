@@ -1,0 +1,8 @@
+name: ai-gateway
+image: ghcr.io/your-org/ai-gateway:latest
+region: global
+public: true
+exposure: external-edge
+domain: ai.example.com
+port: 3000
+replicas: 1

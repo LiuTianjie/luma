@@ -1,0 +1,6 @@
+name: backup-job
+image: ghcr.io/your-org/backup-job:latest
+region: home
+public: false
+exposure: none
+replicas: 1

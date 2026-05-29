@@ -1,0 +1,8 @@
+name: fetch-worker
+image: ghcr.io/your-org/fetch-worker:latest
+region: global
+public: false
+exposure: none
+replicas: 1
+env:
+  QUEUE_URL: redis://redis:6379/0

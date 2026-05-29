@@ -1,0 +1,27 @@
+project:
+  name: Luma
+
+defaults:
+  stackRoot: stacks
+  routesRoot: routes
+  publicNetwork: public
+  entrypoint: websecure
+  certResolver: letsencrypt
+
+dns:
+  provider: cloudflare
+  zone: example.com
+  zoneIdEnv: CLOUDFLARE_ZONE_ID
+  apiTokenEnv: CLOUDFLARE_API_TOKEN
+  edgeTarget: 203.0.113.10
+  recordType: A
+  ttl: 1
+  proxied: false
+
+portainer:
+  webhookUrlEnv: PORTAINER_WEBHOOK_URL
+
+git:
+  autoCommit: false
+  autoPush: false
+  commitMessage: "deploy {name} to {region}"

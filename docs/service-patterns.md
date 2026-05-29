@@ -1,8 +1,8 @@
 # Service Patterns
 
-本仓库固定四种服务模式。新增服务时优先复制 `templates/` 中的模板，再修改镜像、域名、端口、region 和 replicas。
+本仓库固定五种 exposure 模式。新增服务时优先复制 `examples/` 中的 service manifest，再修改镜像、域名、端口、region、exposure 和 replicas。
 
-## 1. public-cn-service
+## 1. cn-edge
 
 国内公开服务。
 
@@ -10,6 +10,7 @@
 - 接入国内 Traefik。
 - 跑在 `region=cn`。
 - 适合主 Web/API 和核心业务服务。
+- 对应 `exposure: cn-edge`。
 
 典型约束：
 
@@ -21,28 +22,55 @@ placement:
 
 公开域名通过 Traefik labels 声明。
 
-## 2. public-global-service
+## 2. tailscale-relay
 
-国内域名入口，容器跑在海外节点。
+家里服务通过国内入口和 Tailscale 暴露。
 
 - 有公网域名。
-- 用户仍访问备案域名。
+- 用户访问备案域名。
 - 国内 Traefik 作为入口。
+- Traefik 通过 Tailscale 访问 home 节点。
+- 适合低频工具、预览环境、家里管理面板。
+- 不适合核心高频 API、大文件下载、登录或支付。
+- 对应 `exposure: tailscale-relay`。
+
+Luma 会生成 `routes/<service>.yml`，由 Traefik file provider 加载。
+
+## 3. cloudflare-tunnel
+
+家里或私有服务通过 Cloudflare Tunnel 暴露。
+
+- 有公网域名。
+- 不经过国内 Traefik。
+- 不经过 Tailscale 数据面。
+- 适合家里无公网 IP 或希望 Cloudflare 直接接入的工具服务。
+- 对应 `exposure: cloudflare-tunnel`。
+
+第一版 Luma 会生成 app + `cloudflared` stack。Cloudflare Tunnel public hostname 仍需要在 Cloudflare 侧配置。
+
+## 4. external-edge
+
+海外公开服务。
+
+- 有公网域名。
 - 服务容器跑在 `region=global`。
+- 入口是海外/global edge。
 - 适合 AI 网关、外网代理、低频外网服务。
 - 不适合核心高频 API。
+- 对应 `exposure: external-edge`。
 
-这个模式会引入跨 region 请求链路。只有当服务必须访问外网，且请求频率或延迟要求可接受时才使用。
+这个模式会引入海外链路。只有当服务必须访问外网，且请求频率或延迟要求可接受时才使用。
 
-## 3. global-worker
+## 5. none / global-worker
 
-海外 worker。
+内部服务或海外 worker。
 
 - 无公网域名。
 - 跑在 `region=global`。
 - 通常同时要求 `external_net=true`。
 - 通过队列消费任务。
 - 访问外网后写回结果。
+- 对应 `exposure: none`。
 
 推荐链路：
 
@@ -52,7 +80,7 @@ cn Web/API -> Queue -> global worker -> 外网 API -> 写回结果
 
 这种模式比国内 API 实时调用海外 HTTP 更稳，也更容易重试、限流和降级。
 
-## 4. home-internal-service
+## home-internal-service
 
 家庭节点内部服务。
 
@@ -60,5 +88,6 @@ cn Web/API -> Queue -> global worker -> 外网 API -> 写回结果
 - 非核心。
 - 默认不暴露公网域名。
 - 优先通过 Tailscale 或内网访问。
+- 对应 `exposure: none`。
 
 适合备份、低频任务、内部工具和测试服务。不要把核心公网服务调度到 home。

@@ -63,6 +63,14 @@ docker node update --label-add ingress=true cn-manager-1
 
 ## 7. 部署 Traefik
 
+如果计划使用 `exposure: tailscale-relay`，先在国内入口节点准备 Traefik 动态路由目录：
+
+```bash
+sudo mkdir -p /opt/luma/routes
+```
+
+后续把仓库中的 `routes/*.yml` 同步到这个目录。Traefik stack 已经把 `/opt/luma/routes` 挂载为 file provider 动态配置目录。
+
 部署 `stacks/core/traefik/stack.yml`。
 
 ```bash
@@ -104,3 +112,13 @@ docker stack deploy -c stacks/cn/whoami/stack.yml whoami
 - Traefik 自动发现 whoami service。
 - HTTPS 证书签发成功。
 - 请求命中国内节点上的 `traefik/whoami` 容器。
+
+## 11. 验证 tailscale-relay
+
+当需要让 home 服务走国内入口时：
+
+1. 在 home 节点部署 `examples/home-tailscale-relay.yaml` 生成的 stack。
+2. 确认 home 节点可以通过 Tailscale hostname 被国内入口节点访问。
+3. 把 Luma 生成的 `routes/<service>.yml` 同步到国内入口节点 `/opt/luma/routes/`。
+4. 确认 home 节点防火墙只允许来自 Tailscale 网络或国内入口 Tailscale IP 的 published port。
+5. 访问对应域名，确认链路为 `Cloudflare DNS -> CN Traefik -> Tailscale -> home service`。

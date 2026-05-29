@@ -1,0 +1,19 @@
+services:
+  app:
+    image: ghcr.io/your-org/home-tool:latest
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.region == home
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.region == home

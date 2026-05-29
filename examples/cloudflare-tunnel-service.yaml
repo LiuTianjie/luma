@@ -1,0 +1,10 @@
+name: home-tool
+image: ghcr.io/your-org/home-tool:latest
+region: home
+public: true
+exposure: cloudflare-tunnel
+domain: tool.example.com
+port: 8080
+replicas: 1
+tunnel:
+  tokenEnv: CLOUDFLARE_TUNNEL_TOKEN

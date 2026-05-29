@@ -1,0 +1,11 @@
+name: home-panel
+image: ghcr.io/your-org/home-panel:latest
+region: home
+public: true
+exposure: tailscale-relay
+domain: panel.example.com
+port: 8080
+publishPort: 8080
+replicas: 1
+relay:
+  host: home-1.your-tailnet.ts.net

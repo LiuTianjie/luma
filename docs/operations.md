@@ -4,21 +4,30 @@
 
 ## 新增服务
 
-1. 从 `templates/` 复制模板到 `stacks/<region>/<service>/stack.yml`。
-2. 修改 `image`、域名、端口、region、replicas 和环境变量。
-3. 运行 `./scripts/validate-stacks.sh`。
-4. 提交到 Git。
-5. 在 Portainer 中部署或让 Git 部署自动同步。
+1. 从 `examples/` 复制一个 service manifest。
+2. 修改 `image`、域名、端口、region、exposure、replicas 和环境变量。
+3. 本地预览：`luma deploy <service>.yaml --dry-run`。
+4. 本地生成但不触发外部系统：`luma deploy <service>.yaml --skip-dns --skip-webhook`。
+5. 真实发布：`luma deploy <service>.yaml --commit --push`。
+6. 运行 `./scripts/validate-stacks.sh`。
+
+需要完全手写 stack 时仍可复制 `templates/`，但默认使用 Luma。
 
 ## 更新镜像 tag
 
-修改对应 `stack.yml` 的 `image` tag。
+优先修改对应 service manifest 的 `image` tag。
 
 ```yaml
 image: ghcr.io/your-org/your-app:2026-05-29-1
 ```
 
-提交后在 Portainer 更新 stack，或执行：
+然后执行：
+
+```bash
+luma deploy <service>.yaml --commit --push
+```
+
+如果是手写 stack，提交后在 Portainer 更新 stack，或执行：
 
 ```bash
 docker stack deploy -c stacks/cn/your-app/stack.yml your-app
@@ -26,11 +35,14 @@ docker stack deploy -c stacks/cn/your-app/stack.yml your-app
 
 ## 扩缩容 replicas
 
-修改 `deploy.replicas` 后重新部署 stack。
+优先修改 service manifest 的 `replicas` 后重新执行 Luma。
 
 ```yaml
-deploy:
-  replicas: 3
+replicas: 3
+```
+
+```bash
+luma deploy <service>.yaml --commit --push
 ```
 
 临时扩缩容也可以执行：
@@ -78,6 +90,8 @@ docker stack rm <stack-name>
 
 然后从仓库删除对应 `stacks/<region>/<service>/` 目录并提交。
 
+如果服务使用 `tailscale-relay`，还要删除对应 `routes/<service>.yml` 并同步 `/opt/luma/routes`。
+
 ## 节点临时摘除
 
 维护节点前先 drain，避免新任务调度到该节点。
@@ -107,3 +121,13 @@ docker service ps --no-trunc <stack>_<service>
 ## Portainer 安全
 
 Portainer 管理面板不要直接暴露公网。推荐只通过 Tailscale IP、内网地址或受控 VPN 访问。若未来确实需要公网访问，必须额外加认证、访问控制和审计。
+
+## Tailscale relay 安全
+
+`tailscale-relay` 会把公网请求从国内 Traefik 转发到 home 节点。使用时要满足：
+
+- home 服务端口只允许 Tailscale 网络访问；
+- 不用于核心高频业务；
+- 不用于大文件下载；
+- `routes/<service>.yml` 已同步到国内入口节点 `/opt/luma/routes`；
+- 国内入口节点能解析并访问 `relay.host`。
