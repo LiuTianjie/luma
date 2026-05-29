@@ -11,6 +11,7 @@ docker node update --label-add region=global global-worker-1
 docker node update --label-add region=home home-1
 docker node update --label-add ingress=true cn-manager-1
 docker node update --label-add external_net=true global-worker-1
+docker node update --label-add egress=true cn-manager-1
 ```
 
 ## 标签含义
@@ -34,6 +35,10 @@ docker node update --label-add external_net=true global-worker-1
 ### `external_net=true`
 
 具备稳定访问外网能力的节点。需要访问 OpenAI、GitHub 或其他海外资源的 worker 可以同时约束 `region=global` 和 `external_net=true`。
+
+### `egress=true`
+
+出站代理网关节点。`stacks/core/egress-gateway/stack.yml` 会调度到带有该标签的节点，用于 Docker 拉镜像、拉依赖和选定服务访问外网。
 
 ## 检查标签
 

@@ -1,0 +1,28 @@
+services:
+  mihomo:
+    image: metacubex/mihomo:latest
+    command: ["-d", "/root/.config/mihomo"]
+    volumes:
+      - /opt/luma/egress-gateway:/root/.config/mihomo
+    ports:
+      - target: 7890
+        published: 7890
+        protocol: tcp
+        mode: host
+      - target: 7890
+        published: 7890
+        protocol: udp
+        mode: host
+    networks:
+      - egress
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.egress == true
+      restart_policy:
+        condition: any
+
+networks:
+  egress:
+    external: true

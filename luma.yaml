@@ -10,10 +10,11 @@ defaults:
 
 dns:
   provider: cloudflare
-  zone: example.com
+  zone: itool.tech
+  zoneId: ac7105f330b0107c778ea8769bdfdc00
   zoneIdEnv: CLOUDFLARE_ZONE_ID
   apiTokenEnv: CLOUDFLARE_API_TOKEN
-  edgeTarget: 203.0.113.10
+  edgeTarget: 8.130.148.30
   recordType: A
   ttl: 1
   proxied: false
