@@ -6,6 +6,15 @@ Start with:
 luma doctor
 ```
 
+## Tailscale is not logged in
+
+Create an ephemeral or reusable auth key in Tailscale, then:
+
+```bash
+export TAILSCALE_AUTHKEY='...'
+luma tailscale connect <node>
+```
+
 ## Docker image pulls fail
 
 Fix:

@@ -9,6 +9,7 @@ CLOUDFLARE_API_TOKEN     Cloudflare DNS API token
 PORTAINER_WEBHOOK_URL    Portainer stack webhook
 EGRESS_SUBSCRIPTION_URL  proxy subscription URL
 LUMA_SUDO_PASSWORD       optional remote sudo password for bootstrap
+TAILSCALE_AUTHKEY        optional auth key for unattended Tailscale login
 ```
 
 ## Runtime Secret Files

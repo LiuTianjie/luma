@@ -30,6 +30,12 @@ If sudo requires a password:
 export LUMA_SUDO_PASSWORD='...'
 ```
 
+For unattended Tailscale login:
+
+```bash
+export TAILSCALE_AUTHKEY='...'
+```
+
 ## 2. Bootstrap The Node
 
 For the first all-in-one server:
@@ -39,6 +45,7 @@ luma node bootstrap aly --profile single-node
 ```
 
 The command is idempotent and can be re-run. It installs Docker, initializes Swarm if inactive, creates overlay networks, applies labels, creates runtime directories, configures UFW, and deploys Traefik plus Portainer.
+It also installs Tailscale. When `TAILSCALE_AUTHKEY` is set, it logs the node into the tailnet automatically.
 
 ## 3. Configure Providers
 

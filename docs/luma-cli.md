@@ -64,6 +64,7 @@ export CLOUDFLARE_API_TOKEN='...'
 export PORTAINER_WEBHOOK_URL='...'
 export EGRESS_SUBSCRIPTION_URL='...'
 export LUMA_SUDO_PASSWORD='...'
+export TAILSCALE_AUTHKEY='...'
 ```
 
 ## Commands
@@ -103,6 +104,12 @@ Repair Portainer:
 
 ```bash
 luma portainer setup aly
+```
+
+Install/login Tailscale:
+
+```bash
+luma tailscale connect aly
 ```
 
 Generate a service manifest interactively:

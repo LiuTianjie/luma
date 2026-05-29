@@ -63,6 +63,7 @@ Bootstrap the first node:
 
 ```bash
 export LUMA_SUDO_PASSWORD='...'
+export TAILSCALE_AUTHKEY='...' # optional but recommended for unattended login
 luma node bootstrap aly --profile single-node
 ```
 
@@ -97,6 +98,13 @@ Run diagnostics:
 ```bash
 luma doctor
 luma doctor --deep
+```
+
+If Tailscale was not connected during bootstrap:
+
+```bash
+export TAILSCALE_AUTHKEY='...'
+luma tailscale connect aly
 ```
 
 ## Daily Workflow

@@ -68,6 +68,7 @@ export CLOUDFLARE_API_TOKEN='...'
 export PORTAINER_WEBHOOK_URL='...'
 export EGRESS_SUBSCRIPTION_URL='...'
 export LUMA_SUDO_PASSWORD='...'
+export TAILSCALE_AUTHKEY='...'
 ```
 
 Do not commit secrets.
@@ -83,6 +84,7 @@ luma node bootstrap aly --profile single-node
 This does:
 
 - installs Docker and Compose;
+- installs Tailscale and logs in when `TAILSCALE_AUTHKEY` is set;
 - initializes Docker Swarm if needed;
 - creates `public` and `egress` overlay networks;
 - applies node labels;
@@ -95,6 +97,13 @@ If only Portainer needs repair:
 
 ```bash
 luma portainer setup aly
+```
+
+If Tailscale login was skipped during bootstrap:
+
+```bash
+export TAILSCALE_AUTHKEY='...'
+luma tailscale connect aly
 ```
 
 ## 4. Connect Cloudflare
