@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  app:
+    image: ghcr.io/your-org/internal-tool:latest
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.region == home

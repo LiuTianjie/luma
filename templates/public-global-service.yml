@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  app:
+    image: ghcr.io/your-org/your-global-app:latest
+    networks:
+      - public
+    environment:
+      NODE_ENV: production
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.region == global
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.global-app.rule=Host(`global-app.example.com`)
+        - traefik.http.routers.global-app.entrypoints=websecure
+        - traefik.http.routers.global-app.tls.certresolver=letsencrypt
+        - traefik.http.services.global-app.loadbalancer.server.port=3000
+
+networks:
+  public:
+    external: true

@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  worker:
+    image: alpine:3.20
+    command: ["sh", "-c", "while true; do date; sleep 300; done"]
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.region == global
+          - node.labels.external_net == true
