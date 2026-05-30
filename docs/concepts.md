@@ -4,13 +4,13 @@ Luma exposes five concepts.
 
 ## Node
 
-A server Luma can reach over SSH.
+A server that runs Luma locally as either the manager or a worker. New installs do not require the client machine to SSH into nodes; each server runs `luma bootstrap manager` or `luma node join` on itself.
 
 ```yaml
 nodes:
-  aly:
-    host: aly
-    publicIp: 8.130.148.30
+  manager-1:
+    host: manager-1
+    publicIp: 203.0.113.10
     region: cn
     roles: [swarm-manager, edge, egress]
 ```

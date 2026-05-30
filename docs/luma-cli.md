@@ -1,23 +1,35 @@
 # Luma CLI
 
-Luma is the command line interface for installing nodes, wiring providers, generating Swarm stacks, and triggering Portainer deployments.
+Luma is the command line interface for installing nodes, wiring providers, generating Swarm stacks, deploying services, and keeping Portainer as the operations UI.
 
-The default path is Portainer-first:
+The default path is control-plane first and Portainer-backed:
 
 ```text
-luma deploy service.yaml -> render stack -> sync DNS -> commit/push -> trigger Portainer webhook
+luma deploy service.yaml -> Luma Control API -> render stack on manager -> sync DNS -> Portainer API -> Docker Swarm
 ```
 
-`--direct` exists for bootstrap and emergency recovery only.
+Portainer is required and installed by bootstrap. It shows stacks, services, logs, tasks, and node placement. Luma Control is the authentication and orchestration layer; it does not replace Portainer.
 
 ## Install
 
 ```bash
-python3 -m venv .venv
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+luma preflight
+```
+
+The installer uses a GitHub archive, not `git clone`. It installs into `~/.local/share/luma/venv` and writes `~/.local/bin/luma`.
+
+Install a pinned release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.0 sh
+```
+
+Development checkout:
+
+```bash
+./scripts/install-luma.sh
 . .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e .
-luma --help
 ```
 
 ## Configuration
@@ -25,21 +37,21 @@ luma --help
 `luma.yaml` is the single project config source:
 
 ```yaml
-project: itool
+project: example
 
 providers:
   dns:
     type: cloudflare
-    zone: itool.tech
-    zoneId: ac7105f330b0107c778ea8769bdfdc00
+    zone: example.com
+    zoneId: ""
     apiTokenEnv: CLOUDFLARE_API_TOKEN
   portainer:
     webhookUrlEnv: PORTAINER_WEBHOOK_URL
 
 nodes:
-  aly:
-    host: aly
-    publicIp: 8.130.148.30
+  manager-1:
+    host: manager-1
+    publicIp: 203.0.113.10
     region: cn
     roles:
       - swarm-manager
@@ -48,7 +60,7 @@ nodes:
 
 defaults:
   exposure: cn-edge
-  registry: ghcr.io/turning4th
+  registry: ghcr.io/liutianjie
   stackRoot: stacks
   routesRoot: routes
   publicNetwork: public
@@ -57,15 +69,23 @@ defaults:
   certResolver: letsencrypt
 ```
 
-Secrets stay outside Git:
+Secrets stay outside Git. Put them in `.env`:
 
 ```bash
-export CLOUDFLARE_API_TOKEN='...'
-export PORTAINER_WEBHOOK_URL='...'
-export EGRESS_SUBSCRIPTION_URL='...'
-export LUMA_SUDO_PASSWORD='...'
-export TAILSCALE_AUTHKEY='...'
+cp .env.example .env
+$EDITOR .env
 ```
+
+```dotenv
+CLOUDFLARE_API_TOKEN=...
+PORTAINER_WEBHOOK_URL=...
+PORTAINER_WEBHOOK_API=...
+EGRESS_SUBSCRIPTION_URL=...
+LUMA_SUDO_PASSWORD=...
+TAILSCALE_AUTHKEY=...
+```
+
+Luma loads `.env` automatically. Use `--env-file <path>` to load another file or `--no-env` to disable this behavior. On the manager node, bootstrap copies the required Cloudflare and Portainer values into `/opt/luma/control/control.json` so client machines do not need those secrets.
 
 ## Commands
 
@@ -75,41 +95,79 @@ Initialize a config:
 luma init
 ```
 
+Check local requirements and `.env`:
+
+```bash
+luma preflight
+```
+
 List configured nodes:
 
 ```bash
 luma node list
 ```
 
-Bootstrap a node:
+Bootstrap the manager by running this directly on the manager server:
 
 ```bash
-luma node bootstrap aly --profile single-node
+luma bootstrap manager --domain luma.example.com --profile single-node
+```
+
+For `single-node`, it installs Docker, connects Tailscale when configured, initializes Swarm, configures networks and labels, deploys Traefik, deploys Portainer, deploys Luma Control, configures firewall rules, and sets up egress. Set `EGRESS_SUBSCRIPTION_URL` first, or use `--skip-egress` and repair egress later.
+
+It streams progress:
+
+```text
+[start] Create overlay networks
+[ok] Overlay networks ready
+[start] Deploy Portainer
+[fail] Deploy Portainer
+  Fix: Run: luma portainer setup
+```
+
+Skip egress only when you want to repair it later:
+
+```bash
+luma bootstrap manager --domain luma.example.com --profile single-node --skip-egress
+```
+
+Login from any client machine:
+
+```bash
+luma login https://luma.example.com --token <deploy-token>
+luma context list
+luma context use <cluster-id>
+```
+
+Join additional servers by running this on each server:
+
+```bash
+luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
 ```
 
 Connect Cloudflare and write `providers.dns.zoneId`:
 
 ```bash
-luma cloudflare connect --zone itool.tech
+luma cloudflare connect --zone example.com
 ```
 
-Install or refresh the outbound gateway:
+Repair or refresh the outbound gateway:
 
 ```bash
-luma egress setup aly
-luma egress refresh aly
+luma egress setup
+luma egress refresh
 ```
 
 Repair Portainer:
 
 ```bash
-luma portainer setup aly
+luma portainer setup
 ```
 
 Install/login Tailscale:
 
 ```bash
-luma tailscale connect aly
+luma tailscale connect
 ```
 
 Generate a service manifest interactively:
@@ -128,20 +186,26 @@ luma render examples/public-cn-service.yaml
 Deploy through Portainer:
 
 ```bash
-luma deploy examples/public-cn-service.yaml --commit --push
+luma deploy examples/public-cn-service.yaml
 ```
 
-Emergency direct deploy:
+`depoly` is accepted as a compatibility alias:
 
 ```bash
-luma deploy examples/public-cn-service.yaml --direct --node aly
+luma depoly examples/public-cn-service.yaml
 ```
 
 Run diagnostics:
 
 ```bash
 luma doctor
-luma doctor --deep
+luma doctor --legacy-ssh --deep  # optional legacy node checks
+```
+
+Legacy SSH bootstrap remains available for older setups:
+
+```bash
+luma node bootstrap manager-1 --profile single-node
 ```
 
 ## Service Manifest
@@ -152,7 +216,7 @@ image: ghcr.io/me/app:latest
 region: cn
 public: true
 exposure: cn-edge
-domain: app.itool.tech
+domain: app.example.com
 port: 3000
 replicas: 2
 ```
@@ -185,17 +249,44 @@ Optional fields:
 - `relay.host`
 - `relay.url`
 - `tunnel.tokenEnv`
+- `portainer.webhookUrlEnv`
+- `portainer.webhookUrl`
 
 ## Deploy Order
 
-For `luma deploy service.yaml --commit --push`, Luma does:
+For `luma deploy service.yaml`, Luma does:
 
 1. parse and validate the service manifest;
-2. render `stacks/<region>/<service>/stack.yml`;
-3. render `routes/<service>.yml` for `tailscale-relay`;
-4. run local stack validation when Docker is available;
-5. upsert Cloudflare DNS unless skipped;
-6. commit and push generated changes when requested;
-7. trigger the Portainer webhook.
+2. read the current login context from `~/.config/luma`;
+3. submit the manifest to the manager's Luma Control API;
+4. render `stacks/<region>/<service>/stack.yml` on the manager;
+5. render `routes/<service>.yml` on the manager for `tailscale-relay`;
+6. upsert Cloudflare DNS unless skipped;
+7. create or update the service's Portainer stack through the Portainer API.
 
-If `PORTAINER_WEBHOOK_URL` is missing, default deploy fails with an explicit fix. Use `--direct` only when Portainer is unavailable.
+`--dry-run` renders locally and does not contact the control API. `--skip-dns` and `--skip-webhook` are sent to the control API. `--commit` and `--push` are deprecated in control-plane deploy mode.
+
+Legacy Portainer webhooks are still supported for existing GitOps stacks. For more than one GitOps stack, use per-service webhook env vars:
+
+```yaml
+name: api
+portainer:
+  webhookUrlEnv: PORTAINER_WEBHOOK_API
+```
+
+Or centralize the mapping in `luma.yaml`:
+
+```yaml
+providers:
+  portainer:
+    webhooks:
+      api: PORTAINER_WEBHOOK_API
+      web: PORTAINER_WEBHOOK_WEB
+```
+
+When webhooks are configured, Luma resolves them in this order:
+
+1. `service.portainer.webhookUrl`
+2. `service.portainer.webhookUrlEnv`
+3. `providers.portainer.webhooks.<service name or slug>`
+4. global `providers.portainer.webhookUrlEnv`

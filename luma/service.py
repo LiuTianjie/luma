@@ -41,6 +41,7 @@ class ServiceSpec:
     stack_path: Optional[Path] = None
     route_path: Optional[Path] = None
     dns: Dict[str, Any] = field(default_factory=dict)
+    portainer: Dict[str, Any] = field(default_factory=dict)
     relay: Dict[str, Any] = field(default_factory=dict)
     tunnel: Dict[str, Any] = field(default_factory=dict)
 
@@ -144,6 +145,9 @@ def load_service(path: Path) -> ServiceSpec:
     dns = raw.get("dns") or {}
     if not isinstance(dns, dict):
         raise LumaError("dns must be a mapping")
+    portainer = raw.get("portainer") or {}
+    if not isinstance(portainer, dict):
+        raise LumaError("portainer must be a mapping")
 
     return ServiceSpec(
         source=path,
@@ -165,6 +169,7 @@ def load_service(path: Path) -> ServiceSpec:
         stack_path=Path(stack_path) if stack_path else None,
         route_path=Path(route_path) if route_path else None,
         dns=dns,
+        portainer=portainer,
         relay=relay,
         tunnel=tunnel,
     )

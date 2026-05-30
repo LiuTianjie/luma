@@ -2,26 +2,29 @@
 
 Bootstrap is automated by the Luma CLI. The first supported target is Ubuntu 22.04+.
 
-## 1. Prepare SSH
+## 1. Prepare Local CLI
 
-Add the server to `luma.yaml`:
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+luma preflight
+```
+
+Required local tools are Python 3.9+ and curl or wget. SSH is only needed for the legacy remote bootstrap path. Docker is only needed on servers that will run workloads.
+
+## 2. Prepare The Manager Node
+
+Run the first bootstrap directly on the full manager node. Add the server to `luma.yaml` so DNS targets and labels can be derived:
 
 ```yaml
 nodes:
-  aly:
-    host: aly
-    publicIp: 8.130.148.30
+  manager-1:
+    host: manager-1
+    publicIp: 203.0.113.10
     region: cn
     roles:
       - swarm-manager
       - edge
       - egress
-```
-
-Make sure local SSH works:
-
-```bash
-ssh aly 'hostname'
 ```
 
 If sudo requires a password:
@@ -32,54 +35,125 @@ export LUMA_SUDO_PASSWORD='...'
 
 For unattended Tailscale login:
 
-```bash
-export TAILSCALE_AUTHKEY='...'
+```dotenv
+TAILSCALE_AUTHKEY=...
 ```
 
-## 2. Bootstrap The Node
+For the built-in egress gateway:
+
+```dotenv
+EGRESS_SUBSCRIPTION_URL=...
+```
+
+Put them in `.env`; Luma loads it automatically.
+
+The default manager bootstrap uses the published control image configured in Luma. If you are developing the control API locally and want the manager to build it from the installed package, set `defaults.images.lumaControl: luma-control:local` or export `LUMA_CONTROL_IMAGE=luma-control:local`.
+
+To publish a custom control image:
+
+```bash
+docker build -f Dockerfile.control -t ghcr.io/<you>/luma-control:latest .
+docker push ghcr.io/<you>/luma-control:latest
+export LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:latest
+```
+
+## 3. Bootstrap The Manager
 
 For the first all-in-one server:
 
 ```bash
-luma node bootstrap aly --profile single-node
+luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-The command is idempotent and can be re-run. It installs Docker, initializes Swarm if inactive, creates overlay networks, applies labels, creates runtime directories, configures UFW, and deploys Traefik plus Portainer.
+The command is idempotent and can be re-run. It installs Docker, initializes Swarm if inactive, creates overlay networks, applies labels, creates runtime directories, configures UFW, and deploys Traefik, Portainer, and Luma Control.
 It also installs Tailscale. When `TAILSCALE_AUTHKEY` is set, it logs the node into the tailnet automatically.
+For profiles with the `egress` role, it also runs egress setup. Set `EGRESS_SUBSCRIPTION_URL` first, or use `--skip-egress` and repair egress later.
 
-## 3. Configure Providers
+During bootstrap, Luma prints live step logs:
+
+```text
+[start] Install Docker
+[ok] Docker installed
+[start] Deploy Traefik
+[fail] Deploy Traefik
+  Fix: Re-run luma bootstrap manager after fixing the error
+```
+
+If a step fails, fix that layer and either re-run bootstrap or run the focused repair command:
+
+```bash
+luma tailscale connect
+luma portainer setup
+luma egress setup
+```
+
+To bootstrap the node first and configure egress later:
+
+```bash
+luma bootstrap manager --domain luma.example.com --profile single-node --skip-egress
+```
+
+The output includes:
+
+```text
+Control domain: luma.example.com
+Cluster: luma-...
+Deploy token: ...
+Join token: ...
+```
+
+Keep the deploy token and join token private.
+
+## 4. Login From A Client
+
+From any machine that should be allowed to deploy:
+
+```bash
+luma login https://luma.example.com --token <deploy-token>
+luma context list
+```
+
+The client stores the endpoint, cluster id, and deploy token in `~/.config/luma/contexts/`. It does not need Docker, SSH access, Cloudflare credentials, or Portainer webhooks.
+
+## 5. Join Worker Nodes
+
+Run this directly on each additional server:
+
+```bash
+luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
+```
+
+The node asks the manager for the Swarm join token and manager address, then joins the cluster locally.
+After the local join succeeds, it calls back to Luma Control so the manager applies the region, profile, and role labels automatically.
+
+## 6. Configure Or Refresh Providers
+
+Provider config and secrets are copied into the manager control state during `luma bootstrap manager`. If you change `luma.yaml`, Cloudflare settings, or legacy Portainer webhook env vars after bootstrap, rerun:
+
+```bash
+luma bootstrap manager --domain luma.example.com --profile single-node
+```
 
 Cloudflare:
 
 ```bash
 export CLOUDFLARE_API_TOKEN='...'
-luma cloudflare connect --zone itool.tech
+luma cloudflare connect --zone example.com
 ```
 
-Egress:
-
-```bash
-export EGRESS_SUBSCRIPTION_URL='...'
-luma egress setup aly
-```
-
-Portainer webhook:
-
-1. Open Portainer on `https://<server-ip>:9443`.
-2. Create or connect the Swarm environment.
-3. Create a Git-backed stack for this repository.
-4. Enable webhook for the stack.
-5. Export the webhook URL locally:
+Portainer is initialized automatically during bootstrap. Luma uses the Portainer API by default, so new users do not need to create stack webhooks. If you intentionally use legacy Git-backed Portainer stacks, export the webhook URL on the manager before `luma bootstrap manager`, or rerun bootstrap after adding it:
 
 ```bash
 export PORTAINER_WEBHOOK_URL='...'
 ```
 
-## 4. Verify
+Bootstrap stores the relevant Cloudflare and Portainer values in `/opt/luma/control/control.json` on the manager. Client machines do not need these values.
+
+## 7. Verify
 
 ```bash
 luma doctor
-ssh aly 'sudo docker service ls'
+luma doctor --legacy-ssh --deep  # optional, from a machine that can SSH to nodes
 ```
 
 Expected core services:
@@ -91,18 +165,18 @@ portainer_agent
 egress_mihomo
 ```
 
-## 5. First Public Service
+## 8. First Public Service
 
 ```bash
-luma deploy examples/public-cn-service.yaml --commit --push
+luma deploy examples/public-cn-service.yaml
 ```
 
 Check DNS and Traefik:
 
 ```bash
-curl -I https://whoami.itool.tech
+curl -I https://whoami.example.com
 ```
 
-## 6. Add More Nodes Later
+## Legacy SSH Bootstrap
 
-Additional nodes need Swarm join automation before they can be fully hands-off. For the current version, use the first `single-node` path as the reference production setup, then extend `nodes` and profiles as the multi-node automation matures.
+`luma node bootstrap <node> --profile ...` remains available as a transition and repair path for existing SSH-based setups. New documentation and the default experience should use local manager bootstrap, local worker join, and login-based deploy.

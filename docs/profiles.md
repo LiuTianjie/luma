@@ -10,18 +10,19 @@ One public server running:
 - Swarm manager
 - Traefik
 - Portainer
+- Luma Control API
 - egress gateway
 
 Use:
 
 ```bash
-luma node bootstrap aly --profile single-node
+luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
 This profile also deploys Portainer. To repair only the Portainer control plane:
 
 ```bash
-luma portainer setup aly
+luma portainer setup
 ```
 
 ## `cn-edge`

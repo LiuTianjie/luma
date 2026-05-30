@@ -1,0 +1,32 @@
+services:
+  luma-control:
+    image: ${LUMA_CONTROL_IMAGE:-ghcr.io/liutianjie/luma-control:latest}
+    command: ["python", "-m", "luma.control.server", "serve", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      LUMA_CONTROL_STATE_DIR: /opt/luma/control
+      LUMA_CONTROL_CONFIG: /opt/luma/luma.yaml
+      DOCKER_API_VERSION: "1.44"
+    volumes:
+      - /opt/luma/control:/opt/luma/control
+      - /opt/luma/luma.yaml:/opt/luma/luma.yaml:ro
+      - /opt/luma/stacks:/opt/luma/stacks
+      - /opt/luma/routes:/opt/luma/routes
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - public
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.region == cn
+          - node.labels.ingress == true
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.luma-control.rule=Host(`${LUMA_CONTROL_DOMAIN:-luma.local}`)
+        - traefik.http.routers.luma-control.entrypoints=websecure
+        - traefik.http.routers.luma-control.tls.certresolver=letsencrypt
+        - traefik.http.services.luma-control.loadbalancer.server.port=8080
+
+networks:
+  public:
+    external: true

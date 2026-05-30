@@ -10,7 +10,7 @@ services:
           - node.labels.region == cn
       labels:
         - traefik.enable=true
-        - traefik.http.routers.whoami.rule=Host(`whoami.itool.tech`)
+        - traefik.http.routers.whoami.rule=Host(`whoami.example.com`)
         - traefik.http.routers.whoami.entrypoints=websecure
         - traefik.http.routers.whoami.tls.certresolver=letsencrypt
         - traefik.http.services.whoami.loadbalancer.server.port=80

@@ -1,38 +1,47 @@
-project: itool
-
+project: example
 providers:
   dns:
     type: cloudflare
-    zone: itool.tech
-    zoneId: ac7105f330b0107c778ea8769bdfdc00
+    zone: example.com
+    zoneId: ""
     apiTokenEnv: CLOUDFLARE_API_TOKEN
     recordType: A
     ttl: 1
     proxied: false
+    controlProxied: false
   portainer:
     webhookUrlEnv: PORTAINER_WEBHOOK_URL
-
 nodes:
-  aly:
-    host: aly
-    publicIp: 8.130.148.30
+  manager-1:
+    host: manager-1
+    publicIp: 203.0.113.10
     region: cn
     roles:
-      - swarm-manager
-      - edge
-      - egress
-
+    - swarm-manager
+    - edge
+    - egress
+  worker-global-1:
+    host: worker-global-1
+    publicIp: 198.51.100.20
+    region: global
+    roles:
+    - global-worker
 defaults:
   exposure: cn-edge
-  registry: ghcr.io/turning4th
+  registry: ghcr.io/liutianjie
   stackRoot: stacks
   routesRoot: routes
   publicNetwork: public
   egressNetwork: egress
   entrypoint: websecure
   certResolver: letsencrypt
-
+  images:
+    traefik: docker.1panel.live/library/traefik:v3.6
+    portainer: docker.1panel.live/portainer/portainer-ce:2.21.5
+    portainerAgent: docker.1ms.run/portainer/agent:2.21.5
+    egressGateway: docker.1panel.live/metacubex/mihomo:latest
+    lumaControl: ghcr.io/liutianjie/luma-control:latest
 git:
   autoCommit: false
   autoPush: false
-  commitMessage: "deploy {name} to {region}"
+  commitMessage: deploy {name} to {region}

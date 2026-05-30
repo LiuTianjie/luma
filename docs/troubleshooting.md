@@ -3,7 +3,57 @@
 Start with:
 
 ```bash
+luma preflight
 luma doctor
+```
+
+If env checks fail, create or edit `.env`:
+
+```bash
+cp .env.example .env
+$EDITOR .env
+```
+
+## Local CLI cannot be installed
+
+Run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+```
+
+If `python3` is missing, install it first:
+
+```bash
+# macOS
+brew install python
+
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv python3-pip curl
+```
+
+Local Docker is optional on client machines. Install Docker only on servers that will run manager or worker workloads.
+
+## `zsh: permission denied: luma`
+
+Your shell is resolving the repository's `luma/` package directory instead of the installed CLI command.
+
+Fix:
+
+```bash
+./scripts/install-luma.sh
+. .venv/bin/activate
+hash -r
+which luma
+luma preflight
+```
+
+Fallback:
+
+```bash
+.venv/bin/luma preflight
+./scripts/luma preflight
 ```
 
 ## Tailscale is not logged in
@@ -11,8 +61,7 @@ luma doctor
 Create an ephemeral or reusable auth key in Tailscale, then:
 
 ```bash
-export TAILSCALE_AUTHKEY='...'
-luma tailscale connect <node>
+luma tailscale connect
 ```
 
 ## Docker image pulls fail
@@ -20,23 +69,32 @@ luma tailscale connect <node>
 Fix:
 
 ```bash
-export EGRESS_SUBSCRIPTION_URL='...'
-luma egress setup <node>
-luma doctor --deep
+luma egress setup
+luma doctor --legacy-ssh --deep
 ```
 
-## Default deploy says Portainer webhook missing
+## Not logged in
 
-Fix:
+If deploy prints `not logged in`, authenticate against the manager's control API:
 
 ```bash
-export PORTAINER_WEBHOOK_URL='...'
+luma login https://luma.example.com --token <deploy-token>
+luma context list
 ```
 
-Or use emergency direct deploy:
+## Portainer deploy fails
+
+Rerun manager bootstrap so Portainer is initialized and `/opt/luma/control/control.json` is refreshed:
 
 ```bash
-luma deploy service.yaml --direct --node aly
+luma bootstrap manager --domain luma.example.com --profile single-node
+```
+
+If you intentionally use legacy Portainer webhooks, configure them on the manager:
+
+```dotenv
+PORTAINER_WEBHOOK_URL=...
+PORTAINER_WEBHOOK_API=...
 ```
 
 ## Cloudflare DNS fails
@@ -52,16 +110,15 @@ Specific zone: your domain
 Then:
 
 ```bash
-export CLOUDFLARE_API_TOKEN='...'
 luma cloudflare connect --zone example.com
 ```
 
-## Remote sudo fails
+## Sudo fails
 
-Either configure passwordless sudo for the SSH user or set:
+Run bootstrap with sudo, configure passwordless sudo, or set:
 
 ```bash
-export LUMA_SUDO_PASSWORD='...'
+LUMA_SUDO_PASSWORD=...
 ```
 
 ## Portainer is not reachable
@@ -78,5 +135,5 @@ The default Portainer HTTPS port is `9443`.
 Repair:
 
 ```bash
-luma portainer setup aly
+luma portainer setup
 ```

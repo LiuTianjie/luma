@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from .bootstrap import bootstrap_node, deploy_direct, setup_egress, setup_portainer, setup_tailscale
+from .bootstrap import bootstrap_manager_local, bootstrap_node, configure_dns, join_local_node, local_docker_node_name, setup_egress, setup_portainer, setup_tailscale
 from .cloudflare import find_zone, sync_dns
 from .config import LumaConfig, load_config, save_config
+from .control.client import ControlClient
+from .control.context import list_contexts, load_current_context, save_context, use_context
+from .control.state import load_state, new_state, state_path
+from .envfile import load_env_file
 from .errors import LumaError
-from .gitops import commit, push
 from .io import dump_yaml, write_yaml
-from .portainer import configured_webhook, trigger_webhook
+from .local import LocalExecutor
 from .profiles import PROFILES
 from .remote import RemoteExecutor
 from .render import render_stack, render_tailscale_route, route_path, stack_path
@@ -23,11 +29,35 @@ from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="luma", description="Self-hosted deployment control plane.")
     parser.add_argument("--config", type=Path, default=None, help="Path to luma.yaml")
+    parser.add_argument("--env-file", type=Path, default=Path(".env"), help="Path to local env file")
+    parser.add_argument("--no-env", action="store_true", help="Do not load .env")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init")
+    sub.add_parser("preflight")
+    login = sub.add_parser("login")
+    login.add_argument("endpoint")
+    login.add_argument("--token", required=True)
+    login.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
+    login.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
+    context = sub.add_parser("context")
+    context_sub = context.add_subparsers(dest="context_command", required=True)
+    context_sub.add_parser("list")
+    context_use = context_sub.add_parser("use")
+    context_use.add_argument("cluster")
+    bootstrap = sub.add_parser("bootstrap")
+    bootstrap_sub = bootstrap.add_subparsers(dest="bootstrap_command", required=True)
+    manager = bootstrap_sub.add_parser("manager")
+    manager.add_argument("--domain", required=True)
+    manager.add_argument("--node")
+    manager.add_argument("--profile", choices=sorted(PROFILES), default="single-node")
+    manager.add_argument("--http-port", type=int, help="Public Traefik HTTP port")
+    manager.add_argument("--https-port", type=int, help="Public Traefik HTTPS port")
+    manager.add_argument("--skip-egress", action="store_true")
+    manager.add_argument("--overwrite-control-state", action="store_true")
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks such as docker pull through egress")
+    doctor.add_argument("--legacy-ssh", action="store_true", help="Also run legacy SSH checks for nodes in luma.yaml")
 
     node = sub.add_parser("node")
     node_sub = node.add_subparsers(dest="node_command", required=True)
@@ -35,6 +65,15 @@ def build_parser() -> argparse.ArgumentParser:
     node_bootstrap = node_sub.add_parser("bootstrap")
     node_bootstrap.add_argument("node")
     node_bootstrap.add_argument("--profile", choices=sorted(PROFILES), required=True)
+    node_bootstrap.add_argument("--skip-egress", action="store_true", help="Skip egress setup during bootstrap; run luma egress setup later")
+    node_join = node_sub.add_parser("join")
+    node_join.add_argument("endpoint")
+    node_join.add_argument("--token", required=True)
+    node_join.add_argument("--profile", choices=sorted(PROFILES), required=True)
+    node_join.add_argument("--region", required=True)
+    node_join.add_argument("--name", default=os.uname().nodename)
+    node_join.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
+    node_join.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
 
     cf = sub.add_parser("cloudflare")
     cf_sub = cf.add_subparsers(dest="cloudflare_command", required=True)
@@ -45,17 +84,17 @@ def build_parser() -> argparse.ArgumentParser:
     egress_sub = egress.add_subparsers(dest="egress_command", required=True)
     for name in ("setup", "refresh"):
         cmd = egress_sub.add_parser(name)
-        cmd.add_argument("node")
+        cmd.add_argument("node", nargs="?", help="Legacy remote node name. Omit to repair the current server.")
 
     portainer = sub.add_parser("portainer")
     portainer_sub = portainer.add_subparsers(dest="portainer_command", required=True)
     portainer_setup = portainer_sub.add_parser("setup")
-    portainer_setup.add_argument("node")
+    portainer_setup.add_argument("node", nargs="?", help="Legacy remote node name. Omit to repair the current server.")
 
     tailscale = sub.add_parser("tailscale")
     tailscale_sub = tailscale.add_subparsers(dest="tailscale_command", required=True)
     tailscale_connect = tailscale_sub.add_parser("connect")
-    tailscale_connect.add_argument("node")
+    tailscale_connect.add_argument("node", nargs="?", help="Legacy remote node name. Omit to repair the current server.")
 
     service = sub.add_parser("service")
     service_sub = service.add_subparsers(dest="service_command", required=True)
@@ -74,38 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--dry-run", action="store_true")
     deploy.add_argument("--skip-dns", action="store_true")
     deploy.add_argument("--skip-webhook", action="store_true")
-    deploy.add_argument("--commit", action="store_true", help="Commit generated stack changes")
-    deploy.add_argument("--push", action="store_true", help="Push Git changes before triggering Portainer")
-    deploy.add_argument("--direct", action="store_true", help="Deploy directly with docker stack deploy over SSH")
-    deploy.add_argument("--node", help="Manager node for --direct deploy")
+    deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
+    deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
+    deploy.add_argument("--via", choices=("portainer",), default="portainer", help="Deployment runner")
 
     return parser
-
-
-def validate_stack_file(path: Path) -> str:
-    result = subprocess.run(
-        ["docker", "compose", "-f", str(path), "config"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise LumaError(f"docker compose config failed for {path}:\n{result.stdout}")
-    return f"Stack valid: {path}"
-
-
-def write_rendered_service(config: LumaConfig, service_path: Path) -> tuple[Any, Path, Path | None]:
-    service = load_service(service_path)
-    target = stack_path(config, service)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render_stack(config, service), encoding="utf-8")
-    route_target = None
-    if service.exposure == "tailscale-relay":
-        route_target = route_path(config, service)
-        route_target.parent.mkdir(parents=True, exist_ok=True)
-        route_target.write_text(render_tailscale_route(config, service), encoding="utf-8")
-    return service, target, route_target
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -142,6 +154,52 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    env_file = args.env_file
+    checks = [
+        ("Python", True, f"{sys.executable} ({sys.version_info.major}.{sys.version_info.minor})", "Install Python 3.9+"),
+        ("pip", _module_available("pip"), "python -m pip", "Run: python3 -m ensurepip --upgrade"),
+        ("venv", _module_available("venv"), "python -m venv", "Install python3-venv"),
+        ("Git", bool(shutil.which("git")), shutil.which("git") or "-", "Optional: install Git for source-checkout development"),
+        ("SSH", bool(shutil.which("ssh")), shutil.which("ssh") or "-", "Optional: install OpenSSH client for legacy remote commands"),
+        ("Env file", env_file.exists(), str(env_file), "Optional: cp .env.example .env"),
+        ("Docker Compose", _docker_compose_available(), "docker compose", "Optional locally; install Docker to validate rendered stacks"),
+    ]
+    for name, ok, detail, fix in checks:
+        print(f"{name}: {'ok' if ok else 'missing'} ({detail})")
+        if not ok:
+            print(f"  Fix: {fix}")
+    required_ok = all(ok for name, ok, _, _ in checks if name not in {"Docker Compose", "Env file", "Git", "SSH"})
+    return 0 if required_ok else 1
+
+
+def _module_available(name: str) -> bool:
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {name}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _docker_compose_available() -> bool:
+    docker = shutil.which("docker")
+    if not docker:
+        return False
+    result = subprocess.run(
+        [docker, "compose", "version"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
 def cmd_node(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if args.node_command == "list":
@@ -154,10 +212,162 @@ def cmd_node(args: argparse.Namespace) -> int:
     if args.node_command == "bootstrap":
         node = config.get_node(args.node)
         profile = PROFILES[args.profile]
-        for line in bootstrap_node(config, node, profile):
-            print(line)
+        bootstrap_node(config, node, profile, run_egress=not args.skip_egress, emit=log)
+        print("Bootstrap complete")
+        return 0
+    if args.node_command == "join":
+        log("[start] Configure system DNS")
+        log(f"[ok] {configure_dns(LocalExecutor())}")
+        client = ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
+        result = client.register_node(node_name=args.name, profile=args.profile, region=args.region)
+        print(f"Node registered: {result['nodeName']} ({result['profile']}, {result['region']})")
+        manager_addr = result.get("managerAddr")
+        swarm_token = result.get("swarmJoinToken")
+        node = _local_node(args.profile, name=args.name, region=args.region)
+        join_local_node(node, PROFILES[args.profile], str(manager_addr or ""), str(swarm_token or ""), emit=log)
+        actual_node_name = local_docker_node_name()
+        label_result = client.label_node(node_name=actual_node_name, profile=args.profile, region=args.region)
+        print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
+        print("Node join complete")
         return 0
     raise LumaError(f"unknown node command: {args.node_command}")
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    client = ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
+    result = client.verify_login()
+    cluster_id = str(result.get("clusterId") or "")
+    if not cluster_id:
+        raise LumaError("control API did not return clusterId")
+    save_context(
+        endpoint=args.endpoint,
+        cluster_id=cluster_id,
+        token=args.token,
+        insecure=args.insecure,
+        resolve_ip=args.resolve_ip,
+    )
+    print(f"Logged in to {cluster_id} at {args.endpoint.rstrip('/')}")
+    return 0
+
+
+def cmd_context(args: argparse.Namespace) -> int:
+    if args.context_command == "list":
+        contexts = list_contexts()
+        if not contexts:
+            print("No contexts. Run: luma login <control-url> --token <token>")
+            return 0
+        for item in contexts:
+            marker = "*" if item.get("current") else " "
+            print(f"{marker} {item.get('clusterId')}\t{item.get('endpoint')}")
+        return 0
+    if args.context_command == "use":
+        use_context(args.cluster)
+        print(f"Current context: {args.cluster}")
+        return 0
+    raise LumaError(f"unknown context command: {args.context_command}")
+
+
+def cmd_bootstrap(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if args.bootstrap_command == "manager":
+        _apply_bootstrap_port_overrides(config, http_port=args.http_port, https_port=args.https_port)
+        node = config.get_node(args.node) if args.node else (config.default_manager() or _local_node(args.profile))
+        if not node:
+            raise LumaError("no manager node configured. Add a node or pass --node.")
+        profile = PROFILES[args.profile]
+        state = _control_state_for_bootstrap(args.domain, overwrite=args.overwrite_control_state)
+        _attach_control_secrets(state, config)
+        bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log)
+        control_url = _control_url(args.domain, args.https_port or _config_https_port(config))
+        print("Bootstrap complete")
+        print(f"Control domain: {args.domain}")
+        print(f"Control URL: {control_url}")
+        print(f"Cluster: {state['clusterId']}")
+        print(f"Deploy token: {state['deployToken']}")
+        print(f"Join token: {state['joinToken']}")
+        return 0
+    raise LumaError(f"unknown bootstrap command: {args.bootstrap_command}")
+
+
+def _apply_bootstrap_port_overrides(config: LumaConfig, *, http_port: int | None, https_port: int | None) -> None:
+    if http_port is None and https_port is None:
+        return
+    defaults = config.raw.setdefault("defaults", {})
+    ports = defaults.setdefault("ports", {})
+    if http_port is not None:
+        ports["traefikHttp"] = http_port
+    if https_port is not None:
+        ports["traefikHttps"] = https_port
+
+
+def _config_https_port(config: LumaConfig) -> int:
+    ports = config.defaults.get("ports") or {}
+    if isinstance(ports, dict):
+        return int(ports.get("traefikHttps") or ports.get("https") or 443)
+    return 443
+
+
+def _control_url(domain: str, https_port: int) -> str:
+    port = "" if https_port == 443 else f":{https_port}"
+    return f"https://{domain}{port}"
+
+
+def _control_state_for_bootstrap(domain: str, *, overwrite: bool) -> Dict[str, object]:
+    if overwrite:
+        return new_state(domain=domain)
+    path = state_path()
+    try:
+        if path.exists():
+            return load_state(path)
+    except PermissionError:
+        pass
+    result = LocalExecutor().sudo_result(f"test -f {shlex.quote(str(path))} && cat {shlex.quote(str(path))}")
+    if result.code == 0 and result.output.strip():
+        raw = result.output.strip()
+        start = raw.find("{")
+        end = raw.rfind("}")
+        data = json.loads(raw[start : end + 1] if start >= 0 and end >= start else raw)
+        if isinstance(data, dict):
+            return data
+    return new_state(domain=domain)
+
+
+def _attach_control_secrets(state: Dict[str, object], config: LumaConfig) -> None:
+    names: set[str] = set()
+    dns = config.dns
+    if dns:
+        names.add(str(dns.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN")))
+        names.add(str(dns.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID")))
+    portainer = config.portainer
+    if portainer:
+        names.add(str(portainer.get("webhookUrlEnv", "PORTAINER_WEBHOOK_URL")))
+        webhooks = portainer.get("webhooks") or {}
+        if isinstance(webhooks, dict):
+            names.update(str(value) for value in webhooks.values() if value)
+    names.update(key for key in os.environ if key == "PORTAINER_WEBHOOK_URL" or key.startswith("PORTAINER_WEBHOOK_"))
+    names.update(key for key in os.environ if key in {"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID"})
+
+    existing = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+    secrets = dict(existing or {})
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            secrets[name] = value
+    if secrets:
+        state["secrets"] = secrets
+
+
+def _local_node(profile_name: str, *, name: str | None = None, region: str | None = None):
+    from .config import NodeConfig
+
+    profile = PROFILES[profile_name]
+    return NodeConfig(
+        name=name or os.uname().nodename,
+        host="localhost",
+        region=region or profile.labels.get("region", "cn"),
+        roles=list(profile.roles),
+        raw={},
+    )
 
 
 def cmd_cloudflare(args: argparse.Namespace) -> int:
@@ -178,12 +388,12 @@ def cmd_cloudflare(args: argparse.Namespace) -> int:
 
 def cmd_egress(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    node = config.get_node(args.node)
+    node = _repair_node(config, args.node, "egress-gateway")
+    executor = None if args.node else LocalExecutor()
     subscription_url = os.environ.get("EGRESS_SUBSCRIPTION_URL")
     if not subscription_url:
         raise LumaError("missing EGRESS_SUBSCRIPTION_URL")
-    for line in setup_egress(config, node, subscription_url):
-        print(line)
+    setup_egress(config, node, subscription_url, emit=log, executor=executor)
     if args.egress_command == "refresh":
         print("Egress refreshed")
     else:
@@ -194,9 +404,8 @@ def cmd_egress(args: argparse.Namespace) -> int:
 def cmd_portainer(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if args.portainer_command == "setup":
-        node = config.get_node(args.node)
-        for line in setup_portainer(node):
-            print(line)
+        node = _repair_node(config, args.node, "single-node")
+        setup_portainer(node, emit=log, executor=None if args.node else LocalExecutor())
         return 0
     raise LumaError(f"unknown portainer command: {args.portainer_command}")
 
@@ -204,11 +413,18 @@ def cmd_portainer(args: argparse.Namespace) -> int:
 def cmd_tailscale(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if args.tailscale_command == "connect":
-        node = config.get_node(args.node)
-        for line in setup_tailscale(node):
-            print(line)
+        node = _repair_node(config, args.node, "single-node")
+        log("[start] Install and connect Tailscale")
+        for line in setup_tailscale(node, executor=None if args.node else LocalExecutor()):
+            log(f"[ok] {line}")
         return 0
     raise LumaError(f"unknown tailscale command: {args.tailscale_command}")
+
+
+def _repair_node(config: LumaConfig, node_name: str | None, profile_name: str):
+    if node_name:
+        return config.get_node(node_name)
+    return config.default_manager() or _local_node(profile_name)
 
 
 def prompt(default: str, label: str) -> str:
@@ -287,52 +503,65 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             print(rendered_route)
         return 0
 
-    service, target, route_target = write_rendered_service(config, args.service)
-    print(f"Stack written: {target}")
-    written_paths = [target]
-    if route_target:
-        written_paths.append(route_target)
-        print(f"Traefik relay route written: {route_target}")
-    try:
-        print(validate_stack_file(target))
-    except FileNotFoundError:
-        print("Stack validation skipped: docker is not installed")
+    if args.commit or args.push:
+        raise LumaError("--commit/--push are not supported for control-plane deploy; run deploy --dry-run for local rendering")
 
-    if not args.skip_dns:
-        print(sync_dns(config, service))
-
-    if args.direct:
-        node = config.get_node(args.node) if args.node else config.default_manager()
-        if not node:
-            raise LumaError("no manager node configured for --direct")
-        for line in deploy_direct(config, node, target, service.slug, route_target):
-            print(line)
-        return 0
-
-    do_commit = args.commit or bool(config.git.get("autoCommit", False))
-    do_push = args.push or bool(config.git.get("autoPush", False))
-    if do_commit:
-        message_template = config.git.get("commitMessage", "deploy {name}")
-        message = str(message_template).format(name=service.name, region=service.region)
-        print(commit(written_paths, message))
-    if do_push:
-        print(push())
-    if not args.skip_webhook:
-        if not configured_webhook(config):
-            raise LumaError("Portainer webhook is required for default deploy. Set PORTAINER_WEBHOOK_URL or use --direct.")
-        print(trigger_webhook(config, service))
-    print(f"Deploy prepared for Portainer: {service.name} -> {target}")
+    context = load_current_context()
+    client = ControlClient(
+        str(context["endpoint"]),
+        str(context["token"]),
+        insecure=bool(context.get("insecure")),
+        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
+    )
+    result = client.deploy(
+        manifest=args.service.read_text(encoding="utf-8"),
+        source_name=str(args.service),
+        skip_dns=args.skip_dns,
+        skip_webhook=args.skip_webhook,
+    )
+    print(f"Deploy submitted to {context['clusterId']}: {result.get('service', service.name)}")
+    if result.get("image"):
+        image = result["image"]
+        if image.get("fallback"):
+            print(f"Image fallback: {image.get('requested')} -> {image.get('selected')}")
+        else:
+            print(f"Image ready: {image.get('selected')}")
+    if result.get("dns"):
+        print(result["dns"])
+    if result.get("webhook"):
+        print(result["webhook"])
     return 0
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     checks: list[tuple[str, bool, str]] = []
-    checks.append(("Config", bool(config.path and config.path.exists()), "Run: luma init"))
+    checks.append(("Login context", False, "Run: luma login <control-url> --token <deploy-token>"))
+    try:
+        context = load_current_context()
+        checks[-1] = ("Login context", True, str(context.get("endpoint") or "current context loaded"))
+        client = ControlClient(
+            str(context["endpoint"]),
+            str(context["token"]),
+            insecure=bool(context.get("insecure")),
+            resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
+        )
+        verified = client.verify_login()
+        checks.append(("Control API", bool(verified.get("clusterId")), "Check the control URL, token, DNS, and HTTPS route"))
+    except LumaError as exc:
+        checks.append(("Control API", False, str(exc)))
+
+    if not args.legacy_ssh:
+        if args.deep:
+            checks.append(("Deep node checks", False, "Run: luma doctor --legacy-ssh --deep from a machine that can SSH to the nodes"))
+        for name, ok, fix in checks:
+            print(f"{name}: {'ok' if ok else 'fail'}")
+            if not ok:
+                print(f"  Fix: {fix}")
+        return 0 if all(ok for _, ok, _ in checks) else 1
+
+    checks.append(("Config", bool(config.path and config.path.exists()), "Run: luma init or create luma.yaml on manager nodes"))
     checks.append(("Nodes", bool(config.nodes), "Add nodes to luma.yaml"))
-    checks.append(("Cloudflare token", bool(os.environ.get(config.dns.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))), "Export CLOUDFLARE_API_TOKEN"))
-    checks.append(("Portainer webhook", bool(configured_webhook(config)), "Set PORTAINER_WEBHOOK_URL"))
-    checks.append(("Egress subscription", bool(os.environ.get("EGRESS_SUBSCRIPTION_URL")), "Export EGRESS_SUBSCRIPTION_URL"))
     for node in config.nodes.values():
         remote = RemoteExecutor(node)
         ssh = remote.run_result("true")
@@ -397,13 +626,22 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     if argv and argv[0] == "depoly":
-        print("Unknown command: depoly. Did you mean: deploy?", file=sys.stderr)
-        return 2
+        argv[0] = "deploy"
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if not args.no_env:
+            load_env_file(args.env_file)
         if args.command == "init":
             return cmd_init(args)
+        if args.command == "preflight":
+            return cmd_preflight(args)
+        if args.command == "login":
+            return cmd_login(args)
+        if args.command == "context":
+            return cmd_context(args)
+        if args.command == "bootstrap":
+            return cmd_bootstrap(args)
         if args.command == "doctor":
             return cmd_doctor(args)
         if args.command == "node":

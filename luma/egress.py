@@ -39,7 +39,7 @@ def minimal_mihomo_config_from_bytes(raw: bytes) -> str:
         "mixed-port": 7890,
         "allow-lan": True,
         "bind-address": "0.0.0.0",
-        "mode": "global",
+        "mode": "rule",
         "log-level": "info",
         "ipv6": False,
         "external-controller": "127.0.0.1:9090",

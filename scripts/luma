@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+if [ ! -x "$ROOT/.venv/bin/luma" ]; then
+  echo "Luma is not installed in .venv yet." >&2
+  echo "Run: ./scripts/install-luma.sh" >&2
+  exit 1
+fi
+
+exec "$ROOT/.venv/bin/luma" "$@"

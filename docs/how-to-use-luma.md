@@ -8,31 +8,53 @@ Luma keeps five concepts visible:
 node / region / exposure / egress / service
 ```
 
-Portainer is the default deployment control plane. Tailscale is a control-plane network and a relay option for home services. Cloudflare is the DNS provider and optional tunnel provider. Egress Gateway is only for outbound traffic such as pulling images, installing dependencies, or running services that need external network access.
+Portainer is a required operations console and deployment runner. Luma Control runs on the manager node and owns login tokens, node registration, DNS sync, stack rendering, and Portainer deployment calls. After `luma login`, `luma deploy` can be run from a client that does not have Docker, SSH access, Cloudflare credentials, or Portainer webhooks. Tailscale is a control-plane network and a relay option for home services. Cloudflare is the DNS provider and optional tunnel provider. Egress Gateway is only for outbound traffic such as pulling images, installing dependencies, or running services that need external network access.
 
 ## 1. Install The CLI
 
 ```bash
-cd ~/infra-stacks
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e .
-luma --help
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+luma preflight
 ```
+
+This creates a private venv at `~/.local/share/luma/venv` and a `luma` command at `~/.local/bin/luma`. If the command is not found, add `~/.local/bin` to `PATH`.
+
+Install a specific tag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.0 sh
+```
+
+For local development from a checkout:
+
+```bash
+./scripts/install-luma.sh
+. .venv/bin/activate
+```
+
+If `python3` is missing, the installer prints the package command for macOS or Ubuntu/Debian. Local Docker is optional; it is only used to validate rendered stack files before deployment.
+
+Create `.env`:
+
+```bash
+cp .env.example .env
+$EDITOR .env
+```
+
+Luma loads `.env` automatically. Shell exports win over `.env`, so CI or one-off commands can override local values.
 
 ## 2. Configure `luma.yaml`
 
 `luma.yaml` is the only project config file Luma needs.
 
 ```yaml
-project: itool
+project: example
 
 providers:
   dns:
     type: cloudflare
-    zone: itool.tech
-    zoneId: ac7105f330b0107c778ea8769bdfdc00
+    zone: example.com
+    zoneId: ""
     apiTokenEnv: CLOUDFLARE_API_TOKEN
     recordType: A
     ttl: 1
@@ -41,9 +63,9 @@ providers:
     webhookUrlEnv: PORTAINER_WEBHOOK_URL
 
 nodes:
-  aly:
-    host: aly
-    publicIp: 8.130.148.30
+  manager-1:
+    host: manager-1
+    publicIp: 203.0.113.10
     region: cn
     roles:
       - swarm-manager
@@ -52,23 +74,27 @@ nodes:
 
 defaults:
   exposure: cn-edge
-  registry: ghcr.io/turning4th
+  registry: ghcr.io/liutianjie
   stackRoot: stacks
   routesRoot: routes
   publicNetwork: public
   egressNetwork: egress
   entrypoint: websecure
   certResolver: letsencrypt
+  images:
+    egressGateway: docker.1panel.live/metacubex/mihomo:latest
 ```
 
-Secrets are environment variables:
+Secrets live in `.env` or environment variables:
 
-```bash
-export CLOUDFLARE_API_TOKEN='...'
-export PORTAINER_WEBHOOK_URL='...'
-export EGRESS_SUBSCRIPTION_URL='...'
-export LUMA_SUDO_PASSWORD='...'
-export TAILSCALE_AUTHKEY='...'
+```dotenv
+CLOUDFLARE_API_TOKEN=...
+PORTAINER_WEBHOOK_URL=...
+PORTAINER_WEBHOOK_API=...
+EGRESS_SUBSCRIPTION_URL=...
+LUMA_SUDO_PASSWORD=...
+TAILSCALE_AUTHKEY=...
+LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:latest
 ```
 
 Do not commit secrets.
@@ -78,7 +104,7 @@ Do not commit secrets.
 For a single public server that runs Swarm manager, Traefik, Portainer, and egress:
 
 ```bash
-luma node bootstrap aly --profile single-node
+luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
 This does:
@@ -88,32 +114,62 @@ This does:
 - initializes Docker Swarm if needed;
 - creates `public` and `egress` overlay networks;
 - applies node labels;
-- creates `/opt/luma/routes` and `/opt/luma/egress-gateway`;
+- creates `/opt/luma/stacks`, `/opt/luma/routes`, `/opt/luma/control`, and `/opt/luma/egress-gateway`;
 - deploys Traefik;
 - deploys Portainer;
+- deploys Luma Control;
+- deploys egress when the profile has the `egress` role;
 - configures UFW for SSH, 80, 443, 9443, and blocks inbound 7890.
+
+Set `EGRESS_SUBSCRIPTION_URL` before running an egress profile, or use `--skip-egress` and repair it later. Bootstrap prints live step logs with `[start]`, `[ok]`, and `[fail]` markers. If one step fails, either re-run bootstrap after fixing the issue or run the focused repair command for that layer.
 
 If only Portainer needs repair:
 
 ```bash
-luma portainer setup aly
+luma portainer setup
 ```
 
 If Tailscale login was skipped during bootstrap:
 
 ```bash
-export TAILSCALE_AUTHKEY='...'
-luma tailscale connect aly
+luma tailscale connect
 ```
+
+If egress was skipped or needs repair:
+
+```bash
+luma egress setup
+```
+
+To intentionally skip egress during first bootstrap:
+
+```bash
+luma bootstrap manager --domain luma.example.com --profile single-node --skip-egress
+```
+
+The bootstrap output includes a deploy token and a join token. Use the deploy token on client machines:
+
+```bash
+luma login https://luma.example.com --token <deploy-token>
+luma context list
+```
+
+Use the join token on additional servers:
+
+```bash
+luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
+```
+
+The manager applies the node labels automatically after the node joins Swarm.
 
 ## 4. Connect Cloudflare
 
 ```bash
-export CLOUDFLARE_API_TOKEN='...'
-luma cloudflare connect --zone itool.tech
+luma cloudflare connect --zone example.com
 ```
 
 The command verifies the token, finds the zone, and writes `providers.dns.zoneId` back to `luma.yaml`.
+Run this before `luma bootstrap manager` when possible. If you connect Cloudflare afterward, rerun manager bootstrap so `/opt/luma/luma.yaml` and `/opt/luma/control/control.json` are refreshed.
 
 For `cn-edge` services, DNS defaults to the public IP of the configured edge node. A service can override this with:
 
@@ -122,14 +178,13 @@ dns:
   target: 203.0.113.10
 ```
 
-## 5. Set Up Egress
+## 5. Repair Or Refresh Egress
 
 ```bash
-export EGRESS_SUBSCRIPTION_URL='...'
-luma egress setup aly
+luma egress setup
 ```
 
-This downloads the subscription, strips it into a minimal Mihomo config, writes it to `/opt/luma/egress-gateway/config.yaml`, deploys `egress_mihomo`, and configures Docker daemon proxy:
+Bootstrap already runs this for `single-node` unless `--skip-egress` is used. Run it directly when egress was skipped, failed, or the subscription needs repair. It downloads the subscription, strips it into a minimal Mihomo config, writes it to `/opt/luma/egress-gateway/config.yaml`, deploys `egress_mihomo`, and configures Docker daemon proxy:
 
 ```text
 HTTP_PROXY=http://127.0.0.1:7890
@@ -139,7 +194,7 @@ HTTPS_PROXY=http://127.0.0.1:7890
 Refresh subscription output later:
 
 ```bash
-luma egress refresh aly
+luma egress refresh
 ```
 
 ## 6. Create A Service
@@ -158,20 +213,28 @@ image: ghcr.io/me/app:latest
 region: cn
 public: true
 exposure: cn-edge
-domain: app.itool.tech
+domain: app.example.com
 port: 3000
 replicas: 2
 ```
 
 ## 7. Deploy
 
-Default production path:
+Default deploy path:
 
 ```bash
-luma deploy app.yaml --commit --push
+luma deploy app.yaml
 ```
 
-This renders the stack, syncs DNS, commits, pushes, and triggers Portainer.
+This submits the manifest to the logged-in Luma Control endpoint. The manager renders generated files under `/opt/luma`, syncs DNS, and creates or updates the stack through the Portainer API.
+
+Legacy Portainer webhooks remain supported. When existing GitOps stacks use webhooks, configure a webhook per service so Luma only triggers the changed stack:
+
+```yaml
+name: api
+portainer:
+  webhookUrlEnv: PORTAINER_WEBHOOK_API
+```
 
 Preview without side effects:
 
@@ -179,16 +242,10 @@ Preview without side effects:
 luma deploy app.yaml --dry-run
 ```
 
-Generate local files without DNS or Portainer:
+Preview generated files without DNS or webhook side effects:
 
 ```bash
 luma deploy app.yaml --skip-dns --skip-webhook
-```
-
-Emergency deploy when Portainer is unavailable:
-
-```bash
-luma deploy app.yaml --direct --node aly
 ```
 
 ## 8. Exposure Modes
@@ -233,7 +290,7 @@ No public entrypoint. Use it for workers and internal services.
 
 ```bash
 luma doctor
-luma doctor --deep
+luma doctor --legacy-ssh --deep  # optional, from a machine that can SSH to nodes
 ```
 
 Each failed check includes a concrete fix command or environment variable.
@@ -244,16 +301,16 @@ Use the reference node first:
 
 ```bash
 luma doctor
-luma node bootstrap aly --profile single-node
-luma egress setup aly
-luma deploy examples/public-cn-service.yaml --commit --push
+luma bootstrap manager --domain luma.example.com --profile single-node
+luma egress setup
+luma deploy examples/public-cn-service.yaml
 ```
 
 Then check:
 
 ```bash
 docker service ls
-curl -I https://whoami.itool.tech
+curl -I https://whoami.example.com
 ```
 
 Rotate any token or subscription URL that has been pasted into chat or logs before open-sourcing the repository.

@@ -94,6 +94,42 @@ def sync_dns(config: LumaConfig, service: ServiceSpec) -> str:
     return f"DNS created: {name} -> {target}"
 
 
+def sync_control_dns(config: LumaConfig, domain: str) -> str:
+    dns_config = config.dns
+    if dns_config.get("provider") != "cloudflare":
+        return "Control DNS skipped: dns.provider is not cloudflare"
+    token_env = str(dns_config.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
+    token = os.environ.get(token_env)
+    if not token:
+        raise LumaError(f"missing Cloudflare API token env var: {token_env}")
+    zone_id = os.environ.get(str(dns_config.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID"))) or dns_config.get("zoneId")
+    if not zone_id:
+        raise LumaError("missing Cloudflare zone id: run luma cloudflare connect --zone <domain> or set providers.dns.zoneId")
+    target = dns_config.get("edgeTarget") or config.default_dns_target()
+    if not target:
+        raise LumaError("missing DNS target: configure an edge node publicIp or providers.dns.edgeTarget")
+    record_type = str(dns_config.get("recordType", "A")).upper()
+    proxied = bool(dns_config.get("controlProxied", dns_config.get("proxied", False)))
+    ttl = int(dns_config.get("ttl", 1))
+    client = CloudflareClient(token)
+    query = urllib.parse.urlencode({"type": record_type, "name": domain})
+    existing = client.request("GET", f"/zones/{zone_id}/dns_records?{query}")["result"]
+    body = {
+        "type": record_type,
+        "name": domain,
+        "content": str(target),
+        "ttl": ttl,
+        "proxied": proxied,
+        "comment": "managed by Luma control plane",
+    }
+    if existing:
+        record_id = existing[0]["id"]
+        client.request("PUT", f"/zones/{zone_id}/dns_records/{record_id}", body)
+        return f"Control DNS updated: {domain} -> {target}"
+    client.request("POST", f"/zones/{zone_id}/dns_records", body)
+    return f"Control DNS created: {domain} -> {target}"
+
+
 def get_token(config: LumaConfig) -> tuple[str, str]:
     dns_config = config.dns
     token_env = str(dns_config.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))

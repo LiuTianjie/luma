@@ -3,6 +3,6 @@ image: traefik/whoami:latest
 region: cn
 public: true
 exposure: cn-edge
-domain: whoami.itool.tech
+domain: whoami.example.com
 port: 80
 replicas: 1

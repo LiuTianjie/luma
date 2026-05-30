@@ -1,19 +1,22 @@
 # Operations
 
-Production changes should flow through Git and Portainer.
+Portainer is the required operations UI and deployment runner. Luma Control is the self-hosted API on the manager node that handles login tokens, node registration, DNS sync, stack rendering, and Portainer deployment calls. `luma deploy` talks to Luma Control; it does not SSH into a node to deploy.
 
-The normal path is:
+The default path is:
 
 ```text
-service.yaml -> luma deploy --commit --push -> Portainer webhook -> Docker Swarm
+service.yaml -> luma deploy -> Luma Control -> render stack -> sync DNS -> Portainer API -> Docker Swarm
 ```
+
+Luma uses the Portainer API by default. Webhooks remain supported for older Git-backed stacks, but users do not need to create webhooks for the default flow.
 
 ## Add A Service
 
 ```bash
 luma service new
 luma deploy <service>.yaml --dry-run
-luma deploy <service>.yaml --commit --push
+luma login https://luma.example.com --token <deploy-token>
+luma deploy <service>.yaml
 luma doctor
 ```
 
@@ -25,7 +28,7 @@ image: ghcr.io/me/api:2026-05-29-1
 region: cn
 public: true
 exposure: cn-edge
-domain: api.itool.tech
+domain: api.example.com
 port: 3000
 replicas: 2
 ```
@@ -41,7 +44,7 @@ image: ghcr.io/me/api:2026-05-29-2
 Then deploy:
 
 ```bash
-luma deploy api.yaml --commit --push
+luma deploy api.yaml
 ```
 
 ## Scale Replicas
@@ -55,7 +58,7 @@ replicas: 3
 Then deploy:
 
 ```bash
-luma deploy api.yaml --commit --push
+luma deploy api.yaml
 ```
 
 Temporary scale from a manager node:
@@ -69,6 +72,13 @@ Temporary commands do not update Git. Commit the manifest change afterward if it
 ## View Status
 
 From Portainer, check stacks, services, tasks, logs, and node placement.
+
+From a client:
+
+```bash
+luma context list
+luma context use <cluster-id>
+```
 
 From a manager node:
 
@@ -84,7 +94,7 @@ Preferred path:
 
 ```bash
 git revert <deploy-commit>
-luma deploy <service>.yaml --commit --push
+luma deploy <service>.yaml
 ```
 
 Emergency Docker rollback:
@@ -127,20 +137,20 @@ sudo docker node update --availability active <node-name>
 
 ```bash
 export EGRESS_SUBSCRIPTION_URL='...'
-luma egress refresh aly
+luma egress refresh
 ```
 
 Verify image pulls:
 
 ```bash
-ssh aly 'sudo docker pull hello-world:latest'
+sudo docker pull hello-world:latest
 ```
 
 ## Repair Control Plane
 
 ```bash
-luma node bootstrap aly --profile single-node
-luma portainer setup aly
+luma bootstrap manager --domain luma.example.com --profile single-node
+luma portainer setup
 luma doctor
 ```
 

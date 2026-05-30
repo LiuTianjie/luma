@@ -1,0 +1,13 @@
+ARG PYTHON_IMAGE=docker.1panel.live/library/python:3.11-slim
+FROM ${PYTHON_IMAGE}
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY luma ./luma
+
+RUN pip install --no-cache-dir .
+
+EXPOSE 8080
+
+CMD ["python", "-m", "luma.control.server", "serve", "--host", "0.0.0.0", "--port", "8080"]

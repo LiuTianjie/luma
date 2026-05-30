@@ -2,17 +2,37 @@
 
 Luma stores project topology in `luma.yaml`, but secrets stay outside Git.
 
-## Environment Variables
+By default, the CLI loads `.env` from the current working directory. Use `--env-file <path>` for another file or `--no-env` to disable loading.
 
 ```bash
+cp .env.example .env
+$EDITOR .env
+```
+
+## Environment Variables
+
+```dotenv
 CLOUDFLARE_API_TOKEN     Cloudflare DNS API token
-PORTAINER_WEBHOOK_URL    Portainer stack webhook
+PORTAINER_WEBHOOK_URL    optional legacy Portainer stack webhook
+PORTAINER_WEBHOOK_*      optional legacy per-service Portainer GitOps webhooks
 EGRESS_SUBSCRIPTION_URL  proxy subscription URL
-LUMA_SUDO_PASSWORD       optional remote sudo password for bootstrap
+LUMA_SUDO_PASSWORD       optional sudo password for local or legacy remote bootstrap
 TAILSCALE_AUTHKEY        optional auth key for unattended Tailscale login
+LUMA_CONTROL_IMAGE       optional published control API image for bootstrap
+TRAEFIK_ACME_EMAIL       optional Let's Encrypt account email
 ```
 
 ## Runtime Secret Files
+
+Control-plane state is written on the manager:
+
+```text
+/opt/luma/control/control.json
+```
+
+It contains the cluster id, deploy token, join token, Swarm worker join token, and copied Cloudflare/Portainer environment values needed by the control API. This file must not be committed or copied to client machines.
+
+Luma Control also mounts `/var/run/docker.sock` so it can apply node labels after workers join. Treat deploy and join tokens as cluster-admin sensitive.
 
 Egress configuration is written on the node:
 
@@ -21,6 +41,17 @@ Egress configuration is written on the node:
 ```
 
 This file must not be committed.
+
+`.env` and `.env.*` are ignored by Git. `.env.example` is committed as the safe template.
+
+Client login state is written per user:
+
+```text
+~/.config/luma/contexts/<cluster>.json
+~/.config/luma/current-context
+```
+
+The context contains only the control endpoint, cluster id, and deploy token. It should still be treated as a secret because it can deploy to the cluster.
 
 ## Rotation
 
