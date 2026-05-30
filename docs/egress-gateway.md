@@ -24,7 +24,7 @@ Luma will:
 - configure stable system DNS resolvers for registry/bootstrap reliability;
 - temporarily disable Docker daemon proxy for the first egress bootstrap;
 - deploy `stacks/core/egress-gateway/stack.yml` using Luma's built-in egress image;
-- label the node as `egress=true`;
+- label the gateway host as `egress=true` for the internal `egress_mihomo` service;
 - configure Docker daemon proxy to `127.0.0.1:7890`;
 - restart Docker.
 
@@ -69,19 +69,21 @@ sudo docker service ls | grep egress
 sudo docker pull hello-world:latest
 ```
 
-From inside a service that joins the `egress` network, use:
+For a service that needs the runtime proxy, declare `proxy: true` in the service manifest:
 
 ```yaml
-env:
-  HTTP_PROXY: http://egress_mihomo:7890
-  HTTPS_PROXY: http://egress_mihomo:7890
-networks:
-  - egress
+name: ai-worker
+image: ghcr.io/acme/ai-worker:1.0.0
+region: cn
+exposure: none
+proxy: true
 ```
+
+Luma renders the egress network, `HTTP_PROXY=http://egress_mihomo:7890`, and `HTTPS_PROXY=http://egress_mihomo:7890` automatically. Scheduling still follows the service `region`. If the manifest already sets `HTTP_PROXY` or `HTTPS_PROXY`, Luma keeps the explicit value.
 
 ## Security
 
 - Do not commit `EGRESS_SUBSCRIPTION_URL`.
 - Rotate subscription URLs that appear in chat, logs, or screenshots.
 - Keep inbound `7890` blocked.
-- Prefer one explicit egress node first. Add more only when scheduling or throughput requires it.
+- Prefer one egress gateway first. Add more only when scheduling or throughput requires it.

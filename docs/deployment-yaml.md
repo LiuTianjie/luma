@@ -45,7 +45,7 @@ luma deploy status.yaml
 | `constraints` | 否 | string[] | 追加 Swarm placement 约束。Luma 会自动加 region 约束。 |
 | `labels` | 否 | string[] | 追加 service labels。公开 Traefik labels 会自动生成。 |
 | `networks` | 否 | string[] | 追加 external overlay networks。公开 Traefik 服务会自动加入 public network。 |
-| `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动加入 egress 网络、代理环境变量和 `node.labels.egress == true` 约束。 |
+| `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动加入 egress 网络和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
 | `publishPort` | tailscale-relay 可用 | integer | host mode 暴露端口，默认等于 `port`。 |
 | `relay` | tailscale-relay 必填 | map | Tailscale relay 上游信息。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
@@ -146,7 +146,7 @@ placement:
 
 ### 需要代理的 worker
 
-如果服务运行时需要通过 Luma egress proxy 访问外网，声明 `proxy: true`：
+如果服务运行时需要通过 Luma egress proxy 访问外网，声明 `proxy: true`。不要为了使用默认代理手写 `networks: [egress]` 或 `HTTP_PROXY` / `HTTPS_PROXY`；Luma 会自动渲染这些字段。如果你显式写了同名 env，Luma 会保留你的值。
 
 ```yaml
 name: ai-worker
@@ -169,7 +169,6 @@ networks:
 placement:
   constraints:
     - node.labels.region == cn
-    - node.labels.egress == true
 ```
 
 ### 家里内部服务

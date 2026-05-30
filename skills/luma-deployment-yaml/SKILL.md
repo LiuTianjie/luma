@@ -17,6 +17,7 @@ Luma manifests are not Docker Compose. They describe one service: image, region,
    - home service through Tailscale relay: `region: home`, `exposure: tailscale-relay`
    - Cloudflare Tunnel service: usually `region: home`, `exposure: cloudflare-tunnel`
    - worker/internal service: `exposure: none`
+   - runtime proxy service: add `proxy: true` when the container itself must access external networks through Luma egress
 2. Ask only for missing required facts: service name, image, domain, container port, region/exposure, and relay/tunnel details when needed.
 3. Emit only the manifest YAML unless the user asks for explanation.
 4. Prefer `${ENV_NAME}` references for secrets; do not put plaintext secrets in YAML.
@@ -34,6 +35,8 @@ Luma manifests are not Docker Compose. They describe one service: image, region,
 - `replicas` defaults to `1`; when present it must be `>= 1`.
 - `port` is the container's internal listening port, not the cloud firewall/security-group port.
 - Avoid the legacy `public` field in new files. If present, it must match `exposure != none`.
+- Use `proxy: true` for runtime outbound proxy needs. Do not hand-write the default `HTTP_PROXY`, `HTTPS_PROXY`, or `egress` network just to use Luma egress.
+- `proxy: true` is not for image pulls. Image pulls use the Docker daemon proxy configured by egress setup.
 - Plain env values may be written directly under `env`.
 - Secret env values must use `${NAME}` and be stored with `luma secret set NAME` before deployment.
 
@@ -63,6 +66,21 @@ env:
   QUEUE_URL: redis://redis:6379/0
   OPENAI_API_KEY: ${OPENAI_API_KEY}
 ```
+
+Worker that needs Luma egress proxy:
+
+```yaml
+name: ai-worker
+image: ghcr.io/acme/ai-worker:1.0.0
+region: cn
+exposure: none
+proxy: true
+env:
+  OPENAI_BASE_URL: https://api.openai.com/v1
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+```
+
+Luma renders the `egress` overlay network and default `HTTP_PROXY` / `HTTPS_PROXY` automatically. Scheduling still follows `region`. Existing proxy env vars in `env` are preserved.
 
 When emitting `${NAME}` values, also tell the user to run:
 

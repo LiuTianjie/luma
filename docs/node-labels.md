@@ -10,7 +10,6 @@ docker node update --label-add region=cn cn-worker-1
 docker node update --label-add region=global global-sg-1
 docker node update --label-add region=home home-1
 docker node update --label-add ingress=true cn-manager-1
-docker node update --label-add egress=true cn-manager-1
 ```
 
 ## 标签含义
@@ -21,7 +20,7 @@ docker node update --label-add egress=true cn-manager-1
 
 ### `region=global`
 
-海外区域。用于 AI 网关、外网 API 调用服务、爬虫和 worker。调度只按 region 选择区域；是否走 Luma egress proxy 由服务 manifest 的 `proxy: true` 决定。
+海外区域。用于 AI 网关、外网 API 调用服务、爬虫和 worker。调度按 region 选择区域；是否走 Luma egress proxy 由服务 manifest 的 `proxy: true` 决定。
 
 ### `region=home`
 
@@ -33,7 +32,13 @@ docker node update --label-add egress=true cn-manager-1
 
 ### `egress=true`
 
-具备承载 egress/proxy 工作负载能力的节点。通过 `luma node join ... --region cn --name cn-egress-1 --egress` 加入的节点会自动带这个标签。服务声明 `proxy: true` 后会自动加 `node.labels.egress == true` 约束、加入 `egress` 网络并注入代理环境变量。
+内部网关标签，不是普通节点加入模型。`luma egress setup` 会在承载 egress gateway 的机器上维护这个标签，确保 `egress_mihomo` 调度到正确位置。业务服务声明 `proxy: true` 后会加入 `egress` 网络并注入代理环境变量，但仍按服务 `region` 调度。
+
+如果老版本曾经在普通 worker 上执行过包含 `--egress` 的 join 命令，它可能仍残留 `egress=true`。升级到 region-first 模型后，普通业务服务不再需要这个标签。只在你确认该机器不应该承载内部 egress gateway 时移除：
+
+```bash
+docker node update --label-rm egress <node-name>
+```
 
 ## 检查标签
 

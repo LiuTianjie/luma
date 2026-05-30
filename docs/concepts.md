@@ -39,6 +39,8 @@ Outbound proxy for image pulls, dependency downloads, and selected services.
 
 It is not a public ingress.
 
+Image pulls use the Docker daemon proxy configured by `luma egress setup`. Service runtime proxy is explicit: set `proxy: true` in the service manifest. Luma then attaches the service to the `egress` overlay network and injects default `HTTP_PROXY` / `HTTPS_PROXY`. Scheduling still follows the service `region`.
+
 ## Service
 
 A small YAML manifest that Luma turns into a Swarm stack:

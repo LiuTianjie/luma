@@ -99,7 +99,6 @@ def build_parser() -> argparse.ArgumentParser:
     node_join.add_argument("--profile", nargs="?", const="__legacy_profile__", help=argparse.SUPPRESS)
     node_join.add_argument("--region", choices=sorted(VALID_REGIONS))
     node_join.add_argument("--name", default=os.uname().nodename)
-    node_join.add_argument("--egress", action="store_true", help="Mark this node as able to run egress/proxy workloads")
     node_join.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
     node_join.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
     node_exit = node_sub.add_parser("exit")
@@ -312,14 +311,14 @@ def cmd_node(args: argparse.Namespace) -> int:
         log("[start] Configure system DNS")
         log(f"[ok] {configure_dns(LocalExecutor())}")
         client = ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
-        result = client.register_node(node_name=args.name, region=args.region, egress=args.egress)
+        result = client.register_node(node_name=args.name, region=args.region)
         print(f"Node registered: {result['nodeName']} ({result['region']})")
         manager_addr = result.get("managerAddr")
         swarm_token = result.get("swarmJoinToken")
-        node = _local_node_for_region(args.region, name=args.name, egress=args.egress)
-        join_local_node(node, _join_profile_for_region(args.region, egress=args.egress), str(manager_addr or ""), str(swarm_token or ""), emit=log)
+        node = _local_node_for_region(args.region, name=args.name)
+        join_local_node(node, _join_profile_for_region(args.region), str(manager_addr or ""), str(swarm_token or ""), emit=log)
         actual_node_name = local_docker_node_name()
-        label_result = client.label_node(node_name=actual_node_name, region=args.region, egress=args.egress)
+        label_result = client.label_node(node_name=actual_node_name, region=args.region)
         print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
         print("Node join complete")
         return 0
@@ -512,7 +511,6 @@ def _node_join_examples(control_url: str, join_token: str) -> list[tuple[str, st
         ("cn worker", f"{base} --region cn --name cn-worker-1"),
         ("global worker", f"{base} --region global --name global-sg-1"),
         ("home node", f"{base} --region home --name home-mac-mini"),
-        ("egress-capable cn worker", f"{base} --region cn --name cn-egress-1 --egress"),
     ]
 
 
@@ -574,12 +572,10 @@ def _local_node(profile_name: str, *, name: str | None = None, region: str | Non
     )
 
 
-def _local_node_for_region(region: str, *, name: str | None = None, egress: bool = False):
+def _local_node_for_region(region: str, *, name: str | None = None):
     from .config import NodeConfig
 
     roles = [region]
-    if egress:
-        roles.append("egress")
     return NodeConfig(
         name=name or os.uname().nodename,
         host="localhost",
@@ -589,15 +585,11 @@ def _local_node_for_region(region: str, *, name: str | None = None, egress: bool
     )
 
 
-def _join_profile_for_region(region: str, *, egress: bool = False):
+def _join_profile_for_region(region: str):
     from .profiles import Profile
 
     labels = {"region": region}
-    if egress:
-        labels["egress"] = "true"
     roles = [region]
-    if egress:
-        roles.append("egress")
     return Profile(
         name=f"{region}-node",
         roles=roles,

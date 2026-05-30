@@ -182,7 +182,7 @@ Use the join token on additional servers:
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 ```
 
-The manager applies the region label automatically after the node joins Swarm. Use `--egress` only on nodes that can run proxy/egress workloads.
+The manager applies the region label automatically after the node joins Swarm.
 
 ## 4. Connect Cloudflare
 
@@ -212,6 +212,20 @@ Bootstrap already runs this for `single-node` unless `--skip-egress` is used. Ru
 HTTP_PROXY=http://127.0.0.1:7890
 HTTPS_PROXY=http://127.0.0.1:7890
 ```
+
+Service runtime proxy is opt-in per service. Declare `proxy: true` in the service manifest; do not hand-write the egress network or default proxy env unless you need to override them:
+
+```yaml
+name: ai-worker
+image: ghcr.io/acme/ai-worker:1.0.0
+region: cn
+exposure: none
+proxy: true
+env:
+  OPENAI_BASE_URL: https://api.openai.com/v1
+```
+
+Luma attaches the service to the `egress` overlay network and injects `HTTP_PROXY=http://egress_mihomo:7890` plus `HTTPS_PROXY=http://egress_mihomo:7890` when those env vars are not already set. Scheduling still follows the service `region`.
 
 Refresh subscription output later:
 

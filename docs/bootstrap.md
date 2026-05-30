@@ -135,11 +135,10 @@ Run this directly on each additional server:
 luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
-luma node join https://luma.example.com --token <join-token> --region cn --name cn-egress-1 --egress
 ```
 
 The node asks the manager for the Swarm join token and manager address, then joins the cluster locally.
-After the local join succeeds, it calls back to Luma Control so the manager applies the region label and optional `egress=true` capability label automatically. `--name` is only the machine name; `--region` is the scheduling boundary.
+After the local join succeeds, it calls back to Luma Control so the manager applies the region label automatically. `--name` is only the machine name; `--region` is the scheduling boundary.
 
 If a node needs to leave a broken or rebuilt manager before joining again, run this on that node:
 

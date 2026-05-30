@@ -150,7 +150,6 @@ These fields mean different things:
 
 - `--name`: the human/node identifier registered with Luma and Docker. It can be any unique name, but use a clear name such as `global-sg-1` or `home-mac-mini`.
 - `--region`: the scheduling region label used by service manifests. This is what `region: cn`, `region: global`, or `region: home` matches during deploy.
-- `--egress`: optional node capability. Use it for a node that can run proxy/egress workloads.
 
 For example, `--name m3max --region home` means the node is called `m3max` and receives `region=home`. The name does not affect scheduling.
 
@@ -172,10 +171,9 @@ Run `luma node join` on the machine being added:
 luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
-luma node join https://luma.example.com --token <join-token> --region cn --name cn-egress-1 --egress
 ```
 
-Services that need a runtime proxy declare `proxy: true` in their service manifest. They are scheduled onto nodes with `egress=true` and receive proxy environment variables automatically.
+Services that need a runtime proxy declare `proxy: true` in their service manifest. They still schedule by `region`, join the `egress` overlay network, and receive `HTTP_PROXY` / `HTTPS_PROXY` automatically. This is runtime proxying for the container, not image-pull proxying.
 
 For macOS home nodes, install and start Docker Desktop and Tailscale first; Luma does not use apt on macOS.
 For non-apt Linux distributions, install Docker manually before `luma node join`.

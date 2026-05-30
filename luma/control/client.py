@@ -79,18 +79,18 @@ class ControlClient:
     def health(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/health")
 
-    def register_node(self, *, node_name: str, region: str, egress: bool = False) -> Dict[str, Any]:
+    def register_node(self, *, node_name: str, region: str) -> Dict[str, Any]:
         return self.request(
             "POST",
             "/v1/nodes/register",
-            {"nodeName": node_name, "region": region, "capabilities": {"egress": egress}},
+            {"nodeName": node_name, "region": region},
         )
 
-    def label_node(self, *, node_name: str, region: str, egress: bool = False) -> Dict[str, Any]:
+    def label_node(self, *, node_name: str, region: str) -> Dict[str, Any]:
         return self.request(
             "POST",
             "/v1/nodes/label",
-            {"nodeName": node_name, "region": region, "capabilities": {"egress": egress}},
+            {"nodeName": node_name, "region": region},
         )
 
     def deploy(self, *, manifest: str, source_name: str, skip_dns: bool = False, skip_webhook: bool = False) -> Dict[str, Any]:

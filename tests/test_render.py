@@ -68,7 +68,7 @@ public: false
         self.assertIn("node.labels.region == global", constraints)
         self.assertNotIn("node.labels.external_net == true", constraints)
 
-    def test_proxy_service_adds_egress_network_env_and_constraint(self):
+    def test_proxy_service_adds_egress_network_and_env_without_node_constraint(self):
         service = self.load(
             """
 name: proxy worker
@@ -83,7 +83,7 @@ env:
         worker = rendered["services"]["proxy-worker"]
         constraints = worker["deploy"]["placement"]["constraints"]
         self.assertIn("node.labels.region == cn", constraints)
-        self.assertIn("node.labels.egress == true", constraints)
+        self.assertNotIn("node.labels.egress == true", constraints)
         self.assertIn("egress", worker["networks"])
         self.assertEqual(worker["environment"]["HTTP_PROXY"], "http://custom-proxy:7890")
         self.assertEqual(worker["environment"]["HTTPS_PROXY"], "http://egress_mihomo:7890")

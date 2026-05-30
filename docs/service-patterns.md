@@ -68,7 +68,7 @@ Luma 会生成 `routes/<service>.yml`，由 Traefik file provider 加载。
 - 无公网域名。
 - 跑在 `region=global`。
 - 默认只按 `region=global` 调度。
-- 如果运行时必须走 Luma egress proxy，在服务 manifest 声明 `proxy: true`。
+- 如果运行时必须走 Luma egress proxy，在服务 manifest 声明 `proxy: true`；不要手写默认 egress network 和代理 env。
 - 通过队列消费任务。
 - 访问外网后写回结果。
 - 对应 `exposure: none`。

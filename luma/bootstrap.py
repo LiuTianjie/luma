@@ -886,7 +886,7 @@ def setup_egress(config: LumaConfig, node: NodeConfig, subscription_url: str, *,
         fix="Check defaults.images.egressGateway points to a domestic mirror image",
     )
     egress_profile = PROFILES["egress-gateway"]
-    _step(results, emit, "Apply egress node label", lambda: apply_labels(remote, egress_profile, node))
+    _step(results, emit, "Apply egress gateway label", lambda: apply_labels(remote, egress_profile, node))
     _step(
         results,
         emit,

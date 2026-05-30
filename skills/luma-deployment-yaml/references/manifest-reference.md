@@ -16,7 +16,7 @@
 | `constraints` | no | string[] | Extra Swarm placement constraints. Luma adds region constraints. |
 | `labels` | no | string[] | Extra service labels. Luma adds Traefik labels for `cn-edge` and `external-edge`. |
 | `networks` | no | string[] | Extra external overlay networks. |
-| `proxy` | no | boolean | Runtime proxy requirement. When true, Luma adds the egress network, default proxy env, and `node.labels.egress == true`. |
+| `proxy` | no | boolean | Runtime proxy requirement. When true, Luma adds the egress network and default proxy env. Scheduling still follows `region`. This is not for image pulls. |
 | `publishPort` | relay only | integer | Host mode published port for tailscale relay. |
 | `relay.host` | tailscale-relay | string | Tailscale hostname. Alternative: `relay.url`. |
 | `relay.url` | tailscale-relay | string | Full upstream URL. Alternative: `relay.host`. |
@@ -35,6 +35,7 @@
 | Home service through China edge and Tailscale | `region: home`, `exposure: tailscale-relay`, `domain`, `port`, `relay.host` or `relay.url` |
 | Home/private service through Cloudflare Tunnel | `region: home`, `exposure: cloudflare-tunnel`, `domain`, `port`, `tunnel.tokenEnv` |
 | Queue worker or internal service | `exposure: none`, no `domain`, no `port` required |
+| Service runtime needs Luma egress proxy | add `proxy: true`; keep `region` as the desired scheduling region |
 
 ## Render Behavior
 
@@ -46,9 +47,24 @@
   - load balancer server port from `port`
 - Public Traefik services are attached to the configured public overlay network.
 - Every service gets `node.labels.region == <region>`.
-- `proxy:true` services also get `node.labels.egress == true`, the configured egress overlay network, and default `HTTP_PROXY` / `HTTPS_PROXY` env values unless already set.
+- `proxy: true` services also get the configured egress overlay network and default `HTTP_PROXY=http://egress_mihomo:7890` / `HTTPS_PROXY=http://egress_mihomo:7890` env values unless already set. Scheduling still follows `region`.
 - `tailscale-relay` creates a host-mode published port and a file-provider Traefik route to the relay upstream.
 - `cloudflare-tunnel` adds a `cloudflared` sidecar service using `${<tokenEnv>}`.
+
+## Proxy Example
+
+```yaml
+name: ai-worker
+image: ghcr.io/acme/ai-worker:1.0.0
+region: cn
+exposure: none
+proxy: true
+env:
+  OPENAI_BASE_URL: https://api.openai.com/v1
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+```
+
+Do not add the default `egress` network or default proxy env manually for this case. Add custom `HTTP_PROXY` or `HTTPS_PROXY` only when overriding the default proxy target.
 
 ## Review Checklist
 
@@ -58,6 +74,7 @@
 - Are secrets represented as `${ENV_NAME}` instead of plaintext?
 - For every `${ENV_NAME}`, remind the user to run `luma secret set ENV_NAME` before deploying.
 - Does the image include a meaningful tag?
+- If the service needs external runtime network access, did you use `proxy: true` instead of manual egress network/env boilerplate?
 - Should this be public at all, or is `exposure: none` safer?
 - For home services, is latency/availability acceptable for the workload?
 

@@ -42,12 +42,11 @@ def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     require_token(state, token, token_type="join")
     node_name = str(body.get("nodeName") or "").strip()
     region = str(body.get("region") or "").strip()
-    capabilities = capabilities_from_body(body)
     if not node_name or not region:
         raise LumaError("nodeName and region are required")
     if region not in VALID_REGIONS:
         raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
-    _remember_node(state, node_name, region=region, capabilities=capabilities, status="registered")
+    _remember_node(state, node_name, region=region, status="registered")
     save_state(state)
     return {
         "clusterId": state["clusterId"],
@@ -55,7 +54,6 @@ def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "swarmJoinToken": state.get("swarmJoinToken", ""),
         "nodeName": node_name,
         "region": region,
-        "capabilities": capabilities,
     }
 
 
@@ -64,14 +62,13 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     require_token(state, token, token_type="join")
     node_name = str(body.get("nodeName") or "").strip()
     region = str(body.get("region") or "").strip()
-    capabilities = capabilities_from_body(body)
     if not node_name or not region:
         raise LumaError("nodeName and region are required")
     if region not in VALID_REGIONS:
         raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
-    labels = labels_for_region(region, egress=bool(capabilities.get("egress", False)))
+    labels = labels_for_region(region)
     label_swarm_node(node_name, labels)
-    _remember_node(state, node_name, region=region, capabilities=capabilities, status="labeled", labels=labels)
+    _remember_node(state, node_name, region=region, status="labeled", labels=labels)
     save_state(state)
     return {
         "clusterId": state["clusterId"],
@@ -184,18 +181,8 @@ def _valid_env_name(name: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name))
 
 
-def labels_for_region(region: str, *, egress: bool = False) -> Dict[str, str]:
-    labels = {"region": region}
-    if egress:
-        labels["egress"] = "true"
-    return labels
-
-
-def capabilities_from_body(body: Dict[str, Any]) -> Dict[str, bool]:
-    raw = body.get("capabilities")
-    if isinstance(raw, dict):
-        return {"egress": bool(raw.get("egress", False))}
-    return {"egress": bool(body.get("egress", False))}
+def labels_for_region(region: str) -> Dict[str, str]:
+    return {"region": region}
 
 
 def _remember_node(state: Dict[str, Any], node_name: str, **values: Any) -> None:
@@ -339,7 +326,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "version": __version__,
                     "nodeJoinModel": "region-first",
-                    "capabilities": ["node-region", "node-egress"],
+                    "capabilities": ["node-region", "service-proxy"],
                 },
             )
             return

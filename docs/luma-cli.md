@@ -155,7 +155,6 @@ Join additional servers by running this on each server:
 luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
-luma node join https://luma.example.com --token <join-token> --region cn --name cn-egress-1 --egress
 ```
 
 Connect Cloudflare and write `providers.dns.zoneId`:
@@ -253,6 +252,7 @@ Optional fields:
 - `constraints`
 - `labels`
 - `networks`
+- `proxy`: when `true`, runtime traffic uses the egress proxy; Luma adds the egress network and default proxy env. Scheduling still follows `region`.
 - `stackPath`
 - `routePath`
 - `dns.target`
@@ -264,6 +264,16 @@ Optional fields:
 - `tunnel.tokenEnv`
 - `portainer.webhookUrlEnv`
 - `portainer.webhookUrl`
+
+Example worker that needs the Luma egress proxy:
+
+```yaml
+name: ai-worker
+image: ghcr.io/acme/ai-worker:1.0.0
+region: cn
+exposure: none
+proxy: true
+```
 
 ## Deploy Order
 

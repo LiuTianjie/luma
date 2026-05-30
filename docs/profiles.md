@@ -43,10 +43,8 @@ Worker nodes are now region-first:
 luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
-luma node join https://luma.example.com --token <join-token> --region cn --name cn-egress-1 --egress
 ```
 
 - `region` is the scheduling boundary.
 - `name` is only the machine display name.
-- `--egress` marks a node as able to run proxy/egress workloads.
 - Services that require the proxy declare `proxy: true`.
