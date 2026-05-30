@@ -19,6 +19,7 @@ from luma.bootstrap import (
     bootstrap_manager_local,
     initialize_portainer,
     install_control_config,
+    install_docker,
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
@@ -679,6 +680,21 @@ class PortainerWebhookTests(unittest.TestCase):
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
         self.assertTrue(any("docker pull ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
         self.assertTrue(any("docker build" in cmd and "-t ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
+
+    def test_install_docker_repairs_known_bad_apt_mirror(self):
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Linux\n")
+        remote.sudo_result.return_value = Mock(code=1, output="")
+        remote.sudo.return_value = ""
+
+        result = install_docker(remote)
+
+        self.assertEqual(result, "Docker installed")
+        command = remote.sudo.call_args.args[0]
+        self.assertIn("mirrors.ivolces.com/ubuntu", command)
+        self.assertIn("mirrors.aliyun.com/ubuntu", command)
+        self.assertIn("apt-get install -y docker.io docker-compose-v2", command)
+        self.assertNotIn("apt-get install -y docker.io docker-compose-v2 curl ca-certificates ufw python3-yaml || true", command)
 
     def test_service_webhook_env_overrides_global_webhook(self):
         with tempfile.TemporaryDirectory() as tmp:
