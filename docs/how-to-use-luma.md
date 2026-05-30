@@ -32,6 +32,20 @@ For local development from a checkout:
 . .venv/bin/activate
 ```
 
+To uninstall the local CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh
+```
+
+The default uninstall keeps `~/.luma.config.json` and `~/.config/luma`. To remove local config and login contexts too:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh -s -- --purge
+```
+
+This does not remove Docker, Swarm, Portainer, Traefik, Luma Control, deployed services, or `/opt/luma` from a server.
+
 If `python3` is missing, the installer prints the package command for macOS or Ubuntu/Debian. Local Docker is optional; it is only used to validate rendered stack files before deployment.
 
 Create `.env`:

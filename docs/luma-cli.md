@@ -32,6 +32,20 @@ Development checkout:
 . .venv/bin/activate
 ```
 
+Uninstall the local CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh
+```
+
+By default uninstall keeps `~/.luma.config.json` and `~/.config/luma` so a reinstall can keep local prompts and login contexts. To remove those local files too:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh -s -- --purge
+```
+
+This only removes the local CLI install. It does not remove Docker, Swarm, Portainer, Traefik, Luma Control, deployed services, or server-side `/opt/luma` state.
+
 ## Configuration
 
 `luma.yaml` is the single project config source:

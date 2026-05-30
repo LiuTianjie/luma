@@ -29,6 +29,20 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 
 The installer downloads the GitHub archive for that tag, creates `~/.local/share/luma/venv`, installs the Python package, writes `~/.local/bin/luma`, and adds `~/.local/bin` to the user's shell profile when needed.
 
+Users can uninstall the local CLI with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh
+```
+
+Use `--purge` to also remove local config and login contexts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh -s -- --purge
+```
+
+The uninstall script is intentionally local-only. It does not remove server runtime components such as Docker, Swarm, Portainer, Traefik, Luma Control, deployed services, or `/opt/luma`.
+
 The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you want a fully pinned bootstrap, set this in `luma.yaml` before running manager bootstrap:
 
 ```yaml

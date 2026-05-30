@@ -56,6 +56,20 @@ The installer loads `.env` if present and fixes Linux DNS before creating the vi
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.0 sh
 ```
 
+Uninstall the local CLI without touching user secrets or login contexts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh
+```
+
+Remove the local CLI, `~/.luma.config.json`, and `~/.config/luma`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh -s -- --purge
+```
+
+The uninstall script only removes the local Luma CLI install. It does not remove Docker, Swarm, Portainer, Traefik, Luma Control, deployed services, or server-side `/opt/luma` state.
+
 If your shell says `permission denied: luma`, it is resolving the repository's `luma/` package directory instead of the venv command. Use either:
 
 ```bash

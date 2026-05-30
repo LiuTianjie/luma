@@ -240,6 +240,25 @@ def _deploy_portainer(remote: Executor, config: LumaConfig) -> list[str]:
     ]
 
 
+def _reset_portainer_state(remote: Executor) -> str:
+    _docker(
+        remote,
+        "set -euo pipefail; "
+        "docker stack rm portainer >/dev/null 2>&1 || true; "
+        "for i in $(seq 1 60); do "
+        "services=$(docker service ls --filter label=com.docker.stack.namespace=portainer --format '{{.Name}}'); "
+        "[ -z \"$services\" ] && break; "
+        "sleep 2; "
+        "done; "
+        "services=$(docker service ls --filter label=com.docker.stack.namespace=portainer --format '{{.Name}}'); "
+        "[ -z \"$services\" ]; "
+        "if docker volume inspect portainer_portainer_data >/dev/null 2>&1; then "
+        "docker volume rm portainer_portainer_data >/dev/null; "
+        "fi",
+    )
+    return "Portainer state reset"
+
+
 def deploy_control_stack(remote: Executor, config: LumaConfig, domain: str) -> list[str]:
     image = _control_image(config)
     _ensure_control_image(remote, image)
@@ -331,7 +350,14 @@ def initialize_portainer(remote: Executor, state: dict[str, object]) -> str:
             api_url,
             "POST",
             "/endpoints",
-            {"Name": "luma-local", "EndpointCreationType": "1"},
+            {
+                "Name": "luma-local",
+                "EndpointCreationType": "2",
+                "URL": "tcp://tasks.agent:9001",
+                "TLS": "true",
+                "TLSSkipVerify": "true",
+                "TLSSkipClientVerify": "true",
+            },
             token=jwt,
         )
         if status in {200, 201} and isinstance(payload, dict):
@@ -347,6 +373,17 @@ def initialize_portainer(remote: Executor, state: dict[str, object]) -> str:
     state["portainerEndpointId"] = int(endpoint["Id"])
     state["portainerEndpointName"] = str(endpoint.get("Name") or endpoint["Id"])
     return "Portainer initialized"
+
+
+def bind_portainer_credentials(remote: Executor, config: LumaConfig, state: dict[str, object]) -> str | list[str]:
+    try:
+        return initialize_portainer(remote, state)
+    except LumaError:
+        return [
+            _reset_portainer_state(remote),
+            *_deploy_portainer(remote, config),
+            initialize_portainer(remote, state),
+        ]
 
 
 def _portainer_request(
@@ -587,6 +624,7 @@ def bootstrap_node(
     profile: Profile,
     *,
     run_egress: bool = True,
+    reset_portainer_state: bool = False,
     emit: Progress | None = None,
     executor: Executor | None = None,
 ) -> list[str]:
@@ -609,6 +647,8 @@ def bootstrap_node(
     if "edge" in profile.roles or profile.name == "single-node":
         _step(results, emit, "Deploy Traefik", lambda: _deploy_traefik(remote, config), fix=bootstrap_fix)
     if "swarm-manager" in profile.roles or profile.name == "single-node":
+        if reset_portainer_state:
+            _step(results, emit, "Reset Portainer state", lambda: _reset_portainer_state(remote), fix=portainer_fix)
         _step(results, emit, "Deploy Portainer", lambda: _deploy_portainer(remote, config), fix=portainer_fix)
     if run_egress and "egress" in profile.roles:
         subscription_url = os.environ.get("EGRESS_SUBSCRIPTION_URL")
@@ -632,16 +672,23 @@ def bootstrap_node(
 
 def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profile, domain: str, state: dict[str, object], *, run_egress: bool = True, emit: Progress | None = None) -> list[str]:
     remote = LocalExecutor()
-    results = bootstrap_node(config, node, profile, run_egress=run_egress, emit=emit, executor=remote)
+    results = bootstrap_node(
+        config,
+        node,
+        profile,
+        run_egress=run_egress,
+        reset_portainer_state=True,
+        emit=emit,
+        executor=remote,
+    )
     state["portainerApiUrl"] = _portainer_api_url_for_node(node)
     _step(
         results,
         emit,
         "Bind Portainer credentials",
-        lambda: initialize_portainer(remote, state),
+        lambda: bind_portainer_credentials(remote, config, state),
         fix=(
-            "Set LUMA_PORTAINER_ADMIN_PASSWORD to the existing Portainer admin password "
-            "or reset Portainer, then rerun bootstrap manager"
+            "Check Portainer service logs and rerun bootstrap manager"
         ),
     )
     _step(results, emit, "Save Portainer credentials", lambda: install_control_state(remote, state))

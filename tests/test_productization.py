@@ -14,6 +14,7 @@ from luma.bootstrap import (
     _last_command_value,
     _portainer_agent_image_candidates,
     _traefik_ports,
+    bootstrap_node,
     bootstrap_manager_local,
     initialize_portainer,
 )
@@ -467,7 +468,14 @@ class PortainerWebhookTests(unittest.TestCase):
             "https://127.0.0.1:9443/api",
             "POST",
             "/endpoints",
-            {"Name": "luma-local", "EndpointCreationType": "1"},
+            {
+                "Name": "luma-local",
+                "EndpointCreationType": "2",
+                "URL": "tcp://tasks.agent:9001",
+                "TLS": "true",
+                "TLSSkipVerify": "true",
+                "TLSSkipClientVerify": "true",
+            },
             token="jwt-token",
         )
         self.assertEqual(request.call_count, 3)
@@ -541,6 +549,96 @@ class PortainerWebhookTests(unittest.TestCase):
         self.assertEqual(sequence[:2], ["save", "sync-dns"])
         self.assertGreaterEqual(len(saved_states), 1)
         self.assertEqual(saved_states[0]["portainerAdminPassword"], "secret")
+
+    def test_bootstrap_manager_recreates_portainer_after_bind_failure(self):
+        config = LumaConfig(
+            {
+                "nodes": {
+                    "manager": {
+                        "host": "localhost",
+                        "publicIp": "127.0.0.1",
+                        "roles": ["swarm-manager", "edge"],
+                    }
+                }
+            },
+            None,
+        )
+        node = config.get_node("manager")
+        state = {"clusterId": "luma-test", "domain": "luma.example.com"}
+        bind_calls = []
+
+        def bind_portainer(_remote, current_state):
+            bind_calls.append("bind")
+            if len(bind_calls) == 1:
+                current_state["portainerAdminPassword"] = "secret"
+                raise LumaError("Portainer endpoint discovery failed: HTTP 500 broken endpoint")
+            current_state["portainerEndpointId"] = 7
+            return "Portainer initialized"
+
+        with patch("luma.bootstrap.bootstrap_node", return_value=["Bootstrap node complete"]), patch(
+            "luma.bootstrap.initialize_portainer", side_effect=bind_portainer
+        ), patch("luma.bootstrap._reset_portainer_state", return_value="Portainer state reset") as reset, patch(
+            "luma.bootstrap._deploy_portainer", return_value=["Portainer redeployed"]
+        ) as redeploy, patch(
+            "luma.bootstrap.install_control_state", return_value="Secret written: /opt/luma/control/control.json"
+        ), patch(
+            "luma.bootstrap.local_swarm_join_info",
+            return_value={"managerAddr": "127.0.0.1:2377", "swarmJoinToken": "token", "swarmId": "swarm"},
+        ), patch("luma.bootstrap.sync_control_dns", return_value="Control DNS synced"), patch(
+            "luma.bootstrap.install_control_config", return_value="Config installed"
+        ), patch("luma.bootstrap.deploy_control_stack", return_value="Control deployed"):
+            bootstrap_manager_local(config, node, PROFILES["single-node"], "luma.example.com", state)
+
+        self.assertEqual(len(bind_calls), 2)
+        reset.assert_called_once()
+        redeploy.assert_called_once()
+        self.assertEqual(state["portainerAdminPassword"], "secret")
+        self.assertEqual(state["portainerEndpointId"], 7)
+
+    def test_bootstrap_node_can_reset_portainer_before_deploy(self):
+        config = LumaConfig(
+            {
+                "nodes": {
+                    "manager": {
+                        "host": "localhost",
+                        "publicIp": "127.0.0.1",
+                        "roles": ["swarm-manager", "edge"],
+                    }
+                }
+            },
+            None,
+        )
+        node = config.get_node("manager")
+        sequence = []
+
+        def mark(name):
+            def inner(*_args, **_kwargs):
+                sequence.append(name)
+                return name
+
+            return inner
+
+        with patch("luma.bootstrap.configure_dns", side_effect=mark("dns")), patch(
+            "luma.bootstrap.install_docker", side_effect=mark("docker")
+        ), patch("luma.bootstrap.setup_tailscale", side_effect=mark("tailscale")), patch(
+            "luma.bootstrap.ensure_swarm", side_effect=mark("swarm")
+        ), patch("luma.bootstrap.ensure_networks", side_effect=mark("networks")), patch(
+            "luma.bootstrap.apply_labels", side_effect=mark("labels")
+        ), patch("luma.bootstrap.prepare_paths", side_effect=mark("paths")), patch(
+            "luma.bootstrap.configure_firewall", side_effect=mark("firewall")
+        ), patch("luma.bootstrap._deploy_traefik", side_effect=mark("traefik")), patch(
+            "luma.bootstrap._reset_portainer_state", side_effect=mark("reset-portainer")
+        ), patch("luma.bootstrap._deploy_portainer", side_effect=lambda *_args, **_kwargs: [mark("portainer")()]):
+            bootstrap_node(
+                config,
+                node,
+                PROFILES["single-node"],
+                run_egress=False,
+                reset_portainer_state=True,
+                executor=Mock(),
+            )
+
+        self.assertLess(sequence.index("reset-portainer"), sequence.index("portainer"))
 
     def test_service_webhook_env_overrides_global_webhook(self):
         with tempfile.TemporaryDirectory() as tmp:
