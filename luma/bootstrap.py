@@ -270,8 +270,19 @@ def deploy_control_stack(remote: Executor, config: LumaConfig, domain: str) -> l
     stack_text = stack_text.replace(f"${{LUMA_CONTROL_IMAGE:-{DEFAULT_CONTROL_IMAGE}}}", image)
     return [
         _deploy_stack_text(remote, stack_text, "luma-control"),
+        _force_update_service_image(remote, "luma-control_luma-control", image),
         _wait_service_ready(remote, "luma-control_luma-control"),
     ]
+
+
+def _force_update_service_image(remote: Executor, service: str, image: str) -> str:
+    _docker(
+        remote,
+        "set -euo pipefail; "
+        f"docker service inspect {shlex.quote(service)} >/dev/null 2>&1; "
+        f"docker service update --image {shlex.quote(image)} --force {shlex.quote(service)} >/dev/null",
+    )
+    return f"Service image refreshed: {service} -> {image}"
 
 
 def _ensure_control_image(remote: Executor, image: str) -> str:

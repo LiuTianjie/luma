@@ -178,6 +178,14 @@ Services that need a runtime proxy declare `proxy: true` in their service manife
 For macOS home nodes, install and start Docker Desktop and Tailscale first; Luma does not use apt on macOS.
 For non-apt Linux distributions, install Docker manually before `luma node join`.
 
+To detach a node before rejoining a rebuilt manager, run this on that node:
+
+```bash
+luma node exit
+```
+
+This leaves Docker Swarm and removes local Luma runtime state under `/opt/luma`. It keeps Tailscale and Docker image/volume cache by default. Use `--tailscale` to also log out Tailscale, and `--prune-docker` only when you intentionally want to remove unused Docker cache and volumes.
+
 ## Update An Existing Manager
 
 After new Luma code is merged and the control image is published, run this on the manager:
@@ -194,6 +202,15 @@ If the installed CLI is too old to recognize `luma update`, run the installer on
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
 luma update manager --domain luma.example.com --profile single-node
 ```
+
+Check both local CLI and manager control API versions:
+
+```bash
+luma version
+luma version --control-url https://luma.example.com
+```
+
+The updated control API reports `Node join model: region-first`. If it does not, the manager is still running an old `luma-control` task.
 
 Deploy a service from any logged-in client. The client does not need Docker, SSH keys, Cloudflare credentials, or Portainer webhooks:
 

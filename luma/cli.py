@@ -26,6 +26,7 @@ from .remote import RemoteExecutor
 from .render import render_stack, render_tailscale_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
 from .userconfig import configured_keys, ensure_interactive_config, interactive_configure, load_user_config, masked_config_lines, user_config_path
+from . import __version__
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,6 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init")
+    version = sub.add_parser("version")
+    version.add_argument("--control-url", help="Control API URL to check instead of the current login context")
+    version.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API check")
+    version.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
     sub.add_parser("preflight")
     configure = sub.add_parser("configure")
     configure.add_argument("--role", choices=("manager", "worker", "client"), default="manager")
@@ -97,6 +102,9 @@ def build_parser() -> argparse.ArgumentParser:
     node_join.add_argument("--egress", action="store_true", help="Mark this node as able to run egress/proxy workloads")
     node_join.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
     node_join.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
+    node_exit = node_sub.add_parser("exit")
+    node_exit.add_argument("--tailscale", action="store_true", help="Also log out Tailscale on this node")
+    node_exit.add_argument("--prune-docker", action="store_true", help="Also prune unused Docker containers, networks, images, and volumes")
 
     cf = sub.add_parser("cloudflare")
     cf_sub = cf.add_subparsers(dest="cloudflare_command", required=True)
@@ -216,6 +224,43 @@ def cmd_configure(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_version(args: argparse.Namespace) -> int:
+    print(f"Luma CLI: {__version__}")
+    health_context = _version_health_context(args)
+    if health_context is None:
+        print("Luma Control: not checked (run luma login or pass --control-url)")
+        return 0
+    endpoint, token, insecure, resolve_ip = health_context
+    try:
+        payload = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).health()
+    except LumaError as exc:
+        print(f"Luma Control: unavailable ({exc})")
+        return 0
+    print(f"Luma Control: {payload.get('version') or 'unknown'}")
+    node_join_model = payload.get("nodeJoinModel")
+    if node_join_model:
+        print(f"Node join model: {node_join_model}")
+    capabilities = payload.get("capabilities")
+    if isinstance(capabilities, list):
+        print("Capabilities: " + ", ".join(str(item) for item in capabilities))
+    return 0
+
+
+def _version_health_context(args: argparse.Namespace) -> tuple[str, str, bool, str | None] | None:
+    if args.control_url:
+        return args.control_url, "health", bool(args.insecure), args.resolve_ip
+    try:
+        context = load_current_context()
+    except LumaError:
+        return None
+    return (
+        str(context["endpoint"]),
+        str(context["token"]),
+        bool(context.get("insecure", False)),
+        str(context["resolveIp"]) if context.get("resolveIp") else None,
+    )
+
+
 def _module_available(name: str) -> bool:
     result = subprocess.run(
         [sys.executable, "-c", f"import {name}"],
@@ -277,6 +322,11 @@ def cmd_node(args: argparse.Namespace) -> int:
         label_result = client.label_node(node_name=actual_node_name, region=args.region, egress=args.egress)
         print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
         print("Node join complete")
+        return 0
+    if args.node_command == "exit":
+        for message in exit_local_node(tailscale=args.tailscale, prune_docker=args.prune_docker):
+            print(message)
+        print("Node exit complete")
         return 0
     raise LumaError(f"unknown node command: {args.node_command}")
 
@@ -556,6 +606,61 @@ def _join_profile_for_region(region: str, *, egress: bool = False):
     )
 
 
+def exit_local_node(*, tailscale: bool = False, prune_docker: bool = False) -> list[str]:
+    remote = LocalExecutor()
+    results: list[str] = []
+    results.append(_leave_local_swarm(remote))
+    results.append(_remove_local_runtime_state(remote))
+    if tailscale:
+        results.append(_tailscale_logout(remote))
+    if prune_docker:
+        results.append(_prune_local_docker(remote))
+    return results
+
+
+def _leave_local_swarm(remote: LocalExecutor) -> str:
+    result = remote.sudo_result(
+        "set -euo pipefail; "
+        "if command -v docker >/dev/null 2>&1; then "
+        "state=$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || echo inactive); "
+        "if [ \"$state\" = \"active\" ]; then docker swarm leave --force >/dev/null; echo left; else echo skipped; fi; "
+        "else echo skipped; fi"
+    )
+    if result.code != 0:
+        raise LumaError(f"failed to leave Docker Swarm:\n{result.output.strip()}")
+    status = _last_nonempty_line(result.output)
+    if status == "left":
+        return "Swarm left"
+    return "Swarm leave skipped"
+
+
+def _remove_local_runtime_state(remote: LocalExecutor) -> str:
+    remote.sudo("rm -rf /opt/luma")
+    return "Removed /opt/luma"
+
+
+def _tailscale_logout(remote: LocalExecutor) -> str:
+    result = remote.sudo_result(
+        "if command -v tailscale >/dev/null 2>&1; then tailscale logout >/dev/null 2>&1 || true; echo done; else echo skipped; fi"
+    )
+    if result.code != 0:
+        raise LumaError(f"failed to log out Tailscale:\n{result.output.strip()}")
+    if _last_nonempty_line(result.output) == "skipped":
+        return "Tailscale logout skipped"
+    return "Tailscale logged out"
+
+
+def _prune_local_docker(remote: LocalExecutor) -> str:
+    result = remote.sudo_result(
+        "if command -v docker >/dev/null 2>&1; then docker system prune -af --volumes >/dev/null; echo done; else echo skipped; fi"
+    )
+    if result.code != 0:
+        raise LumaError(f"failed to prune Docker:\n{result.output.strip()}")
+    if _last_nonempty_line(result.output) == "skipped":
+        return "Docker prune skipped"
+    return "Docker pruned"
+
+
 def cmd_cloudflare(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if args.cloudflare_command == "connect":
@@ -827,6 +932,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_preflight(args)
         if args.command == "configure":
             return cmd_configure(args)
+        if args.command == "version":
+            return cmd_version(args)
         if args.command == "login":
             return cmd_login(args)
         if args.command == "context":

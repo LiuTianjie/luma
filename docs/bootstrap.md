@@ -141,6 +141,14 @@ luma node join https://luma.example.com --token <join-token> --region cn --name 
 The node asks the manager for the Swarm join token and manager address, then joins the cluster locally.
 After the local join succeeds, it calls back to Luma Control so the manager applies the region label and optional `egress=true` capability label automatically. `--name` is only the machine name; `--region` is the scheduling boundary.
 
+If a node needs to leave a broken or rebuilt manager before joining again, run this on that node:
+
+```bash
+luma node exit
+```
+
+By default this leaves Docker Swarm and removes `/opt/luma`, while keeping Tailscale login state and Docker caches. Add `--tailscale` only when the node should leave the tailnet too; add `--prune-docker` only when unused Docker cache and volumes should be removed.
+
 ## 6. Configure Or Refresh Providers
 
 Provider config and secrets are copied into the manager control state during `luma bootstrap manager`. If you change `luma.yaml`, Cloudflare settings, or legacy Portainer webhook env vars after bootstrap, rerun:
@@ -158,6 +166,14 @@ luma update manager --domain luma.example.com --profile single-node
 The update command refreshes the local CLI first, then runs manager bootstrap. Bootstrap is designed to be idempotent. It refreshes the manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
 
 If the installed CLI is too old to recognize `luma update`, run the installer once and then retry the update command.
+
+Verify the manager is really running the new control API:
+
+```bash
+luma version --control-url https://luma.example.com
+```
+
+The expected output includes `Node join model: region-first`.
 
 Cloudflare:
 

@@ -19,6 +19,7 @@ from ..errors import LumaError
 from ..portainer import deploy_with_portainer
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service
+from .. import __version__
 from .state import init_state, load_state, require_token, save_state
 
 
@@ -332,7 +333,15 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/v1/health":
-            self._json(200, {"ok": True})
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "version": __version__,
+                    "nodeJoinModel": "region-first",
+                    "capabilities": ["node-region", "node-egress"],
+                },
+            )
             return
         try:
             token = bearer_token(self.headers)

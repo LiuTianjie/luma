@@ -76,6 +76,9 @@ class ControlClient:
     def verify_login(self) -> Dict[str, Any]:
         return self.request("POST", "/v1/auth/login/verify", {})
 
+    def health(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/health")
+
     def register_node(self, *, node_name: str, region: str, egress: bool = False) -> Dict[str, Any]:
         return self.request(
             "POST",

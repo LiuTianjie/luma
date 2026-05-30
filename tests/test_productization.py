@@ -14,6 +14,7 @@ from luma.config import LumaConfig
 from luma.bootstrap import (
     _acme_email,
     _ensure_control_image,
+    _force_update_service_image,
     _last_command_value,
     _portainer_agent_image_candidates,
     _reset_portainer_state,
@@ -34,7 +35,7 @@ from luma.errors import LumaError
 from luma.portainer import resolve_webhook, upsert_stack
 from luma.profiles import PROFILES
 from luma.service import load_service
-from luma.cli import _node_join_examples, _portainer_url_from_state, build_parser, main
+from luma.cli import _node_join_examples, _portainer_url_from_state, build_parser, exit_local_node, main
 from luma.userconfig import configured_keys, load_user_config
 
 
@@ -364,6 +365,69 @@ class CliTests(unittest.TestCase):
             ],
             check=False,
         )
+
+    def test_version_prints_cli_without_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                with patch("builtins.print") as printed:
+                    code = main(["version"])
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+        self.assertEqual(code, 0)
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("Luma CLI: 0.1.0", printed_text)
+        self.assertIn("Luma Control: not checked", printed_text)
+
+    def test_version_prints_control_health_from_explicit_url(self):
+        client = Mock()
+        client.health.return_value = {
+            "version": "0.1.0",
+            "nodeJoinModel": "region-first",
+            "capabilities": ["node-region", "node-egress"],
+        }
+        with patch("luma.cli.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
+            code = main(["version", "--control-url", "https://luma.example.com"])
+
+        self.assertEqual(code, 0)
+        client_cls.assert_called_once_with("https://luma.example.com", "health", insecure=False, resolve_ip=None)
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("Luma Control: 0.1.0", printed_text)
+        self.assertIn("Node join model: region-first", printed_text)
+        self.assertIn("Capabilities: node-region, node-egress", printed_text)
+
+    def test_node_exit_cleans_local_swarm_and_runtime_state(self):
+        remote = Mock()
+        remote.sudo_result.return_value = Mock(code=0, output="left\n")
+        remote.sudo.return_value = ""
+
+        with patch("luma.cli.LocalExecutor", return_value=remote):
+            results = exit_local_node()
+
+        self.assertEqual(results, ["Swarm left", "Removed /opt/luma"])
+        self.assertIn("docker swarm leave --force", remote.sudo_result.call_args.args[0])
+        remote.sudo.assert_called_once_with("rm -rf /opt/luma")
+
+    def test_node_exit_optional_deep_cleanup(self):
+        remote = Mock()
+        remote.sudo_result.side_effect = [
+            Mock(code=0, output="skipped\n"),
+            Mock(code=0, output="done\n"),
+            Mock(code=0, output="done\n"),
+        ]
+        remote.sudo.return_value = ""
+
+        with patch("luma.cli.LocalExecutor", return_value=remote):
+            results = exit_local_node(tailscale=True, prune_docker=True)
+
+        self.assertEqual(
+            results,
+            ["Swarm leave skipped", "Removed /opt/luma", "Tailscale logged out", "Docker pruned"],
+        )
+        commands = [call.args[0] for call in remote.sudo_result.call_args_list]
+        self.assertTrue(any("tailscale logout" in command for command in commands))
+        self.assertTrue(any("docker system prune -af --volumes" in command for command in commands))
 
     def test_node_join_prompts_for_worker_config_during_command(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -853,6 +917,17 @@ class PortainerWebhookTests(unittest.TestCase):
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
         self.assertTrue(any("docker pull ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
         self.assertFalse(any("docker build" in cmd for cmd in docker_commands))
+
+    def test_control_service_force_updates_image_after_stack_deploy(self):
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Linux\n")
+        remote.sudo.return_value = ""
+
+        result = _force_update_service_image(remote, "luma-control_luma-control", "ghcr.io/liutianjie/luma-control:latest")
+
+        self.assertEqual(result, "Service image refreshed: luma-control_luma-control -> ghcr.io/liutianjie/luma-control:latest")
+        command = remote.sudo.call_args.args[0]
+        self.assertIn("docker service update --image ghcr.io/liutianjie/luma-control:latest --force luma-control_luma-control", command)
 
     def test_install_docker_repairs_known_bad_apt_mirror(self):
         remote = Mock()
