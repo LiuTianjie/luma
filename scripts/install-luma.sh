@@ -16,6 +16,40 @@ INSTALL_REF="${LUMA_INSTALL_REF:-main}"
 INSTALL_HOME="${LUMA_INSTALL_HOME:-$HOME/.local/share/luma}"
 BIN_DIR="${LUMA_BIN_DIR:-$HOME/.local/bin}"
 
+ensure_path() {
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) return 0 ;;
+  esac
+
+  marker="# Luma CLI"
+  line="export PATH=\"$BIN_DIR:\$PATH\""
+  updated=""
+
+  for profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$profile" ] || continue
+    if ! grep -F "$BIN_DIR" "$profile" >/dev/null 2>&1; then
+      {
+        printf '\n%s\n' "$marker"
+        printf '%s\n' "$line"
+      } >> "$profile"
+      updated="${updated}${updated:+ }$profile"
+    fi
+  done
+
+  if [ -z "$updated" ]; then
+    profile="$HOME/.profile"
+    {
+      printf '\n%s\n' "$marker"
+      printf '%s\n' "$line"
+    } >> "$profile"
+    updated="$profile"
+  fi
+
+  PATH="$BIN_DIR:$PATH"
+  export PATH
+  echo "PATH updated in: $updated"
+}
+
 download_source() {
   archive_url="${LUMA_ARCHIVE_URL:-$REPO_URL/archive/refs/heads/$INSTALL_REF.tar.gz}"
   tmp_dir="$(mktemp -d)"
@@ -152,15 +186,13 @@ if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
 exec "$VENV_DIR/bin/luma" "\$@"
 EOF
   chmod +x "$BIN_DIR/luma"
+  ensure_path
 fi
 
 echo "Luma installed in $VENV_DIR"
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
   echo "Command shim: $BIN_DIR/luma"
-  case ":$PATH:" in
-    *":$BIN_DIR:"*) ;;
-    *) echo "Add $BIN_DIR to PATH if 'luma' is not found." ;;
-  esac
+  echo "Open a new shell or run: exec \$SHELL -l"
 fi
 echo "Next:"
 if [ "$LOCAL_CHECKOUT" -eq 1 ]; then

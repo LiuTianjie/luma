@@ -27,7 +27,7 @@ git push origin main --tags
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.0 sh
 ```
 
-The installer downloads the GitHub archive for that tag, creates `~/.local/share/luma/venv`, installs the Python package, and writes `~/.local/bin/luma`.
+The installer downloads the GitHub archive for that tag, creates `~/.local/share/luma/venv`, installs the Python package, writes `~/.local/bin/luma`, and adds `~/.local/bin` to the user's shell profile when needed.
 
 The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you want a fully pinned bootstrap, set this in `luma.yaml` before running manager bootstrap:
 

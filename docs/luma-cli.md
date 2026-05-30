@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 luma preflight
 ```
 
-The installer uses a GitHub archive, not `git clone`. It installs into `~/.local/share/luma/venv` and writes `~/.local/bin/luma`.
+The installer uses a GitHub archive, not `git clone`. It installs into `~/.local/share/luma/venv`, writes `~/.local/bin/luma`, and adds `~/.local/bin` to your shell profile when needed.
 
 Install a pinned release:
 

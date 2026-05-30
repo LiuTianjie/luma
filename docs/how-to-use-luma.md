@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 luma preflight
 ```
 
-This creates a private venv at `~/.local/share/luma/venv` and a `luma` command at `~/.local/bin/luma`. If the command is not found, add `~/.local/bin` to `PATH`.
+This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` command at `~/.local/bin/luma`, and adds `~/.local/bin` to your shell profile when needed. Open a new shell or run `exec $SHELL -l` after installation.
 
 Install a specific tag:
 

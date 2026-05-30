@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 luma preflight
 ```
 
-The installer downloads a release archive, creates a private venv under `~/.local/share/luma/venv`, and writes a `luma` command shim to `~/.local/bin/luma`. If `luma` is not found after install, add `~/.local/bin` to `PATH`.
+The installer downloads a release archive, creates a private venv under `~/.local/share/luma/venv`, writes a `luma` command shim to `~/.local/bin/luma`, and adds `~/.local/bin` to your shell profile when needed. Open a new shell or run `exec $SHELL -l` after installation.
 
 For development from a checkout, the same script still works:
 

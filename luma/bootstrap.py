@@ -342,8 +342,12 @@ def install_docker(remote: Executor) -> str:
         "set -euo pipefail; "
         "export DEBIAN_FRONTEND=noninteractive; "
         "apt-get update; "
-        "apt-get install -y docker.io docker-compose-v2 curl ca-certificates ufw python3-yaml; "
-        "systemctl enable --now docker"
+        "apt-get install -y docker.io docker-compose-v2 curl ca-certificates ufw python3-yaml || true; "
+        "systemctl enable --now containerd || true; "
+        "systemctl enable --now docker.socket || true; "
+        "systemctl reset-failed docker || true; "
+        "systemctl restart docker || systemctl start docker; "
+        "docker info >/dev/null"
     )
     return "Docker installed"
 
