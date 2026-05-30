@@ -94,3 +94,9 @@ class ControlClient:
                 "skipWebhook": skip_webhook,
             },
         )
+
+    def list_secrets(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/secrets")
+
+    def set_secret(self, *, name: str, value: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/secrets", {"name": name, "value": value})

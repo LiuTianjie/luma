@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import shlex
@@ -49,6 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
     context_sub.add_parser("list")
     context_use = context_sub.add_parser("use")
     context_use.add_argument("cluster")
+    secret = sub.add_parser("secret")
+    secret_sub = secret.add_subparsers(dest="secret_command", required=True)
+    secret_sub.add_parser("list")
+    secret_set = secret_sub.add_parser("set")
+    secret_set.add_argument("name")
+    secret_set.add_argument("--value")
     bootstrap = sub.add_parser("bootstrap")
     bootstrap_sub = bootstrap.add_subparsers(dest="bootstrap_command", required=True)
     manager = bootstrap_sub.add_parser("manager")
@@ -290,6 +297,33 @@ def cmd_context(args: argparse.Namespace) -> int:
         print(f"Current context: {args.cluster}")
         return 0
     raise LumaError(f"unknown context command: {args.context_command}")
+
+
+def cmd_secret(args: argparse.Namespace) -> int:
+    context = load_current_context()
+    client = ControlClient(
+        str(context["endpoint"]),
+        str(context["token"]),
+        insecure=bool(context.get("insecure")),
+        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
+    )
+    if args.secret_command == "list":
+        result = client.list_secrets()
+        keys = result.get("secrets") if isinstance(result.get("secrets"), list) else []
+        if not keys:
+            print("No deployment secrets configured")
+            return 0
+        for key in keys:
+            print(str(key))
+        return 0
+    if args.secret_command == "set":
+        value = args.value
+        if value is None:
+            value = getpass.getpass(f"{args.name}: ")
+        result = client.set_secret(name=args.name, value=value)
+        print(f"Secret saved: {result.get('name', args.name)}")
+        return 0
+    raise LumaError(f"unknown secret command: {args.secret_command}")
 
 
 def cmd_bootstrap(args: argparse.Namespace) -> int:
@@ -674,6 +708,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_login(args)
         if args.command == "context":
             return cmd_context(args)
+        if args.command == "secret":
+            return cmd_secret(args)
         if args.command == "bootstrap":
             return cmd_bootstrap(args)
         if args.command == "doctor":

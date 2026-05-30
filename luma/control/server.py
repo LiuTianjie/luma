@@ -4,6 +4,7 @@ import argparse
 import http.client
 import json
 import os
+import re
 import socket
 import tempfile
 import urllib.parse
@@ -100,6 +101,7 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     target = _resolve_control_path(stack_path(config, service), config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     stack_text = render_stack(config, service)
+    stack_env = _stack_env_for_text(stack_text)
     target.write_text(stack_text, encoding="utf-8")
     written = [str(target)]
     if service.exposure == "tailscale-relay":
@@ -108,7 +110,7 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         route_target.write_text(render_tailscale_route(config, service), encoding="utf-8")
         written.append(str(route_target))
     dns_result = None if body.get("skipDns") else sync_dns(config, service)
-    webhook_result = None if body.get("skipWebhook") else deploy_with_portainer(config, service, stack_text, state)
+    webhook_result = None if body.get("skipWebhook") else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env)
     return {
         "clusterId": state["clusterId"],
         "service": service.name,
@@ -118,6 +120,31 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "dns": dns_result,
         "webhook": webhook_result,
     }
+
+
+def handle_secret_list(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+    return {"secrets": sorted(str(key) for key in secrets)}
+
+
+def handle_secret_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    name = str(body.get("name") or "").strip()
+    value = body.get("value")
+    if not _valid_env_name(name):
+        raise LumaError("secret name must be a valid environment variable name")
+    if value is None or str(value) == "":
+        raise LumaError("secret value is required")
+    secrets = state.setdefault("secrets", {})
+    if not isinstance(secrets, dict):
+        secrets = {}
+        state["secrets"] = secrets
+    secrets[name] = str(value)
+    save_state(state)
+    return {"name": name, "saved": True}
 
 
 def _resolve_control_path(path: Path, config_path: Path) -> Path:
@@ -134,6 +161,25 @@ def _apply_state_secrets(state: Dict[str, Any]) -> None:
         if value is None:
             continue
         os.environ[str(key)] = str(value)
+
+
+def _stack_env_for_text(stack_text: str) -> list[dict[str, str]]:
+    names = sorted(set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", stack_text)))
+    env: list[dict[str, str]] = []
+    missing = []
+    for name in names:
+        value = os.environ.get(name)
+        if value is None:
+            missing.append(name)
+        else:
+            env.append({"name": name, "value": value})
+    if missing:
+        raise LumaError("missing deployment secrets: " + ", ".join(missing) + ". Run: luma secret set <NAME>")
+    return env
+
+
+def _valid_env_name(name: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name))
 
 
 def labels_for_profile(profile_name: str, region: str) -> Dict[str, str]:
@@ -282,6 +328,15 @@ class ControlHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/health":
             self._json(200, {"ok": True})
             return
+        try:
+            token = bearer_token(self.headers)
+            if self.path == "/v1/secrets":
+                self._json(200, handle_secret_list(token))
+                return
+        except LumaError as exc:
+            code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+            self._json(code, {"error": str(exc)})
+            return
         self._json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
@@ -299,6 +354,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/deployments":
                 self._json(200, handle_deployment(token, body))
+                return
+            if self.path == "/v1/secrets":
+                self._json(200, handle_secret_set(token, body))
                 return
             self._json(404, {"error": "not found"})
         except LumaError as exc:

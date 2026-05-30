@@ -18,8 +18,8 @@ from luma.bootstrap import (
     initialize_portainer,
 )
 from luma.control.client import ControlClient
-from luma.control.context import load_current_context
-from luma.control.server import handle_deployment, handle_node_label, handle_node_register, resolve_service_image
+from luma.control.context import load_current_context, save_context
+from luma.control.server import handle_deployment, handle_node_label, handle_node_register, handle_secret_list, handle_secret_set, resolve_service_image
 from luma.control.state import init_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -390,6 +390,24 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(LumaError):
             ControlClient("https://luma.example.com", "secret", resolve_ip="203.0.113.10")
 
+    def test_secret_set_sends_value_to_control_plane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.set_secret.return_value = {"name": "DATABASE_URL", "saved": True}
+                with patch("luma.cli.ControlClient", return_value=client), patch(
+                    "luma.cli.getpass.getpass", return_value="postgres://secret"
+                ), patch("builtins.print") as printed:
+                    code = main(["secret", "set", "DATABASE_URL"])
+                self.assertEqual(code, 0)
+                client.set_secret.assert_called_once_with(name="DATABASE_URL", value="postgres://secret")
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertNotIn("postgres://secret", printed_text)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
 
 class EnvFileTests(unittest.TestCase):
     def test_load_env_file_preserves_existing_values(self):
@@ -636,6 +654,88 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_deployment_passes_referenced_secrets_as_portainer_stack_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_secret_set(state["deployToken"], {"name": "DATABASE_URL", "value": "postgres://secret"})
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "domain": "api.example.com",
+                        "port": 80,
+                        "env": {"DATABASE_URL": "${DATABASE_URL}"},
+                    }
+                )
+                with patch("luma.control.server.sync_dns", return_value="DNS updated"), patch(
+                    "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
+                ) as deploy:
+                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+                self.assertEqual(result["service"], "api")
+                deploy.assert_called_once()
+                self.assertEqual(deploy.call_args.kwargs["stack_env"], [{"name": "DATABASE_URL", "value": "postgres://secret"}])
+                self.assertIn("DATABASE_URL: ${DATABASE_URL}", (root / "stacks" / "cn" / "api" / "stack.yml").read_text())
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_deployment_fails_when_referenced_secret_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_db = os.environ.get("DATABASE_URL")
+            try:
+                os.environ.pop("DATABASE_URL", None)
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"providers": {"dns": {"type": "cloudflare", "zone": "example.com"}}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "domain": "api.example.com",
+                        "port": 80,
+                        "env": {"DATABASE_URL": "${DATABASE_URL}"},
+                    }
+                )
+                with self.assertRaises(LumaError):
+                    handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("DATABASE_URL", old_db)
+
+    def test_secret_list_hides_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_secret_set(state["deployToken"], {"name": "DATABASE_URL", "value": "postgres://secret"})
+                result = handle_secret_list(state["deployToken"])
+                self.assertEqual(result, {"secrets": ["DATABASE_URL"]})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
     def test_deployment_skip_flags_are_honored_by_control_api(self):
         with tempfile.TemporaryDirectory() as tmp:

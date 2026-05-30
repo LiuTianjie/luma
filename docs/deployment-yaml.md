@@ -89,6 +89,40 @@ env:
   DATABASE_URL: ${DATABASE_URL}
 ```
 
+## 环境变量和 Secret
+
+普通非敏感配置可以直接写在 manifest 里：
+
+```yaml
+env:
+  NODE_ENV: production
+  LOG_LEVEL: info
+```
+
+敏感值不要写明文。先把 secret 存到控制面：
+
+```bash
+luma secret set DATABASE_URL
+luma secret set OPENAI_API_KEY
+luma secret list
+```
+
+然后在 YAML 里引用：
+
+```yaml
+env:
+  DATABASE_URL: ${DATABASE_URL}
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+```
+
+部署时，客户端只提交 manifest。Luma Control 会从控制面 secret store 读取这些变量，并作为 Portainer stack environment 传入。`luma secret list` 只显示 key，不显示 value。
+
+如果缺少引用的变量，部署会失败并提示：
+
+```text
+missing deployment secrets: DATABASE_URL. Run: luma secret set <NAME>
+```
+
 ### 海外 worker
 
 ```yaml

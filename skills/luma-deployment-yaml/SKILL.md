@@ -34,6 +34,8 @@ Luma manifests are not Docker Compose. They describe one service: image, region,
 - `replicas` defaults to `1`; when present it must be `>= 1`.
 - `port` is the container's internal listening port, not the cloud firewall/security-group port.
 - Avoid the legacy `public` field in new files. If present, it must match `exposure != none`.
+- Plain env values may be written directly under `env`.
+- Secret env values must use `${NAME}` and be stored with `luma secret set NAME` before deployment.
 
 ## Minimal Templates
 
@@ -59,6 +61,13 @@ exposure: none
 replicas: 1
 env:
   QUEUE_URL: redis://redis:6379/0
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+```
+
+When emitting `${NAME}` values, also tell the user to run:
+
+```bash
+luma secret set NAME
 ```
 
 Home Tailscale relay:

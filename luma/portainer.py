@@ -13,10 +13,17 @@ from .errors import LumaError
 from .service import ServiceSpec
 
 
-def deploy_with_portainer(config: LumaConfig, service: ServiceSpec, stack_content: str, state: Dict[str, Any]) -> str:
+def deploy_with_portainer(
+    config: LumaConfig,
+    service: ServiceSpec,
+    stack_content: str,
+    state: Dict[str, Any],
+    *,
+    stack_env: list[dict[str, str]] | None = None,
+) -> str:
     webhook_url, webhook_env = resolve_webhook(config, service)
     if not webhook_url:
-        return upsert_stack(config, service, stack_content, state, missing_webhook_env=webhook_env)
+        return upsert_stack(config, service, stack_content, state, missing_webhook_env=webhook_env, stack_env=stack_env)
     return trigger_webhook_url(service, webhook_url)
 
 
@@ -45,6 +52,7 @@ def upsert_stack(
     state: Dict[str, Any],
     *,
     missing_webhook_env: str,
+    stack_env: list[dict[str, str]] | None = None,
 ) -> str:
     api_url = str(state.get("portainerApiUrl") or config.portainer.get("apiUrl") or "")
     username = str(state.get("portainerAdminUsername") or config.portainer.get("adminUsername") or "admin")
@@ -72,7 +80,7 @@ def upsert_stack(
             f"/stacks/{int(stack_id)}?{urllib.parse.urlencode({'endpointId': endpoint})}",
             {
                 "StackFileContent": stack_content,
-                "Env": [],
+                "Env": stack_env or [],
                 "Prune": True,
                 "PullImage": False,
             },
@@ -86,7 +94,7 @@ def upsert_stack(
             "Name": service.slug,
             "StackFileContent": stack_content,
             "SwarmID": swarm_id,
-            "Env": [],
+            "Env": stack_env or [],
         },
         token=token,
     )

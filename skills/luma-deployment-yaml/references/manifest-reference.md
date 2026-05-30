@@ -11,7 +11,7 @@
 | `domain` | public only | string | Public hostname. |
 | `port` | public only | integer | Container internal port. |
 | `replicas` | no | integer | Defaults to `1`. Must be at least `1`. |
-| `env` or `environment` | no | map | Service environment variables. |
+| `env` or `environment` | no | map | Service environment variables. Use direct values for non-sensitive settings and `${SECRET_NAME}` for secrets stored in Luma Control. |
 | `command` | no | string/list | Overrides container command. |
 | `constraints` | no | string[] | Extra Swarm placement constraints. Luma adds region constraints. |
 | `labels` | no | string[] | Extra service labels. Luma adds Traefik labels for `cn-edge` and `external-edge`. |
@@ -56,6 +56,7 @@
 - Is `port` the container port, not the public firewall port?
 - Is `region` compatible with `exposure`?
 - Are secrets represented as `${ENV_NAME}` instead of plaintext?
+- For every `${ENV_NAME}`, remind the user to run `luma secret set ENV_NAME` before deploying.
 - Does the image include a meaningful tag?
 - Should this be public at all, or is `exposure: none` safer?
 - For home services, is latency/availability acceptable for the workload?
