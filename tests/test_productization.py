@@ -1,7 +1,9 @@
 import base64
+import io
 import os
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -327,6 +329,41 @@ class CliTests(unittest.TestCase):
         self.assertIn("--region cn --name cn-egress-1 --egress", commands)
         self.assertNotIn("--profile", commands)
 
+    def test_update_manager_installs_cli_then_refreshes_bootstrap(self):
+        completed = Mock(returncode=0)
+        with patch("luma.cli._run_luma_installer") as installer, patch(
+            "luma.cli._luma_executable", return_value="/usr/local/bin/luma"
+        ), patch(
+            "luma.cli.subprocess.run", return_value=completed
+        ) as run:
+            code = main(
+                [
+                    "update",
+                    "manager",
+                    "--domain",
+                    "luma.example.com",
+                    "--profile",
+                    "single-node",
+                    "--install-ref",
+                    "main",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        installer.assert_called_once_with(install_ref="main")
+        run.assert_called_once_with(
+            [
+                "/usr/local/bin/luma",
+                "bootstrap",
+                "manager",
+                "--domain",
+                "luma.example.com",
+                "--profile",
+                "single-node",
+            ],
+            check=False,
+        )
+
     def test_node_join_prompts_for_worker_config_during_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".luma.config.json"
@@ -487,6 +524,21 @@ class CliTests(unittest.TestCase):
     def test_control_client_resolve_ip_requires_insecure(self):
         with self.assertRaises(LumaError):
             ControlClient("https://luma.example.com", "secret", resolve_ip="203.0.113.10")
+
+    def test_control_client_reports_legacy_node_api_during_region_first_join(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        error = urllib.error.HTTPError(
+            "https://luma.example.com/v1/nodes/register",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"error": "nodeName, profile, and region are required"}'),
+        )
+        with patch("urllib.request.urlopen", side_effect=error), self.assertRaises(LumaError) as raised:
+            client.register_node(node_name="m3max", region="home")
+
+        self.assertIn("control API is older than this CLI", str(raised.exception))
+        self.assertIn("luma update manager", str(raised.exception))
 
     def test_secret_set_sends_value_to_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:

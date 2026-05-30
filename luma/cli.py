@@ -66,6 +66,17 @@ def build_parser() -> argparse.ArgumentParser:
     manager.add_argument("--https-port", type=int, help="Public Traefik HTTPS port")
     manager.add_argument("--skip-egress", action="store_true")
     manager.add_argument("--overwrite-control-state", action="store_true")
+    update = sub.add_parser("update")
+    update_sub = update.add_subparsers(dest="update_command", required=True)
+    update_manager = update_sub.add_parser("manager")
+    update_manager.add_argument("--domain", required=True)
+    update_manager.add_argument("--node")
+    update_manager.add_argument("--profile", choices=sorted(PROFILES), default="single-node")
+    update_manager.add_argument("--http-port", type=int, help="Public Traefik HTTP port")
+    update_manager.add_argument("--https-port", type=int, help="Public Traefik HTTPS port")
+    update_manager.add_argument("--skip-egress", action="store_true")
+    update_manager.add_argument("--overwrite-control-state", action="store_true")
+    update_manager.add_argument("--install-ref", help="Git ref passed to the install script as LUMA_INSTALL_REF")
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks such as docker pull through egress")
     doctor.add_argument("--legacy-ssh", action="store_true", help="Also run legacy SSH checks for nodes in luma.yaml")
@@ -363,6 +374,56 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
             print(f"  {label}: {command}")
         return 0
     raise LumaError(f"unknown bootstrap command: {args.bootstrap_command}")
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    if args.update_command == "manager":
+        print("[start] Update Luma CLI")
+        _run_luma_installer(install_ref=args.install_ref)
+        print("[ok] Luma CLI updated")
+        print("[start] Refresh manager bootstrap")
+        command = _updated_manager_bootstrap_command(args)
+        completed = subprocess.run(command, check=False)
+        if completed.returncode != 0:
+            raise LumaError(f"manager bootstrap refresh failed with exit code {completed.returncode}")
+        print("[ok] Manager update complete")
+        return 0
+    raise LumaError(f"unknown update command: {args.update_command}")
+
+
+def _run_luma_installer(*, install_ref: str | None = None) -> None:
+    env = os.environ.copy()
+    if install_ref:
+        env["LUMA_INSTALL_REF"] = install_ref
+    command = "curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
+    subprocess.run(command, shell=True, check=True, env=env)
+
+
+def _updated_manager_bootstrap_command(args: argparse.Namespace) -> list[str]:
+    command = [
+        _luma_executable(),
+        "bootstrap",
+        "manager",
+        "--domain",
+        args.domain,
+        "--profile",
+        args.profile,
+    ]
+    if args.node:
+        command.extend(["--node", args.node])
+    if args.http_port is not None:
+        command.extend(["--http-port", str(args.http_port)])
+    if args.https_port is not None:
+        command.extend(["--https-port", str(args.https_port)])
+    if args.skip_egress:
+        command.append("--skip-egress")
+    if args.overwrite_control_state:
+        command.append("--overwrite-control-state")
+    return command
+
+
+def _luma_executable() -> str:
+    return shutil.which("luma") or sys.argv[0]
 
 
 def _apply_bootstrap_port_overrides(config: LumaConfig, *, http_port: int | None, https_port: int | None) -> None:
@@ -774,6 +835,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_secret(args)
         if args.command == "bootstrap":
             return cmd_bootstrap(args)
+        if args.command == "update":
+            return cmd_update(args)
         if args.command == "doctor":
             return cmd_doctor(args)
         if args.command == "node":

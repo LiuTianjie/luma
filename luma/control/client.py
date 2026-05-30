@@ -48,6 +48,13 @@ class ControlClient:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if _looks_like_legacy_node_api_error(detail):
+                raise LumaError(
+                    "control API is older than this CLI and still expects node join profiles. "
+                    "Update the manager first: run the installer on the manager, then run "
+                    "`luma update manager --domain <control-domain> --profile single-node` "
+                    "or rerun `luma bootstrap manager --domain <control-domain> --profile single-node`."
+                ) from exc
             raise LumaError(f"control API error {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise LumaError(f"control API unavailable: {exc}") from exc
@@ -100,3 +107,7 @@ class ControlClient:
 
     def set_secret(self, *, name: str, value: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/secrets", {"name": name, "value": value})
+
+
+def _looks_like_legacy_node_api_error(detail: str) -> bool:
+    return "nodeName, profile, and region are required" in detail

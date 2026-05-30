@@ -180,14 +180,20 @@ For non-apt Linux distributions, install Docker manually before `luma node join`
 
 ## Update An Existing Manager
 
-After new Luma code is merged and the control image is published, update the manager in two steps:
+After new Luma code is merged and the control image is published, run this on the manager:
+
+```bash
+luma update manager --domain luma.example.com --profile single-node
+```
+
+`luma update manager` updates the local CLI, then runs an idempotent manager bootstrap. It refreshes `/opt/luma/luma.yaml`, `/opt/luma/control/control.json`, pulls the current `ghcr.io/liutianjie/luma-control:latest`, and redeploys the Luma Control service. Existing Portainer data, deploy tokens, join tokens, Swarm nodes, and service stacks are kept unless you explicitly purge or reset them.
+
+If the installed CLI is too old to recognize `luma update`, run the installer once and then retry:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma update manager --domain luma.example.com --profile single-node
 ```
-
-The install step updates the local `luma` CLI on the manager. The bootstrap step is idempotent: it refreshes `/opt/luma/luma.yaml`, `/opt/luma/control/control.json`, pulls the current `ghcr.io/liutianjie/luma-control:latest`, and redeploys the Luma Control service. Existing Portainer data, deploy tokens, join tokens, Swarm nodes, and service stacks are kept unless you explicitly purge or reset them.
 
 Deploy a service from any logged-in client. The client does not need Docker, SSH keys, Cloudflare credentials, or Portainer webhooks:
 

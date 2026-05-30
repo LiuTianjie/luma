@@ -149,14 +149,15 @@ Provider config and secrets are copied into the manager control state during `lu
 luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-Use the same pattern after upgrading Luma itself. First update the CLI on the manager, then rerun manager bootstrap:
+Use `luma update manager` after upgrading Luma itself:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma update manager --domain luma.example.com --profile single-node
 ```
 
-Bootstrap is designed to be idempotent. It refreshes the manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
+The update command refreshes the local CLI first, then runs manager bootstrap. Bootstrap is designed to be idempotent. It refreshes the manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
+
+If the installed CLI is too old to recognize `luma update`, run the installer once and then retry the update command.
 
 Cloudflare:
 
