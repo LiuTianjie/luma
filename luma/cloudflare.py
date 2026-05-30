@@ -107,7 +107,7 @@ def sync_control_dns(config: LumaConfig, domain: str) -> str:
         raise LumaError("missing Cloudflare zone id: run luma cloudflare connect --zone <domain> or set providers.dns.zoneId")
     target = dns_config.get("edgeTarget") or config.default_dns_target()
     if not target:
-        raise LumaError("missing DNS target: configure an edge node publicIp or providers.dns.edgeTarget")
+        return "Control DNS skipped: missing DNS target; configure providers.dns.edgeTarget or run luma configure --role manager"
     record_type = str(dns_config.get("recordType", "A")).upper()
     proxied = bool(dns_config.get("controlProxied", dns_config.get("proxied", False)))
     ttl = int(dns_config.get("ttl", 1))

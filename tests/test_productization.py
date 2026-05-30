@@ -13,6 +13,7 @@ import yaml
 from luma import __version__
 from luma.assets import asset_text
 from luma.config import LumaConfig
+from luma.cloudflare import sync_control_dns
 from luma.bootstrap import (
     _acme_email,
     _ensure_control_image,
@@ -29,7 +30,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import handle_deployment, handle_node_label, handle_node_register, handle_secret_list, handle_secret_set, resolve_service_image
+from luma.control.server import handle_control_status, handle_deployment, handle_node_label, handle_node_register, handle_secret_list, handle_secret_set, resolve_service_image
 from luma.control.state import init_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -80,6 +81,19 @@ class ProductConfigTests(unittest.TestCase):
         self.assertEqual(config.dns["provider"], "cloudflare")
         self.assertEqual(config.default_dns_target(), "203.0.113.10")
         self.assertTrue(config.get_node("manager-1").has_role("edge"))
+
+    def test_control_dns_without_target_is_skipped_with_fix_hint(self):
+        old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+        try:
+            config = LumaConfig(
+                {"providers": {"dns": {"type": "cloudflare", "zone": "example.com", "zoneId": "zone-id"}}},
+                None,
+            )
+            result = sync_control_dns(config, "luma.example.com")
+            self.assertIn("Control DNS skipped: missing DNS target", result)
+            self.assertIn("luma configure --role manager", result)
+        finally:
+            _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
     def test_profiles_have_expected_roles(self):
         self.assertIn("edge", PROFILES["single-node"].roles)
@@ -229,6 +243,10 @@ class CliTests(unittest.TestCase):
                     "service": "api",
                     "image": {"selected": "nginx:alpine"},
                     "webhook": "Portainer stack updated for api: api",
+                    "steps": [
+                        {"name": "Sync DNS", "status": "ok", "message": "DNS skipped: service is not public"},
+                        {"name": "Deploy Portainer stack", "status": "ok", "message": "Portainer stack updated for api: api"},
+                    ],
                 }
                 with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["deploy", str(service_path), "--timeout", "42"])
@@ -238,6 +256,8 @@ class CliTests(unittest.TestCase):
                 printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
                 self.assertIn("[start] Load deploy context", printed_text)
                 self.assertIn("[start] Waiting for control plane response (timeout 42s)", printed_text)
+                self.assertIn("[ok] Sync DNS: DNS skipped: service is not public", printed_text)
+                self.assertIn("[ok] Deploy Portainer stack: Portainer stack updated for api: api", printed_text)
                 self.assertIn("[ok] Deploy finished: api", printed_text)
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -307,6 +327,7 @@ class CliTests(unittest.TestCase):
             config_path = Path(tmp) / ".luma.config.json"
             old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
             old_token = _set_env("CLOUDFLARE_API_TOKEN", "")
+            old_target = _set_env("LUMA_DNS_EDGE_TARGET", "")
             try:
                 secret_values = iter(["cf-token", "ts-key", "sub-url", "sudo-pass"])
                 with patch("luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)), patch(
@@ -317,6 +338,7 @@ class CliTests(unittest.TestCase):
                 self.assertTrue(config_path.exists())
                 keys = configured_keys(config_path)
                 self.assertIn("CLOUDFLARE_API_TOKEN", keys)
+                self.assertIn("LUMA_DNS_EDGE_TARGET", keys)
                 self.assertIn("TRAEFIK_ACME_EMAIL", keys)
                 printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
                 self.assertNotIn("cf-token", printed_text)
@@ -324,12 +346,16 @@ class CliTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+                _restore_env("LUMA_DNS_EDGE_TARGET", old_target)
 
     def test_bootstrap_prompts_for_missing_manager_config_during_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".luma.config.json"
+            project_config = Path(tmp) / "luma.yaml"
+            project_config.write_text("{}\n", encoding="utf-8")
             old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
             old_cf = _set_env("CLOUDFLARE_API_TOKEN", "")
+            old_target = _set_env("LUMA_DNS_EDGE_TARGET", "")
             old_email = _set_env("TRAEFIK_ACME_EMAIL", "")
             old_ts = _set_env("TAILSCALE_AUTHKEY", "")
             old_egress = _set_env("EGRESS_SUBSCRIPTION_URL", "")
@@ -342,14 +368,29 @@ class CliTests(unittest.TestCase):
                     state["portainerAdminPassword"] = "portainer-secret"
                     return []
 
+                input_values = iter(["203.0.113.10", "ops@example.com"])
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
-                ), patch("builtins.input", return_value="ops@example.com"), patch(
+                ), patch("builtins.input", side_effect=lambda _prompt: next(input_values)), patch(
                     "luma.cli.bootstrap_manager_local", side_effect=bootstrap_side_effect
+                ), patch(
+                    "luma.cli.find_zone", return_value={"id": "zone-example"}
                 ), patch("builtins.print") as printed:
-                    code = main(["bootstrap", "manager", "--domain", "luma.example.com", "--profile", "single-node"])
+                    code = main(
+                        [
+                            "--config",
+                            str(project_config),
+                            "bootstrap",
+                            "manager",
+                            "--domain",
+                            "luma.example.com",
+                            "--profile",
+                            "single-node",
+                        ]
+                    )
                 self.assertEqual(code, 0)
                 self.assertTrue(config_path.exists())
+                self.assertIn("LUMA_DNS_EDGE_TARGET", configured_keys(config_path))
                 self.assertIn("EGRESS_SUBSCRIPTION_URL", configured_keys(config_path))
                 printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
                 self.assertIn("Portainer URL: https://203.0.113.10:9443", printed_text)
@@ -366,6 +407,7 @@ class CliTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_cf)
+                _restore_env("LUMA_DNS_EDGE_TARGET", old_target)
                 _restore_env("TRAEFIK_ACME_EMAIL", old_email)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("EGRESS_SUBSCRIPTION_URL", old_egress)
@@ -391,6 +433,7 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             old_cf = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            old_target = _set_env("LUMA_DNS_EDGE_TARGET", "")
             old_email = _set_env("TRAEFIK_ACME_EMAIL", "ops@example.com")
             old_ts = _set_env("TAILSCALE_AUTHKEY", "ts-key")
             old_sudo = _set_env("LUMA_SUDO_PASSWORD", "sudo-pass")
@@ -430,10 +473,13 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(dns["type"], "cloudflare")
                 self.assertEqual(dns["zone"], "itool.tech")
                 self.assertEqual(dns["zoneId"], "zone-itool")
+                self.assertEqual(dns["edgeTarget"], "203.0.113.10")
                 saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
                 self.assertEqual(saved["providers"]["dns"]["zoneId"], "zone-itool")
+                self.assertEqual(saved["providers"]["dns"]["edgeTarget"], "203.0.113.10")
             finally:
                 _restore_env("CLOUDFLARE_API_TOKEN", old_cf)
+                _restore_env("LUMA_DNS_EDGE_TARGET", old_target)
                 _restore_env("TRAEFIK_ACME_EMAIL", old_email)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
@@ -518,6 +564,45 @@ class CliTests(unittest.TestCase):
         self.assertIn("Luma Control: 0.1.0", printed_text)
         self.assertIn("Node join model: region-first", printed_text)
         self.assertIn("Capabilities: node-region, service-proxy", printed_text)
+
+    def test_status_prints_control_plane_readiness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.status.return_value = {
+                    "clusterId": "luma-test",
+                    "version": "0.1.2",
+                    "configPath": "/opt/luma/luma.yaml",
+                    "dns": {
+                        "provider": "cloudflare",
+                        "zone": "example.com",
+                        "zoneIdConfigured": True,
+                        "tokenEnv": "CLOUDFLARE_API_TOKEN",
+                        "tokenConfigured": True,
+                        "target": "203.0.113.10",
+                        "ready": True,
+                    },
+                    "portainer": {
+                        "apiUrl": "https://100.64.0.1:9443/api",
+                        "endpointIdConfigured": True,
+                        "swarmIdConfigured": True,
+                        "ready": True,
+                    },
+                    "nodes": {"registered": 2},
+                }
+                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                    code = main(["status"])
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+        self.assertEqual(code, 0)
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("Control API: ok (luma-test, 0.1.2)", printed_text)
+        self.assertIn("DNS provider: cloudflare", printed_text)
+        self.assertIn("DNS ready: yes", printed_text)
+        self.assertIn("Portainer ready: yes", printed_text)
 
     def test_node_exit_cleans_local_swarm_and_runtime_state(self):
         remote = Mock()
@@ -1153,11 +1238,62 @@ class ControlApiTests(unittest.TestCase):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
                 self.assertEqual(result["service"], "api")
                 self.assertIn(str(root / "stacks" / "cn" / "api" / "stack.yml"), result["written"])
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Parse manifest=ok:api -> cn/cn-edge", steps)
+                self.assertIn("Sync DNS=ok:DNS updated", steps)
+                self.assertIn("Deploy Portainer stack=ok:Portainer deploy triggered", steps)
                 with self.assertRaises(Exception):
                     handle_deployment(state["joinToken"], {"manifest": manifest, "sourceName": "api.yaml"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_control_status_reports_dns_and_portainer_readiness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_token = _set_env("CLOUDFLARE_API_TOKEN", "")
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_secret_set(state["deployToken"], {"name": "CLOUDFLARE_API_TOKEN", "value": "cf-token"})
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=False)
+                state["portainerApiUrl"] = "https://100.64.0.1:9443/api"
+                state["portainerEndpointId"] = 2
+                state["swarmId"] = "swarm"
+                state["nodes"] = {"manager": {}, "worker": {}}
+                from luma.control.state import save_state
+
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {
+                                "dns": {"type": "cloudflare", "zone": "example.com", "zoneId": "zone-id"},
+                            },
+                            "nodes": {
+                                "edge": {
+                                    "host": "edge",
+                                    "publicIp": "203.0.113.10",
+                                    "region": "cn",
+                                    "roles": ["edge"],
+                                }
+                            },
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                result = handle_control_status(state["deployToken"])
+                self.assertEqual(result["dns"]["provider"], "cloudflare")
+                self.assertTrue(result["dns"]["tokenConfigured"])
+                self.assertTrue(result["dns"]["zoneIdConfigured"])
+                self.assertEqual(result["dns"]["target"], "203.0.113.10")
+                self.assertTrue(result["portainer"]["ready"])
+                self.assertEqual(result["nodes"]["registered"], 2)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
     def test_deployment_passes_referenced_secrets_as_portainer_stack_env(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1274,8 +1410,11 @@ class ControlApiTests(unittest.TestCase):
                     )
                 sync.assert_not_called()
                 webhook.assert_not_called()
-                self.assertIsNone(result["dns"])
-                self.assertIsNone(result["webhook"])
+                self.assertEqual(result["dns"], "DNS skipped: --skip-dns")
+                self.assertEqual(result["webhook"], "Portainer deploy skipped: --skip-webhook")
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Sync DNS=ok:DNS skipped: --skip-dns", steps)
+                self.assertIn("Deploy Portainer stack=ok:Portainer deploy skipped: --skip-webhook", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

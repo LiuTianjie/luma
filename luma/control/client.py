@@ -82,6 +82,9 @@ class ControlClient:
     def health(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/health")
 
+    def status(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/status")
+
     def register_node(self, *, node_name: str, region: str) -> Dict[str, Any]:
         return self.request(
             "POST",

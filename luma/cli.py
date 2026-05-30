@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("--control-url", help="Control API URL to check instead of the current login context")
     version.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API check")
     version.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
+    status = sub.add_parser("status")
+    status.add_argument("--control-url", help="Control API URL to check instead of the current login context")
+    status.add_argument("--token", help="Deploy token to use with --control-url")
+    status.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API check")
+    status.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
     sub.add_parser("preflight")
     configure = sub.add_parser("configure")
     configure.add_argument("--role", choices=("manager", "worker", "client"), default="manager")
@@ -246,6 +251,32 @@ def cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    payload = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).status()
+    print(f"Control API: ok ({payload.get('clusterId')}, {payload.get('version')})")
+    print(f"Config path: {payload.get('configPath') or '-'}")
+    dns = payload.get("dns") if isinstance(payload.get("dns"), dict) else {}
+    print(f"DNS provider: {dns.get('provider') or 'not configured'}")
+    print(f"DNS zone: {dns.get('zone') or '-'}")
+    print(f"DNS zone id: {_configured_label(bool(dns.get('zoneIdConfigured')))}")
+    print(f"DNS token: {_configured_label(bool(dns.get('tokenConfigured')))} ({dns.get('tokenEnv') or 'CLOUDFLARE_API_TOKEN'})")
+    print(f"DNS target: {dns.get('target') or '-'}")
+    print(f"DNS ready: {'yes' if dns.get('ready') else 'no'}")
+    portainer = payload.get("portainer") if isinstance(payload.get("portainer"), dict) else {}
+    print(f"Portainer API: {portainer.get('apiUrl') or '-'}")
+    print(f"Portainer endpoint: {_configured_label(bool(portainer.get('endpointIdConfigured')))}")
+    print(f"Portainer swarm id: {_configured_label(bool(portainer.get('swarmIdConfigured')))}")
+    print(f"Portainer ready: {'yes' if portainer.get('ready') else 'no'}")
+    nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
+    print(f"Registered nodes: {nodes.get('registered', 0)}")
+    return 0
+
+
+def _configured_label(value: bool) -> str:
+    return "configured" if value else "missing"
+
+
 def _version_health_context(args: argparse.Namespace) -> tuple[str, str, bool, str | None] | None:
     if args.control_url:
         return args.control_url, "health", bool(args.insecure), args.resolve_ip
@@ -253,6 +284,20 @@ def _version_health_context(args: argparse.Namespace) -> tuple[str, str, bool, s
         context = load_current_context()
     except LumaError:
         return None
+    return (
+        str(context["endpoint"]),
+        str(context["token"]),
+        bool(context.get("insecure", False)),
+        str(context["resolveIp"]) if context.get("resolveIp") else None,
+    )
+
+
+def _control_context(args: argparse.Namespace, *, require_token: bool) -> tuple[str, str, bool, str | None]:
+    if args.control_url:
+        if require_token and not args.token:
+            raise LumaError("--token is required with --control-url")
+        return args.control_url, str(args.token or "health"), bool(args.insecure), args.resolve_ip
+    context = load_current_context()
     return (
         str(context["endpoint"]),
         str(context["token"]),
@@ -401,10 +446,12 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
             raise LumaError("no manager node configured. Add a node or pass --node.")
         profile = PROFILES[args.profile]
         keys = ["CLOUDFLARE_API_TOKEN", "TRAEFIK_ACME_EMAIL", "TAILSCALE_AUTHKEY", "LUMA_SUDO_PASSWORD"]
+        if not _dns_target_for_bootstrap(config, node) and sys.stdin.isatty():
+            keys.append("LUMA_DNS_EDGE_TARGET")
         if not args.skip_egress and "egress" in profile.roles:
             keys.append("EGRESS_SUBSCRIPTION_URL")
         ensure_interactive_config("manager", keys=keys)
-        _ensure_cloudflare_dns_from_local_config(config, args.domain)
+        _ensure_cloudflare_dns_from_local_config(config, args.domain, node)
         state = _control_state_for_bootstrap(args.domain, overwrite=args.overwrite_control_state)
         _attach_control_secrets(state, config)
         bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log)
@@ -561,18 +608,15 @@ def _attach_control_secrets(state: Dict[str, object], config: LumaConfig) -> Non
         state["secrets"] = secrets
 
 
-def _ensure_cloudflare_dns_from_local_config(config: LumaConfig, domain: str) -> None:
+def _ensure_cloudflare_dns_from_local_config(config: LumaConfig, domain: str, node=None) -> None:
     dns = config.dns
     if dns.get("provider"):
+        _ensure_dns_edge_target(config, node)
         return
     if not os.environ.get("CLOUDFLARE_API_TOKEN"):
+        _ensure_dns_edge_target(config, node)
         return
-    providers = config.raw.setdefault("providers", {})
-    if not isinstance(providers, dict):
-        raise LumaError("providers must be a mapping to configure Cloudflare DNS")
-    dns_config = providers.setdefault("dns", {})
-    if not isinstance(dns_config, dict):
-        raise LumaError("providers.dns must be a mapping to configure Cloudflare DNS")
+    dns_config = _writable_dns_config(config)
     for zone_name in _zone_candidates(domain):
         try:
             zone = find_zone(LumaConfig({"providers": {"dns": {"type": "cloudflare"}}}, None), zone_name)
@@ -582,6 +626,7 @@ def _ensure_cloudflare_dns_from_local_config(config: LumaConfig, domain: str) ->
         dns_config["zone"] = zone_name
         dns_config["zoneId"] = zone["id"]
         dns_config.setdefault("apiTokenEnv", "CLOUDFLARE_API_TOKEN")
+        _ensure_dns_edge_target(config, node, dns_config=dns_config)
         if config.path:
             save_config(config)
         return
@@ -589,6 +634,53 @@ def _ensure_cloudflare_dns_from_local_config(config: LumaConfig, domain: str) ->
         "CLOUDFLARE_API_TOKEN is configured, but Cloudflare zone could not be inferred from "
         f"{domain!r}. Run: luma cloudflare connect --zone <zone>, then rerun bootstrap/update manager."
     )
+
+
+def _writable_dns_config(config: LumaConfig) -> Dict[str, object]:
+    providers = config.raw.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise LumaError("providers must be a mapping to configure Cloudflare DNS")
+    current = providers.get("dns")
+    if current is None and isinstance(config.raw.get("dns"), dict):
+        current = dict(config.raw["dns"])
+        providers["dns"] = current
+    if current is None:
+        current = {}
+        providers["dns"] = current
+    if not isinstance(current, dict):
+        raise LumaError("providers.dns must be a mapping to configure Cloudflare DNS")
+    return current
+
+
+def _ensure_dns_edge_target(config: LumaConfig, node=None, *, dns_config: Dict[str, object] | None = None) -> None:
+    target = _dns_target_for_bootstrap(config, node)
+    if not target:
+        return
+    dns_config = dns_config or _writable_dns_config(config)
+    if dns_config.get("edgeTarget"):
+        return
+    dns_config["edgeTarget"] = target
+    if config.path:
+        save_config(config)
+
+
+def _dns_target_for_bootstrap(config: LumaConfig, node=None) -> str:
+    env_target = os.environ.get("LUMA_DNS_EDGE_TARGET", "").strip()
+    if env_target:
+        return env_target
+    config_target = config.default_dns_target()
+    if config_target:
+        return str(config_target)
+    node_target = getattr(node, "public_ip", None) if node is not None else None
+    if not node_target and node is not None:
+        raw = getattr(node, "raw", {}) or {}
+        node_target = raw.get("edgeTarget") or raw.get("publicIp") or raw.get("public_ip")
+    if not node_target:
+        return ""
+    target = str(node_target).strip()
+    if target in {"localhost", "127.0.0.1", "::1"}:
+        return ""
+    return target
 
 
 def _zone_candidates(domain: str) -> list[str]:
@@ -853,6 +945,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         skip_webhook=args.skip_webhook,
         timeout=args.timeout,
     )
+    for step in result.get("steps") or []:
+        if isinstance(step, dict):
+            message = step.get("message")
+            suffix = f": {message}" if message else ""
+            print(f"[{step.get('status', 'ok')}] {step.get('name', 'step')}{suffix}")
     print(f"[ok] Deploy finished: {result.get('service', service.name)}")
     if result.get("image"):
         image = result["image"]
@@ -975,6 +1072,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_configure(args)
         if args.command == "version":
             return cmd_version(args)
+        if args.command == "status":
+            return cmd_status(args)
         if args.command == "login":
             return cmd_login(args)
         if args.command == "context":

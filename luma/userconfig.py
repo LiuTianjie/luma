@@ -22,6 +22,7 @@ SECRET_KEYS = {
 ROLE_KEYS = {
     "manager": [
         ("CLOUDFLARE_API_TOKEN", "Cloudflare API token", True, True),
+        ("LUMA_DNS_EDGE_TARGET", "Public DNS target for control and edge routes", False, False),
         ("TRAEFIK_ACME_EMAIL", "ACME certificate email", False, True),
         ("TAILSCALE_AUTHKEY", "Tailscale auth key", True, False),
         ("EGRESS_SUBSCRIPTION_URL", "Egress subscription URL", True, False),

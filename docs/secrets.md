@@ -24,6 +24,7 @@ $EDITOR .env
 
 ```dotenv
 CLOUDFLARE_API_TOKEN     Cloudflare DNS API token
+LUMA_DNS_EDGE_TARGET     public IP or DNS target for control and edge records
 PORTAINER_WEBHOOK_URL    optional legacy Portainer stack webhook
 PORTAINER_WEBHOOK_*      optional legacy per-service Portainer GitOps webhooks
 LUMA_PORTAINER_ADMIN_PASSWORD  optional recovery override for an already-initialized Portainer admin

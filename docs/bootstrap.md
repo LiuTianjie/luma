@@ -152,7 +152,7 @@ By default this leaves Docker Swarm and removes `/opt/luma`, while keeping Tails
 
 Provider config and secrets are copied into the manager control state during `luma bootstrap manager`. If you change `luma.yaml`, Cloudflare settings, or legacy Portainer webhook env vars after bootstrap, rerun:
 
-If the local manager config has `CLOUDFLARE_API_TOKEN` but no `providers.dns`, bootstrap infers the Cloudflare zone from the control domain, looks up the zone id, and writes `providers.dns` before installing `/opt/luma/luma.yaml`.
+If the local manager config has `CLOUDFLARE_API_TOKEN` but no `providers.dns`, bootstrap infers the Cloudflare zone from the control domain, looks up the zone id, and writes `providers.dns` before installing `/opt/luma/luma.yaml`. If no DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET` and writes it as `providers.dns.edgeTarget`.
 
 ```bash
 luma bootstrap manager --domain luma.example.com --profile single-node
@@ -180,6 +180,7 @@ Cloudflare:
 
 ```bash
 export CLOUDFLARE_API_TOKEN='...'
+export LUMA_DNS_EDGE_TARGET='203.0.113.10'
 luma cloudflare connect --zone example.com
 ```
 

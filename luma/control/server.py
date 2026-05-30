@@ -37,6 +37,49 @@ def handle_login_verify(token: str) -> Dict[str, Any]:
     return {"clusterId": state["clusterId"], "endpoint": state.get("domain", "")}
 
 
+def handle_control_status(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    dns = config.dns
+    dns_provider = str(dns.get("provider") or "not configured")
+    token_env = str(dns.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
+    zone_id = os.environ.get(str(dns.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID"))) or dns.get("zoneId")
+    dns_target = dns.get("edgeTarget") or config.default_dns_target()
+    portainer_api_url = str(state.get("portainerApiUrl") or config.portainer.get("apiUrl") or "")
+    portainer_endpoint_id = state.get("portainerEndpointId") or config.portainer.get("endpointId")
+    swarm_id = str(state.get("swarmId") or config.portainer.get("swarmId") or "")
+    secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    return {
+        "clusterId": state["clusterId"],
+        "version": __version__,
+        "configPath": str(config_path),
+        "dns": {
+            "provider": dns_provider,
+            "zone": str(dns.get("zone") or ""),
+            "zoneIdConfigured": bool(zone_id),
+            "tokenEnv": token_env,
+            "tokenConfigured": bool(os.environ.get(token_env) or token_env in secrets),
+            "target": str(dns_target or ""),
+            "ready": dns_provider == "cloudflare" and bool(zone_id) and bool(os.environ.get(token_env) or token_env in secrets) and bool(dns_target),
+        },
+        "portainer": {
+            "apiUrl": _redact_url(portainer_api_url),
+            "apiConfigured": bool(portainer_api_url),
+            "endpointIdConfigured": bool(portainer_endpoint_id),
+            "swarmIdConfigured": bool(swarm_id),
+            "ready": bool(portainer_api_url and portainer_endpoint_id and swarm_id),
+        },
+        "nodes": {
+            "registered": len(nodes),
+            "names": sorted(str(name) for name in nodes),
+        },
+    }
+
+
 def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="join")
@@ -82,6 +125,7 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
+    steps: list[dict[str, str]] = []
     manifest = body.get("manifest")
     source_name = str(body.get("sourceName") or "service.yaml")
     if not isinstance(manifest, str) or not manifest.strip():
@@ -95,21 +139,28 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         service = load_service(service_path)
     finally:
         service_path.unlink(missing_ok=True)
+    steps.append({"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"})
 
-    service, image_result = resolve_service_image(config, service)
+    service, image_result = _deploy_step(steps, "Resolve image", lambda: resolve_service_image(config, service))
     target = _resolve_control_path(stack_path(config, service), config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    stack_text = render_stack(config, service)
-    stack_env = _stack_env_for_text(stack_text)
-    target.write_text(stack_text, encoding="utf-8")
+    stack_text = _deploy_step(steps, "Render stack", lambda: render_stack(config, service))
+    stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text))
+    _deploy_step(steps, "Write stack", lambda: target.write_text(stack_text, encoding="utf-8"))
     written = [str(target)]
     if service.exposure == "tailscale-relay":
         route_target = _resolve_control_path(route_path(config, service), config_path)
         route_target.parent.mkdir(parents=True, exist_ok=True)
-        route_target.write_text(render_tailscale_route(config, service), encoding="utf-8")
+        _deploy_step(steps, "Write route", lambda: route_target.write_text(render_tailscale_route(config, service), encoding="utf-8"))
         written.append(str(route_target))
-    dns_result = None if body.get("skipDns") else sync_dns(config, service)
-    webhook_result = None if body.get("skipWebhook") else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env)
+    dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service))
+    webhook_result = _deploy_step(
+        steps,
+        "Deploy Portainer stack",
+        lambda: "Portainer deploy skipped: --skip-webhook"
+        if body.get("skipWebhook")
+        else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env),
+    )
     return {
         "clusterId": state["clusterId"],
         "service": service.name,
@@ -118,6 +169,7 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "image": image_result,
         "dns": dns_result,
         "webhook": webhook_result,
+        "steps": steps,
     }
 
 
@@ -175,6 +227,42 @@ def _stack_env_for_text(stack_text: str) -> list[dict[str, str]]:
     if missing:
         raise LumaError("missing deployment secrets: " + ", ".join(missing) + ". Run: luma secret set <NAME>")
     return env
+
+
+def _deploy_step(steps: list[dict[str, str]], name: str, action: Any) -> Any:
+    try:
+        result = action()
+    except LumaError as exc:
+        steps.append({"name": name, "status": "fail", "message": str(exc)})
+        raise LumaError(f"{name} failed: {exc}") from exc
+    message = _step_message(result)
+    steps.append({"name": name, "status": "ok", "message": message})
+    return result
+
+
+def _step_message(result: Any) -> str:
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
+        image = result[1]
+        selected = image.get("selected")
+        requested = image.get("requested")
+        if selected and requested and selected != requested:
+            return f"{requested} -> {selected}"
+        if selected:
+            return str(selected)
+    if isinstance(result, str):
+        return result
+    if isinstance(result, int):
+        return "written"
+    return "ok"
+
+
+def _redact_url(value: str) -> str:
+    if not value:
+        return ""
+    parsed = urllib.parse.urlparse(value)
+    if not parsed.netloc:
+        return value
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
 
 
 def _valid_env_name(name: str) -> bool:
@@ -334,6 +422,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             token = bearer_token(self.headers)
             if self.path == "/v1/secrets":
                 self._json(200, handle_secret_list(token))
+                return
+            if self.path == "/v1/status":
+                self._json(200, handle_control_status(token))
                 return
         except LumaError as exc:
             code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400

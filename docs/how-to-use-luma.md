@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.2 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.4 sh
 ```
 
 For local development from a checkout:
@@ -70,6 +70,7 @@ providers:
     zone: example.com
     zoneId: ""
     apiTokenEnv: CLOUDFLARE_API_TOKEN
+    edgeTarget: 203.0.113.10
     recordType: A
     ttl: 1
     proxied: false
@@ -105,12 +106,13 @@ Run the command you actually need:
 luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-If local values are missing, Luma asks for them first, writes `~/.luma.config.json`, then continues. On worker nodes, the same happens during `luma node join ...`. `.env` and exported environment variables still work for local overrides. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, bootstrap infers the Cloudflare zone from the control domain and writes the provider config before installing `/opt/luma/luma.yaml`.
+If local values are missing, Luma asks for them first, writes `~/.luma.config.json`, then continues. On worker nodes, the same happens during `luma node join ...`. `.env` and exported environment variables still work for local overrides. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, bootstrap infers the Cloudflare zone from the control domain and writes the provider config before installing `/opt/luma/luma.yaml`. If no edge DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET` and writes it as `providers.dns.edgeTarget`.
 
 The relevant keys are:
 
 ```dotenv
 CLOUDFLARE_API_TOKEN=...
+LUMA_DNS_EDGE_TARGET=203.0.113.10
 PORTAINER_WEBHOOK_URL=...
 PORTAINER_WEBHOOK_API=...
 EGRESS_SUBSCRIPTION_URL=...

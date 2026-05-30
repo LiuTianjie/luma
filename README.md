@@ -55,7 +55,7 @@ Use the same installer on every machine:
 The installer loads `.env` if present and fixes Linux DNS before creating the virtualenv, so Python package installation is less likely to fail on fresh cloud servers. If `python3` is missing, it prints the OS-specific package command and exits. To install a tagged release, set `LUMA_INSTALL_REF`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.2 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.4 sh
 ```
 
 Uninstall the local CLI without touching user secrets or login contexts:
@@ -86,7 +86,7 @@ cp .env.example .env
 luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-When required local values are missing, the command prompts for them first and saves them to `~/.luma.config.json`. `.env` still works for project-local overrides, and values already exported in your shell take priority over both. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, manager bootstrap infers the Cloudflare zone from the control domain and writes the DNS provider config before installing `/opt/luma/luma.yaml`.
+When required local values are missing, the command prompts for them first and saves them to `~/.luma.config.json`. `.env` still works for project-local overrides, and values already exported in your shell take priority over both. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, manager bootstrap infers the Cloudflare zone from the control domain and writes the DNS provider config before installing `/opt/luma/luma.yaml`. If no edge DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET` and writes it as `providers.dns.edgeTarget`.
 
 Create or edit `luma.yaml`:
 
@@ -99,6 +99,7 @@ providers:
     zone: example.com
     zoneId: ""
     apiTokenEnv: CLOUDFLARE_API_TOKEN
+    edgeTarget: 203.0.113.10
 
 nodes:
   manager-1:
