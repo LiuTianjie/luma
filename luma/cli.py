@@ -143,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--dry-run", action="store_true")
     deploy.add_argument("--skip-dns", action="store_true")
     deploy.add_argument("--skip-webhook", action="store_true")
+    deploy.add_argument("--timeout", type=int, default=1800, help="Seconds to wait for the control-plane deploy response")
     deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--via", choices=("portainer",), default="portainer", help="Deployment runner")
@@ -790,21 +791,28 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     if args.commit or args.push:
         raise LumaError("--commit/--push are not supported for control-plane deploy; run deploy --dry-run for local rendering")
+    if args.timeout < 1:
+        raise LumaError("--timeout must be at least 1 second")
 
+    print(f"[start] Load deploy context: {args.service}", flush=True)
     context = load_current_context()
+    print(f"[ok] Logged in: {context['clusterId']} ({context['endpoint']})", flush=True)
     client = ControlClient(
         str(context["endpoint"]),
         str(context["token"]),
         insecure=bool(context.get("insecure")),
         resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
     )
+    print(f"[start] Submit deploy: {service.name} -> {service.region}/{service.exposure}", flush=True)
+    print(f"[start] Waiting for control plane response (timeout {args.timeout}s)", flush=True)
     result = client.deploy(
         manifest=args.service.read_text(encoding="utf-8"),
         source_name=str(args.service),
         skip_dns=args.skip_dns,
         skip_webhook=args.skip_webhook,
+        timeout=args.timeout,
     )
-    print(f"Deploy submitted to {context['clusterId']}: {result.get('service', service.name)}")
+    print(f"[ok] Deploy finished: {result.get('service', service.name)}")
     if result.get("image"):
         image = result["image"]
         if image.get("fallback"):

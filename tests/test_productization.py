@@ -186,6 +186,43 @@ class CliTests(unittest.TestCase):
         args = build_parser().parse_args(["deploy", "app.yaml"])
         self.assertEqual(args.command, "deploy")
         self.assertEqual(args.via, "portainer")
+        self.assertEqual(args.timeout, 1800)
+
+    def test_deploy_prints_progress_and_passes_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_home = _set_env("LUMA_CONFIG_HOME", str(home))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.deploy.return_value = {
+                    "service": "api",
+                    "image": {"selected": "nginx:alpine"},
+                    "webhook": "Portainer stack updated for api: api",
+                }
+                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                    code = main(["deploy", str(service_path), "--timeout", "42"])
+                self.assertEqual(code, 0)
+                client.deploy.assert_called_once()
+                self.assertEqual(client.deploy.call_args.kwargs["timeout"], 42)
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("[start] Load deploy context", printed_text)
+                self.assertIn("[start] Waiting for control plane response (timeout 42s)", printed_text)
+                self.assertIn("[ok] Deploy finished: api", printed_text)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
 
     def test_depoly_aliases_deploy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -561,6 +598,15 @@ class CliTests(unittest.TestCase):
 
         self.assertIn("control API is older than this CLI", str(raised.exception))
         self.assertIn("luma update manager", str(raised.exception))
+
+    def test_control_client_reports_timeout_without_traceback(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("read timed out")), self.assertRaises(LumaError) as raised:
+            client.deploy(manifest="name: api\nimage: nginx\nregion: cn\nexposure: none\n", source_name="service.yaml", timeout=42)
+
+        self.assertIn("control API timed out after 42s", str(raised.exception))
+        self.assertIn("/v1/deployments", str(raised.exception))
+        self.assertIn("manager may still be applying", str(raised.exception))
 
     def test_secret_set_sends_value_to_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:

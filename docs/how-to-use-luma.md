@@ -264,6 +264,14 @@ luma deploy app.yaml
 
 This submits the manifest to the logged-in Luma Control endpoint. The manager renders generated files under `/opt/luma`, syncs DNS, and creates or updates the stack through the Portainer API.
 
+`luma deploy` prints client-side progress before and after the control-plane request. The client waits up to 1800 seconds by default because first deploys may pull large images through the manager. Override it when needed:
+
+```bash
+luma deploy app.yaml --timeout 3600
+```
+
+Repeated deploys are updates. The same service `name` maps to the same Portainer stack; running deploy again rewrites the generated stack file and updates that stack. Changing `name` creates a different stack.
+
 Legacy Portainer webhooks remain supported. When existing GitOps stacks use webhooks, configure a webhook per service so Luma only triggers the changed stack:
 
 ```yaml

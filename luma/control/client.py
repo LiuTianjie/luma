@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import ssl
 import urllib.error
 import urllib.parse
@@ -25,7 +26,7 @@ class ControlClient:
         self.resolve_ip = resolve_ip
         self._host_header = parsed.netloc
 
-    def request(self, method: str, path: str, body: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def request(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Dict[str, Any]:
         data = json.dumps(body or {}).encode("utf-8") if body is not None else None
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -41,7 +42,7 @@ class ControlClient:
             headers=headers,
         )
         try:
-            kwargs: Dict[str, Any] = {"timeout": 30}
+            kwargs: Dict[str, Any] = {"timeout": timeout}
             if self.insecure:
                 kwargs["context"] = ssl._create_unverified_context()
             with urllib.request.urlopen(req, **kwargs) as resp:
@@ -56,6 +57,8 @@ class ControlClient:
                     "or rerun `luma bootstrap manager --domain <control-domain> --profile single-node`."
                 ) from exc
             raise LumaError(f"control API error {exc.code}: {detail}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise LumaError(_timeout_message(path, timeout)) from exc
         except urllib.error.URLError as exc:
             raise LumaError(f"control API unavailable: {exc}") from exc
         if not raw:
@@ -93,7 +96,15 @@ class ControlClient:
             {"nodeName": node_name, "region": region},
         )
 
-    def deploy(self, *, manifest: str, source_name: str, skip_dns: bool = False, skip_webhook: bool = False) -> Dict[str, Any]:
+    def deploy(
+        self,
+        *,
+        manifest: str,
+        source_name: str,
+        skip_dns: bool = False,
+        skip_webhook: bool = False,
+        timeout: int = 1800,
+    ) -> Dict[str, Any]:
         return self.request(
             "POST",
             "/v1/deployments",
@@ -103,6 +114,7 @@ class ControlClient:
                 "skipDns": skip_dns,
                 "skipWebhook": skip_webhook,
             },
+            timeout=timeout,
         )
 
     def list_secrets(self) -> Dict[str, Any]:
@@ -114,3 +126,14 @@ class ControlClient:
 
 def _looks_like_legacy_node_api_error(detail: str) -> bool:
     return "nodeName, profile, and region are required" in detail
+
+
+def _timeout_message(path: str, timeout: int) -> str:
+    message = f"control API timed out after {timeout}s waiting for {path}"
+    if path == "/v1/deployments":
+        message += (
+            "; the manager may still be applying the deployment. "
+            "Check `docker service logs -f luma-control_luma-control` and Portainer stack status, "
+            "or retry with `luma deploy <service.yaml> --timeout 3600`."
+        )
+    return message
