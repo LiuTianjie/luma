@@ -20,6 +20,7 @@ from luma.portainer import resolve_webhook, upsert_stack
 from luma.profiles import PROFILES
 from luma.service import load_service
 from luma.cli import build_parser, main
+from luma.userconfig import configured_keys, load_user_config
 
 
 class ProductConfigTests(unittest.TestCase):
@@ -135,6 +136,11 @@ class CliTests(unittest.TestCase):
         args = build_parser().parse_args(["preflight"])
         self.assertEqual(args.command, "preflight")
 
+    def test_parser_exposes_configure(self):
+        args = build_parser().parse_args(["configure", "--role", "worker"])
+        self.assertEqual(args.command, "configure")
+        self.assertEqual(args.role, "worker")
+
     def test_bootstrap_supports_skip_egress(self):
         args = build_parser().parse_args(["node", "bootstrap", "manager-1", "--profile", "single-node", "--skip-egress"])
         self.assertEqual(args.command, "node")
@@ -214,6 +220,48 @@ class CliTests(unittest.TestCase):
                 self.assertNotIn("secret-token", printed_text)
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_configure_writes_user_config_without_printing_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_token = _set_env("CLOUDFLARE_API_TOKEN", "")
+            try:
+                secret_values = iter(["cf-token", "ts-key", "sub-url", "sudo-pass"])
+                with patch("luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)), patch(
+                    "builtins.input", return_value="ops@example.com"
+                ), patch("builtins.print") as printed:
+                    code = main(["configure", "--role", "manager"])
+                self.assertEqual(code, 0)
+                self.assertTrue(config_path.exists())
+                keys = configured_keys(config_path)
+                self.assertIn("CLOUDFLARE_API_TOKEN", keys)
+                self.assertIn("TRAEFIK_ACME_EMAIL", keys)
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertNotIn("cf-token", printed_text)
+                self.assertNotIn("sudo-pass", printed_text)
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_user_config_loads_missing_or_empty_env_without_overriding_existing_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            config_path.write_text(
+                '{"version":1,"env":{"CLOUDFLARE_API_TOKEN":"from-config","TAILSCALE_AUTHKEY":"ts-key"}}\n',
+                encoding="utf-8",
+            )
+            old_token = _set_env("CLOUDFLARE_API_TOKEN", "from-env")
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "")
+            try:
+                load_user_config(config_path)
+                import os
+
+                self.assertEqual(os.environ["CLOUDFLARE_API_TOKEN"], "from-env")
+                self.assertEqual(os.environ["TAILSCALE_AUTHKEY"], "ts-key")
+            finally:
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
 
     def test_deploy_without_context_fails_clearly(self):
         with tempfile.TemporaryDirectory() as tmp:

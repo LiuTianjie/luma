@@ -67,10 +67,10 @@ On the first full manager node, create a local `.env` for secrets:
 
 ```bash
 cp .env.example .env
-$EDITOR .env
+luma configure --role manager
 ```
 
-Luma loads `.env` automatically. Values already exported in your shell take priority over `.env`.
+Luma stores local secrets in `~/.luma.config.json` and loads them automatically. `.env` still works for project-local overrides, and values already exported in your shell take priority over both.
 
 Create or edit `luma.yaml`:
 

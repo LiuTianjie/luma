@@ -2,7 +2,18 @@
 
 Luma stores project topology in `luma.yaml`, but secrets stay outside Git.
 
-By default, the CLI loads `.env` from the current working directory. Use `--env-file <path>` for another file or `--no-env` to disable loading.
+By default, the CLI loads `.env` from the current working directory and `~/.luma.config.json` from the current user. Use `--env-file <path>` for another project-local file or `--no-env` to disable local secret loading.
+
+For normal use, prefer the interactive setup:
+
+```bash
+luma configure --role manager
+luma configure --role worker
+```
+
+This writes `~/.luma.config.json` with mode `0600` and masks secret values in `luma configure --show`.
+
+`.env` remains useful for development or one-off overrides:
 
 ```bash
 cp .env.example .env
@@ -47,11 +58,12 @@ This file must not be committed.
 Client login state is written per user:
 
 ```text
+~/.luma.config.json
 ~/.config/luma/contexts/<cluster>.json
 ~/.config/luma/current-context
 ```
 
-The context contains only the control endpoint, cluster id, and deploy token. It should still be treated as a secret because it can deploy to the cluster.
+`~/.luma.config.json` contains local setup secrets such as Cloudflare, Tailscale, egress, and sudo values. The context contains only the control endpoint, cluster id, and deploy token. Both should be treated as secrets.
 
 ## Rotation
 

@@ -24,6 +24,7 @@ from .profiles import PROFILES
 from .remote import RemoteExecutor
 from .render import render_stack, render_tailscale_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
+from .userconfig import configured_keys, interactive_configure, load_user_config, masked_config_lines, user_config_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +36,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init")
     sub.add_parser("preflight")
+    configure = sub.add_parser("configure")
+    configure.add_argument("--role", choices=("manager", "worker", "client"), default="manager")
+    configure.add_argument("--show", action="store_true", help="Show configured key names without printing secret values")
     login = sub.add_parser("login")
     login.add_argument("endpoint")
     login.add_argument("--token", required=True)
@@ -171,6 +175,26 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             print(f"  Fix: {fix}")
     required_ok = all(ok for name, ok, _, _ in checks if name not in {"Docker Compose", "Env file", "Git", "SSH"})
     return 0 if required_ok else 1
+
+
+def cmd_configure(args: argparse.Namespace) -> int:
+    path = user_config_path()
+    if args.show:
+        keys = configured_keys(path)
+        print(f"Config: {path}")
+        if not keys:
+            print("No keys configured. Run: luma configure --role manager")
+            return 0
+        for line in masked_config_lines(keys):
+            print(line)
+        return 0
+    if args.role == "client":
+        print("Client machines usually do not need local secrets. Run luma login <control-url> --token <deploy-token>.")
+    path = interactive_configure(args.role, path=path)
+    print(f"Config saved: {path}")
+    for line in masked_config_lines(configured_keys(path)):
+        print(line)
+    return 0
 
 
 def _module_available(name: str) -> bool:
@@ -632,10 +656,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not args.no_env:
             load_env_file(args.env_file)
+            load_user_config()
         if args.command == "init":
             return cmd_init(args)
         if args.command == "preflight":
             return cmd_preflight(args)
+        if args.command == "configure":
+            return cmd_configure(args)
         if args.command == "login":
             return cmd_login(args)
         if args.command == "context":

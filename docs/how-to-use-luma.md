@@ -85,7 +85,15 @@ defaults:
     egressGateway: docker.1panel.live/metacubex/mihomo:latest
 ```
 
-Secrets live in `.env` or environment variables:
+Run the interactive setup on the machine that will execute the command:
+
+```bash
+luma configure --role manager
+```
+
+It writes `~/.luma.config.json` and Luma loads it automatically. On worker nodes, use `luma configure --role worker`. `.env` and exported environment variables still work for local overrides.
+
+The relevant keys are:
 
 ```dotenv
 CLOUDFLARE_API_TOKEN=...

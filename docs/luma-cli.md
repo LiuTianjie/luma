@@ -69,23 +69,19 @@ defaults:
   certResolver: letsencrypt
 ```
 
-Secrets stay outside Git. Put them in `.env`:
+Secrets stay outside Git. For normal use, run the interactive setup once:
 
 ```bash
-cp .env.example .env
-$EDITOR .env
+luma configure --role manager
 ```
 
-```dotenv
-CLOUDFLARE_API_TOKEN=...
-PORTAINER_WEBHOOK_URL=...
-PORTAINER_WEBHOOK_API=...
-EGRESS_SUBSCRIPTION_URL=...
-LUMA_SUDO_PASSWORD=...
-TAILSCALE_AUTHKEY=...
+It writes `~/.luma.config.json` with mode `0600` and never prints secret values. On worker servers, run:
+
+```bash
+luma configure --role worker
 ```
 
-Luma loads `.env` automatically. Use `--env-file <path>` to load another file or `--no-env` to disable this behavior. On the manager node, bootstrap copies the required Cloudflare and Portainer values into `/opt/luma/control/control.json` so client machines do not need those secrets.
+Luma loads `.env` and `~/.luma.config.json` automatically. Use `--env-file <path>` to load another project-local env file or `--no-env` to disable local secret loading. Values already exported in your shell take priority. On the manager node, bootstrap copies the required Cloudflare and Portainer values into `/opt/luma/control/control.json` so client machines do not need those secrets.
 
 ## Commands
 

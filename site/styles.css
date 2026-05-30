@@ -104,15 +104,12 @@ pre {
   letter-spacing: 0;
 }
 
-.brand-mark {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  color: #061017;
-  background: linear-gradient(135deg, var(--cyan), var(--mint));
-  border-radius: 9px;
-  box-shadow: 0 0 28px rgba(69, 220, 242, 0.36);
+.brand-logo {
+  width: 40px;
+  height: 40px;
+  display: block;
+  object-fit: contain;
+  filter: drop-shadow(0 0 18px rgba(69, 220, 242, 0.42));
 }
 
 .nav-links {
@@ -170,6 +167,7 @@ main {
 .hero-copy {
   position: relative;
   z-index: 2;
+  min-width: 0;
 }
 
 .eyebrow {
@@ -313,6 +311,7 @@ html[lang="zh-CN"] h2 {
 }
 
 .install-strip code {
+  min-width: 0;
   overflow: hidden;
   color: #c9fbff;
   font-size: 0.84rem;
@@ -1296,7 +1295,7 @@ footer {
 @media (max-width: 640px) {
   main,
   footer {
-    width: min(100% - 22px, var(--max));
+    width: min(calc(100% - 22px), var(--max));
   }
 
   .site-header {
@@ -1314,8 +1313,20 @@ footer {
     flex-direction: column;
   }
 
+  .hero-copy,
+  .hero-lede {
+    width: 100%;
+    max-width: calc(100vw - 22px);
+  }
+
+  .hero-lede {
+    overflow-wrap: anywhere;
+  }
+
   .install-strip {
     grid-template-columns: auto 1fr;
+    width: 100%;
+    max-width: calc(100vw - 22px);
   }
 
   .copy-button {

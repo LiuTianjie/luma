@@ -5,9 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Luma lets clients deploy services with named domains and automatically handles DNS, HTTPS certificates, Traefik routing, and Swarm workload updates."
+      content="Luma turns domain-first service manifests into DNS records, HTTPS certificates, Traefik routes, and Swarm workload updates."
     />
-    <title>Luma - Client-side domain deploys to Swarm workloads</title>
+    <title>Luma - Domain-driven deploy control plane</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
     <link rel="alternate" hreflang="en" href="./" />
     <link rel="alternate" hreflang="zh-CN" href="./zh.html" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -23,7 +25,7 @@
 
     <header class="site-header">
       <a class="brand" href="#top" aria-label="Luma home">
-        <span class="brand-mark">L</span>
+        <img class="brand-logo" src="./assets/luma-logo-mark.png" alt="" aria-hidden="true" />
         <span>Luma</span>
       </a>
       <nav class="nav-links" aria-label="Primary">
@@ -42,10 +44,10 @@
       <section class="hero">
         <div class="hero-copy reveal">
           <p class="eyebrow">Self-hosted deployment control plane</p>
-          <h1>Pick a domain on the client. Luma routes it to the workload.</h1>
+          <h1>Domain to HTTPS entrypoint.</h1>
           <p class="hero-lede">
-            Run <code>luma deploy</code> from any client and declare the service domain and port. Luma Control
-            updates DNS, issues HTTPS, configures Traefik, and routes traffic to the Swarm workload.
+            Run <code>luma deploy</code> from any machine. Luma takes care of DNS, certificates, Traefik routes,
+            and Swarm service updates.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#demo">Watch the deploy demo</a>
@@ -76,27 +78,27 @@
 
       <section class="highlight-grid reveal" aria-label="Product pillars">
         <div>
-          <strong>Named domain</strong>
-          <span><code>domain: status.example.com</code> becomes the service entry</span>
+          <strong>Domain as entrypoint</strong>
+          <span>The <code>domain</code> field defines how users reach the service</span>
         </div>
         <div>
-          <strong>Automatic DNS</strong>
-          <span>Cloudflare points the record at the selected edge node</span>
+          <strong>DNS follows deploys</strong>
+          <span>Records point at the edge selected by exposure</span>
         </div>
         <div>
-          <strong>Automatic HTTPS</strong>
-          <span>Traefik obtains an ACME certificate for the new host</span>
+          <strong>Certificates follow routes</strong>
+          <span>Traefik creates HTTPS for each Host rule</span>
         </div>
         <div>
-          <strong>Routed workload</strong>
-          <span>Host rules forward to the right service and port</span>
+          <strong>Route to service</strong>
+          <span>Host rules connect requests to service:port</span>
         </div>
       </section>
 
       <section class="section command-theatre" id="demo">
         <div class="section-heading reveal">
           <p class="eyebrow">Command demo</p>
-          <h2>From install to deploy, light up the real cluster step by step.</h2>
+          <h2>From install to publish, watch the cluster state change.</h2>
         </div>
 
         <div class="demo-grid reveal">
@@ -196,34 +198,34 @@ replicas: 2</code></pre>
         </div>
         <div class="section-copy reveal">
           <p class="eyebrow">Core flow</p>
-          <h2>The client submits a domain. The control plane does four things.</h2>
+          <h2>One domain field expands into DNS, TLS, routing, and service placement.</h2>
           <ul class="capability-list">
             <li>
               <span>01</span>
               <div>
-                <strong>Read the service file</strong>
-                <p>Capture the domain `status.example.com`, port `80`, and exposure `cn-edge`.</p>
+                <strong>Parse the service entry</strong>
+                <p>Read <code>domain</code>, <code>port</code>, and <code>exposure</code> to resolve the entrypoint and target port.</p>
               </div>
             </li>
             <li>
               <span>02</span>
               <div>
-                <strong>Sync DNS</strong>
-                <p>Write the Cloudflare record so the service domain points at the selected edge node.</p>
+                <strong>Sync DNS record</strong>
+                <p>Write the Cloudflare record so the domain points at the selected edge node.</p>
               </div>
             </li>
             <li>
               <span>03</span>
               <div>
-                <strong>Issue HTTPS</strong>
-                <p>Traefik completes ACME for the new host and creates the HTTPS entry.</p>
+                <strong>Create the HTTPS entry</strong>
+                <p>Traefik completes ACME from the Host rule and creates the TLS route.</p>
               </div>
             </li>
             <li>
               <span>04</span>
               <div>
-                <strong>Route to workload</strong>
-                <p>Update the stack so `status.example.com` forwards to `status:80` replicas.</p>
+                <strong>Update service routing</strong>
+                <p>Update the stack so <code>status.example.com</code> forwards to <code>status:80</code> replicas.</p>
               </div>
             </li>
           </ul>
@@ -233,7 +235,7 @@ replicas: 2</code></pre>
       <section class="section guide" id="guide">
         <div class="section-heading reveal">
           <p class="eyebrow">Quick start</p>
-          <h2>Create the control endpoint, then deploy named services from clients.</h2>
+          <h2>Three machine roles. Three command paths.</h2>
         </div>
 
         <div class="step-track">
@@ -246,7 +248,7 @@ replicas: 2</code></pre>
             </div>
             <div>
               <h3>Install the CLI</h3>
-              <p>Install the same <code>luma</code> command on managers, workers, or clients.</p>
+              <p>Managers, workers, and clients use the same <code>luma</code> command.</p>
               <pre><code>curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
 luma preflight</code></pre>
             </div>
@@ -262,8 +264,8 @@ luma preflight</code></pre>
               <span class="service-dot portainer"></span>
             </div>
             <div>
-              <h3>Create the control domain</h3>
-              <p>Run this on the first full server to create the control endpoint and deploy token.</p>
+              <h3>Initialize the control plane</h3>
+              <p>Create the Swarm manager, Traefik, Portainer, and Luma Control on the first full node.</p>
               <pre><code>luma bootstrap manager --domain luma.example.com --profile single-node</code></pre>
             </div>
           </article>
@@ -276,8 +278,8 @@ luma preflight</code></pre>
               <span class="join-token"></span>
             </div>
             <div>
-              <h3>Add workload nodes as needed</h3>
-              <p>Workers receive region and profile labels so the control plane can choose placement.</p>
+              <h3>Join workload nodes</h3>
+              <p>Each server joins locally, then the control plane records its region and profile labels.</p>
               <pre><code>luma node join https://luma.example.com --token &lt;join-token&gt; --profile global-worker --region global</code></pre>
             </div>
           </article>
@@ -290,8 +292,8 @@ luma preflight</code></pre>
               <span class="deploy-pulse"></span>
             </div>
             <div>
-              <h3>Deploy a named domain from a client</h3>
-              <p>The control plane handles DNS, certificate issuance, routing, and workload updates.</p>
+              <h3>Deploy from a client</h3>
+              <p>After login, the client submits a manifest. The control plane handles DNS, TLS, routing, and stack updates.</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
 luma deploy status.yaml</code></pre>
             </div>
@@ -301,16 +303,16 @@ luma deploy status.yaml</code></pre>
 
       <section class="cta reveal">
         <div>
-          <p class="eyebrow">Ready to publish a service?</p>
-          <h2>Write the domain and port. Luma publishes it as HTTPS.</h2>
+          <p class="eyebrow">Start validating</p>
+          <h2>Deploy a status service first and verify the full entry path.</h2>
         </div>
-        <a class="button primary" href="https://github.com/LiuTianjie/luma">Open GitHub</a>
+        <a class="button primary" href="https://github.com/LiuTianjie/luma">View project</a>
       </section>
     </main>
 
     <footer>
       <span>Luma</span>
-      <span>Self-hosted control plane for small infrastructure.</span>
+      <span>Domain-driven deploy control plane for small infrastructure.</span>
     </footer>
 
     <script src="./app.js"></script>

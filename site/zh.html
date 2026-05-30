@@ -5,9 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Luma 让客户端提交指定域名的服务部署请求，并自动完成 DNS、HTTPS 证书、Traefik 路由和 Swarm 工作负载更新。"
+      content="Luma 将域名优先的服务清单转换为 DNS 记录、HTTPS 证书、Traefik 路由和 Swarm 工作负载更新。"
     />
-    <title>Luma - 客户端指定域名，自动部署到工作负载</title>
+    <title>Luma - 域名驱动的自托管部署控制面</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
     <link rel="alternate" hreflang="en" href="./" />
     <link rel="alternate" hreflang="zh-CN" href="./zh.html" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -23,7 +25,7 @@
 
     <header class="site-header">
       <a class="brand" href="#top" aria-label="Luma home">
-        <span class="brand-mark">L</span>
+        <img class="brand-logo" src="./assets/luma-logo-mark.png" alt="" aria-hidden="true" />
         <span>Luma</span>
       </a>
       <nav class="nav-links" aria-label="主导航">
@@ -42,13 +44,12 @@
       <section class="hero">
         <div class="hero-copy reveal">
           <p class="eyebrow">自托管部署控制面</p>
-          <h1>客户端声明域名，Luma 自动发布 HTTPS 服务。</h1>
+          <h1>domain<br />到 HTTPS 入口。</h1>
           <p class="hero-lede">
-            在任意客户端执行 <code>luma deploy</code>，声明服务域名和端口。Luma 控制面会修改 DNS、
-            申请 HTTPS 证书、配置 Traefik 路由，并把流量转发到 Swarm 工作负载。
+            在任意机器执行 <code>luma deploy</code>。Luma 接管 DNS、证书、Traefik 路由和 Swarm 服务更新。
           </p>
           <div class="hero-actions">
-            <a class="button primary" href="#demo">看部署演示</a>
+            <a class="button primary" href="#demo">查看演示</a>
             <a class="button ghost" href="https://github.com/LiuTianjie/luma">查看源码</a>
           </div>
           <div class="install-strip" aria-label="安装命令">
@@ -76,27 +77,27 @@
 
       <section class="highlight-grid reveal" aria-label="产品特点">
         <div>
-          <strong>指定域名</strong>
-          <span><code>domain: status.example.com</code> 就是服务入口</span>
+          <strong>域名即入口</strong>
+          <span><code>domain</code> 字段定义服务访问地址</span>
         </div>
         <div>
-          <strong>自动 DNS</strong>
-          <span>Cloudflare 记录指向选中的边缘节点</span>
+          <strong>DNS 跟随部署</strong>
+          <span>记录按 exposure 指向目标边缘节点</span>
         </div>
         <div>
-          <strong>自动证书</strong>
-          <span>Traefik 为新域名完成 ACME 签发</span>
+          <strong>证书随路由签发</strong>
+          <span>Traefik 为每个 Host 建立 HTTPS</span>
         </div>
         <div>
-          <strong>路由到负载</strong>
-          <span>Host 规则转发到对应服务和端口</span>
+          <strong>路由到服务</strong>
+          <span>Host 规则连接到 service:port</span>
         </div>
       </section>
 
       <section class="section command-theatre" id="demo">
         <div class="section-heading reveal">
-          <p class="eyebrow">命令演示</p>
-          <h2>从安装到部署，把真实集群一步步点亮。</h2>
+          <p class="eyebrow">交互演示</p>
+          <h2>从安装到发布，逐步看到集群状态变化。</h2>
         </div>
 
         <div class="demo-grid reveal">
@@ -196,34 +197,34 @@ replicas: 2</code></pre>
         </div>
         <div class="section-copy reveal">
           <p class="eyebrow">核心链路</p>
-          <h2>从一个 domain 字段，到可访问的 HTTPS 服务。</h2>
+          <h2>一个 domain 字段，展开成 DNS、证书、路由和服务。</h2>
           <ul class="capability-list">
             <li>
               <span>01</span>
               <div>
-                <strong>读取服务清单</strong>
-                <p>拿到域名 `status.example.com`、端口 `80` 和入口 `cn-edge`。</p>
+                <strong>解析服务入口</strong>
+                <p>读取 <code>domain</code>、<code>port</code> 和 <code>exposure</code>，确定入口与目标端口。</p>
               </div>
             </li>
             <li>
               <span>02</span>
               <div>
-                <strong>同步 DNS</strong>
-                <p>在 Cloudflare 写入记录，让服务域名指向选中的边缘节点。</p>
+                <strong>同步 DNS 记录</strong>
+                <p>在 Cloudflare 写入记录，让域名指向选中的边缘节点。</p>
               </div>
             </li>
             <li>
               <span>03</span>
               <div>
-                <strong>签发证书</strong>
-                <p>Traefik 根据新域名自动完成 ACME，生成 HTTPS 入口。</p>
+                <strong>建立 HTTPS 入口</strong>
+                <p>Traefik 根据 Host 规则完成 ACME，并生成对应的 TLS 路由。</p>
               </div>
             </li>
             <li>
               <span>04</span>
               <div>
-                <strong>路由到负载</strong>
-                <p>更新 stack，把 `status.example.com` 转发到 `status:80` 副本。</p>
+                <strong>更新服务路由</strong>
+                <p>更新 stack，把 <code>status.example.com</code> 转发到 <code>status:80</code> 副本。</p>
               </div>
             </li>
           </ul>
@@ -233,7 +234,7 @@ replicas: 2</code></pre>
       <section class="section guide" id="guide">
         <div class="section-heading reveal">
           <p class="eyebrow">上手路径</p>
-          <h2>先建立控制面，再从客户端部署域名服务。</h2>
+          <h2>三类机器，对应三段命令。</h2>
         </div>
 
         <div class="step-track">
@@ -246,7 +247,7 @@ replicas: 2</code></pre>
             </div>
             <div>
               <h3>安装 CLI</h3>
-              <p>在 manager、worker 或客户端上都可以安装同一个 <code>luma</code> 命令。</p>
+              <p>manager、worker、client 使用同一个 <code>luma</code> 命令。</p>
               <pre><code>curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
 luma preflight</code></pre>
             </div>
@@ -262,8 +263,8 @@ luma preflight</code></pre>
               <span class="service-dot portainer"></span>
             </div>
             <div>
-              <h3>初始化控制面域名</h3>
-              <p>在第一台全功能服务器上执行，创建控制面入口和部署 token。</p>
+              <h3>初始化控制面</h3>
+              <p>在第一台全功能节点上创建 Swarm manager、Traefik、Portainer 和 Luma Control。</p>
               <pre><code>luma bootstrap manager --domain luma.example.com --profile single-node</code></pre>
             </div>
           </article>
@@ -276,8 +277,8 @@ luma preflight</code></pre>
               <span class="join-token"></span>
             </div>
             <div>
-              <h3>按需加入工作节点</h3>
-              <p>worker 加入后获得 region 和 profile labels，后续由控制面选择落点。</p>
+              <h3>加入工作节点</h3>
+              <p>每台服务器本机 join，控制面记录 region 和 profile labels。</p>
               <pre><code>luma node join https://luma.example.com --token &lt;join-token&gt; --profile global-worker --region global</code></pre>
             </div>
           </article>
@@ -290,8 +291,8 @@ luma preflight</code></pre>
               <span class="deploy-pulse"></span>
             </div>
             <div>
-              <h3>客户端部署指定域名</h3>
-              <p>客户端提交 manifest 后，控制面自动完成 DNS、证书、路由和工作负载更新。</p>
+              <h3>从客户端部署服务</h3>
+              <p>client 登录后提交 manifest，DNS、证书、路由和 stack 更新由控制面完成。</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
 luma deploy status.yaml</code></pre>
             </div>
@@ -301,16 +302,16 @@ luma deploy status.yaml</code></pre>
 
       <section class="cta reveal">
         <div>
-          <p class="eyebrow">准备发布服务？</p>
-          <h2>写下域名和端口，Luma 自动发布成 HTTPS 服务。</h2>
+          <p class="eyebrow">开始验证</p>
+          <h2>先发布一个 status 服务，确认整条入口链路。</h2>
         </div>
-        <a class="button primary" href="https://github.com/LiuTianjie/luma">打开 GitHub</a>
+        <a class="button primary" href="https://github.com/LiuTianjie/luma">查看项目</a>
       </section>
     </main>
 
     <footer>
       <span>Luma</span>
-      <span>面向小型基础设施的自托管部署控制面。</span>
+      <span>面向小型基础设施的域名驱动部署控制面。</span>
     </footer>
 
     <script src="./app.js"></script>
