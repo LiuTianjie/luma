@@ -404,6 +404,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         if not args.skip_egress and "egress" in profile.roles:
             keys.append("EGRESS_SUBSCRIPTION_URL")
         ensure_interactive_config("manager", keys=keys)
+        _ensure_cloudflare_dns_from_local_config(config, args.domain)
         state = _control_state_for_bootstrap(args.domain, overwrite=args.overwrite_control_state)
         _attach_control_secrets(state, config)
         bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log)
@@ -558,6 +559,46 @@ def _attach_control_secrets(state: Dict[str, object], config: LumaConfig) -> Non
             secrets[name] = value
     if secrets:
         state["secrets"] = secrets
+
+
+def _ensure_cloudflare_dns_from_local_config(config: LumaConfig, domain: str) -> None:
+    dns = config.dns
+    if dns.get("provider"):
+        return
+    if not os.environ.get("CLOUDFLARE_API_TOKEN"):
+        return
+    providers = config.raw.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise LumaError("providers must be a mapping to configure Cloudflare DNS")
+    dns_config = providers.setdefault("dns", {})
+    if not isinstance(dns_config, dict):
+        raise LumaError("providers.dns must be a mapping to configure Cloudflare DNS")
+    for zone_name in _zone_candidates(domain):
+        try:
+            zone = find_zone(LumaConfig({"providers": {"dns": {"type": "cloudflare"}}}, None), zone_name)
+        except LumaError:
+            continue
+        dns_config["type"] = "cloudflare"
+        dns_config["zone"] = zone_name
+        dns_config["zoneId"] = zone["id"]
+        dns_config.setdefault("apiTokenEnv", "CLOUDFLARE_API_TOKEN")
+        if config.path:
+            save_config(config)
+        return
+    raise LumaError(
+        "CLOUDFLARE_API_TOKEN is configured, but Cloudflare zone could not be inferred from "
+        f"{domain!r}. Run: luma cloudflare connect --zone <zone>, then rerun bootstrap/update manager."
+    )
+
+
+def _zone_candidates(domain: str) -> list[str]:
+    labels = [part for part in domain.strip(".").split(".") if part]
+    candidates: list[str] = []
+    for index in range(0, max(0, len(labels) - 1)):
+        candidate = ".".join(labels[index:])
+        if "." in candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
 
 
 def _local_node(profile_name: str, *, name: str | None = None, region: str | None = None):

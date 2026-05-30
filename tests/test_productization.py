@@ -371,6 +371,73 @@ class CliTests(unittest.TestCase):
                 _restore_env("EGRESS_SUBSCRIPTION_URL", old_egress)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
 
+    def test_bootstrap_infers_cloudflare_dns_from_interactive_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "luma.yaml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}},
+                        "nodes": {
+                            "manager": {
+                                "host": "localhost",
+                                "publicIp": "203.0.113.10",
+                                "region": "cn",
+                                "roles": ["swarm-manager", "edge"],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_cf = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            old_email = _set_env("TRAEFIK_ACME_EMAIL", "ops@example.com")
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "ts-key")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "sudo-pass")
+            try:
+                captured = {}
+
+                def bootstrap_side_effect(config, _node, _profile, _domain, state, **_kwargs):
+                    captured["config"] = config.raw
+                    state["portainerApiUrl"] = "https://203.0.113.10:9443/api"
+                    state["portainerAdminUsername"] = "admin"
+                    state["portainerAdminPassword"] = "portainer-secret"
+                    return []
+
+                def find_zone_side_effect(_config, zone_name):
+                    if zone_name == "itool.tech":
+                        return {"id": "zone-itool"}
+                    raise LumaError("not found")
+
+                with patch("luma.cli.find_zone", side_effect=find_zone_side_effect), patch(
+                    "luma.cli.bootstrap_manager_local", side_effect=bootstrap_side_effect
+                ), patch("builtins.print"):
+                    code = main(
+                        [
+                            "--config",
+                            str(config_path),
+                            "bootstrap",
+                            "manager",
+                            "--domain",
+                            "luma.itool.tech",
+                            "--node",
+                            "manager",
+                            "--skip-egress",
+                        ]
+                    )
+                self.assertEqual(code, 0)
+                dns = captured["config"]["providers"]["dns"]
+                self.assertEqual(dns["type"], "cloudflare")
+                self.assertEqual(dns["zone"], "itool.tech")
+                self.assertEqual(dns["zoneId"], "zone-itool")
+                saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["providers"]["dns"]["zoneId"], "zone-itool")
+            finally:
+                _restore_env("CLOUDFLARE_API_TOKEN", old_cf)
+                _restore_env("TRAEFIK_ACME_EMAIL", old_email)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
     def test_portainer_url_from_state_strips_api_suffix(self):
         self.assertEqual(
             _portainer_url_from_state({"portainerApiUrl": "https://203.0.113.10:9443/api"}),

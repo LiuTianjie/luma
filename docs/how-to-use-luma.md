@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.1 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.2 sh
 ```
 
 For local development from a checkout:
@@ -105,7 +105,7 @@ Run the command you actually need:
 luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-If local values are missing, Luma asks for them first, writes `~/.luma.config.json`, then continues. On worker nodes, the same happens during `luma node join ...`. `.env` and exported environment variables still work for local overrides.
+If local values are missing, Luma asks for them first, writes `~/.luma.config.json`, then continues. On worker nodes, the same happens during `luma node join ...`. `.env` and exported environment variables still work for local overrides. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, bootstrap infers the Cloudflare zone from the control domain and writes the provider config before installing `/opt/luma/luma.yaml`.
 
 The relevant keys are:
 
