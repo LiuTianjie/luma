@@ -17,6 +17,7 @@ from .config import LumaConfig, NodeConfig
 from .cloudflare import sync_control_dns
 from .egress import minimal_mihomo_config_from_url
 from .errors import LumaError
+from .io import dump_yaml
 from .local import LocalExecutor
 from .profiles import PROFILES, Profile
 from .remote import RemoteExecutor
@@ -292,11 +293,36 @@ def _ensure_control_image(remote: Executor, image: str) -> str:
     return f"Control image built: {image}"
 
 
-def install_control_config(remote: Executor, config: LumaConfig) -> str:
-    if not config.path:
-        raise LumaError("control plane bootstrap requires a luma.yaml path")
-    content = Path(config.path).read_text(encoding="utf-8")
+def install_control_config(remote: Executor, config: LumaConfig, node: NodeConfig | None = None) -> str:
+    content = Path(config.path).read_text(encoding="utf-8") if config.path else dump_yaml(_bootstrap_config(config, node))
     return remote.write_secret(content, f"{ROOT}/luma.yaml", mode="644")
+
+
+def _bootstrap_config(config: LumaConfig, node: NodeConfig | None = None) -> dict[str, object]:
+    raw = dict(config.raw)
+    raw.setdefault("project", "luma")
+    providers = raw.setdefault("providers", {})
+    if isinstance(providers, dict):
+        providers.setdefault("portainer", {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"})
+    defaults = raw.setdefault("defaults", {})
+    if isinstance(defaults, dict):
+        defaults.setdefault("exposure", "cn-edge")
+        defaults.setdefault("stackRoot", "stacks")
+        defaults.setdefault("routesRoot", "routes")
+        defaults.setdefault("publicNetwork", "public")
+        defaults.setdefault("egressNetwork", "egress")
+        defaults.setdefault("entrypoint", "websecure")
+        defaults.setdefault("certResolver", "letsencrypt")
+    nodes = raw.setdefault("nodes", {})
+    if node and isinstance(nodes, dict) and node.name not in nodes:
+        nodes[node.name] = {
+            "host": node.host,
+            "publicIp": node.public_ip,
+            "region": node.region,
+            "roles": list(node.roles),
+        }
+    raw.setdefault("git", {"autoCommit": False, "autoPush": False, "commitMessage": "deploy {name} to {region}"})
+    return raw
 
 
 def install_control_state(remote: Executor, state: dict[str, object]) -> str:
@@ -694,7 +720,7 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
     _step(results, emit, "Save Portainer credentials", lambda: install_control_state(remote, state))
     state.update(local_swarm_join_info(node))
     _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
-    _step(results, emit, "Install control config", lambda: install_control_config(remote, config))
+    _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
     _step(results, emit, "Deploy Luma control API", lambda: deploy_control_stack(remote, config, domain), fix="Build and publish the Luma control image, then rerun bootstrap manager")
     return results

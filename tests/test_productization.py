@@ -17,6 +17,7 @@ from luma.bootstrap import (
     bootstrap_node,
     bootstrap_manager_local,
     initialize_portainer,
+    install_control_config,
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
@@ -639,6 +640,31 @@ class PortainerWebhookTests(unittest.TestCase):
             )
 
         self.assertLess(sequence.index("reset-portainer"), sequence.index("portainer"))
+
+    def test_install_control_config_generates_config_without_local_path(self):
+        config = LumaConfig({}, None)
+        node = config.default_manager()
+        if node is None:
+            from luma.config import NodeConfig
+
+            node = NodeConfig(
+                name="manager",
+                host="localhost",
+                public_ip="127.0.0.1",
+                region="cn",
+                roles=["swarm-manager", "edge"],
+            )
+        remote = Mock()
+        remote.write_secret.return_value = "Secret written: /opt/luma/luma.yaml"
+
+        result = install_control_config(remote, config, node)
+
+        self.assertEqual(result, "Secret written: /opt/luma/luma.yaml")
+        content = remote.write_secret.call_args.args[0]
+        data = yaml.safe_load(content)
+        self.assertEqual(data["project"], "luma")
+        self.assertEqual(data["nodes"]["manager"]["host"], "localhost")
+        self.assertEqual(data["defaults"]["publicNetwork"], "public")
 
     def test_service_webhook_env_overrides_global_webhook(self):
         with tempfile.TemporaryDirectory() as tmp:
