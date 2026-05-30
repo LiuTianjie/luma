@@ -24,10 +24,20 @@ from .remote import RemoteExecutor
 ROOT = "/opt/luma"
 DEFAULT_TRAEFIK_IMAGE = "docker.1panel.live/library/traefik:v3.6"
 DEFAULT_PORTAINER_IMAGE = "docker.1panel.live/portainer/portainer-ce:2.21.5"
-DEFAULT_PORTAINER_AGENT_IMAGE = "docker.1ms.run/portainer/agent:2.21.5"
+DEFAULT_PORTAINER_AGENT_IMAGE = "docker.1panel.live/portainer/agent:2.21.5"
 DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
 DEFAULT_PORTAINER_API_URL = "https://127.0.0.1:9443/api"
+PORTAINER_IMAGE_FALLBACKS = [
+    "docker.m.daocloud.io/portainer/portainer-ce:2.21.5",
+    "docker.1ms.run/portainer/portainer-ce:2.21.5",
+    "portainer/portainer-ce:2.21.5",
+]
+PORTAINER_AGENT_IMAGE_FALLBACKS = [
+    "docker.m.daocloud.io/portainer/agent:2.21.5",
+    "docker.1ms.run/portainer/agent:2.21.5",
+    "portainer/agent:2.21.5",
+]
 Progress = Callable[[str], None]
 
 
@@ -78,6 +88,16 @@ def _core_image(config: LumaConfig, key: str, env_name: str, default: str) -> st
     if isinstance(images, dict) and images.get(key):
         return str(images[key])
     return os.environ.get(env_name, default)
+
+
+def _core_image_candidates(config: LumaConfig, key: str, env_name: str, default: str, fallbacks: list[str]) -> list[str]:
+    selected = _core_image(config, key, env_name, default)
+    override = os.environ.get(env_name)
+    images = config.defaults.get("images") or {}
+    if override or (isinstance(images, dict) and images.get(key)):
+        return [selected]
+    candidates = [selected, *fallbacks]
+    return list(dict.fromkeys(candidates))
 
 
 def _wait_service_ready(remote: Executor, service_name: str, *, timeout_seconds: int = 120) -> str:
@@ -144,8 +164,22 @@ def _portainer_image(config: LumaConfig) -> str:
     return _core_image(config, "portainer", "LUMA_PORTAINER_IMAGE", DEFAULT_PORTAINER_IMAGE)
 
 
+def _portainer_image_candidates(config: LumaConfig) -> list[str]:
+    return _core_image_candidates(config, "portainer", "LUMA_PORTAINER_IMAGE", DEFAULT_PORTAINER_IMAGE, PORTAINER_IMAGE_FALLBACKS)
+
+
 def _portainer_agent_image(config: LumaConfig) -> str:
     return _core_image(config, "portainerAgent", "LUMA_PORTAINER_AGENT_IMAGE", DEFAULT_PORTAINER_AGENT_IMAGE)
+
+
+def _portainer_agent_image_candidates(config: LumaConfig) -> list[str]:
+    return _core_image_candidates(
+        config,
+        "portainerAgent",
+        "LUMA_PORTAINER_AGENT_IMAGE",
+        DEFAULT_PORTAINER_AGENT_IMAGE,
+        PORTAINER_AGENT_IMAGE_FALLBACKS,
+    )
 
 
 def _control_image(config: LumaConfig) -> str:
@@ -165,6 +199,16 @@ def _pull_image(remote: Executor, image: str) -> str:
     return f"Image pulled: {image}"
 
 
+def _pull_first_available(remote: Executor, images: list[str]) -> tuple[str, str]:
+    errors = []
+    for image in images:
+        try:
+            return image, _pull_image(remote, image)
+        except Exception as exc:
+            errors.append(f"{image}: {exc}")
+    raise LumaError("failed to pull any candidate image:\n" + "\n".join(errors))
+
+
 def _deploy_traefik(remote: Executor, config: LumaConfig) -> list[str]:
     image = _traefik_image(config)
     http_port, https_port = _traefik_ports(config)
@@ -181,14 +225,14 @@ def _deploy_traefik(remote: Executor, config: LumaConfig) -> list[str]:
 
 
 def _deploy_portainer(remote: Executor, config: LumaConfig) -> list[str]:
-    portainer_image = _portainer_image(config)
-    agent_image = _portainer_agent_image(config)
+    agent_image, agent_result = _pull_first_available(remote, _portainer_agent_image_candidates(config))
+    portainer_image, portainer_result = _pull_first_available(remote, _portainer_image_candidates(config))
     stack_text = asset_text("stacks/core/portainer/stack.yml")
     stack_text = stack_text.replace("portainer/portainer-ce:2.21.5", portainer_image)
     stack_text = stack_text.replace("portainer/agent:2.21.5", agent_image)
     return [
-        _pull_image(remote, agent_image),
-        _pull_image(remote, portainer_image),
+        agent_result,
+        portainer_result,
         _deploy_stack_text(remote, stack_text, "portainer"),
         _wait_service_ready(remote, "portainer_portainer"),
         _wait_service_ready(remote, "portainer_agent"),

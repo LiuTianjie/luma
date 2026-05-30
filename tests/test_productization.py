@@ -8,7 +8,7 @@ import yaml
 
 from luma.assets import asset_text
 from luma.config import LumaConfig
-from luma.bootstrap import _acme_email, _last_command_value, _traefik_ports
+from luma.bootstrap import _acme_email, _last_command_value, _portainer_agent_image_candidates, _traefik_ports
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context
 from luma.control.server import handle_deployment, handle_node_label, handle_node_register, resolve_service_image
@@ -81,6 +81,16 @@ class ProductConfigTests(unittest.TestCase):
     def test_acme_email_defaults_from_dns_zone(self):
         config = LumaConfig({"providers": {"dns": {"zone": "example.net"}}}, None)
         self.assertEqual(_acme_email(config), "admin@example.net")
+
+    def test_portainer_agent_image_candidates_include_official_fallback(self):
+        config = LumaConfig({}, None)
+        candidates = _portainer_agent_image_candidates(config)
+        self.assertEqual(candidates[0], "docker.1panel.live/portainer/agent:2.21.5")
+        self.assertIn("portainer/agent:2.21.5", candidates)
+
+    def test_portainer_agent_image_override_disables_fallbacks(self):
+        config = LumaConfig({"defaults": {"images": {"portainerAgent": "registry.local/agent:test"}}}, None)
+        self.assertEqual(_portainer_agent_image_candidates(config), ["registry.local/agent:test"])
 
     def test_sudo_prompt_is_stripped_from_command_values(self):
         self.assertEqual(_last_command_value("[sudo] password for user: SWMTKN-1-token\n"), "SWMTKN-1-token")
