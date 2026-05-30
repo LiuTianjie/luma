@@ -3,6 +3,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -116,6 +117,35 @@ def interactive_configure(role: str, *, path: Path | None = None, input_fn=None)
             values[key] = current
         elif required:
             raise LumaError(f"{key} is required for {role} configuration")
+    return write_user_config(values, path=path)
+
+
+def ensure_interactive_config(role: str, *, keys: Iterable[str] | None = None, path: Path | None = None, input_fn=None) -> Path | None:
+    if role not in ROLE_KEYS:
+        raise LumaError(f"unknown configure role: {role}")
+    wanted = set(keys or [item[0] for item in ROLE_KEYS[role]])
+    prompts = [item for item in ROLE_KEYS[role] if item[0] in wanted and not os.environ.get(item[0])]
+    if not prompts:
+        return None
+    if not sys.stdin.isatty() and input_fn is None:
+        missing = ", ".join(item[0] for item in prompts)
+        raise LumaError(f"missing local config ({missing}). Run: luma configure --role {role}")
+    if input_fn is None:
+        input_fn = input
+    values: Dict[str, str] = {}
+    print(f"Missing local {role} configuration. Values will be saved to {path or user_config_path()}.")
+    for key, label, secret, required in prompts:
+        suffix = " [required]" if required else " [optional, press Enter to skip]"
+        prompt = f"{label}{suffix}: "
+        value = getpass.getpass(prompt) if secret else input_fn(prompt)
+        value = value.strip()
+        if value:
+            values[key] = value
+            os.environ[key] = value
+        elif required:
+            raise LumaError(f"{key} is required for {role} configuration")
+    if not values:
+        return None
     return write_user_config(values, path=path)
 
 

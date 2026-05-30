@@ -67,10 +67,10 @@ On the first full manager node, create a local `.env` for secrets:
 
 ```bash
 cp .env.example .env
-luma configure --role manager
+luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-Luma stores local secrets in `~/.luma.config.json` and loads them automatically. `.env` still works for project-local overrides, and values already exported in your shell take priority over both.
+When required local values are missing, the command prompts for them first and saves them to `~/.luma.config.json`. `.env` still works for project-local overrides, and values already exported in your shell take priority over both.
 
 Create or edit `luma.yaml`:
 

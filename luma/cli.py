@@ -24,7 +24,7 @@ from .profiles import PROFILES
 from .remote import RemoteExecutor
 from .render import render_stack, render_tailscale_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
-from .userconfig import configured_keys, interactive_configure, load_user_config, masked_config_lines, user_config_path
+from .userconfig import configured_keys, ensure_interactive_config, interactive_configure, load_user_config, masked_config_lines, user_config_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -240,6 +240,7 @@ def cmd_node(args: argparse.Namespace) -> int:
         print("Bootstrap complete")
         return 0
     if args.node_command == "join":
+        ensure_interactive_config("worker")
         log("[start] Configure system DNS")
         log(f"[ok] {configure_dns(LocalExecutor())}")
         client = ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
@@ -299,6 +300,10 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         if not node:
             raise LumaError("no manager node configured. Add a node or pass --node.")
         profile = PROFILES[args.profile]
+        keys = ["CLOUDFLARE_API_TOKEN", "TRAEFIK_ACME_EMAIL", "TAILSCALE_AUTHKEY", "LUMA_SUDO_PASSWORD"]
+        if not args.skip_egress and "egress" in profile.roles:
+            keys.append("EGRESS_SUBSCRIPTION_URL")
+        ensure_interactive_config("manager", keys=keys)
         state = _control_state_for_bootstrap(args.domain, overwrite=args.overwrite_control_state)
         _attach_control_secrets(state, config)
         bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log)
@@ -412,6 +417,7 @@ def cmd_cloudflare(args: argparse.Namespace) -> int:
 
 def cmd_egress(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    ensure_interactive_config("manager", keys=["EGRESS_SUBSCRIPTION_URL"])
     node = _repair_node(config, args.node, "egress-gateway")
     executor = None if args.node else LocalExecutor()
     subscription_url = os.environ.get("EGRESS_SUBSCRIPTION_URL")
@@ -437,6 +443,7 @@ def cmd_portainer(args: argparse.Namespace) -> int:
 def cmd_tailscale(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if args.tailscale_command == "connect":
+        ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"])
         node = _repair_node(config, args.node, "single-node")
         log("[start] Install and connect Tailscale")
         for line in setup_tailscale(node, executor=None if args.node else LocalExecutor()):

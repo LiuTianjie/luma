@@ -69,19 +69,19 @@ defaults:
   certResolver: letsencrypt
 ```
 
-Secrets stay outside Git. For normal use, run the interactive setup once:
+Secrets stay outside Git. For normal use, run the command you actually need:
 
 ```bash
-luma configure --role manager
+luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-It writes `~/.luma.config.json` with mode `0600` and never prints secret values. On worker servers, run:
+If required local values are missing, Luma prompts for them before continuing and saves them to `~/.luma.config.json` with mode `0600`. On worker servers, the same happens during:
 
 ```bash
-luma configure --role worker
+luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
 ```
 
-Luma loads `.env` and `~/.luma.config.json` automatically. Use `--env-file <path>` to load another project-local env file or `--no-env` to disable local secret loading. Values already exported in your shell take priority. On the manager node, bootstrap copies the required Cloudflare and Portainer values into `/opt/luma/control/control.json` so client machines do not need those secrets.
+`luma configure --role manager|worker` remains available if you want to edit local secrets ahead of time, and `luma configure --show` lists configured keys without printing values. Luma loads `.env` and `~/.luma.config.json` automatically. Use `--env-file <path>` to load another project-local env file or `--no-env` to disable local secret loading. Values already exported in your shell take priority. On the manager node, bootstrap copies the required Cloudflare and Portainer values into `/opt/luma/control/control.json` so client machines do not need those secrets.
 
 ## Commands
 

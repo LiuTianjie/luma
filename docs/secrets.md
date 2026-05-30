@@ -4,14 +4,14 @@ Luma stores project topology in `luma.yaml`, but secrets stay outside Git.
 
 By default, the CLI loads `.env` from the current working directory and `~/.luma.config.json` from the current user. Use `--env-file <path>` for another project-local file or `--no-env` to disable local secret loading.
 
-For normal use, prefer the interactive setup:
+For normal use, run the target command directly. If local values are missing, Luma prompts for them before continuing:
 
 ```bash
-luma configure --role manager
-luma configure --role worker
+luma bootstrap manager --domain luma.example.com --profile single-node
+luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
 ```
 
-This writes `~/.luma.config.json` with mode `0600` and masks secret values in `luma configure --show`.
+This writes `~/.luma.config.json` with mode `0600`. `luma configure --role manager|worker` remains available for pre-filling values, and `luma configure --show` masks secret values.
 
 `.env` remains useful for development or one-off overrides:
 

@@ -244,6 +244,79 @@ class CliTests(unittest.TestCase):
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
+    def test_bootstrap_prompts_for_missing_manager_config_during_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_cf = _set_env("CLOUDFLARE_API_TOKEN", "")
+            old_email = _set_env("TRAEFIK_ACME_EMAIL", "")
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "")
+            old_egress = _set_env("EGRESS_SUBSCRIPTION_URL", "")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
+            try:
+                secret_values = iter(["cf-token", "ts-key", "sub-url", "sudo-pass"])
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
+                ), patch("builtins.input", return_value="ops@example.com"), patch(
+                    "luma.cli.bootstrap_manager_local", return_value=[]
+                ):
+                    code = main(["bootstrap", "manager", "--domain", "luma.example.com", "--profile", "single-node"])
+                self.assertEqual(code, 0)
+                self.assertTrue(config_path.exists())
+                self.assertIn("EGRESS_SUBSCRIPTION_URL", configured_keys(config_path))
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("CLOUDFLARE_API_TOKEN", old_cf)
+                _restore_env("TRAEFIK_ACME_EMAIL", old_email)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("EGRESS_SUBSCRIPTION_URL", old_egress)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
+    def test_node_join_prompts_for_worker_config_during_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
+            try:
+                secret_values = iter(["ts-key", "sudo-pass"])
+                client = Mock()
+                client.register_node.return_value = {
+                    "nodeName": "worker-1",
+                    "profile": "global-worker",
+                    "region": "global",
+                    "managerAddr": "100.64.0.1:2377",
+                    "swarmJoinToken": "swarm-token",
+                }
+                client.label_node.return_value = {"message": "labels applied"}
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
+                ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.ControlClient", return_value=client
+                ), patch("luma.cli.join_local_node", return_value=[]), patch(
+                    "luma.cli.local_docker_node_name", return_value="worker-1"
+                ):
+                    code = main(
+                        [
+                            "node",
+                            "join",
+                            "https://luma.example.com",
+                            "--token",
+                            "join-token",
+                            "--profile",
+                            "global-worker",
+                            "--region",
+                            "global",
+                        ]
+                    )
+                self.assertEqual(code, 0)
+                self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
+                self.assertIn("LUMA_SUDO_PASSWORD", configured_keys(config_path))
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
     def test_user_config_loads_missing_or_empty_env_without_overriding_existing_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".luma.config.json"

@@ -85,13 +85,13 @@ defaults:
     egressGateway: docker.1panel.live/metacubex/mihomo:latest
 ```
 
-Run the interactive setup on the machine that will execute the command:
+Run the command you actually need:
 
 ```bash
-luma configure --role manager
+luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-It writes `~/.luma.config.json` and Luma loads it automatically. On worker nodes, use `luma configure --role worker`. `.env` and exported environment variables still work for local overrides.
+If local values are missing, Luma asks for them first, writes `~/.luma.config.json`, then continues. On worker nodes, the same happens during `luma node join ...`. `.env` and exported environment variables still work for local overrides.
 
 The relevant keys are:
 
