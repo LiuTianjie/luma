@@ -273,8 +273,24 @@ def deploy_control_stack(remote: Executor, config: LumaConfig, domain: str) -> l
 
 
 def _ensure_control_image(remote: Executor, image: str) -> str:
-    if "/" in image:
-        return f"Control image remote: {image}"
+    image_arg = shlex.quote(image)
+    status = _last_command_value(
+        _docker(
+            remote,
+            "set -euo pipefail; "
+            f"if docker image inspect {image_arg} >/dev/null 2>&1; then "
+            "echo present; "
+            f"elif docker pull {image_arg} >/dev/null 2>&1; then "
+            "echo pulled; "
+            "else "
+            "echo build; "
+            "fi",
+        )
+    )
+    if status == "present":
+        return f"Control image already present: {image}"
+    if status == "pulled":
+        return f"Control image pulled: {image}"
     dockerfile = asset_path("Dockerfile.control")
     pyproject = asset_path("pyproject.toml")
     readme = asset_path("README.md")

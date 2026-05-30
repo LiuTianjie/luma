@@ -11,6 +11,7 @@ from luma.assets import asset_text
 from luma.config import LumaConfig
 from luma.bootstrap import (
     _acme_email,
+    _ensure_control_image,
     _last_command_value,
     _portainer_agent_image_candidates,
     _traefik_ports,
@@ -665,6 +666,19 @@ class PortainerWebhookTests(unittest.TestCase):
         self.assertEqual(data["project"], "luma")
         self.assertEqual(data["nodes"]["manager"]["host"], "localhost")
         self.assertEqual(data["defaults"]["publicNetwork"], "public")
+
+    def test_control_image_builds_when_remote_pull_is_unavailable(self):
+        remote = Mock()
+        remote.run.return_value = ""
+        remote.sudo.return_value = "build\n"
+
+        result = _ensure_control_image(remote, "ghcr.io/liutianjie/luma-control:latest")
+
+        self.assertEqual(result, "Control image built: ghcr.io/liutianjie/luma-control:latest")
+        self.assertGreaterEqual(remote.upload.call_count, 4)
+        docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
+        self.assertTrue(any("docker pull ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
+        self.assertTrue(any("docker build" in cmd and "-t ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
 
     def test_service_webhook_env_overrides_global_webhook(self):
         with tempfile.TemporaryDirectory() as tmp:

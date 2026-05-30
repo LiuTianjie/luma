@@ -5,16 +5,19 @@ Luma can be distributed without asking users to clone the repository.
 ## Recommended First Release
 
 1. Push the repo to GitHub.
-2. Build and publish the control API image:
+2. Build and publish the control API image with GitHub Actions:
 
 ```bash
-docker build -f Dockerfile.control -t ghcr.io/liutianjie/luma-control:v0.1.0 .
-docker tag ghcr.io/liutianjie/luma-control:v0.1.0 ghcr.io/liutianjie/luma-control:latest
-docker push ghcr.io/liutianjie/luma-control:v0.1.0
-docker push ghcr.io/liutianjie/luma-control:latest
+git push origin main
 ```
 
-3. Create a tag:
+The `Build Control Image` workflow publishes:
+
+- `ghcr.io/liutianjie/luma-control:latest` from `main`
+- `ghcr.io/liutianjie/luma-control:main-<sha>` from `main`
+- `ghcr.io/liutianjie/luma-control:<tag>` from `v*` tags
+
+3. Create a tag to publish a versioned image and release archive:
 
 ```bash
 git tag v0.1.0
