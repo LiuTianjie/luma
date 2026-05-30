@@ -7,6 +7,7 @@ import shlex
 import ssl
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable, Union
@@ -313,6 +314,18 @@ def initialize_portainer(remote: Executor, state: dict[str, object]) -> str:
         raise LumaError(f"Portainer authentication failed: HTTP {status} {detail}")
     jwt = str(payload["jwt"])
     status, payload = _portainer_request(api_url, "GET", "/endpoints", token=jwt)
+    if status == 200 and isinstance(payload, list) and not payload:
+        status, payload = _portainer_form_request(
+            api_url,
+            "POST",
+            "/endpoints",
+            {"Name": "luma-local", "EndpointCreationType": "1"},
+            token=jwt,
+        )
+        if status in {200, 201} and isinstance(payload, dict):
+            payload = [payload]
+        elif status == 409:
+            status, payload = _portainer_request(api_url, "GET", "/endpoints", token=jwt)
     if status != 200 or not isinstance(payload, list) or not payload:
         detail = payload.get("message") if isinstance(payload, dict) else payload
         raise LumaError(f"Portainer endpoint discovery failed: HTTP {status} {detail}")
@@ -335,6 +348,35 @@ def _portainer_request(
     headers = {"Accept": "application/json"}
     if body is not None:
         headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(api_url.rstrip("/") + path, data=data, method=method, headers=headers)
+    context = ssl._create_unverified_context()
+    try:
+        with urllib.request.urlopen(request, timeout=20, context=context) as response:
+            raw = response.read().decode("utf-8")
+            return response.status, json.loads(raw) if raw else None
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload: object | None = json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            payload = raw
+        return exc.code, payload
+
+
+def _portainer_form_request(
+    api_url: str,
+    method: str,
+    path: str,
+    form: dict[str, str],
+    token: str | None = None,
+) -> tuple[int, object | None]:
+    data = urllib.parse.urlencode(form).encode("utf-8")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(api_url.rstrip("/") + path, data=data, method=method, headers=headers)

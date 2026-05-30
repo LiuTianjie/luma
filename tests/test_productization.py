@@ -8,7 +8,7 @@ import yaml
 
 from luma.assets import asset_text
 from luma.config import LumaConfig
-from luma.bootstrap import _acme_email, _last_command_value, _portainer_agent_image_candidates, _traefik_ports
+from luma.bootstrap import _acme_email, _last_command_value, _portainer_agent_image_candidates, _traefik_ports, initialize_portainer
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context
 from luma.control.server import handle_deployment, handle_node_label, handle_node_register, resolve_service_image
@@ -416,6 +416,36 @@ class EnvFileTests(unittest.TestCase):
 
 
 class PortainerWebhookTests(unittest.TestCase):
+    def test_initialize_portainer_creates_local_endpoint_when_empty(self):
+        state = {
+            "portainerApiUrl": "https://127.0.0.1:9443/api",
+            "portainerAdminUsername": "admin",
+            "portainerAdminPassword": "secret",
+        }
+        with patch(
+            "luma.bootstrap._portainer_request",
+            side_effect=[
+                (200, {}),
+                (200, {"jwt": "jwt-token"}),
+                (200, []),
+            ],
+        ) as request, patch(
+            "luma.bootstrap._portainer_form_request",
+            return_value=(200, {"Id": 7, "Name": "luma-local"}),
+        ) as form_request:
+            result = initialize_portainer(Mock(), state)
+        self.assertEqual(result, "Portainer initialized")
+        self.assertEqual(state["portainerEndpointId"], 7)
+        self.assertEqual(state["portainerEndpointName"], "luma-local")
+        form_request.assert_called_once_with(
+            "https://127.0.0.1:9443/api",
+            "POST",
+            "/endpoints",
+            {"Name": "luma-local", "EndpointCreationType": "1"},
+            token="jwt-token",
+        )
+        self.assertEqual(request.call_count, 3)
+
     def test_service_webhook_env_overrides_global_webhook(self):
         with tempfile.TemporaryDirectory() as tmp:
             service_path = Path(tmp) / "service.yaml"
