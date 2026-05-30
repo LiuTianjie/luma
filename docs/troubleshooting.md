@@ -90,6 +90,26 @@ Rerun manager bootstrap so Portainer is initialized and `/opt/luma/control/contr
 luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
+If bootstrap fails with `Portainer authentication failed: HTTP 422 Invalid credentials`, Portainer already has
+an admin password that does not match Luma's saved state. If you know the current password, bind it explicitly
+and rerun:
+
+```bash
+export LUMA_PORTAINER_ADMIN_PASSWORD='...'
+luma bootstrap manager --domain luma.example.com --profile single-node
+```
+
+If you do not know the current Portainer admin password, reset the Portainer admin password first:
+
+```bash
+docker service scale portainer_portainer=0
+docker pull portainer/helper-reset-password
+docker run --rm -v portainer_portainer_data:/data portainer/helper-reset-password
+docker service scale portainer_portainer=1
+```
+
+Then rerun bootstrap with `LUMA_PORTAINER_ADMIN_PASSWORD` set to the new password printed by the helper.
+
 If you intentionally use legacy Portainer webhooks, configure them on the manager:
 
 ```dotenv

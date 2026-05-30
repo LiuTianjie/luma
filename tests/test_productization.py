@@ -1,4 +1,5 @@
 import base64
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,14 @@ import yaml
 
 from luma.assets import asset_text
 from luma.config import LumaConfig
-from luma.bootstrap import _acme_email, _last_command_value, _portainer_agent_image_candidates, _traefik_ports, initialize_portainer
+from luma.bootstrap import (
+    _acme_email,
+    _last_command_value,
+    _portainer_agent_image_candidates,
+    _traefik_ports,
+    bootstrap_manager_local,
+    initialize_portainer,
+)
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context
 from luma.control.server import handle_deployment, handle_node_label, handle_node_register, resolve_service_image
@@ -445,6 +453,76 @@ class PortainerWebhookTests(unittest.TestCase):
             token="jwt-token",
         )
         self.assertEqual(request.call_count, 3)
+
+    def test_initialize_portainer_uses_env_password_override(self):
+        state = {
+            "portainerApiUrl": "https://127.0.0.1:9443/api",
+            "portainerAdminUsername": "admin",
+            "portainerAdminPassword": "stale",
+        }
+        with patch.dict(os.environ, {"LUMA_PORTAINER_ADMIN_PASSWORD": "current"}), patch(
+            "luma.bootstrap._portainer_request",
+            side_effect=[
+                (200, {}),
+                (200, {"jwt": "jwt-token"}),
+                (200, [{"Id": 7, "Name": "luma-local"}]),
+            ],
+        ) as request:
+            result = initialize_portainer(Mock(), state)
+        self.assertEqual(result, "Portainer initialized")
+        self.assertEqual(state["portainerAdminPassword"], "current")
+        request.assert_any_call(
+            "https://127.0.0.1:9443/api",
+            "POST",
+            "/auth",
+            {"Username": "admin", "Password": "current"},
+        )
+
+    def test_bootstrap_manager_saves_portainer_credentials_before_dns(self):
+        config = LumaConfig(
+            {
+                "nodes": {
+                    "manager": {
+                        "host": "localhost",
+                        "publicIp": "127.0.0.1",
+                        "roles": ["swarm-manager", "edge"],
+                    }
+                }
+            },
+            None,
+        )
+        node = config.get_node("manager")
+        state = {"clusterId": "luma-test", "domain": "luma.example.com"}
+        sequence = []
+        saved_states = []
+
+        def bind_portainer(_remote, current_state):
+            current_state["portainerAdminUsername"] = "admin"
+            current_state["portainerAdminPassword"] = "secret"
+            return "Portainer initialized"
+
+        def save_state(_remote, current_state):
+            sequence.append("save")
+            saved_states.append(dict(current_state))
+            return "Secret written: /opt/luma/control/control.json"
+
+        def sync_dns(_config, _domain):
+            sequence.append("sync-dns")
+            return "Control DNS synced"
+
+        with patch("luma.bootstrap.bootstrap_node", return_value=["Bootstrap node complete"]), patch(
+            "luma.bootstrap.initialize_portainer", side_effect=bind_portainer
+        ), patch("luma.bootstrap.install_control_state", side_effect=save_state), patch(
+            "luma.bootstrap.local_swarm_join_info",
+            return_value={"managerAddr": "127.0.0.1:2377", "swarmJoinToken": "token", "swarmId": "swarm"},
+        ), patch("luma.bootstrap.sync_control_dns", side_effect=sync_dns), patch(
+            "luma.bootstrap.install_control_config", return_value="Config installed"
+        ), patch("luma.bootstrap.deploy_control_stack", return_value="Control deployed"):
+            bootstrap_manager_local(config, node, PROFILES["single-node"], "luma.example.com", state)
+
+        self.assertEqual(sequence[:2], ["save", "sync-dns"])
+        self.assertGreaterEqual(len(saved_states), 1)
+        self.assertEqual(saved_states[0]["portainerAdminPassword"], "secret")
 
     def test_service_webhook_env_overrides_global_webhook(self):
         with tempfile.TemporaryDirectory() as tmp:

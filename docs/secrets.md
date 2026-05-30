@@ -26,6 +26,7 @@ $EDITOR .env
 CLOUDFLARE_API_TOKEN     Cloudflare DNS API token
 PORTAINER_WEBHOOK_URL    optional legacy Portainer stack webhook
 PORTAINER_WEBHOOK_*      optional legacy per-service Portainer GitOps webhooks
+LUMA_PORTAINER_ADMIN_PASSWORD  optional recovery override for an already-initialized Portainer admin
 EGRESS_SUBSCRIPTION_URL  proxy subscription URL
 LUMA_SUDO_PASSWORD       optional sudo password for local or legacy remote bootstrap
 TAILSCALE_AUTHKEY        optional auth key for unattended Tailscale login

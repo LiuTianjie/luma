@@ -12,6 +12,8 @@ Luma keeps the user-facing model small:
 node / region / exposure / egress / service
 ```
 
+Service manifests are documented in [docs/deployment-yaml.md](docs/deployment-yaml.md). Agents can use the installable skill in [skills/luma-deployment-yaml](skills/luma-deployment-yaml) to generate or review deployment YAML.
+
 The runtime stack is:
 
 ```text

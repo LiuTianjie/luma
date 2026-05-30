@@ -286,8 +286,16 @@ def install_control_state(remote: Executor, state: dict[str, object]) -> str:
 
 
 def initialize_portainer(remote: Executor, state: dict[str, object]) -> str:
-    username = str(state.get("portainerAdminUsername") or "admin")
-    password = str(state.get("portainerAdminPassword") or f"{secrets.token_urlsafe(24)}A1!")
+    username = str(
+        os.environ.get("LUMA_PORTAINER_ADMIN_USERNAME")
+        or state.get("portainerAdminUsername")
+        or "admin"
+    )
+    password = str(
+        os.environ.get("LUMA_PORTAINER_ADMIN_PASSWORD")
+        or state.get("portainerAdminPassword")
+        or f"{secrets.token_urlsafe(24)}A1!"
+    )
     api_url = str(state.get("portainerApiUrl") or DEFAULT_PORTAINER_API_URL)
     state["portainerAdminUsername"] = username
     state["portainerAdminPassword"] = password
@@ -311,7 +319,11 @@ def initialize_portainer(remote: Executor, state: dict[str, object]) -> str:
     status, payload = _portainer_request(api_url, "POST", "/auth", {"Username": username, "Password": password})
     if status != 200 or not isinstance(payload, dict) or not payload.get("jwt"):
         detail = payload.get("message") if isinstance(payload, dict) else payload
-        raise LumaError(f"Portainer authentication failed: HTTP {status} {detail}")
+        raise LumaError(
+            f"Portainer authentication failed: HTTP {status} {detail}. "
+            "If Portainer was already initialized, set LUMA_PORTAINER_ADMIN_PASSWORD to the existing admin password "
+            "or reset the Portainer admin password, then rerun bootstrap manager."
+        )
     jwt = str(payload["jwt"])
     status, payload = _portainer_request(api_url, "GET", "/endpoints", token=jwt)
     if status == 200 and isinstance(payload, list) and not payload:
@@ -622,7 +634,17 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
     remote = LocalExecutor()
     results = bootstrap_node(config, node, profile, run_egress=run_egress, emit=emit, executor=remote)
     state["portainerApiUrl"] = _portainer_api_url_for_node(node)
-    _step(results, emit, "Bind Portainer credentials", lambda: initialize_portainer(remote, state), fix="Restart Portainer and rerun bootstrap manager")
+    _step(
+        results,
+        emit,
+        "Bind Portainer credentials",
+        lambda: initialize_portainer(remote, state),
+        fix=(
+            "Set LUMA_PORTAINER_ADMIN_PASSWORD to the existing Portainer admin password "
+            "or reset Portainer, then rerun bootstrap manager"
+        ),
+    )
+    _step(results, emit, "Save Portainer credentials", lambda: install_control_state(remote, state))
     state.update(local_swarm_join_info(node))
     _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config))
