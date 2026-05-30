@@ -45,7 +45,7 @@ luma deploy status.yaml
 | `constraints` | 否 | string[] | 追加 Swarm placement 约束。Luma 会自动加 region 约束。 |
 | `labels` | 否 | string[] | 追加 service labels。公开 Traefik labels 会自动生成。 |
 | `networks` | 否 | string[] | 追加 external overlay networks。公开 Traefik 服务会自动加入 public network。 |
-| `externalNet` | 否 | boolean | `global + exposure:none` 时是否要求 `node.labels.external_net == true`，默认 `true`。 |
+| `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动加入 egress 网络、代理环境变量和 `node.labels.egress == true` 约束。 |
 | `publishPort` | tailscale-relay 可用 | integer | host mode 暴露端口，默认等于 `port`。 |
 | `relay` | tailscale-relay 必填 | map | Tailscale relay 上游信息。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
@@ -142,7 +142,34 @@ env:
 placement:
   constraints:
     - node.labels.region == global
-    - node.labels.external_net == true
+```
+
+### 需要代理的 worker
+
+如果服务运行时需要通过 Luma egress proxy 访问外网，声明 `proxy: true`：
+
+```yaml
+name: ai-worker
+image: ghcr.io/acme/ai-worker:1.0.0
+region: cn
+exposure: none
+proxy: true
+env:
+  OPENAI_BASE_URL: https://api.openai.com/v1
+```
+
+渲染后会自动带上：
+
+```yaml
+environment:
+  HTTP_PROXY: http://egress_mihomo:7890
+  HTTPS_PROXY: http://egress_mihomo:7890
+networks:
+  - egress
+placement:
+  constraints:
+    - node.labels.region == cn
+    - node.labels.egress == true
 ```
 
 ### 家里内部服务

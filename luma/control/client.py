@@ -69,18 +69,18 @@ class ControlClient:
     def verify_login(self) -> Dict[str, Any]:
         return self.request("POST", "/v1/auth/login/verify", {})
 
-    def register_node(self, *, node_name: str, profile: str, region: str) -> Dict[str, Any]:
+    def register_node(self, *, node_name: str, region: str, egress: bool = False) -> Dict[str, Any]:
         return self.request(
             "POST",
             "/v1/nodes/register",
-            {"nodeName": node_name, "profile": profile, "region": region},
+            {"nodeName": node_name, "region": region, "capabilities": {"egress": egress}},
         )
 
-    def label_node(self, *, node_name: str, profile: str, region: str) -> Dict[str, Any]:
+    def label_node(self, *, node_name: str, region: str, egress: bool = False) -> Dict[str, Any]:
         return self.request(
             "POST",
             "/v1/nodes/label",
-            {"nodeName": node_name, "profile": profile, "region": region},
+            {"nodeName": node_name, "region": region, "capabilities": {"egress": egress}},
         )
 
     def deploy(self, *, manifest: str, source_name: str, skip_dns: bool = False, skip_webhook: bool = False) -> Dict[str, Any]:

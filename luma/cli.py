@@ -80,9 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
     node_join = node_sub.add_parser("join")
     node_join.add_argument("endpoint")
     node_join.add_argument("--token", required=True)
-    node_join.add_argument("--profile", choices=sorted(PROFILES), required=True)
-    node_join.add_argument("--region", required=True)
+    node_join.add_argument("--profile", nargs="?", const="__legacy_profile__", help=argparse.SUPPRESS)
+    node_join.add_argument("--region", choices=sorted(VALID_REGIONS))
     node_join.add_argument("--name", default=os.uname().nodename)
+    node_join.add_argument("--egress", action="store_true", help="Mark this node as able to run egress/proxy workloads")
     node_join.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
     node_join.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
 
@@ -247,18 +248,22 @@ def cmd_node(args: argparse.Namespace) -> int:
         print("Bootstrap complete")
         return 0
     if args.node_command == "join":
+        if args.profile is not None:
+            raise LumaError("node join now uses --region; use --region home/global/cn and --name ...")
+        if not args.region:
+            raise LumaError("node join requires --region (cn, global, or home)")
         ensure_interactive_config("worker")
         log("[start] Configure system DNS")
         log(f"[ok] {configure_dns(LocalExecutor())}")
         client = ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
-        result = client.register_node(node_name=args.name, profile=args.profile, region=args.region)
-        print(f"Node registered: {result['nodeName']} ({result['profile']}, {result['region']})")
+        result = client.register_node(node_name=args.name, region=args.region, egress=args.egress)
+        print(f"Node registered: {result['nodeName']} ({result['region']})")
         manager_addr = result.get("managerAddr")
         swarm_token = result.get("swarmJoinToken")
-        node = _local_node(args.profile, name=args.name, region=args.region)
-        join_local_node(node, PROFILES[args.profile], str(manager_addr or ""), str(swarm_token or ""), emit=log)
+        node = _local_node_for_region(args.region, name=args.name, egress=args.egress)
+        join_local_node(node, _join_profile_for_region(args.region, egress=args.egress), str(manager_addr or ""), str(swarm_token or ""), emit=log)
         actual_node_name = local_docker_node_name()
-        label_result = client.label_node(node_name=actual_node_name, profile=args.profile, region=args.region)
+        label_result = client.label_node(node_name=actual_node_name, region=args.region, egress=args.egress)
         print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
         print("Node join complete")
         return 0
@@ -353,6 +358,9 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         print(f"Cluster: {state['clusterId']}")
         print(f"Deploy token: {state['deployToken']}")
         print(f"Join token: {state['joinToken']}")
+        print("Join additional nodes:")
+        for label, command in _node_join_examples(control_url, str(state["joinToken"])):
+            print(f"  {label}: {command}")
         return 0
     raise LumaError(f"unknown bootstrap command: {args.bootstrap_command}")
 
@@ -385,6 +393,16 @@ def _portainer_url_from_state(state: Dict[str, object]) -> str:
     if not api_url:
         return ""
     return api_url.removesuffix("/api")
+
+
+def _node_join_examples(control_url: str, join_token: str) -> list[tuple[str, str]]:
+    base = f"luma node join {control_url} --token {join_token}"
+    return [
+        ("cn worker", f"{base} --region cn --name cn-worker-1"),
+        ("global worker", f"{base} --region global --name global-sg-1"),
+        ("home node", f"{base} --region home --name home-mac-mini"),
+        ("egress-capable cn worker", f"{base} --region cn --name cn-egress-1 --egress"),
+    ]
 
 
 def _control_state_for_bootstrap(domain: str, *, overwrite: bool) -> Dict[str, object]:
@@ -442,6 +460,38 @@ def _local_node(profile_name: str, *, name: str | None = None, region: str | Non
         region=region or profile.labels.get("region", "cn"),
         roles=list(profile.roles),
         raw={},
+    )
+
+
+def _local_node_for_region(region: str, *, name: str | None = None, egress: bool = False):
+    from .config import NodeConfig
+
+    roles = [region]
+    if egress:
+        roles.append("egress")
+    return NodeConfig(
+        name=name or os.uname().nodename,
+        host="localhost",
+        region=region,
+        roles=roles,
+        raw={},
+    )
+
+
+def _join_profile_for_region(region: str, *, egress: bool = False):
+    from .profiles import Profile
+
+    labels = {"region": region}
+    if egress:
+        labels["egress"] = "true"
+    roles = [region]
+    if egress:
+        roles.append("egress")
+    return Profile(
+        name=f"{region}-node",
+        roles=roles,
+        labels=labels,
+        description=f"{region} region worker node",
     )
 
 

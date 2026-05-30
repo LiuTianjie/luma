@@ -16,7 +16,7 @@
 | `constraints` | no | string[] | Extra Swarm placement constraints. Luma adds region constraints. |
 | `labels` | no | string[] | Extra service labels. Luma adds Traefik labels for `cn-edge` and `external-edge`. |
 | `networks` | no | string[] | Extra external overlay networks. |
-| `externalNet` | no | boolean | For `global + exposure:none`, defaults to true and adds `node.labels.external_net == true`. |
+| `proxy` | no | boolean | Runtime proxy requirement. When true, Luma adds the egress network, default proxy env, and `node.labels.egress == true`. |
 | `publishPort` | relay only | integer | Host mode published port for tailscale relay. |
 | `relay.host` | tailscale-relay | string | Tailscale hostname. Alternative: `relay.url`. |
 | `relay.url` | tailscale-relay | string | Full upstream URL. Alternative: `relay.host`. |
@@ -46,7 +46,7 @@
   - load balancer server port from `port`
 - Public Traefik services are attached to the configured public overlay network.
 - Every service gets `node.labels.region == <region>`.
-- `global + exposure:none + externalNet:true` also gets `node.labels.external_net == true`.
+- `proxy:true` services also get `node.labels.egress == true`, the configured egress overlay network, and default `HTTP_PROXY` / `HTTPS_PROXY` env values unless already set.
 - `tailscale-relay` creates a host-mode published port and a file-provider Traefik route to the relay upstream.
 - `cloudflare-tunnel` adds a `cloudflared` sidecar service using `${<tokenEnv>}`.
 

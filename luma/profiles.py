@@ -40,7 +40,7 @@ PROFILES: Dict[str, Profile] = {
     "global-worker": Profile(
         name="global-worker",
         roles=["global-worker"],
-        labels={"region": "global", "external_net": "true"},
+        labels={"region": "global"},
         description="Overseas/external-network worker node.",
     ),
 }

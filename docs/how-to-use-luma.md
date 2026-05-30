@@ -179,10 +179,10 @@ luma context list
 Use the join token on additional servers:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
+luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 ```
 
-The manager applies the node labels automatically after the node joins Swarm.
+The manager applies the region label automatically after the node joins Swarm. Use `--egress` only on nodes that can run proxy/egress workloads.
 
 ## 4. Connect Cloudflare
 

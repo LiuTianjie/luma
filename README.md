@@ -139,8 +139,57 @@ luma context list
 On each additional server, join from that server itself:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
+luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 ```
+
+## Node Regions
+
+Luma uses `region` as the scheduling boundary for both nodes and services.
+
+These fields mean different things:
+
+- `--name`: the human/node identifier registered with Luma and Docker. It can be any unique name, but use a clear name such as `global-sg-1` or `home-mac-mini`.
+- `--region`: the scheduling region label used by service manifests. This is what `region: cn`, `region: global`, or `region: home` matches during deploy.
+- `--egress`: optional node capability. Use it for a node that can run proxy/egress workloads.
+
+For example, `--name m3max --region home` means the node is called `m3max` and receives `region=home`. The name does not affect scheduling.
+
+Manager bootstrap profiles:
+
+- `single-node`: the first all-in-one manager. Runs Swarm manager, Traefik, Portainer, Luma Control, and egress.
+- `cn-edge`: a public domestic edge/manager profile without the all-in-one egress setup.
+
+Use `luma bootstrap manager` for these profiles on the manager server:
+
+```bash
+luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com --profile cn-edge
+```
+
+Run `luma node join` on the machine being added:
+
+```bash
+luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
+luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
+luma node join https://luma.example.com --token <join-token> --region cn --name cn-egress-1 --egress
+```
+
+Services that need a runtime proxy declare `proxy: true` in their service manifest. They are scheduled onto nodes with `egress=true` and receive proxy environment variables automatically.
+
+For macOS home nodes, install and start Docker Desktop and Tailscale first; Luma does not use apt on macOS.
+For non-apt Linux distributions, install Docker manually before `luma node join`.
+
+## Update An Existing Manager
+
+After new Luma code is merged and the control image is published, update the manager in two steps:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+luma bootstrap manager --domain luma.example.com --profile single-node
+```
+
+The install step updates the local `luma` CLI on the manager. The bootstrap step is idempotent: it refreshes `/opt/luma/luma.yaml`, `/opt/luma/control/control.json`, pulls the current `ghcr.io/liutianjie/luma-control:latest`, and redeploys the Luma Control service. Existing Portainer data, deploy tokens, join tokens, Swarm nodes, and service stacks are kept unless you explicitly purge or reset them.
 
 Deploy a service from any logged-in client. The client does not need Docker, SSH keys, Cloudflare credentials, or Portainer webhooks:
 

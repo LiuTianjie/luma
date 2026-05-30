@@ -7,4 +7,3 @@ services:
       placement:
         constraints:
           - node.labels.region == global
-          - node.labels.external_net == true

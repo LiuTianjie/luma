@@ -54,7 +54,7 @@ replicas: 2
             app["deploy"]["labels"],
         )
 
-    def test_global_worker_gets_external_net_constraint(self):
+    def test_global_worker_uses_region_constraint_only_by_default(self):
         service = self.load(
             """
 name: worker
@@ -66,7 +66,27 @@ public: false
         rendered = yaml.safe_load(render_stack(self.config(), service))
         constraints = rendered["services"]["worker"]["deploy"]["placement"]["constraints"]
         self.assertIn("node.labels.region == global", constraints)
-        self.assertIn("node.labels.external_net == true", constraints)
+        self.assertNotIn("node.labels.external_net == true", constraints)
+
+    def test_proxy_service_adds_egress_network_env_and_constraint(self):
+        service = self.load(
+            """
+name: proxy worker
+image: ghcr.io/acme/proxy-worker:latest
+region: cn
+proxy: true
+env:
+  HTTP_PROXY: http://custom-proxy:7890
+"""
+        )
+        rendered = yaml.safe_load(render_stack(self.config(), service))
+        worker = rendered["services"]["proxy-worker"]
+        constraints = worker["deploy"]["placement"]["constraints"]
+        self.assertIn("node.labels.region == cn", constraints)
+        self.assertIn("node.labels.egress == true", constraints)
+        self.assertIn("egress", worker["networks"])
+        self.assertEqual(worker["environment"]["HTTP_PROXY"], "http://custom-proxy:7890")
+        self.assertEqual(worker["environment"]["HTTPS_PROXY"], "http://egress_mihomo:7890")
 
     def test_default_stack_path_uses_region_and_slug(self):
         service = self.load(

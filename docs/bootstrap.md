@@ -132,11 +132,14 @@ The client stores the endpoint, cluster id, and deploy token in `~/.config/luma/
 Run this directly on each additional server:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
+luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
+luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
+luma node join https://luma.example.com --token <join-token> --region cn --name cn-egress-1 --egress
 ```
 
 The node asks the manager for the Swarm join token and manager address, then joins the cluster locally.
-After the local join succeeds, it calls back to Luma Control so the manager applies the region, profile, and role labels automatically.
+After the local join succeeds, it calls back to Luma Control so the manager applies the region label and optional `egress=true` capability label automatically. `--name` is only the machine name; `--region` is the scheduling boundary.
 
 ## 6. Configure Or Refresh Providers
 
@@ -145,6 +148,15 @@ Provider config and secrets are copied into the manager control state during `lu
 ```bash
 luma bootstrap manager --domain luma.example.com --profile single-node
 ```
+
+Use the same pattern after upgrading Luma itself. First update the CLI on the manager, then rerun manager bootstrap:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
+luma bootstrap manager --domain luma.example.com --profile single-node
+```
+
+Bootstrap is designed to be idempotent. It refreshes the manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
 
 Cloudflare:
 

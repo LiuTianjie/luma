@@ -61,13 +61,14 @@ Luma 会生成 `routes/<service>.yml`，由 Traefik file provider 加载。
 
 这个模式会引入海外链路。只有当服务必须访问外网，且请求频率或延迟要求可接受时才使用。
 
-## 5. none / global-worker
+## 5. none / global worker
 
 内部服务或海外 worker。
 
 - 无公网域名。
 - 跑在 `region=global`。
-- 通常同时要求 `external_net=true`。
+- 默认只按 `region=global` 调度。
+- 如果运行时必须走 Luma egress proxy，在服务 manifest 声明 `proxy: true`。
 - 通过队列消费任务。
 - 访问外网后写回结果。
 - 对应 `exposure: none`。

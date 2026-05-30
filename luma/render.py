@@ -58,8 +58,8 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
 def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
     service_name = service.slug
     constraints = [f"node.labels.region == {service.region}"]
-    if service.region == "global" and service.external_net and service.exposure == "none":
-        constraints.append("node.labels.external_net == true")
+    if service.proxy:
+        constraints.append("node.labels.egress == true")
     constraints.extend(service.constraints)
 
     deploy: Dict[str, Any] = {
@@ -83,6 +83,8 @@ def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
     networks = list(service.networks)
     if uses_traefik_labels(service) and config.public_network not in networks:
         networks.insert(0, config.public_network)
+    if service.proxy and config.egress_network not in networks:
+        networks.append(config.egress_network)
 
     service_body: Dict[str, Any] = {
         "image": service.image,
@@ -90,8 +92,12 @@ def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
     }
     if service.command is not None:
         service_body["command"] = service.command
-    if service.environment:
-        service_body["environment"] = service.environment
+    environment = dict(service.environment)
+    if service.proxy:
+        environment.setdefault("HTTP_PROXY", "http://egress_mihomo:7890")
+        environment.setdefault("HTTPS_PROXY", "http://egress_mihomo:7890")
+    if environment:
+        service_body["environment"] = environment
     if service.exposure == "tailscale-relay":
         service_body["ports"] = [
             {

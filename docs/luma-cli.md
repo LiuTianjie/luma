@@ -92,7 +92,7 @@ luma bootstrap manager --domain luma.example.com --profile single-node
 If required local values are missing, Luma prompts for them before continuing and saves them to `~/.luma.config.json` with mode `0600`. On worker servers, the same happens during:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
+luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 ```
 
 `luma configure --role manager|worker` remains available if you want to edit local secrets ahead of time, and `luma configure --show` lists configured keys without printing values. Luma loads `.env` and `~/.luma.config.json` automatically. Use `--env-file <path>` to load another project-local env file or `--no-env` to disable local secret loading. Values already exported in your shell take priority. On the manager node, bootstrap copies the required Cloudflare and Portainer values into `/opt/luma/control/control.json` so client machines do not need those secrets.
@@ -152,7 +152,10 @@ luma context use <cluster-id>
 Join additional servers by running this on each server:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
+luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
+luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
+luma node join https://luma.example.com --token <join-token> --region cn --name cn-egress-1 --egress
 ```
 
 Connect Cloudflare and write `providers.dns.zoneId`:

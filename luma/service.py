@@ -37,13 +37,13 @@ class ServiceSpec:
     constraints: List[str] = field(default_factory=list)
     labels: List[str] = field(default_factory=list)
     networks: List[str] = field(default_factory=list)
-    external_net: bool = True
     stack_path: Optional[Path] = None
     route_path: Optional[Path] = None
     dns: Dict[str, Any] = field(default_factory=dict)
     portainer: Dict[str, Any] = field(default_factory=dict)
     relay: Dict[str, Any] = field(default_factory=dict)
     tunnel: Dict[str, Any] = field(default_factory=dict)
+    proxy: bool = False
 
     @property
     def slug(self) -> str:
@@ -60,7 +60,7 @@ class ServiceSpec:
         if self.exposure == "cloudflare-tunnel":
             return "cloudflare-tunnel-service"
         if self.region == "global":
-            return "global-worker"
+            return "global-internal-service"
         if self.region == "home":
             return "home-internal-service"
         return "internal-cn-service"
@@ -165,11 +165,11 @@ def load_service(path: Path) -> ServiceSpec:
         constraints=constraints,
         labels=labels,
         networks=networks,
-        external_net=bool(raw.get("externalNet", True)),
         stack_path=Path(stack_path) if stack_path else None,
         route_path=Path(route_path) if route_path else None,
         dns=dns,
         portainer=portainer,
         relay=relay,
         tunnel=tunnel,
+        proxy=bool(raw.get("proxy", False)),
     )

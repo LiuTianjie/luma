@@ -17,9 +17,8 @@ from ..cloudflare import sync_dns
 from ..config import load_config
 from ..errors import LumaError
 from ..portainer import deploy_with_portainer
-from ..profiles import PROFILES
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
-from ..service import ServiceSpec, load_service
+from ..service import VALID_REGIONS, ServiceSpec, load_service
 from .state import init_state, load_state, require_token, save_state
 
 
@@ -41,19 +40,21 @@ def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="join")
     node_name = str(body.get("nodeName") or "").strip()
-    profile = str(body.get("profile") or "").strip()
     region = str(body.get("region") or "").strip()
-    if not node_name or not profile or not region:
-        raise LumaError("nodeName, profile, and region are required")
-    _remember_node(state, node_name, profile=profile, region=region, status="registered")
+    capabilities = capabilities_from_body(body)
+    if not node_name or not region:
+        raise LumaError("nodeName and region are required")
+    if region not in VALID_REGIONS:
+        raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
+    _remember_node(state, node_name, region=region, capabilities=capabilities, status="registered")
     save_state(state)
     return {
         "clusterId": state["clusterId"],
         "managerAddr": state.get("managerAddr", ""),
         "swarmJoinToken": state.get("swarmJoinToken", ""),
         "nodeName": node_name,
-        "profile": profile,
         "region": region,
+        "capabilities": capabilities,
     }
 
 
@@ -61,15 +62,15 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="join")
     node_name = str(body.get("nodeName") or "").strip()
-    profile_name = str(body.get("profile") or "").strip()
     region = str(body.get("region") or "").strip()
-    if not node_name or not profile_name or not region:
-        raise LumaError("nodeName, profile, and region are required")
-    if profile_name not in PROFILES:
-        raise LumaError(f"unknown profile: {profile_name}")
-    labels = labels_for_profile(profile_name, region)
+    capabilities = capabilities_from_body(body)
+    if not node_name or not region:
+        raise LumaError("nodeName and region are required")
+    if region not in VALID_REGIONS:
+        raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
+    labels = labels_for_region(region, egress=bool(capabilities.get("egress", False)))
     label_swarm_node(node_name, labels)
-    _remember_node(state, node_name, profile=profile_name, region=region, status="labeled", labels=labels)
+    _remember_node(state, node_name, region=region, capabilities=capabilities, status="labeled", labels=labels)
     save_state(state)
     return {
         "clusterId": state["clusterId"],
@@ -182,13 +183,18 @@ def _valid_env_name(name: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name))
 
 
-def labels_for_profile(profile_name: str, region: str) -> Dict[str, str]:
-    profile = PROFILES[profile_name]
-    labels = {str(key): str(value) for key, value in profile.labels.items()}
-    labels["region"] = region
-    for role in profile.roles:
-        labels[f"role.{role}"] = "true"
+def labels_for_region(region: str, *, egress: bool = False) -> Dict[str, str]:
+    labels = {"region": region}
+    if egress:
+        labels["egress"] = "true"
     return labels
+
+
+def capabilities_from_body(body: Dict[str, Any]) -> Dict[str, bool]:
+    raw = body.get("capabilities")
+    if isinstance(raw, dict):
+        return {"egress": bool(raw.get("egress", False))}
+    return {"egress": bool(body.get("egress", False))}
 
 
 def _remember_node(state: Dict[str, Any], node_name: str, **values: Any) -> None:

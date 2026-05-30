@@ -274,6 +274,14 @@ def deploy_control_stack(remote: Executor, config: LumaConfig, domain: str) -> l
 
 def _ensure_control_image(remote: Executor, image: str) -> str:
     image_arg = shlex.quote(image)
+    if "/" in image:
+        try:
+            _docker(remote, f"docker pull {image_arg} >/dev/null 2>&1")
+            return f"Control image pulled: {image}"
+        except Exception:
+            exists = _last_command_value(_docker(remote, f"docker image inspect {image_arg} >/dev/null 2>&1 && echo yes || echo no"))
+            if exists == "yes":
+                return f"Control image already present: {image}"
     status = _last_command_value(
         _docker(
             remote,

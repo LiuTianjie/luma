@@ -1,6 +1,6 @@
 # Profiles
 
-Profiles are Luma's bootstrap presets.
+Profiles are Luma's manager bootstrap presets. Ordinary worker joins do not use profiles; run `luma node join ... --region cn|global|home --name <node-name>` on each worker.
 
 ## `single-node`
 
@@ -35,26 +35,18 @@ Domestic public edge:
 - Portainer
 - `public` overlay network
 
-## `egress-gateway`
+## Worker regions
 
-Outbound proxy node:
+Worker nodes are now region-first:
 
-- `egress` overlay network
-- mihomo stack
-- Docker daemon proxy
-- firewall hardening
+```bash
+luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
+luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
+luma node join https://luma.example.com --token <join-token> --region cn --name cn-egress-1 --egress
+```
 
-## `home-node`
-
-Home/private node:
-
-- `region=home`
-- suitable for `tailscale-relay` and `cloudflare-tunnel`
-
-## `global-worker`
-
-Overseas/external-network node:
-
-- `region=global`
-- `external_net=true`
-- suitable for workers and `external-edge`
+- `region` is the scheduling boundary.
+- `name` is only the machine display name.
+- `--egress` marks a node as able to run proxy/egress workloads.
+- Services that require the proxy declare `proxy: true`.

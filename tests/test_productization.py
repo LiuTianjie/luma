@@ -31,7 +31,7 @@ from luma.errors import LumaError
 from luma.portainer import resolve_webhook, upsert_stack
 from luma.profiles import PROFILES
 from luma.service import load_service
-from luma.cli import _portainer_url_from_state, build_parser, main
+from luma.cli import _node_join_examples, _portainer_url_from_state, build_parser, main
 from luma.userconfig import configured_keys, load_user_config
 
 
@@ -297,6 +297,13 @@ class CliTests(unittest.TestCase):
                 self.assertIn("Portainer username: admin", printed_text)
                 self.assertIn("Portainer password: sudo jq", printed_text)
                 self.assertNotIn("portainer-secret", printed_text)
+                self.assertIn(
+                    "cn worker: luma node join https://luma.example.com --token",
+                    printed_text,
+                )
+                self.assertIn("--region global --name global-sg-1", printed_text)
+                self.assertIn("--region home --name home-mac-mini", printed_text)
+                self.assertIn("--region cn --name cn-egress-1 --egress", printed_text)
             finally:
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_cf)
@@ -311,6 +318,15 @@ class CliTests(unittest.TestCase):
             "https://203.0.113.10:9443",
         )
 
+    def test_node_join_examples_are_region_first(self):
+        examples = _node_join_examples("https://luma.example.com", "join-token")
+        commands = "\n".join(command for _label, command in examples)
+        self.assertIn("--region cn --name cn-worker-1", commands)
+        self.assertIn("--region global --name global-sg-1", commands)
+        self.assertIn("--region home --name home-mac-mini", commands)
+        self.assertIn("--region cn --name cn-egress-1 --egress", commands)
+        self.assertNotIn("--profile", commands)
+
     def test_node_join_prompts_for_worker_config_during_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".luma.config.json"
@@ -322,7 +338,6 @@ class CliTests(unittest.TestCase):
                 client = Mock()
                 client.register_node.return_value = {
                     "nodeName": "worker-1",
-                    "profile": "global-worker",
                     "region": "global",
                     "managerAddr": "100.64.0.1:2377",
                     "swarmJoinToken": "swarm-token",
@@ -342,15 +357,77 @@ class CliTests(unittest.TestCase):
                             "https://luma.example.com",
                             "--token",
                             "join-token",
-                            "--profile",
-                            "global-worker",
                             "--region",
                             "global",
+                            "--name",
+                            "global-sg-1",
                         ]
                     )
                 self.assertEqual(code, 0)
+                client.register_node.assert_called_once_with(node_name="global-sg-1", region="global", egress=False)
+                client.label_node.assert_called_once_with(node_name="worker-1", region="global", egress=False)
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
                 self.assertIn("LUMA_SUDO_PASSWORD", configured_keys(config_path))
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
+    def test_node_join_rejects_legacy_profile_argument(self):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.print"):
+            code = main(
+                [
+                    "node",
+                    "join",
+                    "https://luma.example.com",
+                    "--token",
+                    "join-token",
+                    "--profile",
+                    "home-node",
+                    "--region",
+                    "home",
+                ]
+            )
+        self.assertEqual(code, 1)
+
+    def test_node_join_supports_egress_capability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "ts-key")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "sudo-pass")
+            try:
+                client = Mock()
+                client.register_node.return_value = {
+                    "nodeName": "cn-egress-1",
+                    "region": "cn",
+                    "managerAddr": "100.64.0.1:2377",
+                    "swarmJoinToken": "swarm-token",
+                    "capabilities": {"egress": True},
+                }
+                client.label_node.return_value = {"message": "labels applied"}
+                with patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.ControlClient", return_value=client
+                ), patch("luma.cli.join_local_node", return_value=[]), patch(
+                    "luma.cli.local_docker_node_name", return_value="cn-egress-1"
+                ):
+                    code = main(
+                        [
+                            "node",
+                            "join",
+                            "https://luma.example.com",
+                            "--token",
+                            "join-token",
+                            "--region",
+                            "cn",
+                            "--name",
+                            "cn-egress-1",
+                            "--egress",
+                        ]
+                    )
+                self.assertEqual(code, 0)
+                client.register_node.assert_called_once_with(node_name="cn-egress-1", region="cn", egress=True)
+                client.label_node.assert_called_once_with(node_name="cn-egress-1", region="cn", egress=True)
             finally:
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
@@ -688,7 +765,7 @@ class PortainerWebhookTests(unittest.TestCase):
     def test_control_image_builds_when_remote_pull_is_unavailable(self):
         remote = Mock()
         remote.run.return_value = ""
-        remote.sudo.return_value = "build\n"
+        remote.sudo.side_effect = [Exception("pull failed"), "no\n", "build\n", ""]
 
         result = _ensure_control_image(remote, "ghcr.io/liutianjie/luma-control:latest")
 
@@ -697,6 +774,18 @@ class PortainerWebhookTests(unittest.TestCase):
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
         self.assertTrue(any("docker pull ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
         self.assertTrue(any("docker build" in cmd and "-t ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
+
+    def test_control_image_pulls_published_image_during_bootstrap(self):
+        remote = Mock()
+        remote.sudo.return_value = ""
+
+        result = _ensure_control_image(remote, "ghcr.io/liutianjie/luma-control:latest")
+
+        self.assertEqual(result, "Control image pulled: ghcr.io/liutianjie/luma-control:latest")
+        self.assertEqual(remote.upload.call_count, 0)
+        docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
+        self.assertTrue(any("docker pull ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
+        self.assertFalse(any("docker build" in cmd for cmd in docker_commands))
 
     def test_install_docker_repairs_known_bad_apt_mirror(self):
         remote = Mock()
@@ -755,9 +844,14 @@ class ControlApiTests(unittest.TestCase):
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 with self.assertRaises(Exception):
-                    handle_node_register(state["deployToken"], {"nodeName": "b", "profile": "global-worker", "region": "global"})
-                result = handle_node_register(state["joinToken"], {"nodeName": "b", "profile": "global-worker", "region": "global"})
+                    handle_node_register(state["deployToken"], {"nodeName": "b", "region": "global"})
+                result = handle_node_register(
+                    state["joinToken"],
+                    {"nodeName": "b", "region": "global", "capabilities": {"egress": False}},
+                )
                 self.assertEqual(result["nodeName"], "b")
+                self.assertEqual(result["region"], "global")
+                self.assertEqual(result["capabilities"], {"egress": False})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -767,14 +861,29 @@ class ControlApiTests(unittest.TestCase):
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 with patch("luma.control.server.label_swarm_node") as label:
-                    result = handle_node_label(state["joinToken"], {"nodeName": "b", "profile": "global-worker", "region": "global"})
+                    result = handle_node_label(
+                        state["joinToken"],
+                        {"nodeName": "b", "region": "global", "capabilities": {"egress": True}},
+                    )
                 label.assert_called_once()
                 labels = label.call_args.args[1]
                 self.assertEqual(labels["region"], "global")
-                self.assertEqual(labels["role.global-worker"], "true")
+                self.assertEqual(labels["egress"], "true")
+                self.assertNotIn("role.global-worker", labels)
                 self.assertEqual(result["nodeName"], "b")
+                self.assertEqual(result["labels"]["egress"], "true")
                 with self.assertRaises(Exception):
-                    handle_node_label(state["deployToken"], {"nodeName": "b", "profile": "global-worker", "region": "global"})
+                    handle_node_label(state["deployToken"], {"nodeName": "b", "region": "global"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_register_rejects_unknown_region(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                with self.assertRaises(Exception):
+                    handle_node_register(state["joinToken"], {"nodeName": "b", "region": "mars"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

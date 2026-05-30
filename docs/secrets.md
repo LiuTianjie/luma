@@ -8,7 +8,7 @@ For normal use, run the target command directly. If local values are missing, Lu
 
 ```bash
 luma bootstrap manager --domain luma.example.com --profile single-node
-luma node join https://luma.example.com --token <join-token> --profile global-worker --region global
+luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 ```
 
 This writes `~/.luma.config.json` with mode `0600`. `luma configure --role manager|worker` remains available for pre-filling values, and `luma configure --show` masks secret values.

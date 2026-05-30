@@ -113,11 +113,11 @@
             </button>
             <button class="command-row" type="button" data-demo-step="join-cn">
               <span>03</span>
-              <code>luma node join --profile cn-edge --region cn</code>
+              <code>luma node join --region cn --name cn-worker-1</code>
             </button>
             <button class="command-row" type="button" data-demo-step="join-global">
               <span>04</span>
-              <code>luma node join --profile global-worker --region global</code>
+              <code>luma node join --region global --name global-sg-1</code>
             </button>
             <button class="command-row" type="button" data-demo-step="deploy">
               <span>05</span>
@@ -279,8 +279,8 @@ luma preflight</code></pre>
             </div>
             <div>
               <h3>Join workload nodes</h3>
-              <p>Each server joins locally, then the control plane records its region and profile labels.</p>
-              <pre><code>luma node join https://luma.example.com --token &lt;join-token&gt; --profile global-worker --region global</code></pre>
+              <p>Each server joins locally, then the control plane records its region label and optional egress capability.</p>
+              <pre><code>luma node join https://luma.example.com --token &lt;join-token&gt; --region global --name global-sg-1</code></pre>
             </div>
           </article>
 
