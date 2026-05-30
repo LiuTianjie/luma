@@ -243,6 +243,18 @@ html[lang="zh-CN"] h2 {
   font-size: 1.08rem;
 }
 
+.hero-lede code,
+.highlight-grid code,
+.capability-list code,
+.step-card p code {
+  color: #c9fbff;
+  font-size: 0.9em;
+  padding: 0.12em 0.34em;
+  border: 1px solid rgba(141, 247, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(69, 220, 242, 0.08);
+}
+
 .hero-actions {
   display: flex;
   flex-wrap: wrap;
@@ -514,7 +526,7 @@ html[lang="zh-CN"] h2 {
 
 .stage-map {
   position: relative;
-  min-height: 252px;
+  min-height: 360px;
   overflow: hidden;
   border: 1px solid rgba(141, 247, 255, 0.14);
   border-radius: 20px;
@@ -555,13 +567,23 @@ html[lang="zh-CN"] h2 {
 }
 
 .manager-node {
-  top: 88px;
+  top: 142px;
   left: calc(50% - 78px);
 }
 
-.worker-node {
+.edge-node {
   top: 34px;
   right: 34px;
+}
+
+.worker-node {
+  right: 34px;
+  bottom: 34px;
+}
+
+.global-node {
+  top: 34px;
+  left: 34px;
 }
 
 .client-node {
@@ -574,43 +596,64 @@ html[lang="zh-CN"] h2 {
   z-index: 1;
   height: 4px;
   border-radius: 999px;
-  opacity: 0.24;
+  opacity: 0.16;
   background: linear-gradient(90deg, transparent, var(--cyan-2), var(--amber), transparent);
   background-size: 220% 100%;
 }
 
 .link-client {
-  left: 166px;
-  right: calc(50% + 72px);
-  bottom: 96px;
+  left: 168px;
+  right: calc(50% + 74px);
+  bottom: 102px;
   transform: rotate(-13deg);
+}
+
+.link-edge {
+  left: calc(50% + 72px);
+  right: 34px;
+  top: 130px;
+  transform: rotate(-20deg);
 }
 
 .link-worker {
   left: calc(50% + 72px);
   right: 168px;
-  top: 92px;
-  transform: rotate(-15deg);
+  bottom: 105px;
+  transform: rotate(18deg);
 }
 
-.demo-stage[data-stage="bootstrap"] .manager-node,
-.demo-stage[data-stage="join"] .manager-node,
-.demo-stage[data-stage="deploy"] .manager-node,
-.demo-stage[data-stage="join"] .worker-node,
-.demo-stage[data-stage="deploy"] .worker-node,
+.link-global {
+  left: 168px;
+  right: calc(50% + 72px);
+  top: 130px;
+  transform: rotate(20deg);
+}
+
 .demo-stage[data-stage="install"] .client-node,
-.demo-stage[data-stage="bootstrap"] .client-node,
-.demo-stage[data-stage="join"] .client-node,
-.demo-stage[data-stage="deploy"] .client-node {
+.demo-stage[data-stage="bootstrap"] .manager-node,
+.demo-stage[data-stage="bootstrap"] .edge-node,
+.demo-stage[data-stage="join-cn"] .manager-node,
+.demo-stage[data-stage="join-cn"] .edge-node,
+.demo-stage[data-stage="join-cn"] .worker-node,
+.demo-stage[data-stage="join-global"] .manager-node,
+.demo-stage[data-stage="join-global"] .edge-node,
+.demo-stage[data-stage="join-global"] .worker-node,
+.demo-stage[data-stage="join-global"] .global-node,
+.demo-stage[data-stage="deploy"] .stage-node,
+.demo-stage[data-stage="published"] .stage-node {
   border-color: rgba(141, 247, 255, 0.56);
   box-shadow: 0 0 28px rgba(69, 220, 242, 0.2);
   transform: translateY(-2px);
 }
 
-.demo-stage[data-stage="join"] .link-worker,
-.demo-stage[data-stage="deploy"] .link-worker,
-.demo-stage[data-stage="deploy"] .link-client,
-.demo-stage[data-stage="bootstrap"] .link-client {
+.demo-stage[data-stage="bootstrap"] .link-client,
+.demo-stage[data-stage="bootstrap"] .link-edge,
+.demo-stage[data-stage="join-cn"] .link-client,
+.demo-stage[data-stage="join-cn"] .link-edge,
+.demo-stage[data-stage="join-cn"] .link-worker,
+.demo-stage[data-stage="join-global"] .stage-link,
+.demo-stage[data-stage="deploy"] .stage-link,
+.demo-stage[data-stage="published"] .stage-link {
   opacity: 1;
   animation: beam 2s linear infinite;
 }
@@ -652,12 +695,10 @@ html[lang="zh-CN"] h2 {
 }
 
 .demo-stage[data-stage="bootstrap"] .domain-card,
-.demo-stage[data-stage="deploy"] .domain-card,
-.demo-stage[data-stage="bootstrap"] .dns-card,
-.demo-stage[data-stage="deploy"] .dns-card,
-.demo-stage[data-stage="bootstrap"] .tls-card,
-.demo-stage[data-stage="deploy"] .tls-card,
-.demo-stage[data-stage="deploy"] .stack-card {
+.demo-stage[data-stage="join-cn"] .domain-card,
+.demo-stage[data-stage="join-global"] .domain-card,
+.demo-stage[data-stage="deploy"] .effect-card,
+.demo-stage[data-stage="published"] .effect-card {
   border-color: rgba(126, 230, 184, 0.5);
   background: rgba(126, 230, 184, 0.08);
   transform: translateY(-2px);
@@ -1026,8 +1067,9 @@ pre code {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
   gap: 12px;
-  align-items: center;
+  align-items: start;
   color: var(--muted);
+  line-height: 1.58;
 }
 
 .capability-list span {
@@ -1278,28 +1320,39 @@ footer {
   }
 
   .stage-map {
-    min-height: 440px;
+    min-height: 700px;
   }
 
   .manager-node,
+  .edge-node,
   .worker-node,
+  .global-node,
   .client-node {
     left: 22px;
     right: auto;
     width: calc(100% - 44px);
   }
 
-  .manager-node {
+  .client-node {
     top: 28px;
+    bottom: auto;
   }
 
-  .worker-node {
+  .manager-node {
     top: 168px;
   }
 
-  .client-node {
+  .edge-node {
     top: 308px;
+  }
+
+  .worker-node {
+    top: 448px;
     bottom: auto;
+  }
+
+  .global-node {
+    top: 588px;
   }
 
   .stage-link {
@@ -1311,11 +1364,19 @@ footer {
   }
 
   .link-worker {
-    top: 106px;
+    top: 386px;
   }
 
   .link-client {
-    bottom: 106px;
+    top: 106px;
+  }
+
+  .link-edge {
+    top: 246px;
+  }
+
+  .link-global {
+    top: 526px;
   }
 
   .section {
