@@ -97,12 +97,24 @@ The output includes:
 
 ```text
 Control domain: luma.example.com
+Control URL: https://luma.example.com
+Portainer URL: https://203.0.113.10:9443
+Portainer username: admin
+Portainer password: sudo jq -r '.portainerAdminPassword' /opt/luma/control/control.json
 Cluster: luma-...
 Deploy token: ...
 Join token: ...
 ```
 
-Keep the deploy token and join token private.
+Keep the deploy token, join token, and Portainer admin password private.
+
+The `--domain` value is the Luma Control URL. Portainer is not routed through that domain by default.
+Bootstrap exposes Portainer directly on the manager at `https://<manager-ip>:9443`, with Traefik disabled for
+the Portainer stack. To read the generated Portainer password later:
+
+```bash
+sudo jq -r '.portainerAdminUsername, .portainerAdminPassword' /opt/luma/control/control.json
+```
 
 ## 4. Login From A Client
 

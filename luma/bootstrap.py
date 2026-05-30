@@ -518,6 +518,10 @@ def install_docker(remote: Executor) -> str:
     remote.sudo(
         "set -euo pipefail; "
         "export DEBIAN_FRONTEND=noninteractive; "
+        "command -v apt-get >/dev/null 2>&1 || { "
+        "echo 'automatic Docker installation currently supports apt-based Linux only; install Docker manually and rerun luma node join' >&2; "
+        "exit 1; "
+        "}; "
         "for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do "
         "[ -f \"$file\" ] || continue; "
         "sed -i "

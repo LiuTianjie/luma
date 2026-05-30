@@ -31,7 +31,7 @@ from luma.errors import LumaError
 from luma.portainer import resolve_webhook, upsert_stack
 from luma.profiles import PROFILES
 from luma.service import load_service
-from luma.cli import build_parser, main
+from luma.cli import _portainer_url_from_state, build_parser, main
 from luma.userconfig import configured_keys, load_user_config
 
 
@@ -277,15 +277,26 @@ class CliTests(unittest.TestCase):
             old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
             try:
                 secret_values = iter(["cf-token", "ts-key", "sub-url", "sudo-pass"])
+                def bootstrap_side_effect(_config, _node, _profile, _domain, state, **_kwargs):
+                    state["portainerApiUrl"] = "https://203.0.113.10:9443/api"
+                    state["portainerAdminUsername"] = "admin"
+                    state["portainerAdminPassword"] = "portainer-secret"
+                    return []
+
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
                 ), patch("builtins.input", return_value="ops@example.com"), patch(
-                    "luma.cli.bootstrap_manager_local", return_value=[]
-                ):
+                    "luma.cli.bootstrap_manager_local", side_effect=bootstrap_side_effect
+                ), patch("builtins.print") as printed:
                     code = main(["bootstrap", "manager", "--domain", "luma.example.com", "--profile", "single-node"])
                 self.assertEqual(code, 0)
                 self.assertTrue(config_path.exists())
                 self.assertIn("EGRESS_SUBSCRIPTION_URL", configured_keys(config_path))
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("Portainer URL: https://203.0.113.10:9443", printed_text)
+                self.assertIn("Portainer username: admin", printed_text)
+                self.assertIn("Portainer password: sudo jq", printed_text)
+                self.assertNotIn("portainer-secret", printed_text)
             finally:
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_cf)
@@ -293,6 +304,12 @@ class CliTests(unittest.TestCase):
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("EGRESS_SUBSCRIPTION_URL", old_egress)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
+    def test_portainer_url_from_state_strips_api_suffix(self):
+        self.assertEqual(
+            _portainer_url_from_state({"portainerApiUrl": "https://203.0.113.10:9443/api"}),
+            "https://203.0.113.10:9443",
+        )
 
     def test_node_join_prompts_for_worker_config_during_command(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -691,6 +708,7 @@ class PortainerWebhookTests(unittest.TestCase):
 
         self.assertEqual(result, "Docker installed")
         command = remote.sudo.call_args.args[0]
+        self.assertIn("command -v apt-get", command)
         self.assertIn("mirrors.ivolces.com/ubuntu", command)
         self.assertIn("mirrors.aliyun.com/ubuntu", command)
         self.assertIn("apt-get install -y docker.io docker-compose-v2", command)

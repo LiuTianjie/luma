@@ -156,7 +156,23 @@ luma doctor
 
 ## Portainer Access
 
-Portainer is deployed on `9443` for the first bootstrap experience. For production, prefer accessing it through a trusted network, a restricted source IP, or a private control-plane path. Keep the webhook URL secret because it can trigger deployments.
+Portainer is deployed on the manager's `9443` port for the first bootstrap experience:
+
+```text
+https://<manager-ip>:9443
+```
+
+The `luma bootstrap manager --domain ...` domain is for Luma Control, not Portainer. Portainer's stack has
+Traefik disabled by default, so bootstrap does not create a Portainer domain.
+
+The Portainer username defaults to `admin`. The generated password is stored on the manager:
+
+```bash
+sudo jq -r '.portainerAdminUsername, .portainerAdminPassword' /opt/luma/control/control.json
+```
+
+For production, prefer accessing Portainer through a trusted network, a restricted source IP, or a private
+control-plane path. Keep the webhook URL secret because it can trigger deployments.
 
 ## Tailscale Relay
 

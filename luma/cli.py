@@ -345,6 +345,11 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         print("Bootstrap complete")
         print(f"Control domain: {args.domain}")
         print(f"Control URL: {control_url}")
+        portainer_url = _portainer_url_from_state(state)
+        if portainer_url:
+            print(f"Portainer URL: {portainer_url}")
+            print(f"Portainer username: {state.get('portainerAdminUsername', 'admin')}")
+            print("Portainer password: sudo jq -r '.portainerAdminPassword' /opt/luma/control/control.json")
         print(f"Cluster: {state['clusterId']}")
         print(f"Deploy token: {state['deployToken']}")
         print(f"Join token: {state['joinToken']}")
@@ -373,6 +378,13 @@ def _config_https_port(config: LumaConfig) -> int:
 def _control_url(domain: str, https_port: int) -> str:
     port = "" if https_port == 443 else f":{https_port}"
     return f"https://{domain}{port}"
+
+
+def _portainer_url_from_state(state: Dict[str, object]) -> str:
+    api_url = str(state.get("portainerApiUrl") or "")
+    if not api_url:
+        return ""
+    return api_url.removesuffix("/api")
 
 
 def _control_state_for_bootstrap(domain: str, *, overwrite: bool) -> Dict[str, object]:
