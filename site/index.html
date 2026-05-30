@@ -198,10 +198,34 @@ replicas: 2</code></pre>
           <p class="eyebrow">Core flow</p>
           <h2>The client submits a domain. The control plane does four things.</h2>
           <ul class="capability-list">
-            <li><span>01</span> Read <code>domain</code>, <code>port</code>, and <code>exposure</code> from the manifest.</li>
-            <li><span>02</span> Write <code>status.example.com -> cn-edge</code> in Cloudflare.</li>
-            <li><span>03</span> Ask Traefik to issue HTTPS for <code>status.example.com</code>.</li>
-            <li><span>04</span> Update the stack so the Host route reaches <code>status:80</code>.</li>
+            <li>
+              <span>01</span>
+              <div>
+                <strong>Read the service file</strong>
+                <p>Capture the domain `status.example.com`, port `80`, and exposure `cn-edge`.</p>
+              </div>
+            </li>
+            <li>
+              <span>02</span>
+              <div>
+                <strong>Sync DNS</strong>
+                <p>Write the Cloudflare record so the service domain points at the selected edge node.</p>
+              </div>
+            </li>
+            <li>
+              <span>03</span>
+              <div>
+                <strong>Issue HTTPS</strong>
+                <p>Traefik completes ACME for the new host and creates the HTTPS entry.</p>
+              </div>
+            </li>
+            <li>
+              <span>04</span>
+              <div>
+                <strong>Route to workload</strong>
+                <p>Update the stack so `status.example.com` forwards to `status:80` replicas.</p>
+              </div>
+            </li>
           </ul>
         </div>
       </section>

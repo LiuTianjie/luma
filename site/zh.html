@@ -198,10 +198,34 @@ replicas: 2</code></pre>
           <p class="eyebrow">核心链路</p>
           <h2>从一个 domain 字段，到可访问的 HTTPS 服务。</h2>
           <ul class="capability-list">
-            <li><span>01</span> 读取 manifest 里的 <code>domain</code>、<code>port</code>、<code>exposure</code>。</li>
-            <li><span>02</span> 在 Cloudflare 写入 <code>status.example.com -> cn-edge</code>。</li>
-            <li><span>03</span> 让 Traefik 为 <code>status.example.com</code> 自动签发 HTTPS 证书。</li>
-            <li><span>04</span> 更新 stack，把 Host 路由转发到 <code>status:80</code> 工作负载。</li>
+            <li>
+              <span>01</span>
+              <div>
+                <strong>读取服务清单</strong>
+                <p>拿到域名 `status.example.com`、端口 `80` 和入口 `cn-edge`。</p>
+              </div>
+            </li>
+            <li>
+              <span>02</span>
+              <div>
+                <strong>同步 DNS</strong>
+                <p>在 Cloudflare 写入记录，让服务域名指向选中的边缘节点。</p>
+              </div>
+            </li>
+            <li>
+              <span>03</span>
+              <div>
+                <strong>签发证书</strong>
+                <p>Traefik 根据新域名自动完成 ACME，生成 HTTPS 入口。</p>
+              </div>
+            </li>
+            <li>
+              <span>04</span>
+              <div>
+                <strong>路由到负载</strong>
+                <p>更新 stack，把 `status.example.com` 转发到 `status:80` 副本。</p>
+              </div>
+            </li>
           </ul>
         </div>
       </section>
