@@ -16,6 +16,7 @@ from luma.bootstrap import (
     _ensure_control_image,
     _last_command_value,
     _portainer_agent_image_candidates,
+    _reset_portainer_state,
     _traefik_ports,
     bootstrap_node,
     bootstrap_manager_local,
@@ -685,7 +686,7 @@ class PortainerWebhookTests(unittest.TestCase):
             sequence.append("sync-dns")
             return "Control DNS synced"
 
-        with patch("luma.bootstrap.bootstrap_node", return_value=["Bootstrap node complete"]), patch(
+        with patch("luma.bootstrap.bootstrap_node", return_value=["Bootstrap node complete"]) as bootstrap, patch(
             "luma.bootstrap.initialize_portainer", side_effect=bind_portainer
         ), patch("luma.bootstrap.install_control_state", side_effect=save_state), patch(
             "luma.bootstrap.local_swarm_join_info",
@@ -698,6 +699,7 @@ class PortainerWebhookTests(unittest.TestCase):
         self.assertEqual(sequence[:2], ["save", "sync-dns"])
         self.assertGreaterEqual(len(saved_states), 1)
         self.assertEqual(saved_states[0]["portainerAdminPassword"], "secret")
+        self.assertFalse(bootstrap.call_args.kwargs["reset_portainer_state"])
 
     def test_bootstrap_manager_recreates_portainer_after_bind_failure(self):
         config = LumaConfig(
@@ -788,6 +790,19 @@ class PortainerWebhookTests(unittest.TestCase):
             )
 
         self.assertLess(sequence.index("reset-portainer"), sequence.index("portainer"))
+
+    def test_reset_portainer_state_removes_containers_using_data_volume(self):
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Linux\n")
+        remote.sudo.return_value = ""
+
+        result = _reset_portainer_state(remote)
+
+        self.assertEqual(result, "Portainer state reset")
+        command = remote.sudo.call_args.args[0]
+        self.assertIn("docker ps -aq --filter volume=portainer_portainer_data", command)
+        self.assertIn("docker rm -f $containers", command)
+        self.assertIn("docker volume rm portainer_portainer_data", command)
 
     def test_install_control_config_generates_config_without_local_path(self):
         config = LumaConfig({}, None)

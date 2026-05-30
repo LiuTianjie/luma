@@ -254,6 +254,8 @@ def _reset_portainer_state(remote: Executor) -> str:
         "services=$(docker service ls --filter label=com.docker.stack.namespace=portainer --format '{{.Name}}'); "
         "[ -z \"$services\" ]; "
         "if docker volume inspect portainer_portainer_data >/dev/null 2>&1; then "
+        "containers=$(docker ps -aq --filter volume=portainer_portainer_data); "
+        "if [ -n \"$containers\" ]; then docker rm -f $containers >/dev/null; fi; "
         "docker volume rm portainer_portainer_data >/dev/null; "
         "fi",
     )
@@ -738,7 +740,7 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
         node,
         profile,
         run_egress=run_egress,
-        reset_portainer_state=True,
+        reset_portainer_state=False,
         emit=emit,
         executor=remote,
     )
