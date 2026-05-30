@@ -766,7 +766,9 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
         ),
     )
     _step(results, emit, "Save Portainer credentials", lambda: install_control_state(remote, state))
-    state.update(local_swarm_join_info(node))
+    manager_info = local_swarm_join_info(node)
+    state.update(manager_info)
+    state["portainerApiUrl"] = _portainer_api_url_for_control(node, manager_info)
     _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
@@ -815,6 +817,25 @@ def _portainer_api_url_for_node(node: NodeConfig) -> str:
     host = str(node.raw.get("portainerHost") or node.public_ip or "127.0.0.1")
     port = int(node.raw.get("portainerPort") or 9443)
     return f"https://{host}:{port}/api"
+
+
+def _portainer_api_url_for_control(node: NodeConfig, manager_info: dict[str, str]) -> str:
+    explicit_host = node.raw.get("portainerHost")
+    if explicit_host:
+        host = str(explicit_host)
+    elif node.public_ip and not _is_loopback_host(node.public_ip):
+        host = node.public_ip
+    else:
+        manager_addr = str(manager_info.get("managerAddr") or "")
+        host = manager_addr.rsplit(":", 1)[0] if manager_addr else ""
+        if not host or _is_loopback_host(host):
+            host = str(node.public_ip or "127.0.0.1")
+    port = int(node.raw.get("portainerPort") or 9443)
+    return f"https://{host}:{port}/api"
+
+
+def _is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1"}
 
 
 def _join_swarm(remote: Executor, manager_addr: str, swarm_token: str) -> str:

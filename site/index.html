@@ -191,6 +191,7 @@
           </div>
           <pre><code>name: status
 image: traefik/whoami:latest
+region: cn
 domain: status.example.com
 port: 80
 exposure: cn-edge
@@ -265,8 +266,8 @@ luma preflight</code></pre>
             </div>
             <div>
               <h3>Initialize the control plane</h3>
-              <p>Create the Swarm manager, Traefik, Portainer, and Luma Control on the first full node.</p>
-              <pre><code>luma bootstrap manager --domain luma.example.com --profile single-node</code></pre>
+              <p>Create the single control-plane manager with Swarm, Traefik, Portainer, Luma Control, and the egress gateway.</p>
+              <pre><code>luma bootstrap manager --domain luma.example.com</code></pre>
             </div>
           </article>
 
@@ -279,7 +280,7 @@ luma preflight</code></pre>
             </div>
             <div>
               <h3>Join workload nodes</h3>
-              <p>Each server joins locally, then the control plane records its region label and optional egress capability.</p>
+              <p>Each server joins locally with a region label. The node name is only an identifier; the region is the scheduling boundary.</p>
               <pre><code>luma node join https://luma.example.com --token &lt;join-token&gt; --region global --name global-sg-1</code></pre>
             </div>
           </article>
@@ -293,7 +294,7 @@ luma preflight</code></pre>
             </div>
             <div>
               <h3>Deploy from a client</h3>
-              <p>After login, the client submits a manifest. The control plane handles DNS, TLS, routing, and stack updates.</p>
+              <p>After login, the client submits a manifest and prints progress while the control plane handles DNS, TLS, routing, image pulls, and stack updates.</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
 luma deploy status.yaml</code></pre>
             </div>

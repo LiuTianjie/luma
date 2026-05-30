@@ -190,6 +190,7 @@
           </div>
           <pre><code>name: status
 image: traefik/whoami:latest
+region: cn
 domain: status.example.com
 port: 80
 exposure: cn-edge
@@ -264,8 +265,8 @@ luma preflight</code></pre>
             </div>
             <div>
               <h3>初始化控制面</h3>
-              <p>在第一台全功能节点上创建 Swarm manager、Traefik、Portainer 和 Luma Control。</p>
-              <pre><code>luma bootstrap manager --domain luma.example.com --profile single-node</code></pre>
+              <p>创建唯一控制面 manager，同时启动 Swarm、Traefik、Portainer、Luma Control 和 egress gateway。</p>
+              <pre><code>luma bootstrap manager --domain luma.example.com</code></pre>
             </div>
           </article>
 
@@ -278,7 +279,7 @@ luma preflight</code></pre>
             </div>
             <div>
               <h3>加入工作节点</h3>
-              <p>每台服务器本机 join，控制面记录 region 标签和可选 egress 能力。</p>
+              <p>每台服务器本机 join 并写入 region 标签。name 只是机器标识，region 才是调度边界。</p>
               <pre><code>luma node join https://luma.example.com --token &lt;join-token&gt; --region global --name global-sg-1</code></pre>
             </div>
           </article>
@@ -292,7 +293,7 @@ luma preflight</code></pre>
             </div>
             <div>
               <h3>从客户端部署服务</h3>
-              <p>client 登录后提交 manifest，DNS、证书、路由和 stack 更新由控制面完成。</p>
+              <p>client 登录后提交 manifest，并在控制面处理 DNS、证书、路由、镜像拉取和 stack 更新时打印进度。</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
 luma deploy status.yaml</code></pre>
             </div>

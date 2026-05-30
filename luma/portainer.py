@@ -42,6 +42,8 @@ def trigger_webhook_url(service: ServiceSpec, webhook_url: str) -> str:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise LumaError(f"Portainer webhook error {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise LumaError(f"Portainer webhook unavailable at {webhook_url}: {exc.reason}") from exc
     return f"Portainer webhook triggered for {service.name}: HTTP {status}"
 
 
@@ -135,6 +137,12 @@ class PortainerApi:
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise LumaError(f"Portainer API error {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise LumaError(
+                f"Portainer API unavailable at {self.api_url}: {exc.reason}. "
+                "Check that Portainer is running and that portainerApiUrl in /opt/luma/control/control.json "
+                "is reachable from the luma-control container."
+            ) from exc
         if not raw:
             return None
         return json.loads(raw)

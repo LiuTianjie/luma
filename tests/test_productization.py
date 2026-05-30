@@ -757,7 +757,7 @@ class PortainerWebhookTests(unittest.TestCase):
             "luma.bootstrap.initialize_portainer", side_effect=bind_portainer
         ), patch("luma.bootstrap.install_control_state", side_effect=save_state), patch(
             "luma.bootstrap.local_swarm_join_info",
-            return_value={"managerAddr": "127.0.0.1:2377", "swarmJoinToken": "token", "swarmId": "swarm"},
+            return_value={"managerAddr": "100.64.0.1:2377", "swarmJoinToken": "token", "swarmId": "swarm"},
         ), patch("luma.bootstrap.sync_control_dns", side_effect=sync_dns), patch(
             "luma.bootstrap.install_control_config", return_value="Config installed"
         ), patch("luma.bootstrap.deploy_control_stack", return_value="Control deployed"):
@@ -766,6 +766,7 @@ class PortainerWebhookTests(unittest.TestCase):
         self.assertEqual(sequence[:2], ["save", "sync-dns"])
         self.assertGreaterEqual(len(saved_states), 1)
         self.assertEqual(saved_states[0]["portainerAdminPassword"], "secret")
+        self.assertEqual(saved_states[-1]["portainerApiUrl"], "https://100.64.0.1:9443/api")
         self.assertFalse(bootstrap.call_args.kwargs["reset_portainer_state"])
 
     def test_bootstrap_manager_recreates_portainer_after_bind_failure(self):
