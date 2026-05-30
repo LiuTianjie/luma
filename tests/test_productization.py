@@ -1,6 +1,7 @@
 import base64
 import io
 import os
+import re
 import tempfile
 import unittest
 import urllib.error
@@ -9,6 +10,7 @@ from unittest.mock import Mock, patch
 
 import yaml
 
+from luma import __version__
 from luma.assets import asset_text
 from luma.config import LumaConfig
 from luma.bootstrap import (
@@ -40,6 +42,22 @@ from luma.userconfig import configured_keys, load_user_config
 
 
 class ProductConfigTests(unittest.TestCase):
+    def test_version_files_stay_in_sync(self):
+        root = Path(__file__).resolve().parents[1]
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+        init_file = (root / "luma" / "__init__.py").read_text(encoding="utf-8")
+        asset_pyproject = (root / "luma" / "assets" / "pyproject.toml").read_text(encoding="utf-8")
+
+        pyproject_version = re.search(r'^version = "([^"]+)"$', pyproject, re.MULTILINE)
+        init_version = re.search(r'^__version__ = "([^"]+)"$', init_file, re.MULTILINE)
+        asset_version = re.search(r'^version = "([^"]+)"$', asset_pyproject, re.MULTILINE)
+
+        self.assertIsNotNone(pyproject_version)
+        self.assertIsNotNone(init_version)
+        self.assertIsNotNone(asset_version)
+        self.assertEqual(pyproject_version.group(1), init_version.group(1))
+        self.assertEqual(pyproject_version.group(1), asset_version.group(1))
+
     def test_new_config_model_reads_nodes_and_provider_dns(self):
         config = LumaConfig(
             {
@@ -414,7 +432,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
-        self.assertIn("Luma CLI: 0.1.0", printed_text)
+        self.assertIn(f"Luma CLI: {__version__}", printed_text)
         self.assertIn("Luma Control: not checked", printed_text)
 
     def test_version_prints_control_health_from_explicit_url(self):

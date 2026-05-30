@@ -55,7 +55,7 @@ Use the same installer on every machine:
 The installer loads `.env` if present and fixes Linux DNS before creating the virtualenv, so Python package installation is less likely to fail on fresh cloud servers. If `python3` is missing, it prints the OS-specific package command and exits. To install a tagged release, set `LUMA_INSTALL_REF`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.1 sh
 ```
 
 Uninstall the local CLI without touching user secrets or login contexts:

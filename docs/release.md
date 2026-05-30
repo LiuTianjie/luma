@@ -4,8 +4,20 @@ Luma can be distributed without asking users to clone the repository.
 
 ## Recommended First Release
 
-1. Push the repo to GitHub.
-2. Build and publish the control API image with GitHub Actions:
+1. Bump the package version before committing code that should be distinguishable by `luma version`:
+
+```bash
+python scripts/bump-version.py
+```
+
+Use `--minor`, `--major`, or `--set 0.2.0` when patch bumping is not appropriate. Verify without changing files:
+
+```bash
+python scripts/bump-version.py --check
+```
+
+2. Push the repo to GitHub.
+3. Build and publish the control API image with GitHub Actions:
 
 ```bash
 git push origin main
@@ -17,17 +29,17 @@ The `Build Control Image` workflow publishes:
 - `ghcr.io/liutianjie/luma-control:main-<sha>` from `main`
 - `ghcr.io/liutianjie/luma-control:<tag>` from `v*` tags
 
-3. Create a tag to publish a versioned image and release archive:
+4. Create a tag to publish a versioned image and release archive:
 
 ```bash
-git tag v0.1.0
+git tag v0.1.1
 git push origin main --tags
 ```
 
-4. Users install with:
+5. Users install with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.1 sh
 ```
 
 The installer downloads the GitHub archive for that tag, creates `~/.local/share/luma/venv`, installs the Python package, writes `~/.local/bin/luma`, and adds `~/.local/bin` to the user's shell profile when needed.
@@ -51,7 +63,7 @@ The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you wa
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.0
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.1
 ```
 
 ## Latest Channel
@@ -71,7 +83,7 @@ Use these environment variables when the code is hosted somewhere else:
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.1.0 \
+  LUMA_INSTALL_REF=v0.1.1 \
   sh
 ```
 
