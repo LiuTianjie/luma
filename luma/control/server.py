@@ -6,8 +6,10 @@ import json
 import os
 import re
 import socket
+import ssl
 import tempfile
 import urllib.parse
+import urllib.request
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -161,6 +163,11 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if body.get("skipWebhook")
         else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env),
     )
+    probe_result = _deploy_step(
+        steps,
+        "Probe public route",
+        lambda: "Public route probe skipped: --skip-webhook" if body.get("skipWebhook") else _probe_public_route(service),
+    )
     return {
         "clusterId": state["clusterId"],
         "service": service.name,
@@ -169,6 +176,7 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "image": image_result,
         "dns": dns_result,
         "webhook": webhook_result,
+        "probe": probe_result,
         "steps": steps,
     }
 
@@ -227,6 +235,28 @@ def _stack_env_for_text(stack_text: str) -> list[dict[str, str]]:
     if missing:
         raise LumaError("missing deployment secrets: " + ", ".join(missing) + ". Run: luma secret set <NAME>")
     return env
+
+
+def _probe_public_route(service: ServiceSpec) -> str:
+    if service.exposure not in {"cn-edge", "external-edge"}:
+        return "Public route probe skipped: service is not exposed through Traefik"
+    if not service.domain:
+        return "Public route probe skipped: service has no domain"
+    url = f"https://{service.domain}/"
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "luma-control-route-probe"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return _probe_status_message(url, int(resp.status))
+    except urllib.error.HTTPError as exc:
+        return _probe_status_message(url, int(exc.code))
+    except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
+        return f"Public route probe inconclusive: {url} ({exc})"
+
+
+def _probe_status_message(url: str, status: int) -> str:
+    if status == 404:
+        return f"Public route reachable: {url} -> HTTP 404 (the app may not serve /)"
+    return f"Public route reachable: {url} -> HTTP {status}"
 
 
 def _deploy_step(steps: list[dict[str, str]], name: str, action: Any) -> Any:

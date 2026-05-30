@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import yaml
 
@@ -1232,9 +1232,10 @@ class ControlApiTests(unittest.TestCase):
                         "port": 80,
                     }
                 )
+                probe_error = urllib.error.HTTPError("https://api.example.com/", 404, "not found", {}, None)
                 with patch("luma.control.server.sync_dns", return_value="DNS updated"), patch(
                     "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
-                ):
+                ), patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
                 self.assertEqual(result["service"], "api")
                 self.assertIn(str(root / "stacks" / "cn" / "api" / "stack.yml"), result["written"])
@@ -1242,6 +1243,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn("Parse manifest=ok:api -> cn/cn-edge", steps)
                 self.assertIn("Sync DNS=ok:DNS updated", steps)
                 self.assertIn("Deploy Portainer stack=ok:Portainer deploy triggered", steps)
+                self.assertIn("Probe public route=ok:Public route reachable: https://api.example.com/ -> HTTP 404", steps)
                 with self.assertRaises(Exception):
                     handle_deployment(state["joinToken"], {"manifest": manifest, "sourceName": "api.yaml"})
             finally:
@@ -1323,11 +1325,14 @@ class ControlApiTests(unittest.TestCase):
                         "env": {"DATABASE_URL": "${DATABASE_URL}"},
                     }
                 )
+                response = MagicMock()
+                response.__enter__.return_value.status = 200
                 with patch("luma.control.server.sync_dns", return_value="DNS updated"), patch(
                     "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
-                ) as deploy:
+                ) as deploy, patch("luma.control.server.urllib.request.urlopen", return_value=response):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
                 self.assertEqual(result["service"], "api")
+                self.assertEqual(result["probe"], "Public route reachable: https://api.example.com/ -> HTTP 200")
                 deploy.assert_called_once()
                 self.assertEqual(deploy.call_args.kwargs["stack_env"], [{"name": "DATABASE_URL", "value": "postgres://secret"}])
                 self.assertIn("DATABASE_URL: ${DATABASE_URL}", (root / "stacks" / "cn" / "api" / "stack.yml").read_text())
@@ -1412,9 +1417,11 @@ class ControlApiTests(unittest.TestCase):
                 webhook.assert_not_called()
                 self.assertEqual(result["dns"], "DNS skipped: --skip-dns")
                 self.assertEqual(result["webhook"], "Portainer deploy skipped: --skip-webhook")
+                self.assertEqual(result["probe"], "Public route probe skipped: --skip-webhook")
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Sync DNS=ok:DNS skipped: --skip-dns", steps)
                 self.assertIn("Deploy Portainer stack=ok:Portainer deploy skipped: --skip-webhook", steps)
+                self.assertIn("Probe public route=ok:Public route probe skipped: --skip-webhook", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

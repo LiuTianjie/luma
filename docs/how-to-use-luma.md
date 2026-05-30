@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.4 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.6 sh
 ```
 
 For local development from a checkout:
@@ -264,9 +264,9 @@ Default deploy path:
 luma deploy app.yaml
 ```
 
-This submits the manifest to the logged-in Luma Control endpoint. The manager renders generated files under `/opt/luma`, syncs DNS, and creates or updates the stack through the Portainer API.
+This submits the manifest to the logged-in Luma Control endpoint. The manager renders generated files under `/opt/luma`, syncs DNS, creates or updates the stack through the Portainer API, and probes the public route for `cn-edge` and `external-edge` services.
 
-`luma deploy` prints client-side progress before and after the control-plane request. The client waits up to 1800 seconds by default because first deploys may pull large images through the manager. Override it when needed:
+`luma deploy` prints client-side progress and each control-plane step. A public route probe reports the HTTP status from `/`; `404` means the route reached the application but the app may not serve a root page. The client waits up to 1800 seconds by default because first deploys may pull large images through the manager. Override it when needed:
 
 ```bash
 luma deploy app.yaml --timeout 3600

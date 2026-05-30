@@ -74,6 +74,7 @@ def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
                 f"traefik.http.routers.{service_name}.entrypoints={config.entrypoint}",
                 f"traefik.http.routers.{service_name}.tls.certresolver={config.cert_resolver}",
                 f"traefik.http.services.{service_name}.loadbalancer.server.port={service.port}",
+                f"traefik.swarm.network={config.public_network}",
             ]
         )
         deploy["labels"] = labels

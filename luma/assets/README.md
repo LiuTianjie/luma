@@ -53,7 +53,7 @@ Use the same installer on every machine:
 The installer loads `.env` if present and fixes Linux DNS before creating the virtualenv, so Python package installation is less likely to fail on fresh cloud servers. If `python3` is missing, it prints the OS-specific package command and exits. To install a tagged release, set `LUMA_INSTALL_REF`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.4 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.6 sh
 ```
 
 Uninstall the local CLI without touching user secrets or login contexts:
@@ -254,6 +254,8 @@ Default deploy through Portainer:
 ```bash
 luma deploy app.yaml
 ```
+
+For public `cn-edge` and `external-edge` services, deploy also probes the route after the stack update. `HTTP 404` from `/` still means the route reached the application; use the application's real path such as `/admin/` when it has no homepage.
 
 For multiple GitOps stacks in one private repo, give each service its own webhook env:
 

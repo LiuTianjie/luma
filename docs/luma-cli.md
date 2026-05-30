@@ -22,7 +22,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.4 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.6 sh
 ```
 
 Development checkout:
@@ -286,9 +286,10 @@ For `luma deploy service.yaml`, Luma does:
 4. render `stacks/<region>/<service>/stack.yml` on the manager;
 5. render `routes/<service>.yml` on the manager for `tailscale-relay`;
 6. upsert Cloudflare DNS unless skipped;
-7. create or update the service's Portainer stack through the Portainer API.
+7. create or update the service's Portainer stack through the Portainer API;
+8. probe the public route for `cn-edge` and `external-edge` services.
 
-The client prints local progress before submitting the request and while waiting for the control plane. The default deploy response timeout is 1800 seconds because first deploys may pull large images through the manager; use `--timeout <seconds>` to override it.
+The client prints local progress before submitting the request, while waiting for the control plane, and for each control-plane step. A public route probe reports the HTTP status from `/`; `404` means the route is reachable but the application may not serve a root page. The default deploy response timeout is 1800 seconds because first deploys may pull large images through the manager; use `--timeout <seconds>` to override it.
 
 Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Portainer stack instead of creating a duplicate. The update uses the current rendered manifest as the source of truth; resources removed from the manifest can be pruned by Portainer.
 

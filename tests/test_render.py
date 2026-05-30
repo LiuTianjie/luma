@@ -53,6 +53,7 @@ replicas: 2
             "traefik.http.routers.app.rule=Host(`app.example.com`)",
             app["deploy"]["labels"],
         )
+        self.assertIn("traefik.swarm.network=public", app["deploy"]["labels"])
 
     def test_global_worker_uses_region_constraint_only_by_default(self):
         service = self.load(
@@ -87,6 +88,23 @@ env:
         self.assertIn("egress", worker["networks"])
         self.assertEqual(worker["environment"]["HTTP_PROXY"], "http://custom-proxy:7890")
         self.assertEqual(worker["environment"]["HTTPS_PROXY"], "http://egress_mihomo:7890")
+
+    def test_public_proxy_service_pins_traefik_to_public_network(self):
+        service = self.load(
+            """
+name: proxied api
+image: ghcr.io/acme/proxied-api:latest
+region: cn
+exposure: cn-edge
+domain: proxied.example.com
+port: 8080
+proxy: true
+"""
+        )
+        rendered = yaml.safe_load(render_stack(self.config(), service))
+        app = rendered["services"]["proxied-api"]
+        self.assertEqual(app["networks"], ["public", "egress"])
+        self.assertIn("traefik.swarm.network=public", app["deploy"]["labels"])
 
     def test_default_stack_path_uses_region_and_slug(self):
         service = self.load(
