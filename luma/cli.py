@@ -9,8 +9,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, TypeVar
 
 from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, join_local_node, local_docker_node_id, local_docker_node_name, setup_egress, setup_portainer, setup_tailscale
 from .cloudflare import find_zone, sync_dns
@@ -28,6 +30,9 @@ from .render import render_stack, render_tailscale_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
 from .userconfig import configured_keys, ensure_interactive_config, interactive_configure, load_user_config, masked_config_lines, user_config_path
 from . import __version__
+
+
+T = TypeVar("T")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -472,6 +477,32 @@ def _docker_compose_available() -> bool:
 
 def log(message: str) -> None:
     print(message, flush=True)
+
+
+def _run_with_wait_heartbeat(action: Callable[[], T], *, timeout: int, interval: int = 30) -> T:
+    done = threading.Event()
+    started = time.monotonic()
+
+    def heartbeat() -> None:
+        while not done.wait(interval):
+            elapsed = int(time.monotonic() - started)
+            print(f"[wait] Control plane still working ({elapsed}s elapsed, timeout {timeout}s)", flush=True)
+
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    thread.start()
+    try:
+        return action()
+    finally:
+        done.set()
+        thread.join(timeout=0.2)
+
+
+def _print_deploy_step(step: Dict[str, Any]) -> None:
+    status = str(step.get("status") or "ok")
+    name = str(step.get("name") or "step")
+    message = step.get("message")
+    suffix = f": {message}" if message else ""
+    print(f"[{status}] {name}{suffix}", flush=True)
 
 
 def cmd_node(args: argparse.Namespace) -> int:
@@ -1227,19 +1258,49 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
     )
     print(f"[start] Submit deploy: {service.name} -> {service.region}/{service.exposure}", flush=True)
-    print(f"[start] Waiting for control plane response (timeout {args.timeout}s)", flush=True)
-    result = client.deploy(
-        manifest=args.service.read_text(encoding="utf-8"),
-        source_name=str(args.service),
-        skip_dns=args.skip_dns,
-        skip_webhook=args.skip_webhook,
-        timeout=args.timeout,
-    )
-    for step in result.get("steps") or []:
-        if isinstance(step, dict):
-            message = step.get("message")
-            suffix = f": {message}" if message else ""
-            print(f"[{step.get('status', 'ok')}] {step.get('name', 'step')}{suffix}")
+    manifest_text = args.service.read_text(encoding="utf-8")
+    streamed = False
+    result: Dict[str, Any] | None = None
+    try:
+        for event in client.deploy_events(
+            manifest=manifest_text,
+            source_name=str(args.service),
+            skip_dns=args.skip_dns,
+            skip_webhook=args.skip_webhook,
+            timeout=args.timeout,
+        ):
+            status = str(event.get("status") or "")
+            if status in {"start", "ok", "fail"}:
+                _print_deploy_step(event)
+                if status == "fail":
+                    raise LumaError(str(event.get("message") or "deploy failed"))
+            elif status == "done":
+                payload = event.get("result")
+                if not isinstance(payload, dict):
+                    raise LumaError("control API stream ended without a deploy result")
+                result = payload
+            streamed = True
+    except LumaError as exc:
+        if "control API error 404" not in str(exc):
+            raise
+
+    if result is None:
+        if streamed:
+            raise LumaError("control API stream ended without a deploy result")
+        print(f"[start] Waiting for control plane response (timeout {args.timeout}s)", flush=True)
+        result = _run_with_wait_heartbeat(
+            lambda: client.deploy(
+                manifest=manifest_text,
+                source_name=str(args.service),
+                skip_dns=args.skip_dns,
+                skip_webhook=args.skip_webhook,
+                timeout=args.timeout,
+            ),
+            timeout=args.timeout,
+        )
+        for step in result.get("steps") or []:
+            if isinstance(step, dict):
+                _print_deploy_step(step)
     print(f"[ok] Deploy finished: {result.get('service', service.name)}")
     if result.get("image"):
         image = result["image"]

@@ -6,7 +6,7 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict
+from typing import Any, Dict, Iterator
 
 from ..errors import LumaError
 
@@ -27,6 +27,28 @@ class ControlClient:
         self._host_header = parsed.netloc
 
     def request(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Dict[str, Any]:
+        with self._open(method, path, body, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+        if not raw:
+            return {}
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise LumaError("control API returned invalid JSON")
+        return payload
+
+    def stream(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Iterator[Dict[str, Any]]:
+        response = self._open(method, path, body, timeout=timeout)
+        with response:
+            for raw_line in response:
+                line = raw_line.decode("utf-8").strip()
+                if not line:
+                    continue
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    raise LumaError("control API returned invalid stream JSON")
+                yield payload
+
+    def _open(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Any:
         data = json.dumps(body or {}).encode("utf-8") if body is not None else None
         headers = {
             "Authorization": f"Bearer {self.token}",
@@ -45,8 +67,7 @@ class ControlClient:
             kwargs: Dict[str, Any] = {"timeout": timeout}
             if self.insecure:
                 kwargs["context"] = ssl._create_unverified_context()
-            with urllib.request.urlopen(req, **kwargs) as resp:
-                raw = resp.read().decode("utf-8")
+            return urllib.request.urlopen(req, **kwargs)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             if _looks_like_legacy_node_api_error(detail):
@@ -61,12 +82,6 @@ class ControlClient:
             raise LumaError(_timeout_message(path, timeout)) from exc
         except urllib.error.URLError as exc:
             raise LumaError(f"control API unavailable: {exc}") from exc
-        if not raw:
-            return {}
-        payload = json.loads(raw)
-        if not isinstance(payload, dict):
-            raise LumaError("control API returned invalid JSON")
-        return payload
 
     def _request_url(self, path: str) -> str:
         if not self.resolve_ip:
@@ -122,6 +137,27 @@ class ControlClient:
         return self.request(
             "POST",
             "/v1/deployments",
+            {
+                "manifest": manifest,
+                "sourceName": source_name,
+                "skipDns": skip_dns,
+                "skipWebhook": skip_webhook,
+            },
+            timeout=timeout,
+        )
+
+    def deploy_events(
+        self,
+        *,
+        manifest: str,
+        source_name: str,
+        skip_dns: bool = False,
+        skip_webhook: bool = False,
+        timeout: int = 1800,
+    ) -> Iterator[Dict[str, Any]]:
+        return self.stream(
+            "POST",
+            "/v1/deployments/stream",
             {
                 "manifest": manifest,
                 "sourceName": source_name,

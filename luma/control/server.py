@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from ..assets import asset_path
 from ..cloudflare import sync_dns
@@ -236,7 +236,7 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
@@ -254,28 +254,32 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         service = load_service(service_path)
     finally:
         service_path.unlink(missing_ok=True)
-    steps.append({"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"})
+    parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
+    steps.append(parse_step)
+    _emit_progress(progress, parse_step)
 
     registry_auth = _registry_auth_for_service(state, service)
     service, image_result = _deploy_step(
         steps,
         "Resolve image",
         lambda: resolve_service_image(config, service, registry_auth=registry_auth),
+        progress=progress,
     )
-    service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state))
+    service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state), progress=progress)
     target = _resolve_control_path(stack_path(config, service), config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    stack_text = _deploy_step(steps, "Render stack", lambda: render_stack(config, service))
-    stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text))
-    _deploy_step(steps, "Write stack", lambda: target.write_text(stack_text, encoding="utf-8"))
+    stack_text = _deploy_step(steps, "Render stack", lambda: render_stack(config, service), progress=progress)
+    stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
+    _deploy_step(steps, "Write stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
     written = [str(target)]
-    dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service))
+    dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
     webhook_result = _deploy_step(
         steps,
         "Deploy Portainer stack",
         lambda: "Portainer deploy skipped: --skip-webhook"
         if body.get("skipWebhook")
         else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env, registry_auth=registry_auth),
+        progress=progress,
     )
     if service.exposure == "tailscale-relay":
         route_target = _resolve_control_path(route_path(config, service), config_path)
@@ -283,16 +287,17 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         route_service = service
         relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host"))
         if body.get("skipWebhook") and not relay_is_explicit:
-            _deploy_step(steps, "Write route", lambda: "Route skipped: --skip-webhook requires deploy to infer tailscale relay")
+            _deploy_step(steps, "Write route", lambda: "Route skipped: --skip-webhook requires deploy to infer tailscale relay", progress=progress)
         else:
             if not body.get("skipWebhook"):
-                route_service = _deploy_step(steps, "Resolve relay", lambda: resolve_tailscale_relay(service))
-            _deploy_step(steps, "Write route", lambda: route_target.write_text(render_tailscale_route(config, route_service), encoding="utf-8"))
+                route_service = _deploy_step(steps, "Resolve relay", lambda: resolve_tailscale_relay(service), progress=progress)
+            _deploy_step(steps, "Write route", lambda: route_target.write_text(render_tailscale_route(config, route_service), encoding="utf-8"), progress=progress)
             written.append(str(route_target))
     probe_result = _deploy_step(
         steps,
         "Probe public route",
         lambda: "Public route probe skipped: --skip-webhook" if body.get("skipWebhook") else _probe_public_route(service),
+        progress=progress,
     )
     return {
         "clusterId": state["clusterId"],
@@ -455,15 +460,25 @@ def _probe_status_message(url: str, status: int) -> str:
     return f"Public route reachable: {url} -> HTTP {status}"
 
 
-def _deploy_step(steps: list[dict[str, str]], name: str, action: Any) -> Any:
+def _deploy_step(steps: list[dict[str, str]], name: str, action: Any, *, progress: Callable[[dict[str, str]], None] | None = None) -> Any:
+    _emit_progress(progress, {"name": name, "status": "start", "message": "started"})
     try:
         result = action()
     except LumaError as exc:
-        steps.append({"name": name, "status": "fail", "message": str(exc)})
+        step = {"name": name, "status": "fail", "message": str(exc)}
+        steps.append(step)
+        _emit_progress(progress, step)
         raise LumaError(f"{name} failed: {exc}") from exc
     message = _step_message(result)
-    steps.append({"name": name, "status": "ok", "message": message})
+    step = {"name": name, "status": "ok", "message": message}
+    steps.append(step)
+    _emit_progress(progress, step)
     return result
+
+
+def _emit_progress(progress: Callable[[dict[str, str]], None] | None, event: dict[str, str]) -> None:
+    if progress:
+        progress(event)
 
 
 def _step_message(result: Any) -> str:
@@ -1243,6 +1258,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/deployments":
                 self._json(200, handle_deployment(token, body))
                 return
+            if self.path == "/v1/deployments/stream":
+                self._stream_deployment(token, body)
+                return
             if self.path == "/v1/secrets":
                 self._json(200, handle_secret_set(token, body))
                 return
@@ -1261,6 +1279,24 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
+
+    def _stream_deployment(self, token: str, body: Dict[str, Any]) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        def emit(event: Dict[str, Any]) -> None:
+            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+
+        try:
+            result = handle_deployment(token, body, progress=emit)
+            emit({"status": "done", "result": result})
+        except LumaError as exc:
+            emit({"status": "fail", "message": str(exc)})
+        except Exception as exc:
+            emit({"status": "fail", "message": str(exc)})
 
     def _read_json(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length") or "0")

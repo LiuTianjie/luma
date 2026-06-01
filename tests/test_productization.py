@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -46,7 +47,7 @@ from luma.portainer import deploy_with_portainer, remove_luma_portainer_registry
 from luma.profiles import PROFILES
 from luma.registry import registry_provider_type
 from luma.service import load_service
-from luma.cli import _node_join_examples, _portainer_url_from_state, build_parser, exit_local_node, main
+from luma.cli import _node_join_examples, _portainer_url_from_state, _run_with_wait_heartbeat, build_parser, exit_local_node, main
 from luma.userconfig import configured_keys, ensure_interactive_config, load_user_config
 
 
@@ -263,6 +264,7 @@ class CliTests(unittest.TestCase):
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
+                client.deploy_events.side_effect = LumaError("control API error 404: not found")
                 client.deploy.return_value = {
                     "service": "api",
                     "image": {"selected": "nginx:alpine"},
@@ -285,6 +287,57 @@ class CliTests(unittest.TestCase):
                 self.assertIn("[ok] Deploy finished: api", printed_text)
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_deploy_streams_current_control_plane_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_home = _set_env("LUMA_CONFIG_HOME", str(home))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.deploy_events.return_value = iter(
+                    [
+                        {"name": "Resolve image", "status": "start", "message": "started"},
+                        {"name": "Resolve image", "status": "ok", "message": "nginx:alpine"},
+                        {"status": "done", "result": {"service": "api", "image": {"selected": "nginx:alpine"}}},
+                    ]
+                )
+                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                    code = main(["deploy", str(service_path)])
+                self.assertEqual(code, 0)
+                client.deploy_events.assert_called_once()
+                client.deploy.assert_not_called()
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("[start] Resolve image: started", printed_text)
+                self.assertIn("[ok] Resolve image: nginx:alpine", printed_text)
+                self.assertIn("[ok] Deploy finished: api", printed_text)
+                self.assertNotIn("Waiting for control plane response", printed_text)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_wait_heartbeat_prints_during_slow_deploy_request(self):
+        def slow_action():
+            time.sleep(0.03)
+            return {"ok": True}
+
+        with patch("builtins.print") as printed:
+            result = _run_with_wait_heartbeat(slow_action, timeout=42, interval=0.01)
+        self.assertEqual(result, {"ok": True})
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("[wait] Control plane still working", printed_text)
+        self.assertIn("timeout 42s", printed_text)
 
     def test_depoly_aliases_deploy(self):
         with tempfile.TemporaryDirectory() as tmp:
