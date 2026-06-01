@@ -4,8 +4,11 @@ import json
 import os
 import re
 import tempfile
+import threading
 import unittest
 import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -33,7 +36,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import handle_control_status, handle_deployment, handle_node_label, handle_node_register, handle_secret_list, handle_secret_set, resolve_service_image
+from luma.control.server import ControlHandler, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_secret_list, handle_secret_set, resolve_service_image
 from luma.control.state import init_state, load_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -161,6 +164,10 @@ class ProductConfigTests(unittest.TestCase):
     def test_packaged_core_stack_assets_are_available(self):
         self.assertIn("traefik", asset_text("stacks/core/traefik/stack.yml"))
         self.assertIn("luma-control", asset_text("stacks/core/luma-control/stack.yml"))
+        self.assertIn("Luma Status", asset_text("dashboard/index.html"))
+        self.assertIn("/v1/dashboard", asset_text("dashboard/app.js"))
+        root = Path(__file__).resolve().parents[1]
+        self.assertIn('"assets/dashboard/*"', (root / "pyproject.toml").read_text(encoding="utf-8"))
 
 
 class EgressConfigTests(unittest.TestCase):
@@ -1509,6 +1516,7 @@ class ControlApiTests(unittest.TestCase):
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 (root / "luma.yaml").write_text(
@@ -1558,6 +1566,7 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
     def test_control_status_reports_dns_and_portainer_readiness(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1628,6 +1637,178 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_dashboard_payload_reports_nodes_services_and_traffic_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["portainerApiUrl"] = "https://100.64.0.1:9443/api?token=secret"
+                state["portainerAdminPassword"] = "portainer-secret"
+                state["portainerEndpointId"] = 2
+                state["swarmId"] = "swarm"
+                state["nodes"] = {
+                    "manager": {"region": "cn", "status": "labeled", "labels": {"region": "cn"}},
+                    "home-node": {"displayName": "mini", "region": "home", "status": "labeled"},
+                }
+                from luma.control.state import save_state
+
+                save_state(state)
+                (root / "routes").mkdir()
+                (root / "routes" / "home-panel.yml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "http": {
+                                "routers": {"home-panel": {"rule": "Host(`panel.example.com`)"}},
+                                "services": {
+                                    "home-panel": {
+                                        "loadBalancer": {"servers": [{"url": "http://100.64.0.2:8080"}]}
+                                    }
+                                },
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {
+                                "dns": {
+                                    "type": "cloudflare",
+                                    "zone": "example.com",
+                                    "zoneId": "zone-id",
+                                    "edgeTarget": "203.0.113.10",
+                                }
+                            },
+                            "defaults": {"routesRoot": str(root / "routes")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                docker_nodes = [
+                    {
+                        "ID": "node-manager",
+                        "Description": {"Hostname": "manager"},
+                        "Spec": {"Role": "manager", "Availability": "active", "Labels": {"region": "cn", "ingress": "true"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.1"},
+                        "ManagerStatus": {"Leader": True},
+                    },
+                    {
+                        "ID": "node-home",
+                        "Description": {"Hostname": "home-node"},
+                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
+                    },
+                ]
+                docker_services = [
+                    _docker_service(
+                        "svc-api",
+                        "api_api",
+                        "ghcr.io/me/api:1",
+                        2,
+                        ["node.labels.region == cn"],
+                        {
+                            "traefik.http.routers.api.rule": "Host(`api.example.com`)",
+                            "traefik.http.services.api.loadbalancer.server.port": "3000",
+                            "traefik.swarm.network": "public",
+                        },
+                    ),
+                    _docker_service("svc-worker", "worker_worker", "ghcr.io/me/worker:1", 1, ["node.labels.region == global"], {}),
+                    _docker_service("svc-home", "home-panel_home-panel", "ghcr.io/me/panel:1", 1, ["node.labels.region == home"], {}),
+                ]
+                docker_tasks = [
+                    _docker_task("svc-api", "node-manager", "running"),
+                    _docker_task("svc-api", "node-home", "accepted"),
+                    _docker_task("svc-api", "node-home", "failed"),
+                    _docker_task("svc-worker", "node-manager", "running"),
+                    _docker_task("svc-home", "node-home", "running"),
+                ]
+
+                def fake_docker(method, path, body=None):
+                    self.assertEqual(method, "GET")
+                    if path == "/nodes":
+                        return docker_nodes
+                    if path == "/services":
+                        return docker_services
+                    if path == "/tasks":
+                        return docker_tasks
+                    raise AssertionError(path)
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker):
+                    result = handle_dashboard(state["deployToken"])
+
+                self.assertEqual(result["cluster"]["id"], "luma-test")
+                self.assertTrue(result["readiness"]["dns"]["ready"])
+                self.assertTrue(result["readiness"]["portainer"]["ready"])
+                self.assertEqual(result["readiness"]["dns"]["target"], "203.0.113.10")
+                self.assertEqual(result["nodes"][0]["name"], "home-node")
+                api = next(item for item in result["services"] if item["routeId"] == "api")
+                self.assertEqual(api["domain"], "api.example.com")
+                self.assertEqual(api["targetPort"], "3000")
+                self.assertEqual(api["running"], 1)
+                self.assertEqual(api["pending"], 1)
+                self.assertEqual(api["failed"], 1)
+                self.assertEqual(api["exposure"], "cn-edge")
+                self.assertEqual(api["health"], "degraded")
+                worker = next(item for item in result["services"] if item["routeId"] == "worker")
+                self.assertEqual(worker["exposure"], "none")
+                home_path = next(item for item in result["trafficPaths"] if item["id"] == "home-panel")
+                self.assertEqual(home_path["kind"], "tailscale-relay")
+                self.assertIn("http://100.64.0.2:8080", home_path["segments"])
+                serialized = json.dumps(result)
+                self.assertNotIn("portainer-secret", serialized)
+                self.assertNotIn(state["deployToken"], serialized)
+                self.assertNotIn("token=secret", serialized)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_dashboard_returns_partial_payload_when_docker_socket_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {"manager": {"region": "cn", "status": "registered"}}
+                from luma.control.state import save_state
+
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"providers": {"dns": {"type": "cloudflare"}}}), encoding="utf-8")
+                with patch("luma.control.server.docker_request", side_effect=LumaError("Docker socket unavailable")):
+                    result = handle_dashboard(state["deployToken"])
+                self.assertFalse(result["readiness"]["swarm"]["available"])
+                self.assertEqual(result["nodes"][0]["name"], "manager")
+                self.assertEqual(result["nodes"][0]["state"], "missing")
+                self.assertTrue(any("Docker nodes unavailable" in item for item in result["errors"]))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_dashboard_handler_serves_static_assets_and_rejects_missing_token(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ControlHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            with urllib.request.urlopen(base + "/dashboard/", timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"Luma Status", response.read())
+            with urllib.request.urlopen(base + "/dashboard/app.js", timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"/v1/dashboard", response.read())
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(base + "/v1/dashboard", timeout=5)
+            self.assertEqual(raised.exception.code, 401)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_deployment_passes_referenced_secrets_as_portainer_stack_env(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1922,6 +2103,30 @@ class ControlApiTests(unittest.TestCase):
                 },
                 token="jwt",
             )
+
+
+def _docker_service(service_id, name, image, replicas, constraints, labels):
+    return {
+        "ID": service_id,
+        "Spec": {
+            "Name": name,
+            "Labels": labels,
+            "Mode": {"Replicated": {"Replicas": replicas}},
+            "TaskTemplate": {
+                "ContainerSpec": {"Image": image},
+                "Placement": {"Constraints": constraints},
+            },
+        },
+    }
+
+
+def _docker_task(service_id, node_id, state):
+    return {
+        "ServiceID": service_id,
+        "NodeID": node_id,
+        "DesiredState": "running",
+        "Status": {"State": state},
+    }
 
 
 def _restore_env(key, value):

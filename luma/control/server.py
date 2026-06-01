@@ -16,9 +16,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
 
+from ..assets import asset_path
 from ..cloudflare import sync_dns
 from ..config import load_config
 from ..errors import LumaError
+from ..io import load_yaml
 from ..portainer import deploy_with_portainer
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service
@@ -83,6 +85,63 @@ def handle_control_status(token: str) -> Dict[str, Any]:
             "items": registered_nodes,
         },
         "swarm": _swarm_nodes_summary(),
+    }
+
+
+def handle_dashboard(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    dns = config.dns
+    dns_provider = str(dns.get("provider") or "not configured")
+    token_env = str(dns.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
+    zone_id = os.environ.get(str(dns.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID"))) or dns.get("zoneId")
+    dns_target = str(dns.get("edgeTarget") or config.default_dns_target() or "")
+    secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+    dns_token_configured = bool(os.environ.get(token_env) or token_env in secrets)
+    portainer_endpoint_id = state.get("portainerEndpointId") or config.portainer.get("endpointId")
+    swarm_id = str(state.get("swarmId") or config.portainer.get("swarmId") or "")
+    errors: list[str] = []
+
+    raw_nodes = _dashboard_docker_list("/nodes", "nodes", errors)
+    node_by_id = _dashboard_node_map(raw_nodes)
+    registered_nodes = _registered_nodes_summary(state.get("nodes") if isinstance(state.get("nodes"), dict) else {})
+    nodes = _dashboard_nodes(registered_nodes, raw_nodes)
+
+    raw_services = _dashboard_docker_list("/services", "services", errors)
+    raw_tasks = _dashboard_docker_list("/tasks", "tasks", errors)
+    route_files = _dashboard_route_files(config, config_path, errors)
+    services = _dashboard_services(raw_services, raw_tasks, node_by_id, route_files)
+    traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target)
+
+    return {
+        "cluster": {
+            "id": str(state.get("clusterId") or ""),
+            "version": __version__,
+            "configPath": str(config_path),
+        },
+        "readiness": {
+            "dns": {
+                "ready": dns_provider == "cloudflare" and bool(zone_id) and dns_token_configured and bool(dns_target),
+                "provider": dns_provider,
+                "zone": str(dns.get("zone") or ""),
+                "target": dns_target,
+            },
+            "portainer": {
+                "ready": bool((state.get("portainerApiUrl") or config.portainer.get("apiUrl")) and portainer_endpoint_id and swarm_id),
+                "apiConfigured": bool(state.get("portainerApiUrl") or config.portainer.get("apiUrl")),
+                "endpointConfigured": bool(portainer_endpoint_id),
+            },
+            "swarm": {
+                "available": bool(raw_nodes),
+            },
+        },
+        "nodes": nodes,
+        "services": [_public_dashboard_service(item) for item in services],
+        "trafficPaths": traffic_paths,
+        "errors": errors,
     }
 
 
@@ -353,6 +412,330 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
     return items
 
 
+def _dashboard_docker_list(path: str, label: str, errors: list[str]) -> list[Dict[str, Any]]:
+    try:
+        value = docker_request("GET", path)
+    except LumaError as exc:
+        errors.append(f"Docker {label} unavailable: {exc}")
+        return []
+    if not isinstance(value, list):
+        errors.append(f"Docker {label} response was not a list")
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _dashboard_node_map(raw_nodes: list[Dict[str, Any]]) -> dict[str, Dict[str, Any]]:
+    result: dict[str, Dict[str, Any]] = {}
+    for node in raw_nodes:
+        node_id = str(node.get("ID") or "")
+        if not node_id:
+            continue
+        result[node_id] = _swarm_node_summary_item(node)
+    return result
+
+
+def _dashboard_nodes(registered_nodes: list[Dict[str, Any]], raw_nodes: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    merged: dict[str, Dict[str, Any]] = {}
+    for node in registered_nodes:
+        name = str(node.get("name") or "")
+        if not name:
+            continue
+        merged.setdefault(name, {})["registered"] = node
+    for raw_node in raw_nodes:
+        node = _swarm_node_summary_item(raw_node)
+        name = str(node.get("hostname") or node.get("id") or "")
+        if not name:
+            continue
+        merged.setdefault(name, {})["swarm"] = node
+
+    rows: list[Dict[str, Any]] = []
+    for name in sorted(merged):
+        registered = merged[name].get("registered") if isinstance(merged[name].get("registered"), dict) else {}
+        swarm = merged[name].get("swarm") if isinstance(merged[name].get("swarm"), dict) else {}
+        display = str(registered.get("displayName") or name)
+        rows.append(
+            {
+                "name": name,
+                "displayName": display,
+                "region": str(registered.get("region") or swarm.get("region") or ""),
+                "role": str(swarm.get("role") or ""),
+                "state": str(swarm.get("state") or "missing"),
+                "availability": str(swarm.get("availability") or ""),
+                "leader": bool(swarm.get("leader")),
+            }
+        )
+    return rows
+
+
+def _dashboard_route_files(config: Any, config_path: Path, errors: list[str]) -> dict[str, Dict[str, Any]]:
+    routes_root = _resolve_control_path(config.routes_root, config_path)
+    if not routes_root.exists():
+        return {}
+    result: dict[str, Dict[str, Any]] = {}
+    try:
+        files = sorted([*routes_root.glob("*.yml"), *routes_root.glob("*.yaml")])
+    except OSError as exc:
+        errors.append(f"Route files unavailable: {exc}")
+        return result
+    for path in files:
+        try:
+            data = load_yaml(path)
+            route = _dashboard_route_file(path.stem, data)
+            if route:
+                result[path.stem] = route
+        except (LumaError, OSError) as exc:
+            errors.append(f"Route file {path.name} unreadable: {exc}")
+    return result
+
+
+def _dashboard_route_file(route_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    http = data.get("http") if isinstance(data.get("http"), dict) else {}
+    routers = http.get("routers") if isinstance(http.get("routers"), dict) else {}
+    services = http.get("services") if isinstance(http.get("services"), dict) else {}
+    domain = ""
+    for router in routers.values():
+        if not isinstance(router, dict):
+            continue
+        domain = _host_from_rule(str(router.get("rule") or ""))
+        if domain:
+            break
+    upstreams: list[str] = []
+    for service in services.values():
+        if not isinstance(service, dict):
+            continue
+        load_balancer = service.get("loadBalancer") if isinstance(service.get("loadBalancer"), dict) else {}
+        servers = load_balancer.get("servers") if isinstance(load_balancer.get("servers"), list) else []
+        for server in servers:
+            if isinstance(server, dict) and server.get("url"):
+                upstreams.append(str(server["url"]))
+    if not domain and not upstreams:
+        return {}
+    return {"id": route_id, "domain": domain, "upstreams": upstreams}
+
+
+def _dashboard_services(
+    raw_services: list[Dict[str, Any]],
+    raw_tasks: list[Dict[str, Any]],
+    node_by_id: dict[str, Dict[str, Any]],
+    route_files: dict[str, Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    tasks_by_service: dict[str, list[Dict[str, Any]]] = {}
+    for task in raw_tasks:
+        service_id = str(task.get("ServiceID") or "")
+        if service_id:
+            tasks_by_service.setdefault(service_id, []).append(task)
+
+    services: list[Dict[str, Any]] = []
+    for service in raw_services:
+        item = _dashboard_service(service, tasks_by_service.get(str(service.get("ID") or ""), []), node_by_id, route_files)
+        if item:
+            services.append(item)
+
+    cloudflare_tunnel_stacks = {item["stack"] for item in services if item.get("name") == "cloudflared" and item.get("stack")}
+    for item in services:
+        if item.get("stack") in cloudflare_tunnel_stacks and item.get("name") != "cloudflared" and item.get("exposure") == "none":
+            item["exposure"] = "cloudflare-tunnel"
+    services.sort(key=lambda item: (str(item.get("stack") or ""), str(item.get("name") or "")))
+    return services
+
+
+def _dashboard_service(
+    service: Dict[str, Any],
+    tasks: list[Dict[str, Any]],
+    node_by_id: dict[str, Dict[str, Any]],
+    route_files: dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    spec = service.get("Spec") if isinstance(service.get("Spec"), dict) else {}
+    full_name = str(spec.get("Name") or service.get("ID") or "")
+    if not full_name:
+        return {}
+    stack, name = _split_swarm_service_name(full_name)
+    template = spec.get("TaskTemplate") if isinstance(spec.get("TaskTemplate"), dict) else {}
+    container = template.get("ContainerSpec") if isinstance(template.get("ContainerSpec"), dict) else {}
+    placement = template.get("Placement") if isinstance(template.get("Placement"), dict) else {}
+    constraints = placement.get("Constraints") if isinstance(placement.get("Constraints"), list) else []
+    labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
+    route = _traefik_route_from_labels(labels)
+    route_id = stack or name
+    route_file = route_files.get(route_id) or route_files.get(name)
+    counts, task_nodes = _dashboard_task_counts(tasks, node_by_id)
+    desired = _service_desired_replicas(spec, counts)
+    region = _constraint_value(constraints, "node.labels.region")
+    exposure = "none"
+    if route.get("domain"):
+        exposure = "external-edge" if region == "global" else "cn-edge"
+    elif route_file:
+        exposure = "tailscale-relay"
+    return {
+        "stack": stack,
+        "name": name,
+        "fullName": full_name,
+        "image": str(container.get("Image") or ""),
+        "desired": desired,
+        "running": counts["running"],
+        "failed": counts["failed"],
+        "pending": counts["pending"],
+        "nodes": task_nodes,
+        "region": region,
+        "node": _constraint_value(constraints, "node.hostname"),
+        "exposure": exposure,
+        "routeId": route_id,
+        "domain": str(route.get("domain") or (route_file or {}).get("domain") or ""),
+        "targetPort": str(route.get("port") or ""),
+        "network": str(route.get("network") or ""),
+        "health": _service_health(desired, counts),
+        "_routeFile": route_file or {},
+    }
+
+
+def _public_dashboard_service(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in item.items() if not key.startswith("_")}
+
+
+def _split_swarm_service_name(name: str) -> tuple[str, str]:
+    if "_" not in name:
+        return "", name
+    stack, service = name.split("_", 1)
+    return stack, service
+
+
+def _service_desired_replicas(spec: Dict[str, Any], counts: Dict[str, int]) -> int:
+    mode = spec.get("Mode") if isinstance(spec.get("Mode"), dict) else {}
+    replicated = mode.get("Replicated") if isinstance(mode.get("Replicated"), dict) else {}
+    replicas = replicated.get("Replicas")
+    if isinstance(replicas, int):
+        return replicas
+    total = counts["running"] + counts["pending"] + counts["failed"]
+    return total or 1
+
+
+def _dashboard_task_counts(tasks: list[Dict[str, Any]], node_by_id: dict[str, Dict[str, Any]]) -> tuple[Dict[str, int], list[str]]:
+    current_tasks = [task for task in tasks if str(task.get("DesiredState") or "") == "running"]
+    if not current_tasks:
+        current_tasks = tasks
+    counts = {"running": 0, "failed": 0, "pending": 0}
+    nodes: list[str] = []
+    for task in current_tasks:
+        status = task.get("Status") if isinstance(task.get("Status"), dict) else {}
+        state = str(status.get("State") or "").lower()
+        if state == "running":
+            counts["running"] += 1
+        elif state in {"failed", "rejected"}:
+            counts["failed"] += 1
+        elif state and state not in {"shutdown", "complete", "remove"}:
+            counts["pending"] += 1
+        node_id = str(task.get("NodeID") or "")
+        node = node_by_id.get(node_id)
+        hostname = str((node or {}).get("hostname") or "")
+        if hostname and state not in {"failed", "rejected", "shutdown", "complete", "remove"} and hostname not in nodes:
+            nodes.append(hostname)
+    return counts, nodes
+
+
+def _service_health(desired: int, counts: Dict[str, int]) -> str:
+    if desired > 0 and counts["running"] >= desired and counts["failed"] == 0 and counts["pending"] == 0:
+        return "healthy"
+    if counts["running"] > 0:
+        return "degraded"
+    if counts["pending"] > 0:
+        return "pending"
+    if counts["failed"] > 0:
+        return "failed"
+    return "unknown"
+
+
+def _constraint_value(constraints: list[Any], key: str) -> str:
+    for constraint in constraints:
+        text = str(constraint)
+        match = re.search(rf"{re.escape(key)}\s*==\s*([^\s]+)", text)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _traefik_route_from_labels(labels: Dict[str, Any]) -> Dict[str, str]:
+    route: Dict[str, str] = {}
+    for key, value in labels.items():
+        label_key = str(key)
+        label_value = str(value)
+        if label_key.startswith("traefik.http.routers.") and label_key.endswith(".rule") and not route.get("domain"):
+            host = _host_from_rule(label_value)
+            if host:
+                route["domain"] = host
+        elif label_key.endswith(".loadbalancer.server.port") and not route.get("port"):
+            route["port"] = label_value
+        elif label_key == "traefik.swarm.network":
+            route["network"] = label_value
+    return route
+
+
+def _host_from_rule(rule: str) -> str:
+    for pattern in (r"Host\(`([^`]+)`\)", r'Host\("([^"]+)"\)', r"Host\('([^']+)'\)", r"Host\(([^),]+)\)"):
+        match = re.search(pattern, rule)
+        if match:
+            return match.group(1).strip(" `\"'")
+    return ""
+
+
+def _dashboard_traffic_paths(
+    services: list[Dict[str, Any]],
+    route_files: dict[str, Dict[str, Any]],
+    dns_target: str,
+) -> list[Dict[str, Any]]:
+    paths: list[Dict[str, Any]] = []
+    for service in services:
+        route_id = str(service.get("routeId") or service.get("name") or "")
+        exposure = str(service.get("exposure") or "none")
+        nodes = [str(node) for node in service.get("nodes", []) if node]
+        service_target = str(service.get("name") or "")
+        if service.get("targetPort"):
+            service_target = f"{service_target}:{service['targetPort']}"
+        if exposure in {"cn-edge", "external-edge"}:
+            segments = ["Cloudflare DNS", dns_target or "DNS target missing", "Traefik", service_target]
+            segments.extend(nodes or ["no running tasks"])
+        elif exposure == "tailscale-relay":
+            route_file = service.get("_routeFile") if isinstance(service.get("_routeFile"), dict) else route_files.get(route_id, {})
+            upstreams = [str(item) for item in route_file.get("upstreams", [])] if isinstance(route_file, dict) else []
+            segments = ["Cloudflare DNS", dns_target or "DNS target missing", "Traefik", "Tailscale"]
+            segments.extend(upstreams or nodes or ["upstream unresolved"])
+        elif exposure == "cloudflare-tunnel":
+            segments = ["Cloudflare", "cloudflared", service_target]
+            segments.extend(nodes or ["no running tasks"])
+        else:
+            segments = ["client/internal", service_target]
+            segments.extend(nodes or ["no running tasks"])
+        paths.append(
+            {
+                "id": route_id,
+                "kind": exposure,
+                "domain": str(service.get("domain") or ""),
+                "segments": segments,
+            }
+        )
+    return paths
+
+
+def _swarm_node_summary_item(node: Dict[str, Any]) -> Dict[str, Any]:
+    spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
+    description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
+    status = node.get("Status") if isinstance(node.get("Status"), dict) else {}
+    manager_status = node.get("ManagerStatus") if isinstance(node.get("ManagerStatus"), dict) else {}
+    labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
+    return {
+        "id": str(node.get("ID") or "")[:12],
+        "hostname": str(description.get("Hostname") or ""),
+        "role": str(spec.get("Role") or ""),
+        "availability": str(spec.get("Availability") or ""),
+        "state": str(status.get("State") or ""),
+        "addr": str(status.get("Addr") or ""),
+        "region": str(labels.get("region") or ""),
+        "ingress": str(labels.get("ingress") or ""),
+        "leader": bool(manager_status.get("Leader")),
+        "reachability": str(manager_status.get("Reachability") or ""),
+        "labels": {str(key): str(value) for key, value in labels.items()},
+    }
+
+
 def _swarm_nodes_summary() -> Dict[str, Any]:
     try:
         nodes = docker_request("GET", "/nodes")
@@ -364,26 +747,7 @@ def _swarm_nodes_summary() -> Dict[str, Any]:
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
-        description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
-        status = node.get("Status") if isinstance(node.get("Status"), dict) else {}
-        manager_status = node.get("ManagerStatus") if isinstance(node.get("ManagerStatus"), dict) else {}
-        labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
-        items.append(
-            {
-                "id": str(node.get("ID") or "")[:12],
-                "hostname": str(description.get("Hostname") or ""),
-                "role": str(spec.get("Role") or ""),
-                "availability": str(spec.get("Availability") or ""),
-                "state": str(status.get("State") or ""),
-                "addr": str(status.get("Addr") or ""),
-                "region": str(labels.get("region") or ""),
-                "ingress": str(labels.get("ingress") or ""),
-                "leader": bool(manager_status.get("Leader")),
-                "reachability": str(manager_status.get("Reachability") or ""),
-                "labels": {str(key): str(value) for key, value in labels.items()},
-            }
-        )
+        items.append(_swarm_node_summary_item(node))
     items.sort(key=lambda item: item.get("hostname") or item.get("id") or "")
     return {"available": True, "nodes": items}
 
@@ -595,28 +959,59 @@ def label_swarm_node(node_name: str, labels: Dict[str, str]) -> None:
     docker_request("POST", f"/nodes/{urllib.parse.quote(node_id, safe='')}/update?version={version}", spec)
 
 
+DASHBOARD_ASSETS = {
+    "/dashboard/": ("dashboard/index.html", "text/html; charset=utf-8"),
+    "/dashboard/app.js": ("dashboard/app.js", "application/javascript; charset=utf-8"),
+    "/dashboard/styles.css": ("dashboard/styles.css", "text/css; charset=utf-8"),
+}
+
+
+def _dashboard_asset(path: str) -> tuple[bytes, str]:
+    if path not in DASHBOARD_ASSETS:
+        raise LumaError("dashboard asset not found")
+    relative_path, content_type = DASHBOARD_ASSETS[path]
+    return asset_path(relative_path).read_bytes(), content_type
+
+
 class ControlHandler(BaseHTTPRequestHandler):
     server_version = "LumaControl/0.1"
 
     def do_GET(self) -> None:
-        if self.path == "/v1/health":
+        parsed_path = urllib.parse.urlparse(self.path).path
+        if parsed_path == "/dashboard":
+            self.send_response(308)
+            self.send_header("Location", "/dashboard/")
+            self.end_headers()
+            return
+        if parsed_path.startswith("/dashboard/"):
+            try:
+                body, content_type = _dashboard_asset(parsed_path)
+                cache_control = "no-store" if parsed_path == "/dashboard/" else "public, max-age=60"
+                self._bytes(200, body, content_type, cache_control=cache_control)
+            except (LumaError, OSError):
+                self._json(404, {"error": "not found"})
+            return
+        if parsed_path == "/v1/health":
             self._json(
                 200,
                 {
                     "ok": True,
                     "version": __version__,
                     "nodeJoinModel": "region-first",
-                    "capabilities": ["node-region", "service-proxy"],
+                    "capabilities": ["node-region", "service-proxy", "dashboard"],
                 },
             )
             return
         try:
             token = bearer_token(self.headers)
-            if self.path == "/v1/secrets":
+            if parsed_path == "/v1/secrets":
                 self._json(200, handle_secret_list(token))
                 return
-            if self.path == "/v1/status":
+            if parsed_path == "/v1/status":
                 self._json(200, handle_control_status(token))
+                return
+            if parsed_path == "/v1/dashboard":
+                self._json(200, handle_dashboard(token))
                 return
         except LumaError as exc:
             code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
@@ -665,11 +1060,15 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def _json(self, status: int, payload: Dict[str, Any]) -> None:
         raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+        self._bytes(status, raw, "application/json")
+
+    def _bytes(self, status: int, body: bytes, content_type: str, *, cache_control: str = "no-store") -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache_control)
         self.end_headers()
-        self.wfile.write(raw)
+        self.wfile.write(body)
 
 
 def serve(host: str, port: int) -> None:

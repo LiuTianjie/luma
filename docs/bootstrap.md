@@ -127,6 +127,14 @@ luma context list
 
 The client stores the endpoint, cluster id, and deploy token in `~/.config/luma/contexts/`. It does not need Docker, SSH access, Cloudflare credentials, or Portainer webhooks.
 
+For a read-only Web view, open:
+
+```text
+https://luma.example.com/dashboard/
+```
+
+Paste the same deploy token to see control readiness, nodes, services, and inferred traffic paths. Use this only on trusted devices because the browser stores the token in local storage.
+
 ## 5. Join Worker Nodes
 
 Run this directly on each additional server:

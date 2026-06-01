@@ -84,6 +84,8 @@ Client login state is written per user:
 
 `~/.luma.config.json` contains local setup secrets such as Cloudflare, Tailscale, egress, and sudo values. The context contains only the control endpoint, cluster id, and deploy token. Both should be treated as secrets.
 
+The Web status panel at `https://<control-domain>/dashboard/` also uses the deploy token. The browser stores it in local storage for that control domain, so use the panel only on trusted devices and clear browser storage or rotate the deploy token if the device is no longer trusted.
+
 ## Rotation
 
 Rotate any token or subscription URL that appears in:

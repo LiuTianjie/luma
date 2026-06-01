@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Luma Status</title>
+    <link rel="stylesheet" href="/dashboard/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Luma Control</p>
+          <h1>Status Panel</h1>
+        </div>
+        <div class="top-actions">
+          <span class="sync-state" data-sync-state>Not connected</span>
+          <button type="button" data-refresh>Refresh</button>
+          <button type="button" class="ghost" data-sign-out>Sign out</button>
+        </div>
+      </header>
+
+      <section class="login-panel" data-login-panel>
+        <div>
+          <p class="eyebrow">Read-only access</p>
+          <h2>Paste a deploy token</h2>
+          <p>Tokens stay in this browser and are sent only to this Luma Control origin.</p>
+        </div>
+        <form data-login-form>
+          <input data-token-input type="password" autocomplete="off" spellcheck="false" placeholder="Deploy token" />
+          <button type="submit">Open status</button>
+        </form>
+      </section>
+
+      <section class="error-list" data-errors hidden></section>
+
+      <section class="summary-grid" data-summary hidden>
+        <article>
+          <span>Cluster</span>
+          <strong data-cluster-id>-</strong>
+          <small data-cluster-version>-</small>
+        </article>
+        <article>
+          <span>DNS</span>
+          <strong data-dns-ready>-</strong>
+          <small data-dns-detail>-</small>
+        </article>
+        <article>
+          <span>Portainer</span>
+          <strong data-portainer-ready>-</strong>
+          <small data-portainer-detail>-</small>
+        </article>
+        <article>
+          <span>Swarm</span>
+          <strong data-swarm-ready>-</strong>
+          <small data-swarm-detail>-</small>
+        </article>
+      </section>
+
+      <section class="content-grid" data-content hidden>
+        <article class="panel">
+          <div class="panel-heading">
+            <h2>Nodes</h2>
+            <span data-node-count>0</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Region</th>
+                  <th>Role</th>
+                  <th>State</th>
+                  <th>Availability</th>
+                  <th>Leader</th>
+                </tr>
+              </thead>
+              <tbody data-nodes></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-heading">
+            <h2>Services</h2>
+            <span data-service-count>0</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Service</th>
+                  <th>Region</th>
+                  <th>Exposure</th>
+                  <th>Image</th>
+                  <th>Replicas</th>
+                  <th>Health</th>
+                  <th>Nodes</th>
+                </tr>
+              </thead>
+              <tbody data-services></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel path-panel" data-path-section hidden>
+        <div class="panel-heading">
+          <h2>Traffic Paths</h2>
+          <span>inferred</span>
+        </div>
+        <div class="path-grid" data-paths></div>
+      </section>
+    </main>
+    <script src="/dashboard/app.js" defer></script>
+  </body>
+</html>

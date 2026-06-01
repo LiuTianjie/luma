@@ -23,5 +23,6 @@ luma = [
   "assets/Dockerfile.control",
   "assets/README.md",
   "assets/pyproject.toml",
+  "assets/dashboard/*",
   "assets/stacks/core/*/stack.yml",
 ]

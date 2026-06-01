@@ -160,6 +160,7 @@ The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For s
 | worker/home node | Join the cluster | `luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1` |
 | client laptop | Login to control plane | `luma login https://luma.example.com --token <deploy-token>` |
 | client laptop | Deploy a service | `luma deploy app.yaml` |
+| browser on trusted device | View status panel | `https://luma.example.com/dashboard/` |
 | any logged-in client | Manage deploy secrets | `luma secret set DATABASE_URL` |
 | any machine | Show local version | `luma version` |
 | any machine | Diagnose local environment | `luma doctor` |
@@ -265,6 +266,7 @@ See `docs/deployment-yaml.md` for all fields and `examples/` for service templat
 | --- | --- |
 | Update the manager | Run `luma update` on the manager. If the control API already matches the updated CLI, manager bootstrap is skipped; use `luma update manager` to force refresh. |
 | View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, Portainer, registered nodes, and actual Swarm nodes. |
+| View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the deploy token on a trusted device. |
 | What happens if I run `luma update` on a client or worker? | It updates only the local CLI and skips manager control-plane refresh. |
 | When does `luma update` need `--domain`? | Only when `/opt/luma/control/control.json` is missing or you intentionally changed the control domain. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
@@ -319,5 +321,6 @@ Restart Codex after installing so the skill is loaded.
 
 - Do not commit API tokens, Portainer webhooks, deploy tokens, join tokens, or proxy subscription URLs.
 - Client machines should not need SSH/Docker/Cloudflare/Portainer credentials; distribute deploy tokens instead.
+- The Web status panel uses the deploy token and stores it in browser local storage. Use it on trusted devices only.
 - Join tokens should only be used on servers that are joining the cluster.
 - If a token or subscription URL is pasted into chat, logs, or issues, rotate it before publishing.

@@ -120,6 +120,14 @@ luma status
 
 `luma status` prints DNS and Portainer readiness, registered Luma nodes from the control state, and actual Docker Swarm nodes from the manager Docker socket.
 
+The same control plane also serves a read-only Web status panel:
+
+```text
+https://<control-domain>/dashboard/
+```
+
+Paste the deploy token to view readiness, nodes, services, and inferred traffic paths from a trusted browser.
+
 List nodes from local `luma.yaml` only:
 
 ```bash
