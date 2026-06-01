@@ -191,7 +191,7 @@ luma node join https://luma.example.com --token <join-token> --region global --n
 luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
 ```
 
-macOS home 节点需要提前安装并启动 Docker Desktop 和 Tailscale。非 apt Linux 发行版需要提前手动安装 Docker。
+macOS home 节点需要提前安装并启动 Docker Desktop 和 Tailscale。执行 `luma node join --region home ...` 时，如果本机还没有连上 Tailscale，CLI 会把 `TAILSCALE_AUTHKEY` 当作必填项先询问，再注册节点和加入 Swarm。非 apt Linux 发行版需要提前手动安装 Docker。
 
 移除节点前，先在该节点本机执行：
 
@@ -266,7 +266,8 @@ env:
 
 | 问题 | 做法 |
 | --- | --- |
-| 更新 manager | 在 manager 上运行 `luma update`。正常情况下不需要再传域名。 |
+| 更新 manager | 在 manager 上运行 `luma update`。如果 control API 已经和更新后的 CLI 同版本，会跳过 manager bootstrap；需要强制刷新时运行 `luma update manager`。 |
+| 查看整个集群状态 | 任意已登录 client 运行 `luma status`，会输出控制面、DNS、Portainer、注册节点和 Swarm 实际节点。 |
 | 在 client 或 worker 上运行 `luma update` 会怎样 | 只更新本地 CLI，不刷新 manager 控制面。 |
 | `luma update` 什么时候需要 `--domain` | 只有 `/opt/luma/control/control.json` 缺失，或你确实要切换控制面域名时。 |
 | 服务 A 从一个 region 迁到另一个 region | 改 manifest 的 `region`，必要时同步修改 `exposure`，然后重新 `luma deploy app.yaml`。 |
@@ -274,9 +275,9 @@ env:
 | 服务从内部变公开 | 设置匹配的 `region` + `exposure`，补 `domain` 和 `port`，重新 deploy。 |
 | 新增国内 worker | 在新机器执行 `luma node join ... --region cn --name ...`。 |
 | 新增海外 worker | 在新机器执行 `luma node join ... --region global --name ...`。 |
-| 新增家里节点 | 先准备 Docker Desktop/Tailscale，再执行 `luma node join ... --region home --name ...`。 |
+| 新增家里节点 | 先准备 Docker Desktop/Tailscale，再执行 `luma node join ... --region home --name ...`。如果未连接 Tailscale，CLI 会要求输入 `TAILSCALE_AUTHKEY`。 |
 | manager 只有 2c2g | 给业务 manifest 设置 `resources.limits` 和 `resources.reservations`，避免业务服务挤占控制面。 |
-| Tailscale bootstrap 时没连上 | 在对应机器运行 `luma tailscale connect`。 |
+| Tailscale bootstrap/join 时没连上 | 在对应机器运行 `luma tailscale connect`；该命令会要求输入 `TAILSCALE_AUTHKEY`。 |
 | egress 失败或后补订阅 | 设置 `EGRESS_SUBSCRIPTION_URL` 后运行 `luma egress setup`。 |
 | 检查控制面版本 | `luma version --control-url https://luma.example.com`。 |
 | 公开服务 `/` 返回 404 | 这通常说明路由已经打到应用了；用真实路径如 `/admin/` 验证。 |

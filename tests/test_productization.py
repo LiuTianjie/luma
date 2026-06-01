@@ -29,6 +29,7 @@ from luma.bootstrap import (
     initialize_portainer,
     install_control_config,
     install_docker,
+    setup_tailscale,
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
@@ -552,7 +553,7 @@ class CliTests(unittest.TestCase):
             check=False,
         )
 
-    def test_update_manager_infers_domain_from_control_state(self):
+    def test_update_infers_domain_and_refreshes_when_control_is_older(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -565,6 +566,8 @@ class CliTests(unittest.TestCase):
             try:
                 with patch("luma.cli._run_luma_installer") as installer, patch(
                     "luma.cli._luma_executable", return_value="/usr/local/bin/luma"
+                ), patch("luma.cli._installed_cli_version", return_value="0.1.10"), patch(
+                    "luma.cli._control_version_for_update", return_value="0.1.9"
                 ), patch(
                     "luma.cli.subprocess.run", return_value=completed
                 ) as run:
@@ -587,6 +590,32 @@ class CliTests(unittest.TestCase):
             check=False,
         )
 
+    def test_update_skips_manager_refresh_when_control_matches_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            state_dir.mkdir()
+            (state_dir / "control.json").write_text(
+                json.dumps({"clusterId": "luma-test", "domain": "luma.example.com"}) + "\n",
+                encoding="utf-8",
+            )
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(state_dir))
+            try:
+                with patch("luma.cli._run_luma_installer") as installer, patch(
+                    "luma.cli._installed_cli_version", return_value="0.1.10"
+                ), patch("luma.cli._control_version_for_update", return_value="0.1.10"), patch(
+                    "luma.cli.subprocess.run"
+                ) as run, patch("builtins.print") as printed:
+                    code = main(["update"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+        self.assertEqual(code, 0)
+        installer.assert_called_once_with(install_ref=None)
+        run.assert_not_called()
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("Manager bootstrap refresh skipped", printed_text)
+        self.assertIn("control API already matches CLI version 0.1.10", printed_text)
+
     def test_update_without_manager_state_updates_cli_only(self):
         with patch("luma.cli._existing_control_state", return_value=None), patch(
             "luma.cli._run_luma_installer"
@@ -599,6 +628,16 @@ class CliTests(unittest.TestCase):
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("CLI updated", printed_text)
         self.assertIn("Manager bootstrap refresh skipped", printed_text)
+
+    def test_version_local_skips_control_check(self):
+        with patch("luma.cli.ControlClient") as client_cls, patch("builtins.print") as printed:
+            code = main(["version", "--local"])
+
+        self.assertEqual(code, 0)
+        client_cls.assert_not_called()
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn(f"Luma CLI: {__version__}", printed_text)
+        self.assertNotIn("Luma Control", printed_text)
 
     def test_version_prints_cli_without_context(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -656,7 +695,34 @@ class CliTests(unittest.TestCase):
                         "swarmIdConfigured": True,
                         "ready": True,
                     },
-                    "nodes": {"registered": 2},
+                    "nodes": {
+                        "registered": 2,
+                        "items": [
+                            {"name": "manager", "region": "cn", "status": "labeled", "displayName": "manager"},
+                            {"name": "docker-home", "region": "home", "status": "labeled", "displayName": "mini-gaojiu"},
+                        ],
+                    },
+                    "swarm": {
+                        "available": True,
+                        "nodes": [
+                            {
+                                "hostname": "manager",
+                                "role": "manager",
+                                "state": "ready",
+                                "availability": "active",
+                                "region": "cn",
+                                "leader": True,
+                            },
+                            {
+                                "hostname": "docker-home",
+                                "role": "worker",
+                                "state": "ready",
+                                "availability": "active",
+                                "region": "home",
+                                "leader": False,
+                            },
+                        ],
+                    },
                 }
                 with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
                     code = main(["status"])
@@ -669,6 +735,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("DNS provider: cloudflare", printed_text)
         self.assertIn("DNS ready: yes", printed_text)
         self.assertIn("Portainer ready: yes", printed_text)
+        self.assertIn("Registered node details:", printed_text)
+        self.assertIn("docker-home\thome\tlabeled\tmini-gaojiu", printed_text)
+        self.assertIn("Swarm nodes: 2", printed_text)
+        self.assertIn("manager\tmanager\tready\tactive\tcn\tyes", printed_text)
 
     def test_node_exit_cleans_local_swarm_and_runtime_state(self):
         remote = Mock()
@@ -748,6 +818,84 @@ class CliTests(unittest.TestCase):
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
 
+    def test_home_node_join_requires_tailscale_key_when_disconnected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
+            try:
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "luma.userconfig.getpass.getpass", return_value=""
+                ), patch("luma.cli._local_tailscale_connected", return_value=False), patch(
+                    "luma.cli.ControlClient"
+                ) as client_cls, patch("builtins.print"):
+                    code = main(
+                        [
+                            "node",
+                            "join",
+                            "https://luma.example.com",
+                            "--token",
+                            "join-token",
+                            "--region",
+                            "home",
+                            "--name",
+                            "home-mac-mini",
+                        ]
+                    )
+                self.assertEqual(code, 1)
+                client_cls.assert_not_called()
+                self.assertNotIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
+    def test_home_node_join_prompts_for_required_tailscale_key_before_registering(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
+            try:
+                secret_values = iter(["ts-key", "sudo-pass"])
+                client = Mock()
+                client.register_node.return_value = {
+                    "nodeName": "home-mac-mini",
+                    "region": "home",
+                    "managerAddr": "100.64.0.1:2377",
+                    "swarmJoinToken": "swarm-token",
+                }
+                client.label_node.return_value = {"message": "labels applied"}
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
+                ), patch("luma.cli._local_tailscale_connected", side_effect=[False, False]), patch(
+                    "luma.cli.configure_dns", return_value="DNS ok"
+                ), patch("luma.cli.ControlClient", return_value=client), patch(
+                    "luma.cli.join_local_node", return_value=[]
+                ), patch("luma.cli.local_docker_node_name", return_value="docker-home"):
+                    code = main(
+                        [
+                            "node",
+                            "join",
+                            "https://luma.example.com",
+                            "--token",
+                            "join-token",
+                            "--region",
+                            "home",
+                            "--name",
+                            "home-mac-mini",
+                        ]
+                    )
+                self.assertEqual(code, 0)
+                client.register_node.assert_called_once_with(node_name="home-mac-mini", region="home")
+                client.label_node.assert_called_once_with(node_name="docker-home", region="home", registered_name="home-mac-mini")
+                self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
     def test_node_join_rejects_legacy_profile_argument(self):
         with patch("sys.stdin.isatty", return_value=True), patch("builtins.print"):
             code = main(
@@ -764,6 +912,22 @@ class CliTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(code, 1)
+
+    def test_macos_tailscale_uses_authkey_when_available(self):
+        node = LumaConfig({"nodes": {"mini": {"host": "localhost", "region": "home"}}}, None).get_node("mini")
+        remote = Mock()
+        remote.run_result.side_effect = [
+            Mock(code=0, output="Darwin\n"),
+            Mock(code=0, output="/usr/local/bin/tailscale\n"),
+            Mock(code=1, output="not logged in\n"),
+        ]
+        remote.run.return_value = ""
+
+        results = setup_tailscale(node, authkey="ts-key", executor=remote)
+
+        self.assertEqual(results, ["Tailscale connected: luma-mini"])
+        commands = [call.args[0] for call in remote.run.call_args_list]
+        self.assertTrue(any("tailscale up" in command and "--authkey ts-key" in command for command in commands))
 
     def test_noninteractive_config_skips_missing_optional_values(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1373,7 +1537,10 @@ class ControlApiTests(unittest.TestCase):
                 state["portainerApiUrl"] = "https://100.64.0.1:9443/api"
                 state["portainerEndpointId"] = 2
                 state["swarmId"] = "swarm"
-                state["nodes"] = {"manager": {}, "worker": {}}
+                state["nodes"] = {
+                    "manager": {"region": "cn", "status": "labeled", "labels": {"region": "cn"}},
+                    "docker-home": {"displayName": "mini-gaojiu", "region": "home", "status": "labeled"},
+                }
                 from luma.control.state import save_state
 
                 save_state(state)
@@ -1395,13 +1562,33 @@ class ControlApiTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                result = handle_control_status(state["deployToken"])
+                docker_nodes = [
+                    {
+                        "ID": "manager-id-123456",
+                        "Description": {"Hostname": "manager"},
+                        "Spec": {"Role": "manager", "Availability": "active", "Labels": {"region": "cn", "ingress": "true"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.1"},
+                        "ManagerStatus": {"Leader": True, "Reachability": "reachable"},
+                    },
+                    {
+                        "ID": "home-id-123456",
+                        "Description": {"Hostname": "docker-home"},
+                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
+                    },
+                ]
+                with patch("luma.control.server.docker_request", return_value=docker_nodes):
+                    result = handle_control_status(state["deployToken"])
                 self.assertEqual(result["dns"]["provider"], "cloudflare")
                 self.assertTrue(result["dns"]["tokenConfigured"])
                 self.assertTrue(result["dns"]["zoneIdConfigured"])
                 self.assertEqual(result["dns"]["target"], "203.0.113.10")
                 self.assertTrue(result["portainer"]["ready"])
                 self.assertEqual(result["nodes"]["registered"], 2)
+                self.assertEqual(result["nodes"]["items"][0]["name"], "docker-home")
+                self.assertEqual(result["nodes"]["items"][0]["displayName"], "mini-gaojiu")
+                self.assertEqual(result["swarm"]["nodes"][0]["hostname"], "docker-home")
+                self.assertEqual(result["swarm"]["nodes"][1]["leader"], True)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

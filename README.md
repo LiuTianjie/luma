@@ -189,7 +189,7 @@ luma node join https://luma.example.com --token <join-token> --region global --n
 luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
 ```
 
-For macOS home nodes, install and start Docker Desktop and Tailscale first. For non-apt Linux distributions, install Docker manually before joining.
+For macOS home nodes, install and start Docker Desktop and Tailscale first. When `luma node join --region home ...` runs and the node is not connected to Tailscale yet, the CLI requires `TAILSCALE_AUTHKEY` before registering the node and joining Swarm. For non-apt Linux distributions, install Docker manually before joining.
 
 Before removing or rebuilding a node, run this on that node:
 
@@ -264,7 +264,8 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 
 | Question | What to do |
 | --- | --- |
-| Update the manager | Run `luma update` on the manager. Normally no domain argument is needed. |
+| Update the manager | Run `luma update` on the manager. If the control API already matches the updated CLI, manager bootstrap is skipped; use `luma update manager` to force refresh. |
+| View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, Portainer, registered nodes, and actual Swarm nodes. |
 | What happens if I run `luma update` on a client or worker? | It updates only the local CLI and skips manager control-plane refresh. |
 | When does `luma update` need `--domain`? | Only when `/opt/luma/control/control.json` is missing or you intentionally changed the control domain. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
@@ -272,9 +273,9 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | Make an internal service public | Set a matching `region` + `exposure`, add `domain` and `port`, then deploy again. |
 | Add a CN worker | Run `luma node join ... --region cn --name ...` on the new machine. |
 | Add a global worker | Run `luma node join ... --region global --name ...` on the new machine. |
-| Add a home node | Prepare Docker Desktop/Tailscale first, then run `luma node join ... --region home --name ...`. |
+| Add a home node | Prepare Docker Desktop/Tailscale first, then run `luma node join ... --region home --name ...`. If Tailscale is not connected, the CLI requires `TAILSCALE_AUTHKEY`. |
 | Manager is only 2c2g | Set `resources.limits` and `resources.reservations` on application manifests so apps do not starve the control plane. |
-| Tailscale was not connected during bootstrap | Run `luma tailscale connect` on the relevant machine. |
+| Tailscale was not connected during bootstrap/join | Run `luma tailscale connect` on the relevant machine; it requires `TAILSCALE_AUTHKEY`. |
 | Egress failed or subscription was added later | Set `EGRESS_SUBSCRIPTION_URL`, then run `luma egress setup`. |
 | Check control-plane version | Run `luma version --control-url https://luma.example.com`. |
 | A public service returns 404 on `/` | The route usually reached the app; verify with the real app path such as `/admin/`. |

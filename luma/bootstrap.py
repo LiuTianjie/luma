@@ -574,6 +574,14 @@ def setup_tailscale(node: NodeConfig, *, authkey: str | None = None, executor: E
         status = remote.run_result("tailscale status >/dev/null 2>&1")
         if status.code == 0:
             results.append("Tailscale already logged in")
+        elif authkey:
+            remote.run(
+                "tailscale up "
+                f"--authkey {shlex.quote(authkey)} "
+                f"--hostname {shlex.quote(hostname)} "
+                "--accept-dns=false"
+            )
+            results.append(f"Tailscale connected: {hostname}")
         else:
             results.append("Tailscale installed but not connected on macOS")
         return results

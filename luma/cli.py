@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from .bootstrap import bootstrap_manager_local, bootstrap_node, configure_dns, join_local_node, local_docker_node_name, setup_egress, setup_portainer, setup_tailscale
+from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, join_local_node, local_docker_node_name, setup_egress, setup_portainer, setup_tailscale
 from .cloudflare import find_zone, sync_dns
 from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
@@ -41,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("--control-url", help="Control API URL to check instead of the current login context")
     version.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API check")
     version.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
+    version.add_argument("--local", action="store_true", help="Only print the local CLI version")
     status = sub.add_parser("status")
     status.add_argument("--control-url", help="Control API URL to check instead of the current login context")
     status.add_argument("--token", help="Deploy token to use with --control-url")
@@ -79,8 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     update = sub.add_parser(
         "update",
         description=(
-            "Update the local CLI. With no target, Luma refreshes the manager "
-            "only when local manager state exists; clients and workers update CLI only."
+            "Update the local CLI. With no target, Luma refreshes the manager only "
+            "when local manager state exists and the control API version differs; "
+            "clients and workers update CLI only."
         ),
         epilog="Examples: luma update | luma update --install-ref v0.1.10 | luma update manager --domain luma.example.com",
     )
@@ -243,6 +246,8 @@ def cmd_configure(args: argparse.Namespace) -> int:
 
 def cmd_version(args: argparse.Namespace) -> int:
     print(f"Luma CLI: {__version__}")
+    if args.local:
+        return 0
     health_context = _version_health_context(args)
     if health_context is None:
         print("Luma Control: not checked (run luma login or pass --control-url)")
@@ -282,6 +287,52 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"Portainer ready: {'yes' if portainer.get('ready') else 'no'}")
     nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
     print(f"Registered nodes: {nodes.get('registered', 0)}")
+    registered_items = nodes.get("items") if isinstance(nodes.get("items"), list) else []
+    if registered_items:
+        print("Registered node details:")
+        print("  name\tregion\tstatus\tdisplay")
+        for item in registered_items:
+            if not isinstance(item, dict):
+                continue
+            print(
+                "  "
+                + "\t".join(
+                    [
+                        str(item.get("name") or "-"),
+                        str(item.get("region") or "-"),
+                        str(item.get("status") or "-"),
+                        str(item.get("displayName") or "-"),
+                    ]
+                )
+            )
+    elif isinstance(nodes.get("names"), list) and nodes.get("names"):
+        print("Registered node names: " + ", ".join(str(name) for name in nodes["names"]))
+    swarm = payload.get("swarm") if isinstance(payload.get("swarm"), dict) else {}
+    if swarm:
+        if not swarm.get("available"):
+            print(f"Swarm nodes: unavailable ({swarm.get('error') or 'unknown error'})")
+        else:
+            swarm_nodes = swarm.get("nodes") if isinstance(swarm.get("nodes"), list) else []
+            print(f"Swarm nodes: {len(swarm_nodes)}")
+            if swarm_nodes:
+                print("  hostname\trole\tstate\tavailability\tregion\tleader")
+                for item in swarm_nodes:
+                    if not isinstance(item, dict):
+                        continue
+                    leader = "yes" if item.get("leader") else "-"
+                    print(
+                        "  "
+                        + "\t".join(
+                            [
+                                str(item.get("hostname") or item.get("id") or "-"),
+                                str(item.get("role") or "-"),
+                                str(item.get("state") or "-"),
+                                str(item.get("availability") or "-"),
+                                str(item.get("region") or "-"),
+                                leader,
+                            ]
+                        )
+                    )
     return 0
 
 
@@ -365,7 +416,8 @@ def cmd_node(args: argparse.Namespace) -> int:
             raise LumaError("node join now uses --region; use --region home/global/cn and --name ...")
         if not args.region:
             raise LumaError("node join requires --region (cn, global, or home)")
-        ensure_interactive_config("worker")
+        required_worker_keys = ["TAILSCALE_AUTHKEY"] if args.region == "home" and not _local_tailscale_connected() else []
+        ensure_interactive_config("worker", required_keys=required_worker_keys)
         log("[start] Configure system DNS")
         log(f"[ok] {configure_dns(LocalExecutor())}")
         client = ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
@@ -373,6 +425,8 @@ def cmd_node(args: argparse.Namespace) -> int:
         print(f"Node registered: {result['nodeName']} ({result['region']})")
         manager_addr = result.get("managerAddr")
         swarm_token = result.get("swarmJoinToken")
+        if manager_addr and _is_tailscale_manager_addr(str(manager_addr)) and not _local_tailscale_connected():
+            ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
         node = _local_node_for_region(args.region, name=args.name)
         join_local_node(node, _join_profile_for_region(args.region), str(manager_addr or ""), str(swarm_token or ""), emit=log)
         actual_node_name = local_docker_node_name()
@@ -491,9 +545,14 @@ def cmd_update(args: argparse.Namespace) -> int:
         print("[start] Update Luma CLI")
         _run_luma_installer(install_ref=args.install_ref)
         print("[ok] Luma CLI updated")
-        if args.update_command is None and not _should_refresh_manager(args):
-            print("[skip] Manager bootstrap refresh skipped: no local manager control state found")
-            return 0
+        if args.update_command is None:
+            should_refresh, reason = _manager_refresh_decision(args)
+            if not should_refresh:
+                print(f"[skip] Manager bootstrap refresh skipped: {reason}")
+                return 0
+            print(f"[info] Manager bootstrap refresh required: {reason}")
+        else:
+            print("[info] Manager bootstrap refresh forced")
         print("[start] Refresh manager bootstrap")
         command = _updated_manager_bootstrap_command(args)
         completed = subprocess.run(command, check=False)
@@ -502,6 +561,62 @@ def cmd_update(args: argparse.Namespace) -> int:
         print("[ok] Manager update complete")
         return 0
     raise LumaError(f"unknown update command: {args.update_command}")
+
+
+def _manager_refresh_decision(args: argparse.Namespace) -> tuple[bool, str]:
+    if _manager_update_options_provided(args):
+        return True, "manager update options were provided"
+    state = _existing_control_state()
+    if not state:
+        return False, "no local manager control state found"
+    domain = str(state.get("domain") or "").strip()
+    if not domain:
+        return False, "local manager control state has no domain; run luma update manager --domain <control-domain>"
+    installed_version = _installed_cli_version()
+    if not installed_version:
+        return True, "could not determine updated CLI version"
+    control_version = _control_version_for_update(domain, args)
+    if not control_version:
+        return True, "could not check current control API version"
+    if control_version == installed_version:
+        return False, f"control API already matches CLI version {installed_version}"
+    return True, f"control API {control_version} differs from CLI {installed_version}"
+
+
+def _manager_update_options_provided(args: argparse.Namespace) -> bool:
+    if args.domain or args.node or args.http_port is not None or args.https_port is not None:
+        return True
+    if args.skip_egress or args.overwrite_control_state:
+        return True
+    if getattr(args, "profile", "single-node") != "single-node":
+        return True
+    return False
+
+
+def _installed_cli_version() -> str:
+    try:
+        completed = subprocess.run(
+            [_luma_executable(), "version", "--local"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    match = re.search(r"^Luma CLI:\s*(\S+)", completed.stdout, flags=re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _control_version_for_update(domain: str, args: argparse.Namespace) -> str:
+    config = load_config(args.config)
+    control_url = _control_url(domain, _config_https_port(config))
+    try:
+        payload = ControlClient(control_url, "health").health()
+    except LumaError:
+        return ""
+    return str(payload.get("version") or "")
 
 
 def _run_luma_installer(*, install_ref: str | None = None) -> None:
@@ -534,15 +649,6 @@ def _updated_manager_bootstrap_command(args: argparse.Namespace) -> list[str]:
     if args.overwrite_control_state:
         command.append("--overwrite-control-state")
     return command
-
-
-def _should_refresh_manager(args: argparse.Namespace) -> bool:
-    if args.domain or args.node or args.http_port is not None or args.https_port is not None:
-        return True
-    if args.skip_egress or args.overwrite_control_state:
-        return True
-    state = _existing_control_state()
-    return bool(state and str(state.get("domain") or "").strip())
 
 
 def _manager_update_domain(explicit_domain: str | None) -> str:
@@ -874,7 +980,7 @@ def cmd_portainer(args: argparse.Namespace) -> int:
 def cmd_tailscale(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     if args.tailscale_command == "connect":
-        ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"])
+        ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
         node = _repair_node(config, args.node, "single-node")
         log("[start] Install and connect Tailscale")
         for line in setup_tailscale(node, executor=None if args.node else LocalExecutor()):
@@ -887,6 +993,18 @@ def _repair_node(config: LumaConfig, node_name: str | None, profile_name: str):
     if node_name:
         return config.get_node(node_name)
     return config.default_manager() or _local_node(profile_name)
+
+
+def _local_tailscale_connected() -> bool:
+    result = LocalExecutor().run_result("command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -1")
+    if result.code != 0:
+        return False
+    return bool(_last_output_line(result.output))
+
+
+def _last_output_line(output: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else ""
 
 
 def prompt(default: str, label: str) -> str:

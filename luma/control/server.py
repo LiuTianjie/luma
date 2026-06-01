@@ -55,6 +55,7 @@ def handle_control_status(token: str) -> Dict[str, Any]:
     swarm_id = str(state.get("swarmId") or config.portainer.get("swarmId") or "")
     secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    registered_nodes = _registered_nodes_summary(nodes)
     return {
         "clusterId": state["clusterId"],
         "version": __version__,
@@ -76,9 +77,11 @@ def handle_control_status(token: str) -> Dict[str, Any]:
             "ready": bool(portainer_api_url and portainer_endpoint_id and swarm_id),
         },
         "nodes": {
-            "registered": len(nodes),
-            "names": sorted(str(name) for name in nodes),
+            "registered": len(registered_nodes),
+            "names": [item["name"] for item in registered_nodes],
+            "items": registered_nodes,
         },
+        "swarm": _swarm_nodes_summary(),
     }
 
 
@@ -321,6 +324,60 @@ def _remember_node(state: Dict[str, Any], node_name: str, *, merge_from: str = "
         current.update(existing)
     current.update(values)
     nodes[node_name] = current
+
+
+def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
+    items: list[Dict[str, Any]] = []
+    for name in sorted(str(key) for key in nodes):
+        raw = nodes.get(name)
+        if not isinstance(raw, dict):
+            raw = {}
+        labels = raw.get("labels") if isinstance(raw.get("labels"), dict) else {}
+        items.append(
+            {
+                "name": name,
+                "displayName": str(raw.get("displayName") or name),
+                "region": str(raw.get("region") or labels.get("region") or ""),
+                "status": str(raw.get("status") or "registered"),
+                "labels": {str(key): str(value) for key, value in labels.items()},
+            }
+        )
+    return items
+
+
+def _swarm_nodes_summary() -> Dict[str, Any]:
+    try:
+        nodes = docker_request("GET", "/nodes")
+    except LumaError as exc:
+        return {"available": False, "error": str(exc), "nodes": []}
+    if not isinstance(nodes, list):
+        return {"available": False, "error": "Docker API returned invalid node list", "nodes": []}
+    items: list[Dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
+        description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
+        status = node.get("Status") if isinstance(node.get("Status"), dict) else {}
+        manager_status = node.get("ManagerStatus") if isinstance(node.get("ManagerStatus"), dict) else {}
+        labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
+        items.append(
+            {
+                "id": str(node.get("ID") or "")[:12],
+                "hostname": str(description.get("Hostname") or ""),
+                "role": str(spec.get("Role") or ""),
+                "availability": str(spec.get("Availability") or ""),
+                "state": str(status.get("State") or ""),
+                "addr": str(status.get("Addr") or ""),
+                "region": str(labels.get("region") or ""),
+                "ingress": str(labels.get("ingress") or ""),
+                "leader": bool(manager_status.get("Leader")),
+                "reachability": str(manager_status.get("Reachability") or ""),
+                "labels": {str(key): str(value) for key, value in labels.items()},
+            }
+        )
+    items.sort(key=lambda item: item.get("hostname") or item.get("id") or "")
+    return {"available": True, "nodes": items}
 
 
 class DockerSocketConnection(http.client.HTTPConnection):

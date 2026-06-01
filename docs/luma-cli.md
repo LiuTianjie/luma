@@ -112,7 +112,15 @@ Check local requirements and `.env`:
 luma preflight
 ```
 
-List configured nodes:
+Show control-plane and cluster state from any logged-in client:
+
+```bash
+luma status
+```
+
+`luma status` prints DNS and Portainer readiness, registered Luma nodes from the control state, and actual Docker Swarm nodes from the manager Docker socket.
+
+List nodes from local `luma.yaml` only:
 
 ```bash
 luma node list

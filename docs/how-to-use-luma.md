@@ -185,6 +185,8 @@ luma node join https://luma.example.com --token <join-token> --region global --n
 
 The manager applies the region label automatically after the node joins Swarm. `--name` is stored as a display name; Docker's actual node name remains the canonical Swarm identity.
 
+For `--region home`, the node must be connected to Tailscale before it can join a manager address on the tailnet. If the node is not connected yet, `luma node join` treats `TAILSCALE_AUTHKEY` as required and asks for it before registering the node. You can also run `luma tailscale connect` first to fill the key and connect Tailscale without attempting a Swarm join.
+
 ## 4. Connect Cloudflare
 
 ```bash

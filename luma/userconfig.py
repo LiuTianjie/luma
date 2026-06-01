@@ -184,15 +184,23 @@ def interactive_configure(role: str, *, path: Path | None = None, input_fn=None)
     return write_user_config(values, path=path)
 
 
-def ensure_interactive_config(role: str, *, keys: Iterable[str] | None = None, path: Path | None = None, input_fn=None) -> Path | None:
+def ensure_interactive_config(
+    role: str,
+    *,
+    keys: Iterable[str] | None = None,
+    required_keys: Iterable[str] | None = None,
+    path: Path | None = None,
+    input_fn=None,
+) -> Path | None:
     if role not in ROLE_KEYS:
         raise LumaError(f"unknown configure role: {role}")
     wanted = set(keys or [item.key for item in ROLE_KEYS[role]])
+    required = set(required_keys or [])
     prompts = [item for item in ROLE_KEYS[role] if item.key in wanted and not os.environ.get(item.key)]
     if not prompts:
         return None
     if not sys.stdin.isatty() and input_fn is None:
-        missing_required = [item.key for item in prompts if item.required]
+        missing_required = [item.key for item in prompts if item.required or item.key in required]
         if missing_required:
             missing = ", ".join(missing_required)
             raise LumaError(f"missing local config ({missing}). Run: luma configure --role {role}")
@@ -202,7 +210,8 @@ def ensure_interactive_config(role: str, *, keys: Iterable[str] | None = None, p
     values: Dict[str, str] = {}
     print(f"Missing local {role} configuration. Values will be saved to {path or user_config_path()}.")
     for item in prompts:
-        suffix = " [required]" if item.required else " [optional, press Enter to skip]"
+        is_required = item.required or item.key in required
+        suffix = " [required]" if is_required else " [optional, press Enter to skip]"
         _print_prompt_help(item, suffix)
         prompt = f"{item.key}: "
         value = getpass.getpass(prompt) if item.secret else input_fn(prompt)
@@ -210,7 +219,7 @@ def ensure_interactive_config(role: str, *, keys: Iterable[str] | None = None, p
         if value:
             values[item.key] = value
             os.environ[item.key] = value
-        elif item.required:
+        elif is_required:
             raise LumaError(f"{item.key} is required for {role} configuration")
     if not values:
         return None
