@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 from .config import LumaConfig
 from .errors import LumaError
-from .registry import normalize_registry_host, public_registry_url, registry_provider_type
+from .registry import image_uses_mutable_latest_tag, normalize_registry_host, public_registry_url, registry_provider_type
 from .service import ServiceSpec
 
 
@@ -25,7 +25,7 @@ def deploy_with_portainer(
     registry_auth: dict[str, str] | None = None,
 ) -> str:
     webhook_url, webhook_env = resolve_webhook(config, service)
-    if not webhook_url or registry_auth:
+    if not webhook_url or registry_auth or image_uses_mutable_latest_tag(service.image):
         return upsert_stack(
             config,
             service,
@@ -94,7 +94,7 @@ def upsert_stack(
             "StackFileContent": stack_content,
             "Env": stack_env or [],
             "Prune": True,
-            "PullImage": bool(registry_id),
+            "PullImage": bool(registry_id) or image_uses_mutable_latest_tag(service.image),
         }
         stack_headers = _portainer_registry_auth_header(registry_id)
         request_kwargs: Dict[str, Any] = {"token": token}

@@ -38,7 +38,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, resolve_service_image
+from luma.control.server import ControlHandler, ensure_image_present, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, resolve_service_image
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -1448,6 +1448,38 @@ class PortainerWebhookTests(unittest.TestCase):
             self.assertEqual(upsert.call_args.kwargs["registry_auth"], registry_auth)
             webhook.assert_not_called()
 
+    def test_latest_image_bypasses_webhook_and_uses_portainer_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:latest",
+                        "region": "cn",
+                        "exposure": "none",
+                        "portainer": {"webhookUrl": "https://portainer.example.com/hook"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+                "swarmId": "swarm-test",
+            }
+            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert, patch(
+                "luma.portainer.trigger_webhook_url"
+            ) as webhook:
+                result = deploy_with_portainer(config, service, "services: {}", state)
+            self.assertEqual(result, "Portainer stack updated")
+            upsert.assert_called_once()
+            webhook.assert_not_called()
+
     def test_bootstrap_manager_saves_portainer_credentials_before_dns(self):
         config = LumaConfig(
             {
@@ -2699,6 +2731,31 @@ class ControlApiTests(unittest.TestCase):
             self.assertEqual(decoded["password"], "ghp_secret")
             self.assertEqual(decoded["serveraddress"], "ghcr.io")
 
+    def test_latest_service_image_is_pulled_even_when_present_locally(self):
+        calls = []
+
+        def fake_raw(method, path, *, headers=None):
+            calls.append((method, path, headers or {}))
+            if method == "GET":
+                return 200, "{}"
+            return 200, "{}"
+
+        with patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
+            ensure_image_present("ghcr.io/acme/api:latest", force_pull=True)
+        self.assertEqual([method for method, _path, _headers in calls], ["POST"])
+        self.assertIn("/images/create?fromImage=ghcr.io%2Facme%2Fapi%3Alatest", calls[0][1])
+
+    def test_pinned_service_image_uses_local_cache_when_present(self):
+        calls = []
+
+        def fake_raw(method, path, *, headers=None):
+            calls.append((method, path, headers or {}))
+            return 200, "{}"
+
+        with patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
+            ensure_image_present("ghcr.io/acme/api:1.0.0")
+        self.assertEqual([method for method, _path, _headers in calls], ["GET"])
+
     def test_config_webhook_mapping_uses_service_slug(self):
         with tempfile.TemporaryDirectory() as tmp:
             service_path = Path(tmp) / "service.yaml"
@@ -2988,6 +3045,50 @@ class ControlApiTests(unittest.TestCase):
                 },
                 token="jwt",
                 headers={"X-Registry-Auth": base64.b64encode(b'{"registryId":42}').decode("ascii")},
+            )
+
+    def test_portainer_stack_update_pulls_latest_without_registry_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:latest",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+                "swarmId": "swarm-test",
+            }
+            client = Mock()
+            client.authenticate.return_value = "jwt"
+            client.request.side_effect = [
+                [{"Id": 7, "Name": "api"}],
+                None,
+            ]
+            with patch("luma.portainer.PortainerApi", return_value=client):
+                result = upsert_stack(config, service, "services: {}", state, missing_webhook_env="PORTAINER_WEBHOOK_URL")
+            self.assertIn("Portainer stack updated", result)
+            client.request.assert_any_call(
+                "PUT",
+                "/stacks/7?endpointId=1",
+                {
+                    "StackFileContent": "services: {}",
+                    "Env": [],
+                    "Prune": True,
+                    "PullImage": True,
+                },
+                token="jwt",
             )
 
     def test_remove_luma_portainer_registry_deletes_only_luma_owned_match(self):

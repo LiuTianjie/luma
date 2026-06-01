@@ -23,7 +23,13 @@ from ..config import load_config
 from ..errors import LumaError
 from ..io import load_yaml
 from ..portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack
-from ..registry import docker_registry_auth_header, normalize_registry_host, registry_auth_for_image, registry_auth_matches_image
+from ..registry import (
+    docker_registry_auth_header,
+    image_uses_mutable_latest_tag,
+    normalize_registry_host,
+    registry_auth_for_image,
+    registry_auth_matches_image,
+)
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service
 from .. import __version__
@@ -1285,12 +1291,14 @@ def resolve_service_image(
     for image in images:
         image_registry_auth = registry_auth if registry_auth_matches_image(registry_auth, image) else None
         try:
-            ensure_image_present(image, registry_auth=image_registry_auth)
+            force_pull = image_uses_mutable_latest_tag(image)
+            ensure_image_present(image, registry_auth=image_registry_auth, force_pull=force_pull)
             result = {
                 "requested": service.image,
                 "selected": image,
                 "fallback": image != service.image,
                 "registryAuth": bool(image_registry_auth),
+                "forcePull": force_pull,
             }
             return replace(service, image=image), result
         except LumaError as exc:
@@ -1298,11 +1306,17 @@ def resolve_service_image(
     raise LumaError("unable to pull service image; tried " + "; ".join(errors))
 
 
-def ensure_image_present(image: str, *, registry_auth: Dict[str, str] | None = None) -> None:
+def ensure_image_present(
+    image: str,
+    *,
+    registry_auth: Dict[str, str] | None = None,
+    force_pull: bool = False,
+) -> None:
     encoded = urllib.parse.quote(image, safe="")
-    status, _ = docker_request_raw("GET", f"/images/{encoded}/json")
-    if status == 200:
-        return
+    if not force_pull:
+        status, _ = docker_request_raw("GET", f"/images/{encoded}/json")
+        if status == 200:
+            return
     from_image = urllib.parse.quote(image, safe="")
     headers = {}
     auth_header = docker_registry_auth_header(registry_auth)

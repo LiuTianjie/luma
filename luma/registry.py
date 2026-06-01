@@ -87,6 +87,16 @@ def registry_auth_matches_image(auth: Dict[str, str] | None, image: str) -> bool
     return image_host in aliases
 
 
+def image_uses_mutable_latest_tag(image: str) -> bool:
+    image_ref = str(image or "").strip()
+    if not image_ref or "@" in image_ref:
+        return False
+    name = image_ref.rsplit("/", 1)[-1]
+    if ":" not in name:
+        return True
+    return name.rsplit(":", 1)[-1] == "latest"
+
+
 def registry_provider_type(host: str) -> int:
     host = normalize_registry_host(host)
     if host in {"docker.io", DEFAULT_DOCKER_REGISTRY}:
