@@ -164,7 +164,7 @@ Use `luma update` after upgrading Luma itself:
 luma update
 ```
 
-The update command refreshes the local CLI first, then runs manager bootstrap. It infers the control domain from `/opt/luma/control/control.json`; pass `--domain` only when that state is missing or you intentionally changed the control domain. Bootstrap is designed to be idempotent. It refreshes the manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
+The update command always refreshes the local CLI first. On a manager, it detects `/opt/luma/control/control.json`, then runs manager bootstrap. On a client or worker node, it skips the manager bootstrap refresh and exits after updating the CLI. Pass `--domain` only when the manager state is missing or you intentionally changed the control domain. Bootstrap is designed to be idempotent. It refreshes the manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
 
 If the installed CLI is too old to recognize `luma update`, run the installer once and then retry the update command.
 

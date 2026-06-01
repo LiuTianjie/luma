@@ -577,6 +577,19 @@ class CliTests(unittest.TestCase):
             check=False,
         )
 
+    def test_update_without_manager_state_updates_cli_only(self):
+        with patch("luma.cli._existing_control_state", return_value=None), patch(
+            "luma.cli._run_luma_installer"
+        ) as installer, patch("luma.cli.subprocess.run") as run, patch("builtins.print") as printed:
+            code = main(["update"])
+
+        self.assertEqual(code, 0)
+        installer.assert_called_once_with(install_ref=None)
+        run.assert_not_called()
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("CLI updated", printed_text)
+        self.assertIn("Manager bootstrap refresh skipped", printed_text)
+
     def test_version_prints_cli_without_context(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))

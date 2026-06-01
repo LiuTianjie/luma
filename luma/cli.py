@@ -484,6 +484,9 @@ def cmd_update(args: argparse.Namespace) -> int:
         print("[start] Update Luma CLI")
         _run_luma_installer(install_ref=args.install_ref)
         print("[ok] Luma CLI updated")
+        if args.update_command is None and not _should_refresh_manager(args):
+            print("[skip] Manager bootstrap refresh skipped: no local manager control state found")
+            return 0
         print("[start] Refresh manager bootstrap")
         command = _updated_manager_bootstrap_command(args)
         completed = subprocess.run(command, check=False)
@@ -524,6 +527,15 @@ def _updated_manager_bootstrap_command(args: argparse.Namespace) -> list[str]:
     if args.overwrite_control_state:
         command.append("--overwrite-control-state")
     return command
+
+
+def _should_refresh_manager(args: argparse.Namespace) -> bool:
+    if args.domain or args.node or args.http_port is not None or args.https_port is not None:
+        return True
+    if args.skip_egress or args.overwrite_control_state:
+        return True
+    state = _existing_control_state()
+    return bool(state and str(state.get("domain") or "").strip())
 
 
 def _manager_update_domain(explicit_domain: str | None) -> str:
