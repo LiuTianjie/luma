@@ -442,7 +442,8 @@ def resolve_service_node_pin(service: ServiceSpec, state: Dict[str, Any]) -> Ser
     region = str(record.get("region") or "")
     if region and region != service.region:
         raise LumaError(f"Luma node {service.node} is in region {region}, not {service.region}")
-    node_id = str(record.get("swarmNodeId") or record.get("labels", {}).get("luma.node.id") or "").strip()
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    node_id = str(record.get("swarmNodeId") or labels.get("luma.node.id") or "").strip()
     if not node_id:
         raise LumaError(f"Luma node {service.node} has no Swarm NodeID; rerun luma node join on that node")
     return replace(service, node_id=node_id)

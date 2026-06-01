@@ -120,6 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
     node_exit.add_argument("--prune-docker", action="store_true", help="Also prune unused Docker containers, networks, images, and volumes")
     node_remove = node_sub.add_parser("remove")
     node_remove.add_argument("name")
+    node_remove.add_argument("--control-url", help="Control API URL to use instead of the current login context")
+    node_remove.add_argument("--token", help="Deploy token to use with --control-url")
+    node_remove.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
+    node_remove.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
 
     cf = sub.add_parser("cloudflare")
     cf_sub = cf.add_subparsers(dest="cloudflare_command", required=True)
@@ -462,8 +466,8 @@ def log(message: str) -> None:
 
 
 def cmd_node(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
     if args.node_command == "list":
+        config = load_config(args.config)
         if not config.nodes:
             print("No nodes configured")
             return 0
@@ -471,6 +475,7 @@ def cmd_node(args: argparse.Namespace) -> int:
             print(f"{node.name}\thost={node.host}\tregion={node.region}\troles={','.join(node.roles)}\tpublicIp={node.public_ip or '-'}")
         return 0
     if args.node_command == "bootstrap":
+        config = load_config(args.config)
         node = config.get_node(args.node)
         profile = PROFILES[args.profile]
         bootstrap_node(config, node, profile, run_egress=not args.skip_egress, emit=log)
