@@ -2013,12 +2013,20 @@ footer {
   }
 
   .stage-map {
-    min-height: 746px;
+    min-height: 816px;
   }
 
   .stage-status {
     top: 16px;
     max-width: calc(100% - 44px);
+  }
+
+  .stage-pipeline {
+    top: 74px;
+    left: 50%;
+    max-width: calc(100% - 44px);
+    justify-content: center;
+    transform: translateX(-50%);
   }
 
   .manager-node,
@@ -2032,25 +2040,25 @@ footer {
   }
 
   .client-node {
-    top: 74px;
+    top: 136px;
     bottom: auto;
   }
 
   .manager-node {
-    top: 214px;
+    top: 276px;
   }
 
   .edge-node {
-    top: 354px;
+    top: 416px;
   }
 
   .worker-node {
-    top: 494px;
+    top: 556px;
     bottom: auto;
   }
 
   .global-node {
-    top: 634px;
+    top: 696px;
   }
 
   .stage-link {
@@ -2086,37 +2094,37 @@ footer {
   }
 
   .flow-client {
-    top: 94px;
+    top: 156px;
     bottom: auto;
   }
 
   .flow-edge {
-    top: 234px;
+    top: 296px;
   }
 
   .flow-worker {
-    top: 374px;
+    top: 436px;
     bottom: auto;
   }
 
   .flow-global {
-    top: 514px;
+    top: 576px;
   }
 
   .link-worker {
-    top: 432px;
+    top: 494px;
   }
 
   .link-client {
-    top: 152px;
+    top: 214px;
   }
 
   .link-edge {
-    top: 292px;
+    top: 354px;
   }
 
   .link-global {
-    top: 572px;
+    top: 634px;
   }
 
   .section {
