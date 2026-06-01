@@ -1087,6 +1087,17 @@ class CliTests(unittest.TestCase):
         self.assertIn("/v1/deployments", str(raised.exception))
         self.assertIn("manager may still be applying", str(raised.exception))
 
+    def test_node_label_waits_longer_than_manager_node_discovery(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        response = MagicMock()
+        response.read.return_value = b'{"ok": true}'
+        response.__enter__.return_value = response
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            client.label_node(node_name="orbstack", region="home", registered_name="mac-mini-gaojiu", node_id="node-id")
+
+        timeout = urlopen.call_args.kwargs["timeout"]
+        self.assertGreaterEqual(timeout, 120)
+
     def test_secret_set_sends_value_to_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))

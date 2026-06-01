@@ -105,7 +105,7 @@ class ControlClient:
             body["registeredName"] = registered_name
         if node_id:
             body["nodeId"] = node_id
-        return self.request("POST", "/v1/nodes/label", body)
+        return self.request("POST", "/v1/nodes/label", body, timeout=120)
 
     def unregister_node(self, *, node_name: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/nodes/unregister", {"nodeName": node_name})
