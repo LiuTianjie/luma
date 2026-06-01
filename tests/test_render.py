@@ -213,6 +213,41 @@ relay:
         )
         self.assertEqual(route_path(self.config(), service), Path("routes/home-panel.yml"))
 
+    def test_tailscale_relay_can_preview_route_from_node_pin(self):
+        service = self.load(
+            """
+name: home panel
+image: ghcr.io/acme/panel:latest
+region: home
+node: orbstack
+exposure: tailscale-relay
+domain: panel.example.com
+port: 8080
+"""
+        )
+        route = yaml.safe_load(render_tailscale_route(self.config(), service))
+        self.assertEqual(
+            route["http"]["services"]["home-panel"]["loadBalancer"]["servers"][0]["url"],
+            "http://orbstack:8080",
+        )
+
+    def test_tailscale_relay_can_preview_auto_home_node_route(self):
+        service = self.load(
+            """
+name: home panel
+image: ghcr.io/acme/panel:latest
+region: home
+exposure: tailscale-relay
+domain: panel.example.com
+port: 8080
+"""
+        )
+        route = yaml.safe_load(render_tailscale_route(self.config(), service))
+        self.assertEqual(
+            route["http"]["services"]["home-panel"]["loadBalancer"]["servers"][0]["url"],
+            "http://auto-home-node:8080",
+        )
+
     def test_cloudflare_tunnel_adds_cloudflared_service(self):
         service = self.load(
             """

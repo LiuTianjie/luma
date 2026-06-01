@@ -119,10 +119,6 @@ def load_service(path: Path) -> ServiceSpec:
     relay = raw.get("relay") or {}
     if not isinstance(relay, dict):
         raise LumaError("relay must be a mapping")
-    if exposure == "tailscale-relay":
-        if not isinstance(relay.get("host"), str) and not isinstance(relay.get("url"), str):
-            raise LumaError("exposure=tailscale-relay requires relay.host or relay.url")
-
     tunnel = raw.get("tunnel") or {}
     if not isinstance(tunnel, dict):
         raise LumaError("tunnel must be a mapping")

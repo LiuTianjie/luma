@@ -21,8 +21,8 @@
 | `proxy` | no | boolean | Runtime proxy requirement. When true, Luma adds the egress network and default proxy env. Scheduling still follows `region`. This is not for image pulls. |
 | `resources` | no | map | Swarm `deploy.resources` limits/reservations for CPU and memory. Useful on small manager nodes. |
 | `publishPort` | relay only | integer | Host mode published port for tailscale relay. |
-| `relay.host` | tailscale-relay | string | Tailscale hostname. Alternative: `relay.url`. |
-| `relay.url` | tailscale-relay | string | Full upstream URL. Alternative: `relay.host`. |
+| `relay.host` | tailscale-relay override | string | Optional advanced upstream override. Usually omit it. Alternative: `relay.url`. |
+| `relay.url` | tailscale-relay override | string | Optional full upstream URL override. Usually omit it. Alternative: `relay.host`. |
 | `tunnel.tokenEnv` | cloudflare-tunnel | string | Env var name for Cloudflare tunnel token. Defaults to `CLOUDFLARE_TUNNEL_TOKEN`. |
 | `dns` | no | map | Reserved for DNS extensions. |
 | `portainer` | no | map | Reserved for Portainer integration extensions. |
@@ -35,7 +35,7 @@
 | --- | --- |
 | Domestic public HTTPS service | `region: cn`, `exposure: cn-edge`, `domain`, `port` |
 | Overseas/global HTTPS service | `region: global`, `exposure: external-edge`, `domain`, `port` |
-| Home service through China edge and Tailscale | `region: home`, `exposure: tailscale-relay`, `domain`, `port`, `relay.host` or `relay.url` |
+| Home service through China edge and Tailscale | `region: home`, `exposure: tailscale-relay`, `domain`, `port`; optional `node` only when pinning |
 | Home/private service through Cloudflare Tunnel | `region: home`, `exposure: cloudflare-tunnel`, `domain`, `port`, `tunnel.tokenEnv` |
 | Queue worker or internal service | `exposure: none`, no `domain`, no `port` required |
 | Service runtime needs Luma egress proxy | add `proxy: true`; keep `region` as the desired scheduling region |
@@ -51,6 +51,7 @@
 - Public Traefik services are attached to the configured public overlay network.
 - Every service gets `node.labels.region == <region>`.
 - If `node` is set, the service also gets `node.hostname == <node>`.
+- For `tailscale-relay` without an explicit `relay.host`/`relay.url`, Luma Control deploys the stack first, inspects the running Swarm tasks, and points the Traefik route at the home nodes that actually run those tasks.
 - `volumes` entries are copied onto the service; named sources such as `app_data:/data` are also declared as stack volumes so Docker keeps state across task replacement.
 - `resources` is copied to Swarm `deploy.resources`; use `limits` and `reservations` to protect small manager nodes from noisy services.
 - `proxy: true` services also get the configured egress overlay network and default `HTTP_PROXY=http://egress_mihomo:7890` / `HTTPS_PROXY=http://egress_mihomo:7890` env values unless already set. Scheduling still follows `region`.

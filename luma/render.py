@@ -36,12 +36,17 @@ def named_volume_sources(volumes: List[str]) -> List[str]:
 
 def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
     service_name = service.slug
-    upstream_url = service.relay.get("url")
-    if not upstream_url:
-        scheme = service.relay.get("scheme", "http")
-        host = service.relay["host"]
-        port = service.relay.get("port", service.publish_port or service.port)
-        upstream_url = f"{scheme}://{host}:{port}"
+    upstream_urls = service.relay.get("urls")
+    if isinstance(upstream_urls, list) and upstream_urls:
+        servers = [{"url": str(url)} for url in upstream_urls]
+    else:
+        upstream_url = service.relay.get("url")
+        if not upstream_url:
+            scheme = service.relay.get("scheme", "http")
+            host = service.relay.get("host") or service.node or f"auto-{service.region}-node"
+            port = service.relay.get("port", service.publish_port or service.port)
+            upstream_url = f"{scheme}://{host}:{port}"
+        servers = [{"url": upstream_url}]
 
     route: Dict[str, Any] = {
         "http": {
@@ -56,14 +61,13 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
             "services": {
                 service_name: {
                     "loadBalancer": {
-                        "servers": [{"url": upstream_url}],
+                        "servers": servers,
                     }
                 }
             },
         }
     }
     return dump_yaml(route)
-
 
 def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
     service_name = service.slug

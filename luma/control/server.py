@@ -8,6 +8,7 @@ import re
 import socket
 import ssl
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import replace
@@ -158,11 +159,6 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text))
     _deploy_step(steps, "Write stack", lambda: target.write_text(stack_text, encoding="utf-8"))
     written = [str(target)]
-    if service.exposure == "tailscale-relay":
-        route_target = _resolve_control_path(route_path(config, service), config_path)
-        route_target.parent.mkdir(parents=True, exist_ok=True)
-        _deploy_step(steps, "Write route", lambda: route_target.write_text(render_tailscale_route(config, service), encoding="utf-8"))
-        written.append(str(route_target))
     dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service))
     webhook_result = _deploy_step(
         steps,
@@ -171,6 +167,18 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if body.get("skipWebhook")
         else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env),
     )
+    if service.exposure == "tailscale-relay":
+        route_target = _resolve_control_path(route_path(config, service), config_path)
+        route_target.parent.mkdir(parents=True, exist_ok=True)
+        route_service = service
+        relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host"))
+        if body.get("skipWebhook") and not relay_is_explicit:
+            _deploy_step(steps, "Write route", lambda: "Route skipped: --skip-webhook requires deploy to infer tailscale relay")
+        else:
+            if not body.get("skipWebhook"):
+                route_service = _deploy_step(steps, "Resolve relay", lambda: resolve_tailscale_relay(service))
+            _deploy_step(steps, "Write route", lambda: route_target.write_text(render_tailscale_route(config, route_service), encoding="utf-8"))
+            written.append(str(route_target))
     probe_result = _deploy_step(
         steps,
         "Probe public route",
@@ -423,6 +431,95 @@ def docker_request_raw(method: str, path: str) -> tuple[int, str]:
         raise LumaError("Docker socket unavailable to Luma Control") from exc
     finally:
         conn.close()
+
+
+def resolve_tailscale_relay(service: ServiceSpec) -> ServiceSpec:
+    if service.exposure != "tailscale-relay":
+        return service
+    if service.relay.get("url") or service.relay.get("host"):
+        return service
+    upstream_urls = _swarm_task_upstream_urls(service)
+    relay = dict(service.relay)
+    relay["urls"] = upstream_urls
+    return replace(service, relay=relay)
+
+
+def _swarm_task_upstream_urls(service: ServiceSpec) -> list[str]:
+    port = int(service.publish_port or service.port or 0)
+    if port < 1:
+        raise LumaError("tailscale-relay requires a valid port")
+    deadline = time.monotonic() + 60
+    last_count = 0
+    while True:
+        urls, running_count = _running_task_upstream_urls(service, port)
+        if running_count >= service.replicas and urls:
+            return urls
+        last_count = running_count
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(2)
+    raise LumaError(
+        f"tailscale-relay service {service.slug} has {last_count}/{service.replicas} running tasks; "
+        "wait for the service to become ready or check luma status"
+    )
+
+
+def _running_task_upstream_urls(service: ServiceSpec, port: int) -> tuple[list[str], int]:
+    node_by_id = _swarm_node_map()
+    service_name = f"{service.slug}_{service.slug}"
+    filters = urllib.parse.quote(json.dumps({"service": {service_name: True}, "desired-state": {"running": True}}), safe="")
+    tasks = docker_request("GET", f"/tasks?filters={filters}")
+    if not isinstance(tasks, list):
+        raise LumaError("Docker API returned invalid task list")
+    urls: list[str] = []
+    running_count = 0
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        status = task.get("Status") if isinstance(task.get("Status"), dict) else {}
+        if str(status.get("State") or "") != "running":
+            continue
+        node_id = str(task.get("NodeID") or "")
+        node = node_by_id.get(node_id)
+        if not node:
+            continue
+        hostname = str(node.get("hostname") or "")
+        if service.node and hostname != service.node:
+            continue
+        region = str(node.get("region") or "")
+        if region != service.region:
+            raise LumaError(f"service task is on node {hostname or node_id} in region {region or '-'}, not {service.region}")
+        addr = str(node.get("addr") or "")
+        if not addr:
+            raise LumaError(f"node {hostname or node_id} has no reachable Docker node address")
+        running_count += 1
+        url = f"http://{addr}:{port}"
+        if url not in urls:
+            urls.append(url)
+    return urls, running_count
+
+
+def _swarm_node_map() -> dict[str, dict[str, str]]:
+    nodes = docker_request("GET", "/nodes")
+    if not isinstance(nodes, list):
+        raise LumaError("Docker API returned invalid node list")
+    result: dict[str, dict[str, str]] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("ID") or "")
+        if not node_id:
+            continue
+        description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
+        spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
+        labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
+        status = node.get("Status") if isinstance(node.get("Status"), dict) else {}
+        result[node_id] = {
+            "hostname": str(description.get("Hostname") or ""),
+            "region": str(labels.get("region") or ""),
+            "addr": str(status.get("Addr") or ""),
+        }
+    return result
 
 
 def resolve_service_image(config: Any, service: ServiceSpec) -> tuple[ServiceSpec, Dict[str, Any]]:

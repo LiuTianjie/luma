@@ -32,7 +32,7 @@ Luma manifests are not Docker Compose. They describe one service: image, region,
 - Public exposures require `domain` and integer `port`.
 - `cn-edge` must use `region: cn`.
 - `external-edge` must use `region: global`.
-- `tailscale-relay` must use `region: home` and include `relay.host` or `relay.url`.
+- `tailscale-relay` must use `region: home`. `relay.host`/`relay.url` are optional advanced overrides; by default Luma Control infers upstreams from the Swarm tasks' actual home nodes after deploy.
 - `replicas` defaults to `1`; when present it must be `>= 1`.
 - `port` is the container's internal listening port, not the cloud firewall/security-group port.
 - Avoid the legacy `public` field in new files. If present, it must match `exposure != none`.
@@ -112,9 +112,9 @@ domain: panel.example.com
 port: 8080
 publishPort: 8080
 replicas: 1
-relay:
-  host: home-1.your-tailnet.ts.net
 ```
+
+Luma Control infers the relay upstream from the actual running Swarm task after deploy. Set `node` only when the service must run on one specific machine; set `relay.url` only for advanced manual override.
 
 Cloudflare Tunnel:
 

@@ -49,7 +49,7 @@ luma deploy status.yaml
 | `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动加入 egress 网络和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
 | `resources` | 否 | map | 透传到 Swarm `deploy.resources`，用于限制 CPU/内存。支持 `limits` 和 `reservations`。 |
 | `publishPort` | tailscale-relay 可用 | integer | host mode 暴露端口，默认等于 `port`。 |
-| `relay` | tailscale-relay 必填 | map | Tailscale relay 上游信息。 |
+| `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随 Swarm 实际运行 task 所在的 home 节点自动推导。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
 | `dns` | 否 | map | 保留给 DNS 相关扩展。 |
 | `portainer` | 否 | map | 保留给 Portainer webhook/API 相关扩展。 |
@@ -70,7 +70,7 @@ luma deploy status.yaml
 
 - `exposure: cn-edge` 必须配 `region: cn`。
 - `exposure: external-edge` 必须配 `region: global`。
-- `exposure: tailscale-relay` 必须配 `region: home`，并提供 `relay.host` 或 `relay.url`。
+- `exposure: tailscale-relay` 必须配 `region: home`。若未提供 `relay.host`/`relay.url`，控制面会在部署后根据实际 running task 所在节点自动推导上游。
 - 公开服务必须提供 `domain` 和整数 `port`。
 - `public` 是旧字段；新 manifest 不建议写。若写了，必须与 exposure 匹配：`exposure != none` 时 public 才能是 `true`。
 
@@ -239,11 +239,15 @@ domain: panel.example.com
 port: 8080
 publishPort: 8080
 replicas: 1
-relay:
-  host: home-1.your-tailnet.ts.net
 ```
 
-也可以直接写完整上游 URL：
+默认情况下，Luma Control 会在服务部署后查看 Swarm task 实际运行在哪些 home 节点，并把 route 上游指向这些节点的 host port。若服务必须固定到某台机器，再显式指定 `node`：
+
+```yaml
+node: orbstack
+```
+
+也可以手动覆盖完整上游 URL：
 
 ```yaml
 relay:

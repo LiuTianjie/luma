@@ -269,8 +269,8 @@ Optional fields:
 - `dns.type`
 - `dns.proxied`
 - `publishPort`
-- `relay.host`
-- `relay.url`
+- `relay.host`: optional tailscale-relay upstream override; usually omit it.
+- `relay.url`: optional full tailscale-relay upstream URL override; usually omit it.
 - `tunnel.tokenEnv`
 - `portainer.webhookUrlEnv`
 - `portainer.webhookUrl`

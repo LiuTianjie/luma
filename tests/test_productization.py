@@ -1672,6 +1672,72 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_tailscale_relay_follows_actual_home_task_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "home-panel",
+                        "image": "nginx:alpine",
+                        "region": "home",
+                        "exposure": "tailscale-relay",
+                        "domain": "panel.example.com",
+                        "port": 8080,
+                    }
+                )
+                docker_nodes = [
+                    {
+                        "ID": "home-1",
+                        "Description": {"Hostname": "orbstack"},
+                        "Spec": {"Labels": {"region": "home"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
+                    },
+                    {
+                        "ID": "home-2",
+                        "Description": {"Hostname": "m3max"},
+                        "Spec": {"Labels": {"region": "home"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.3"},
+                    },
+                ]
+                docker_tasks = [
+                    {
+                        "NodeID": "home-2",
+                        "DesiredState": "running",
+                        "Status": {"State": "running"},
+                    },
+                ]
+                with patch("luma.control.server.docker_request", side_effect=[docker_nodes, docker_tasks]), patch(
+                    "luma.control.server.resolve_service_image",
+                    side_effect=lambda _config, service: (service, {"requested": service.image, "selected": service.image}),
+                ), patch(
+                    "luma.control.server.deploy_with_portainer",
+                    return_value="Portainer stack updated",
+                ):
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "home-panel.yaml", "skipDns": True},
+                    )
+                route = (root / "routes" / "home-panel.yml").read_text(encoding="utf-8")
+                self.assertIn("http://100.64.0.3:8080", route)
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Resolve relay=ok", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_deployment_fails_when_referenced_secret_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
