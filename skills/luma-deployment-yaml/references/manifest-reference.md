@@ -55,6 +55,7 @@
 - `volumes` entries are copied onto the service; named sources such as `app_data:/data` are also declared as stack volumes so Docker keeps state across task replacement.
 - `resources` is copied to Swarm `deploy.resources`; use `limits` and `reservations` to protect small manager nodes from noisy services.
 - `proxy: true` services also get the configured egress overlay network and default `HTTP_PROXY=http://egress_mihomo:7890` / `HTTPS_PROXY=http://egress_mihomo:7890` env values unless already set. Scheduling still follows `region`.
+- `proxy: true` is independent from exposure. It can be combined with `region: home` and `exposure: tailscale-relay`; relay handles inbound traffic, egress handles the container's outbound HTTP/HTTPS traffic.
 - `tailscale-relay` creates a host-mode published port and a file-provider Traefik route to the relay upstream.
 - `cloudflare-tunnel` adds a `cloudflared` sidecar service using `${<tokenEnv>}`.
 

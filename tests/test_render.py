@@ -138,6 +138,28 @@ proxy: true
         self.assertEqual(app["networks"], ["public", "egress"])
         self.assertIn("traefik.swarm.network=public", app["deploy"]["labels"])
 
+    def test_home_tailscale_relay_service_can_use_runtime_proxy(self):
+        service = self.load(
+            """
+name: home ai panel
+image: ghcr.io/acme/home-ai-panel:latest
+region: home
+exposure: tailscale-relay
+domain: ai-home.example.com
+port: 8080
+proxy: true
+"""
+        )
+        rendered = yaml.safe_load(render_stack(self.config(), service))
+        app = rendered["services"]["home-ai-panel"]
+        self.assertEqual(app["networks"], ["egress"])
+        self.assertEqual(rendered["networks"]["egress"]["external"], True)
+        self.assertEqual(app["environment"]["HTTP_PROXY"], "http://egress_mihomo:7890")
+        self.assertEqual(app["environment"]["HTTPS_PROXY"], "http://egress_mihomo:7890")
+        self.assertEqual(app["ports"][0]["mode"], "host")
+        self.assertIn("node.labels.region == home", app["deploy"]["placement"]["constraints"])
+        self.assertNotIn("labels", app["deploy"])
+
     def test_service_resources_render_to_swarm_deploy_resources(self):
         service = self.load(
             """

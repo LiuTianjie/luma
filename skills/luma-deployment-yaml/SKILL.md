@@ -38,6 +38,7 @@ Luma manifests are not Docker Compose. They describe one service: image, region,
 - Avoid the legacy `public` field in new files. If present, it must match `exposure != none`.
 - Use `proxy: true` for runtime outbound proxy needs. Do not hand-write the default `HTTP_PROXY`, `HTTPS_PROXY`, or `egress` network just to use Luma egress.
 - `proxy: true` is not for image pulls. Image pulls use the Docker daemon proxy configured by egress setup.
+- `proxy: true` can be combined with `region: home` and `exposure: tailscale-relay`: inbound traffic uses the relay path, while the container's outbound HTTP/HTTPS traffic uses Luma egress.
 - Plain env values may be written directly under `env`.
 - Secret env values must use `${NAME}` and be stored with `luma secret set NAME` before deployment.
 

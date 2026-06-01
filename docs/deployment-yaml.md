@@ -175,6 +175,8 @@ placement:
 
 如果服务运行时需要通过 Luma egress proxy 访问外网，声明 `proxy: true`。不要为了使用默认代理手写 `networks: [egress]` 或 `HTTP_PROXY` / `HTTPS_PROXY`；Luma 会自动渲染这些字段。如果你显式写了同名 env，Luma 会保留你的值。
 
+`proxy: true` 只管容器自己的出站 HTTP/HTTPS 请求，和服务如何被访问是两件事。比如 `region: home` + `exposure: tailscale-relay` + `proxy: true` 是有效组合：用户入站流量走公网 Traefik -> Tailscale -> home task，容器访问外网时走 `egress_mihomo`。
+
 ```yaml
 name: ai-worker
 image: ghcr.io/acme/ai-worker:1.0.0
