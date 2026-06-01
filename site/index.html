@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Luma turns domain-first service manifests into DNS records, HTTPS certificates, Traefik routes, and Swarm workload updates."
+      content="Luma turns YAML service manifests into DNS records, HTTPS certificates, Traefik routes, and Swarm workload updates."
     />
-    <title>Luma - Domain-driven deploy control plane</title>
+    <title>Luma - Self-hosted deploy control plane</title>
     <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
     <link rel="alternate" hreflang="en" href="./" />
@@ -18,7 +18,7 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=20260601-design1" />
+    <link rel="stylesheet" href="./styles.css?v=20260601-dubstyle1" />
   </head>
   <body>
     <a class="skip-link" href="#top">Skip to content</a>
@@ -45,10 +45,11 @@
     <main id="top">
       <section class="hero">
         <div class="hero-copy reveal">
-          <h1>Write YAML. Run luma deploy.</h1>
+          <p class="hero-kicker">Deploy tool for small Swarm clusters</p>
+          <h1>Deploy services<br />on your own servers.</h1>
           <p class="hero-lede">
-            Put the service in a YAML file. Luma updates Cloudflare records, Traefik rules, and Swarm services.
-            Each server joins locally; later deploys can be submitted from any client.
+            Write one YAML file for the domain, port, exposure, and region. Luma syncs Cloudflare DNS,
+            Traefik HTTPS routes, and Swarm services while each server joins the cluster locally.
           </p>
           <div class="hero-status" aria-label="Deployment capabilities">
             <span><strong>DNS</strong> Cloudflare sync</span>
@@ -56,7 +57,7 @@
             <span><strong>Nodes</strong> region labels</span>
           </div>
           <div class="hero-actions">
-            <a class="button primary" href="#demo">See commands</a>
+            <a class="button primary" href="#demo">View deploy flow</a>
             <a class="button ghost" href="https://github.com/LiuTianjie/luma">View source</a>
           </div>
           <div class="install-strip" aria-label="Install command">
@@ -66,36 +67,54 @@
           </div>
         </div>
 
-        <div class="hero-visual ops-board reveal" aria-label="Luma deployment control board">
-          <div class="ops-rail">
-            <span>luma</span>
-            <span>control</span>
-            <span>edge</span>
+        <div class="hero-visual deploy-dashboard reveal" aria-label="Luma deployment architecture">
+          <div class="dashboard-topline">
+            <span><img src="./assets/luma-logo-mark.png" alt="" aria-hidden="true" />Deploy preview</span>
+            <strong>status.example.com</strong>
           </div>
-          <div class="ops-terminal">
-            <div class="ops-window">
-              <span></span><span></span><span></span>
-              <strong>deploy/status.yaml</strong>
+          <div class="architecture-flow">
+            <span class="arch-line arch-line-input" aria-hidden="true"></span>
+            <span class="arch-line arch-line-dns" aria-hidden="true"></span>
+            <span class="arch-line arch-line-edge" aria-hidden="true"></span>
+            <span class="arch-line arch-line-swarm" aria-hidden="true"></span>
+            <div class="arch-card arch-manifest">
+              <span class="arch-label">01 Manifest</span>
+              <strong>status.yaml</strong>
+              <code>domain: status.example.com<br />exposure: cn-edge<br />port: 80</code>
             </div>
+            <div class="arch-card arch-control">
+              <img src="./assets/luma-logo-mark.png" alt="" aria-hidden="true" />
+              <span class="arch-label">02 Control</span>
+              <strong>Luma Control</strong>
+              <small>syncs DNS, TLS, routes, and services from the manifest</small>
+            </div>
+            <div class="arch-card arch-dns">
+              <span class="brand-icon icon-cloudflare" aria-hidden="true"></span>
+              <strong>Cloudflare DNS</strong>
+              <small>status.example.com -> cn-edge</small>
+            </div>
+            <div class="arch-card arch-edge">
+              <span class="brand-icon icon-traefik" aria-hidden="true"></span>
+              <strong>Traefik Edge</strong>
+              <small>Host rule + ACME certificate</small>
+            </div>
+            <div class="arch-card arch-swarm">
+              <span class="brand-icon icon-docker" aria-hidden="true"></span>
+              <strong>Swarm Nodes</strong>
+              <small>status:80 replicated x2</small>
+            </div>
+          </div>
+          <div class="deploy-output">
             <pre><code>$ luma deploy status.yaml
 ok dns     status.example.com -> cn-edge
 ok tls     acme certificate requested
 ok route   Host(status.example.com) -> status:80
-ok swarm   status replicated x2
-
-published https://status.example.com</code></pre>
-          </div>
-          <div class="route-ledger">
-            <span class="ledger-label">entry path</span>
-            <div><strong>Domain</strong><span>status.example.com</span></div>
-            <div><strong>Exposure</strong><span>cn-edge</span></div>
-            <div><strong>Target</strong><span>status:80</span></div>
-          </div>
-          <div class="node-rack">
-            <span class="rack-label">nodes</span>
-            <div><strong>manager</strong><small>control + traefik</small></div>
-            <div><strong>cn-worker-1</strong><small>region=cn</small></div>
-            <div><strong>global-sg-1</strong><small>region=global</small></div>
+ok swarm   status replicated x2</code></pre>
+            <div class="route-summary">
+              <span><strong>Domain</strong>status.example.com</span>
+              <span><strong>Exposure</strong>cn-edge</span>
+              <span><strong>Target</strong>status:80</span>
+            </div>
           </div>
         </div>
       </section>
@@ -149,7 +168,7 @@ published https://status.example.com</code></pre>
 
       <section class="section command-theatre" id="demo">
         <div class="section-heading reveal">
-          <h2>What each command changes.</h2>
+          <h2>What each command updates.</h2>
         </div>
 
         <div class="demo-grid reveal">
@@ -286,7 +305,7 @@ resources:
     memory: 512M</code></pre>
         </div>
         <div class="section-copy reveal">
-          <h2>Read the manifest, then update these parts.</h2>
+          <h2>Luma reads the manifest and updates the deploy path.</h2>
           <ul class="capability-list">
             <li>
               <span>01</span>
@@ -306,7 +325,7 @@ resources:
               <span>03</span>
               <div>
                 <strong>Create HTTPS route</strong>
-                <p>Traefik reads the Host rule, requests a certificate, and creates the TLS route.</p>
+                <p>Traefik reads the Host rule, requests a certificate, and creates the HTTPS route.</p>
               </div>
             </li>
             <li>
@@ -394,7 +413,7 @@ resources:
             </div>
             <div>
               <h3>Save private registry credentials</h3>
-              <p>Use this when GitHub Actions publishes a private GHCR image. It also fits repositories that publish a GitHub Pages site while the runtime image stays private.</p>
+              <p>Use saved credentials when the image registry is private.</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
 printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username &lt;user&gt; --password-stdin</code></pre>
             </div>
@@ -409,7 +428,7 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username &lt;user&gt; 
             </div>
             <div>
               <h3>Deploy from a client</h3>
-              <p>After login, the client submits a manifest. Luma prints DNS, certificate, route, and stack progress.</p>
+              <p>After login, the client submits the manifest. Luma prints DNS, certificate, route, and stack progress.</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
 luma deploy status.yaml</code></pre>
             </div>
@@ -421,9 +440,9 @@ luma deploy status.yaml</code></pre>
 
     <footer>
       <span>Luma</span>
-      <span>Deployment tooling for small server setups.</span>
+      <span>YAML deploys for small Swarm clusters.</span>
     </footer>
 
-    <script src="./app.js?v=20260601-design1"></script>
+    <script src="./app.js?v=20260601-dubstyle1"></script>
   </body>
 </html>
