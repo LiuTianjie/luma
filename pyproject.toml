@@ -1,16 +1,40 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "luma-infra"
-version = "0.1.19"
+version = "0.1.20"
 description = "Declarative deployment CLI for region-aware Docker Swarm infrastructure."
 readme = "README.md"
 requires-python = ">=3.9"
+authors = [
+  { name = "Luma Contributors" },
+]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: System :: Systems Administration",
+]
 dependencies = [
   "PyYAML>=6.0.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/LiuTianjie/luma"
+Repository = "https://github.com/LiuTianjie/luma"
+Issues = "https://github.com/LiuTianjie/luma/issues"
+Documentation = "https://liutianjie.github.io/luma/"
 
 [project.scripts]
 luma = "luma.cli:main"

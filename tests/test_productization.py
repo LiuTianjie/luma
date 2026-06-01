@@ -68,6 +68,16 @@ class ProductConfigTests(unittest.TestCase):
         self.assertEqual(pyproject_version.group(1), init_version.group(1))
         self.assertEqual(pyproject_version.group(1), asset_version.group(1))
 
+    def test_pyproject_has_publish_metadata(self):
+        root = Path(__file__).resolve().parents[1]
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+        self.assertIn('name = "luma-infra"', pyproject)
+        self.assertIn('luma = "luma.cli:main"', pyproject)
+        self.assertIn("[project.urls]", pyproject)
+        self.assertIn('license = "MIT"', pyproject)
+        self.assertIn('license-files = ["LICENSE"]', pyproject)
+
     def test_installer_does_not_change_system_dns(self):
         root = Path(__file__).resolve().parents[1]
         installer = (root / "scripts" / "install-luma.sh").read_text(encoding="utf-8")
@@ -413,6 +423,80 @@ class CliTests(unittest.TestCase):
                 self.assertNotIn("Waiting for control plane response", printed_text)
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_deploy_streams_ndjson_with_env_context_without_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_home = _set_env("LUMA_CONFIG_HOME", str(home))
+            old_url = _set_env("LUMA_CONTROL_URL", "https://luma.example.com")
+            old_token = _set_env("LUMA_DEPLOY_TOKEN", "deploy-token")
+            old_insecure = _set_env("LUMA_INSECURE", "")
+            old_resolve = _set_env("LUMA_RESOLVE_IP", "")
+            try:
+                client = Mock()
+                client.deploy_events.return_value = iter(
+                    [
+                        {"name": "Resolve image", "status": "start", "message": "started"},
+                        {"name": "Resolve image", "status": "ok", "message": "nginx:alpine"},
+                        {"status": "done", "result": {"service": "api", "image": {"selected": "nginx:alpine"}}},
+                    ]
+                )
+                with patch("luma.cli.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
+                    code = main(["--no-env", "deploy", str(service_path), "--format", "ndjson"])
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+                _restore_env("LUMA_CONTROL_URL", old_url)
+                _restore_env("LUMA_DEPLOY_TOKEN", old_token)
+                _restore_env("LUMA_INSECURE", old_insecure)
+                _restore_env("LUMA_RESOLVE_IP", old_resolve)
+
+            self.assertEqual(code, 0)
+            client_cls.assert_called_once_with("https://luma.example.com", "deploy-token", insecure=False, resolve_ip=None)
+            client.deploy_events.assert_called_once()
+            client.deploy.assert_not_called()
+            lines = [json.loads(call.args[0]) for call in printed.call_args_list]
+            self.assertTrue(all(isinstance(line, dict) for line in lines))
+            self.assertEqual(lines[0]["type"], "event")
+            self.assertEqual(lines[-1]["type"], "result")
+            self.assertTrue(lines[-1]["ok"])
+            self.assertEqual(lines[-1]["result"]["service"], "api")
+
+    def test_deploy_dry_run_json_does_not_create_control_client(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch("luma.cli.ControlClient") as client_cls, patch("builtins.print") as printed:
+                code = main(["deploy", str(service_path), "--dry-run", "--format", "json"])
+
+        self.assertEqual(code, 0)
+        client_cls.assert_not_called()
+        payload = json.loads(printed.call_args_list[-1].args[0])
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["result"]["dryRun"])
+        self.assertEqual(payload["result"]["service"]["name"], "api")
+        self.assertEqual(payload["result"]["artifacts"][0]["kind"], "stack")
 
     def test_wait_heartbeat_prints_during_slow_deploy_request(self):
         def slow_action():
@@ -892,6 +976,110 @@ class CliTests(unittest.TestCase):
         self.assertIn("NAME         REGION", printed_text)
         self.assertIn("docker-home  home    labeled     ready  worker", printed_text)
         self.assertIn("manager      cn      labeled     ready  manager", printed_text)
+
+    def test_status_uses_env_context_without_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            old_url = _set_env("LUMA_CONTROL_URL", "https://luma.example.com")
+            old_token = _set_env("LUMA_DEPLOY_TOKEN", "deploy-token")
+            old_insecure = _set_env("LUMA_INSECURE", "false")
+            old_resolve = _set_env("LUMA_RESOLVE_IP", "")
+            try:
+                client = Mock()
+                client.status.return_value = {"clusterId": "luma-test", "version": "0.1.2"}
+                with patch("luma.cli.ControlClient", return_value=client) as client_cls, patch("builtins.print") as printed:
+                    code = main(["--no-env", "status", "--format", "json"])
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+                _restore_env("LUMA_CONTROL_URL", old_url)
+                _restore_env("LUMA_DEPLOY_TOKEN", old_token)
+                _restore_env("LUMA_INSECURE", old_insecure)
+                _restore_env("LUMA_RESOLVE_IP", old_resolve)
+
+        self.assertEqual(code, 0)
+        client_cls.assert_called_once_with("https://luma.example.com", "deploy-token", insecure=False, resolve_ip=None)
+        payload = json.loads(printed.call_args_list[-1].args[0])
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["command"], "status")
+        self.assertEqual(payload["result"]["clusterId"], "luma-test")
+
+    def test_status_cli_context_overrides_env_and_login_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            old_url = _set_env("LUMA_CONTROL_URL", "https://env.example.com")
+            old_token = _set_env("LUMA_DEPLOY_TOKEN", "env-token")
+            try:
+                save_context(endpoint="https://context.example.com", cluster_id="luma-test", token="context-token")
+                client = Mock()
+                client.status.return_value = {"clusterId": "luma-test"}
+                with patch("luma.cli.ControlClient", return_value=client) as client_cls, patch("builtins.print"):
+                    code = main(
+                        [
+                            "--no-env",
+                            "status",
+                            "--control-url",
+                            "https://cli.example.com",
+                            "--token",
+                            "cli-token",
+                            "--format",
+                            "json",
+                        ]
+                    )
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+                _restore_env("LUMA_CONTROL_URL", old_url)
+                _restore_env("LUMA_DEPLOY_TOKEN", old_token)
+
+        self.assertEqual(code, 0)
+        client_cls.assert_called_once_with("https://cli.example.com", "cli-token", insecure=False, resolve_ip=None)
+
+    def test_status_json_reports_invalid_env_bool(self):
+        old_url = _set_env("LUMA_CONTROL_URL", "https://luma.example.com")
+        old_token = _set_env("LUMA_DEPLOY_TOKEN", "deploy-token")
+        old_insecure = _set_env("LUMA_INSECURE", "sometimes")
+        try:
+            with patch("luma.cli.ControlClient") as client_cls, patch("builtins.print") as printed:
+                code = main(["--no-env", "status", "--format", "json"])
+        finally:
+            _restore_env("LUMA_CONTROL_URL", old_url)
+            _restore_env("LUMA_DEPLOY_TOKEN", old_token)
+            _restore_env("LUMA_INSECURE", old_insecure)
+
+        self.assertEqual(code, 1)
+        client_cls.assert_not_called()
+        payload = json.loads(printed.call_args_list[-1].args[0])
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "luma_error")
+        self.assertIn("LUMA_INSECURE", payload["error"]["message"])
+
+    def test_secret_and_registry_list_use_env_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            old_url = _set_env("LUMA_CONTROL_URL", "https://luma.example.com")
+            old_token = _set_env("LUMA_DEPLOY_TOKEN", "deploy-token")
+            try:
+                secret_client = Mock()
+                secret_client.list_secrets.return_value = {"secrets": ["DATABASE_URL"]}
+                registry_client = Mock()
+                registry_client.list_registries.return_value = {"registries": [{"host": "ghcr.io", "username": "bot"}]}
+                with patch("luma.cli.ControlClient", side_effect=[secret_client, registry_client]) as client_cls, patch(
+                    "builtins.print"
+                ) as printed:
+                    secret_code = main(["--no-env", "secret", "list", "--format", "json"])
+                    registry_code = main(["--no-env", "registry", "list", "--format", "json"])
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+                _restore_env("LUMA_CONTROL_URL", old_url)
+                _restore_env("LUMA_DEPLOY_TOKEN", old_token)
+
+        self.assertEqual(secret_code, 0)
+        self.assertEqual(registry_code, 0)
+        self.assertEqual(client_cls.call_count, 2)
+        for call in client_cls.call_args_list:
+            self.assertEqual(call.args[:2], ("https://luma.example.com", "deploy-token"))
+        payloads = [json.loads(call.args[0]) for call in printed.call_args_list]
+        self.assertEqual(payloads[0]["result"]["secrets"], ["DATABASE_URL"])
+        self.assertEqual(payloads[1]["result"]["registries"][0]["host"], "ghcr.io")
 
     def test_node_exit_cleans_local_swarm_and_runtime_state(self):
         remote = Mock()

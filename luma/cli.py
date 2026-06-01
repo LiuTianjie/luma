@@ -33,6 +33,7 @@ from . import __version__
 
 
 T = TypeVar("T")
+OUTPUT_FORMATS = ("text", "json", "ndjson")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--token", help="Deploy token to use with --control-url")
     status.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API check")
     status.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
+    _add_output_arguments(status)
     sub.add_parser("preflight")
     configure = sub.add_parser("configure")
     configure.add_argument("--role", choices=("manager", "worker", "client"), default="manager")
@@ -69,13 +71,17 @@ def build_parser() -> argparse.ArgumentParser:
     context_use.add_argument("cluster")
     secret = sub.add_parser("secret")
     secret_sub = secret.add_subparsers(dest="secret_command", required=True)
-    secret_sub.add_parser("list")
+    secret_list = secret_sub.add_parser("list")
+    _add_control_arguments(secret_list)
+    _add_output_arguments(secret_list)
     secret_set = secret_sub.add_parser("set")
     secret_set.add_argument("name")
     secret_set.add_argument("--value")
     registry = sub.add_parser("registry")
     registry_sub = registry.add_subparsers(dest="registry_command", required=True)
-    registry_sub.add_parser("list")
+    registry_list = registry_sub.add_parser("list")
+    _add_control_arguments(registry_list)
+    _add_output_arguments(registry_list)
     registry_login = registry_sub.add_parser("login")
     registry_login.add_argument("host")
     registry_login.add_argument("--username", required=True)
@@ -99,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.10 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.20 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     update_sub = update.add_subparsers(dest="update_command", required=False, metavar="[target]")
@@ -171,15 +177,19 @@ def build_parser() -> argparse.ArgumentParser:
     service_remove.add_argument("--dry-run", action="store_true", help="Show what would be removed without changing the manager")
     service_remove.add_argument("--timeout", type=int, default=300, help="Seconds to wait for the control-plane remove response")
 
-    for name in ("validate", "render"):
-        cmd = sub.add_parser(name)
-        cmd.add_argument("service", type=Path)
+    validate = sub.add_parser("validate")
+    validate.add_argument("service", type=Path)
+    _add_output_arguments(validate)
+    render = sub.add_parser("render")
+    render.add_argument("service", type=Path)
 
     dns = sub.add_parser("dns-sync")
     dns.add_argument("service", type=Path)
 
     deploy = sub.add_parser("deploy")
     deploy.add_argument("service", type=Path)
+    _add_control_arguments(deploy)
+    _add_output_arguments(deploy)
     deploy.add_argument("--dry-run", action="store_true")
     deploy.add_argument("--skip-dns", action="store_true")
     deploy.add_argument("--skip-webhook", action="store_true")
@@ -189,6 +199,18 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--via", choices=("portainer",), default="portainer", help="Deployment runner")
 
     return parser
+
+
+def _add_control_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--control-url", help="Control API URL to use instead of the current login context")
+    parser.add_argument("--token", help="Deploy token to use with --control-url")
+    parser.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API")
+    parser.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
+
+
+def _add_output_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--format", choices=OUTPUT_FORMATS, default="text", help="Output format")
+    parser.add_argument("--quiet", action="store_true", help="Print only the final result or error")
 
 
 def _add_update_manager_arguments(parser: argparse.ArgumentParser) -> None:
@@ -302,6 +324,12 @@ def cmd_version(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     payload = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).status()
+    if _output_format(args) != "text":
+        _print_success(args, payload)
+        return 0
+    if _quiet(args):
+        print("ok")
+        return 0
     print("Luma status")
     _print_key_values(
         "Control",
@@ -386,6 +414,86 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
         print("  " + "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
 
 
+def _output_format(args: argparse.Namespace) -> str:
+    return str(getattr(args, "format", "text") or "text")
+
+
+def _quiet(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "quiet", False))
+
+
+def _command_name(args: argparse.Namespace) -> str:
+    command = str(getattr(args, "command", ""))
+    if command == "secret":
+        return f"secret {getattr(args, 'secret_command', '')}".strip()
+    if command == "registry":
+        return f"registry {getattr(args, 'registry_command', '')}".strip()
+    return command
+
+
+def _json_dumps(payload: Dict[str, Any]) -> str:
+    return json.dumps(payload, default=str, separators=(",", ":"), sort_keys=True)
+
+
+def _print_json(payload: Dict[str, Any], *, file: Any = None) -> None:
+    print(_json_dumps(payload), file=file)
+
+
+def _success_payload(args: argparse.Namespace, result: Dict[str, Any]) -> Dict[str, Any]:
+    return {"ok": True, "command": _command_name(args), "result": result}
+
+
+def _error_payload(exc: LumaError, *, code: str = "luma_error") -> Dict[str, Any]:
+    return {"ok": False, "error": {"code": code, "message": str(exc)}}
+
+
+def _print_success(args: argparse.Namespace, result: Dict[str, Any]) -> None:
+    output_format = _output_format(args)
+    if output_format == "json":
+        _print_json(_success_payload(args, result))
+    elif output_format == "ndjson":
+        _print_json({"type": "result", "ok": True, "result": result})
+
+
+def _print_structured_error(args: argparse.Namespace, exc: LumaError) -> bool:
+    output_format = _output_format(args)
+    if output_format == "json":
+        _print_json(_error_payload(exc), file=sys.stderr)
+        return True
+    if output_format == "ndjson":
+        _print_json({"type": "error", **_error_payload(exc)}, file=sys.stderr)
+        return True
+    return False
+
+
+def _env_text(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _arg_text(args: argparse.Namespace, name: str) -> str | None:
+    value = getattr(args, name, None)
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def _env_bool(name: str) -> bool | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise LumaError(f"{name} must be true or false")
+
+
 def _status_node_rows(registered_items: list[object], swarm_nodes: list[object]) -> list[list[str]]:
     merged: dict[str, dict[str, object]] = {}
     for item in registered_items:
@@ -445,16 +553,54 @@ def _version_health_context(args: argparse.Namespace) -> tuple[str, str, bool, s
 
 
 def _control_context(args: argparse.Namespace, *, require_token: bool) -> tuple[str, str, bool, str | None]:
-    if args.control_url:
-        if require_token and not args.token:
-            raise LumaError("--token is required with --control-url")
-        return args.control_url, str(args.token or "health"), bool(args.insecure), args.resolve_ip
-    context = load_current_context()
+    control_url = _arg_text(args, "control_url") or _env_text("LUMA_CONTROL_URL")
+    token = _arg_text(args, "token") or _env_text("LUMA_DEPLOY_TOKEN")
+    resolve_ip = _arg_text(args, "resolve_ip") or _env_text("LUMA_RESOLVE_IP")
+    env_insecure = _env_bool("LUMA_INSECURE")
+    cli_insecure = bool(getattr(args, "insecure", False))
+    insecure: bool | None = True if cli_insecure else env_insecure
+
+    has_stateless_context = any(
+        value is not None
+        for value in (control_url, token, resolve_ip, env_insecure)
+    ) or cli_insecure
+
+    if not has_stateless_context:
+        context = load_current_context()
+        return (
+            str(context["endpoint"]),
+            str(context["token"]),
+            bool(context.get("insecure", False)),
+            str(context["resolveIp"]) if context.get("resolveIp") else None,
+        )
+
+    context: Dict[str, Any] = {}
+    if not control_url or (require_token and not token) or insecure is None:
+        try:
+            context = load_current_context()
+        except LumaError:
+            context = {}
+
+    if not control_url:
+        control_url = str(context["endpoint"]) if context.get("endpoint") else None
+    if not token:
+        token = str(context["token"]) if context.get("token") else None
+    if insecure is None:
+        insecure = bool(context.get("insecure", False))
+    if not resolve_ip and context.get("resolveIp"):
+        resolve_ip = str(context["resolveIp"])
+
+    if not control_url:
+        raise LumaError("control URL is required; pass --control-url, set LUMA_CONTROL_URL, or run luma login")
+    if require_token and not token:
+        raise LumaError("deploy token is required; pass --token, set LUMA_DEPLOY_TOKEN, or run luma login")
+    if not token:
+        token = "health"
     return (
-        str(context["endpoint"]),
-        str(context["token"]),
-        bool(context.get("insecure", False)),
-        str(context["resolveIp"]) if context.get("resolveIp") else None,
+        control_url,
+        token,
+        bool(insecure),
+        resolve_ip,
     )
 
 
@@ -485,7 +631,9 @@ def log(message: str) -> None:
     print(message, flush=True)
 
 
-def _run_with_wait_heartbeat(action: Callable[[], T], *, timeout: int, interval: int = 30) -> T:
+def _run_with_wait_heartbeat(action: Callable[[], T], *, timeout: int, interval: int = 30, emit: bool = True) -> T:
+    if not emit:
+        return action()
     done = threading.Event()
     started = time.monotonic()
 
@@ -621,6 +769,20 @@ def cmd_context(args: argparse.Namespace) -> int:
 
 
 def cmd_secret(args: argparse.Namespace) -> int:
+    if args.secret_command == "list":
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+        result = client.list_secrets()
+        keys = result.get("secrets") if isinstance(result.get("secrets"), list) else []
+        if _output_format(args) != "text":
+            _print_success(args, {"secrets": keys})
+            return 0
+        if not keys:
+            print("No deployment secrets configured")
+            return 0
+        for key in keys:
+            print(str(key))
+        return 0
     context = load_current_context()
     client = ControlClient(
         str(context["endpoint"]),
@@ -628,15 +790,6 @@ def cmd_secret(args: argparse.Namespace) -> int:
         insecure=bool(context.get("insecure")),
         resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
     )
-    if args.secret_command == "list":
-        result = client.list_secrets()
-        keys = result.get("secrets") if isinstance(result.get("secrets"), list) else []
-        if not keys:
-            print("No deployment secrets configured")
-            return 0
-        for key in keys:
-            print(str(key))
-        return 0
     if args.secret_command == "set":
         value = args.value
         if value is None:
@@ -648,16 +801,14 @@ def cmd_secret(args: argparse.Namespace) -> int:
 
 
 def cmd_registry(args: argparse.Namespace) -> int:
-    context = load_current_context()
-    client = ControlClient(
-        str(context["endpoint"]),
-        str(context["token"]),
-        insecure=bool(context.get("insecure")),
-        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
-    )
     if args.registry_command == "list":
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
         result = client.list_registries()
         items = result.get("registries") if isinstance(result.get("registries"), list) else []
+        if _output_format(args) != "text":
+            _print_success(args, {"registries": items})
+            return 0
         if not items:
             print("No registry credentials configured")
             return 0
@@ -666,6 +817,13 @@ def cmd_registry(args: argparse.Namespace) -> int:
             username = str(item.get("username") or "")
             print(f"{host}\t{username}")
         return 0
+    context = load_current_context()
+    client = ControlClient(
+        str(context["endpoint"]),
+        str(context["token"]),
+        insecure=bool(context.get("insecure")),
+        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
+    )
     if args.registry_command == "login":
         if args.password_stdin:
             password = sys.stdin.read().strip()
@@ -1269,8 +1427,18 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
 def cmd_validate(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
-    print(f"Service valid: {service.name} ({service.service_kind})")
-    print(render_stack(config, service))
+    rendered = render_stack(config, service)
+    target = stack_path(config, service)
+    rendered_route = render_tailscale_route(config, service) if service.exposure == "tailscale-relay" else None
+    route_target = route_path(config, service) if rendered_route else None
+    if _output_format(args) != "text":
+        _print_success(args, _render_result(service, target, rendered, route_target, rendered_route))
+        return 0
+    if not _quiet(args):
+        print(f"Service valid: {service.name} ({service.service_kind})")
+        print(rendered)
+    else:
+        print(f"Service valid: {service.name}")
     return 0
 
 
@@ -1288,6 +1456,36 @@ def cmd_dns_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _service_summary(service: Any) -> Dict[str, Any]:
+    return {
+        "source": str(service.source),
+        "name": service.name,
+        "slug": service.slug,
+        "image": service.image,
+        "region": service.region,
+        "node": service.node,
+        "exposure": service.exposure,
+        "serviceKind": service.service_kind,
+        "public": service.public,
+        "domain": service.domain,
+        "port": service.port,
+        "replicas": service.replicas,
+    }
+
+
+def _render_result(
+    service: Any,
+    target: Path,
+    rendered: str,
+    route_target: Path | None = None,
+    rendered_route: str | None = None,
+) -> Dict[str, Any]:
+    artifacts: list[Dict[str, Any]] = [{"kind": "stack", "path": str(target), "content": rendered}]
+    if route_target and rendered_route:
+        artifacts.append({"kind": "route", "path": str(route_target), "content": rendered_route})
+    return {"service": _service_summary(service), "artifacts": artifacts}
+
+
 def cmd_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
@@ -1295,8 +1493,18 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     target = stack_path(config, service)
     rendered_route = render_tailscale_route(config, service) if service.exposure == "tailscale-relay" else None
     route_target = route_path(config, service) if rendered_route else None
+    output_format = _output_format(args)
+    quiet = _quiet(args) or output_format != "text"
 
     if args.dry_run:
+        result = _render_result(service, target, rendered, route_target, rendered_route)
+        result["dryRun"] = True
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        if quiet:
+            print(f"Dry run: {service.name}")
+            return 0
         print(f"Dry run: would write {target}")
         print(rendered)
         if rendered_route and route_target:
@@ -1309,16 +1517,14 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if args.timeout < 1:
         raise LumaError("--timeout must be at least 1 second")
 
-    print(f"[start] Load deploy context: {args.service}", flush=True)
-    context = load_current_context()
-    print(f"[ok] Logged in: {context['clusterId']} ({context['endpoint']})", flush=True)
-    client = ControlClient(
-        str(context["endpoint"]),
-        str(context["token"]),
-        insecure=bool(context.get("insecure")),
-        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
-    )
-    print(f"[start] Submit deploy: {service.name} -> {service.region}/{service.exposure}", flush=True)
+    if not quiet:
+        print(f"[start] Load deploy context: {args.service}", flush=True)
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    if not quiet:
+        print(f"[ok] Control endpoint: {endpoint}", flush=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    if not quiet:
+        print(f"[start] Submit deploy: {service.name} -> {service.region}/{service.exposure}", flush=True)
     manifest_text = args.service.read_text(encoding="utf-8")
     streamed = False
     result: Dict[str, Any] | None = None
@@ -1331,8 +1537,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             timeout=args.timeout,
         ):
             status = str(event.get("status") or "")
+            if output_format == "ndjson":
+                _print_json({"type": "event", **event})
             if status in {"start", "ok", "fail"}:
-                _print_deploy_step(event)
+                if not quiet:
+                    _print_deploy_step(event)
                 if status == "fail":
                     raise LumaError(str(event.get("message") or "deploy failed"))
             elif status == "done":
@@ -1348,7 +1557,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if result is None:
         if streamed:
             raise LumaError("control API stream ended without a deploy result")
-        print(f"[start] Waiting for control plane response (timeout {args.timeout}s)", flush=True)
+        if not quiet:
+            print(f"[start] Waiting for control plane response (timeout {args.timeout}s)", flush=True)
         result = _run_with_wait_heartbeat(
             lambda: client.deploy(
                 manifest=manifest_text,
@@ -1358,10 +1568,17 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 timeout=args.timeout,
             ),
             timeout=args.timeout,
+            emit=not quiet,
         )
         for step in result.get("steps") or []:
             if isinstance(step, dict):
-                _print_deploy_step(step)
+                if output_format == "ndjson":
+                    _print_json({"type": "event", **step})
+                elif not quiet:
+                    _print_deploy_step(step)
+    if output_format != "text":
+        _print_success(args, result)
+        return 0
     print(f"[ok] Deploy finished: {result.get('service', service.name)}")
     if result.get("image"):
         image = result["image"]
@@ -1521,6 +1738,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "deploy":
             return cmd_deploy(args)
     except LumaError as exc:
+        if _print_structured_error(args, exc):
+            return 1
         print(f"luma: {exc}", file=sys.stderr)
         return 1
     parser.print_help()

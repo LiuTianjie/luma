@@ -125,6 +125,22 @@ luma validate service.yaml
 luma deploy service.yaml --dry-run
 ```
 
+For CI runners, install the PyPI package and use stateless environment auth:
+
+```bash
+python -m pip install "luma-infra==0.1.20"
+export LUMA_CONTROL_URL="https://luma.example.com"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+luma validate service.yaml --format json
+luma deploy service.yaml --dry-run --format json
+```
+
+Deploying from main/release branches can stream machine-readable events:
+
+```bash
+luma deploy service.yaml --format ndjson --timeout 1800
+```
+
 ## Required Platform Ports
 
 Manifest `port` is the container's internal listening port. It is separate from the host/cloud firewall ports required by the Luma platform:

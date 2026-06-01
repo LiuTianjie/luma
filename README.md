@@ -58,6 +58,12 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 
 ## Install The CLI
 
+For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
+
+```bash
+python -m pip install "luma-infra==0.1.20"
+```
+
 Install without cloning the repository:
 
 ```bash
@@ -70,7 +76,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.10 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.20 sh
 ```
 
 Develop from source:
@@ -227,6 +233,21 @@ luma validate status.yaml
 luma deploy --dry-run status.yaml
 luma deploy status.yaml
 ```
+
+In CI, pass the control endpoint and deploy token through environment variables instead of creating a login context:
+
+```bash
+python -m pip install "luma-infra==0.1.20"
+
+export LUMA_CONTROL_URL="https://luma.example.com"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+
+luma validate status.yaml --format json
+luma deploy status.yaml --dry-run --format json
+luma deploy status.yaml --format ndjson --timeout 1800
+```
+
+CI clients do not need SSH, Docker, Cloudflare, Portainer, or persistent files under `~/.config/luma`.
 
 When application services share a small manager, set explicit resource limits:
 

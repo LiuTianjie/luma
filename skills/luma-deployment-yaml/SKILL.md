@@ -22,6 +22,7 @@ Luma manifests are not Docker Compose. They describe one service: image, region,
 3. Emit only the manifest YAML unless the user asks for explanation.
 4. Prefer `${ENV_NAME}` references for secrets; do not put plaintext secrets in YAML.
 5. Recommend validation with `luma validate <file>` and `luma deploy <file> --dry-run`.
+6. For CI usage, recommend installing the PyPI package `luma-infra` and using stateless environment authentication instead of running the shell installer or `luma login`.
 
 ## Hard Rules
 
@@ -101,6 +102,37 @@ When emitting `${NAME}` values, also tell the user to run:
 ```bash
 luma secret set NAME
 ```
+
+## CI Usage
+
+For generic shell CI, install the published Python package. The package name is `luma-infra`, but the command remains `luma`:
+
+```bash
+python -m pip install "luma-infra==0.1.20"
+```
+
+CI clients should authenticate with environment variables and avoid persistent login contexts:
+
+```bash
+export LUMA_CONTROL_URL="https://luma.example.com"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+```
+
+PR checks should validate and dry-run without changing the control plane:
+
+```bash
+luma validate deploy/app.yaml --format json
+luma deploy deploy/app.yaml --dry-run --format json
+```
+
+Main/release deployments can stream control-plane events as NDJSON:
+
+```bash
+luma status --format json
+luma deploy deploy/app.yaml --format ndjson --timeout 1800
+```
+
+Do not tell CI users to install Docker, configure SSH, store Cloudflare/Portainer credentials, or run `luma login`. CI only needs `LUMA_CONTROL_URL` and `LUMA_DEPLOY_TOKEN`; optional advanced variables are `LUMA_INSECURE=true|false` and `LUMA_RESOLVE_IP`.
 
 Home Tailscale relay:
 

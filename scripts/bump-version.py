@@ -12,7 +12,22 @@ VERSION_FILES = [
     ROOT / "luma" / "__init__.py",
     ROOT / "luma" / "assets" / "pyproject.toml",
 ]
+VERSION_REFERENCE_FILES = [
+    ROOT / "README.md",
+    ROOT / "docs" / "luma-cli.md",
+    ROOT / "docs" / "release.md",
+    ROOT / "docs" / "how-to-use-luma.md",
+    ROOT / "luma" / "assets" / "README.md",
+    ROOT / "luma" / "cli.py",
+]
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+VERSION_REFERENCE_PATTERNS = [
+    re.compile(r"(luma-infra==)\d+\.\d+\.\d+"),
+    re.compile(r"(LUMA_INSTALL_REF=v)\d+\.\d+\.\d+"),
+    re.compile(r"(git tag v)\d+\.\d+\.\d+"),
+    re.compile(r"(luma-control:v)\d+\.\d+\.\d+"),
+    re.compile(r"(--install-ref v)\d+\.\d+\.\d+"),
+]
 
 
 def main() -> int:
@@ -32,6 +47,7 @@ def main() -> int:
     current = next(iter(unique))
 
     if args.check:
+        check_reference_versions(current)
         print(current)
         return 0
 
@@ -45,6 +61,9 @@ def main() -> int:
     for path in VERSION_FILES:
         text = path.read_text(encoding="utf-8")
         path.write_text(replace_version(text, current, next_version, path), encoding="utf-8")
+    for path in VERSION_REFERENCE_FILES:
+        text = path.read_text(encoding="utf-8")
+        path.write_text(replace_reference_versions(text, next_version), encoding="utf-8")
     print(f"{current} -> {next_version}")
     return 0
 
@@ -75,6 +94,27 @@ def replace_version(text: str, current: str, next_version: str, path: Path) -> s
     if path.name == "pyproject.toml":
         return re.sub(r'^version = "[^"]+"$', f'version = "{next_version}"', text, count=1, flags=re.MULTILINE)
     return re.sub(r'^__version__ = "[^"]+"$', f'__version__ = "{next_version}"', text, count=1, flags=re.MULTILINE)
+
+
+def replace_reference_versions(text: str, next_version: str) -> str:
+    for pattern in VERSION_REFERENCE_PATTERNS:
+        text = pattern.sub(rf"\g<1>{next_version}", text)
+    return text
+
+
+def check_reference_versions(current: str) -> None:
+    mismatches: list[str] = []
+    for path in VERSION_REFERENCE_FILES:
+        text = path.read_text(encoding="utf-8")
+        for pattern in VERSION_REFERENCE_PATTERNS:
+            for match in pattern.finditer(text):
+                prefix = match.group(1)
+                version = match.group(0).removeprefix(prefix).removeprefix("v")
+                if version != current:
+                    mismatches.append(f"{path.relative_to(ROOT)}: {match.group(0)}")
+    if mismatches:
+        details = "\n".join(mismatches)
+        raise SystemExit(f"version references disagree with {current}:\n{details}")
 
 
 def bump(version: str, *, major: bool, minor: bool) -> str:

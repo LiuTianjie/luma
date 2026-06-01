@@ -12,6 +12,16 @@ Portainer is required and installed by bootstrap. It shows stacks, services, log
 
 ## Install
 
+CI runners should install the published package instead of running the shell installer:
+
+```bash
+python -m pip install "luma-infra==0.1.20"
+```
+
+The package distribution name is `luma-infra`, but the installed command is still `luma`.
+
+For interactive machines, use the installer:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
 ~/.local/bin/luma preflight
@@ -22,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.10 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.20 sh
 ```
 
 Development checkout:
@@ -45,6 +55,43 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninst
 ```
 
 This only removes the local CLI install. It does not remove Docker, Swarm, Portainer, Traefik, Luma Control, deployed services, or server-side `/opt/luma` state.
+
+## CI Usage
+
+CI can run Luma as a stateless control-plane client. It does not need SSH, Docker, Cloudflare, Portainer, or files under `~/.config/luma`.
+
+PR validation:
+
+```bash
+python -m pip install "luma-infra==0.1.20"
+
+export LUMA_CONTROL_URL="https://luma.example.com"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+
+luma validate deploy/app.yaml --format json
+luma deploy deploy/app.yaml --dry-run --format json
+```
+
+Main or release deployment:
+
+```bash
+python -m pip install "luma-infra==0.1.20"
+
+export LUMA_CONTROL_URL="https://luma.example.com"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+
+luma status --format json
+luma deploy deploy/app.yaml --format ndjson --timeout 1800
+```
+
+The control context priority is CLI flags, then environment variables, then the local login context. CI commonly uses:
+
+- `LUMA_CONTROL_URL`
+- `LUMA_DEPLOY_TOKEN`
+- `LUMA_INSECURE=true|false`
+- `LUMA_RESOLVE_IP`
+
+`LUMA_RESOLVE_IP` keeps the control hostname in the `Host` header and requires insecure TLS mode.
 
 ## Configuration
 

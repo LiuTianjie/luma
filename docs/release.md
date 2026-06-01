@@ -2,7 +2,7 @@
 
 Luma can be distributed without asking users to clone the repository.
 
-## Recommended First Release
+## Recommended Release
 
 1. Bump the package version before committing code that should be distinguishable by `luma version`:
 
@@ -29,17 +29,34 @@ The `Build Control Image` workflow publishes:
 - `ghcr.io/liutianjie/luma-control:main-<sha>` from `main`
 - `ghcr.io/liutianjie/luma-control:<tag>` from `v*` tags
 
-4. Create a tag to publish a versioned image and release archive:
+4. Configure PyPI Trusted Publishing once for the `luma-infra` project:
+
+- owner: `LiuTianjie`
+- repository: `luma`
+- workflow: `pypi.yml`
+- environment: `pypi`
+
+The package distribution name is `luma-infra`; the installed console command remains `luma`.
+
+5. Create a tag to publish a versioned image, GitHub archive, and PyPI package:
 
 ```bash
-git tag v0.1.10
+git tag v0.1.20
 git push origin main --tags
 ```
 
-5. Users install with:
+The `Publish Python Package` workflow builds wheel and sdist, runs `twine check`, and publishes with `pypa/gh-action-pypi-publish@release/v1` through OIDC. Do not store a long-lived `PYPI_API_TOKEN` secret.
+
+6. CI users install with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.10 sh
+python -m pip install "luma-infra==0.1.20"
+```
+
+Interactive users can still install with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.20 sh
 ```
 
 The installer downloads the GitHub archive for that tag, creates `~/.local/share/luma/venv`, installs the Python package, writes `~/.local/bin/luma`, and adds `~/.local/bin` to the user's shell profile when needed.
@@ -63,7 +80,7 @@ The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you wa
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.10
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.20
 ```
 
 ## Latest Channel
@@ -76,6 +93,12 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 
 This is convenient but less reproducible than a tag. For real users, prefer a version tag.
 
+For CI, prefer the pinned PyPI package:
+
+```bash
+python -m pip install "luma-infra==0.1.20"
+```
+
 ## Custom Host Or Fork
 
 Use these environment variables when the code is hosted somewhere else:
@@ -83,12 +106,25 @@ Use these environment variables when the code is hosted somewhere else:
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.1.10 \
+  LUMA_INSTALL_REF=v0.1.20 \
   sh
 ```
 
 Use `LUMA_ARCHIVE_URL` to bypass GitHub archive URL conventions completely.
 
-## PyPI Later
+## PyPI Package Checks
 
-The package already has a `pyproject.toml` and includes runtime stack templates as package data, so it can later be published to PyPI. The one-line installer is still useful for local preflight, venv creation, and PATH setup. Host-level changes such as Linux DNS repair are handled by manager bootstrap or node join, not by a CLI-only install.
+Before tagging, verify the package locally:
+
+```bash
+rm -rf dist
+python -m pip install --upgrade build twine
+python -m build
+python -m twine check dist/*
+python -m venv /tmp/luma-package-test
+. /tmp/luma-package-test/bin/activate
+python -m pip install dist/*.whl
+luma version --local
+```
+
+The package includes runtime stack templates and dashboard assets as package data. The one-line installer remains useful for local preflight, venv creation, and PATH setup. Host-level changes such as Linux DNS repair are handled by manager bootstrap or node join, not by a CLI-only install.
