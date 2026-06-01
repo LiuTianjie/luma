@@ -148,6 +148,21 @@ luma node join https://luma.example.com --token <join-token> --region home --nam
 The node asks the manager for the Swarm join token and manager address, then joins the cluster locally.
 After the local join succeeds, it calls back to Luma Control so the manager applies the region and Luma node labels automatically. `--name` is the Luma node name used in status output and service manifests; Luma stores the real Swarm NodeID separately and uses that NodeID for pinned scheduling. `--region` is the scheduling boundary.
 
+### Required node ports
+
+Luma configures UFW on Linux nodes during bootstrap/join. If you use a cloud security group, host firewall, or Tailscale ACL, allow these paths too:
+
+| Port | Direction | Purpose |
+| --- | --- | --- |
+| `80/tcp` | Internet to manager/edge | HTTP entrypoint and Let's Encrypt HTTP-01 challenge. |
+| `443/tcp` | Internet to manager/edge | HTTPS entrypoint for public services and Luma Control. |
+| `9443/tcp` | trusted clients to manager | Direct Portainer UI/API access. Restrict this when possible. |
+| `2377/tcp` | workers to manager | Docker Swarm control-plane join and manager communication. |
+| `7946/tcp` and `7946/udp` | node to node | Docker Swarm node discovery and overlay-network gossip. |
+| `4789/udp` | node to node | Docker overlay/VXLAN data path. |
+
+`7890/tcp` and `7890/udp` are intentionally denied for public inbound access; the egress proxy is for local Docker/service outbound traffic only.
+
 If a node needs to leave a broken or rebuilt manager before joining again, run this on that node:
 
 ```bash

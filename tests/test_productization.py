@@ -1562,6 +1562,15 @@ class PortainerWebhookTests(unittest.TestCase):
         self.assertIn("docker rm -f $containers", command)
         self.assertIn("docker volume rm portainer_portainer_data", command)
 
+    def test_portainer_agent_is_manager_only(self):
+        stack = yaml.safe_load(asset_text("stacks/core/portainer/stack.yml"))
+        agent = stack["services"]["agent"]
+
+        self.assertEqual(agent["environment"]["AGENT_CLUSTER_ADDR"], "tasks.agent")
+        self.assertIn("node.role == manager", agent["deploy"]["placement"]["constraints"])
+        self.assertIn("node.platform.os == linux", agent["deploy"]["placement"]["constraints"])
+        self.assertEqual(stack["services"]["portainer"]["command"], "-H tcp://tasks.agent:9001 --tlsskipverify")
+
     def test_install_control_config_generates_config_without_local_path(self):
         config = LumaConfig({}, None)
         node = config.default_manager()

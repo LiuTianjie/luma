@@ -124,3 +124,18 @@ resources:
 luma validate service.yaml
 luma deploy service.yaml --dry-run
 ```
+
+## Required Platform Ports
+
+Manifest `port` is the container's internal listening port. It is separate from the host/cloud firewall ports required by the Luma platform:
+
+| Port | Required path | Purpose |
+| --- | --- | --- |
+| `80/tcp` | public clients to edge manager | HTTP redirect and Let's Encrypt challenge. |
+| `443/tcp` | public clients to edge manager | HTTPS ingress for public services and Luma Control. |
+| `9443/tcp` | trusted operators to manager | Direct Portainer UI/API access. |
+| `2377/tcp` | workers to manager | Docker Swarm control plane. |
+| `7946/tcp`, `7946/udp` | all Swarm nodes | Swarm discovery and overlay gossip. |
+| `4789/udp` | all Swarm nodes | Overlay/VXLAN data path. |
+
+Current Luma Portainer stacks keep the endpoint URL `tcp://tasks.agent:9001` for compatibility, but schedule `portainer_agent` only on manager nodes. This prevents a `cn` deploy from failing because a `global` or `home` worker agent cannot reach the manager agent.

@@ -90,6 +90,21 @@ Rerun manager bootstrap so Portainer is initialized and `/opt/luma/control/contr
 luma bootstrap manager --domain luma.example.com
 ```
 
+If deploy fails with `Unable to check for name collision` or `The agent was unable to contact any other agent located on a manager node`, inspect the Portainer agent placement first:
+
+```bash
+docker service inspect portainer_agent --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}} {{json .Spec.TaskTemplate.Placement.Constraints}}'
+docker service ps portainer_agent --no-trunc
+```
+
+Current Luma installs keep `tcp://tasks.agent:9001` compatible with existing Portainer endpoints, but constrain `portainer_agent` to Swarm manager nodes. If an older install still has worker agent tasks, rerun:
+
+```bash
+luma portainer setup
+```
+
+If worker nodes still need to run workloads, their Swarm networking must allow node-to-node `7946/tcp`, `7946/udp`, and `4789/udp`. A one-way `7946/tcp` timeout can make Portainer worker agents report that no manager agent exists, even when `docker node ls` shows the manager as ready.
+
 If bootstrap fails with `Portainer authentication failed: HTTP 422 Invalid credentials`, Portainer already has
 an admin password that does not match Luma's saved state. If you know the current password, bind it explicitly
 and rerun:

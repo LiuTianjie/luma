@@ -134,3 +134,8 @@ tunnel:
 ## Additional Reference
 
 For the full field table and more examples, read `references/manifest-reference.md`.
+
+## Operational Notes
+
+- `region` controls service scheduling, but Portainer deployment itself is run through the Swarm manager. Current Luma Portainer stacks constrain `portainer_agent` to manager nodes so `cn` deploys are not blocked by worker-agent health.
+- When diagnosing deploy failures that mention Portainer manager agents, check node networking before changing the service manifest. Swarm nodes that run workloads need node-to-node `7946/tcp`, `7946/udp`, and `4789/udp`; workers also need `2377/tcp` to the manager.

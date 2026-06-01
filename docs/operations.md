@@ -182,6 +182,21 @@ luma portainer setup
 luma doctor
 ```
 
+## Required Network Ports
+
+For Linux nodes, Luma configures UFW during bootstrap/join. Mirror the same access in cloud security groups or Tailscale ACLs:
+
+| Port | Required between | Purpose |
+| --- | --- | --- |
+| `80/tcp` | public clients -> edge manager | HTTP redirect and Let's Encrypt challenge. |
+| `443/tcp` | public clients -> edge manager | HTTPS ingress for Luma Control and public services. |
+| `9443/tcp` | trusted operators -> manager | Direct Portainer UI/API. Prefer a restricted source range. |
+| `2377/tcp` | worker nodes -> manager | Swarm control plane. |
+| `7946/tcp`, `7946/udp` | all Swarm nodes | Swarm discovery and overlay-network gossip. |
+| `4789/udp` | all Swarm nodes | Overlay/VXLAN service traffic. |
+
+Luma's Portainer deployment path uses a manager-constrained `portainer_agent` so `cn` deployments do not depend on worker-side Portainer agents. The Swarm ports are still required for workloads that run across multiple nodes.
+
 ## Portainer Access
 
 Portainer is deployed on the manager's `9443` port for the first bootstrap experience:
