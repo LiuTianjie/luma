@@ -14,15 +14,15 @@ Portainer is required and installed by bootstrap. It shows stacks, services, log
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma preflight
+~/.local/bin/luma preflight
 ```
 
-The installer uses a GitHub archive, not `git clone`. It installs into `~/.local/share/luma/venv`, writes `~/.local/bin/luma`, and adds `~/.local/bin` to your shell profile when needed.
+The installer uses a GitHub archive, not `git clone`. It installs into `~/.local/share/luma/venv`, writes `~/.local/bin/luma`, and adds `~/.local/bin` to your shell profile when needed. Use `~/.local/bin/luma` immediately, or open a new shell / run `exec $SHELL -l` before using the shorter `luma` command.
 
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.6 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.7 sh
 ```
 
 Development checkout:
@@ -227,7 +227,6 @@ luma node bootstrap manager-1 --profile single-node
 name: app
 image: ghcr.io/me/app:latest
 region: cn
-public: true
 exposure: cn-edge
 domain: app.example.com
 port: 3000
@@ -254,6 +253,7 @@ Optional fields:
 - `labels`
 - `networks`
 - `proxy`: when `true`, runtime traffic uses the egress proxy; Luma adds the egress network and default proxy env. Scheduling still follows `region`.
+- `resources`: passed through to Swarm `deploy.resources`; supports `limits` and `reservations` for CPU and memory.
 - `stackPath`
 - `routePath`
 - `dns.target`
@@ -274,6 +274,22 @@ image: ghcr.io/acme/ai-worker:1.0.0
 region: cn
 exposure: none
 proxy: true
+```
+
+Example bounded service for a small manager:
+
+```yaml
+name: api
+image: ghcr.io/acme/api:1.0.0
+region: cn
+exposure: none
+resources:
+  limits:
+    cpus: "0.50"
+    memory: 512M
+  reservations:
+    cpus: "0.10"
+    memory: 128M
 ```
 
 ## Deploy Order

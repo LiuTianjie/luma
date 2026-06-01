@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     update = sub.add_parser("update")
     update_sub = update.add_subparsers(dest="update_command", required=True)
     update_manager = update_sub.add_parser("manager")
-    update_manager.add_argument("--domain", required=True)
+    update_manager.add_argument("--domain", help="Control domain. Defaults to the domain stored in /opt/luma/control/control.json.")
     update_manager.add_argument("--node")
     update_manager.add_argument("--profile", choices=sorted(PROFILES), default="single-node")
     update_manager.add_argument("--http-port", type=int, help="Public Traefik HTTP port")
@@ -498,12 +498,13 @@ def _run_luma_installer(*, install_ref: str | None = None) -> None:
 
 
 def _updated_manager_bootstrap_command(args: argparse.Namespace) -> list[str]:
+    domain = _manager_update_domain(args.domain)
     command = [
         _luma_executable(),
         "bootstrap",
         "manager",
         "--domain",
-        args.domain,
+        domain,
         "--profile",
         args.profile,
     ]
@@ -518,6 +519,34 @@ def _updated_manager_bootstrap_command(args: argparse.Namespace) -> list[str]:
     if args.overwrite_control_state:
         command.append("--overwrite-control-state")
     return command
+
+
+def _manager_update_domain(explicit_domain: str | None) -> str:
+    if explicit_domain:
+        return explicit_domain
+    state = _existing_control_state()
+    if state:
+        domain = str(state.get("domain") or "").strip()
+        if domain:
+            return domain
+    raise LumaError("update manager could not infer the control domain. Pass --domain <control-domain> once.")
+
+
+def _existing_control_state() -> Dict[str, object] | None:
+    path = state_path()
+    try:
+        if path.exists():
+            return load_state(path)
+    except PermissionError:
+        pass
+    result = LocalExecutor().sudo_result(f"test -f {shlex.quote(str(path))} && cat {shlex.quote(str(path))}")
+    if result.code != 0 or not result.output.strip():
+        return None
+    raw = result.output.strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    data = json.loads(raw[start : end + 1] if start >= 0 and end >= start else raw)
+    return data if isinstance(data, dict) else None
 
 
 def _luma_executable() -> str:
@@ -566,20 +595,10 @@ def _node_join_examples(control_url: str, join_token: str) -> list[tuple[str, st
 def _control_state_for_bootstrap(domain: str, *, overwrite: bool) -> Dict[str, object]:
     if overwrite:
         return new_state(domain=domain)
-    path = state_path()
-    try:
-        if path.exists():
-            return load_state(path)
-    except PermissionError:
-        pass
-    result = LocalExecutor().sudo_result(f"test -f {shlex.quote(str(path))} && cat {shlex.quote(str(path))}")
-    if result.code == 0 and result.output.strip():
-        raw = result.output.strip()
-        start = raw.find("{")
-        end = raw.rfind("}")
-        data = json.loads(raw[start : end + 1] if start >= 0 and end >= start else raw)
-        if isinstance(data, dict):
-            return data
+    data = _existing_control_state()
+    if data:
+        data["domain"] = domain
+        return data
     return new_state(domain=domain)
 
 

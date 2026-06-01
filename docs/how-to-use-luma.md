@@ -14,15 +14,15 @@ Portainer is a required operations console and deployment runner. Luma Control r
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma preflight
+~/.local/bin/luma preflight
 ```
 
-This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` command at `~/.local/bin/luma`, and adds `~/.local/bin` to your shell profile when needed. Open a new shell or run `exec $SHELL -l` after installation.
+This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` command at `~/.local/bin/luma`, and adds `~/.local/bin` to your shell profile when needed. Use `~/.local/bin/luma` immediately, or open a new shell / run `exec $SHELL -l` before using the shorter `luma` command.
 
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.6 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.7 sh
 ```
 
 For local development from a checkout:
@@ -249,7 +249,6 @@ Manual manifest:
 name: app
 image: ghcr.io/me/app:latest
 region: cn
-public: true
 exposure: cn-edge
 domain: app.example.com
 port: 3000
@@ -288,7 +287,7 @@ Preview without side effects:
 luma deploy app.yaml --dry-run
 ```
 
-Preview generated files without DNS or webhook side effects:
+Submit to the control plane, render/write files on the manager, but skip DNS sync and Portainer deployment:
 
 ```bash
 luma deploy app.yaml --skip-dns --skip-webhook

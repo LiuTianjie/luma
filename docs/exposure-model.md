@@ -34,7 +34,6 @@ Manifest:
 name: app
 image: ghcr.io/your-org/app:latest
 region: cn
-public: true
 exposure: cn-edge
 domain: app.example.com
 port: 3000
@@ -75,7 +74,6 @@ Manifest:
 name: home-panel
 image: ghcr.io/your-org/home-panel:latest
 region: home
-public: true
 exposure: tailscale-relay
 domain: panel.example.com
 port: 8080
@@ -116,7 +114,6 @@ Manifest:
 name: home-tool
 image: ghcr.io/your-org/home-tool:latest
 region: home
-public: true
 exposure: cloudflare-tunnel
 domain: tool.example.com
 port: 8080
@@ -153,7 +150,6 @@ Manifest:
 name: ai-gateway
 image: ghcr.io/your-org/ai-gateway:latest
 region: global
-public: true
 exposure: external-edge
 domain: ai.example.com
 port: 3000
@@ -189,7 +185,6 @@ Manifest:
 name: fetch-worker
 image: ghcr.io/your-org/fetch-worker:latest
 region: global
-public: false
 exposure: none
 replicas: 1
 env:

@@ -46,6 +46,7 @@ luma deploy status.yaml
 | `labels` | 否 | string[] | 追加 service labels。公开 Traefik labels 会自动生成。 |
 | `networks` | 否 | string[] | 追加 external overlay networks。公开 Traefik 服务会自动加入 public network。 |
 | `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动加入 egress 网络和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
+| `resources` | 否 | map | 透传到 Swarm `deploy.resources`，用于限制 CPU/内存。支持 `limits` 和 `reservations`。 |
 | `publishPort` | tailscale-relay 可用 | integer | host mode 暴露端口，默认等于 `port`。 |
 | `relay` | tailscale-relay 必填 | map | Tailscale relay 上游信息。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
@@ -169,6 +170,26 @@ networks:
 placement:
   constraints:
     - node.labels.region == cn
+```
+
+### 小机器资源限制
+
+如果 manager 只有 2c2g，并且业务服务也部署在 manager 上，建议给每个非核心服务显式设置资源边界。`limits` 是硬上限，`reservations` 用于 Swarm 调度时预留资源：
+
+```yaml
+name: api
+image: ghcr.io/acme/api:1.0.0
+region: cn
+exposure: cn-edge
+domain: api.example.com
+port: 3000
+resources:
+  limits:
+    cpus: "0.50"
+    memory: 512M
+  reservations:
+    cpus: "0.10"
+    memory: 128M
 ```
 
 ### 家里内部服务

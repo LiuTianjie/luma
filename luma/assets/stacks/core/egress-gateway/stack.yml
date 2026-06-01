@@ -17,6 +17,13 @@ services:
       - egress
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
       placement:
         constraints:
           - node.labels.egress == true

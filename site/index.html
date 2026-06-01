@@ -49,6 +49,11 @@
             Run <code>luma deploy</code> from any machine. Luma takes care of DNS, certificates, Traefik routes,
             and Swarm service updates.
           </p>
+          <div class="hero-status" aria-label="Deployment capabilities">
+            <span><strong>DNS</strong> Cloudflare sync</span>
+            <span><strong>TLS</strong> Traefik ACME</span>
+            <span><strong>Nodes</strong> region labels</span>
+          </div>
           <div class="hero-actions">
             <a class="button primary" href="#demo">Watch the deploy demo</a>
             <a class="button ghost" href="https://github.com/LiuTianjie/luma">View source</a>
@@ -72,6 +77,10 @@
           <div class="hud hud-bottom">
             <strong>route</strong>
             <span>status.example.com</span>
+          </div>
+          <div class="hud hud-left">
+            <strong>swarm</strong>
+            <span>cn / global / home</span>
           </div>
         </div>
       </section>
@@ -195,7 +204,11 @@ region: cn
 domain: status.example.com
 port: 80
 exposure: cn-edge
-replicas: 2</code></pre>
+replicas: 2
+resources:
+  limits:
+    cpus: "0.50"
+    memory: 512M</code></pre>
         </div>
         <div class="section-copy reveal">
           <p class="eyebrow">Core flow</p>
@@ -229,6 +242,13 @@ replicas: 2</code></pre>
                 <p>Update the stack so <code>status.example.com</code> forwards to <code>status:80</code> replicas.</p>
               </div>
             </li>
+            <li>
+              <span>05</span>
+              <div>
+                <strong>Keep manager headroom</strong>
+                <p>Use Swarm resource limits when app services share a small control-plane node.</p>
+              </div>
+            </li>
           </ul>
         </div>
       </section>
@@ -251,7 +271,7 @@ replicas: 2</code></pre>
               <h3>Install the CLI</h3>
               <p>Managers, workers, and clients use the same <code>luma</code> command.</p>
               <pre><code>curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma preflight</code></pre>
+~/.local/bin/luma preflight</code></pre>
             </div>
           </article>
 
@@ -266,7 +286,7 @@ luma preflight</code></pre>
             </div>
             <div>
               <h3>Initialize the control plane</h3>
-              <p>Create the single control-plane manager with Swarm, Traefik, Portainer, Luma Control, and the egress gateway.</p>
+              <p>Create the single control-plane manager with Swarm, Traefik, Portainer, Luma Control, and the egress gateway. Built-in services ship with conservative resource caps.</p>
               <pre><code>luma bootstrap manager --domain luma.example.com</code></pre>
             </div>
           </article>

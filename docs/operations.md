@@ -26,7 +26,6 @@ For a hand-written manifest, keep the same fields:
 name: api
 image: ghcr.io/me/api:2026-05-29-1
 region: cn
-public: true
 exposure: cn-edge
 domain: api.example.com
 port: 3000
@@ -105,14 +104,11 @@ sudo docker service rollback <stack>_<service>
 
 ## Remove A Service
 
-Remove the stack in Portainer, then remove generated files from Git:
+Remove the stack in Portainer, then remove generated files on the manager:
 
 ```bash
-rm -rf stacks/<region>/<service>
-rm -f routes/<service>.yml
-git add -A
-git commit -m "remove <service>"
-git push
+sudo rm -rf /opt/luma/stacks/<region>/<service>
+sudo rm -f /opt/luma/routes/<service>.yml
 ```
 
 If Portainer is unavailable:

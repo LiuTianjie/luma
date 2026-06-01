@@ -37,6 +37,8 @@ class ServiceSpec:
     constraints: List[str] = field(default_factory=list)
     labels: List[str] = field(default_factory=list)
     networks: List[str] = field(default_factory=list)
+    volumes: List[str] = field(default_factory=list)
+    resources: Dict[str, Any] = field(default_factory=dict)
     stack_path: Optional[Path] = None
     route_path: Optional[Path] = None
     dns: Dict[str, Any] = field(default_factory=dict)
@@ -132,13 +134,23 @@ def load_service(path: Path) -> ServiceSpec:
     constraints = raw.get("constraints") or []
     labels = raw.get("labels") or []
     networks = raw.get("networks") or []
+    volumes = raw.get("volumes") or []
+    resources = raw.get("resources") or {}
     for field_name, value in {
         "constraints": constraints,
         "labels": labels,
         "networks": networks,
+        "volumes": volumes,
     }.items():
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise LumaError(f"{field_name} must be a list of strings")
+    if not isinstance(resources, dict):
+        raise LumaError("resources must be a mapping")
+    for section_name, section in resources.items():
+        if section_name not in {"limits", "reservations"}:
+            raise LumaError("resources only supports limits and reservations")
+        if not isinstance(section, dict):
+            raise LumaError(f"resources.{section_name} must be a mapping")
 
     stack_path = raw.get("stackPath")
     route_path = raw.get("routePath")
@@ -165,6 +177,8 @@ def load_service(path: Path) -> ServiceSpec:
         constraints=constraints,
         labels=labels,
         networks=networks,
+        volumes=volumes,
+        resources=resources,
         stack_path=Path(stack_path) if stack_path else None,
         route_path=Path(route_path) if route_path else None,
         dns=dns,

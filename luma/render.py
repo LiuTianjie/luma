@@ -24,6 +24,16 @@ def uses_traefik_labels(service: ServiceSpec) -> bool:
     return service.exposure in {"cn-edge", "external-edge"}
 
 
+def named_volume_sources(volumes: List[str]) -> List[str]:
+    names: List[str] = []
+    for spec in volumes:
+        source = spec.split(":", 1)[0].strip()
+        if not source or source.startswith("/") or source.startswith("."):
+            continue
+        names.append(source)
+    return names
+
+
 def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
     service_name = service.slug
     upstream_url = service.relay.get("url")
@@ -64,6 +74,8 @@ def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
         "replicas": service.replicas,
         "placement": {"constraints": constraints},
     }
+    if service.resources:
+        deploy["resources"] = service.resources
 
     labels: List[str] = list(service.labels)
     if uses_traefik_labels(service):
@@ -106,6 +118,8 @@ def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
                 "mode": "host",
             }
         ]
+    if service.volumes:
+        service_body["volumes"] = service.volumes
     if networks:
         service_body["networks"] = networks
 
@@ -127,5 +141,11 @@ def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
         stack["networks"] = {
             name: {"external": True}
             for name in networks
+        }
+    volume_names = named_volume_sources(service.volumes)
+    if volume_names:
+        stack["volumes"] = {
+            name: {}
+            for name in volume_names
         }
     return dump_yaml(stack)

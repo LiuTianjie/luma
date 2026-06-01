@@ -85,5 +85,5 @@ Luma renders the egress network, `HTTP_PROXY=http://egress_mihomo:7890`, and `HT
 
 - Do not commit `EGRESS_SUBSCRIPTION_URL`.
 - Rotate subscription URLs that appear in chat, logs, or screenshots.
-- Keep inbound `7890` blocked.
+- Keep inbound `7890` blocked on public interfaces. Luma's built-in egress service also ships with conservative Swarm resource limits so a 2c2g manager keeps headroom for control-plane and app workloads.
 - Prefer one egress gateway first. Add more only when scheduling or throughput requires it.

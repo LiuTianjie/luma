@@ -25,7 +25,7 @@ ensure_path() {
   line="export PATH=\"$BIN_DIR:\$PATH\""
   updated=""
 
-  for profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+  for profile in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do
     [ -f "$profile" ] || continue
     if ! grep -F "$BIN_DIR" "$profile" >/dev/null 2>&1; then
       {
@@ -51,7 +51,18 @@ ensure_path() {
 }
 
 download_source() {
-  archive_url="${LUMA_ARCHIVE_URL:-$REPO_URL/archive/refs/heads/$INSTALL_REF.tar.gz}"
+  case "$INSTALL_REF" in
+    refs/*)
+      default_archive_url="$REPO_URL/archive/$INSTALL_REF.tar.gz"
+      ;;
+    v[0-9]*|[0-9]*.[0-9]*)
+      default_archive_url="$REPO_URL/archive/refs/tags/$INSTALL_REF.tar.gz"
+      ;;
+    *)
+      default_archive_url="$REPO_URL/archive/refs/heads/$INSTALL_REF.tar.gz"
+      ;;
+  esac
+  archive_url="${LUMA_ARCHIVE_URL:-$default_archive_url}"
   tmp_dir="$(mktemp -d)"
   archive="$tmp_dir/luma.tar.gz"
   if command -v curl >/dev/null 2>&1; then
@@ -202,6 +213,6 @@ if [ "$LOCAL_CHECKOUT" -eq 1 ]; then
   echo "  $VENV_DIR/bin/luma preflight"
   echo "  ./scripts/luma preflight"
 else
-  echo "  luma preflight"
-  echo "  luma login https://luma.example.com --token <deploy-token>"
+  echo "  $BIN_DIR/luma preflight"
+  echo "  $BIN_DIR/luma login https://luma.example.com --token <deploy-token>"
 fi

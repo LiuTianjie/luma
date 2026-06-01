@@ -48,6 +48,11 @@
           <p class="hero-lede">
             在任意机器执行 <code>luma deploy</code>。Luma 接管 DNS、证书、Traefik 路由和 Swarm 服务更新。
           </p>
+          <div class="hero-status" aria-label="部署能力">
+            <span><strong>DNS</strong> Cloudflare 同步</span>
+            <span><strong>TLS</strong> Traefik ACME</span>
+            <span><strong>Nodes</strong> region 标签</span>
+          </div>
           <div class="hero-actions">
             <a class="button primary" href="#demo">查看演示</a>
             <a class="button ghost" href="https://github.com/LiuTianjie/luma">查看源码</a>
@@ -71,6 +76,10 @@
           <div class="hud hud-bottom">
             <strong>route</strong>
             <span>status.example.com</span>
+          </div>
+          <div class="hud hud-left">
+            <strong>swarm</strong>
+            <span>cn / global / home</span>
           </div>
         </div>
       </section>
@@ -194,7 +203,11 @@ region: cn
 domain: status.example.com
 port: 80
 exposure: cn-edge
-replicas: 2</code></pre>
+replicas: 2
+resources:
+  limits:
+    cpus: "0.50"
+    memory: 512M</code></pre>
         </div>
         <div class="section-copy reveal">
           <p class="eyebrow">核心链路</p>
@@ -228,6 +241,13 @@ replicas: 2</code></pre>
                 <p>更新 stack，把 <code>status.example.com</code> 转发到 <code>status:80</code> 副本。</p>
               </div>
             </li>
+            <li>
+              <span>05</span>
+              <div>
+                <strong>保留 manager 余量</strong>
+                <p>业务服务和控制面共用小机器时，用 Swarm resources 限制 CPU 和内存。</p>
+              </div>
+            </li>
           </ul>
         </div>
       </section>
@@ -250,7 +270,7 @@ replicas: 2</code></pre>
               <h3>安装 CLI</h3>
               <p>manager、worker、client 使用同一个 <code>luma</code> 命令。</p>
               <pre><code>curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma preflight</code></pre>
+~/.local/bin/luma preflight</code></pre>
             </div>
           </article>
 
@@ -265,7 +285,7 @@ luma preflight</code></pre>
             </div>
             <div>
               <h3>初始化控制面</h3>
-              <p>创建唯一控制面 manager，同时启动 Swarm、Traefik、Portainer、Luma Control 和 egress gateway。</p>
+              <p>创建唯一控制面 manager，同时启动 Swarm、Traefik、Portainer、Luma Control 和 egress gateway。内置服务默认带保守资源上限。</p>
               <pre><code>luma bootstrap manager --domain luma.example.com</code></pre>
             </div>
           </article>

@@ -106,6 +106,45 @@ proxy: true
         self.assertEqual(app["networks"], ["public", "egress"])
         self.assertIn("traefik.swarm.network=public", app["deploy"]["labels"])
 
+    def test_service_resources_render_to_swarm_deploy_resources(self):
+        service = self.load(
+            """
+name: bounded worker
+image: ghcr.io/acme/bounded-worker:latest
+region: cn
+resources:
+  limits:
+    cpus: "0.50"
+    memory: 256M
+  reservations:
+    cpus: "0.10"
+    memory: 64M
+"""
+        )
+        rendered = yaml.safe_load(render_stack(self.config(), service))
+        resources = rendered["services"]["bounded-worker"]["deploy"]["resources"]
+        self.assertEqual(resources["limits"]["cpus"], "0.50")
+        self.assertEqual(resources["limits"]["memory"], "256M")
+        self.assertEqual(resources["reservations"]["memory"], "64M")
+
+    def test_named_volumes_are_rendered_on_service_and_stack(self):
+        service = self.load(
+            """
+name: stateful app
+image: ghcr.io/acme/stateful-app:latest
+region: cn
+exposure: none
+volumes:
+  - stateful_data:/data
+  - stateful_home:/codex-home
+"""
+        )
+        rendered = yaml.safe_load(render_stack(self.config(), service))
+        app = rendered["services"]["stateful-app"]
+        self.assertEqual(app["volumes"], ["stateful_data:/data", "stateful_home:/codex-home"])
+        self.assertIn("stateful_data", rendered["volumes"])
+        self.assertIn("stateful_home", rendered["volumes"])
+
     def test_default_stack_path_uses_region_and_slug(self):
         service = self.load(
             """

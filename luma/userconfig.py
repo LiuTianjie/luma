@@ -129,8 +129,11 @@ def ensure_interactive_config(role: str, *, keys: Iterable[str] | None = None, p
     if not prompts:
         return None
     if not sys.stdin.isatty() and input_fn is None:
-        missing = ", ".join(item[0] for item in prompts)
-        raise LumaError(f"missing local config ({missing}). Run: luma configure --role {role}")
+        missing_required = [item[0] for item in prompts if item[3]]
+        if missing_required:
+            missing = ", ".join(missing_required)
+            raise LumaError(f"missing local config ({missing}). Run: luma configure --role {role}")
+        return None
     if input_fn is None:
         input_fn = input
     values: Dict[str, str] = {}

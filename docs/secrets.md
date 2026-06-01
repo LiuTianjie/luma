@@ -47,6 +47,23 @@ It contains the cluster id, deploy token, join token, Swarm worker join token, a
 
 Luma Control also mounts `/var/run/docker.sock` so it can apply node labels after workers join. Treat deploy and join tokens as cluster-admin sensitive.
 
+## Deployment Secrets
+
+Service manifests can reference control-plane deployment secrets with `${NAME}` in fields such as `env`.
+
+```bash
+luma login https://luma.example.com --token <deploy-token>
+luma secret set API_TOKEN
+luma secret list
+```
+
+`luma secret list` prints only names, not values. During deploy, Luma Control resolves the referenced values on the manager before sending the stack to Portainer. If a manifest references a missing secret, deploy fails before Portainer is updated:
+
+```yaml
+env:
+  API_TOKEN: ${API_TOKEN}
+```
+
 Egress configuration is written on the node:
 
 ```text

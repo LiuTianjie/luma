@@ -16,7 +16,9 @@
 | `constraints` | no | string[] | Extra Swarm placement constraints. Luma adds region constraints. |
 | `labels` | no | string[] | Extra service labels. Luma adds Traefik labels for `cn-edge` and `external-edge`. |
 | `networks` | no | string[] | Extra external overlay networks. |
+| `volumes` | no | string[] | Compose-style service volume specs such as `name:/path` for state that must survive redeploys. Named sources are rendered as stack volumes. |
 | `proxy` | no | boolean | Runtime proxy requirement. When true, Luma adds the egress network and default proxy env. Scheduling still follows `region`. This is not for image pulls. |
+| `resources` | no | map | Swarm `deploy.resources` limits/reservations for CPU and memory. Useful on small manager nodes. |
 | `publishPort` | relay only | integer | Host mode published port for tailscale relay. |
 | `relay.host` | tailscale-relay | string | Tailscale hostname. Alternative: `relay.url`. |
 | `relay.url` | tailscale-relay | string | Full upstream URL. Alternative: `relay.host`. |
@@ -47,6 +49,8 @@
   - load balancer server port from `port`
 - Public Traefik services are attached to the configured public overlay network.
 - Every service gets `node.labels.region == <region>`.
+- `volumes` entries are copied onto the service; named sources such as `app_data:/data` are also declared as stack volumes so Docker keeps state across task replacement.
+- `resources` is copied to Swarm `deploy.resources`; use `limits` and `reservations` to protect small manager nodes from noisy services.
 - `proxy: true` services also get the configured egress overlay network and default `HTTP_PROXY=http://egress_mihomo:7890` / `HTTPS_PROXY=http://egress_mihomo:7890` env values unless already set. Scheduling still follows `region`.
 - `tailscale-relay` creates a host-mode published port and a file-provider Traefik route to the relay upstream.
 - `cloudflare-tunnel` adds a `cloudflared` sidecar service using `${<tokenEnv>}`.
@@ -66,6 +70,22 @@ env:
 
 Do not add the default `egress` network or default proxy env manually for this case. Add custom `HTTP_PROXY` or `HTTPS_PROXY` only when overriding the default proxy target.
 
+## Resource Example
+
+```yaml
+name: bounded-api
+image: ghcr.io/acme/api:1.0.0
+region: cn
+exposure: none
+resources:
+  limits:
+    cpus: "0.50"
+    memory: 512M
+  reservations:
+    cpus: "0.10"
+    memory: 128M
+```
+
 ## Review Checklist
 
 - Does `domain` match the actual user-facing hostname?
@@ -75,6 +95,7 @@ Do not add the default `egress` network or default proxy env manually for this c
 - For every `${ENV_NAME}`, remind the user to run `luma secret set ENV_NAME` before deploying.
 - Does the image include a meaningful tag?
 - If the service needs external runtime network access, did you use `proxy: true` instead of manual egress network/env boilerplate?
+- On small manager nodes, does the service set reasonable `resources` limits/reservations?
 - Should this be public at all, or is `exposure: none` safer?
 - For home services, is latency/availability acceptable for the workload?
 

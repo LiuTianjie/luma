@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import secrets
 import shlex
@@ -842,6 +843,12 @@ def _join_swarm(remote: Executor, manager_addr: str, swarm_token: str) -> str:
     if not manager_addr or not swarm_token:
         raise LumaError("control plane did not return managerAddr and swarmJoinToken")
     advertise = _tailscale_ip(remote)
+    if not advertise and _is_tailscale_manager_addr(manager_addr):
+        raise LumaError(
+            "managerAddr is a Tailscale address but this node is not connected to Tailscale. "
+            "Set TAILSCALE_AUTHKEY and rerun luma node join, run luma tailscale connect first, "
+            "or configure swarmJoinAddr on the manager to use a reachable public/private address."
+        )
     advertise_arg = f" --advertise-addr {shlex.quote(advertise)}" if advertise else ""
     _docker(
         remote,
@@ -860,6 +867,15 @@ def _join_swarm(remote: Executor, manager_addr: str, swarm_token: str) -> str:
         "fi"
     )
     return "Swarm joined"
+
+
+def _is_tailscale_manager_addr(manager_addr: str) -> bool:
+    host = manager_addr.rsplit(":", 1)[0] if manager_addr.count(":") == 1 else manager_addr
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address in ipaddress.ip_network("100.64.0.0/10")
 
 
 def local_docker_node_name() -> str:

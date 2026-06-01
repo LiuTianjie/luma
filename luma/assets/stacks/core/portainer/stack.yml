@@ -8,6 +8,13 @@ services:
       - agent_network
     deploy:
       mode: global
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+        reservations:
+          cpus: "0.02"
+          memory: 32M
       placement:
         constraints:
           - node.platform.os == linux
@@ -26,6 +33,13 @@ services:
       - agent_network
     deploy:
       replicas: 1
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+        reservations:
+          cpus: "0.10"
+          memory: 128M
       placement:
         constraints:
           - node.labels.region == cn

@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import re
 import tempfile
@@ -18,6 +19,7 @@ from luma.bootstrap import (
     _acme_email,
     _ensure_control_image,
     _force_update_service_image,
+    _is_tailscale_manager_addr,
     _last_command_value,
     _portainer_agent_image_candidates,
     _reset_portainer_state,
@@ -39,7 +41,7 @@ from luma.portainer import resolve_webhook, upsert_stack
 from luma.profiles import PROFILES
 from luma.service import load_service
 from luma.cli import _node_join_examples, _portainer_url_from_state, build_parser, exit_local_node, main
-from luma.userconfig import configured_keys, load_user_config
+from luma.userconfig import configured_keys, ensure_interactive_config, load_user_config
 
 
 class ProductConfigTests(unittest.TestCase):
@@ -142,6 +144,12 @@ class ProductConfigTests(unittest.TestCase):
 
     def test_sudo_prompt_is_stripped_from_command_values(self):
         self.assertEqual(_last_command_value("[sudo] password for user: SWMTKN-1-token\n"), "SWMTKN-1-token")
+
+    def test_tailscale_manager_addr_detection(self):
+        self.assertTrue(_is_tailscale_manager_addr("100.64.0.1:2377"))
+        self.assertTrue(_is_tailscale_manager_addr("100.127.255.254"))
+        self.assertFalse(_is_tailscale_manager_addr("100.128.0.1:2377"))
+        self.assertFalse(_is_tailscale_manager_addr("203.0.113.10:2377"))
 
     def test_packaged_core_stack_assets_are_available(self):
         self.assertIn("traefik", asset_text("stacks/core/traefik/stack.yml"))
@@ -534,6 +542,41 @@ class CliTests(unittest.TestCase):
             check=False,
         )
 
+    def test_update_manager_infers_domain_from_control_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            state_dir.mkdir()
+            (state_dir / "control.json").write_text(
+                json.dumps({"clusterId": "luma-test", "domain": "luma.example.com"}) + "\n",
+                encoding="utf-8",
+            )
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(state_dir))
+            completed = Mock(returncode=0)
+            try:
+                with patch("luma.cli._run_luma_installer") as installer, patch(
+                    "luma.cli._luma_executable", return_value="/usr/local/bin/luma"
+                ), patch(
+                    "luma.cli.subprocess.run", return_value=completed
+                ) as run:
+                    code = main(["update", "manager", "--profile", "single-node"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+        self.assertEqual(code, 0)
+        installer.assert_called_once_with(install_ref=None)
+        run.assert_called_once_with(
+            [
+                "/usr/local/bin/luma",
+                "bootstrap",
+                "manager",
+                "--domain",
+                "luma.example.com",
+                "--profile",
+                "single-node",
+            ],
+            check=False,
+        )
+
     def test_version_prints_cli_without_context(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
@@ -698,6 +741,30 @@ class CliTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(code, 1)
+
+    def test_noninteractive_config_skips_missing_optional_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
+            try:
+                with patch("sys.stdin.isatty", return_value=False):
+                    result = ensure_interactive_config("worker", path=config_path)
+                self.assertIsNone(result)
+                self.assertFalse(config_path.exists())
+            finally:
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
+    def test_noninteractive_config_still_requires_required_values(self):
+        old_token = _set_env("CLOUDFLARE_API_TOKEN", "")
+        try:
+            with patch("sys.stdin.isatty", return_value=False):
+                with self.assertRaises(LumaError) as ctx:
+                    ensure_interactive_config("manager", keys=["CLOUDFLARE_API_TOKEN"])
+            self.assertIn("CLOUDFLARE_API_TOKEN", str(ctx.exception))
+        finally:
+            _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
     def test_user_config_loads_missing_or_empty_env_without_overriding_existing_values(self):
         with tempfile.TemporaryDirectory() as tmp:

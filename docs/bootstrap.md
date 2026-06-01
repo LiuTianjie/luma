@@ -6,7 +6,7 @@ Bootstrap is automated by the Luma CLI. The first supported target is Ubuntu 22.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma preflight
+~/.local/bin/luma preflight
 ```
 
 Required local tools are Python 3.9+ and curl or wget. SSH is only needed for the legacy remote bootstrap path. Docker is only needed on servers that will run workloads.
@@ -161,10 +161,10 @@ luma bootstrap manager --domain luma.example.com --profile single-node
 Use `luma update manager` after upgrading Luma itself:
 
 ```bash
-luma update manager --domain luma.example.com --profile single-node
+luma update manager --profile single-node
 ```
 
-The update command refreshes the local CLI first, then runs manager bootstrap. Bootstrap is designed to be idempotent. It refreshes the manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
+The update command refreshes the local CLI first, then runs manager bootstrap. It infers the control domain from `/opt/luma/control/control.json`; pass `--domain` only when that state is missing or you intentionally changed the control domain. Bootstrap is designed to be idempotent. It refreshes the manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
 
 If the installed CLI is too old to recognize `luma update`, run the installer once and then retry the update command.
 

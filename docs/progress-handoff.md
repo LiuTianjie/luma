@@ -19,7 +19,7 @@ Luma uses a self-hosted control plane instead of SSH-driven deployment:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma preflight
+~/.local/bin/luma preflight
 luma bootstrap manager --domain luma.example.com --profile single-node
 luma login https://luma.example.com --token <deploy-token>
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1

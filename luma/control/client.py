@@ -53,7 +53,7 @@ class ControlClient:
                 raise LumaError(
                     "control API is older than this CLI and still expects node join profiles. "
                     "Update the manager first: run the installer on the manager, then run "
-                    "`luma update manager --domain <control-domain> --profile single-node` "
+                    "`luma update manager --profile single-node` "
                     "or rerun `luma bootstrap manager --domain <control-domain> --profile single-node`."
                 ) from exc
             raise LumaError(f"control API error {exc.code}: {detail}") from exc
