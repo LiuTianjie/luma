@@ -1,6 +1,6 @@
 # Service Patterns
 
-本仓库固定五种 exposure 模式。新增服务时优先复制 `examples/` 中的 service manifest，再修改镜像、域名、端口、region、exposure 和 replicas。只有当服务必须固定在某台机器上时才加 `node`，它会追加 `node.hostname == <hostname>`，但不会替代 `region`。
+本仓库固定五种 exposure 模式。新增服务时优先复制 `examples/` 中的 service manifest，再修改镜像、域名、端口、region、exposure 和 replicas。只有当服务必须固定在某台机器上时才加 `node`，它填写的是 `luma node join --name` 的 Luma 节点名；控制面会解析成 Swarm NodeID 约束，但不会替代 `region`。
 
 ## 1. cn-edge
 
@@ -93,14 +93,14 @@ cn Web/API -> Queue -> global worker -> 外网 API -> 写回结果
 
 适合备份、低频任务、内部工具和测试服务。不要把核心公网服务调度到 home。
 
-如果它依赖某台 home 节点的本地磁盘或硬件，可以钉到具体 Swarm hostname：
+如果它依赖某台 home 节点的本地磁盘或硬件，可以钉到具体 Luma 节点名：
 
 ```yaml
 name: home-db
 image: postgres:16
 region: home
-node: orbstack
+node: home-mac-mini
 exposure: none
 ```
 
-用 `luma status` 查看真实 hostname；不要使用 display name。
+这里使用的是 `luma node join --name` 的节点名。控制面会解析成 Swarm NodeID 约束，避免 Docker hostname 重名时调度到错误机器。

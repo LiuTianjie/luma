@@ -27,6 +27,7 @@ class ServiceSpec:
     image: str
     region: str
     node: Optional[str] = None
+    node_id: Optional[str] = None
     public: bool = False
     exposure: str = "none"
     domain: Optional[str] = None
@@ -167,6 +168,7 @@ def load_service(path: Path) -> ServiceSpec:
         image=image.strip(),
         region=region,
         node=node.strip() if isinstance(node, str) else None,
+        node_id=None,
         public=public,
         exposure=exposure,
         domain=domain.strip() if isinstance(domain, str) else None,

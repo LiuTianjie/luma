@@ -55,4 +55,4 @@ port: 3000
 replicas: 2
 ```
 
-Set `node: <swarm-hostname>` only when the service must run on one specific machine. Luma still adds the `region` placement constraint, then adds `node.hostname == <swarm-hostname>`.
+Set `node: <luma-node-name>` only when the service must run on one specific machine. The value is the name passed to `luma node join --name`. Luma still adds the `region` placement constraint, then resolves that name to the real Swarm NodeID and adds a `node.labels.luma.node.id == <node-id>` constraint.

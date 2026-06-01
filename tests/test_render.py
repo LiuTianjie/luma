@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
@@ -69,7 +70,7 @@ public: false
         self.assertIn("node.labels.region == global", constraints)
         self.assertNotIn("node.labels.external_net == true", constraints)
 
-    def test_service_can_pin_to_swarm_node_hostname(self):
+    def test_service_can_pin_to_luma_node_name_for_preview(self):
         service = self.load(
             """
 name: pinned worker
@@ -85,7 +86,28 @@ exposure: none
             constraints,
             [
                 "node.labels.region == home",
-                "node.hostname == orbstack",
+                "node.labels.luma.node.name == orbstack",
+            ],
+        )
+
+    def test_service_can_pin_to_resolved_swarm_node_id(self):
+        service = self.load(
+            """
+name: pinned worker
+image: ghcr.io/acme/worker:latest
+region: home
+node: mac-mini-gaojiu
+exposure: none
+"""
+        )
+        service = replace(service, node_id="3ve5sy2mn3n16a7yhu9tavhrm")
+        rendered = yaml.safe_load(render_stack(self.config(), service))
+        constraints = rendered["services"]["pinned-worker"]["deploy"]["placement"]["constraints"]
+        self.assertEqual(
+            constraints,
+            [
+                "node.labels.region == home",
+                "node.labels.luma.node.id == 3ve5sy2mn3n16a7yhu9tavhrm",
             ],
         )
 

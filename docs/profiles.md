@@ -46,5 +46,5 @@ luma node join https://luma.example.com --token <join-token> --region home --nam
 ```
 
 - `region` is the scheduling boundary.
-- `name` is only the machine display name.
+- `name` is the Luma node name used in status output and service manifests; pinned scheduling resolves it to the real Swarm NodeID.
 - Services that require the proxy declare `proxy: true`.

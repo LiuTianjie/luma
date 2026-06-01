@@ -183,7 +183,7 @@ Use the join token on additional servers:
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 ```
 
-The manager applies the region label automatically after the node joins Swarm. `--name` is stored as a display name; Docker's actual node name remains the canonical Swarm identity.
+The manager applies scheduling labels automatically after the node joins Swarm. `--name` is the Luma node name used in service manifests. Luma also stores the real Swarm NodeID in `luma.node.id` and uses that NodeID for pinned scheduling, so generic Docker hostnames such as OrbStack's `orbstack` do not collide.
 
 For `--region home`, the node must be connected to Tailscale before it can join a manager address on the tailnet. If the node is not connected yet, `luma node join` treats `TAILSCALE_AUTHKEY` as required and asks for it before registering the node. You can also run `luma tailscale connect` first to fill the key and connect Tailscale without attempting a Swarm join.
 
@@ -256,11 +256,11 @@ port: 3000
 replicas: 2
 ```
 
-To pin a service to one Swarm node, add `node` with the hostname shown by `luma status`:
+To pin a service to one machine, add `node` with the Luma node name passed to `luma node join --name`:
 
 ```yaml
 region: home
-node: orbstack
+node: home-mac-mini
 ```
 
 ## 7. Deploy

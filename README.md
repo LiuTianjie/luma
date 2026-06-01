@@ -45,7 +45,7 @@ Luma's user-facing model is five words:
 | `service` | One deployment unit described by a Luma YAML manifest. |
 
 `region` decides where a service runs. `exposure` decides how traffic enters. They are related, but not the same thing.
-Set manifest `node` only when a service must be pinned to one Swarm hostname; Luma still keeps the `region` placement constraint.
+Set manifest `node` only when a service must be pinned to one Luma node name; Luma still keeps the `region` placement constraint and resolves the node name to the real Swarm NodeID before scheduling.
 
 | Manifest | Scheduled on | Ingress path |
 | --- | --- | --- |
@@ -181,7 +181,7 @@ Bootstrap prints a join token. Run this on each new server itself:
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 ```
 
-`--name` is the human-readable display name stored by Luma. Docker may still report the host's actual Docker node name after join; Luma keeps that actual Docker node name as the canonical Swarm identity and stores your requested display name.
+`--name` is the Luma node name used in status output and service manifests. Luma also records the real Swarm NodeID so pinned services target the intended machine even when Docker hostnames are not unique.
 
 `--region` is the scheduling label. Service manifests match it through `region`:
 
@@ -193,13 +193,17 @@ luma node join https://luma.example.com --token <join-token> --region home --nam
 
 For macOS home nodes, install and start Docker Desktop and Tailscale first. When `luma node join --region home ...` runs and the node is not connected to Tailscale yet, the CLI requires `TAILSCALE_AUTHKEY` before registering the node and joining Swarm. For non-apt Linux distributions, install Docker manually before joining.
 
+`--name` is the Luma node name. Luma stores it on the Swarm node as `luma.node.name` and stores the real Swarm NodeID as `luma.node.id`, so hosts with generic Docker names such as OrbStack's `orbstack` can still be targeted safely.
+
 Before removing or rebuilding a node, run this on that node:
 
 ```bash
 luma node exit
 ```
 
-By default it leaves Swarm and removes local Luma runtime state under `/opt/luma`, while keeping Tailscale and Docker image/volume cache. Add `--tailscale` to also log out of Tailscale. Add `--prune-docker` only when you intentionally want to remove unused Docker cache and volumes.
+By default it leaves Swarm and removes local Luma runtime state under `/opt/luma`, while keeping Tailscale and Docker image/volume cache. Add `--endpoint <control-url> --token <token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` to also log out of Tailscale. Add `--prune-docker` only when you intentionally want to remove unused Docker cache and volumes.
+
+To remove a stale registered-only record from the control plane, run `luma node remove <name>` from a logged-in client.
 
 ## Deploy Services
 
@@ -272,7 +276,7 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | What happens if I run `luma update` on a client or worker? | It updates only the local CLI and skips manager control-plane refresh. |
 | When does `luma update` need `--domain`? | Only when `/opt/luma/control/control.json` is missing or you intentionally changed the control domain. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
-| Pin service A to one node | Set manifest `node` to the Swarm hostname shown by `luma status`, keep the matching `region`, then deploy again. |
+| Pin service A to one node | Set manifest `node` to the Luma node name passed to `luma node join --name`, keep the matching `region`, then deploy again. Control resolves it to the Swarm NodeID before scheduling. |
 | Make a public service internal | Change `exposure` to `none`, remove public-only domain/ingress config if no longer needed, then deploy again. |
 | Make an internal service public | Set a matching `region` + `exposure`, add `domain` and `port`, then deploy again. |
 | Add a CN worker | Run `luma node join ... --region cn --name ...` on the new machine. |

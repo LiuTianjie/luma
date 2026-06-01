@@ -74,10 +74,10 @@ Use this only when the service depends on local disk, hardware, or a specific ho
 
 ```yaml
 region: home
-node: orbstack
+node: home-mac-mini
 ```
 
-`node` must be the Swarm hostname shown by `luma status`. Luma still keeps the `region` constraint, so the selected node must also be in that region.
+`node` must be the Luma node name passed to `luma node join --name`. Luma resolves it to the Swarm NodeID before deploy and still keeps the `region` constraint, so the selected node must also be in that region.
 
 ## View Status
 

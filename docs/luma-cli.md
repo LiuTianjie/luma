@@ -174,6 +174,20 @@ luma node join https://luma.example.com --token <join-token> --region global --n
 luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
 ```
 
+`--name` is the Luma node name used by `luma status` and by service manifests. Luma labels the Swarm node with both `luma.node.name` and `luma.node.id`, then uses the NodeID label for pinned scheduling.
+
+Leave Swarm and optionally unregister the node from the control plane:
+
+```bash
+luma node exit --endpoint https://luma.example.com --token <deploy-or-join-token> --name home-mac-mini
+```
+
+Remove a stale registered-only node from Luma Control:
+
+```bash
+luma node remove home-mac-mini
+```
+
 Connect Cloudflare and write `providers.dns.zoneId`:
 
 ```bash
@@ -263,7 +277,7 @@ Public services also require:
 
 Optional fields:
 
-- `node`: Swarm hostname for pinning the service to one node; Luma still adds the `region` constraint.
+- `node`: Luma node name from `luma node join --name` for pinning the service to one node. The control plane resolves it to the Swarm NodeID and still adds the `region` constraint.
 - `env` / `environment`
 - `command`
 - `constraints`

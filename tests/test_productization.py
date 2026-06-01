@@ -36,7 +36,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_secret_list, handle_secret_set, resolve_service_image
+from luma.control.server import ControlHandler, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_secret_list, handle_secret_set, resolve_service_image
 from luma.control.state import init_state, load_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -806,6 +806,8 @@ class CliTests(unittest.TestCase):
                     "luma.cli.ControlClient", return_value=client
                 ), patch("luma.cli.join_local_node", return_value=[]), patch(
                     "luma.cli.local_docker_node_name", return_value="worker-1"
+                ), patch(
+                    "luma.cli.local_docker_node_id", return_value="node-id-1"
                 ):
                     code = main(
                         [
@@ -822,7 +824,12 @@ class CliTests(unittest.TestCase):
                     )
                 self.assertEqual(code, 0)
                 client.register_node.assert_called_once_with(node_name="global-sg-1", region="global")
-                client.label_node.assert_called_once_with(node_name="worker-1", region="global", registered_name="global-sg-1")
+                client.label_node.assert_called_once_with(
+                    node_name="worker-1",
+                    region="global",
+                    registered_name="global-sg-1",
+                    node_id="node-id-1",
+                )
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
                 self.assertIn("LUMA_SUDO_PASSWORD", configured_keys(config_path))
             finally:
@@ -885,7 +892,9 @@ class CliTests(unittest.TestCase):
                     "luma.cli.configure_dns", return_value="DNS ok"
                 ), patch("luma.cli.ControlClient", return_value=client), patch(
                     "luma.cli.join_local_node", return_value=[]
-                ), patch("luma.cli.local_docker_node_name", return_value="docker-home"):
+                ), patch("luma.cli.local_docker_node_name", return_value="docker-home"), patch(
+                    "luma.cli.local_docker_node_id", return_value="home-id-1"
+                ):
                     code = main(
                         [
                             "node",
@@ -901,7 +910,12 @@ class CliTests(unittest.TestCase):
                     )
                 self.assertEqual(code, 0)
                 client.register_node.assert_called_once_with(node_name="home-mac-mini", region="home")
-                client.label_node.assert_called_once_with(node_name="docker-home", region="home", registered_name="home-mac-mini")
+                client.label_node.assert_called_once_with(
+                    node_name="docker-home",
+                    region="home",
+                    registered_name="home-mac-mini",
+                    node_id="home-id-1",
+                )
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
             finally:
                 _restore_env("LUMA_USER_CONFIG", old_config)
@@ -1473,6 +1487,7 @@ class ControlApiTests(unittest.TestCase):
                 label.assert_called_once()
                 labels = label.call_args.args[1]
                 self.assertEqual(labels["region"], "global")
+                self.assertEqual(labels["luma.node.name"], "b")
                 self.assertNotIn("egress", labels)
                 self.assertNotIn("role.global-worker", labels)
                 self.assertEqual(result["nodeName"], "b")
@@ -1481,7 +1496,7 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_label_node_merges_requested_name_into_actual_docker_node(self):
+    def test_label_node_keeps_requested_name_as_luma_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
@@ -1490,14 +1505,21 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.label_swarm_node"):
                     result = handle_node_label(
                         state["joinToken"],
-                        {"nodeName": "docker-hostname", "registeredName": "global-sg-1", "region": "global"},
+                        {
+                            "nodeName": "docker-hostname",
+                            "nodeId": "node-id-1",
+                            "registeredName": "global-sg-1",
+                            "region": "global",
+                        },
                     )
                 saved = load_state()
-                self.assertEqual(result["nodeName"], "docker-hostname")
+                self.assertEqual(result["nodeName"], "global-sg-1")
                 self.assertEqual(result["displayName"], "global-sg-1")
-                self.assertNotIn("global-sg-1", saved["nodes"])
-                self.assertEqual(saved["nodes"]["docker-hostname"]["displayName"], "global-sg-1")
-                self.assertEqual(saved["nodes"]["docker-hostname"]["status"], "labeled")
+                self.assertIn("global-sg-1", saved["nodes"])
+                self.assertEqual(saved["nodes"]["global-sg-1"]["swarmHostname"], "docker-hostname")
+                self.assertEqual(saved["nodes"]["global-sg-1"]["swarmNodeId"], "node-id-1")
+                self.assertEqual(saved["nodes"]["global-sg-1"]["labels"]["luma.node.id"], "node-id-1")
+                self.assertEqual(saved["nodes"]["global-sg-1"]["status"], "labeled")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -1510,6 +1532,68 @@ class ControlApiTests(unittest.TestCase):
                     handle_node_register(state["joinToken"], {"nodeName": "b", "region": "mars"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_removes_registered_only_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_node_register(state["joinToken"], {"nodeName": "m3max", "region": "home"})
+                result = handle_node_unregister(state["deployToken"], {"nodeName": "m3max"})
+                saved = load_state()
+                self.assertTrue(result["removed"])
+                self.assertNotIn("m3max", saved.get("nodes", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_deployment_resolves_luma_node_name_to_swarm_node_id_constraint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "mac-mini-gaojiu": {
+                        "region": "home",
+                        "status": "labeled",
+                        "swarmHostname": "orbstack",
+                        "swarmNodeId": "node-id-gaojiu",
+                        "labels": {
+                            "region": "home",
+                            "luma.node.name": "mac-mini-gaojiu",
+                            "luma.node.id": "node-id-gaojiu",
+                        },
+                    }
+                }
+                from luma.control.state import save_state
+
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "home-panel",
+                        "image": "ghcr.io/me/home-panel:1",
+                        "region": "home",
+                        "node": "mac-mini-gaojiu",
+                        "exposure": "none",
+                    }
+                )
+                with patch("luma.control.server.resolve_service_image", side_effect=lambda _config, service: (service, {})):
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "home-panel.yaml", "skipDns": True, "skipWebhook": True},
+                    )
+                self.assertEqual(result["service"], "home-panel")
+                stack = (root / "stacks" / "home" / "home-panel" / "stack.yml").read_text(encoding="utf-8")
+                self.assertIn("node.labels.luma.node.id == node-id-gaojiu", stack)
+                self.assertNotIn("node.hostname", stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_deployment_uses_control_state_and_portainer_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:

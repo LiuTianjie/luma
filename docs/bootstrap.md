@@ -146,7 +146,7 @@ luma node join https://luma.example.com --token <join-token> --region home --nam
 ```
 
 The node asks the manager for the Swarm join token and manager address, then joins the cluster locally.
-After the local join succeeds, it calls back to Luma Control so the manager applies the region label automatically. `--name` is the requested display name; Docker's actual node name remains the canonical Swarm identity. `--region` is the scheduling boundary.
+After the local join succeeds, it calls back to Luma Control so the manager applies the region and Luma node labels automatically. `--name` is the Luma node name used in status output and service manifests; Luma stores the real Swarm NodeID separately and uses that NodeID for pinned scheduling. `--region` is the scheduling boundary.
 
 If a node needs to leave a broken or rebuilt manager before joining again, run this on that node:
 
@@ -154,7 +154,7 @@ If a node needs to leave a broken or rebuilt manager before joining again, run t
 luma node exit
 ```
 
-By default this leaves Docker Swarm and removes `/opt/luma`, while keeping Tailscale login state and Docker caches. Add `--tailscale` only when the node should leave the tailnet too; add `--prune-docker` only when unused Docker cache and volumes should be removed.
+By default this leaves Docker Swarm and removes `/opt/luma`, while keeping Tailscale login state and Docker caches. Add `--endpoint <control-url> --token <token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` only when the node should leave the tailnet too; add `--prune-docker` only when unused Docker cache and volumes should be removed.
 
 ## 6. Configure Or Refresh Providers
 

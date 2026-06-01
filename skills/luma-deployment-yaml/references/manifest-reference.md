@@ -7,7 +7,7 @@
 | `name` | yes | string | Service name; Luma slugifies it for stack/service/router names. |
 | `image` | yes | string | Container image. Prefer pinned tags. |
 | `region` | yes | `cn` / `global` / `home` | Runtime placement region. |
-| `node` | no | string | Docker Swarm hostname to pin this service to one node. Luma still adds the region constraint. |
+| `node` | no | string | Luma node name from `luma node join --name`; deploy resolves it to a Swarm NodeID constraint. Luma still adds the region constraint. |
 | `exposure` | recommended | `none` / `cn-edge` / `external-edge` / `tailscale-relay` / `cloudflare-tunnel` | Access mode. Use explicit exposure in new files. |
 | `domain` | public only | string | Public hostname. |
 | `port` | public only | integer | Container internal port. |
@@ -50,7 +50,7 @@
   - load balancer server port from `port`
 - Public Traefik services are attached to the configured public overlay network.
 - Every service gets `node.labels.region == <region>`.
-- If `node` is set, the service also gets `node.hostname == <node>`.
+- If `node` is set, it must be a Luma node name from `luma node join --name`; during control-plane deploy, the service gets `node.labels.luma.node.id == <node-id>`.
 - For `tailscale-relay` without an explicit `relay.host`/`relay.url`, Luma Control deploys the stack first, inspects the running Swarm tasks, and points the Traefik route at the home nodes that actually run those tasks.
 - `volumes` entries are copied onto the service; named sources such as `app_data:/data` are also declared as stack volumes so Docker keeps state across task replacement.
 - `resources` is copied to Swarm `deploy.resources`; use `limits` and `reservations` to protect small manager nodes from noisy services.
@@ -80,13 +80,13 @@ Do not add the default `egress` network or default proxy env manually for this c
 name: home-db
 image: postgres:16
 region: home
-node: orbstack
+node: home-mac-mini
 exposure: none
 volumes:
   - home_db_data:/var/lib/postgresql/data
 ```
 
-Use the Swarm hostname shown by `luma status`, not the display name passed to `luma node join --name`.
+Use the Luma node name passed to `luma node join --name`. Do not use Docker's hostname; OrbStack and similar runtimes can reuse generic hostnames across machines.
 
 ## Resource Example
 
@@ -109,7 +109,7 @@ resources:
 - Does `domain` match the actual user-facing hostname?
 - Is `port` the container port, not the public firewall port?
 - Is `region` compatible with `exposure`?
-- If `node` is set, does it match a real Swarm hostname in `luma status`, and is the node in the selected `region`?
+- If `node` is set, does it match a registered Luma node name in `luma status`, and is the node in the selected `region`?
 - Are secrets represented as `${ENV_NAME}` instead of plaintext?
 - For every `${ENV_NAME}`, remind the user to run `luma secret set ENV_NAME` before deploying.
 - Does the image include a meaningful tag?

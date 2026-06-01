@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, join_local_node, local_docker_node_name, setup_egress, setup_portainer, setup_tailscale
+from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, join_local_node, local_docker_node_id, local_docker_node_name, setup_egress, setup_portainer, setup_tailscale
 from .cloudflare import find_zone, sync_dns
 from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
@@ -111,8 +111,15 @@ def build_parser() -> argparse.ArgumentParser:
     node_join.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
     node_join.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
     node_exit = node_sub.add_parser("exit")
+    node_exit.add_argument("--endpoint", help="Control endpoint; when set, unregister this node from Luma Control")
+    node_exit.add_argument("--token", help="Deploy or join token used with --endpoint")
+    node_exit.add_argument("--name", help="Luma node name to unregister; defaults to this node's registered label or Docker name")
+    node_exit.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
+    node_exit.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
     node_exit.add_argument("--tailscale", action="store_true", help="Also log out Tailscale on this node")
     node_exit.add_argument("--prune-docker", action="store_true", help="Also prune unused Docker containers, networks, images, and volumes")
+    node_remove = node_sub.add_parser("remove")
+    node_remove.add_argument("name")
 
     cf = sub.add_parser("cloudflare")
     cf_sub = cf.add_subparsers(dest="cloudflare_command", required=True)
@@ -367,7 +374,7 @@ def _status_node_rows(registered_items: list[object], swarm_nodes: list[object])
     for item in swarm_nodes:
         if not isinstance(item, dict):
             continue
-        name = _status_value(item.get("hostname") or item.get("id"))
+        name = _status_value(item.get("lumaNode") or item.get("hostname") or item.get("id"))
         if name == "-":
             continue
         merged.setdefault(name, {})["swarm"] = item
@@ -379,6 +386,8 @@ def _status_node_rows(registered_items: list[object], swarm_nodes: list[object])
         registered_dict = registered if isinstance(registered, dict) else {}
         swarm_dict = swarm if isinstance(swarm, dict) else {}
         display = _status_value(registered_dict.get("displayName"))
+        if display == "-":
+            display = _status_value(swarm_dict.get("hostname"))
         if display == name:
             display = "-"
         rows.append(
@@ -486,14 +495,33 @@ def cmd_node(args: argparse.Namespace) -> int:
         node = _local_node_for_region(args.region, name=args.name)
         join_local_node(node, _join_profile_for_region(args.region), str(manager_addr or ""), str(swarm_token or ""), emit=log)
         actual_node_name = local_docker_node_name()
-        label_result = client.label_node(node_name=actual_node_name, region=args.region, registered_name=args.name)
+        actual_node_id = local_docker_node_id()
+        label_result = client.label_node(
+            node_name=actual_node_name,
+            region=args.region,
+            registered_name=args.name,
+            node_id=actual_node_id,
+        )
         print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
         print("Node join complete")
         return 0
     if args.node_command == "exit":
-        for message in exit_local_node(tailscale=args.tailscale, prune_docker=args.prune_docker):
+        for message in exit_local_node(
+            endpoint=args.endpoint,
+            token=args.token,
+            name=args.name,
+            insecure=args.insecure,
+            resolve_ip=args.resolve_ip,
+            tailscale=args.tailscale,
+            prune_docker=args.prune_docker,
+        ):
             print(message)
         print("Node exit complete")
+        return 0
+    if args.node_command == "remove":
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).unregister_node(node_name=args.name)
+        print(result.get("message", f"Node removed: {args.name}"))
         return 0
     raise LumaError(f"unknown node command: {args.node_command}")
 
@@ -937,9 +965,22 @@ def _join_profile_for_region(region: str):
     )
 
 
-def exit_local_node(*, tailscale: bool = False, prune_docker: bool = False) -> list[str]:
+def exit_local_node(
+    *,
+    endpoint: str | None = None,
+    token: str | None = None,
+    name: str | None = None,
+    insecure: bool = False,
+    resolve_ip: str | None = None,
+    tailscale: bool = False,
+    prune_docker: bool = False,
+) -> list[str]:
     remote = LocalExecutor()
     results: list[str] = []
+    if endpoint and token:
+        node_name = name or _local_luma_node_name(remote) or local_docker_node_name()
+        result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).unregister_node(node_name=node_name)
+        results.append(str(result.get("message") or f"Node unregistered: {node_name}"))
     results.append(_leave_local_swarm(remote))
     results.append(_remove_local_runtime_state(remote))
     if tailscale:
@@ -947,6 +988,17 @@ def exit_local_node(*, tailscale: bool = False, prune_docker: bool = False) -> l
     if prune_docker:
         results.append(_prune_local_docker(remote))
     return results
+
+
+def _local_luma_node_name(remote: LocalExecutor) -> str:
+    result = remote.sudo_result(
+        "if command -v docker >/dev/null 2>&1; then "
+        "docker node inspect self --format '{{ index .Spec.Labels \"luma.node.name\" }}' 2>/dev/null || true; "
+        "fi"
+    )
+    if result.code != 0:
+        return ""
+    return _last_nonempty_line(result.output)
 
 
 def _leave_local_swarm(remote: LocalExecutor) -> str:

@@ -913,6 +913,12 @@ def local_docker_node_name() -> str:
     return output or os.uname().nodename
 
 
+def local_docker_node_id() -> str:
+    remote = LocalExecutor()
+    output = _last_command_value(_docker(remote, "docker info --format '{{.Swarm.NodeID}}'"))
+    return output
+
+
 def _docker(remote: Executor, command: str) -> str:
     if _is_darwin(remote):
         return remote.run(command)
