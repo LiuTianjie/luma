@@ -558,7 +558,7 @@ class CliTests(unittest.TestCase):
                 ), patch(
                     "luma.cli.subprocess.run", return_value=completed
                 ) as run:
-                    code = main(["update", "manager", "--profile", "single-node"])
+                    code = main(["update"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -834,7 +834,7 @@ class CliTests(unittest.TestCase):
             client.register_node(node_name="m3max", region="home")
 
         self.assertIn("control API is older than this CLI", str(raised.exception))
-        self.assertIn("luma update manager", str(raised.exception))
+        self.assertIn("luma update", str(raised.exception))
 
     def test_control_client_reports_timeout_without_traceback(self):
         client = ControlClient("https://luma.example.com", "secret")

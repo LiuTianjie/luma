@@ -77,16 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
     manager.add_argument("--skip-egress", action="store_true")
     manager.add_argument("--overwrite-control-state", action="store_true")
     update = sub.add_parser("update")
-    update_sub = update.add_subparsers(dest="update_command", required=True)
+    _add_update_manager_arguments(update)
+    update_sub = update.add_subparsers(dest="update_command", required=False)
     update_manager = update_sub.add_parser("manager")
-    update_manager.add_argument("--domain", help="Control domain. Defaults to the domain stored in /opt/luma/control/control.json.")
-    update_manager.add_argument("--node")
-    update_manager.add_argument("--profile", choices=sorted(PROFILES), default="single-node")
-    update_manager.add_argument("--http-port", type=int, help="Public Traefik HTTP port")
-    update_manager.add_argument("--https-port", type=int, help="Public Traefik HTTPS port")
-    update_manager.add_argument("--skip-egress", action="store_true")
-    update_manager.add_argument("--overwrite-control-state", action="store_true")
-    update_manager.add_argument("--install-ref", help="Git ref passed to the install script as LUMA_INSTALL_REF")
+    _add_update_manager_arguments(update_manager)
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks such as docker pull through egress")
     doctor.add_argument("--legacy-ssh", action="store_true", help="Also run legacy SSH checks for nodes in luma.yaml")
@@ -154,6 +148,17 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--via", choices=("portainer",), default="portainer", help="Deployment runner")
 
     return parser
+
+
+def _add_update_manager_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--domain", help="Control domain. Defaults to the domain stored in /opt/luma/control/control.json.")
+    parser.add_argument("--node")
+    parser.add_argument("--profile", choices=sorted(PROFILES), default="single-node")
+    parser.add_argument("--http-port", type=int, help="Public Traefik HTTP port")
+    parser.add_argument("--https-port", type=int, help="Public Traefik HTTPS port")
+    parser.add_argument("--skip-egress", action="store_true")
+    parser.add_argument("--overwrite-control-state", action="store_true")
+    parser.add_argument("--install-ref", help="Git ref passed to the install script as LUMA_INSTALL_REF")
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -475,7 +480,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    if args.update_command == "manager":
+    if args.update_command in {None, "manager"}:
         print("[start] Update Luma CLI")
         _run_luma_installer(install_ref=args.install_ref)
         print("[ok] Luma CLI updated")

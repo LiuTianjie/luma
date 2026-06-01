@@ -57,7 +57,7 @@ Use the same installer on every machine:
 The installer loads `.env` if present and fixes Linux DNS before creating the virtualenv, so Python package installation is less likely to fail on fresh cloud servers. If `python3` is missing, it prints the OS-specific package command and exits. To install a tagged release, set `LUMA_INSTALL_REF`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.7 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.8 sh
 ```
 
 Uninstall the local CLI without touching user secrets or login contexts:
@@ -194,16 +194,16 @@ This leaves Docker Swarm and removes local Luma runtime state under `/opt/luma`.
 After new Luma code is merged and the control image is published, run this on the manager:
 
 ```bash
-luma update manager --profile single-node
+luma update
 ```
 
-`luma update manager` updates the local CLI, then runs an idempotent manager bootstrap. It infers the control domain from `/opt/luma/control/control.json`; pass `--domain luma.example.com` only when that state is missing or you intentionally changed the control domain. It refreshes `/opt/luma/luma.yaml`, `/opt/luma/control/control.json`, pulls the current `ghcr.io/liutianjie/luma-control:latest`, and redeploys the Luma Control service. Existing Portainer data, deploy tokens, join tokens, Swarm nodes, and service stacks are kept unless you explicitly purge or reset them.
+`luma update` updates the local CLI, then runs an idempotent manager bootstrap. It infers the control domain from `/opt/luma/control/control.json`; pass `--domain luma.example.com` only when that state is missing or you intentionally changed the control domain. It refreshes `/opt/luma/luma.yaml`, `/opt/luma/control/control.json`, pulls the current `ghcr.io/liutianjie/luma-control:latest`, and redeploys the Luma Control service. Existing Portainer data, deploy tokens, join tokens, Swarm nodes, and service stacks are kept unless you explicitly purge or reset them.
 
 If the installed CLI is too old to recognize `luma update`, run the installer once and then retry:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma update manager --profile single-node
+luma update
 ```
 
 Check both local CLI and manager control API versions:

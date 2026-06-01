@@ -57,7 +57,7 @@ cd luma
 安装器会在存在 `.env` 时加载它，并在创建 virtualenv 前修复 Linux DNS，降低新云服务器上 Python 包安装失败的概率。如果缺少 `python3`，脚本会打印对应系统的安装命令并退出。安装指定 tag 时设置 `LUMA_INSTALL_REF`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.7 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.8 sh
 ```
 
 只卸载本地 CLI，不删除用户 secret 或登录 context：
@@ -194,16 +194,16 @@ luma node exit
 新 Luma 代码合并并发布 control image 后，在 manager 上运行：
 
 ```bash
-luma update manager --profile single-node
+luma update
 ```
 
-`luma update manager` 会先更新本地 CLI，然后运行幂等的 manager bootstrap。它会从 `/opt/luma/control/control.json` 推断控制面域名；只有这个状态缺失，或你明确要更换控制面域名时，才需要传 `--domain luma.example.com`。它会刷新 `/opt/luma/luma.yaml`、`/opt/luma/control/control.json`，拉取当前 `ghcr.io/liutianjie/luma-control:latest`，并重新部署 Luma Control 服务。已有 Portainer 数据、deploy token、join token、Swarm 节点和服务 stack 都会保留，除非你明确执行 purge 或 reset。
+`luma update` 会先更新本地 CLI，然后运行幂等的 manager bootstrap。它会从 `/opt/luma/control/control.json` 推断控制面域名；只有这个状态缺失，或你明确要更换控制面域名时，才需要传 `--domain luma.example.com`。它会刷新 `/opt/luma/luma.yaml`、`/opt/luma/control/control.json`，拉取当前 `ghcr.io/liutianjie/luma-control:latest`，并重新部署 Luma Control 服务。已有 Portainer 数据、deploy token、join token、Swarm 节点和服务 stack 都会保留，除非你明确执行 purge 或 reset。
 
 如果已安装 CLI 太旧，不认识 `luma update`，先运行安装器再重试：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
-luma update manager --profile single-node
+luma update
 ```
 
 检查本地 CLI 和 manager control API 版本：

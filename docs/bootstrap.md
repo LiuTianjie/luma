@@ -158,10 +158,10 @@ If the local manager config has `CLOUDFLARE_API_TOKEN` but no `providers.dns`, b
 luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-Use `luma update manager` after upgrading Luma itself:
+Use `luma update` after upgrading Luma itself:
 
 ```bash
-luma update manager --profile single-node
+luma update
 ```
 
 The update command refreshes the local CLI first, then runs manager bootstrap. It infers the control domain from `/opt/luma/control/control.json`; pass `--domain` only when that state is missing or you intentionally changed the control domain. Bootstrap is designed to be idempotent. It refreshes the manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
