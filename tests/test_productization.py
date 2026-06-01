@@ -560,7 +560,7 @@ class CliTests(unittest.TestCase):
             check=False,
         )
 
-    def test_update_infers_domain_and_refreshes_when_control_is_older(self):
+    def test_update_infers_domain_and_refreshes_when_manager_state_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -573,8 +573,6 @@ class CliTests(unittest.TestCase):
             try:
                 with patch("luma.cli._run_luma_installer") as installer, patch(
                     "luma.cli._luma_executable", return_value="/usr/local/bin/luma"
-                ), patch("luma.cli._installed_cli_version", return_value="0.1.10"), patch(
-                    "luma.cli._control_version_for_update", return_value="0.1.9"
                 ), patch(
                     "luma.cli.subprocess.run", return_value=completed
                 ) as run:
@@ -597,7 +595,7 @@ class CliTests(unittest.TestCase):
             check=False,
         )
 
-    def test_update_skips_manager_refresh_when_control_matches_cli(self):
+    def test_update_refreshes_manager_even_when_control_version_matches_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp) / "state"
             state_dir.mkdir()
@@ -606,11 +604,12 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(state_dir))
+            completed = Mock(returncode=0)
             try:
                 with patch("luma.cli._run_luma_installer") as installer, patch(
-                    "luma.cli._installed_cli_version", return_value="0.1.10"
-                ), patch("luma.cli._control_version_for_update", return_value="0.1.10"), patch(
-                    "luma.cli.subprocess.run"
+                    "luma.cli._luma_executable", return_value="/usr/local/bin/luma"
+                ), patch(
+                    "luma.cli.subprocess.run", return_value=completed
                 ) as run, patch("builtins.print") as printed:
                     code = main(["update"])
             finally:
@@ -618,10 +617,10 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         installer.assert_called_once_with(install_ref=None)
-        run.assert_not_called()
+        run.assert_called_once()
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
-        self.assertIn("Manager bootstrap refresh skipped", printed_text)
-        self.assertIn("control API already matches CLI version 0.1.10", printed_text)
+        self.assertIn("Manager bootstrap refresh required", printed_text)
+        self.assertIn("local manager control state found", printed_text)
 
     def test_update_without_manager_state_updates_cli_only(self):
         with patch("luma.cli._existing_control_state", return_value=None), patch(

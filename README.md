@@ -270,7 +270,7 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 
 | Question | What to do |
 | --- | --- |
-| Update the manager | Run `luma update` on the manager. If the control API already matches the updated CLI, manager bootstrap is skipped; use `luma update manager` to force refresh. |
+| Update the manager | Run `luma update` on the manager. If local manager state exists, it refreshes manager bootstrap after updating the CLI. |
 | View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, Portainer, registered nodes, and actual Swarm nodes. |
 | View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the deploy token on a trusted device. |
 | What happens if I run `luma update` on a client or worker? | It updates only the local CLI and skips manager control-plane refresh. |

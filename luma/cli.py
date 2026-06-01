@@ -82,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
         "update",
         description=(
             "Update the local CLI. With no target, Luma refreshes the manager only "
-            "when local manager state exists and the control API version differs; "
+            "when local manager state exists; "
             "clients and workers update CLI only."
         ),
         epilog="Examples: luma update | luma update --install-ref v0.1.10 | luma update manager --domain luma.example.com",
@@ -661,15 +661,7 @@ def _manager_refresh_decision(args: argparse.Namespace) -> tuple[bool, str]:
     domain = str(state.get("domain") or "").strip()
     if not domain:
         return False, "local manager control state has no domain; run luma update manager --domain <control-domain>"
-    installed_version = _installed_cli_version()
-    if not installed_version:
-        return True, "could not determine updated CLI version"
-    control_version = _control_version_for_update(domain, args)
-    if not control_version:
-        return True, "could not check current control API version"
-    if control_version == installed_version:
-        return False, f"control API already matches CLI version {installed_version}"
-    return True, f"control API {control_version} differs from CLI {installed_version}"
+    return True, "local manager control state found"
 
 
 def _manager_update_options_provided(args: argparse.Namespace) -> bool:
@@ -680,32 +672,6 @@ def _manager_update_options_provided(args: argparse.Namespace) -> bool:
     if getattr(args, "profile", "single-node") != "single-node":
         return True
     return False
-
-
-def _installed_cli_version() -> str:
-    try:
-        completed = subprocess.run(
-            [_luma_executable(), "version", "--local"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
-        return ""
-    if completed.returncode != 0:
-        return ""
-    match = re.search(r"^Luma CLI:\s*(\S+)", completed.stdout, flags=re.MULTILINE)
-    return match.group(1) if match else ""
-
-
-def _control_version_for_update(domain: str, args: argparse.Namespace) -> str:
-    config = load_config(args.config)
-    control_url = _control_url(domain, _config_https_port(config))
-    try:
-        payload = ControlClient(control_url, "health").health()
-    except LumaError:
-        return ""
-    return str(payload.get("version") or "")
 
 
 def _run_luma_installer(*, install_ref: str | None = None) -> None:
