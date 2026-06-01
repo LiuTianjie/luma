@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import base64
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -10,6 +11,7 @@ from typing import Any, Dict
 
 from .config import LumaConfig
 from .errors import LumaError
+from .registry import normalize_registry_host, public_registry_url, registry_provider_type
 from .service import ServiceSpec
 
 
@@ -20,10 +22,19 @@ def deploy_with_portainer(
     state: Dict[str, Any],
     *,
     stack_env: list[dict[str, str]] | None = None,
+    registry_auth: dict[str, str] | None = None,
 ) -> str:
     webhook_url, webhook_env = resolve_webhook(config, service)
-    if not webhook_url:
-        return upsert_stack(config, service, stack_content, state, missing_webhook_env=webhook_env, stack_env=stack_env)
+    if not webhook_url or registry_auth:
+        return upsert_stack(
+            config,
+            service,
+            stack_content,
+            state,
+            missing_webhook_env=webhook_env,
+            stack_env=stack_env,
+            registry_auth=registry_auth,
+        )
     return trigger_webhook_url(service, webhook_url)
 
 
@@ -55,6 +66,7 @@ def upsert_stack(
     *,
     missing_webhook_env: str,
     stack_env: list[dict[str, str]] | None = None,
+    registry_auth: dict[str, str] | None = None,
 ) -> str:
     api_url = str(state.get("portainerApiUrl") or config.portainer.get("apiUrl") or "")
     username = str(state.get("portainerAdminUsername") or config.portainer.get("adminUsername") or "admin")
@@ -67,6 +79,7 @@ def upsert_stack(
         )
     client = PortainerApi(api_url, username=username, password=password)
     token = client.authenticate()
+    registry_id = ensure_portainer_registry(client, token, endpoint_id=int(endpoint_id), auth=registry_auth)
     stacks = client.request("GET", "/stacks", token=token)
     if not isinstance(stacks, list):
         raise LumaError("Portainer returned an invalid stack list")
@@ -77,30 +90,140 @@ def upsert_stack(
             break
     endpoint = int(endpoint_id)
     if stack_id:
+        update_body: Dict[str, Any] = {
+            "StackFileContent": stack_content,
+            "Env": stack_env or [],
+            "Prune": True,
+            "PullImage": bool(registry_id),
+        }
+        stack_headers = _portainer_registry_auth_header(registry_id)
+        request_kwargs: Dict[str, Any] = {"token": token}
+        if stack_headers:
+            request_kwargs["headers"] = stack_headers
         client.request(
             "PUT",
             f"/stacks/{int(stack_id)}?{urllib.parse.urlencode({'endpointId': endpoint})}",
-            {
-                "StackFileContent": stack_content,
-                "Env": stack_env or [],
-                "Prune": True,
-                "PullImage": False,
-            },
-            token=token,
+            update_body,
+            **request_kwargs,
         )
         return f"Portainer stack updated for {service.name}: {service.slug}"
+    create_body: Dict[str, Any] = {
+        "Name": service.slug,
+        "StackFileContent": stack_content,
+        "SwarmID": swarm_id,
+        "Env": stack_env or [],
+    }
+    stack_headers = _portainer_registry_auth_header(registry_id)
+    request_kwargs = {"token": token}
+    if stack_headers:
+        request_kwargs["headers"] = stack_headers
     client.request(
         "POST",
         f"/stacks/create/swarm/string?{urllib.parse.urlencode({'endpointId': endpoint})}",
-        {
-            "Name": service.slug,
-            "StackFileContent": stack_content,
-            "SwarmID": swarm_id,
-            "Env": stack_env or [],
-        },
-        token=token,
+        create_body,
+        **request_kwargs,
     )
     return f"Portainer stack created for {service.name}: {service.slug}"
+
+
+def ensure_portainer_registry(
+    client: "PortainerApi",
+    token: str,
+    *,
+    endpoint_id: int,
+    auth: dict[str, str] | None,
+) -> int | None:
+    if not auth:
+        return None
+    server_address = public_registry_url(auth.get("serveraddress") or "")
+    host = normalize_registry_host(server_address)
+    username = str(auth.get("username") or "")
+    password = str(auth.get("password") or "")
+    if not username or not password:
+        return None
+    registries = client.request("GET", "/registries", token=token)
+    if not isinstance(registries, list):
+        raise LumaError("Portainer returned an invalid registry list")
+    luma_name = _luma_registry_name(host)
+    registry_id = _luma_registry_id(registries, host)
+    create_body = {
+        "Name": luma_name,
+        "URL": host,
+        "Authentication": True,
+        "Username": username,
+        "Password": password,
+        "Type": registry_provider_type(host),
+        "TLS": True,
+    }
+    if registry_id is None:
+        created = client.request("POST", "/registries", create_body, token=token)
+        if not isinstance(created, dict) or (created.get("Id") is None and created.get("ID") is None):
+            raise LumaError("Portainer registry create did not return an id")
+        registry_id = int(created.get("Id") or created.get("ID"))
+    else:
+        update_body = {
+            "Name": create_body["Name"],
+            "URL": host,
+            "Authentication": True,
+            "Username": username,
+            "Password": password,
+        }
+        client.request("PUT", f"/registries/{registry_id}", update_body, token=token)
+    access_body = {"UserAccessPolicies": {}, "TeamAccessPolicies": {}, "Namespaces": []}
+    client.request("PUT", f"/endpoints/{endpoint_id}/registries/{registry_id}", access_body, token=token)
+    return registry_id
+
+
+def remove_luma_portainer_registry(config: LumaConfig, state: Dict[str, Any], host: str) -> bool:
+    host = normalize_registry_host(public_registry_url(host))
+    api_url = str(state.get("portainerApiUrl") or config.portainer.get("apiUrl") or "")
+    username = str(state.get("portainerAdminUsername") or config.portainer.get("adminUsername") or "admin")
+    password = str(state.get("portainerAdminPassword") or "")
+    if not api_url or not password:
+        return False
+    client = PortainerApi(api_url, username=username, password=password)
+    token = client.authenticate()
+    registries = client.request("GET", "/registries", token=token)
+    if not isinstance(registries, list):
+        raise LumaError("Portainer returned an invalid registry list")
+    registry_id = _luma_registry_id(registries, host)
+    if registry_id is None:
+        return False
+    client.request("DELETE", f"/registries/{registry_id}", token=token)
+    return True
+
+
+def _portainer_registry_auth_header(registry_id: int | None) -> dict[str, str] | None:
+    if registry_id is None:
+        return None
+    raw = json.dumps({"registryId": registry_id}, separators=(",", ":")).encode("utf-8")
+    return {"X-Registry-Auth": base64.b64encode(raw).decode("ascii")}
+
+
+def _luma_registry_name(host: str) -> str:
+    return f"luma-{host.replace(':', '-').replace('.', '-')}"
+
+
+def _luma_registry_id(registries: list[Any], host: str) -> int | None:
+    luma_name = _luma_registry_name(host)
+    for item in registries:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("Name") or "") != luma_name:
+            continue
+        raw_url = str(item.get("URL") or item.get("Url") or "").strip()
+        if not raw_url:
+            continue
+        parsed_url = urllib.parse.urlparse(raw_url)
+        try:
+            url = normalize_registry_host(parsed_url.netloc or raw_url)
+        except LumaError:
+            continue
+        if url == host:
+            candidate_id = item.get("Id") or item.get("ID")
+            if candidate_id is not None:
+                return int(candidate_id)
+    return None
 
 
 class PortainerApi:
@@ -123,14 +246,17 @@ class PortainerApi:
         body: Dict[str, Any] | None = None,
         *,
         token: str | None = None,
+        headers: Dict[str, str] | None = None,
     ) -> Any:
         data = json.dumps(body or {}).encode("utf-8") if body is not None else None
-        headers = {"Accept": "application/json"}
+        request_headers = {"Accept": "application/json"}
         if body is not None:
-            headers["Content-Type"] = "application/json"
+            request_headers["Content-Type"] = "application/json"
         if token:
-            headers["Authorization"] = f"Bearer {token}"
-        req = urllib.request.Request(self.api_url + path, data=data, method=method, headers=headers)
+            request_headers["Authorization"] = f"Bearer {token}"
+        if headers:
+            request_headers.update(headers)
+        req = urllib.request.Request(self.api_url + path, data=data, method=method, headers=request_headers)
         try:
             with urllib.request.urlopen(req, timeout=60, context=self.context) as resp:
                 raw = resp.read().decode("utf-8")

@@ -37,13 +37,14 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_secret_list, handle_secret_set, resolve_service_image
+from luma.control.server import ControlHandler, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, resolve_service_image
 from luma.control.state import init_state, load_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
 from luma.errors import LumaError
-from luma.portainer import resolve_webhook, upsert_stack
+from luma.portainer import deploy_with_portainer, remove_luma_portainer_registry, resolve_webhook, upsert_stack
 from luma.profiles import PROFILES
+from luma.registry import registry_provider_type
 from luma.service import load_service
 from luma.cli import _node_join_examples, _portainer_url_from_state, build_parser, exit_local_node, main
 from luma.userconfig import configured_keys, ensure_interactive_config, load_user_config
@@ -1236,6 +1237,40 @@ class PortainerWebhookTests(unittest.TestCase):
             {"Username": "admin", "Password": "current"},
         )
 
+    def test_registry_auth_bypasses_webhook_and_uses_portainer_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "private-api",
+                        "image": "ghcr.io/acme/private-api:1",
+                        "region": "cn",
+                        "exposure": "none",
+                        "portainer": {"webhookUrl": "https://portainer.example.com/hook"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+                "swarmId": "swarm-test",
+            }
+            registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
+            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert, patch(
+                "luma.portainer.trigger_webhook_url"
+            ) as webhook:
+                result = deploy_with_portainer(config, service, "services: {}", state, registry_auth=registry_auth)
+            self.assertEqual(result, "Portainer stack updated")
+            upsert.assert_called_once()
+            self.assertEqual(upsert.call_args.kwargs["registry_auth"], registry_auth)
+            webhook.assert_not_called()
+
     def test_bootstrap_manager_saves_portainer_credentials_before_dns(self):
         config = LumaConfig(
             {
@@ -1617,7 +1652,7 @@ class ControlApiTests(unittest.TestCase):
                         "exposure": "none",
                     }
                 )
-                with patch("luma.control.server.resolve_service_image", side_effect=lambda _config, service: (service, {})):
+                with patch("luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})):
                     result = handle_deployment(
                         state["deployToken"],
                         {"manifest": manifest, "sourceName": "home-panel.yaml", "skipDns": True, "skipWebhook": True},
@@ -1972,6 +2007,98 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_registry_credentials_are_saved_without_returning_password(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                saved = handle_registry_set(
+                    state["deployToken"],
+                    {"host": "ghcr.io", "username": "octo", "password": "ghp_secret"},
+                )
+                self.assertEqual(saved, {"host": "ghcr.io", "username": "octo", "saved": True})
+                listed = handle_registry_list(state["deployToken"])
+                serialized = json.dumps(listed)
+                self.assertIn("ghcr.io", serialized)
+                self.assertIn("octo", serialized)
+                self.assertNotIn("ghp_secret", serialized)
+                self.assertEqual(load_state()["registries"]["ghcr.io"]["password"], "ghp_secret")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_registry_remove_cleans_luma_portainer_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_registry_set(
+                    state["deployToken"],
+                    {"host": "ghcr.io", "username": "octo", "password": "ghp_secret"},
+                )
+                with patch("luma.control.server.remove_luma_portainer_registry", return_value=True) as cleanup:
+                    result = handle_registry_remove(state["deployToken"], {"host": "ghcr.io"})
+                self.assertTrue(result["removed"])
+                self.assertTrue(result["portainerRegistryRemoved"])
+                cleanup.assert_called_once()
+                self.assertNotIn("ghcr.io", load_state().get("registries", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_deployment_uses_registry_auth_for_pull_and_portainer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_registry_set(
+                    state["deployToken"],
+                    {"host": "ghcr.io", "username": "octo", "password": "ghp_secret"},
+                )
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "ghcr.io/acme/private-api:1",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                )
+                captured = {}
+
+                def fake_resolve(_config, service, **kwargs):
+                    captured["image_auth"] = kwargs.get("registry_auth")
+                    return service, {"requested": service.image, "selected": service.image, "registryAuth": bool(kwargs.get("registry_auth"))}
+
+                with patch("luma.control.server.resolve_service_image", side_effect=fake_resolve), patch(
+                    "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
+                ) as deploy:
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipWebhook": False},
+                    )
+                self.assertTrue(result["image"]["registryAuth"])
+                self.assertEqual(captured["image_auth"]["username"], "octo")
+                deploy.assert_called_once()
+                self.assertEqual(deploy.call_args.kwargs["registry_auth"]["password"], "ghp_secret")
+                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                self.assertNotIn("ghp_secret", stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_tailscale_relay_follows_actual_home_task_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2021,7 +2148,7 @@ class ControlApiTests(unittest.TestCase):
                 ]
                 with patch("luma.control.server.docker_request", side_effect=[docker_nodes, docker_tasks]), patch(
                     "luma.control.server.resolve_service_image",
-                    side_effect=lambda _config, service: (service, {"requested": service.image, "selected": service.image}),
+                    side_effect=lambda _config, service, **_kwargs: (service, {"requested": service.image, "selected": service.image}),
                 ), patch(
                     "luma.control.server.deploy_with_portainer",
                     return_value="Portainer stack updated",
@@ -2148,6 +2275,45 @@ class ControlApiTests(unittest.TestCase):
             self.assertEqual(selected.image, "mirror.local/traefik/whoami:latest")
             self.assertTrue(result["fallback"])
 
+    def test_service_image_pull_sends_registry_auth_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "ghcr.io/acme/private-api:1",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({}, None)
+            calls = []
+
+            def fake_raw(method, path, *, headers=None):
+                calls.append((method, path, headers or {}))
+                if method == "GET":
+                    return 404, ""
+                return 200, "{}"
+
+            with patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
+                selected, result = resolve_service_image(
+                    config,
+                    service,
+                    registry_auth={"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"},
+                )
+            self.assertEqual(selected.image, "ghcr.io/acme/private-api:1")
+            self.assertTrue(result["registryAuth"])
+            pull_headers = calls[-1][2]
+            self.assertIn("X-Registry-Auth", pull_headers)
+            decoded = json.loads(base64.urlsafe_b64decode(pull_headers["X-Registry-Auth"] + "==").decode("utf-8"))
+            self.assertEqual(decoded["username"], "octo")
+            self.assertEqual(decoded["password"], "ghp_secret")
+            self.assertEqual(decoded["serveraddress"], "ghcr.io")
+
     def test_config_webhook_mapping_uses_service_slug(self):
         with tempfile.TemporaryDirectory() as tmp:
             service_path = Path(tmp) / "service.yaml"
@@ -2222,6 +2388,221 @@ class ControlApiTests(unittest.TestCase):
                 },
                 token="jwt",
             )
+
+    def test_portainer_stack_create_links_registry_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "private-api",
+                        "image": "ghcr.io/acme/private-api:1",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+                "swarmId": "swarm-test",
+            }
+            client = Mock()
+            client.authenticate.return_value = "jwt"
+            client.request.side_effect = [
+                [],
+                {"Id": 42},
+                None,
+                [],
+                {"Id": 7, "Name": "private-api"},
+            ]
+            registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
+            with patch("luma.portainer.PortainerApi", return_value=client):
+                result = upsert_stack(
+                    config,
+                    service,
+                    "services: {}",
+                    state,
+                    missing_webhook_env="PORTAINER_WEBHOOK_URL",
+                    registry_auth=registry_auth,
+                )
+            self.assertIn("Portainer stack created", result)
+            client.request.assert_any_call(
+                "POST",
+                "/registries",
+                {
+                    "Name": "luma-ghcr-io",
+                    "URL": "ghcr.io",
+                    "Authentication": True,
+                    "Username": "octo",
+                    "Password": "ghp_secret",
+                    "Type": 3,
+                    "TLS": True,
+                },
+                token="jwt",
+            )
+            client.request.assert_any_call(
+                "PUT",
+                "/endpoints/1/registries/42",
+                {"UserAccessPolicies": {}, "TeamAccessPolicies": {}, "Namespaces": []},
+                token="jwt",
+            )
+            client.request.assert_any_call(
+                "POST",
+                "/stacks/create/swarm/string?endpointId=1",
+                {
+                    "Name": "private-api",
+                    "StackFileContent": "services: {}",
+                    "SwarmID": "swarm-test",
+                    "Env": [],
+                },
+                token="jwt",
+                headers={"X-Registry-Auth": base64.b64encode(b'{"registryId":42}').decode("ascii")},
+            )
+
+    def test_ghcr_uses_custom_registry_type_for_default_portainer_ce(self):
+        self.assertEqual(registry_provider_type("ghcr.io"), 3)
+
+    def test_portainer_registry_does_not_overwrite_foreign_same_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "private-api",
+                        "image": "ghcr.io/acme/private-api:1",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+                "swarmId": "swarm-test",
+            }
+            client = Mock()
+            client.authenticate.return_value = "jwt"
+            client.request.side_effect = [
+                [{"Id": 9, "Name": "manually-managed", "URL": "ghcr.io"}],
+                {"Id": 42},
+                None,
+                [],
+                {"Id": 7, "Name": "private-api"},
+            ]
+            registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
+            with patch("luma.portainer.PortainerApi", return_value=client):
+                upsert_stack(
+                    config,
+                    service,
+                    "services: {}",
+                    state,
+                    missing_webhook_env="PORTAINER_WEBHOOK_URL",
+                    registry_auth=registry_auth,
+                )
+            self.assertFalse(any(call.args[:2] == ("PUT", "/registries/9") for call in client.request.call_args_list))
+            client.request.assert_any_call(
+                "POST",
+                "/registries",
+                {
+                    "Name": "luma-ghcr-io",
+                    "URL": "ghcr.io",
+                    "Authentication": True,
+                    "Username": "octo",
+                    "Password": "ghp_secret",
+                    "Type": 3,
+                    "TLS": True,
+                },
+                token="jwt",
+            )
+
+    def test_portainer_stack_update_pulls_with_registry_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "private-api",
+                        "image": "ghcr.io/acme/private-api:1",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+                "swarmId": "swarm-test",
+            }
+            client = Mock()
+            client.authenticate.return_value = "jwt"
+            client.request.side_effect = [
+                [{"Id": 42, "Name": "luma-ghcr-io", "URL": "ghcr.io"}],
+                None,
+                None,
+                [{"Id": 7, "Name": "private-api"}],
+                None,
+            ]
+            registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
+            with patch("luma.portainer.PortainerApi", return_value=client):
+                result = upsert_stack(
+                    config,
+                    service,
+                    "services: {}",
+                    state,
+                    missing_webhook_env="PORTAINER_WEBHOOK_URL",
+                    registry_auth=registry_auth,
+                )
+            self.assertIn("Portainer stack updated", result)
+            client.request.assert_any_call(
+                "PUT",
+                "/stacks/7?endpointId=1",
+                {
+                    "StackFileContent": "services: {}",
+                    "Env": [],
+                    "Prune": True,
+                    "PullImage": True,
+                },
+                token="jwt",
+                headers={"X-Registry-Auth": base64.b64encode(b'{"registryId":42}').decode("ascii")},
+            )
+
+    def test_remove_luma_portainer_registry_deletes_only_luma_owned_match(self):
+        config = LumaConfig({}, None)
+        state = {
+            "portainerApiUrl": "https://portainer.example.com/api",
+            "portainerAdminUsername": "admin",
+            "portainerAdminPassword": "secret",
+        }
+        client = Mock()
+        client.authenticate.return_value = "jwt"
+        client.request.side_effect = [
+            [
+                {"Id": 9, "Name": "manually-managed", "URL": "ghcr.io"},
+                {"Id": 42, "Name": "luma-ghcr-io", "URL": "ghcr.io"},
+            ],
+            None,
+        ]
+        with patch("luma.portainer.PortainerApi", return_value=client):
+            removed = remove_luma_portainer_registry(config, state, "ghcr.io")
+        self.assertTrue(removed)
+        client.request.assert_any_call("DELETE", "/registries/42", token="jwt")
+        self.assertFalse(any(call.args[:2] == ("DELETE", "/registries/9") for call in client.request.call_args_list))
 
 
 def _docker_service(service_id, name, image, replicas, constraints, labels):

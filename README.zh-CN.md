@@ -165,6 +165,7 @@ luma tailscale connect
 | client laptop | 登录控制面 | `luma login https://luma.example.com --token <deploy-token>` |
 | client laptop | 部署服务 | `luma deploy app.yaml` |
 | 任意已登录 client | 管理部署 secret | `luma secret set DATABASE_URL` |
+| 任意已登录 client | 管理私有镜像仓库凭证 | `printf '%s' "$GHCR_TOKEN" \| luma registry login ghcr.io --username <user> --password-stdin` |
 | 任意机器 | 看本地版本 | `luma version` |
 | 任意机器 | 诊断本地环境 | `luma doctor` |
 
@@ -172,7 +173,7 @@ luma tailscale connect
 
 - manager 跑 `bootstrap manager` 和 `update`。
 - worker/home 节点跑 `node join`、`node exit`。
-- client 只跑 `login`、`deploy`、`secret`、`context`。
+- client 只跑 `login`、`deploy`、`secret`、`registry`、`context`。
 
 ## 添加节点
 
@@ -250,6 +251,14 @@ proxy: true
 
 Luma 会自动加入 `egress` overlay network，并注入 `HTTP_PROXY` / `HTTPS_PROXY`。这只影响容器运行时出站请求，不等同于镜像拉取代理。
 
+私有镜像不要把 registry token 写进 manifest。先在任意已登录 client 上保存仓库凭证：
+
+```bash
+printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --password-stdin
+```
+
+之后 manifest 仍然只写镜像名，例如 `image: ghcr.io/acme/private-api:1.0.0`。部署时 Luma 会按 image 推断 registry host，带 Docker registry auth 预拉镜像，并把 Portainer/Swarm 需要的 registry auth 传给实际被调度到的节点。这适合 GitHub Actions 构建出来的私有 GHCR 镜像；同一个仓库即使还用 GitHub Pages 发布文档或营销页，也不需要把 GHCR token 写到 Luma manifest 里。
+
 敏感值不要直接写进 manifest。先存到控制面：
 
 ```bash
@@ -277,6 +286,7 @@ env:
 | 服务 A 固定到某个节点 | 把 manifest 的 `node` 设为 `luma node join --name` 使用的 Luma 节点名，保留匹配的 `region`，然后重新 deploy。控制面会解析成 Swarm NodeID 调度。 |
 | 服务从公开变内部 | 把 `exposure` 改为 `none`，移除不再需要的 `domain`/公开入口配置，重新 deploy。 |
 | 服务从内部变公开 | 设置匹配的 `region` + `exposure`，补 `domain` 和 `port`，重新 deploy。 |
+| 部署私有 GHCR 镜像 | 先用 `luma registry login ghcr.io --username <user> --password-stdin` 保存凭证，再部署普通 manifest。 |
 | 新增国内 worker | 在新机器执行 `luma node join ... --region cn --name ...`。 |
 | 新增海外 worker | 在新机器执行 `luma node join ... --region global --name ...`。 |
 | 新增家里节点 | 先准备 Docker Desktop/Tailscale，再执行 `luma node join ... --region home --name ...`。如果未连接 Tailscale，CLI 会要求输入 `TAILSCALE_AUTHKEY`。 |
@@ -324,6 +334,7 @@ rm -rf "$tmp"
 ## 安全边界
 
 - 不要提交 API token、Portainer webhook、deploy token、join token 或代理订阅 URL。
+- 不要把 registry token 写进 manifest 或容器环境变量。使用 `luma registry login`，凭证泄露时到 registry provider 侧轮换或吊销 token。
 - client 机器不需要 SSH/Docker/Cloudflare/Portainer 凭据，尽量只分发 deploy token。
 - join token 只给要加入集群的服务器使用。
 - 如果 token 或订阅 URL 已经贴进聊天、日志或 issue，发布前先轮换。

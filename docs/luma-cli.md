@@ -120,6 +120,14 @@ luma status
 
 `luma status` prints DNS and Portainer readiness, registered Luma nodes from the control state, and actual Docker Swarm nodes from the manager Docker socket.
 
+Store private registry credentials for image pulls:
+
+```bash
+printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --password-stdin
+luma registry list
+luma registry remove ghcr.io
+```
+
 The same control plane also serves a read-only Web status panel:
 
 ```text

@@ -1,34 +1,39 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Luma Status</title>
+    <title>Luma Status · 状态面板</title>
     <link rel="stylesheet" href="/dashboard/styles.css" />
   </head>
   <body>
     <main class="app-shell">
       <header class="topbar">
-        <div>
+        <div class="brand-block">
           <p class="eyebrow">Luma Control</p>
-          <h1>Status Panel</h1>
+          <h1 data-i18n="title">状态面板</h1>
+          <p data-i18n="subtitle">查看控制面、节点、服务和推导出的访问路径。</p>
         </div>
         <div class="top-actions">
-          <span class="sync-state" data-sync-state>Not connected</span>
-          <button type="button" data-refresh>Refresh</button>
-          <button type="button" class="ghost" data-sign-out>Sign out</button>
+          <span class="sync-state" data-sync-state>未连接</span>
+          <div class="lang-switch" aria-label="Language">
+            <button type="button" data-lang="zh">中文</button>
+            <button type="button" data-lang="en">EN</button>
+          </div>
+          <button type="button" data-refresh data-i18n="refresh">刷新</button>
+          <button type="button" class="ghost" data-sign-out data-i18n="signOut">退出</button>
         </div>
       </header>
 
       <section class="login-panel" data-login-panel>
         <div>
-          <p class="eyebrow">Read-only access</p>
-          <h2>Paste a deploy token</h2>
-          <p>Tokens stay in this browser and are sent only to this Luma Control origin.</p>
+          <p class="eyebrow" data-i18n="readonly">只读访问</p>
+          <h2 data-i18n="loginTitle">粘贴 deploy token</h2>
+          <p data-i18n="loginCopy">Token 只保存在当前浏览器，并只发送给当前 Luma Control 域名。</p>
         </div>
         <form data-login-form>
           <input data-token-input type="password" autocomplete="off" spellcheck="false" placeholder="Deploy token" />
-          <button type="submit">Open status</button>
+          <button type="submit" data-i18n="openStatus">打开面板</button>
         </form>
       </section>
 
@@ -36,7 +41,7 @@
 
       <section class="summary-grid" data-summary hidden>
         <article>
-          <span>Cluster</span>
+          <span data-i18n="cluster">集群</span>
           <strong data-cluster-id>-</strong>
           <small data-cluster-version>-</small>
         </article>
@@ -58,21 +63,24 @@
       </section>
 
       <section class="content-grid" data-content hidden>
-        <article class="panel">
+        <article class="panel nodes-panel">
           <div class="panel-heading">
-            <h2>Nodes</h2>
+            <div>
+              <p class="eyebrow" data-i18n="nodesEyebrow">机器</p>
+              <h2 data-i18n="nodes">节点</h2>
+            </div>
             <span data-node-count>0</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="nodes-table">
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>Region</th>
-                  <th>Role</th>
-                  <th>State</th>
-                  <th>Availability</th>
-                  <th>Leader</th>
+                  <th data-i18n="name">名称</th>
+                  <th data-i18n="region">区域</th>
+                  <th data-i18n="role">角色</th>
+                  <th data-i18n="state">状态</th>
+                  <th data-i18n="availability">可用性</th>
+                  <th data-i18n="leader">Leader</th>
                 </tr>
               </thead>
               <tbody data-nodes></tbody>
@@ -80,22 +88,25 @@
           </div>
         </article>
 
-        <article class="panel wide">
+        <article class="panel services-panel">
           <div class="panel-heading">
-            <h2>Services</h2>
+            <div>
+              <p class="eyebrow" data-i18n="servicesEyebrow">工作负载</p>
+              <h2 data-i18n="services">服务</h2>
+            </div>
             <span data-service-count>0</span>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="services-table">
               <thead>
                 <tr>
-                  <th>Service</th>
-                  <th>Region</th>
-                  <th>Exposure</th>
-                  <th>Image</th>
-                  <th>Replicas</th>
-                  <th>Health</th>
-                  <th>Nodes</th>
+                  <th data-i18n="service">服务</th>
+                  <th data-i18n="region">区域</th>
+                  <th data-i18n="exposure">入口</th>
+                  <th data-i18n="image">镜像</th>
+                  <th data-i18n="replicas">副本</th>
+                  <th data-i18n="health">健康</th>
+                  <th data-i18n="nodes">节点</th>
                 </tr>
               </thead>
               <tbody data-services></tbody>
@@ -106,8 +117,11 @@
 
       <section class="panel path-panel" data-path-section hidden>
         <div class="panel-heading">
-          <h2>Traffic Paths</h2>
-          <span>inferred</span>
+          <div>
+            <p class="eyebrow" data-i18n="pathsEyebrow">拓扑</p>
+            <h2 data-i18n="trafficPaths">流量路径</h2>
+          </div>
+          <span data-i18n="inferred">推导</span>
         </div>
         <div class="path-grid" data-paths></div>
       </section>

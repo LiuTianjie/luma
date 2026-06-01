@@ -125,6 +125,25 @@ env:
 missing deployment secrets: DATABASE_URL. Run: luma secret set <NAME>
 ```
 
+## 私有镜像仓库
+
+镜像拉取凭证不要写进 manifest，也不要作为容器环境变量传给业务服务。先在控制面保存 registry credential：
+
+```bash
+luma registry login ghcr.io --username <user> --password-stdin
+luma registry list
+```
+
+然后 manifest 仍然只写镜像：
+
+```yaml
+image: ghcr.io/acme/private-api:1.0.0
+```
+
+部署时 Luma 会从 image 推断 registry host，使用匹配的凭证预拉取镜像，并把 registry 关联到 Portainer/Swarm stack，让被调度的节点可以拉取私有镜像。`luma registry list` 只显示 registry host 和 username，不显示 password/token。私有镜像部署必须使用 Portainer API 绑定；webhook 不能携带 registry auth，Luma 会在匹配到 registry credential 时自动走 API upsert。
+
+常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。Luma 只需要 GHCR 的 registry credential 来拉运行时镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
+
 ### 海外 worker
 
 ```yaml

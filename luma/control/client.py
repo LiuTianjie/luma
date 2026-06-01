@@ -137,6 +137,15 @@ class ControlClient:
     def set_secret(self, *, name: str, value: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/secrets", {"name": name, "value": value})
 
+    def list_registries(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/registries")
+
+    def set_registry(self, *, host: str, username: str, password: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/registries", {"host": host, "username": username, "password": password})
+
+    def remove_registry(self, *, host: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/registries/remove", {"host": host})
+
 
 def _looks_like_legacy_node_api_error(detail: str) -> bool:
     return "nodeName, profile, and region are required" in detail

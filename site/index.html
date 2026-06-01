@@ -45,7 +45,6 @@
     <main id="top">
       <section class="hero">
         <div class="hero-copy reveal">
-          <p class="eyebrow">Deployment tool for a few small servers</p>
           <h1>Write YAML. Run luma deploy.</h1>
           <p class="hero-lede">
             Put the service in a YAML file. Luma updates Cloudflare records, Traefik rules, and Swarm services.
@@ -115,14 +114,13 @@ published https://status.example.com</code></pre>
           <span>Each Host gets its own certificate</span>
         </div>
         <div>
-          <strong>Swarm gets updated</strong>
-          <span>Host rules point to service:port</span>
+          <strong>Private images</strong>
+          <span>Registry auth stays out of YAML</span>
         </div>
       </section>
 
       <section class="section prerequisites" id="prerequisites">
         <div class="section-heading reveal">
-          <p class="eyebrow">Prepare</p>
           <h2>Have these ready first.</h2>
         </div>
         <div class="prereq-grid reveal">
@@ -151,7 +149,6 @@ published https://status.example.com</code></pre>
 
       <section class="section command-theatre" id="demo">
         <div class="section-heading reveal">
-          <p class="eyebrow">Commands</p>
           <h2>What each command changes.</h2>
         </div>
 
@@ -278,7 +275,6 @@ resources:
     memory: 512M</code></pre>
         </div>
         <div class="section-copy reveal">
-          <p class="eyebrow">What deploy does</p>
           <h2>Read the manifest, then update these parts.</h2>
           <ul class="capability-list">
             <li>
@@ -305,12 +301,19 @@ resources:
             <li>
               <span>04</span>
               <div>
+                <strong>Pull private image if needed</strong>
+                <p>For private GHCR or custom registries, Luma uses saved registry credentials without writing tokens into the manifest.</p>
+              </div>
+            </li>
+            <li>
+              <span>05</span>
+              <div>
                 <strong>Update service</strong>
                 <p>Update the stack so <code>status.example.com</code> forwards to <code>status:80</code>.</p>
               </div>
             </li>
             <li>
-              <span>05</span>
+              <span>06</span>
               <div>
                 <strong>Limit resources</strong>
                 <p>Use Swarm resource limits when apps and control services share a small server.</p>
@@ -322,7 +325,6 @@ resources:
 
       <section class="section guide" id="guide">
         <div class="section-heading reveal">
-          <p class="eyebrow">Start</p>
           <h2>Run the command for each machine role.</h2>
         </div>
 
@@ -380,6 +382,21 @@ resources:
               <span class="deploy-pulse"></span>
             </div>
             <div>
+              <h3>Save private registry credentials</h3>
+              <p>Use this when GitHub Actions publishes a private GHCR image. It also fits repositories that publish a GitHub Pages site while the runtime image stays private.</p>
+              <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
+printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username &lt;user&gt; --password-stdin</code></pre>
+            </div>
+          </article>
+
+          <article class="step-card reveal" data-step="05">
+            <div class="step-animation deploy-flow" aria-hidden="true">
+              <span class="manifest"></span>
+              <span class="api-gate"></span>
+              <span class="stack"></span>
+              <span class="deploy-pulse"></span>
+            </div>
+            <div>
               <h3>Deploy from a client</h3>
               <p>After login, the client submits a manifest. Luma prints DNS, certificate, route, and stack progress.</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
@@ -389,13 +406,6 @@ luma deploy status.yaml</code></pre>
         </div>
       </section>
 
-      <section class="cta reveal">
-        <div>
-          <p class="eyebrow">First test</p>
-          <h2>Deploy whoami first and check that the domain opens.</h2>
-        </div>
-        <a class="button primary" href="https://github.com/LiuTianjie/luma">View project</a>
-      </section>
     </main>
 
     <footer>

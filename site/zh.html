@@ -45,7 +45,6 @@
     <main id="top">
       <section class="hero">
         <div class="hero-copy reveal">
-          <p class="eyebrow">给几台小服务器用的部署工具</p>
           <h1>写一份 YAML，<br />执行 luma deploy。</h1>
           <p class="hero-lede">
             服务写在 YAML 里。Luma 负责更新 Cloudflare 记录、Traefik 规则和 Swarm 服务。
@@ -115,14 +114,13 @@ published https://status.example.com</code></pre>
           <span>每个 Host 都走自己的证书</span>
         </div>
         <div>
-          <strong>最后更新 Swarm</strong>
-          <span>Host 规则指向 service:port</span>
+          <strong>私有镜像</strong>
+          <span>registry token 不写进 YAML</span>
         </div>
       </section>
 
       <section class="section prerequisites" id="prerequisites">
         <div class="section-heading reveal">
-          <p class="eyebrow">准备</p>
           <h2>先把这些东西备好。</h2>
         </div>
         <div class="prereq-grid reveal">
@@ -151,7 +149,6 @@ published https://status.example.com</code></pre>
 
       <section class="section command-theatre" id="demo">
         <div class="section-heading reveal">
-          <p class="eyebrow">命令</p>
           <h2>这些命令会改哪些东西。</h2>
         </div>
 
@@ -278,7 +275,6 @@ resources:
     memory: 512M</code></pre>
         </div>
         <div class="section-copy reveal">
-          <p class="eyebrow">deploy 做什么</p>
           <h2>读 manifest，然后改这几处。</h2>
           <ul class="capability-list">
             <li>
@@ -305,12 +301,19 @@ resources:
             <li>
               <span>04</span>
               <div>
+                <strong>按需拉取私有镜像</strong>
+                <p>私有 GHCR 或自建 registry 会使用已保存的仓库凭证，不需要把 token 写进 manifest。</p>
+              </div>
+            </li>
+            <li>
+              <span>05</span>
+              <div>
                 <strong>更新服务</strong>
                 <p>更新 stack，把 <code>status.example.com</code> 转发到 <code>status:80</code>。</p>
               </div>
             </li>
             <li>
-              <span>05</span>
+              <span>06</span>
               <div>
                 <strong>限制资源</strong>
                 <p>业务服务和控制组件共用小机器时，用 Swarm resources 限制 CPU 和内存。</p>
@@ -322,7 +325,6 @@ resources:
 
       <section class="section guide" id="guide">
         <div class="section-heading reveal">
-          <p class="eyebrow">上手</p>
           <h2>按机器角色跑对应命令。</h2>
         </div>
 
@@ -380,6 +382,21 @@ resources:
               <span class="deploy-pulse"></span>
             </div>
             <div>
+              <h3>保存私有 registry 凭证</h3>
+              <p>GitHub Actions 推送私有 GHCR 镜像时先保存一次凭证。同一个仓库即使用 GitHub Pages 发布文档或营销页，运行时镜像也可以继续保持私有。</p>
+              <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
+printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username &lt;user&gt; --password-stdin</code></pre>
+            </div>
+          </article>
+
+          <article class="step-card reveal" data-step="05">
+            <div class="step-animation deploy-flow" aria-hidden="true">
+              <span class="manifest"></span>
+              <span class="api-gate"></span>
+              <span class="stack"></span>
+              <span class="deploy-pulse"></span>
+            </div>
+            <div>
               <h3>从客户端部署服务</h3>
               <p>client 登录后提交 manifest。Luma 会打印 DNS、证书、路由和 stack 更新进度。</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
@@ -389,13 +406,6 @@ luma deploy status.yaml</code></pre>
         </div>
       </section>
 
-      <section class="cta reveal">
-        <div>
-          <p class="eyebrow">建议先试这个</p>
-          <h2>先发布 whoami，确认域名能打开。</h2>
-        </div>
-        <a class="button primary" href="https://github.com/LiuTianjie/luma">查看项目</a>
-      </section>
     </main>
 
     <footer>

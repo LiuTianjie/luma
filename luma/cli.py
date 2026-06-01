@@ -68,6 +68,15 @@ def build_parser() -> argparse.ArgumentParser:
     secret_set = secret_sub.add_parser("set")
     secret_set.add_argument("name")
     secret_set.add_argument("--value")
+    registry = sub.add_parser("registry")
+    registry_sub = registry.add_subparsers(dest="registry_command", required=True)
+    registry_sub.add_parser("list")
+    registry_login = registry_sub.add_parser("login")
+    registry_login.add_argument("host")
+    registry_login.add_argument("--username", required=True)
+    registry_login.add_argument("--password-stdin", action="store_true", help="Read the registry password/token from stdin")
+    registry_remove = registry_sub.add_parser("remove")
+    registry_remove.add_argument("host")
     bootstrap = sub.add_parser("bootstrap")
     bootstrap_sub = bootstrap.add_subparsers(dest="bootstrap_command", required=True)
     manager = bootstrap_sub.add_parser("manager")
@@ -590,6 +599,47 @@ def cmd_secret(args: argparse.Namespace) -> int:
         print(f"Secret saved: {result.get('name', args.name)}")
         return 0
     raise LumaError(f"unknown secret command: {args.secret_command}")
+
+
+def cmd_registry(args: argparse.Namespace) -> int:
+    context = load_current_context()
+    client = ControlClient(
+        str(context["endpoint"]),
+        str(context["token"]),
+        insecure=bool(context.get("insecure")),
+        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
+    )
+    if args.registry_command == "list":
+        result = client.list_registries()
+        items = result.get("registries") if isinstance(result.get("registries"), list) else []
+        if not items:
+            print("No registry credentials configured")
+            return 0
+        for item in items:
+            host = str(item.get("host") or item.get("serverAddress") or "")
+            username = str(item.get("username") or "")
+            print(f"{host}\t{username}")
+        return 0
+    if args.registry_command == "login":
+        if args.password_stdin:
+            password = sys.stdin.read().strip()
+        else:
+            password = getpass.getpass(f"{args.host} password/token: ")
+        result = client.set_registry(host=args.host, username=args.username, password=password)
+        print(f"Registry credential saved: {result.get('host', args.host)}")
+        return 0
+    if args.registry_command == "remove":
+        result = client.remove_registry(host=args.host)
+        status = "removed" if result.get("removed") else "not configured"
+        print(f"Registry credential {status}: {result.get('host', args.host)}")
+        if result.get("portainerRegistryRemoved"):
+            print("Removed matching Luma-managed Portainer registry credential.")
+        if result.get("warning"):
+            print(result["warning"])
+        elif result.get("removed") and not result.get("portainerRegistryRemoved"):
+            print("Revoke or rotate the registry token at the provider to invalidate downstream Portainer/Swarm copies.")
+        return 0
+    raise LumaError(f"unknown registry command: {args.registry_command}")
 
 
 def cmd_bootstrap(args: argparse.Namespace) -> int:
@@ -1320,6 +1370,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_context(args)
         if args.command == "secret":
             return cmd_secret(args)
+        if args.command == "registry":
+            return cmd_registry(args)
         if args.command == "bootstrap":
             return cmd_bootstrap(args)
         if args.command == "update":

@@ -199,16 +199,6 @@ main {
   min-width: 0;
 }
 
-.eyebrow {
-  margin: 0 0 16px;
-  color: var(--amber);
-  font-family: "IBM Plex Mono", "IBM Plex Sans", sans-serif;
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 h1,
 h2,
 h3 {
@@ -245,8 +235,7 @@ html[lang="zh-CN"] body {
 html[lang="zh-CN"] h1,
 html[lang="zh-CN"] h2,
 html[lang="zh-CN"] h3,
-html[lang="zh-CN"] .brand,
-html[lang="zh-CN"] .eyebrow {
+html[lang="zh-CN"] .brand {
   font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "IBM Plex Sans", sans-serif;
 }
 
@@ -594,8 +583,7 @@ html[lang="zh-CN"] h2 {
 .step-card,
 .manifest-panel,
 .topology-card,
-.demo-grid,
-.cta {
+.demo-grid {
   border: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(30, 33, 28, 0.92), rgba(13, 16, 13, 0.82));
   box-shadow: 0 22px 54px rgba(0, 0, 0, 0.2);
@@ -889,7 +877,10 @@ html[lang="zh-CN"] h2 {
   border: 1px solid rgba(225, 218, 198, 0.18);
   border-radius: 8px;
   background: rgba(17, 20, 17, 0.9);
-  transition: border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(10px) scale(0.96);
+  transition: opacity 240ms ease, border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease;
 }
 
 .stage-node strong {
@@ -932,7 +923,7 @@ html[lang="zh-CN"] h2 {
   z-index: 1;
   height: 4px;
   border-radius: 8px;
-  opacity: 0.16;
+  opacity: 0;
   background: linear-gradient(90deg, transparent, var(--cyan-2), var(--amber), transparent);
   background-size: 220% 100%;
 }
@@ -990,29 +981,31 @@ html[lang="zh-CN"] h2 {
 .demo-stage[data-stage="join-global"] .global-node,
 .demo-stage[data-stage="deploy"] .stage-node,
 .demo-stage[data-stage="published"] .stage-node {
+  opacity: 1;
+  pointer-events: auto;
   border-color: rgba(120, 183, 197, 0.56);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
-  transform: translateY(-2px);
+  transform: translateY(0) scale(1);
 }
 
-.demo-stage[data-stage="bootstrap"] .link-client,
 .demo-stage[data-stage="bootstrap"] .link-edge,
-.demo-stage[data-stage="join-cn"] .link-client,
 .demo-stage[data-stage="join-cn"] .link-edge,
 .demo-stage[data-stage="join-cn"] .link-worker,
-.demo-stage[data-stage="join-global"] .stage-link,
+.demo-stage[data-stage="join-global"] .link-edge,
+.demo-stage[data-stage="join-global"] .link-worker,
+.demo-stage[data-stage="join-global"] .link-global,
 .demo-stage[data-stage="deploy"] .stage-link,
 .demo-stage[data-stage="published"] .stage-link {
   opacity: 1;
   animation: beam 2s linear infinite;
 }
 
-.demo-stage[data-stage="bootstrap"] .link-client::after,
 .demo-stage[data-stage="bootstrap"] .link-edge::after,
-.demo-stage[data-stage="join-cn"] .link-client::after,
 .demo-stage[data-stage="join-cn"] .link-edge::after,
 .demo-stage[data-stage="join-cn"] .link-worker::after,
-.demo-stage[data-stage="join-global"] .stage-link::after,
+.demo-stage[data-stage="join-global"] .link-edge::after,
+.demo-stage[data-stage="join-global"] .link-worker::after,
+.demo-stage[data-stage="join-global"] .link-global::after,
 .demo-stage[data-stage="deploy"] .stage-link::after,
 .demo-stage[data-stage="published"] .stage-link::after {
   opacity: 1;
@@ -1548,20 +1541,6 @@ pre code {
   font-weight: 700;
 }
 
-.cta {
-  display: flex;
-  gap: 28px;
-  align-items: center;
-  justify-content: space-between;
-  margin: 80px 0 40px;
-  padding: 34px;
-  border-radius: 8px;
-}
-
-.cta h2 {
-  font-size: clamp(1.8rem, 3vw, 3.3rem);
-}
-
 footer {
   width: min(var(--max), calc(100% - 32px));
   margin: 0 auto;
@@ -1770,7 +1749,6 @@ footer {
   }
 
   .hero-actions,
-  .cta,
   footer {
     align-items: stretch;
     flex-direction: column;

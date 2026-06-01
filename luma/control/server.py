@@ -21,7 +21,8 @@ from ..cloudflare import sync_dns
 from ..config import load_config
 from ..errors import LumaError
 from ..io import load_yaml
-from ..portainer import deploy_with_portainer
+from ..portainer import deploy_with_portainer, remove_luma_portainer_registry
+from ..registry import docker_registry_auth_header, normalize_registry_host, registry_auth_for_image, registry_auth_matches_image
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service
 from .. import __version__
@@ -255,7 +256,12 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         service_path.unlink(missing_ok=True)
     steps.append({"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"})
 
-    service, image_result = _deploy_step(steps, "Resolve image", lambda: resolve_service_image(config, service))
+    registry_auth = _registry_auth_for_service(state, service)
+    service, image_result = _deploy_step(
+        steps,
+        "Resolve image",
+        lambda: resolve_service_image(config, service, registry_auth=registry_auth),
+    )
     service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state))
     target = _resolve_control_path(stack_path(config, service), config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -269,7 +275,7 @@ def handle_deployment(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "Deploy Portainer stack",
         lambda: "Portainer deploy skipped: --skip-webhook"
         if body.get("skipWebhook")
-        else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env),
+        else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env, registry_auth=registry_auth),
     )
     if service.exposure == "tailscale-relay":
         route_target = _resolve_control_path(route_path(config, service), config_path)
@@ -326,6 +332,71 @@ def handle_secret_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     return {"name": name, "saved": True}
 
 
+def handle_registry_list(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    items = []
+    for host, item in sorted(registries.items()):
+        if not isinstance(item, dict):
+            continue
+        items.append(
+            {
+                "host": str(host),
+                "serverAddress": str(item.get("serverAddress") or host),
+                "username": str(item.get("username") or ""),
+                "configured": bool(item.get("username") and item.get("password")),
+            }
+        )
+    return {"registries": items}
+
+
+def handle_registry_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    host = normalize_registry_host(str(body.get("host") or body.get("serverAddress") or ""))
+    username = str(body.get("username") or "").strip()
+    password = body.get("password")
+    if not username:
+        raise LumaError("registry username is required")
+    if password is None or str(password) == "":
+        raise LumaError("registry password is required")
+    registries = state.setdefault("registries", {})
+    if not isinstance(registries, dict):
+        registries = {}
+        state["registries"] = registries
+    registries[host] = {
+        "serverAddress": host,
+        "username": username,
+        "password": str(password),
+        "updatedAt": int(time.time()),
+    }
+    save_state(state)
+    return {"host": host, "username": username, "saved": True}
+
+
+def handle_registry_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    host = normalize_registry_host(str(body.get("host") or ""))
+    registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    removed = bool(registries.pop(host, None))
+    state["registries"] = registries
+    save_state(state)
+    portainer_removed = False
+    warning = None
+    try:
+        config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+        config = load_config(config_path)
+        portainer_removed = remove_luma_portainer_registry(config, state, host)
+    except LumaError as exc:
+        warning = f"Portainer registry cleanup failed: {exc}"
+    result: Dict[str, Any] = {"host": host, "removed": removed, "portainerRegistryRemoved": portainer_removed}
+    if warning:
+        result["warning"] = warning
+    return result
+
+
 def _resolve_control_path(path: Path, config_path: Path) -> Path:
     if path.is_absolute():
         return path
@@ -340,6 +411,11 @@ def _apply_state_secrets(state: Dict[str, Any]) -> None:
         if value is None:
             continue
         os.environ[str(key)] = str(value)
+
+
+def _registry_auth_for_service(state: Dict[str, Any], service: ServiceSpec) -> Dict[str, str] | None:
+    registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    return registry_auth_for_image(registries, service.image)
 
 
 def _stack_env_for_text(stack_text: str) -> list[dict[str, str]]:
@@ -870,11 +946,11 @@ def docker_request(method: str, path: str, body: Dict[str, Any] | None = None) -
     return json.loads(raw)
 
 
-def docker_request_raw(method: str, path: str) -> tuple[int, str]:
+def docker_request_raw(method: str, path: str, *, headers: Dict[str, str] | None = None) -> tuple[int, str]:
     conn = DockerSocketConnection()
     try:
         api_version = os.environ.get("DOCKER_API_VERSION", "1.44")
-        conn.request(method, f"/v{api_version}" + path)
+        conn.request(method, f"/v{api_version}" + path, headers=headers or {})
         response = conn.getresponse()
         raw = response.read().decode("utf-8", errors="replace")
         return response.status, raw
@@ -977,16 +1053,23 @@ def _swarm_node_map() -> dict[str, dict[str, str]]:
     return result
 
 
-def resolve_service_image(config: Any, service: ServiceSpec) -> tuple[ServiceSpec, Dict[str, Any]]:
+def resolve_service_image(
+    config: Any,
+    service: ServiceSpec,
+    *,
+    registry_auth: Dict[str, str] | None = None,
+) -> tuple[ServiceSpec, Dict[str, Any]]:
     images = [service.image, *_fallback_images(config, service.image)]
     errors: list[str] = []
     for image in images:
+        image_registry_auth = registry_auth if registry_auth_matches_image(registry_auth, image) else None
         try:
-            ensure_image_present(image)
+            ensure_image_present(image, registry_auth=image_registry_auth)
             result = {
                 "requested": service.image,
                 "selected": image,
                 "fallback": image != service.image,
+                "registryAuth": bool(image_registry_auth),
             }
             return replace(service, image=image), result
         except LumaError as exc:
@@ -994,13 +1077,17 @@ def resolve_service_image(config: Any, service: ServiceSpec) -> tuple[ServiceSpe
     raise LumaError("unable to pull service image; tried " + "; ".join(errors))
 
 
-def ensure_image_present(image: str) -> None:
+def ensure_image_present(image: str, *, registry_auth: Dict[str, str] | None = None) -> None:
     encoded = urllib.parse.quote(image, safe="")
     status, _ = docker_request_raw("GET", f"/images/{encoded}/json")
     if status == 200:
         return
     from_image = urllib.parse.quote(image, safe="")
-    status, raw = docker_request_raw("POST", f"/images/create?fromImage={from_image}")
+    headers = {}
+    auth_header = docker_registry_auth_header(registry_auth)
+    if auth_header:
+        headers["X-Registry-Auth"] = auth_header
+    status, raw = docker_request_raw("POST", f"/images/create?fromImage={from_image}", headers=headers)
     if status >= 400:
         raise LumaError(f"Docker pull failed with HTTP {status}: {raw.strip()}")
     if '"error"' in raw:
@@ -1119,6 +1206,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         try:
             token = bearer_token(self.headers)
+            if parsed_path == "/v1/registries":
+                self._json(200, handle_registry_list(token))
+                return
             if parsed_path == "/v1/secrets":
                 self._json(200, handle_secret_list(token))
                 return
@@ -1155,6 +1245,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/secrets":
                 self._json(200, handle_secret_set(token, body))
+                return
+            if self.path == "/v1/registries":
+                self._json(200, handle_registry_set(token, body))
+                return
+            if self.path == "/v1/registries/remove":
+                self._json(200, handle_registry_remove(token, body))
                 return
             self._json(404, {"error": "not found"})
         except LumaError as exc:

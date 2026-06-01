@@ -164,6 +164,7 @@ The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For s
 | client laptop | Deploy a service | `luma deploy app.yaml` |
 | browser on trusted device | View status panel | `https://luma.example.com/dashboard/` |
 | any logged-in client | Manage deploy secrets | `luma secret set DATABASE_URL` |
+| any logged-in client | Manage private image registry credentials | `printf '%s' "$GHCR_TOKEN" \| luma registry login ghcr.io --username <user> --password-stdin` |
 | any machine | Show local version | `luma version` |
 | any machine | Diagnose local environment | `luma doctor` |
 
@@ -171,7 +172,7 @@ The installer is the same on every machine. The next command defines the role:
 
 - manager: `bootstrap manager`, `update`
 - worker/home node: `node join`, `node exit`
-- client: `login`, `deploy`, `secret`, `context`
+- client: `login`, `deploy`, `secret`, `registry`, `context`
 
 ## Add Nodes
 
@@ -251,6 +252,14 @@ proxy: true
 
 Luma automatically joins the service to the `egress` overlay network and injects `HTTP_PROXY` / `HTTPS_PROXY`. This affects runtime outbound requests from the container; it is not the same as image-pull proxying.
 
+For private images, keep registry credentials out of the manifest. Save them once from any logged-in client:
+
+```bash
+printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --password-stdin
+```
+
+After that, manifests still only contain the image name, for example `image: ghcr.io/acme/private-api:1.0.0`. During deploy, Luma matches the registry host, pre-pulls with Docker registry auth, and sends Portainer/Swarm the registry auth needed by the node that receives the task. This is useful for private GHCR images produced by GitHub Actions, including images built from repositories that also publish docs or marketing pages through GitHub Pages.
+
 Do not put sensitive values directly in manifests. Store them in the control plane:
 
 ```bash
@@ -279,6 +288,7 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | Pin service A to one node | Set manifest `node` to the Luma node name passed to `luma node join --name`, keep the matching `region`, then deploy again. Control resolves it to the Swarm NodeID before scheduling. |
 | Make a public service internal | Change `exposure` to `none`, remove public-only domain/ingress config if no longer needed, then deploy again. |
 | Make an internal service public | Set a matching `region` + `exposure`, add `domain` and `port`, then deploy again. |
+| Deploy a private GHCR image | Save the credential with `luma registry login ghcr.io --username <user> --password-stdin`, then deploy the normal manifest. |
 | Add a CN worker | Run `luma node join ... --region cn --name ...` on the new machine. |
 | Add a global worker | Run `luma node join ... --region global --name ...` on the new machine. |
 | Add a home node | Prepare Docker Desktop/Tailscale first, then run `luma node join ... --region home --name ...`. If Tailscale is not connected, the CLI requires `TAILSCALE_AUTHKEY`. |
@@ -326,6 +336,7 @@ Restart Codex after installing so the skill is loaded.
 ## Security Boundary
 
 - Do not commit API tokens, Portainer webhooks, deploy tokens, join tokens, or proxy subscription URLs.
+- Do not write registry tokens into manifests or container environment variables. Use `luma registry login` and rotate/revoke the provider token if it is exposed.
 - Client machines should not need SSH/Docker/Cloudflare/Portainer credentials; distribute deploy tokens instead.
 - The Web status panel uses the deploy token and stores it in browser local storage. Use it on trusted devices only.
 - Join tokens should only be used on servers that are joining the cluster.
