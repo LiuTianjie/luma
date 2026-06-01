@@ -87,7 +87,7 @@ luma context list
 Rerun manager bootstrap so Portainer is initialized and `/opt/luma/control/control.json` is refreshed:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 ```
 
 If bootstrap fails with `Portainer authentication failed: HTTP 422 Invalid credentials`, Portainer already has
@@ -96,7 +96,7 @@ and rerun:
 
 ```bash
 export LUMA_PORTAINER_ADMIN_PASSWORD='...'
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 ```
 
 If you do not know the current Portainer admin password, reset the Portainer admin password first:

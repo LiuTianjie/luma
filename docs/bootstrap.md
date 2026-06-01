@@ -62,7 +62,7 @@ export LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:latest
 For the first all-in-one server:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 ```
 
 The command is idempotent and can be re-run. It installs Docker, initializes Swarm if inactive, creates overlay networks, applies labels, creates runtime directories, configures UFW, and deploys Traefik, Portainer, and Luma Control.
@@ -90,7 +90,7 @@ luma egress setup
 To bootstrap the node first and configure egress later:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node --skip-egress
+luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
 The output includes:
@@ -138,7 +138,7 @@ luma node join https://luma.example.com --token <join-token> --region home --nam
 ```
 
 The node asks the manager for the Swarm join token and manager address, then joins the cluster locally.
-After the local join succeeds, it calls back to Luma Control so the manager applies the region label automatically. `--name` is only the machine name; `--region` is the scheduling boundary.
+After the local join succeeds, it calls back to Luma Control so the manager applies the region label automatically. `--name` is the requested display name; Docker's actual node name remains the canonical Swarm identity. `--region` is the scheduling boundary.
 
 If a node needs to leave a broken or rebuilt manager before joining again, run this on that node:
 
@@ -155,7 +155,7 @@ Provider config and secrets are copied into the manager control state during `lu
 If the local manager config has `CLOUDFLARE_API_TOKEN` but no `providers.dns`, bootstrap infers the Cloudflare zone from the control domain, looks up the zone id, and writes `providers.dns` before installing `/opt/luma/luma.yaml`. If no DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET` and writes it as `providers.dns.edgeTarget`.
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 ```
 
 Use `luma update` after upgrading Luma itself:

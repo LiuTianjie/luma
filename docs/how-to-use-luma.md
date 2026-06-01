@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.9 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.10 sh
 ```
 
 For local development from a checkout:
@@ -103,23 +103,22 @@ defaults:
 Run the command you actually need:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 ```
 
 If local values are missing, Luma asks for them first, writes `~/.luma.config.json`, then continues. On worker nodes, the same happens during `luma node join ...`. `.env` and exported environment variables still work for local overrides. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, bootstrap infers the Cloudflare zone from the control domain and writes the provider config before installing `/opt/luma/luma.yaml`. If no edge DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET` and writes it as `providers.dns.edgeTarget`.
 
-The relevant keys are:
+The relevant keys are explained in [secrets.md](secrets.md). The common manager values are:
 
-```dotenv
-CLOUDFLARE_API_TOKEN=...
-LUMA_DNS_EDGE_TARGET=203.0.113.10
-PORTAINER_WEBHOOK_URL=...
-PORTAINER_WEBHOOK_API=...
-EGRESS_SUBSCRIPTION_URL=...
-LUMA_SUDO_PASSWORD=...
-TAILSCALE_AUTHKEY=...
-LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:latest
-```
+| Variable | Purpose |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare DNS token used to create/update control and service records. |
+| `LUMA_DNS_EDGE_TARGET` | Public IP or DNS name that Cloudflare records should point to when no edge target is already configured. |
+| `TRAEFIK_ACME_EMAIL` | Let's Encrypt account email used by Traefik for HTTPS certificates. |
+| `EGRESS_SUBSCRIPTION_URL` | Optional proxy subscription URL for image-pull proxying and `proxy: true` services. |
+| `TAILSCALE_AUTHKEY` | Optional auth key for private worker joins, home nodes, or tailscale-relay services. |
+| `LUMA_SUDO_PASSWORD` | Optional fallback when sudo requires a password. |
+| `LUMA_CONTROL_IMAGE` | Optional development/pinned control API image. |
 
 Do not commit secrets.
 
@@ -128,7 +127,7 @@ Do not commit secrets.
 For a single public server that runs Swarm manager, Traefik, Portainer, and egress:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 ```
 
 This does:
@@ -168,7 +167,7 @@ luma egress setup
 To intentionally skip egress during first bootstrap:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node --skip-egress
+luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
 The bootstrap output includes a deploy token and a join token. Use the deploy token on client machines:
@@ -184,7 +183,7 @@ Use the join token on additional servers:
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 ```
 
-The manager applies the region label automatically after the node joins Swarm.
+The manager applies the region label automatically after the node joins Swarm. `--name` is stored as a display name; Docker's actual node name remains the canonical Swarm identity.
 
 ## 4. Connect Cloudflare
 
@@ -346,7 +345,7 @@ Use the reference node first:
 
 ```bash
 luma doctor
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 luma egress setup
 luma deploy examples/public-cn-service.yaml
 ```

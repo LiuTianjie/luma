@@ -1,7 +1,6 @@
 name: home-panel
 image: ghcr.io/your-org/home-panel:latest
 region: home
-public: true
 exposure: tailscale-relay
 domain: panel.example.com
 port: 8080

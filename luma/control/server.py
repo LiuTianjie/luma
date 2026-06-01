@@ -106,6 +106,7 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="join")
     node_name = str(body.get("nodeName") or "").strip()
+    registered_name = str(body.get("registeredName") or "").strip()
     region = str(body.get("region") or "").strip()
     if not node_name or not region:
         raise LumaError("nodeName and region are required")
@@ -113,11 +114,15 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
     labels = labels_for_region(region)
     label_swarm_node(node_name, labels)
-    _remember_node(state, node_name, region=region, status="labeled", labels=labels)
+    values: Dict[str, Any] = {"region": region, "status": "labeled", "labels": labels}
+    if registered_name and registered_name != node_name:
+        values["displayName"] = registered_name
+    _remember_node(state, node_name, merge_from=registered_name, **values)
     save_state(state)
     return {
         "clusterId": state["clusterId"],
         "nodeName": node_name,
+        "displayName": registered_name if registered_name and registered_name != node_name else node_name,
         "labels": labels,
         "message": f"Node labels applied: {node_name}",
     }
@@ -303,14 +308,17 @@ def labels_for_region(region: str) -> Dict[str, str]:
     return {"region": region}
 
 
-def _remember_node(state: Dict[str, Any], node_name: str, **values: Any) -> None:
+def _remember_node(state: Dict[str, Any], node_name: str, *, merge_from: str = "", **values: Any) -> None:
     nodes = state.setdefault("nodes", {})
     if not isinstance(nodes, dict):
         nodes = {}
         state["nodes"] = nodes
-    current = nodes.get(node_name)
+    current = nodes.pop(merge_from, None) if merge_from and merge_from != node_name else nodes.get(node_name)
     if not isinstance(current, dict):
         current = {}
+    existing = nodes.get(node_name)
+    if isinstance(existing, dict):
+        current.update(existing)
     current.update(values)
     nodes[node_name] = current
 

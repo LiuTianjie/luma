@@ -54,7 +54,7 @@ class ControlClient:
                     "control API is older than this CLI and still expects node join profiles. "
                     "Update the manager first: run the installer on the manager, then run "
                     "`luma update` "
-                    "or rerun `luma bootstrap manager --domain <control-domain> --profile single-node`."
+                    "or rerun `luma bootstrap manager --domain <control-domain>`."
                 ) from exc
             raise LumaError(f"control API error {exc.code}: {detail}") from exc
         except (TimeoutError, socket.timeout) as exc:
@@ -92,12 +92,11 @@ class ControlClient:
             {"nodeName": node_name, "region": region},
         )
 
-    def label_node(self, *, node_name: str, region: str) -> Dict[str, Any]:
-        return self.request(
-            "POST",
-            "/v1/nodes/label",
-            {"nodeName": node_name, "region": region},
-        )
+    def label_node(self, *, node_name: str, region: str, registered_name: str | None = None) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"nodeName": node_name, "region": region}
+        if registered_name and registered_name != node_name:
+            body["registeredName"] = registered_name
+        return self.request("POST", "/v1/nodes/label", body)
 
     def deploy(
         self,

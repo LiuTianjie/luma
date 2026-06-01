@@ -15,12 +15,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;650;760&family=Oxanium:wght@500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260601-design1" />
   </head>
   <body>
+    <a class="skip-link" href="#top">Skip to content</a>
     <div class="shell-grid" aria-hidden="true"></div>
 
     <header class="site-header">
@@ -31,6 +32,7 @@
       <nav class="nav-links" aria-label="Primary">
         <a href="#demo">Demo</a>
         <a href="#deploy">Flow</a>
+        <a href="#prerequisites">Prereqs</a>
         <a href="#guide">Guide</a>
         <a href="https://github.com/LiuTianjie/luma">GitHub</a>
         <span class="lang-switch" aria-label="Language">
@@ -43,11 +45,11 @@
     <main id="top">
       <section class="hero">
         <div class="hero-copy reveal">
-          <p class="eyebrow">Self-hosted deployment control plane</p>
-          <h1>Domain to HTTPS entrypoint.</h1>
+          <p class="eyebrow">Deployment tool for a few small servers</p>
+          <h1>Write YAML. Run luma deploy.</h1>
           <p class="hero-lede">
-            Run <code>luma deploy</code> from any machine. Luma takes care of DNS, certificates, Traefik routes,
-            and Swarm service updates.
+            Put the service in a YAML file. Luma updates Cloudflare records, Traefik rules, and Swarm services.
+            Each server joins locally; later deploys can be submitted from any client.
           </p>
           <div class="hero-status" aria-label="Deployment capabilities">
             <span><strong>DNS</strong> Cloudflare sync</span>
@@ -55,7 +57,7 @@
             <span><strong>Nodes</strong> region labels</span>
           </div>
           <div class="hero-actions">
-            <a class="button primary" href="#demo">Watch the deploy demo</a>
+            <a class="button primary" href="#demo">See commands</a>
             <a class="button ghost" href="https://github.com/LiuTianjie/luma">View source</a>
           </div>
           <div class="install-strip" aria-label="Install command">
@@ -65,56 +67,111 @@
           </div>
         </div>
 
-        <div class="hero-visual reveal" aria-label="Luma control plane topology">
-          <img src="./assets/luma-hero.png" alt="Futuristic control plane connected to three server nodes" />
-          <div class="signal signal-a"></div>
-          <div class="signal signal-b"></div>
-          <div class="signal signal-c"></div>
-          <div class="hud hud-top">
-            <strong>control</strong>
-            <span>tokens verified</span>
+        <div class="hero-visual ops-board reveal" aria-label="Luma deployment control board">
+          <div class="ops-rail">
+            <span>luma</span>
+            <span>control</span>
+            <span>edge</span>
           </div>
-          <div class="hud hud-bottom">
-            <strong>route</strong>
-            <span>status.example.com</span>
+          <div class="ops-terminal">
+            <div class="ops-window">
+              <span></span><span></span><span></span>
+              <strong>deploy/status.yaml</strong>
+            </div>
+            <pre><code>$ luma deploy status.yaml
+ok dns     status.example.com -> cn-edge
+ok tls     acme certificate requested
+ok route   Host(status.example.com) -> status:80
+ok swarm   status replicated x2
+
+published https://status.example.com</code></pre>
           </div>
-          <div class="hud hud-left">
-            <strong>swarm</strong>
-            <span>cn / global / home</span>
+          <div class="route-ledger">
+            <span class="ledger-label">entry path</span>
+            <div><strong>Domain</strong><span>status.example.com</span></div>
+            <div><strong>Exposure</strong><span>cn-edge</span></div>
+            <div><strong>Target</strong><span>status:80</span></div>
+          </div>
+          <div class="node-rack">
+            <span class="rack-label">nodes</span>
+            <div><strong>manager</strong><small>control + traefik</small></div>
+            <div><strong>cn-worker-1</strong><small>region=cn</small></div>
+            <div><strong>global-sg-1</strong><small>region=global</small></div>
           </div>
         </div>
       </section>
 
       <section class="highlight-grid reveal" aria-label="Product pillars">
         <div>
-          <strong>Domain as entrypoint</strong>
-          <span>The <code>domain</code> field defines how users reach the service</span>
+          <strong>Domain in YAML</strong>
+          <span><code>domain</code> is the service address</span>
         </div>
         <div>
-          <strong>DNS follows deploys</strong>
-          <span>Records point at the edge selected by exposure</span>
+          <strong>DNS in Cloudflare</strong>
+          <span>Records point to the selected exposure</span>
         </div>
         <div>
-          <strong>Certificates follow routes</strong>
-          <span>Traefik creates HTTPS for each Host rule</span>
+          <strong>HTTPS in Traefik</strong>
+          <span>Each Host gets its own certificate</span>
         </div>
         <div>
-          <strong>Route to service</strong>
-          <span>Host rules connect requests to service:port</span>
+          <strong>Swarm gets updated</strong>
+          <span>Host rules point to service:port</span>
+        </div>
+      </section>
+
+      <section class="section prerequisites" id="prerequisites">
+        <div class="section-heading reveal">
+          <p class="eyebrow">Prepare</p>
+          <h2>Have these ready first.</h2>
+        </div>
+        <div class="prereq-grid reveal">
+          <article>
+            <span>01</span>
+            <strong>Domain</strong>
+            <p>Use real domains for the control API and public services, for example <code>luma.example.com</code> and <code>status.example.com</code>.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <strong>Cloudflare DNS</strong>
+            <p>Put the DNS zone in Cloudflare and create a token that can read the zone and edit records.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <strong>Linux Manager</strong>
+            <p>Start with one sudo-capable Linux server. A 2c2g manager is enough for testing if app resources are capped.</p>
+          </article>
+          <article>
+            <span>04</span>
+            <strong>Tailscale optional</strong>
+            <p>Skip Tailscale for a single public manager. Use it for home nodes, private joins, or <code>tailscale-relay</code>.</p>
+          </article>
         </div>
       </section>
 
       <section class="section command-theatre" id="demo">
         <div class="section-heading reveal">
-          <p class="eyebrow">Command demo</p>
-          <h2>From install to publish, watch the cluster state change.</h2>
+          <p class="eyebrow">Commands</p>
+          <h2>What each command changes.</h2>
         </div>
 
         <div class="demo-grid reveal">
           <div class="terminal-demo" aria-label="Luma usage steps">
-            <button class="command-row active" type="button" data-demo-step="install">
+            <div class="terminal-header">
+              <strong data-demo-phase>Install CLI on Manager</strong>
+              <span data-demo-progress>01 / 06</span>
+            </div>
+            <button
+              class="command-row active"
+              type="button"
+              data-demo-step="install"
+              data-copy="curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
+              data-copy-label="Click to copy"
+              data-copied-label="Copied"
+            >
               <span>01</span>
-              <code>curl -fsSL .../install-luma.sh | sh</code>
+              <code>manager$ curl -fsSL .../install-luma.sh | sh</code>
+              <small data-command-copy-label>Click to copy</small>
             </button>
             <button class="command-row" type="button" data-demo-step="bootstrap">
               <span>02</span>
@@ -122,11 +179,11 @@
             </button>
             <button class="command-row" type="button" data-demo-step="join-cn">
               <span>03</span>
-              <code>luma node join --region cn --name cn-worker-1</code>
+              <code>luma node join https://luma.example.com --token &lt;join-token&gt; --region cn --name cn-worker-1</code>
             </button>
             <button class="command-row" type="button" data-demo-step="join-global">
               <span>04</span>
-              <code>luma node join --region global --name global-sg-1</code>
+              <code>luma node join https://luma.example.com --token &lt;join-token&gt; --region global --name global-sg-1</code>
             </button>
             <button class="command-row" type="button" data-demo-step="deploy">
               <span>05</span>
@@ -136,13 +193,19 @@
               <span>06</span>
               <code>https://status.example.com</code>
             </button>
+            <div class="demo-progress" aria-hidden="true">
+              <span data-demo-progress-bar></span>
+            </div>
           </div>
 
           <div class="demo-stage" data-stage="install" aria-live="polite">
             <div class="stage-map">
+              <div class="stage-status">
+                <span data-demo-activity>Installing luma on the manager</span>
+              </div>
               <div class="stage-node manager-node">
                 <strong>Manager / Control</strong>
-                <span data-demo-manager>waiting to bootstrap</span>
+                <span data-demo-manager>CLI installed</span>
               </div>
               <div class="stage-node edge-node">
                 <strong>Traefik Edge</strong>
@@ -158,29 +221,33 @@
               </div>
               <div class="stage-node client-node">
                 <strong>Client</strong>
-                <span data-demo-client>installing CLI</span>
+                <span data-demo-client>not logged in</span>
               </div>
               <span class="stage-link link-client"></span>
               <span class="stage-link link-edge"></span>
               <span class="stage-link link-worker"></span>
               <span class="stage-link link-global"></span>
+              <span class="flow-packet flow-client"></span>
+              <span class="flow-packet flow-edge"></span>
+              <span class="flow-packet flow-worker"></span>
+              <span class="flow-packet flow-global"></span>
             </div>
 
             <div class="effect-grid">
               <div class="effect-card domain-card">
                 <span>Domain</span>
-                <strong data-demo-domain>waiting for service spec</strong>
-                <small data-demo-domain-status>the manifest declares the public entry</small>
+                <strong data-demo-domain>no service yet</strong>
+                <small data-demo-domain-status>deploy reads the manifest</small>
               </div>
               <div class="effect-card dns-card">
                 <span>DNS</span>
                 <strong data-demo-dns>pending</strong>
-                <small data-demo-dns-status>control writes records from the exposure target</small>
+                <small data-demo-dns-status>deploy writes the record</small>
               </div>
               <div class="effect-card tls-card">
                 <span>Certificate</span>
                 <strong data-demo-tls>pending</strong>
-                <small data-demo-tls-status>a new Host rule triggers ACME issuance</small>
+                <small data-demo-tls-status>Traefik requests the certificate</small>
               </div>
               <div class="effect-card stack-card">
                 <span>Route and workload</span>
@@ -211,42 +278,42 @@ resources:
     memory: 512M</code></pre>
         </div>
         <div class="section-copy reveal">
-          <p class="eyebrow">Core flow</p>
-          <h2>One domain field expands into DNS, TLS, routing, and service placement.</h2>
+          <p class="eyebrow">What deploy does</p>
+          <h2>Read the manifest, then update these parts.</h2>
           <ul class="capability-list">
             <li>
               <span>01</span>
               <div>
-                <strong>Parse the service entry</strong>
-                <p>Read <code>domain</code>, <code>port</code>, and <code>exposure</code> to resolve the entrypoint and target port.</p>
+                <strong>Read service entry</strong>
+                <p>Read <code>domain</code>, <code>port</code>, and <code>exposure</code> to get the address and target port.</p>
               </div>
             </li>
             <li>
               <span>02</span>
               <div>
-                <strong>Sync DNS record</strong>
-                <p>Write the Cloudflare record so the domain points at the selected edge node.</p>
+                <strong>Write DNS record</strong>
+                <p>Write the Cloudflare record so the domain points to the selected entry node.</p>
               </div>
             </li>
             <li>
               <span>03</span>
               <div>
-                <strong>Create the HTTPS entry</strong>
-                <p>Traefik completes ACME from the Host rule and creates the TLS route.</p>
+                <strong>Create HTTPS route</strong>
+                <p>Traefik reads the Host rule, requests a certificate, and creates the TLS route.</p>
               </div>
             </li>
             <li>
               <span>04</span>
               <div>
-                <strong>Update service routing</strong>
-                <p>Update the stack so <code>status.example.com</code> forwards to <code>status:80</code> replicas.</p>
+                <strong>Update service</strong>
+                <p>Update the stack so <code>status.example.com</code> forwards to <code>status:80</code>.</p>
               </div>
             </li>
             <li>
               <span>05</span>
               <div>
-                <strong>Keep manager headroom</strong>
-                <p>Use Swarm resource limits when app services share a small control-plane node.</p>
+                <strong>Limit resources</strong>
+                <p>Use Swarm resource limits when apps and control services share a small server.</p>
               </div>
             </li>
           </ul>
@@ -255,8 +322,8 @@ resources:
 
       <section class="section guide" id="guide">
         <div class="section-heading reveal">
-          <p class="eyebrow">Quick start</p>
-          <h2>Three machine roles. Three command paths.</h2>
+          <p class="eyebrow">Start</p>
+          <h2>Run the command for each machine role.</h2>
         </div>
 
         <div class="step-track">
@@ -269,7 +336,7 @@ resources:
             </div>
             <div>
               <h3>Install the CLI</h3>
-              <p>Managers, workers, and clients use the same <code>luma</code> command.</p>
+              <p>Install <code>luma</code> on the manager first. Workers and clients install the same command later when needed.</p>
               <pre><code>curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
 ~/.local/bin/luma preflight</code></pre>
             </div>
@@ -286,7 +353,7 @@ resources:
             </div>
             <div>
               <h3>Initialize the control plane</h3>
-              <p>Create the single control-plane manager with Swarm, Traefik, Portainer, Luma Control, and the egress gateway. Built-in services ship with conservative resource caps.</p>
+              <p>Initialize Swarm on the first server, then start Traefik, Portainer, Luma Control, and the egress gateway.</p>
               <pre><code>luma bootstrap manager --domain luma.example.com</code></pre>
             </div>
           </article>
@@ -300,7 +367,7 @@ resources:
             </div>
             <div>
               <h3>Join workload nodes</h3>
-              <p>Each server joins locally with a region label. The node name is only an identifier; the region is the scheduling boundary.</p>
+              <p>Each server runs join locally and gets a region label. Scheduling mainly follows region.</p>
               <pre><code>luma node join https://luma.example.com --token &lt;join-token&gt; --region global --name global-sg-1</code></pre>
             </div>
           </article>
@@ -314,7 +381,7 @@ resources:
             </div>
             <div>
               <h3>Deploy from a client</h3>
-              <p>After login, the client submits a manifest and prints progress while the control plane handles DNS, TLS, routing, image pulls, and stack updates.</p>
+              <p>After login, the client submits a manifest. Luma prints DNS, certificate, route, and stack progress.</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
 luma deploy status.yaml</code></pre>
             </div>
@@ -324,8 +391,8 @@ luma deploy status.yaml</code></pre>
 
       <section class="cta reveal">
         <div>
-          <p class="eyebrow">Start validating</p>
-          <h2>Deploy a status service first and verify the full entry path.</h2>
+          <p class="eyebrow">First test</p>
+          <h2>Deploy whoami first and check that the domain opens.</h2>
         </div>
         <a class="button primary" href="https://github.com/LiuTianjie/luma">View project</a>
       </section>
@@ -333,9 +400,9 @@ luma deploy status.yaml</code></pre>
 
     <footer>
       <span>Luma</span>
-      <span>Domain-driven deploy control plane for small infrastructure.</span>
+      <span>Deployment tooling for small server setups.</span>
     </footer>
 
-    <script src="./app.js"></script>
+    <script src="./app.js?v=20260601-design1"></script>
   </body>
 </html>

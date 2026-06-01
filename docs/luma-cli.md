@@ -22,7 +22,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.9 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.10 sh
 ```
 
 Development checkout:
@@ -87,7 +87,7 @@ defaults:
 Secrets stay outside Git. For normal use, run the command you actually need:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 ```
 
 If required local values are missing, Luma prompts for them before continuing and saves them to `~/.luma.config.json` with mode `0600`. On worker servers, the same happens during:
@@ -121,7 +121,7 @@ luma node list
 Bootstrap the manager by running this directly on the manager server:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 ```
 
 For `single-node`, it installs Docker, connects Tailscale when configured, initializes Swarm, configures networks and labels, deploys Traefik, deploys Portainer, deploys Luma Control, configures firewall rules, and sets up egress. Set `EGRESS_SUBSCRIPTION_URL` first, or use `--skip-egress` and repair egress later.
@@ -139,7 +139,7 @@ It streams progress:
 Skip egress only when you want to repair it later:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node --skip-egress
+luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
 Login from any client machine:

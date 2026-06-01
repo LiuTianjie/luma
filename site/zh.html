@@ -15,12 +15,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;650;760&family=Oxanium:wght@500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260601-design1" />
   </head>
   <body>
+    <a class="skip-link" href="#top">跳到主要内容</a>
     <div class="shell-grid" aria-hidden="true"></div>
 
     <header class="site-header">
@@ -31,6 +32,7 @@
       <nav class="nav-links" aria-label="主导航">
         <a href="#demo">演示</a>
         <a href="#deploy">工作链路</a>
+        <a href="#prerequisites">准备</a>
         <a href="#guide">上手指南</a>
         <a href="https://github.com/LiuTianjie/luma">GitHub</a>
         <span class="lang-switch" aria-label="Language">
@@ -43,10 +45,11 @@
     <main id="top">
       <section class="hero">
         <div class="hero-copy reveal">
-          <p class="eyebrow">自托管部署控制面</p>
-          <h1>domain<br />到 HTTPS 入口。</h1>
+          <p class="eyebrow">给几台小服务器用的部署工具</p>
+          <h1>写一份 YAML，<br />执行 luma deploy。</h1>
           <p class="hero-lede">
-            在任意机器执行 <code>luma deploy</code>。Luma 接管 DNS、证书、Traefik 路由和 Swarm 服务更新。
+            服务写在 YAML 里。Luma 负责更新 Cloudflare 记录、Traefik 规则和 Swarm 服务。
+            每台机器先本机加入集群，之后从任意一台 client 提交部署。
           </p>
           <div class="hero-status" aria-label="部署能力">
             <span><strong>DNS</strong> Cloudflare 同步</span>
@@ -54,7 +57,7 @@
             <span><strong>Nodes</strong> region 标签</span>
           </div>
           <div class="hero-actions">
-            <a class="button primary" href="#demo">查看演示</a>
+            <a class="button primary" href="#demo">看命令</a>
             <a class="button ghost" href="https://github.com/LiuTianjie/luma">查看源码</a>
           </div>
           <div class="install-strip" aria-label="安装命令">
@@ -64,56 +67,111 @@
           </div>
         </div>
 
-        <div class="hero-visual reveal" aria-label="Luma 控制面拓扑图">
-          <img src="./assets/luma-hero.png" alt="卡通风格的控制中心连接多个服务器节点" />
-          <div class="signal signal-a"></div>
-          <div class="signal signal-b"></div>
-          <div class="signal signal-c"></div>
-          <div class="hud hud-top">
-            <strong>control</strong>
-            <span>token 已校验</span>
+        <div class="hero-visual ops-board reveal" aria-label="Luma 部署控制面板">
+          <div class="ops-rail">
+            <span>luma</span>
+            <span>control</span>
+            <span>edge</span>
           </div>
-          <div class="hud hud-bottom">
-            <strong>route</strong>
-            <span>status.example.com</span>
+          <div class="ops-terminal">
+            <div class="ops-window">
+              <span></span><span></span><span></span>
+              <strong>deploy/status.yaml</strong>
+            </div>
+            <pre><code>$ luma deploy status.yaml
+ok dns     status.example.com -> cn-edge
+ok tls     acme certificate requested
+ok route   Host(status.example.com) -> status:80
+ok swarm   status replicated x2
+
+published https://status.example.com</code></pre>
           </div>
-          <div class="hud hud-left">
-            <strong>swarm</strong>
-            <span>cn / global / home</span>
+          <div class="route-ledger">
+            <span class="ledger-label">入口链路</span>
+            <div><strong>Domain</strong><span>status.example.com</span></div>
+            <div><strong>Exposure</strong><span>cn-edge</span></div>
+            <div><strong>Target</strong><span>status:80</span></div>
+          </div>
+          <div class="node-rack">
+            <span class="rack-label">节点</span>
+            <div><strong>manager</strong><small>control + traefik</small></div>
+            <div><strong>cn-worker-1</strong><small>region=cn</small></div>
+            <div><strong>global-sg-1</strong><small>region=global</small></div>
           </div>
         </div>
       </section>
 
       <section class="highlight-grid reveal" aria-label="产品特点">
         <div>
-          <strong>域名即入口</strong>
-          <span><code>domain</code> 字段定义服务访问地址</span>
+          <strong>域名写在清单里</strong>
+          <span><code>domain</code> 就是服务访问地址</span>
         </div>
         <div>
-          <strong>DNS 跟随部署</strong>
-          <span>记录按 exposure 指向目标边缘节点</span>
+          <strong>DNS 写到 Cloudflare</strong>
+          <span>按 exposure 指到对应入口</span>
         </div>
         <div>
-          <strong>证书随路由签发</strong>
-          <span>Traefik 为每个 Host 建立 HTTPS</span>
+          <strong>HTTPS 交给 Traefik</strong>
+          <span>每个 Host 都走自己的证书</span>
         </div>
         <div>
-          <strong>路由到服务</strong>
-          <span>Host 规则连接到 service:port</span>
+          <strong>最后更新 Swarm</strong>
+          <span>Host 规则指向 service:port</span>
+        </div>
+      </section>
+
+      <section class="section prerequisites" id="prerequisites">
+        <div class="section-heading reveal">
+          <p class="eyebrow">准备</p>
+          <h2>先把这些东西备好。</h2>
+        </div>
+        <div class="prereq-grid reveal">
+          <article>
+            <span>01</span>
+            <strong>域名</strong>
+            <p>控制 API 和公开服务都要用真实域名，例如 <code>luma.example.com</code> 和 <code>status.example.com</code>。</p>
+          </article>
+          <article>
+            <span>02</span>
+            <strong>Cloudflare DNS</strong>
+            <p>DNS zone 放在 Cloudflare，并准备一个能读 zone、改 record 的 API token。</p>
+          </article>
+          <article>
+            <span>03</span>
+            <strong>Linux Manager</strong>
+            <p>先准备一台有 sudo 权限的 Linux 服务器。2c2g 可以试用，但业务服务要限制资源。</p>
+          </article>
+          <article>
+            <span>04</span>
+            <strong>Tailscale 可选</strong>
+            <p>单台公网 manager 不一定要 Tailscale。home 节点、私有 join 或 <code>tailscale-relay</code> 才需要。</p>
+          </article>
         </div>
       </section>
 
       <section class="section command-theatre" id="demo">
         <div class="section-heading reveal">
-          <p class="eyebrow">交互演示</p>
-          <h2>从安装到发布，逐步看到集群状态变化。</h2>
+          <p class="eyebrow">命令</p>
+          <h2>这些命令会改哪些东西。</h2>
         </div>
 
         <div class="demo-grid reveal">
           <div class="terminal-demo" aria-label="Luma 使用步骤">
-            <button class="command-row active" type="button" data-demo-step="install">
+            <div class="terminal-header">
+              <strong data-demo-phase>Manager 安装 CLI</strong>
+              <span data-demo-progress>01 / 06</span>
+            </div>
+            <button
+              class="command-row active"
+              type="button"
+              data-demo-step="install"
+              data-copy="curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
+              data-copy-label="点击复制"
+              data-copied-label="已复制"
+            >
               <span>01</span>
-              <code>curl -fsSL .../install-luma.sh | sh</code>
+              <code>manager$ curl -fsSL .../install-luma.sh | sh</code>
+              <small data-command-copy-label>点击复制</small>
             </button>
             <button class="command-row" type="button" data-demo-step="bootstrap">
               <span>02</span>
@@ -121,11 +179,11 @@
             </button>
             <button class="command-row" type="button" data-demo-step="join-cn">
               <span>03</span>
-              <code>luma node join --region cn --name cn-worker-1</code>
+              <code>luma node join https://luma.example.com --token &lt;join-token&gt; --region cn --name cn-worker-1</code>
             </button>
             <button class="command-row" type="button" data-demo-step="join-global">
               <span>04</span>
-              <code>luma node join --region global --name global-sg-1</code>
+              <code>luma node join https://luma.example.com --token &lt;join-token&gt; --region global --name global-sg-1</code>
             </button>
             <button class="command-row" type="button" data-demo-step="deploy">
               <span>05</span>
@@ -135,13 +193,19 @@
               <span>06</span>
               <code>https://status.example.com</code>
             </button>
+            <div class="demo-progress" aria-hidden="true">
+              <span data-demo-progress-bar></span>
+            </div>
           </div>
 
           <div class="demo-stage" data-stage="install" aria-live="polite">
             <div class="stage-map">
+              <div class="stage-status">
+                <span data-demo-activity>在 manager 上安装 luma</span>
+              </div>
               <div class="stage-node manager-node">
                 <strong>Manager / Control</strong>
-                <span data-demo-manager>等待初始化</span>
+                <span data-demo-manager>CLI 已安装</span>
               </div>
               <div class="stage-node edge-node">
                 <strong>Traefik Edge</strong>
@@ -157,34 +221,38 @@
               </div>
               <div class="stage-node client-node">
                 <strong>Client</strong>
-                <span data-demo-client>CLI 安装中</span>
+                <span data-demo-client>未登录</span>
               </div>
               <span class="stage-link link-client"></span>
               <span class="stage-link link-edge"></span>
               <span class="stage-link link-worker"></span>
               <span class="stage-link link-global"></span>
+              <span class="flow-packet flow-client"></span>
+              <span class="flow-packet flow-edge"></span>
+              <span class="flow-packet flow-worker"></span>
+              <span class="flow-packet flow-global"></span>
             </div>
 
             <div class="effect-grid">
               <div class="effect-card domain-card">
                 <span>域名</span>
-                <strong data-demo-domain>等待服务声明</strong>
-                <small data-demo-domain-status>manifest 会声明公开入口</small>
+                <strong data-demo-domain>还没有服务</strong>
+                <small data-demo-domain-status>deploy 时读取 manifest</small>
               </div>
               <div class="effect-card dns-card">
                 <span>DNS</span>
                 <strong data-demo-dns>等待中</strong>
-                <small data-demo-dns-status>控制面根据 exposure 写入记录</small>
+                <small data-demo-dns-status>deploy 时写入记录</small>
               </div>
               <div class="effect-card tls-card">
                 <span>证书</span>
                 <strong data-demo-tls>等待中</strong>
-                <small data-demo-tls-status>新 Host 规则触发 ACME 签发</small>
+                <small data-demo-tls-status>Traefik 按 Host 申请证书</small>
               </div>
               <div class="effect-card stack-card">
                 <span>路由与负载</span>
                 <strong data-demo-stack>等待中</strong>
-                <small data-demo-stack-status>Traefik 会转发到 service:port</small>
+                <small data-demo-stack-status>Traefik 转发到 service:port</small>
               </div>
             </div>
           </div>
@@ -210,42 +278,42 @@ resources:
     memory: 512M</code></pre>
         </div>
         <div class="section-copy reveal">
-          <p class="eyebrow">核心链路</p>
-          <h2>一个 domain 字段，展开成 DNS、证书、路由和服务。</h2>
+          <p class="eyebrow">deploy 做什么</p>
+          <h2>读 manifest，然后改这几处。</h2>
           <ul class="capability-list">
             <li>
               <span>01</span>
               <div>
-                <strong>解析服务入口</strong>
-                <p>读取 <code>domain</code>、<code>port</code> 和 <code>exposure</code>，确定入口与目标端口。</p>
+                <strong>读服务入口</strong>
+                <p>读取 <code>domain</code>、<code>port</code> 和 <code>exposure</code>，确定访问地址和目标端口。</p>
               </div>
             </li>
             <li>
               <span>02</span>
               <div>
-                <strong>同步 DNS 记录</strong>
-                <p>在 Cloudflare 写入记录，让域名指向选中的边缘节点。</p>
+                <strong>写 DNS 记录</strong>
+                <p>在 Cloudflare 写入 record，让域名指到选中的入口节点。</p>
               </div>
             </li>
             <li>
               <span>03</span>
               <div>
-                <strong>建立 HTTPS 入口</strong>
-                <p>Traefik 根据 Host 规则完成 ACME，并生成对应的 TLS 路由。</p>
+                <strong>建 HTTPS 路由</strong>
+                <p>Traefik 读取 Host 规则，申请证书并创建 TLS route。</p>
               </div>
             </li>
             <li>
               <span>04</span>
               <div>
-                <strong>更新服务路由</strong>
-                <p>更新 stack，把 <code>status.example.com</code> 转发到 <code>status:80</code> 副本。</p>
+                <strong>更新服务</strong>
+                <p>更新 stack，把 <code>status.example.com</code> 转发到 <code>status:80</code>。</p>
               </div>
             </li>
             <li>
               <span>05</span>
               <div>
-                <strong>保留 manager 余量</strong>
-                <p>业务服务和控制面共用小机器时，用 Swarm resources 限制 CPU 和内存。</p>
+                <strong>限制资源</strong>
+                <p>业务服务和控制组件共用小机器时，用 Swarm resources 限制 CPU 和内存。</p>
               </div>
             </li>
           </ul>
@@ -254,8 +322,8 @@ resources:
 
       <section class="section guide" id="guide">
         <div class="section-heading reveal">
-          <p class="eyebrow">上手路径</p>
-          <h2>三类机器，对应三段命令。</h2>
+          <p class="eyebrow">上手</p>
+          <h2>按机器角色跑对应命令。</h2>
         </div>
 
         <div class="step-track">
@@ -268,7 +336,7 @@ resources:
             </div>
             <div>
               <h3>安装 CLI</h3>
-              <p>manager、worker、client 使用同一个 <code>luma</code> 命令。</p>
+              <p>先在 manager 上安装 <code>luma</code>。worker 和 client 后面按需安装同一个命令。</p>
               <pre><code>curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
 ~/.local/bin/luma preflight</code></pre>
             </div>
@@ -285,7 +353,7 @@ resources:
             </div>
             <div>
               <h3>初始化控制面</h3>
-              <p>创建唯一控制面 manager，同时启动 Swarm、Traefik、Portainer、Luma Control 和 egress gateway。内置服务默认带保守资源上限。</p>
+              <p>在第一台服务器上初始化 Swarm，并启动 Traefik、Portainer、Luma Control 和 egress gateway。</p>
               <pre><code>luma bootstrap manager --domain luma.example.com</code></pre>
             </div>
           </article>
@@ -299,7 +367,7 @@ resources:
             </div>
             <div>
               <h3>加入工作节点</h3>
-              <p>每台服务器本机 join 并写入 region 标签。name 只是机器标识，region 才是调度边界。</p>
+              <p>每台服务器自己执行 join，并写入 region 标签。调度主要看 region。</p>
               <pre><code>luma node join https://luma.example.com --token &lt;join-token&gt; --region global --name global-sg-1</code></pre>
             </div>
           </article>
@@ -313,7 +381,7 @@ resources:
             </div>
             <div>
               <h3>从客户端部署服务</h3>
-              <p>client 登录后提交 manifest，并在控制面处理 DNS、证书、路由、镜像拉取和 stack 更新时打印进度。</p>
+              <p>client 登录后提交 manifest。Luma 会打印 DNS、证书、路由和 stack 更新进度。</p>
               <pre><code>luma login https://luma.example.com --token &lt;deploy-token&gt;
 luma deploy status.yaml</code></pre>
             </div>
@@ -323,8 +391,8 @@ luma deploy status.yaml</code></pre>
 
       <section class="cta reveal">
         <div>
-          <p class="eyebrow">开始验证</p>
-          <h2>先发布一个 status 服务，确认整条入口链路。</h2>
+          <p class="eyebrow">建议先试这个</p>
+          <h2>先发布 whoami，确认域名能打开。</h2>
         </div>
         <a class="button primary" href="https://github.com/LiuTianjie/luma">查看项目</a>
       </section>
@@ -332,9 +400,9 @@ luma deploy status.yaml</code></pre>
 
     <footer>
       <span>Luma</span>
-      <span>面向小型基础设施的域名驱动部署控制面。</span>
+      <span>给小型服务器环境用的部署工具。</span>
     </footer>
 
-    <script src="./app.js"></script>
+    <script src="./app.js?v=20260601-design1"></script>
   </body>
 </html>

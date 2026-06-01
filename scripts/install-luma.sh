@@ -109,33 +109,6 @@ run_sudo() {
   fi
 }
 
-configure_dns() {
-  if [ "$(uname -s)" != "Linux" ] || ! command -v resolvectl >/dev/null 2>&1; then
-    return 0
-  fi
-  if ! command -v systemctl >/dev/null 2>&1 || ! systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1; then
-    return 0
-  fi
-  run_sudo install -d -m 755 /etc/systemd/resolved.conf.d
-  tmp="$(mktemp)"
-  cat > "$tmp" <<'EOF'
-[Resolve]
-DNS=223.5.5.5 119.29.29.29 1.1.1.1
-FallbackDNS=8.8.8.8 9.9.9.9
-Domains=~.
-EOF
-  run_sudo install -m 644 "$tmp" /etc/systemd/resolved.conf.d/luma.conf
-  rm -f "$tmp"
-  run_sudo systemctl restart systemd-resolved || true
-  iface="$(ip route show default 2>/dev/null | awk '{print $5; exit}')"
-  if [ -n "$iface" ]; then
-    run_sudo resolvectl dns "$iface" 223.5.5.5 119.29.29.29 1.1.1.1 || true
-    run_sudo resolvectl domain "$iface" '~.' || true
-  fi
-}
-
-configure_dns
-
 if ! command -v python3 >/dev/null 2>&1; then
   echo "Python 3 is required."
   echo "macOS: brew install python"

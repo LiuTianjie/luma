@@ -20,18 +20,59 @@ revealItems.forEach((item, index) => {
 document.querySelectorAll("[data-copy]").forEach((button) => {
   button.addEventListener("click", async () => {
     const value = button.getAttribute("data-copy") || "";
+    const label = button.querySelector("[data-command-copy-label]");
     try {
-      await navigator.clipboard.writeText(value);
+      await copyText(value);
+      const copiedText = button.getAttribute("data-copied-label") || (document.documentElement.lang === "zh-CN" ? "已复制" : "Copied");
+      if (label) {
+        const previous = label.textContent;
+        label.textContent = copiedText;
+        button.classList.add("copied");
+        window.setTimeout(() => {
+          label.textContent = previous;
+          button.classList.remove("copied");
+        }, 1200);
+        return;
+      }
       const previous = button.textContent;
-      button.textContent = document.documentElement.lang === "zh-CN" ? "已复制" : "Copied";
+      button.textContent = copiedText;
       window.setTimeout(() => {
         button.textContent = previous;
       }, 1200);
     } catch {
-      button.textContent = document.documentElement.lang === "zh-CN" ? "手动选择" : "Select";
+      if (label) {
+        label.textContent = document.documentElement.lang === "zh-CN" ? "手动选择" : "Select";
+      } else {
+        button.textContent = document.documentElement.lang === "zh-CN" ? "手动选择" : "Select";
+      }
     }
   });
 });
+
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // Fall back for embedded or permission-restricted browsers.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, value.length);
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("copy failed");
+}
 
 const demoStage = document.querySelector(".demo-stage");
 const demoButtons = Array.from(document.querySelectorAll("[data-demo-step]"));
@@ -40,94 +81,106 @@ if (demoStage && demoButtons.length) {
   const isZh = document.documentElement.lang === "zh-CN";
   const demoCopy = {
     install: {
-      manager: isZh ? "等待初始化" : "waiting to bootstrap",
+      phase: isZh ? "Manager 安装 CLI" : "Install CLI on Manager",
+      activity: isZh ? "在 manager 上安装 luma" : "Installing luma on the manager",
+      manager: isZh ? "CLI 已安装" : "CLI installed",
       edge: isZh ? "未创建" : "not created",
       worker: isZh ? "未加入" : "not joined",
       global: isZh ? "未加入" : "not joined",
-      client: isZh ? "CLI 已安装" : "CLI installed",
-      domain: isZh ? "luma 命令就绪" : "luma command ready",
-      domainStatus: isZh ? "manager、worker、client 使用同一套 CLI" : "managers, workers, and clients use the same CLI",
+      client: isZh ? "未登录" : "not logged in",
+      domain: isZh ? "manager 命令就绪" : "manager command ready",
+      domainStatus: isZh ? "bootstrap 下一步在 manager 上执行" : "bootstrap runs on the manager next",
       dns: isZh ? "未配置" : "not configured",
-      dnsStatus: isZh ? "安装阶段只准备本机命令" : "install only prepares the local command",
+      dnsStatus: isZh ? "这一步还不改 DNS" : "DNS is not changed here",
       tls: isZh ? "未创建" : "not created",
-      tlsStatus: isZh ? "证书会随控制面和服务域名创建" : "certificates are created with control and service hosts",
+      tlsStatus: isZh ? "后面有域名时再申请" : "created later when hosts exist",
       stack: isZh ? "无工作负载" : "no workload",
       stackStatus: isZh ? "集群尚未初始化" : "the cluster is not initialized yet",
     },
     bootstrap: {
+      phase: isZh ? "初始化 Manager" : "Bootstrap Manager",
+      activity: isZh ? "在第一台服务器上建 Swarm" : "Initializes Swarm on the first server",
       manager: isZh ? "Swarm manager + Control API" : "Swarm manager + Control API",
       edge: isZh ? "Traefik 已启动" : "Traefik running",
       worker: isZh ? "等待加入" : "waiting to join",
       global: isZh ? "等待加入" : "waiting to join",
-      client: isZh ? "拿到 deploy token" : "deploy token ready",
+      client: isZh ? "保存 deploy token" : "deploy token saved",
       domain: "luma.example.com",
-      domainStatus: isZh ? "控制面域名变成登录入口" : "control domain becomes the login endpoint",
+      domainStatus: isZh ? "以后用这个地址登录" : "used later for login",
       dns: "luma.example.com -> manager",
-      dnsStatus: isZh ? "登录入口先对外可达" : "the login endpoint becomes reachable first",
+      dnsStatus: isZh ? "先让控制 API 能访问" : "control API becomes reachable",
       tls: isZh ? "控制面证书" : "control certificate",
-      tlsStatus: isZh ? "Traefik 为控制面建立 HTTPS" : "Traefik creates HTTPS for control",
-      stack: isZh ? "控制面服务运行" : "control services running",
-      stackStatus: isZh ? "后续部署提交到这个 endpoint" : "later deploys are submitted to this endpoint",
+      tlsStatus: isZh ? "Traefik 给控制 API 申请证书" : "Traefik gets a certificate for control",
+      stack: isZh ? "基础服务已启动" : "base services running",
+      stackStatus: isZh ? "后续 deploy 提交到这里" : "later deploys go here",
     },
     "join-cn": {
+      phase: isZh ? "加入 CN 节点" : "Join CN Node",
+      activity: isZh ? "这台机器自己 join，并写 region=cn" : "This server joins locally with region=cn",
       manager: isZh ? "写入节点 labels" : "node labels applied",
-      edge: isZh ? "cn-edge 可承接入口" : "cn-edge can receive traffic",
+      edge: isZh ? "cn-edge 可用" : "cn-edge available",
       worker: isZh ? "region=cn / name=cn-worker-1" : "region=cn / name=cn-worker-1",
       global: isZh ? "等待加入" : "waiting to join",
-      client: isZh ? "控制面记录节点" : "control records the node",
-      domain: isZh ? "国内服务可选 cn-edge" : "CN services can target cn-edge",
-      domainStatus: isZh ? "manifest 通过 region 选择调度区域" : "manifest uses region for placement",
+      client: isZh ? "节点已记录" : "node recorded",
+      domain: isZh ? "服务可选 cn-edge" : "services can use cn-edge",
+      domainStatus: isZh ? "manifest 用 region 选节点" : "manifest uses region for placement",
       dns: isZh ? "等待服务域名" : "waiting for service domain",
-      dnsStatus: isZh ? "业务域名在 deploy 时写入" : "service DNS is written during deploy",
+      dnsStatus: isZh ? "deploy 时才写业务域名" : "service DNS is written during deploy",
       tls: isZh ? "等待服务域名" : "waiting for service domain",
-      tlsStatus: isZh ? "业务证书跟服务域名绑定" : "service certificates bind to service domains",
-      stack: isZh ? "CN worker 可调度" : "CN worker schedulable",
-      stackStatus: isZh ? "符合条件的服务可以调度到该节点" : "matching services can be placed on this node",
+      tlsStatus: isZh ? "有 Host 后再申请证书" : "certificate waits for a Host",
+      stack: isZh ? "CN worker 可用" : "CN worker available",
+      stackStatus: isZh ? "region=cn 的服务可放到这里" : "region=cn services can run here",
     },
     "join-global": {
-      manager: isZh ? "多节点视图完成" : "multi-node view ready",
+      phase: isZh ? "加入 Global 节点" : "Join Global Node",
+      activity: isZh ? "再加入一台 global 节点" : "Adds a global node",
+      manager: isZh ? "已有多台节点" : "multiple nodes recorded",
       edge: isZh ? "边缘路由在线" : "edge routing online",
       worker: isZh ? "cn-edge 在线" : "cn-edge online",
       global: isZh ? "region=global / name=global-sg-1" : "region=global / name=global-sg-1",
-      client: isZh ? "任意机器可部署" : "any machine can deploy",
-      domain: isZh ? "可按服务选择区域" : "services can choose region",
-      domainStatus: isZh ? "例如 status 走 cn，api 走 global" : "for example, status uses cn and api uses global",
-      dns: isZh ? "按 exposure 写记录" : "records follow exposure",
-      dnsStatus: isZh ? "不同域名可以指向不同入口" : "different domains can point at different entries",
+      client: isZh ? "client 可提交部署" : "client can deploy",
+      domain: isZh ? "服务自己选 region" : "service chooses region",
+      domainStatus: isZh ? "例如 status 用 cn，api 用 global" : "for example, status uses cn and api uses global",
+      dns: isZh ? "按 exposure 写" : "written by exposure",
+      dnsStatus: isZh ? "不同服务可指到不同入口" : "different services can use different entries",
       tls: isZh ? "按域名签发" : "issued per domain",
-      tlsStatus: isZh ? "每个服务域名独立获得 HTTPS" : "each service host receives HTTPS",
-      stack: isZh ? "多节点可调度" : "multi-node scheduling",
-      stackStatus: isZh ? "控制面按标签选择合适节点" : "control selects suitable nodes by labels",
+      tlsStatus: isZh ? "每个服务域名单独处理" : "handled per service host",
+      stack: isZh ? "可按 region 放置" : "placed by region",
+      stackStatus: isZh ? "按节点标签选择位置" : "placement uses node labels",
     },
     deploy: {
+      phase: isZh ? "部署服务" : "Deploy Service",
+      activity: isZh ? "读取 status.yaml，开始更新" : "Reads status.yaml and starts updating",
       manager: isZh ? "接收 status.yaml" : "received status.yaml",
-      edge: isZh ? "创建 Host 路由" : "creating Host route",
+      edge: isZh ? "写 Host 路由" : "writing Host route",
       worker: "status:80 x2",
       global: isZh ? "保持可用" : "still available",
-      client: isZh ? "提交并等待进度" : "submitted and waiting",
+      client: isZh ? "提交 manifest" : "manifest submitted",
       domain: "status.example.com",
-      domainStatus: isZh ? "manifest 提供 domain 和 port" : "manifest provides domain and port",
+      domainStatus: isZh ? "manifest 里有 domain 和 port" : "manifest has domain and port",
       dns: "status.example.com -> cn-edge",
-      dnsStatus: isZh ? "Cloudflare 记录指向 cn-edge" : "Cloudflare record points to cn-edge",
-      tls: isZh ? "HTTPS 建立中" : "HTTPS being created",
-      tlsStatus: isZh ? "Traefik 根据 Host 规则执行 ACME" : "Traefik runs ACME from the Host rule",
+      dnsStatus: isZh ? "Cloudflare record 指向 cn-edge" : "Cloudflare record points to cn-edge",
+      tls: isZh ? "申请 HTTPS" : "requesting HTTPS",
+      tlsStatus: isZh ? "Traefik 按 Host 规则申请证书" : "Traefik requests cert from the Host rule",
       stack: "Host(status.example.com) -> status:80",
-      stackStatus: isZh ? "路由连接到 Swarm 服务副本" : "route attaches to Swarm service replicas",
+      stackStatus: isZh ? "路由指向 Swarm 服务" : "route points to the Swarm service",
     },
     published: {
-      manager: isZh ? "部署记录已保存" : "deployment recorded",
-      edge: isZh ? "HTTPS 入口在线" : "HTTPS entry online",
+      phase: isZh ? "发布完成" : "Published",
+      activity: isZh ? "域名已经能访问服务" : "The domain now reaches the service",
+      manager: isZh ? "记录已保存" : "record saved",
+      edge: isZh ? "HTTPS 可访问" : "HTTPS reachable",
       worker: "status:80 x2",
-      global: isZh ? "可部署下一个服务" : "ready for next service",
-      client: isZh ? "得到访问地址" : "received public URL",
+      global: isZh ? "空闲" : "idle",
+      client: isZh ? "拿到 URL" : "URL returned",
       domain: "https://status.example.com",
-      domainStatus: isZh ? "访问域名即可进入服务" : "the domain now reaches the service",
+      domainStatus: isZh ? "打开域名就是服务" : "opening the domain hits the service",
       dns: "status.example.com -> cn-edge",
-      dnsStatus: isZh ? "DNS、证书、路由都已生效" : "DNS, certificate, and route are active",
+      dnsStatus: isZh ? "DNS、证书、路由已更新" : "DNS, certificate, and route updated",
       tls: isZh ? "HTTPS 可用" : "HTTPS active",
-      tlsStatus: isZh ? "证书生命周期交给 Traefik" : "certificate lifecycle stays with Traefik",
+      tlsStatus: isZh ? "证书后续由 Traefik 续期" : "Traefik renews the certificate later",
       stack: "status service healthy",
-      stackStatus: isZh ? "工作负载在集群节点上运行" : "workload runs on cluster nodes",
+      stackStatus: isZh ? "服务在节点上运行" : "service is running on nodes",
     },
   };
 
@@ -145,6 +198,10 @@ if (demoStage && demoButtons.length) {
     tlsStatus: demoStage.querySelector("[data-demo-tls-status]"),
     stack: demoStage.querySelector("[data-demo-stack]"),
     stackStatus: demoStage.querySelector("[data-demo-stack-status]"),
+    phase: document.querySelector("[data-demo-phase]"),
+    progress: document.querySelector("[data-demo-progress]"),
+    progressBar: document.querySelector("[data-demo-progress-bar]"),
+    activity: demoStage.querySelector("[data-demo-activity]"),
   };
 
   let activeIndex = 0;
@@ -156,13 +213,18 @@ if (demoStage && demoButtons.length) {
 
     demoStage.dataset.stage = step;
     Object.entries(fields).forEach(([key, element]) => {
-      if (element) element.textContent = copy[key];
+      if (element && Object.prototype.hasOwnProperty.call(copy, key)) element.textContent = copy[key];
     });
 
     demoButtons.forEach((button, index) => {
       const isActive = button.dataset.demoStep === step;
       button.classList.toggle("active", isActive);
-      if (isActive) activeIndex = index;
+      if (isActive) {
+        activeIndex = index;
+        fields.progress?.style.setProperty("--progress", `${((index + 1) / demoButtons.length) * 100}%`);
+        if (fields.progress) fields.progress.textContent = `${String(index + 1).padStart(2, "0")} / ${String(demoButtons.length).padStart(2, "0")}`;
+        fields.progressBar?.style.setProperty("--progress", `${((index + 1) / demoButtons.length) * 100}%`);
+      }
     });
 
     if (shouldResetTimer) {

@@ -8,7 +8,7 @@ This is a short handoff for the current control-plane implementation. Public doc
 
 Luma uses a self-hosted control plane instead of SSH-driven deployment:
 
-- The first full node runs `luma bootstrap manager --domain luma.example.com --profile single-node` locally on the server.
+- The first full node runs `luma bootstrap manager --domain luma.example.com` locally on the server.
 - Worker nodes run `luma node join https://luma.example.com --token <join-token> --region cn|global|home --name <node-name>` locally on each server.
 - Client machines only run `luma login` and `luma deploy`; they do not need Docker, SSH, Cloudflare credentials, or Portainer credentials.
 - Portainer is mandatory as the operations UI and deployment runner.
@@ -20,7 +20,7 @@ Luma uses a self-hosted control plane instead of SSH-driven deployment:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
 ~/.local/bin/luma preflight
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 luma login https://luma.example.com --token <deploy-token>
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 luma deploy app.yaml
@@ -41,7 +41,7 @@ luma doctor
 Run these directly on the server being repaired:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 luma egress setup
 luma egress refresh
 luma portainer setup

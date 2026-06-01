@@ -7,7 +7,7 @@ By default, the CLI loads `.env` from the current working directory and `~/.luma
 For normal use, run the target command directly. If local values are missing, Luma prompts for them before continuing:
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
 ```
 
@@ -22,18 +22,18 @@ $EDITOR .env
 
 ## Environment Variables
 
-```dotenv
-CLOUDFLARE_API_TOKEN     Cloudflare DNS API token
-LUMA_DNS_EDGE_TARGET     public IP or DNS target for control and edge records
-PORTAINER_WEBHOOK_URL    optional legacy Portainer stack webhook
-PORTAINER_WEBHOOK_*      optional legacy per-service Portainer GitOps webhooks
-LUMA_PORTAINER_ADMIN_PASSWORD  optional recovery override for an already-initialized Portainer admin
-EGRESS_SUBSCRIPTION_URL  proxy subscription URL
-LUMA_SUDO_PASSWORD       optional sudo password for local or legacy remote bootstrap
-TAILSCALE_AUTHKEY        optional auth key for unattended Tailscale login
-LUMA_CONTROL_IMAGE       optional published control API image for bootstrap
-TRAEFIK_ACME_EMAIL       optional Let's Encrypt account email
-```
+| Variable | When needed | Purpose |
+| --- | --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Required on the manager | Cloudflare DNS API token with Zone Read + DNS Edit. Used to create/update control and service DNS records. |
+| `LUMA_DNS_EDGE_TARGET` | Usually needed on the manager | Public IP or DNS name that Cloudflare records should point to when no edge target is already configured in `luma.yaml`. |
+| `TRAEFIK_ACME_EMAIL` | Required on the manager | Let's Encrypt account email used by Traefik for HTTPS certificates and expiration notices. |
+| `EGRESS_SUBSCRIPTION_URL` | Required only when using egress | Proxy subscription URL used to generate the Mihomo config for image-pull proxying and services with `proxy: true`. |
+| `TAILSCALE_AUTHKEY` | Needed for private/home/tailscale-relay nodes | Auth key for unattended Tailscale login. |
+| `LUMA_SUDO_PASSWORD` | Only when sudo requires a password | Local fallback password for privileged setup commands. Prefer passwordless sudo when possible. |
+| `PORTAINER_WEBHOOK_URL` | Legacy GitOps only | Optional legacy Portainer stack webhook. New installs use the Portainer API by default. |
+| `PORTAINER_WEBHOOK_*` | Legacy GitOps only | Optional per-service Portainer webhooks when multiple GitOps stacks share one repo. |
+| `LUMA_PORTAINER_ADMIN_PASSWORD` | Recovery only | Optional override when binding to an already-initialized Portainer admin account. |
+| `LUMA_CONTROL_IMAGE` | Development/pinned release only | Control API image used during manager bootstrap. |
 
 ## Runtime Secret Files
 

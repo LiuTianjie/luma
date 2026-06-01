@@ -33,7 +33,7 @@ from luma.bootstrap import (
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
 from luma.control.server import handle_control_status, handle_deployment, handle_node_label, handle_node_register, handle_secret_list, handle_secret_set, resolve_service_image
-from luma.control.state import init_state
+from luma.control.state import init_state, load_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
 from luma.errors import LumaError
@@ -60,6 +60,12 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIsNotNone(asset_version)
         self.assertEqual(pyproject_version.group(1), init_version.group(1))
         self.assertEqual(pyproject_version.group(1), asset_version.group(1))
+
+    def test_installer_does_not_change_system_dns(self):
+        root = Path(__file__).resolve().parents[1]
+        installer = (root / "scripts" / "install-luma.sh").read_text(encoding="utf-8")
+        self.assertNotIn("resolvectl dns", installer)
+        self.assertNotIn("/etc/systemd/resolved.conf.d/luma.conf", installer)
 
     def test_new_config_model_reads_nodes_and_provider_dns(self):
         config = LumaConfig(
@@ -401,6 +407,10 @@ class CliTests(unittest.TestCase):
                 self.assertIn("LUMA_DNS_EDGE_TARGET", configured_keys(config_path))
                 self.assertIn("EGRESS_SUBSCRIPTION_URL", configured_keys(config_path))
                 printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("CLOUDFLARE_API_TOKEN [required]", printed_text)
+                self.assertIn("Zone Read and DNS Edit", printed_text)
+                self.assertIn("LUMA_DNS_EDGE_TARGET [optional", printed_text)
+                self.assertIn("EGRESS_SUBSCRIPTION_URL [optional", printed_text)
                 self.assertIn("Portainer URL: https://203.0.113.10:9443", printed_text)
                 self.assertIn("Portainer username: admin", printed_text)
                 self.assertIn("Portainer password: sudo jq", printed_text)
@@ -730,7 +740,7 @@ class CliTests(unittest.TestCase):
                     )
                 self.assertEqual(code, 0)
                 client.register_node.assert_called_once_with(node_name="global-sg-1", region="global")
-                client.label_node.assert_called_once_with(node_name="worker-1", region="global")
+                client.label_node.assert_called_once_with(node_name="worker-1", region="global", registered_name="global-sg-1")
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
                 self.assertIn("LUMA_SUDO_PASSWORD", configured_keys(config_path))
             finally:
@@ -1262,6 +1272,26 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result["nodeName"], "b")
                 with self.assertRaises(Exception):
                     handle_node_label(state["deployToken"], {"nodeName": "b", "region": "global"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_label_node_merges_requested_name_into_actual_docker_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_node_register(state["joinToken"], {"nodeName": "global-sg-1", "region": "global"})
+                with patch("luma.control.server.label_swarm_node"):
+                    result = handle_node_label(
+                        state["joinToken"],
+                        {"nodeName": "docker-hostname", "registeredName": "global-sg-1", "region": "global"},
+                    )
+                saved = load_state()
+                self.assertEqual(result["nodeName"], "docker-hostname")
+                self.assertEqual(result["displayName"], "global-sg-1")
+                self.assertNotIn("global-sg-1", saved["nodes"])
+                self.assertEqual(saved["nodes"]["docker-hostname"]["displayName"], "global-sg-1")
+                self.assertEqual(saved["nodes"]["docker-hostname"]["status"], "labeled")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

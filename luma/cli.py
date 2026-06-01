@@ -76,10 +76,17 @@ def build_parser() -> argparse.ArgumentParser:
     manager.add_argument("--https-port", type=int, help="Public Traefik HTTPS port")
     manager.add_argument("--skip-egress", action="store_true")
     manager.add_argument("--overwrite-control-state", action="store_true")
-    update = sub.add_parser("update")
+    update = sub.add_parser(
+        "update",
+        description=(
+            "Update the local CLI. With no target, Luma refreshes the manager "
+            "only when local manager state exists; clients and workers update CLI only."
+        ),
+        epilog="Examples: luma update | luma update --install-ref v0.1.10 | luma update manager --domain luma.example.com",
+    )
     _add_update_manager_arguments(update)
-    update_sub = update.add_subparsers(dest="update_command", required=False)
-    update_manager = update_sub.add_parser("manager")
+    update_sub = update.add_subparsers(dest="update_command", required=False, metavar="[target]")
+    update_manager = update_sub.add_parser("manager", help="force a manager bootstrap refresh")
     _add_update_manager_arguments(update_manager)
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks such as docker pull through egress")
@@ -369,7 +376,7 @@ def cmd_node(args: argparse.Namespace) -> int:
         node = _local_node_for_region(args.region, name=args.name)
         join_local_node(node, _join_profile_for_region(args.region), str(manager_addr or ""), str(swarm_token or ""), emit=log)
         actual_node_name = local_docker_node_name()
-        label_result = client.label_node(node_name=actual_node_name, region=args.region)
+        label_result = client.label_node(node_name=actual_node_name, region=args.region, registered_name=args.name)
         print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
         print("Node join complete")
         return 0

@@ -46,6 +46,8 @@ Luma generates:
 - Traefik Swarm labels;
 - Cloudflare DNS record pointing to the configured CN edge target.
 
+By default, public traffic enters through one Traefik replica constrained to `node.labels.region == cn` and `node.labels.ingress == true`. If you have multiple CN nodes, DNS still points to the configured edge target; Traefik receives the request there and forwards to matching service tasks over the Swarm overlay network.
+
 ### `tailscale-relay`
 
 Selected home services exposed through the CN edge over Tailscale.
@@ -163,6 +165,8 @@ Luma generates:
 - `stacks/global/ai-gateway/stack.yml`;
 - Traefik Swarm labels for the global edge environment;
 - Cloudflare DNS record pointing to `dns.target`.
+
+Use `dns.target` to choose the public/global edge IP for this service. Without a separate global edge target, a global workload can still be scheduled in `region: global`, but public HTTP traffic will not magically enter through every global node.
 
 ### `none`
 

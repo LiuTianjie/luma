@@ -145,7 +145,7 @@ sudo docker pull hello-world:latest
 ## Repair Control Plane
 
 ```bash
-luma bootstrap manager --domain luma.example.com --profile single-node
+luma bootstrap manager --domain luma.example.com
 luma portainer setup
 luma doctor
 ```

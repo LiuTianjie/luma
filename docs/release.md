@@ -32,14 +32,14 @@ The `Build Control Image` workflow publishes:
 4. Create a tag to publish a versioned image and release archive:
 
 ```bash
-git tag v0.1.9
+git tag v0.1.10
 git push origin main --tags
 ```
 
 5. Users install with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.9 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.10 sh
 ```
 
 The installer downloads the GitHub archive for that tag, creates `~/.local/share/luma/venv`, installs the Python package, writes `~/.local/bin/luma`, and adds `~/.local/bin` to the user's shell profile when needed.
@@ -63,7 +63,7 @@ The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you wa
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.9
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.10
 ```
 
 ## Latest Channel
@@ -83,7 +83,7 @@ Use these environment variables when the code is hosted somewhere else:
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.1.9 \
+  LUMA_INSTALL_REF=v0.1.10 \
   sh
 ```
 
@@ -91,4 +91,4 @@ Use `LUMA_ARCHIVE_URL` to bypass GitHub archive URL conventions completely.
 
 ## PyPI Later
 
-The package already has a `pyproject.toml` and includes runtime stack templates as package data, so it can later be published to PyPI. The one-line installer is still useful because it can also do system preflight, Linux DNS repair, venv creation, and PATH setup.
+The package already has a `pyproject.toml` and includes runtime stack templates as package data, so it can later be published to PyPI. The one-line installer is still useful for local preflight, venv creation, and PATH setup. Host-level changes such as Linux DNS repair are handled by manager bootstrap or node join, not by a CLI-only install.

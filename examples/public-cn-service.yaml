@@ -1,7 +1,6 @@
 name: whoami-demo
 image: traefik/whoami:latest
 region: cn
-public: true
 exposure: cn-edge
 domain: whoami.example.com
 port: 80

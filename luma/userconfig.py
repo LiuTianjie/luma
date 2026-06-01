@@ -4,6 +4,7 @@ import getpass
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -19,18 +20,79 @@ SECRET_KEYS = {
     "TAILSCALE_AUTHKEY",
 }
 
+
+@dataclass(frozen=True)
+class ConfigPrompt:
+    key: str
+    label: str
+    secret: bool
+    required: bool
+    help: str
+    example: str = ""
+
+
 ROLE_KEYS = {
     "manager": [
-        ("CLOUDFLARE_API_TOKEN", "Cloudflare API token", True, True),
-        ("LUMA_DNS_EDGE_TARGET", "Public DNS target for control and edge routes", False, False),
-        ("TRAEFIK_ACME_EMAIL", "ACME certificate email", False, True),
-        ("TAILSCALE_AUTHKEY", "Tailscale auth key", True, False),
-        ("EGRESS_SUBSCRIPTION_URL", "Egress subscription URL", True, False),
-        ("LUMA_SUDO_PASSWORD", "sudo password", True, False),
+        ConfigPrompt(
+            "CLOUDFLARE_API_TOKEN",
+            "Cloudflare DNS API token",
+            True,
+            True,
+            "Used on the manager to create/update DNS records for the control domain and public services. Create a Cloudflare token with Zone Read and DNS Edit for the domain zone.",
+        ),
+        ConfigPrompt(
+            "LUMA_DNS_EDGE_TARGET",
+            "Public DNS target for control and edge routes",
+            False,
+            False,
+            "IP address or DNS name that Cloudflare records should point to when luma.yaml has no providers.dns.edgeTarget or edge node publicIp.",
+            "203.0.113.10",
+        ),
+        ConfigPrompt(
+            "TRAEFIK_ACME_EMAIL",
+            "ACME certificate email",
+            False,
+            True,
+            "Email address used by Traefik/Let's Encrypt for HTTPS certificate registration and expiration notices.",
+            "ops@example.com",
+        ),
+        ConfigPrompt(
+            "TAILSCALE_AUTHKEY",
+            "Tailscale auth key",
+            True,
+            False,
+            "Used only when this server must join a tailnet, such as private worker joins, home nodes, or tailscale-relay exposure.",
+        ),
+        ConfigPrompt(
+            "EGRESS_SUBSCRIPTION_URL",
+            "Egress proxy subscription URL",
+            True,
+            False,
+            "Used by egress setup to build the Mihomo proxy config for Docker image pulls and services with proxy: true. Leave empty when using --skip-egress.",
+        ),
+        ConfigPrompt(
+            "LUMA_SUDO_PASSWORD",
+            "sudo password",
+            True,
+            False,
+            "Optional fallback for sudo commands on servers without passwordless sudo. Stored only in the local user config file.",
+        ),
     ],
     "worker": [
-        ("TAILSCALE_AUTHKEY", "Tailscale auth key", True, False),
-        ("LUMA_SUDO_PASSWORD", "sudo password", True, False),
+        ConfigPrompt(
+            "TAILSCALE_AUTHKEY",
+            "Tailscale auth key",
+            True,
+            False,
+            "Used when this worker/home node needs to join the tailnet before joining Swarm.",
+        ),
+        ConfigPrompt(
+            "LUMA_SUDO_PASSWORD",
+            "sudo password",
+            True,
+            False,
+            "Optional fallback for sudo commands on servers without passwordless sudo. Stored only in the local user config file.",
+        ),
     ],
     "client": [],
 }
@@ -103,33 +165,34 @@ def interactive_configure(role: str, *, path: Path | None = None, input_fn=None)
         input_fn = input
     existing = _read_config(path or user_config_path())
     existing_env = existing.get("env") if isinstance(existing.get("env"), dict) else {}
-    for key, label, secret, required in prompts:
-        current = str(existing_env.get(key) or os.environ.get(key) or "")
-        suffix = " [configured]" if current else (" [required]" if required else " [optional]")
-        prompt = f"{label}{suffix}: "
-        if secret:
+    for item in prompts:
+        current = str(existing_env.get(item.key) or os.environ.get(item.key) or "")
+        suffix = " [configured]" if current else (" [required]" if item.required else " [optional]")
+        _print_prompt_help(item, suffix)
+        prompt = f"{item.key}: "
+        if item.secret:
             value = getpass.getpass(prompt)
         else:
             value = input_fn(prompt)
         value = value.strip()
         if value:
-            values[key] = value
+            values[item.key] = value
         elif current:
-            values[key] = current
-        elif required:
-            raise LumaError(f"{key} is required for {role} configuration")
+            values[item.key] = current
+        elif item.required:
+            raise LumaError(f"{item.key} is required for {role} configuration")
     return write_user_config(values, path=path)
 
 
 def ensure_interactive_config(role: str, *, keys: Iterable[str] | None = None, path: Path | None = None, input_fn=None) -> Path | None:
     if role not in ROLE_KEYS:
         raise LumaError(f"unknown configure role: {role}")
-    wanted = set(keys or [item[0] for item in ROLE_KEYS[role]])
-    prompts = [item for item in ROLE_KEYS[role] if item[0] in wanted and not os.environ.get(item[0])]
+    wanted = set(keys or [item.key for item in ROLE_KEYS[role]])
+    prompts = [item for item in ROLE_KEYS[role] if item.key in wanted and not os.environ.get(item.key)]
     if not prompts:
         return None
     if not sys.stdin.isatty() and input_fn is None:
-        missing_required = [item[0] for item in prompts if item[3]]
+        missing_required = [item.key for item in prompts if item.required]
         if missing_required:
             missing = ", ".join(missing_required)
             raise LumaError(f"missing local config ({missing}). Run: luma configure --role {role}")
@@ -138,16 +201,17 @@ def ensure_interactive_config(role: str, *, keys: Iterable[str] | None = None, p
         input_fn = input
     values: Dict[str, str] = {}
     print(f"Missing local {role} configuration. Values will be saved to {path or user_config_path()}.")
-    for key, label, secret, required in prompts:
-        suffix = " [required]" if required else " [optional, press Enter to skip]"
-        prompt = f"{label}{suffix}: "
-        value = getpass.getpass(prompt) if secret else input_fn(prompt)
+    for item in prompts:
+        suffix = " [required]" if item.required else " [optional, press Enter to skip]"
+        _print_prompt_help(item, suffix)
+        prompt = f"{item.key}: "
+        value = getpass.getpass(prompt) if item.secret else input_fn(prompt)
         value = value.strip()
         if value:
-            values[key] = value
-            os.environ[key] = value
-        elif required:
-            raise LumaError(f"{key} is required for {role} configuration")
+            values[item.key] = value
+            os.environ[item.key] = value
+        elif item.required:
+            raise LumaError(f"{item.key} is required for {role} configuration")
     if not values:
         return None
     return write_user_config(values, path=path)
@@ -159,6 +223,13 @@ def masked_config_lines(keys: Iterable[str]) -> list[str]:
         marker = "***" if key in SECRET_KEYS or "TOKEN" in key or "PASSWORD" in key or "URL" in key else "set"
         lines.append(f"{key}={marker}")
     return lines
+
+
+def _print_prompt_help(item: ConfigPrompt, suffix: str) -> None:
+    print(f"\n{item.key}{suffix}")
+    print(f"  {item.help}")
+    if item.example:
+        print(f"  Example: {item.example}")
 
 
 def _read_config(path: Path) -> Dict[str, Any]:
