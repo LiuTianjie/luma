@@ -1292,15 +1292,17 @@ def resolve_service_image(
         image_registry_auth = registry_auth if registry_auth_matches_image(registry_auth, image) else None
         try:
             force_pull = image_uses_mutable_latest_tag(image)
-            ensure_image_present(image, registry_auth=image_registry_auth, force_pull=force_pull)
+            resolved_image = ensure_image_present(image, registry_auth=image_registry_auth, force_pull=force_pull)
+            deploy_image = resolved_image or image
             result = {
                 "requested": service.image,
                 "selected": image,
+                "deployed": deploy_image,
                 "fallback": image != service.image,
                 "registryAuth": bool(image_registry_auth),
                 "forcePull": force_pull,
             }
-            return replace(service, image=image), result
+            return replace(service, image=deploy_image), result
         except LumaError as exc:
             errors.append(f"{image}: {exc}")
     raise LumaError("unable to pull service image; tried " + "; ".join(errors))
@@ -1311,12 +1313,12 @@ def ensure_image_present(
     *,
     registry_auth: Dict[str, str] | None = None,
     force_pull: bool = False,
-) -> None:
+) -> str | None:
     encoded = urllib.parse.quote(image, safe="")
     if not force_pull:
         status, _ = docker_request_raw("GET", f"/images/{encoded}/json")
         if status == 200:
-            return
+            return None
     from_image = urllib.parse.quote(image, safe="")
     headers = {}
     auth_header = docker_registry_auth_header(registry_auth)
@@ -1327,6 +1329,43 @@ def ensure_image_present(
         raise LumaError(f"Docker pull failed with HTTP {status}: {raw.strip()}")
     if '"error"' in raw:
         raise LumaError(f"Docker pull failed: {raw.strip()}")
+    if force_pull:
+        return _image_repo_digest(image)
+    return None
+
+
+def _image_repo_digest(image: str) -> str:
+    encoded = urllib.parse.quote(image, safe="")
+    status, raw = docker_request_raw("GET", f"/images/{encoded}/json")
+    if status >= 400:
+        raise LumaError(f"Docker image inspect failed with HTTP {status}: {raw.strip()}")
+    try:
+        details = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise LumaError(f"Docker image inspect returned invalid JSON: {raw.strip()}") from exc
+    digests = details.get("RepoDigests")
+    if not isinstance(digests, list):
+        digests = []
+    repository = _image_repository(image)
+    for digest in digests:
+        if not isinstance(digest, str) or "@sha256:" not in digest:
+            continue
+        digest_repository = digest.split("@", 1)[0]
+        if digest_repository == repository:
+            return digest
+    for digest in digests:
+        if isinstance(digest, str) and "@sha256:" in digest:
+            return digest
+    raise LumaError(f"Docker pull succeeded but no repo digest was found for {image}; use a pinned digest or fixed tag")
+
+
+def _image_repository(image: str) -> str:
+    image_ref = image.split("@", 1)[0]
+    slash = image_ref.rfind("/")
+    colon = image_ref.rfind(":")
+    if colon > slash:
+        return image_ref[:colon]
+    return image_ref
 
 
 def _fallback_images(config: Any, image: str) -> list[str]:

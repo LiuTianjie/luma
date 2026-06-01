@@ -1668,6 +1668,38 @@ class PortainerWebhookTests(unittest.TestCase):
             upsert.assert_called_once()
             webhook.assert_not_called()
 
+    def test_digest_image_bypasses_webhook_and_uses_portainer_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx@sha256:abc123",
+                        "region": "cn",
+                        "exposure": "none",
+                        "portainer": {"webhookUrl": "https://portainer.example.com/hook"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+                "swarmId": "swarm-test",
+            }
+            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert, patch(
+                "luma.portainer.trigger_webhook_url"
+            ) as webhook:
+                result = deploy_with_portainer(config, service, "services: {}", state)
+            self.assertEqual(result, "Portainer stack updated")
+            upsert.assert_called_once()
+            webhook.assert_not_called()
+
     def test_bootstrap_manager_saves_portainer_credentials_before_dns(self):
         config = LumaConfig(
             {
@@ -2856,6 +2888,51 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_deployment_renders_latest_as_resolved_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "ghcr.io/acme/api:latest",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                )
+                digest = "ghcr.io/acme/api@sha256:abc123"
+
+                def fake_raw(method, path, *, headers=None):
+                    if method == "GET":
+                        return 200, json.dumps({"RepoDigests": [digest]})
+                    return 200, "{}"
+
+                with patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipWebhook": True},
+                    )
+                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                self.assertEqual(result["image"]["requested"], "ghcr.io/acme/api:latest")
+                self.assertEqual(result["image"]["deployed"], digest)
+                self.assertIn(f"image: {digest}", stack)
+                self.assertNotIn("ghcr.io/acme/api:latest", stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_service_image_falls_back_to_domestic_mirror(self):
         with tempfile.TemporaryDirectory() as tmp:
             service_path = Path(tmp) / "service.yaml"
@@ -2875,9 +2952,11 @@ class ControlApiTests(unittest.TestCase):
             service = load_service(service_path)
             config = LumaConfig({"defaults": {"imageMirrors": ["mirror.local"]}}, None)
             with patch("luma.control.server.ensure_image_present") as ensure:
-                ensure.side_effect = [LumaError("upstream failed"), None]
+                ensure.side_effect = [LumaError("upstream failed"), "mirror.local/traefik/whoami@sha256:abc123"]
                 selected, result = resolve_service_image(config, service)
-            self.assertEqual(selected.image, "mirror.local/traefik/whoami:latest")
+            self.assertEqual(selected.image, "mirror.local/traefik/whoami@sha256:abc123")
+            self.assertEqual(result["selected"], "mirror.local/traefik/whoami:latest")
+            self.assertEqual(result["deployed"], "mirror.local/traefik/whoami@sha256:abc123")
             self.assertTrue(result["fallback"])
 
     def test_service_image_pull_sends_registry_auth_header(self):
@@ -2921,17 +3000,20 @@ class ControlApiTests(unittest.TestCase):
 
     def test_latest_service_image_is_pulled_even_when_present_locally(self):
         calls = []
+        digest = "ghcr.io/acme/api@sha256:abc123"
 
         def fake_raw(method, path, *, headers=None):
             calls.append((method, path, headers or {}))
             if method == "GET":
-                return 200, "{}"
+                return 200, json.dumps({"RepoDigests": [digest]})
             return 200, "{}"
 
         with patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
-            ensure_image_present("ghcr.io/acme/api:latest", force_pull=True)
-        self.assertEqual([method for method, _path, _headers in calls], ["POST"])
+            resolved = ensure_image_present("ghcr.io/acme/api:latest", force_pull=True)
+        self.assertEqual(resolved, digest)
+        self.assertEqual([method for method, _path, _headers in calls], ["POST", "GET"])
         self.assertIn("/images/create?fromImage=ghcr.io%2Facme%2Fapi%3Alatest", calls[0][1])
+        self.assertEqual(calls[1][1], "/images/ghcr.io%2Facme%2Fapi%3Alatest/json")
 
     def test_pinned_service_image_uses_local_cache_when_present(self):
         calls = []
@@ -3243,6 +3325,50 @@ class ControlApiTests(unittest.TestCase):
                     {
                         "name": "api",
                         "image": "nginx:latest",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+                "swarmId": "swarm-test",
+            }
+            client = Mock()
+            client.authenticate.return_value = "jwt"
+            client.request.side_effect = [
+                [{"Id": 7, "Name": "api"}],
+                None,
+            ]
+            with patch("luma.portainer.PortainerApi", return_value=client):
+                result = upsert_stack(config, service, "services: {}", state, missing_webhook_env="PORTAINER_WEBHOOK_URL")
+            self.assertIn("Portainer stack updated", result)
+            client.request.assert_any_call(
+                "PUT",
+                "/stacks/7?endpointId=1",
+                {
+                    "StackFileContent": "services: {}",
+                    "Env": [],
+                    "Prune": True,
+                    "PullImage": True,
+                },
+                token="jwt",
+            )
+
+    def test_portainer_stack_update_pulls_digest_without_registry_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx@sha256:abc123",
                         "region": "cn",
                         "exposure": "none",
                     }

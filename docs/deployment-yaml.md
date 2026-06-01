@@ -34,7 +34,7 @@ luma deploy status.yaml
 | 字段 | 必填 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | `name` | 是 | string | 服务名。Luma 会转成 slug，用于 stack/service/router 名称。 |
-| `image` | 是 | string | 容器镜像，例如 `ghcr.io/acme/api:1.0.0`。`latest` 或未带 tag 会在部署时强制刷新。 |
+| `image` | 是 | string | 容器镜像，例如 `ghcr.io/acme/api:1.0.0`。`latest` 或未带 tag 会在部署时解析成 `name@sha256:...` 再部署。 |
 | `region` | 是 | `cn` / `global` / `home` | 服务运行区域。 |
 | `node` | 否 | string | 指定 Luma 节点名，也就是 `luma node join --name` 的值。用于把服务钉到某台机器；控制面会解析成 Swarm NodeID 后调度，仍会同时加 region 约束。 |
 | `exposure` | 否 | 见下方 | 访问方式。默认由 `public` 兼容推导；新文件建议显式填写。 |
@@ -295,7 +295,7 @@ tunnel:
 - `port` 是否是容器内部监听端口，而不是公网端口。
 - `region` 和 `exposure` 是否匹配。
 - 公开服务是否填写了 `domain` 和 `port`。
-- 镜像是否带 tag；`latest`/未带 tag 会在部署时强制刷新，但生产回滚仍建议使用固定版本 tag。
+- 镜像是否带 tag；`latest`/未带 tag 会在部署时解析成 digest，但生产回滚仍建议使用固定版本 tag。
 - secret 不要直接写明文，优先写 `${ENV_NAME}`。
 - worker 默认使用 `exposure: none`，不要给它配公网域名。
 - home 节点不要承载核心高频公网服务。

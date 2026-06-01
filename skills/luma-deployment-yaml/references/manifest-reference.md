@@ -5,7 +5,7 @@
 | Field | Required | Type | Notes |
 | --- | --- | --- | --- |
 | `name` | yes | string | Service name; Luma slugifies it for stack/service/router names. |
-| `image` | yes | string | Container image. `latest` or an omitted tag is force-pulled during deploy; prefer pinned tags for production rollback. |
+| `image` | yes | string | Container image. `latest` or an omitted tag is resolved to `name@sha256:...` during deploy; prefer pinned tags for production rollback. |
 | `region` | yes | `cn` / `global` / `home` | Runtime placement region. |
 | `node` | no | string | Luma node name from `luma node join --name`; deploy resolves it to a Swarm NodeID constraint. Luma still adds the region constraint. |
 | `exposure` | recommended | `none` / `cn-edge` / `external-edge` / `tailscale-relay` / `cloudflare-tunnel` | Access mode. Use explicit exposure in new files. |
