@@ -190,11 +190,13 @@ Leave Swarm and optionally unregister the node from the control plane:
 luma node exit --endpoint https://luma.example.com --token <deploy-or-join-token> --name home-mac-mini
 ```
 
-Remove a stale registered-only node from Luma Control:
+Remove a node from any logged-in client:
 
 ```bash
 luma node remove home-mac-mini
 ```
+
+The control plane removes the Luma registration record and then removes the matching Docker Swarm worker node on the manager. Matching uses the saved Swarm NodeID, `luma.node.id`, `luma.node.name`, or the Swarm hostname. Luma refuses to remove a Swarm manager node through this command.
 
 Connect Cloudflare and write `providers.dns.zoneId`:
 

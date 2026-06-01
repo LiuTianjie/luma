@@ -204,7 +204,7 @@ luma node exit
 
 By default it leaves Swarm and removes local Luma runtime state under `/opt/luma`, while keeping Tailscale and Docker image/volume cache. Add `--endpoint <control-url> --token <token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` to also log out of Tailscale. Add `--prune-docker` only when you intentionally want to remove unused Docker cache and volumes.
 
-To remove a stale registered-only record from the control plane, run `luma node remove <name>` from a logged-in client.
+To remove a node from the control plane and Swarm, run `luma node remove <name>` from any logged-in client. The manager deletes the Luma registration and the matching Swarm worker node; manager nodes are protected.
 
 ## Deploy Services
 

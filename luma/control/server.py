@@ -228,12 +228,26 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(value, dict) and value.get("displayName") == node_name:
                 removed = nodes.pop(key)
                 break
+    swarm_result = remove_swarm_node(node_name, removed if isinstance(removed, dict) else None)
     save_state(state)
+    registered_removed = bool(removed)
+    swarm_removed = bool(swarm_result.get("removed"))
+    if registered_removed and swarm_removed:
+        message = f"Node removed: {node_name}; Swarm node removed: {swarm_result.get('nodeId')}"
+    elif registered_removed:
+        message = f"Node removed: {node_name}; {swarm_result.get('message')}"
+    elif swarm_removed:
+        message = f"Node not registered: {node_name}; Swarm node removed: {swarm_result.get('nodeId')}"
+    else:
+        message = f"Node not registered: {node_name}; {swarm_result.get('message')}"
     return {
         "clusterId": state["clusterId"],
         "nodeName": node_name,
-        "removed": bool(removed),
-        "message": f"Node removed: {node_name}" if removed else f"Node not registered: {node_name}",
+        "removed": registered_removed or swarm_removed,
+        "registeredRemoved": registered_removed,
+        "swarmRemoved": swarm_removed,
+        "swarmNodeId": str(swarm_result.get("nodeId") or ""),
+        "message": message,
     }
 
 
@@ -1042,6 +1056,84 @@ def _swarm_nodes_summary() -> Dict[str, Any]:
         items.append(_swarm_node_summary_item(node))
     items.sort(key=lambda item: item.get("hostname") or item.get("id") or "")
     return {"available": True, "nodes": items}
+
+
+def remove_swarm_node(node_name: str, record: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    nodes = docker_request("GET", "/nodes")
+    if not isinstance(nodes, list):
+        raise LumaError("Docker API returned invalid node list")
+    match = _match_luma_swarm_node(nodes, node_name=node_name, record=record)
+    if not match:
+        return {"removed": False, "message": "Swarm node not found"}
+    node_id = str(match.get("ID") or "")
+    if not node_id:
+        raise LumaError("Docker API returned invalid node id")
+    spec = match.get("Spec") if isinstance(match.get("Spec"), dict) else {}
+    manager_status = match.get("ManagerStatus") if isinstance(match.get("ManagerStatus"), dict) else {}
+    role = str(spec.get("Role") or "")
+    if role == "manager" or manager_status:
+        raise LumaError(f"refusing to remove Swarm manager node: {node_name}")
+    docker_request("DELETE", f"/nodes/{urllib.parse.quote(node_id, safe='')}?force=1")
+    return {"removed": True, "nodeId": node_id, "message": f"Swarm node removed: {node_id}"}
+
+
+def _match_luma_swarm_node(
+    nodes: list[Any],
+    *,
+    node_name: str,
+    record: Dict[str, Any] | None = None,
+) -> Dict[str, Any] | None:
+    record = record or {}
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    wanted_ids = {
+        str(value).strip()
+        for value in [
+            node_name,
+            record.get("swarmNodeId"),
+            labels.get("luma.node.id"),
+        ]
+        if str(value or "").strip()
+    }
+    wanted_names = {
+        str(value).strip()
+        for value in [
+            node_name,
+            record.get("displayName"),
+            record.get("swarmHostname"),
+            labels.get("luma.node.name"),
+        ]
+        if str(value or "").strip()
+    }
+    matches: list[Dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("ID") or "")
+        spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
+        node_labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
+        description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
+        candidate_ids = {node_id, str(node_labels.get("luma.node.id") or "")}
+        candidate_names = {
+            str(description.get("Hostname") or ""),
+            str(node_labels.get("luma.node.name") or ""),
+        }
+        if any(_node_id_matches(candidate, wanted) for candidate in candidate_ids for wanted in wanted_ids):
+            matches.append(node)
+            continue
+        if wanted_names.intersection(candidate_names):
+            matches.append(node)
+    unique: dict[str, Dict[str, Any]] = {str(node.get("ID") or ""): node for node in matches if str(node.get("ID") or "")}
+    if len(unique) == 1:
+        return next(iter(unique.values()))
+    if len(unique) > 1:
+        raise LumaError(f"multiple Swarm nodes match {node_name}; remove by exact Swarm NodeID")
+    return None
+
+
+def _node_id_matches(candidate: str, wanted: str) -> bool:
+    candidate = candidate.strip()
+    wanted = wanted.strip()
+    return bool(candidate and wanted and (candidate == wanted or candidate.startswith(wanted) or wanted.startswith(candidate)))
 
 
 class DockerSocketConnection(http.client.HTTPConnection):

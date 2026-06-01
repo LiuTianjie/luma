@@ -149,6 +149,16 @@ If Portainer is unavailable:
 sudo docker stack rm <service>
 ```
 
+## Remove A Node
+
+From any logged-in client:
+
+```bash
+luma node remove <node-name>
+```
+
+The request is handled by Luma Control on the manager. It deletes the Luma node registration and removes the matching Docker Swarm worker node using the saved NodeID or Luma node labels. Use this for stale nodes that already left locally, failed joins, or decommissioned worker/home machines. Manager nodes are protected and must not be removed through this command.
+
 ## Drain A Node
 
 ```bash

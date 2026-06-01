@@ -39,7 +39,7 @@ from luma.bootstrap import (
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
 from luma.control.server import ControlHandler, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, resolve_service_image
-from luma.control.state import init_state, load_state
+from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
 from luma.errors import LumaError
@@ -1816,10 +1816,101 @@ class ControlApiTests(unittest.TestCase):
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 handle_node_register(state["joinToken"], {"nodeName": "m3max", "region": "home"})
-                result = handle_node_unregister(state["deployToken"], {"nodeName": "m3max"})
+                with patch("luma.control.server.docker_request", return_value=[]):
+                    result = handle_node_unregister(state["deployToken"], {"nodeName": "m3max"})
                 saved = load_state()
                 self.assertTrue(result["removed"])
+                self.assertTrue(result["registeredRemoved"])
+                self.assertFalse(result["swarmRemoved"])
                 self.assertNotIn("m3max", saved.get("nodes", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_removes_matching_swarm_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "m4mini": {
+                        "region": "home",
+                        "displayName": "m4mini",
+                        "swarmHostname": "orbstack",
+                        "swarmNodeId": "node-id-1",
+                        "labels": {"luma.node.name": "m4mini", "luma.node.id": "node-id-1", "region": "home"},
+                    }
+                }
+                save_state(state)
+                nodes = [
+                    {
+                        "ID": "node-id-1",
+                        "Description": {"Hostname": "orbstack"},
+                        "Spec": {"Role": "worker", "Labels": {"luma.node.name": "m4mini", "luma.node.id": "node-id-1"}},
+                    }
+                ]
+                with patch("luma.control.server.docker_request", side_effect=[nodes, None]) as docker:
+                    result = handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
+
+                self.assertTrue(result["removed"])
+                self.assertTrue(result["registeredRemoved"])
+                self.assertTrue(result["swarmRemoved"])
+                self.assertEqual(result["swarmNodeId"], "node-id-1")
+                docker.assert_any_call("DELETE", "/nodes/node-id-1?force=1")
+                self.assertNotIn("m4mini", load_state().get("nodes", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_removes_swarm_only_luma_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                nodes = [
+                    {
+                        "ID": "node-id-2",
+                        "Description": {"Hostname": "orbstack"},
+                        "Spec": {"Role": "worker", "Labels": {"luma.node.name": "m4mini", "region": "home"}},
+                    }
+                ]
+                with patch("luma.control.server.docker_request", side_effect=[nodes, None]) as docker:
+                    result = handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
+
+                self.assertTrue(result["removed"])
+                self.assertFalse(result["registeredRemoved"])
+                self.assertTrue(result["swarmRemoved"])
+                docker.assert_any_call("DELETE", "/nodes/node-id-2?force=1")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_refuses_to_remove_manager_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                nodes = [
+                    {
+                        "ID": "manager-id",
+                        "Description": {"Hostname": "manager"},
+                        "Spec": {"Role": "manager", "Labels": {"luma.node.name": "manager"}},
+                        "ManagerStatus": {"Leader": True},
+                    }
+                ]
+                with patch("luma.control.server.docker_request", return_value=nodes), self.assertRaisesRegex(LumaError, "refusing to remove Swarm manager"):
+                    handle_node_unregister(state["deployToken"], {"nodeName": "manager"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_keeps_state_when_swarm_remove_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {"m4mini": {"region": "home", "displayName": "m4mini"}}
+                save_state(state)
+                with patch("luma.control.server.docker_request", side_effect=LumaError("Docker unavailable")), self.assertRaisesRegex(LumaError, "Docker unavailable"):
+                    handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
+
+                self.assertIn("m4mini", load_state().get("nodes", {}))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
