@@ -132,6 +132,20 @@ PORTAINER_WEBHOOK_URL=...
 PORTAINER_WEBHOOK_API=...
 ```
 
+## macOS node join fails at Docker
+
+macOS workers and home nodes must have Docker Desktop installed and running before `luma node join`.
+Luma cannot install Docker Desktop automatically.
+
+Verify locally before joining:
+
+```bash
+command -v docker
+docker info
+```
+
+If Docker Desktop is missing or still starting, `luma node join` stops before registering the node with Luma Control. Start Docker Desktop, wait until `docker info` succeeds, then rerun the same join command.
+
 ## Cloudflare DNS fails
 
 Use a Zone-scoped API token:

@@ -534,7 +534,18 @@ def configure_dns(remote: Executor) -> str:
 
 def install_docker(remote: Executor) -> str:
     if _is_darwin(remote):
-        remote.run("command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1")
+        result = remote.run_result("command -v docker >/dev/null 2>&1")
+        if result.code != 0:
+            raise LumaError(
+                "Docker is required before this macOS node can join Swarm. "
+                "Install Docker Desktop, start it, then rerun luma node join."
+            )
+        result = remote.run_result("docker info >/dev/null 2>&1")
+        if result.code != 0:
+            raise LumaError(
+                "Docker is installed but the Docker daemon is not reachable. "
+                "Start Docker Desktop and wait until `docker info` succeeds, then rerun luma node join."
+            )
         return "Docker available"
     if remote.sudo_result("command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1").code == 0:
         return "Docker available"
@@ -807,10 +818,19 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
     return results
 
 
-def join_local_node(node: NodeConfig, profile: Profile, manager_addr: str, swarm_token: str, *, emit: Progress | None = None) -> list[str]:
+def join_local_node(
+    node: NodeConfig,
+    profile: Profile,
+    manager_addr: str,
+    swarm_token: str,
+    *,
+    emit: Progress | None = None,
+    install_docker_first: bool = True,
+) -> list[str]:
     remote = LocalExecutor()
     results: list[str] = []
-    _step(results, emit, "Install Docker", lambda: install_docker(remote))
+    if install_docker_first:
+        _step(results, emit, "Install Docker", lambda: install_docker(remote))
     _step(results, emit, "Install and connect Tailscale", lambda: setup_tailscale(node, executor=remote), fix="Run: luma tailscale connect")
     _step(results, emit, "Join Docker Swarm", lambda: _join_swarm(remote, manager_addr, swarm_token))
     _step(results, emit, "Verify Docker Swarm node", lambda: verify_local_swarm_node(remote))

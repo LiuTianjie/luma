@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, TypeVar
 
-from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, join_local_node, local_docker_node_id, local_docker_node_name, setup_egress, setup_portainer, setup_tailscale
+from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, install_docker, join_local_node, local_docker_node_id, local_docker_node_name, setup_egress, setup_portainer, setup_tailscale
 from .cloudflare import find_zone, sync_dns
 from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
@@ -536,6 +536,8 @@ def cmd_node(args: argparse.Namespace) -> int:
         ensure_interactive_config("worker", required_keys=required_worker_keys)
         log("[start] Configure system DNS")
         log(f"[ok] {configure_dns(LocalExecutor())}")
+        log("[start] Install Docker")
+        log(f"[ok] {install_docker(LocalExecutor())}")
         client = ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
         result = client.register_node(node_name=args.name, region=args.region)
         print(f"Node registered: {result['nodeName']} ({result['region']})")
@@ -544,7 +546,14 @@ def cmd_node(args: argparse.Namespace) -> int:
         if manager_addr and _is_tailscale_manager_addr(str(manager_addr)) and not _local_tailscale_connected():
             ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
         node = _local_node_for_region(args.region, name=args.name)
-        join_local_node(node, _join_profile_for_region(args.region), str(manager_addr or ""), str(swarm_token or ""), emit=log)
+        join_local_node(
+            node,
+            _join_profile_for_region(args.region),
+            str(manager_addr or ""),
+            str(swarm_token or ""),
+            emit=log,
+            install_docker_first=False,
+        )
         actual_node_name = local_docker_node_name()
         actual_node_id = local_docker_node_id()
         label_result = client.label_node(

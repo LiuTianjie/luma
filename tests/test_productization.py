@@ -944,6 +944,8 @@ class CliTests(unittest.TestCase):
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
                 ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.install_docker", return_value="Docker available"
+                ), patch(
                     "luma.cli.ControlClient", return_value=client
                 ), patch("luma.cli.join_local_node", return_value=[]), patch(
                     "luma.cli.local_docker_node_name", return_value="worker-1"
@@ -1055,6 +1057,7 @@ class CliTests(unittest.TestCase):
                     "luma.userconfig.getpass.getpass", side_effect=lambda _prompt: next(secret_values)
                 ), patch("luma.cli._local_tailscale_connected", side_effect=[False, False]), patch(
                     "luma.cli.configure_dns", return_value="DNS ok"
+                ), patch("luma.cli.install_docker", return_value="Docker available"
                 ), patch("luma.cli.ControlClient", return_value=client), patch(
                     "luma.cli.join_local_node", return_value=[]
                 ), patch("luma.cli.local_docker_node_name", return_value="docker-home"), patch(
@@ -1082,6 +1085,40 @@ class CliTests(unittest.TestCase):
                     node_id="home-id-1",
                 )
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
+    def test_node_join_checks_docker_before_registering(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
+            try:
+                client = Mock()
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "luma.userconfig.getpass.getpass", return_value="sudo-pass"
+                ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.install_docker", side_effect=LumaError("Docker is not ready")
+                ), patch("luma.cli.ControlClient", return_value=client), patch("builtins.print"):
+                    code = main(
+                        [
+                            "node",
+                            "join",
+                            "https://luma.example.com",
+                            "--token",
+                            "join-token",
+                            "--region",
+                            "global",
+                            "--name",
+                            "global-sg-1",
+                        ]
+                    )
+
+                self.assertEqual(code, 1)
+                client.register_node.assert_not_called()
             finally:
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
@@ -1647,6 +1684,27 @@ class PortainerWebhookTests(unittest.TestCase):
         self.assertIn("mirrors.aliyun.com/ubuntu", command)
         self.assertIn("apt-get install -y docker.io docker-compose-v2", command)
         self.assertNotIn("apt-get install -y docker.io docker-compose-v2 curl ca-certificates ufw python3-yaml || true", command)
+
+    def test_install_docker_on_macos_requires_docker_cli(self):
+        remote = Mock()
+        remote.run_result.side_effect = [
+            Mock(code=0, output="Darwin\n"),
+            Mock(code=1, output=""),
+        ]
+
+        with self.assertRaisesRegex(LumaError, "Install Docker Desktop"):
+            install_docker(remote)
+
+    def test_install_docker_on_macos_requires_running_daemon(self):
+        remote = Mock()
+        remote.run_result.side_effect = [
+            Mock(code=0, output="Darwin\n"),
+            Mock(code=0, output=""),
+            Mock(code=1, output=""),
+        ]
+
+        with self.assertRaisesRegex(LumaError, "Start Docker Desktop"):
+            install_docker(remote)
 
     def test_service_webhook_env_overrides_global_webhook(self):
         with tempfile.TemporaryDirectory() as tmp:
