@@ -68,6 +68,17 @@ sudo docker service scale api_api=3
 
 Temporary commands do not update Git. Commit the manifest change afterward if it should persist.
 
+## Pin To One Node
+
+Use this only when the service depends on local disk, hardware, or a specific home/worker machine:
+
+```yaml
+region: home
+node: orbstack
+```
+
+`node` must be the Swarm hostname shown by `luma status`. Luma still keeps the `region` constraint, so the selected node must also be in that region.
+
 ## View Status
 
 From Portainer, check stacks, services, tasks, logs, and node placement.

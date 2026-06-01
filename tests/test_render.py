@@ -69,6 +69,38 @@ public: false
         self.assertIn("node.labels.region == global", constraints)
         self.assertNotIn("node.labels.external_net == true", constraints)
 
+    def test_service_can_pin_to_swarm_node_hostname(self):
+        service = self.load(
+            """
+name: pinned worker
+image: ghcr.io/acme/worker:latest
+region: home
+node: orbstack
+exposure: none
+"""
+        )
+        rendered = yaml.safe_load(render_stack(self.config(), service))
+        constraints = rendered["services"]["pinned-worker"]["deploy"]["placement"]["constraints"]
+        self.assertEqual(
+            constraints,
+            [
+                "node.labels.region == home",
+                "node.hostname == orbstack",
+            ],
+        )
+
+    def test_node_pin_rejects_blank_value(self):
+        with self.assertRaisesRegex(Exception, "node must be a non-empty string"):
+            self.load(
+                """
+name: bad worker
+image: ghcr.io/acme/worker:latest
+region: home
+node: ""
+exposure: none
+"""
+            )
+
     def test_proxy_service_adds_egress_network_and_env_without_node_constraint(self):
         service = self.load(
             """

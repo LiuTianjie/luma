@@ -36,6 +36,7 @@ luma deploy status.yaml
 | `name` | 是 | string | 服务名。Luma 会转成 slug，用于 stack/service/router 名称。 |
 | `image` | 是 | string | 容器镜像，例如 `ghcr.io/acme/api:1.0.0`。 |
 | `region` | 是 | `cn` / `global` / `home` | 服务运行区域。 |
+| `node` | 否 | string | 指定 Swarm 节点 hostname。用于把服务钉到某台机器；仍会同时加 region 约束。 |
 | `exposure` | 否 | 见下方 | 访问方式。默认由 `public` 兼容推导；新文件建议显式填写。 |
 | `domain` | 公开服务必填 | string | 用户访问的域名。 |
 | `port` | 公开服务必填 | integer | 容器内部监听端口，不是云服务器安全组端口。 |
@@ -144,6 +145,31 @@ placement:
   constraints:
     - node.labels.region == global
 ```
+
+### 指定部署到某个节点
+
+如果服务必须固定在某台机器上，例如有本地磁盘状态、只想跑在家里的 Mac mini、或临时调试某个 worker，可以使用 `node`：
+
+```yaml
+name: home-db
+image: postgres:16
+region: home
+node: orbstack
+exposure: none
+volumes:
+  - home_db_data:/var/lib/postgresql/data
+```
+
+渲染后会同时保留 region 约束和精确节点约束：
+
+```yaml
+placement:
+  constraints:
+    - node.labels.region == home
+    - node.hostname == orbstack
+```
+
+`node` 使用的是 Docker Swarm 实际 hostname，可通过 `luma status` 的 `Nodes` 表查看。不要把它和 `luma node join --name` 的 display name 混淆。如果 hostname 写错，Swarm 会创建服务，但 task 会一直 pending。
 
 ### 需要代理的 worker
 

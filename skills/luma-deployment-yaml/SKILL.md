@@ -7,7 +7,7 @@ description: Generate and review Luma deployment YAML service manifests for the 
 
 Use this skill to create Luma service manifests consumed by `luma deploy`.
 
-Luma manifests are not Docker Compose. They describe one service: image, region, exposure, domain, port, replicas, and a few runtime options. Luma renders Swarm stacks, DNS, Traefik routes, and Portainer deployment actions.
+Luma manifests are not Docker Compose. They describe one service: image, region, optional node pin, exposure, domain, port, replicas, and a few runtime options. Luma renders Swarm stacks, DNS, Traefik routes, and Portainer deployment actions.
 
 ## Workflow
 
@@ -18,7 +18,7 @@ Luma manifests are not Docker Compose. They describe one service: image, region,
    - Cloudflare Tunnel service: usually `region: home`, `exposure: cloudflare-tunnel`
    - worker/internal service: `exposure: none`
    - runtime proxy service: add `proxy: true` when the container itself must access external networks through Luma egress
-2. Ask only for missing required facts: service name, image, domain, container port, region/exposure, and relay/tunnel details when needed.
+2. Ask only for missing required facts: service name, image, domain, container port, region/exposure, node hostname when pinning is required, and relay/tunnel details when needed.
 3. Emit only the manifest YAML unless the user asks for explanation.
 4. Prefer `${ENV_NAME}` references for secrets; do not put plaintext secrets in YAML.
 5. Recommend validation with `luma validate <file>` and `luma deploy <file> --dry-run`.
@@ -27,6 +27,7 @@ Luma manifests are not Docker Compose. They describe one service: image, region,
 
 - `name`, `image`, and `region` are required.
 - Valid regions: `cn`, `global`, `home`.
+- `node` is optional and pins the service to a Docker Swarm hostname with `node.hostname == <node>`. Use it only for stateful, home, or debugging workloads that must run on one machine.
 - Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`.
 - Public exposures require `domain` and integer `port`.
 - `cn-edge` must use `region: cn`.
@@ -65,6 +66,18 @@ replicas: 1
 env:
   QUEUE_URL: redis://redis:6379/0
   OPENAI_API_KEY: ${OPENAI_API_KEY}
+```
+
+Pinned home worker:
+
+```yaml
+name: home-db
+image: postgres:16
+region: home
+node: orbstack
+exposure: none
+volumes:
+  - home_db_data:/var/lib/postgresql/data
 ```
 
 Worker that needs Luma egress proxy:

@@ -7,6 +7,7 @@
 | `name` | yes | string | Service name; Luma slugifies it for stack/service/router names. |
 | `image` | yes | string | Container image. Prefer pinned tags. |
 | `region` | yes | `cn` / `global` / `home` | Runtime placement region. |
+| `node` | no | string | Docker Swarm hostname to pin this service to one node. Luma still adds the region constraint. |
 | `exposure` | recommended | `none` / `cn-edge` / `external-edge` / `tailscale-relay` / `cloudflare-tunnel` | Access mode. Use explicit exposure in new files. |
 | `domain` | public only | string | Public hostname. |
 | `port` | public only | integer | Container internal port. |
@@ -49,6 +50,7 @@
   - load balancer server port from `port`
 - Public Traefik services are attached to the configured public overlay network.
 - Every service gets `node.labels.region == <region>`.
+- If `node` is set, the service also gets `node.hostname == <node>`.
 - `volumes` entries are copied onto the service; named sources such as `app_data:/data` are also declared as stack volumes so Docker keeps state across task replacement.
 - `resources` is copied to Swarm `deploy.resources`; use `limits` and `reservations` to protect small manager nodes from noisy services.
 - `proxy: true` services also get the configured egress overlay network and default `HTTP_PROXY=http://egress_mihomo:7890` / `HTTPS_PROXY=http://egress_mihomo:7890` env values unless already set. Scheduling still follows `region`.
@@ -69,6 +71,20 @@ env:
 ```
 
 Do not add the default `egress` network or default proxy env manually for this case. Add custom `HTTP_PROXY` or `HTTPS_PROXY` only when overriding the default proxy target.
+
+## Node Pin Example
+
+```yaml
+name: home-db
+image: postgres:16
+region: home
+node: orbstack
+exposure: none
+volumes:
+  - home_db_data:/var/lib/postgresql/data
+```
+
+Use the Swarm hostname shown by `luma status`, not the display name passed to `luma node join --name`.
 
 ## Resource Example
 
@@ -91,6 +107,7 @@ resources:
 - Does `domain` match the actual user-facing hostname?
 - Is `port` the container port, not the public firewall port?
 - Is `region` compatible with `exposure`?
+- If `node` is set, does it match a real Swarm hostname in `luma status`, and is the node in the selected `region`?
 - Are secrets represented as `${ENV_NAME}` instead of plaintext?
 - For every `${ENV_NAME}`, remind the user to run `luma secret set ENV_NAME` before deploying.
 - Does the image include a meaningful tag?

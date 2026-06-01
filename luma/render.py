@@ -68,6 +68,8 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
 def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
     service_name = service.slug
     constraints = [f"node.labels.region == {service.region}"]
+    if service.node:
+        constraints.append(f"node.hostname == {service.node}")
     constraints.extend(service.constraints)
 
     deploy: Dict[str, Any] = {

@@ -45,6 +45,7 @@ Luma 的用户模型只有 5 个词：
 | `service` | 一份 Luma YAML manifest 描述的部署单元。 |
 
 `region` 决定服务运行在哪类节点上，`exposure` 决定流量如何进来。它们相关但不等价。
+只有当服务必须固定在某台 Swarm hostname 上时，才在 manifest 里设置 `node`；Luma 仍然会保留 `region` 调度约束。
 
 例如：
 
@@ -271,6 +272,7 @@ env:
 | 在 client 或 worker 上运行 `luma update` 会怎样 | 只更新本地 CLI，不刷新 manager 控制面。 |
 | `luma update` 什么时候需要 `--domain` | 只有 `/opt/luma/control/control.json` 缺失，或你确实要切换控制面域名时。 |
 | 服务 A 从一个 region 迁到另一个 region | 改 manifest 的 `region`，必要时同步修改 `exposure`，然后重新 `luma deploy app.yaml`。 |
+| 服务 A 固定到某个节点 | 把 manifest 的 `node` 设为 `luma status` 里看到的 Swarm hostname，保留匹配的 `region`，然后重新 deploy。 |
 | 服务从公开变内部 | 把 `exposure` 改为 `none`，移除不再需要的 `domain`/公开入口配置，重新 deploy。 |
 | 服务从内部变公开 | 设置匹配的 `region` + `exposure`，补 `domain` 和 `port`，重新 deploy。 |
 | 新增国内 worker | 在新机器执行 `luma node join ... --region cn --name ...`。 |
@@ -296,7 +298,26 @@ env:
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 常见失败和修复。 |
 | [docs/release.md](docs/release.md) | 发布 tag、安装器和 control image 的流程。 |
 
-Agent 可以使用 [skills/luma-deployment-yaml](skills/luma-deployment-yaml) 里的可安装 skill 来生成或审阅部署 YAML。
+## Agent Skill
+
+Agent 可以使用 [skills/luma-deployment-yaml](skills/luma-deployment-yaml) 里的可安装 skill 来生成或审阅部署 YAML。在 Codex 里可以直接说：
+
+```text
+Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml
+```
+
+手动安装：
+
+```bash
+mkdir -p ~/.codex/skills
+tmp="$(mktemp -d)"
+git clone --depth 1 https://github.com/LiuTianjie/luma.git "$tmp/luma"
+rm -rf ~/.codex/skills/luma-deployment-yaml
+cp -R "$tmp/luma/skills/luma-deployment-yaml" ~/.codex/skills/
+rm -rf "$tmp"
+```
+
+安装后重启 Codex，让 skill 生效。
 
 ## 安全边界
 

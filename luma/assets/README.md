@@ -43,6 +43,7 @@ Luma's user-facing model is five words:
 | `service` | One deployment unit described by a Luma YAML manifest. |
 
 `region` decides where a service runs. `exposure` decides how traffic enters. They are related, but not the same thing.
+Set manifest `node` only when a service must be pinned to one Swarm hostname; Luma still keeps the `region` placement constraint.
 
 | Manifest | Scheduled on | Ingress path |
 | --- | --- | --- |
@@ -267,6 +268,7 @@ See `docs/deployment-yaml.md` for all fields and `examples/` for service templat
 | What happens if I run `luma update` on a client or worker? | It updates only the local CLI and skips manager control-plane refresh. |
 | When does `luma update` need `--domain`? | Only when `/opt/luma/control/control.json` is missing or you intentionally changed the control domain. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
+| Pin service A to one node | Set manifest `node` to the Swarm hostname shown by `luma status`, keep the matching `region`, then deploy again. |
 | Make a public service internal | Change `exposure` to `none`, remove public-only domain/ingress config if no longer needed, then deploy again. |
 | Make an internal service public | Set a matching `region` + `exposure`, add `domain` and `port`, then deploy again. |
 | Add a CN worker | Run `luma node join ... --region cn --name ...` on the new machine. |
@@ -291,6 +293,27 @@ See `docs/deployment-yaml.md` for all fields and `examples/` for service templat
 | `docs/secrets.md` | secret and environment variable handling. |
 | `docs/troubleshooting.md` | common failures and fixes. |
 | `docs/release.md` | publishing tags, installer, and control image releases. |
+
+## Agent Skill
+
+Agents can use the installable skill in `skills/luma-deployment-yaml` to generate or review deployment YAML. In Codex, ask:
+
+```text
+Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml
+```
+
+Manual install:
+
+```bash
+mkdir -p ~/.codex/skills
+tmp="$(mktemp -d)"
+git clone --depth 1 https://github.com/LiuTianjie/luma.git "$tmp/luma"
+rm -rf ~/.codex/skills/luma-deployment-yaml
+cp -R "$tmp/luma/skills/luma-deployment-yaml" ~/.codex/skills/
+rm -rf "$tmp"
+```
+
+Restart Codex after installing so the skill is loaded.
 
 ## Security Boundary
 

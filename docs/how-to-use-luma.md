@@ -256,6 +256,13 @@ port: 3000
 replicas: 2
 ```
 
+To pin a service to one Swarm node, add `node` with the hostname shown by `luma status`:
+
+```yaml
+region: home
+node: orbstack
+```
+
 ## 7. Deploy
 
 Default deploy path:

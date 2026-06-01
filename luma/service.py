@@ -26,6 +26,7 @@ class ServiceSpec:
     name: str
     image: str
     region: str
+    node: Optional[str] = None
     public: bool = False
     exposure: str = "none"
     domain: Optional[str] = None
@@ -79,6 +80,9 @@ def load_service(path: Path) -> ServiceSpec:
         raise LumaError("service manifest requires string field: image")
     if region not in VALID_REGIONS:
         raise LumaError(f"service region must be one of {sorted(VALID_REGIONS)}")
+    node = raw.get("node")
+    if node is not None and (not isinstance(node, str) or not node.strip()):
+        raise LumaError("node must be a non-empty string when provided")
 
     explicit_exposure = raw.get("exposure")
     if explicit_exposure is None:
@@ -166,6 +170,7 @@ def load_service(path: Path) -> ServiceSpec:
         name=name.strip(),
         image=image.strip(),
         region=region,
+        node=node.strip() if isinstance(node, str) else None,
         public=public,
         exposure=exposure,
         domain=domain.strip() if isinstance(domain, str) else None,

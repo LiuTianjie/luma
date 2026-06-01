@@ -54,3 +54,5 @@ domain: app.example.com
 port: 3000
 replicas: 2
 ```
+
+Set `node: <swarm-hostname>` only when the service must run on one specific machine. Luma still adds the `region` placement constraint, then adds `node.hostname == <swarm-hostname>`.

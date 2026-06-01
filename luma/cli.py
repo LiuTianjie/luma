@@ -271,73 +271,129 @@ def cmd_version(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     payload = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).status()
-    print(f"Control API: ok ({payload.get('clusterId')}, {payload.get('version')})")
-    print(f"Config path: {payload.get('configPath') or '-'}")
+    print("Luma status")
+    _print_key_values(
+        "Control",
+        [
+            ("API", "ok"),
+            ("Cluster", _status_value(payload.get("clusterId"))),
+            ("Version", _status_value(payload.get("version"))),
+            ("Config", _status_value(payload.get("configPath"))),
+        ],
+    )
     dns = payload.get("dns") if isinstance(payload.get("dns"), dict) else {}
-    print(f"DNS provider: {dns.get('provider') or 'not configured'}")
-    print(f"DNS zone: {dns.get('zone') or '-'}")
-    print(f"DNS zone id: {_configured_label(bool(dns.get('zoneIdConfigured')))}")
-    print(f"DNS token: {_configured_label(bool(dns.get('tokenConfigured')))} ({dns.get('tokenEnv') or 'CLOUDFLARE_API_TOKEN'})")
-    print(f"DNS target: {dns.get('target') or '-'}")
-    print(f"DNS ready: {'yes' if dns.get('ready') else 'no'}")
+    token_env = dns.get("tokenEnv") or "CLOUDFLARE_API_TOKEN"
+    _print_key_values(
+        "DNS",
+        [
+            ("Ready", _yes_no(bool(dns.get("ready")))),
+            ("Provider", _status_value(dns.get("provider") or "not configured")),
+            ("Zone", _status_value(dns.get("zone"))),
+            ("Zone ID", _configured_label(bool(dns.get("zoneIdConfigured")))),
+            ("Token", f"{_configured_label(bool(dns.get('tokenConfigured')))} ({token_env})"),
+            ("Target", _status_value(dns.get("target"))),
+        ],
+    )
     portainer = payload.get("portainer") if isinstance(payload.get("portainer"), dict) else {}
-    print(f"Portainer API: {portainer.get('apiUrl') or '-'}")
-    print(f"Portainer endpoint: {_configured_label(bool(portainer.get('endpointIdConfigured')))}")
-    print(f"Portainer swarm id: {_configured_label(bool(portainer.get('swarmIdConfigured')))}")
-    print(f"Portainer ready: {'yes' if portainer.get('ready') else 'no'}")
+    _print_key_values(
+        "Portainer",
+        [
+            ("Ready", _yes_no(bool(portainer.get("ready")))),
+            ("API", _status_value(portainer.get("apiUrl"))),
+            ("Endpoint", _configured_label(bool(portainer.get("endpointIdConfigured")))),
+            ("Swarm ID", _configured_label(bool(portainer.get("swarmIdConfigured")))),
+        ],
+    )
     nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
-    print(f"Registered nodes: {nodes.get('registered', 0)}")
     registered_items = nodes.get("items") if isinstance(nodes.get("items"), list) else []
-    if registered_items:
-        print("Registered node details:")
-        print("  name\tregion\tstatus\tdisplay")
-        for item in registered_items:
-            if not isinstance(item, dict):
-                continue
-            print(
-                "  "
-                + "\t".join(
-                    [
-                        str(item.get("name") or "-"),
-                        str(item.get("region") or "-"),
-                        str(item.get("status") or "-"),
-                        str(item.get("displayName") or "-"),
-                    ]
-                )
-            )
-    elif isinstance(nodes.get("names"), list) and nodes.get("names"):
-        print("Registered node names: " + ", ".join(str(name) for name in nodes["names"]))
     swarm = payload.get("swarm") if isinstance(payload.get("swarm"), dict) else {}
-    if swarm:
-        if not swarm.get("available"):
-            print(f"Swarm nodes: unavailable ({swarm.get('error') or 'unknown error'})")
-        else:
-            swarm_nodes = swarm.get("nodes") if isinstance(swarm.get("nodes"), list) else []
-            print(f"Swarm nodes: {len(swarm_nodes)}")
-            if swarm_nodes:
-                print("  hostname\trole\tstate\tavailability\tregion\tleader")
-                for item in swarm_nodes:
-                    if not isinstance(item, dict):
-                        continue
-                    leader = "yes" if item.get("leader") else "-"
-                    print(
-                        "  "
-                        + "\t".join(
-                            [
-                                str(item.get("hostname") or item.get("id") or "-"),
-                                str(item.get("role") or "-"),
-                                str(item.get("state") or "-"),
-                                str(item.get("availability") or "-"),
-                                str(item.get("region") or "-"),
-                                leader,
-                            ]
-                        )
-                    )
+    swarm_nodes = swarm.get("nodes") if isinstance(swarm.get("nodes"), list) else []
+    print()
+    print("Nodes")
+    if swarm and not swarm.get("available"):
+        print(f"  Swarm: unavailable ({swarm.get('error') or 'unknown error'})")
+    else:
+        print(f"  Summary: registered={nodes.get('registered', len(registered_items))}, swarm={len(swarm_nodes)}")
+    rows = _status_node_rows(registered_items, swarm_nodes)
+    if rows:
+        _print_table(["NAME", "REGION", "REGISTERED", "SWARM", "ROLE", "AVAIL", "LEADER", "DISPLAY"], rows)
+    elif isinstance(nodes.get("names"), list) and nodes.get("names"):
+        print("  Registered: " + ", ".join(str(name) for name in nodes["names"]))
+    else:
+        print("  No nodes reported")
     return 0
 
 
 def _configured_label(value: bool) -> str:
     return "configured" if value else "missing"
+
+
+def _yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def _status_value(value: object) -> str:
+    text = str(value or "").strip()
+    return text or "-"
+
+
+def _print_key_values(title: str, rows: list[tuple[str, str]]) -> None:
+    print()
+    print(title)
+    width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        print(f"  {label.ljust(width)}  {value}")
+
+
+def _print_table(headers: list[str], rows: list[list[str]]) -> None:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+    print("  " + "  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    for row in rows:
+        print("  " + "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
+
+
+def _status_node_rows(registered_items: list[object], swarm_nodes: list[object]) -> list[list[str]]:
+    merged: dict[str, dict[str, object]] = {}
+    for item in registered_items:
+        if not isinstance(item, dict):
+            continue
+        name = _status_value(item.get("name"))
+        if name == "-":
+            continue
+        merged.setdefault(name, {})["registered"] = item
+    for item in swarm_nodes:
+        if not isinstance(item, dict):
+            continue
+        name = _status_value(item.get("hostname") or item.get("id"))
+        if name == "-":
+            continue
+        merged.setdefault(name, {})["swarm"] = item
+
+    rows: list[list[str]] = []
+    for name in sorted(merged):
+        registered = merged[name].get("registered")
+        swarm = merged[name].get("swarm")
+        registered_dict = registered if isinstance(registered, dict) else {}
+        swarm_dict = swarm if isinstance(swarm, dict) else {}
+        display = _status_value(registered_dict.get("displayName"))
+        if display == name:
+            display = "-"
+        rows.append(
+            [
+                name,
+                _status_value(registered_dict.get("region") or swarm_dict.get("region")),
+                _status_value(registered_dict.get("status")),
+                _status_value(swarm_dict.get("state")) if swarm_dict else "missing",
+                _status_value(swarm_dict.get("role")),
+                _status_value(swarm_dict.get("availability")),
+                "yes" if swarm_dict.get("leader") else "-",
+                display,
+            ]
+        )
+    return rows
 
 
 def _version_health_context(args: argparse.Namespace) -> tuple[str, str, bool, str | None] | None:

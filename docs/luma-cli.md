@@ -255,6 +255,7 @@ Public services also require:
 
 Optional fields:
 
+- `node`: Swarm hostname for pinning the service to one node; Luma still adds the `region` constraint.
 - `env` / `environment`
 - `command`
 - `constraints`
