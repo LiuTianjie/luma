@@ -7,6 +7,7 @@ import secrets
 import shlex
 import ssl
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -812,6 +813,7 @@ def join_local_node(node: NodeConfig, profile: Profile, manager_addr: str, swarm
     _step(results, emit, "Install Docker", lambda: install_docker(remote))
     _step(results, emit, "Install and connect Tailscale", lambda: setup_tailscale(node, executor=remote), fix="Run: luma tailscale connect")
     _step(results, emit, "Join Docker Swarm", lambda: _join_swarm(remote, manager_addr, swarm_token))
+    _step(results, emit, "Verify Docker Swarm node", lambda: verify_local_swarm_node(remote))
     return results
 
 
@@ -917,6 +919,54 @@ def local_docker_node_id() -> str:
     remote = LocalExecutor()
     output = _last_command_value(_docker(remote, "docker info --format '{{.Swarm.NodeID}}'"))
     return output
+
+
+def verify_local_swarm_node(remote: LocalExecutor | None = None) -> str:
+    remote = remote or LocalExecutor()
+    deadline = time.monotonic() + 20
+    last_output = ""
+    while True:
+        result = remote.run_result(
+            "docker info --format 'state={{.Swarm.LocalNodeState}} nodeID={{.Swarm.NodeID}} error={{.Swarm.Error}}' 2>&1"
+        )
+        last_output = result.output.strip()
+        if result.code == 0:
+            values = _parse_key_values(last_output)
+            state = values.get("state", "")
+            node_id = values.get("nodeID", "")
+            error = values.get("error", "")
+            if state == "active" and node_id:
+                return f"Swarm node active: {node_id}"
+            if state == "error" or error:
+                raise LumaError(
+                    "Docker Swarm joined locally but is not healthy on this node. "
+                    f"docker info: {last_output}. "
+                    "Run `docker swarm leave --force`, fix Docker/Tailscale connectivity, then rerun `luma node join`."
+                )
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(2)
+    raise LumaError(
+        "Docker Swarm join did not produce an active local node within 20s. "
+        f"Last docker info output: {last_output or '-'}"
+    )
+
+
+def _parse_key_values(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    key = ""
+    value_parts: list[str] = []
+    for part in text.split():
+        if "=" in part:
+            if key:
+                values[key] = " ".join(value_parts)
+            key, value = part.split("=", 1)
+            value_parts = [value]
+        elif key:
+            value_parts.append(part)
+    if key:
+        values[key] = " ".join(value_parts)
+    return values
 
 
 def _docker(remote: Executor, command: str) -> str:

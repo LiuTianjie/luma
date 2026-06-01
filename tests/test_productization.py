@@ -33,6 +33,7 @@ from luma.bootstrap import (
     install_control_config,
     install_docker,
     setup_tailscale,
+    verify_local_swarm_node,
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
@@ -835,6 +836,30 @@ class CliTests(unittest.TestCase):
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
+    def test_verify_local_swarm_node_rejects_error_state(self):
+        remote = Mock()
+        remote.run_result.return_value = Mock(
+            code=0,
+            output=(
+                "state=error nodeID= error=rpc error: code = DeadlineExceeded "
+                "desc = context deadline exceeded while waiting for connections to become ready\n"
+            ),
+        )
+
+        with self.assertRaisesRegex(LumaError, "Docker Swarm joined locally but is not healthy"):
+            verify_local_swarm_node(remote)
+
+    def test_verify_local_swarm_node_requires_node_id(self):
+        remote = Mock()
+        remote.run_result.side_effect = [
+            Mock(code=0, output="state=active nodeID= error=\n"),
+            Mock(code=0, output="state=active nodeID= error=\n"),
+        ]
+
+        with patch("luma.bootstrap.time.monotonic", side_effect=[0, 3, 30]), patch("luma.bootstrap.time.sleep"):
+            with self.assertRaisesRegex(LumaError, "did not produce an active local node"):
+                verify_local_swarm_node(remote)
 
     def test_home_node_join_requires_tailscale_key_when_disconnected(self):
         with tempfile.TemporaryDirectory() as tmp:
