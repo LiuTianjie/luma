@@ -94,6 +94,46 @@ def sync_dns(config: LumaConfig, service: ServiceSpec) -> str:
     return f"DNS created: {name} -> {target}"
 
 
+def delete_dns(config: LumaConfig, service: ServiceSpec) -> str:
+    if not service.public:
+        return "DNS skipped: service is not public"
+    if service.exposure == "cloudflare-tunnel":
+        return "DNS skipped: Cloudflare Tunnel public hostname is managed by the tunnel"
+
+    dns_config = config.dns
+    if dns_config.get("provider") != "cloudflare":
+        return "DNS skipped: dns.provider is not cloudflare"
+
+    token_env = str(dns_config.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
+    token = os.environ.get(token_env)
+    if not token:
+        raise LumaError(f"missing Cloudflare API token env var: {token_env}")
+
+    zone_id = os.environ.get(str(dns_config.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID")))
+    if not zone_id:
+        zone_id = dns_config.get("zoneId")
+    if not zone_id:
+        raise LumaError("missing Cloudflare zone id: run luma cloudflare connect --zone <domain> or set providers.dns.zoneId")
+
+    record_type = str(service.dns.get("type") or dns_config.get("recordType", "A")).upper()
+    client = CloudflareClient(token)
+    name = service.domain
+    query = urllib.parse.urlencode({"type": record_type, "name": name})
+    existing = client.request("GET", f"/zones/{zone_id}/dns_records?{query}")["result"]
+    if not existing:
+        return f"DNS not found: {name}"
+    deleted = 0
+    for record in existing:
+        record_id = record.get("id")
+        if not record_id:
+            continue
+        client.request("DELETE", f"/zones/{zone_id}/dns_records/{record_id}")
+        deleted += 1
+    if deleted == 1:
+        return f"DNS deleted: {name}"
+    return f"DNS deleted: {name} ({deleted} records)"
+
+
 def sync_control_dns(config: LumaConfig, domain: str) -> str:
     dns_config = config.dns
     if dns_config.get("provider") != "cloudflare":

@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import socket
 import ssl
 import tempfile
@@ -17,11 +18,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict
 
 from ..assets import asset_path
-from ..cloudflare import sync_dns
+from ..cloudflare import delete_dns, sync_dns
 from ..config import load_config
 from ..errors import LumaError
 from ..io import load_yaml
-from ..portainer import deploy_with_portainer, remove_luma_portainer_registry
+from ..portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack
 from ..registry import docker_registry_auth_header, normalize_registry_host, registry_auth_for_image, registry_auth_matches_image
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service
@@ -312,6 +313,72 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     }
 
 
+def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    steps: list[dict[str, str]] = []
+    manifest = body.get("manifest")
+    source_name = str(body.get("sourceName") or "service.yaml")
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise LumaError("manifest is required")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", encoding="utf-8", delete=False) as fh:
+        fh.write(manifest)
+        service_path = Path(fh.name)
+    try:
+        service = load_service(service_path)
+    finally:
+        service_path.unlink(missing_ok=True)
+    parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
+    steps.append(parse_step)
+    _emit_progress(progress, parse_step)
+
+    dry_run = bool(body.get("dryRun"))
+    stack_target = _generated_stack_remove_target(config, service, config_path)
+    route_target = _resolve_control_path(route_path(config, service), config_path) if service.exposure == "tailscale-relay" else None
+    files = [str(stack_target)]
+    if route_target:
+        files.append(str(route_target))
+
+    dns_result = _deploy_step(
+        steps,
+        "Delete DNS",
+        lambda: "DNS skipped: --skip-dns"
+        if body.get("skipDns")
+        else (_planned_delete_dns_message(service) if dry_run else delete_dns(config, service)),
+        progress=progress,
+    )
+    portainer_result = _deploy_step(
+        steps,
+        "Remove Portainer stack",
+        lambda: "Portainer remove skipped: --skip-portainer"
+        if body.get("skipPortainer")
+        else (_planned_remove_message("Portainer stack would be removed", service.slug) if dry_run else remove_stack(config, service, state)),
+        progress=progress,
+    )
+    files_result = _deploy_step(
+        steps,
+        "Delete generated files",
+        lambda: _planned_remove_message("Generated files would be removed", ", ".join(files))
+        if dry_run
+        else _remove_generated_files(stack_target, route_target),
+        progress=progress,
+    )
+    return {
+        "clusterId": state["clusterId"],
+        "service": service.name,
+        "sourceName": source_name,
+        "files": files,
+        "dns": dns_result,
+        "portainer": portainer_result,
+        "generatedFiles": files_result,
+        "dryRun": dry_run,
+        "steps": steps,
+    }
+
+
 def handle_secret_list(token: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -400,6 +467,53 @@ def handle_registry_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if warning:
         result["warning"] = warning
     return result
+
+
+def _planned_remove_message(prefix: str, target: str) -> str:
+    return f"{prefix}: {target}"
+
+
+def _planned_delete_dns_message(service: ServiceSpec) -> str:
+    if not service.public:
+        return "DNS skipped: service is not public"
+    if service.exposure == "cloudflare-tunnel":
+        return "DNS skipped: Cloudflare Tunnel public hostname is managed by the tunnel"
+    return _planned_remove_message("DNS would be deleted", service.domain or service.name)
+
+
+def _generated_stack_remove_target(config: Any, service: ServiceSpec, config_path: Path) -> Path:
+    target = _resolve_control_path(stack_path(config, service), config_path)
+    if service.stack_path:
+        return target
+    return target.parent
+
+
+def _remove_generated_files(stack_target: Path, route_target: Path | None) -> str:
+    removed = []
+    missing = []
+    for target in [stack_target, route_target]:
+        if target is None:
+            continue
+        result = _remove_path(target)
+        if result:
+            removed.append(str(target))
+        else:
+            missing.append(str(target))
+    if removed and missing:
+        return f"Generated files removed: {', '.join(removed)}; not found: {', '.join(missing)}"
+    if removed:
+        return f"Generated files removed: {', '.join(removed)}"
+    return f"Generated files not found: {', '.join(missing)}"
+
+
+def _remove_path(path: Path) -> bool:
+    if path.is_dir():
+        shutil.rmtree(path)
+        return True
+    if path.exists():
+        path.unlink()
+        return True
+    return False
 
 
 def _resolve_control_path(path: Path, config_path: Path) -> Path:
@@ -1215,7 +1329,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "version": __version__,
                     "nodeJoinModel": "region-first",
-                    "capabilities": ["node-region", "service-proxy", "dashboard"],
+                    "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove"],
                 },
             )
             return
@@ -1260,6 +1374,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/deployments/stream":
                 self._stream_deployment(token, body)
+                return
+            if self.path == "/v1/services/remove":
+                self._json(200, handle_service_remove(token, body))
                 return
             if self.path == "/v1/secrets":
                 self._json(200, handle_secret_set(token, body))

@@ -200,23 +200,34 @@ published https://status.example.com</code></pre>
               <div class="stage-status">
                 <span data-demo-activity>在 manager 上安装 luma</span>
               </div>
+              <div class="stage-pipeline" aria-hidden="true">
+                <span class="pipeline-pill pipe-docker" title="Docker"><span class="brand-icon icon-docker"></span>Docker</span>
+                <span class="pipeline-pill pipe-cloudflare" title="Cloudflare"><span class="brand-icon icon-cloudflare"></span>Cloudflare</span>
+                <span class="pipeline-pill pipe-traefik" title="Traefik"><span class="brand-icon icon-traefik"></span>Traefik</span>
+                <span class="pipeline-pill pipe-github" title="GHCR"><span class="brand-icon icon-github"></span>GHCR</span>
+              </div>
               <div class="stage-node manager-node">
+                <span class="node-icon luma-icon"><img src="./assets/luma-logo-mark.png" alt="" /></span>
                 <strong>Manager / Control</strong>
                 <span data-demo-manager>CLI 已安装</span>
               </div>
               <div class="stage-node edge-node">
+                <span class="node-icon"><span class="brand-icon icon-traefik"></span></span>
                 <strong>Traefik Edge</strong>
                 <span data-demo-edge>未创建</span>
               </div>
               <div class="stage-node worker-node">
+                <span class="node-icon"><span class="brand-icon icon-docker"></span></span>
                 <strong>CN Worker</strong>
                 <span data-demo-worker>未加入</span>
               </div>
               <div class="stage-node global-node">
+                <span class="node-icon"><span class="brand-icon icon-docker"></span></span>
                 <strong>Global Worker</strong>
                 <span data-demo-global>未加入</span>
               </div>
               <div class="stage-node client-node">
+                <span class="node-icon"><span class="brand-icon icon-github"></span></span>
                 <strong>Client</strong>
                 <span data-demo-client>未登录</span>
               </div>
@@ -232,22 +243,22 @@ published https://status.example.com</code></pre>
 
             <div class="effect-grid">
               <div class="effect-card domain-card">
-                <span>域名</span>
+                <span><span class="brand-icon icon-cloudflare"></span>域名</span>
                 <strong data-demo-domain>还没有服务</strong>
                 <small data-demo-domain-status>deploy 时读取 manifest</small>
               </div>
               <div class="effect-card dns-card">
-                <span>DNS</span>
+                <span><span class="brand-icon icon-cloudflare"></span>DNS</span>
                 <strong data-demo-dns>等待中</strong>
                 <small data-demo-dns-status>deploy 时写入记录</small>
               </div>
               <div class="effect-card tls-card">
-                <span>证书</span>
+                <span><span class="brand-icon icon-traefik"></span>证书</span>
                 <strong data-demo-tls>等待中</strong>
                 <small data-demo-tls-status>Traefik 按 Host 申请证书</small>
               </div>
               <div class="effect-card stack-card">
-                <span>路由与负载</span>
+                <span><span class="brand-icon icon-docker"></span>路由与负载</span>
                 <strong data-demo-stack>等待中</strong>
                 <small data-demo-stack-status>Traefik 转发到 service:port</small>
               </div>

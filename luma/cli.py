@@ -164,6 +164,12 @@ def build_parser() -> argparse.ArgumentParser:
     service_sub = service.add_subparsers(dest="service_command", required=True)
     service_new = service_sub.add_parser("new")
     service_new.add_argument("--output", type=Path)
+    service_remove = service_sub.add_parser("remove")
+    service_remove.add_argument("service", type=Path)
+    service_remove.add_argument("--skip-dns", action="store_true", help="Keep Cloudflare DNS records")
+    service_remove.add_argument("--skip-portainer", action="store_true", help="Keep the Portainer stack running")
+    service_remove.add_argument("--dry-run", action="store_true", help="Show what would be removed without changing the manager")
+    service_remove.add_argument("--timeout", type=int, default=300, help="Seconds to wait for the control-plane remove response")
 
     for name in ("validate", "render"):
         cmd = sub.add_parser(name)
@@ -1173,8 +1179,14 @@ def prompt(default: str, label: str) -> str:
 
 
 def cmd_service(args: argparse.Namespace) -> int:
-    if args.service_command != "new":
-        raise LumaError(f"unknown service command: {args.service_command}")
+    if args.service_command == "new":
+        return cmd_service_new(args)
+    if args.service_command == "remove":
+        return cmd_service_remove(args)
+    raise LumaError(f"unknown service command: {args.service_command}")
+
+
+def cmd_service_new(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     name = prompt("app", "name")
     image_default = f"{config.defaults.get('registry', 'ghcr.io/your-org')}/{slugify(name)}:latest"
@@ -1202,6 +1214,46 @@ def cmd_service(args: argparse.Namespace) -> int:
     output = args.output or Path(f"{slugify(name)}.yaml")
     write_yaml(output, data)
     print(f"Service manifest created: {output}")
+    return 0
+
+
+def cmd_service_remove(args: argparse.Namespace) -> int:
+    service = load_service(args.service)
+    if args.timeout < 1:
+        raise LumaError("--timeout must be at least 1 second")
+    print(f"[start] Load remove context: {args.service}", flush=True)
+    context = load_current_context()
+    print(f"[ok] Logged in: {context['clusterId']} ({context['endpoint']})", flush=True)
+    client = ControlClient(
+        str(context["endpoint"]),
+        str(context["token"]),
+        insecure=bool(context.get("insecure")),
+        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
+    )
+    print(f"[start] Submit remove: {service.name} -> {service.region}/{service.exposure}", flush=True)
+    manifest_text = args.service.read_text(encoding="utf-8")
+    result = _run_with_wait_heartbeat(
+        lambda: client.remove_service(
+            manifest=manifest_text,
+            source_name=str(args.service),
+            skip_dns=args.skip_dns,
+            skip_portainer=args.skip_portainer,
+            dry_run=args.dry_run,
+            timeout=args.timeout,
+        ),
+        timeout=args.timeout,
+    )
+    for step in result.get("steps") or []:
+        if isinstance(step, dict):
+            _print_deploy_step(step)
+    action = "Remove dry run finished" if result.get("dryRun") else "Remove finished"
+    print(f"[ok] {action}: {result.get('service', service.name)}")
+    if result.get("dns"):
+        print(result["dns"])
+    if result.get("portainer"):
+        print(result["portainer"])
+    if result.get("generatedFiles"):
+        print(result["generatedFiles"])
     return 0
 
 

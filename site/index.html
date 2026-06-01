@@ -200,23 +200,34 @@ published https://status.example.com</code></pre>
               <div class="stage-status">
                 <span data-demo-activity>Installing luma on the manager</span>
               </div>
+              <div class="stage-pipeline" aria-hidden="true">
+                <span class="pipeline-pill pipe-docker" title="Docker"><span class="brand-icon icon-docker"></span>Docker</span>
+                <span class="pipeline-pill pipe-cloudflare" title="Cloudflare"><span class="brand-icon icon-cloudflare"></span>Cloudflare</span>
+                <span class="pipeline-pill pipe-traefik" title="Traefik"><span class="brand-icon icon-traefik"></span>Traefik</span>
+                <span class="pipeline-pill pipe-github" title="GHCR"><span class="brand-icon icon-github"></span>GHCR</span>
+              </div>
               <div class="stage-node manager-node">
+                <span class="node-icon luma-icon"><img src="./assets/luma-logo-mark.png" alt="" /></span>
                 <strong>Manager / Control</strong>
                 <span data-demo-manager>CLI installed</span>
               </div>
               <div class="stage-node edge-node">
+                <span class="node-icon"><span class="brand-icon icon-traefik"></span></span>
                 <strong>Traefik Edge</strong>
                 <span data-demo-edge>not created</span>
               </div>
               <div class="stage-node worker-node">
+                <span class="node-icon"><span class="brand-icon icon-docker"></span></span>
                 <strong>CN Worker</strong>
                 <span data-demo-worker>not joined</span>
               </div>
               <div class="stage-node global-node">
+                <span class="node-icon"><span class="brand-icon icon-docker"></span></span>
                 <strong>Global Worker</strong>
                 <span data-demo-global>not joined</span>
               </div>
               <div class="stage-node client-node">
+                <span class="node-icon"><span class="brand-icon icon-github"></span></span>
                 <strong>Client</strong>
                 <span data-demo-client>not logged in</span>
               </div>
@@ -232,22 +243,22 @@ published https://status.example.com</code></pre>
 
             <div class="effect-grid">
               <div class="effect-card domain-card">
-                <span>Domain</span>
+                <span><span class="brand-icon icon-cloudflare"></span>Domain</span>
                 <strong data-demo-domain>no service yet</strong>
                 <small data-demo-domain-status>deploy reads the manifest</small>
               </div>
               <div class="effect-card dns-card">
-                <span>DNS</span>
+                <span><span class="brand-icon icon-cloudflare"></span>DNS</span>
                 <strong data-demo-dns>pending</strong>
                 <small data-demo-dns-status>deploy writes the record</small>
               </div>
               <div class="effect-card tls-card">
-                <span>Certificate</span>
+                <span><span class="brand-icon icon-traefik"></span>Certificate</span>
                 <strong data-demo-tls>pending</strong>
                 <small data-demo-tls-status>Traefik requests the certificate</small>
               </div>
               <div class="effect-card stack-card">
-                <span>Route and workload</span>
+                <span><span class="brand-icon icon-docker"></span>Route and workload</span>
                 <strong data-demo-stack>pending</strong>
                 <small data-demo-stack-status>Traefik forwards to service:port</small>
               </div>

@@ -115,7 +115,28 @@ sudo docker service rollback <stack>_<service>
 
 ## Remove A Service
 
-Remove the stack in Portainer, then remove generated files on the manager:
+Use the original service manifest as the source of truth:
+
+```bash
+luma service remove <service>.yaml
+```
+
+The control plane deletes the Luma-managed Cloudflare DNS record for public services, removes the Portainer stack, and deletes generated manager files. For `tailscale-relay`, it also deletes `/opt/luma/routes/<service>.yml`. For `cloudflare-tunnel`, Cloudflare Tunnel public hostname cleanup is skipped because that hostname is still managed in Cloudflare Zero Trust.
+
+Preview the cleanup without changing the manager:
+
+```bash
+luma service remove <service>.yaml --dry-run
+```
+
+Keep DNS or the Portainer stack when you are doing a partial cleanup:
+
+```bash
+luma service remove <service>.yaml --skip-dns
+luma service remove <service>.yaml --skip-portainer
+```
+
+If the control plane is unavailable, remove the stack in Portainer, then remove generated files on the manager:
 
 ```bash
 sudo rm -rf /opt/luma/stacks/<region>/<service>

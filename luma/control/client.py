@@ -167,6 +167,29 @@ class ControlClient:
             timeout=timeout,
         )
 
+    def remove_service(
+        self,
+        *,
+        manifest: str,
+        source_name: str,
+        skip_dns: bool = False,
+        skip_portainer: bool = False,
+        dry_run: bool = False,
+        timeout: int = 300,
+    ) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/services/remove",
+            {
+                "manifest": manifest,
+                "sourceName": source_name,
+                "skipDns": skip_dns,
+                "skipPortainer": skip_portainer,
+                "dryRun": dry_run,
+            },
+            timeout=timeout,
+        )
+
     def list_secrets(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/secrets")
 

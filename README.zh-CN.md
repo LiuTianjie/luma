@@ -284,6 +284,7 @@ env:
 | `luma update` 什么时候需要 `--domain` | 只有 `/opt/luma/control/control.json` 缺失，或你确实要切换控制面域名时。 |
 | 服务 A 从一个 region 迁到另一个 region | 改 manifest 的 `region`，必要时同步修改 `exposure`，然后重新 `luma deploy app.yaml`。 |
 | 服务 A 固定到某个节点 | 把 manifest 的 `node` 设为 `luma node join --name` 使用的 Luma 节点名，保留匹配的 `region`，然后重新 deploy。控制面会解析成 Swarm NodeID 调度。 |
+| 下掉服务 A | 运行 `luma service remove app.yaml`。它会删除 DNS、Portainer stack 和生成的 stack/route 文件；用 `--dry-run` 预览，或用 `--skip-dns` 保留 DNS。 |
 | 服务从公开变内部 | 把 `exposure` 改为 `none`，移除不再需要的 `domain`/公开入口配置，重新 deploy。 |
 | 服务从内部变公开 | 设置匹配的 `region` + `exposure`，补 `domain` 和 `port`，重新 deploy。 |
 | 部署私有 GHCR 镜像 | 先用 `luma registry login ghcr.io --username <user> --password-stdin` 保存凭证，再部署普通 manifest。 |

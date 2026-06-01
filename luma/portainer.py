@@ -193,6 +193,30 @@ def remove_luma_portainer_registry(config: LumaConfig, state: Dict[str, Any], ho
     return True
 
 
+def remove_stack(config: LumaConfig, service: ServiceSpec, state: Dict[str, Any]) -> str:
+    api_url = str(state.get("portainerApiUrl") or config.portainer.get("apiUrl") or "")
+    username = str(state.get("portainerAdminUsername") or config.portainer.get("adminUsername") or "admin")
+    password = str(state.get("portainerAdminPassword") or "")
+    endpoint_id = state.get("portainerEndpointId") or config.portainer.get("endpointId")
+    if not api_url or not password or not endpoint_id:
+        raise LumaError(f"missing Portainer API binding for {service.name}: rerun luma bootstrap manager")
+    client = PortainerApi(api_url, username=username, password=password)
+    token = client.authenticate()
+    stacks = client.request("GET", "/stacks", token=token)
+    if not isinstance(stacks, list):
+        raise LumaError("Portainer returned an invalid stack list")
+    stack_id = None
+    for item in stacks:
+        if isinstance(item, dict) and item.get("Name") == service.slug:
+            stack_id = item.get("Id")
+            break
+    if stack_id is None:
+        return f"Portainer stack not found: {service.slug}"
+    endpoint = int(endpoint_id)
+    client.request("DELETE", f"/stacks/{int(stack_id)}?{urllib.parse.urlencode({'endpointId': endpoint})}", token=token)
+    return f"Portainer stack removed: {service.slug}"
+
+
 def _portainer_registry_auth_header(registry_id: int | None) -> dict[str, str] | None:
     if registry_id is None:
         return None

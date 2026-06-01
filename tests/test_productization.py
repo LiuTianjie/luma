@@ -18,7 +18,7 @@ import yaml
 from luma import __version__
 from luma.assets import asset_text
 from luma.config import LumaConfig
-from luma.cloudflare import sync_control_dns
+from luma.cloudflare import delete_dns, sync_control_dns
 from luma.bootstrap import (
     _acme_email,
     _ensure_control_image,
@@ -38,12 +38,12 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, resolve_service_image
+from luma.control.server import ControlHandler, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, resolve_service_image
 from luma.control.state import init_state, load_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
 from luma.errors import LumaError
-from luma.portainer import deploy_with_portainer, remove_luma_portainer_registry, resolve_webhook, upsert_stack
+from luma.portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack, resolve_webhook, upsert_stack
 from luma.profiles import PROFILES
 from luma.registry import registry_provider_type
 from luma.service import load_service
@@ -109,6 +109,36 @@ class ProductConfigTests(unittest.TestCase):
             self.assertIn("luma configure --role manager", result)
         finally:
             _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_delete_dns_removes_matching_cloudflare_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "domain": "api.example.com",
+                        "port": 80,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({"providers": {"dns": {"type": "cloudflare", "zoneId": "zone-id"}}}, None)
+            old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            try:
+                client = Mock()
+                client.request.side_effect = [{"result": [{"id": "record-1"}]}, {"result": {}}]
+                with patch("luma.cloudflare.CloudflareClient", return_value=client):
+                    result = delete_dns(config, service)
+                self.assertEqual(result, "DNS deleted: api.example.com")
+                client.request.assert_any_call("GET", "/zones/zone-id/dns_records?type=A&name=api.example.com")
+                client.request.assert_any_call("DELETE", "/zones/zone-id/dns_records/record-1")
+            finally:
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
     def test_profiles_have_expected_roles(self):
         self.assertIn("edge", PROFILES["single-node"].roles)
@@ -244,6 +274,63 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "deploy")
         self.assertEqual(args.via, "portainer")
         self.assertEqual(args.timeout, 1800)
+
+    def test_service_remove_parser_defaults_to_full_cleanup(self):
+        args = build_parser().parse_args(["service", "remove", "app.yaml"])
+        self.assertEqual(args.command, "service")
+        self.assertEqual(args.service_command, "remove")
+        self.assertFalse(args.skip_dns)
+        self.assertFalse(args.skip_portainer)
+        self.assertFalse(args.dry_run)
+        self.assertEqual(args.timeout, 300)
+
+    def test_service_remove_submits_manifest_to_control_plane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "domain": "api.example.com",
+                        "port": 80,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_home = _set_env("LUMA_CONFIG_HOME", str(home))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.remove_service.return_value = {
+                    "service": "api",
+                    "dryRun": True,
+                    "dns": "DNS deleted: api.example.com",
+                    "portainer": "Portainer stack removed: api",
+                    "generatedFiles": "Generated files removed",
+                    "steps": [
+                        {"name": "Delete DNS", "status": "ok", "message": "DNS deleted: api.example.com"},
+                        {"name": "Remove Portainer stack", "status": "ok", "message": "Portainer stack removed: api"},
+                    ],
+                }
+                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                    code = main(["service", "remove", str(service_path), "--timeout", "12", "--dry-run"])
+                self.assertEqual(code, 0)
+                client.remove_service.assert_called_once()
+                kwargs = client.remove_service.call_args.kwargs
+                self.assertEqual(kwargs["source_name"], str(service_path))
+                self.assertEqual(kwargs["timeout"], 12)
+                self.assertTrue(kwargs["dry_run"])
+                self.assertFalse(kwargs["skip_dns"])
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("[start] Submit remove: api -> cn/cn-edge", printed_text)
+                self.assertIn("[ok] Remove Portainer stack: Portainer stack removed: api", printed_text)
+                self.assertIn("[ok] Remove dry run finished: api", printed_text)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
 
     def test_deploy_prints_progress_and_passes_timeout(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1775,6 +1862,93 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
+    def test_service_remove_cleans_dns_portainer_and_generated_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["portainerApiUrl"] = "https://127.0.0.1:9443/api"
+                state["portainerAdminPassword"] = "secret"
+                state["portainerEndpointId"] = 1
+                from luma.control.state import save_state
+
+                save_state(state)
+                stack_dir = root / "stacks" / "home" / "home-panel"
+                stack_dir.mkdir(parents=True)
+                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                route_file = root / "routes" / "home-panel.yml"
+                route_file.parent.mkdir(parents=True)
+                route_file.write_text("http:\n", encoding="utf-8")
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zoneId": "zone-id"}},
+                            "defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "home-panel",
+                        "image": "ghcr.io/me/home-panel:1",
+                        "region": "home",
+                        "exposure": "tailscale-relay",
+                        "domain": "panel.example.com",
+                        "port": 8080,
+                    }
+                )
+                with patch("luma.control.server.delete_dns", return_value="DNS deleted: panel.example.com") as dns, patch(
+                    "luma.control.server.remove_stack", return_value="Portainer stack removed: home-panel"
+                ) as stack:
+                    result = handle_service_remove(state["deployToken"], {"manifest": manifest, "sourceName": "home-panel.yaml"})
+                dns.assert_called_once()
+                stack.assert_called_once()
+                self.assertFalse(stack_dir.exists())
+                self.assertFalse(route_file.exists())
+                self.assertEqual(result["service"], "home-panel")
+                self.assertIn(str(stack_dir), result["files"])
+                self.assertIn(str(route_file), result["files"])
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Delete DNS=ok:DNS deleted: panel.example.com", steps)
+                self.assertIn("Remove Portainer stack=ok:Portainer stack removed: home-panel", steps)
+                self.assertIn("Delete generated files=ok:Generated files removed", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_service_remove_dry_run_does_not_delete_generated_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                stack_dir = root / "stacks" / "cn" / "api"
+                stack_dir.mkdir(parents=True)
+                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump({"name": "api", "image": "nginx:alpine", "region": "cn", "exposure": "none"})
+                with patch("luma.control.server.delete_dns") as dns, patch("luma.control.server.remove_stack") as stack:
+                    result = handle_service_remove(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml", "dryRun": True})
+                dns.assert_not_called()
+                stack.assert_not_called()
+                self.assertTrue(stack_dir.exists())
+                self.assertTrue(result["dryRun"])
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Portainer stack would be removed: api", steps)
+                self.assertIn("Generated files would be removed", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_control_status_reports_dns_and_portainer_readiness(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2441,6 +2615,29 @@ class ControlApiTests(unittest.TestCase):
                 },
                 token="jwt",
             )
+
+    def test_portainer_stack_remove_deletes_existing_stack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump({"name": "api-service", "image": "nginx:alpine", "region": "cn", "exposure": "none"}),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+            }
+            client = Mock()
+            client.authenticate.return_value = "jwt"
+            client.request.side_effect = [[{"Id": 7, "Name": "api-service"}], None]
+            with patch("luma.portainer.PortainerApi", return_value=client):
+                result = remove_stack(config, service, state)
+            self.assertEqual(result, "Portainer stack removed: api-service")
+            client.request.assert_any_call("DELETE", "/stacks/7?endpointId=1", token="jwt")
 
     def test_portainer_stack_create_links_registry_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:

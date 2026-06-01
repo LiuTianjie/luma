@@ -240,6 +240,13 @@ Deploy through Portainer:
 luma deploy examples/public-cn-service.yaml
 ```
 
+Remove a deployed service:
+
+```bash
+luma service remove examples/public-cn-service.yaml
+luma service remove examples/public-cn-service.yaml --dry-run
+```
+
 `depoly` is accepted as a compatibility alias:
 
 ```bash
@@ -349,6 +356,8 @@ The client prints local progress before submitting the request, while waiting fo
 Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Portainer stack instead of creating a duplicate. The update uses the current rendered manifest as the source of truth; resources removed from the manifest can be pruned by Portainer.
 
 `--dry-run` renders locally and does not contact the control API. `--skip-dns` and `--skip-webhook` are sent to the control API. `--commit` and `--push` are deprecated in control-plane deploy mode.
+
+For `luma service remove service.yaml`, Luma submits the manifest to the control plane and removes the matching service slug. By default it deletes Luma-managed Cloudflare DNS, removes the Portainer stack, and deletes generated stack files. `tailscale-relay` route files are removed too. Use `--dry-run` to preview, `--skip-dns` to keep the DNS record, and `--skip-portainer` only when you intentionally want to remove generated Luma files without stopping the stack. `cloudflare-tunnel` public hostnames are still managed in Cloudflare Zero Trust, so Luma reports that cleanup as skipped.
 
 Legacy Portainer webhooks are still supported for existing GitOps stacks. For more than one GitOps stack, use per-service webhook env vars:
 
