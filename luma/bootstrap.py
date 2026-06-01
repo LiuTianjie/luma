@@ -11,7 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Callable, Union
+from typing import Any, Callable, Union
 
 from .assets import asset_path, asset_text
 from .config import LumaConfig, NodeConfig
@@ -575,12 +575,7 @@ def setup_tailscale(node: NodeConfig, *, authkey: str | None = None, executor: E
         if status.code == 0:
             results.append("Tailscale already logged in")
         elif authkey:
-            remote.run(
-                "tailscale up "
-                f"--authkey {shlex.quote(authkey)} "
-                f"--hostname {shlex.quote(hostname)} "
-                "--accept-dns=false"
-            )
+            _run_tailscale_up(remote.run_result, authkey, hostname)
             results.append(f"Tailscale connected: {hostname}")
         else:
             results.append("Tailscale installed but not connected on macOS")
@@ -600,15 +595,41 @@ def setup_tailscale(node: NodeConfig, *, authkey: str | None = None, executor: E
     if not authkey:
         results.append("Tailscale login skipped: set TAILSCALE_AUTHKEY and run luma tailscale connect " + node.name)
         return results
-    remote.sudo(
-        "set -euo pipefail; "
-        "tailscale up "
-        f"--authkey {shlex.quote(authkey)} "
-        f"--hostname {shlex.quote(hostname)} "
-        "--accept-dns=false"
-    )
+    _run_tailscale_up(lambda command: remote.sudo_result(f"set -euo pipefail; {command}"), authkey, hostname)
     results.append(f"Tailscale connected: {hostname}")
     return results
+
+
+def _run_tailscale_up(run_result: Callable[[str], Any], authkey: str, hostname: str) -> None:
+    result = run_result(_tailscale_up_command(authkey, hostname))
+    if result.code == 0:
+        return
+    if _tailscale_up_requires_reset(result.output):
+        result = run_result(_tailscale_up_command(authkey, hostname, reset=True))
+        if result.code == 0:
+            return
+    output = _redact_tailscale_authkey(str(result.output), authkey).strip()
+    raise LumaError(f"tailscale up failed:\n{output}")
+
+
+def _tailscale_up_command(authkey: str, hostname: str, *, reset: bool = False) -> str:
+    reset_flag = "--reset " if reset else ""
+    return (
+        "tailscale up "
+        f"{reset_flag}"
+        f"--authkey {shlex.quote(authkey)} "
+        f"--hostname {shlex.quote(hostname)} "
+        "--accept-dns=false "
+        "--accept-routes"
+    )
+
+
+def _tailscale_up_requires_reset(output: str) -> bool:
+    return "changing settings via 'tailscale up' requires mentioning all" in output
+
+
+def _redact_tailscale_authkey(output: str, authkey: str) -> str:
+    return output.replace(authkey, "<redacted>")
 
 
 def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int = 443, allow_portainer: bool = True) -> str:

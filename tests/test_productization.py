@@ -920,14 +920,44 @@ class CliTests(unittest.TestCase):
             Mock(code=0, output="Darwin\n"),
             Mock(code=0, output="/usr/local/bin/tailscale\n"),
             Mock(code=1, output="not logged in\n"),
+            Mock(code=0, output=""),
         ]
-        remote.run.return_value = ""
 
         results = setup_tailscale(node, authkey="ts-key", executor=remote)
 
         self.assertEqual(results, ["Tailscale connected: luma-mini"])
-        commands = [call.args[0] for call in remote.run.call_args_list]
+        commands = [call.args[0] for call in remote.run_result.call_args_list]
         self.assertTrue(any("tailscale up" in command and "--authkey ts-key" in command for command in commands))
+        self.assertTrue(any("tailscale up" in command and "--accept-routes" in command for command in commands))
+
+    def test_tailscale_up_retries_with_reset_for_existing_nondefault_flags(self):
+        node = LumaConfig({"nodes": {"mini": {"host": "localhost", "region": "home"}}}, None).get_node("mini")
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Linux\n")
+        remote.sudo.return_value = ""
+        remote.sudo_result.side_effect = [
+            Mock(code=1, output="not logged in\n"),
+            Mock(
+                code=1,
+                output=(
+                    "Error: changing settings via 'tailscale up' requires mentioning all "
+                    "non-default flags. tailscale up --auth-key=ts-key --accept-routes\n"
+                ),
+            ),
+            Mock(code=0, output=""),
+        ]
+
+        results = setup_tailscale(node, authkey="ts-key", executor=remote)
+
+        self.assertEqual(results, ["Tailscale installed", "Tailscale connected: luma-mini"])
+        commands = [call.args[0] for call in remote.sudo_result.call_args_list]
+        self.assertIn("tailscale status", commands[0])
+        self.assertIn("tailscale up", commands[1])
+        self.assertNotIn("--reset", commands[1])
+        self.assertIn("--accept-routes", commands[1])
+        self.assertIn("tailscale up", commands[2])
+        self.assertIn("--reset", commands[2])
+        self.assertIn("--accept-routes", commands[2])
 
     def test_noninteractive_config_skips_missing_optional_values(self):
         with tempfile.TemporaryDirectory() as tmp:
