@@ -20,6 +20,7 @@
 | `volumes` | no | string[] | Compose-style service volume specs such as `name:/path` for state that must survive redeploys. Named sources are rendered as stack volumes. |
 | `proxy` | no | boolean | Runtime proxy requirement. When true, Luma adds the egress network and default proxy env. Scheduling still follows `region`. This is not for image pulls. |
 | `resources` | no | map | Swarm `deploy.resources` limits/reservations for CPU and memory. Useful on small manager nodes. |
+| `healthcheck` | no | map | Swarm service `healthcheck`; public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`. |
 | `publishPort` | relay only | integer | Host mode published port for tailscale relay. |
 | `relay.host` | tailscale-relay override | string | Optional advanced upstream override. Usually omit it. Alternative: `relay.url`. |
 | `relay.url` | tailscale-relay override | string | Optional full upstream URL override. Usually omit it. Alternative: `relay.host`. |
@@ -54,6 +55,7 @@
 - For `tailscale-relay` without an explicit `relay.host`/`relay.url`, Luma Control deploys the stack first, inspects the running Swarm tasks, and points the Traefik route at the home nodes that actually run those tasks.
 - `volumes` entries are copied onto the service; named sources such as `app_data:/data` are also declared as stack volumes so Docker keeps state across task replacement.
 - `resources` is copied to Swarm `deploy.resources`; use `limits` and `reservations` to protect small manager nodes from noisy services.
+- `healthcheck` is copied to the rendered service. Use it when `running` is not enough to prove the app is listening.
 - `proxy: true` services also get the configured egress overlay network and default `HTTP_PROXY=http://egress_mihomo:7890` / `HTTPS_PROXY=http://egress_mihomo:7890` env values unless already set. Scheduling still follows `region`.
 - `proxy: true` is independent from exposure. It can be combined with `region: home` and `exposure: tailscale-relay`; relay handles inbound traffic, egress handles the container's outbound HTTP/HTTPS traffic.
 - `tailscale-relay` creates a host-mode published port and a file-provider Traefik route to the relay upstream.

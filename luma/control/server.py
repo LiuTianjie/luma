@@ -944,7 +944,7 @@ def _dashboard_task_counts(tasks: list[Dict[str, Any]], node_by_id: dict[str, Di
 
 def _service_health(desired: int, counts: Dict[str, int]) -> str:
     if desired > 0 and counts["running"] >= desired and counts["failed"] == 0 and counts["pending"] == 0:
-        return "healthy"
+        return "running"
     if counts["running"] > 0:
         return "degraded"
     if counts["pending"] > 0:

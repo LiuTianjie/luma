@@ -41,6 +41,7 @@ class ServiceSpec:
     networks: List[str] = field(default_factory=list)
     volumes: List[str] = field(default_factory=list)
     resources: Dict[str, Any] = field(default_factory=dict)
+    healthcheck: Dict[str, Any] = field(default_factory=dict)
     stack_path: Optional[Path] = None
     route_path: Optional[Path] = None
     dns: Dict[str, Any] = field(default_factory=dict)
@@ -137,6 +138,7 @@ def load_service(path: Path) -> ServiceSpec:
     networks = raw.get("networks") or []
     volumes = raw.get("volumes") or []
     resources = raw.get("resources") or {}
+    healthcheck = raw.get("healthcheck") or {}
     for field_name, value in {
         "constraints": constraints,
         "labels": labels,
@@ -152,6 +154,8 @@ def load_service(path: Path) -> ServiceSpec:
             raise LumaError("resources only supports limits and reservations")
         if not isinstance(section, dict):
             raise LumaError(f"resources.{section_name} must be a mapping")
+    if not isinstance(healthcheck, dict):
+        raise LumaError("healthcheck must be a mapping")
 
     stack_path = raw.get("stackPath")
     route_path = raw.get("routePath")
@@ -182,6 +186,7 @@ def load_service(path: Path) -> ServiceSpec:
         networks=networks,
         volumes=volumes,
         resources=resources,
+        healthcheck=healthcheck,
         stack_path=Path(stack_path) if stack_path else None,
         route_path=Path(route_path) if route_path else None,
         dns=dns,

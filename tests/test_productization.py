@@ -2547,6 +2547,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(api["health"], "degraded")
                 worker = next(item for item in result["services"] if item["routeId"] == "worker")
                 self.assertEqual(worker["exposure"], "none")
+                self.assertEqual(worker["health"], "running")
                 home_path = next(item for item in result["trafficPaths"] if item["id"] == "home-panel")
                 self.assertEqual(home_path["kind"], "tailscale-relay")
                 self.assertIn("http://100.64.0.2:8080", home_path["segments"])

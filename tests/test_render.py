@@ -203,6 +203,33 @@ resources:
         self.assertEqual(resources["limits"]["memory"], "256M")
         self.assertEqual(resources["reservations"]["memory"], "64M")
 
+    def test_service_healthcheck_renders_to_stack(self):
+        service = self.load(
+            """
+name: app
+image: ghcr.io/acme/app:latest
+region: cn
+exposure: cn-edge
+domain: app.example.com
+port: 3000
+healthcheck:
+  test:
+    - CMD
+    - wget
+    - -qO-
+    - http://127.0.0.1:3000/healthz
+  interval: 10s
+  timeout: 3s
+  retries: 3
+"""
+        )
+        rendered = yaml.safe_load(render_stack(self.config(), service))
+        healthcheck = rendered["services"]["app"]["healthcheck"]
+        self.assertEqual(healthcheck["test"], ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"])
+        self.assertEqual(healthcheck["interval"], "10s")
+        self.assertEqual(healthcheck["timeout"], "3s")
+        self.assertEqual(healthcheck["retries"], 3)
+
     def test_named_volumes_are_rendered_on_service_and_stack(self):
         service = self.load(
             """

@@ -128,6 +128,8 @@ def render_stack(config: LumaConfig, service: ServiceSpec) -> str:
         ]
     if service.volumes:
         service_body["volumes"] = service.volumes
+    if service.healthcheck:
+        service_body["healthcheck"] = service.healthcheck
     if networks:
         service_body["networks"] = networks
 

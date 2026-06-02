@@ -48,6 +48,7 @@ luma deploy status.yaml
 | `networks` | 否 | string[] | 追加 external overlay networks。公开 Traefik 服务会自动加入 public network。 |
 | `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动加入 egress 网络和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
 | `resources` | 否 | map | 透传到 Swarm `deploy.resources`，用于限制 CPU/内存。支持 `limits` 和 `reservations`。 |
+| `healthcheck` | 否 | map | 透传到 Swarm service `healthcheck`。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
 | `publishPort` | tailscale-relay 可用 | integer | host mode 暴露端口，默认等于 `port`。 |
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随 Swarm 实际运行 task 所在的 home 节点自动推导。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
