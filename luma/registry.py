@@ -71,7 +71,7 @@ def docker_registry_auth_header(auth: Dict[str, str] | None) -> str | None:
         "serveraddress": public_registry_url(auth.get("serveraddress") or ""),
     }
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return base64.b64encode(raw).decode("ascii")
 
 
 def registry_auth_matches_image(auth: Dict[str, str] | None, image: str) -> bool:

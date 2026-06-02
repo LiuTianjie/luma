@@ -2987,15 +2987,16 @@ class ControlApiTests(unittest.TestCase):
                 selected, result = resolve_service_image(
                     config,
                     service,
-                    registry_auth={"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"},
+                    registry_auth={"username": "octo", "password": "ghp_secret1", "serveraddress": "ghcr.io"},
                 )
             self.assertEqual(selected.image, "ghcr.io/acme/private-api:1")
             self.assertTrue(result["registryAuth"])
             pull_headers = calls[-1][2]
             self.assertIn("X-Registry-Auth", pull_headers)
-            decoded = json.loads(base64.urlsafe_b64decode(pull_headers["X-Registry-Auth"] + "==").decode("utf-8"))
+            self.assertTrue(pull_headers["X-Registry-Auth"].endswith("="))
+            decoded = json.loads(base64.b64decode(pull_headers["X-Registry-Auth"], validate=True).decode("utf-8"))
             self.assertEqual(decoded["username"], "octo")
-            self.assertEqual(decoded["password"], "ghp_secret")
+            self.assertEqual(decoded["password"], "ghp_secret1")
             self.assertEqual(decoded["serveraddress"], "ghcr.io")
 
     def test_latest_service_image_is_pulled_even_when_present_locally(self):
