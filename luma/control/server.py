@@ -965,10 +965,39 @@ def handle_storage_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if not name:
         raise LumaError("storage class name is required")
     storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
-    removed = bool(storage_classes.pop(name, None))
+    existing = storage_classes.pop(name, None)
+    removed = bool(existing)
+    storage_stack = _remove_managed_storage_class(name, existing, state) if isinstance(existing, dict) else None
     state["storageClasses"] = storage_classes
     save_state(state)
-    return {"name": name, "removed": removed}
+    result = {"name": name, "removed": removed}
+    if storage_stack:
+        result["storageStack"] = storage_stack
+    return result
+
+
+def _remove_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, str] | None:
+    storage_class = StorageClassSpec(
+        name=name,
+        provider=str(item.get("provider") or "nfs"),
+        mode=str(item.get("mode") or "managed"),
+        node=str(item.get("node") or "") or None,
+        path=str(item.get("path") or "") or None,
+        endpoint=str(item.get("endpoint") or "") or None,
+        mount_options=str(item.get("mountOptions") or "nfsvers=4,rw"),
+        nodes=[str(value) for value in item.get("nodes") or []],
+        regions=[str(value) for value in item.get("regions") or []],
+        raw=dict(item),
+    )
+    stack = managed_storage_stack(storage_class)
+    if not stack:
+        return None
+    if not _storage_apply_available(state):
+        return {"name": stack.name, "removed": "pending: Portainer is not configured"}
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    removed = remove_stack(config, _storage_stack_service_spec(stack.name), state)
+    return {"name": stack.name, "removed": removed}
 
 
 def _load_compose_request(body: Dict[str, Any], source_name: str) -> ComposeDeploymentSpec:

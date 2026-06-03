@@ -40,7 +40,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, ensure_image_present, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_preview, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_set, resolve_service_image
+from luma.control.server import ControlHandler, ensure_image_present, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_preview, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, resolve_service_image
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -3517,6 +3517,37 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result["storageStack"]["applied"], "pending: Portainer is not configured")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_remove_removes_managed_storage_stack_when_portainer_is_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["portainerApiUrl"] = "https://127.0.0.1:9443/api"
+                state["portainerAdminPassword"] = "secret"
+                state["portainerEndpointId"] = 1
+                state["swarmId"] = "swarm"
+                state["storageClasses"] = {
+                    "cn-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "cn-node",
+                        "path": "/srv/luma",
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: luma-storage-cn-nfs") as remove:
+                    result = handle_storage_remove(state["deployToken"], {"name": "cn-nfs"})
+                remove.assert_called_once()
+                self.assertEqual(remove.call_args.args[1].name, "luma-storage-cn-nfs")
+                self.assertEqual(result["storageStack"]["removed"], "Portainer stack removed: luma-storage-cn-nfs")
+                self.assertNotIn("cn-nfs", load_state().get("storageClasses", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_compose_deployment_resolves_storage_class_from_control_state(self):
         with tempfile.TemporaryDirectory() as tmp:
