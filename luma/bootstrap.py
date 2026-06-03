@@ -278,11 +278,14 @@ def deploy_control_stack(remote: Executor, config: LumaConfig, domain: str) -> l
 
 
 def _force_update_service_image(remote: Executor, service: str, image: str) -> str:
+    update_flags = ""
+    if service == "luma-control_luma-control":
+        update_flags = " --update-order start-first --update-failure-action rollback --update-monitor 30s --update-delay 5s --update-parallelism 1"
     _docker(
         remote,
         "set -euo pipefail; "
         f"docker service inspect {shlex.quote(service)} >/dev/null 2>&1; "
-        f"docker service update --image {shlex.quote(image)} --force {shlex.quote(service)} >/dev/null",
+        f"docker service update --image {shlex.quote(image)}{update_flags} --force {shlex.quote(service)} >/dev/null",
     )
     return f"Service image refreshed: {service} -> {image}"
 
@@ -815,6 +818,25 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
     _step(results, emit, "Deploy Luma control API", lambda: deploy_control_stack(remote, config, domain), fix="Build and publish the Luma control image, then rerun bootstrap manager")
+    return results
+
+
+def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: str, state: dict[str, object], *, emit: Progress | None = None) -> list[str]:
+    remote = LocalExecutor()
+    results: list[str] = []
+    state["domain"] = domain
+    manager_info = local_swarm_join_info(node)
+    state.update(manager_info)
+    state["portainerApiUrl"] = _portainer_api_url_for_control(node, manager_info)
+    _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
+    _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
+    _step(
+        results,
+        emit,
+        "Refresh Luma control API",
+        lambda: deploy_control_stack(remote, config, domain),
+        fix="Check luma-control service logs and rerun luma update manager",
+    )
     return results
 
 

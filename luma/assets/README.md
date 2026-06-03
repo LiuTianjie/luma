@@ -275,11 +275,11 @@ See `docs/deployment-yaml.md` for all fields and `examples/` for service templat
 
 | Question | What to do |
 | --- | --- |
-| Update the manager | Run `luma update` on the manager. If local manager state exists, it refreshes manager bootstrap after updating the CLI. |
+| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI and hot-refreshes only Luma Control, without restarting Traefik, Portainer, Docker, or app stacks. |
 | View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, Portainer, registered nodes, and actual Swarm nodes. |
 | View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the deploy token on a trusted device. |
 | What happens if I run `luma update` on a client or worker? | It updates only the local CLI and skips manager control-plane refresh. |
-| When does `luma update` need `--domain`? | Only when `/opt/luma/control/control.json` is missing or you intentionally changed the control domain. |
+| When does `luma update` need `--domain`? | Only when you intentionally changed the control domain. If manager state is missing, run `luma bootstrap manager --domain ...` for first install or repair. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
 | Pin service A to one node | Set manifest `node` to the Luma node name passed to `luma node join --name`, keep the matching `region`, then deploy again. Control resolves it to the Swarm NodeID before scheduling. |
 | Make a public service internal | Change `exposure` to `none`, remove public-only domain/ingress config if no longer needed, then deploy again. |

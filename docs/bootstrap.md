@@ -187,7 +187,9 @@ Use `luma update` after upgrading Luma itself:
 luma update
 ```
 
-The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and refreshes manager bootstrap without comparing control API versions. On a client or worker node, it skips manager bootstrap and exits after updating the CLI. Use `luma update manager` to force an idempotent manager bootstrap refresh when manager state is missing or when you need to pass `--domain`. Pass `--domain` only when the manager state is missing or you intentionally changed the control domain. Bootstrap refreshes manager config/state, pulls the current published Luma Control image, and redeploys the control service without purging Portainer data, tokens, Swarm nodes, or existing app stacks.
+The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and hot-refreshes only the Luma Control API: it preserves existing tokens, Portainer credentials, nodes, and app stacks; refreshes control config/state metadata; pulls the current Luma Control image; and rolls the `luma-control` service with healthcheck-based rollback. It does not redeploy or force-restart Traefik, Portainer, Docker, egress, or user services. On a client or worker node, it skips manager control-plane refresh and exits after updating the CLI. Use `luma update manager` to force the same control-only refresh when you need to pass `--domain`.
+
+Use `luma bootstrap manager --domain ...` for first install or explicit infrastructure repair. Full bootstrap can touch Docker, firewall, Traefik, Portainer, and egress, so treat it as a maintenance-window operation. If an old installed CLI still implements the previous update behavior, update the CLI first through the installer or package manager, then rerun the new `luma update manager` control-only refresh.
 
 If the installed CLI is too old to recognize `luma update`, run the installer once and then retry the update command.
 

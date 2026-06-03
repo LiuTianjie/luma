@@ -33,6 +33,7 @@ from luma.bootstrap import (
     initialize_portainer,
     install_control_config,
     install_docker,
+    refresh_manager_control_local,
     setup_tailscale,
     verify_local_swarm_node,
 )
@@ -211,6 +212,16 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("/v1/dashboard", asset_text("dashboard/app.js"))
         root = Path(__file__).resolve().parents[1]
         self.assertIn('"assets/dashboard/*"', (root / "pyproject.toml").read_text(encoding="utf-8"))
+
+    def test_luma_control_stack_uses_healthcheck_and_start_first_update(self):
+        stack = yaml.safe_load(asset_text("stacks/core/luma-control/stack.yml"))
+        service = stack["services"]["luma-control"]
+
+        self.assertIn("/v1/health", " ".join(service["healthcheck"]["test"]))
+        update_config = service["deploy"]["update_config"]
+        self.assertEqual(update_config["order"], "start-first")
+        self.assertEqual(update_config["failure_action"], "rollback")
+        self.assertEqual(update_config["parallelism"], 1)
 
 
 class EgressConfigTests(unittest.TestCase):
@@ -751,13 +762,13 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("--profile", commands)
         self.assertNotIn("--egress", commands)
 
-    def test_update_manager_installs_cli_then_refreshes_bootstrap(self):
-        completed = Mock(returncode=0)
+    def test_update_manager_installs_cli_then_refreshes_control_only(self):
+        state = {"clusterId": "luma-test", "domain": "luma.example.com", "deployToken": "deploy", "joinToken": "join"}
         with patch("luma.cli._run_luma_installer") as installer, patch(
-            "luma.cli._luma_executable", return_value="/usr/local/bin/luma"
+            "luma.cli._existing_control_state", return_value=state
         ), patch(
-            "luma.cli.subprocess.run", return_value=completed
-        ) as run:
+            "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
+        ) as refresh:
             code = main(
                 [
                     "update",
@@ -773,18 +784,9 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         installer.assert_called_once_with(install_ref="main")
-        run.assert_called_once_with(
-            [
-                "/usr/local/bin/luma",
-                "bootstrap",
-                "manager",
-                "--domain",
-                "luma.example.com",
-                "--profile",
-                "single-node",
-            ],
-            check=False,
-        )
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[2], "luma.example.com")
+        self.assertIs(refresh.call_args.args[3], state)
 
     def test_update_infers_domain_and_refreshes_when_manager_state_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -795,31 +797,18 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(state_dir))
-            completed = Mock(returncode=0)
             try:
                 with patch("luma.cli._run_luma_installer") as installer, patch(
-                    "luma.cli._luma_executable", return_value="/usr/local/bin/luma"
-                ), patch(
-                    "luma.cli.subprocess.run", return_value=completed
-                ) as run:
+                    "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
+                ) as refresh:
                     code = main(["update"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
         self.assertEqual(code, 0)
         installer.assert_called_once_with(install_ref=None)
-        run.assert_called_once_with(
-            [
-                "/usr/local/bin/luma",
-                "bootstrap",
-                "manager",
-                "--domain",
-                "luma.example.com",
-                "--profile",
-                "single-node",
-            ],
-            check=False,
-        )
+        refresh.assert_called_once()
+        self.assertEqual(refresh.call_args.args[2], "luma.example.com")
 
     def test_update_refreshes_manager_even_when_control_version_matches_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -830,36 +819,57 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(state_dir))
-            completed = Mock(returncode=0)
             try:
                 with patch("luma.cli._run_luma_installer") as installer, patch(
-                    "luma.cli._luma_executable", return_value="/usr/local/bin/luma"
-                ), patch(
-                    "luma.cli.subprocess.run", return_value=completed
-                ) as run, patch("builtins.print") as printed:
+                    "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
+                ) as refresh, patch("builtins.print") as printed:
                     code = main(["update"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
         self.assertEqual(code, 0)
         installer.assert_called_once_with(install_ref=None)
-        run.assert_called_once()
+        refresh.assert_called_once()
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
-        self.assertIn("Manager bootstrap refresh required", printed_text)
+        self.assertIn("Manager control-plane refresh required", printed_text)
         self.assertIn("local manager control state found", printed_text)
 
     def test_update_without_manager_state_updates_cli_only(self):
         with patch("luma.cli._existing_control_state", return_value=None), patch(
             "luma.cli._run_luma_installer"
-        ) as installer, patch("luma.cli.subprocess.run") as run, patch("builtins.print") as printed:
+        ) as installer, patch("luma.cli.refresh_manager_control_local") as refresh, patch("builtins.print") as printed:
             code = main(["update"])
 
         self.assertEqual(code, 0)
         installer.assert_called_once_with(install_ref=None)
-        run.assert_not_called()
+        refresh.assert_not_called()
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("CLI updated", printed_text)
-        self.assertIn("Manager bootstrap refresh skipped", printed_text)
+        self.assertIn("Manager control-plane refresh skipped", printed_text)
+
+    def test_update_manager_rejects_bootstrap_only_options(self):
+        with patch("luma.cli._run_luma_installer"), patch(
+            "luma.cli._existing_control_state", return_value={"domain": "luma.example.com"}
+        ), patch("luma.cli.refresh_manager_control_local") as refresh:
+            code = main(["update", "manager", "--domain", "luma.example.com", "--http-port", "8080"])
+
+        self.assertEqual(code, 1)
+        refresh.assert_not_called()
+
+    def test_update_manager_does_not_call_full_bootstrap_paths(self):
+        state = {"clusterId": "luma-test", "domain": "luma.example.com", "deployToken": "deploy", "joinToken": "join"}
+        with patch("luma.cli._run_luma_installer"), patch("luma.cli._existing_control_state", return_value=state), patch(
+            "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
+        ), patch("luma.cli.bootstrap_manager_local") as bootstrap_manager, patch("luma.cli.bootstrap_node") as bootstrap_node_call, patch(
+            "luma.cli.install_docker"
+        ) as docker, patch("luma.cli.setup_egress") as egress:
+            code = main(["update", "manager", "--domain", "luma.example.com"])
+
+        self.assertEqual(code, 0)
+        bootstrap_manager.assert_not_called()
+        bootstrap_node_call.assert_not_called()
+        docker.assert_not_called()
+        egress.assert_not_called()
 
     def test_version_local_skips_control_check(self):
         with patch("luma.cli.ControlClient") as client_cls, patch("builtins.print") as printed:
@@ -1919,7 +1929,55 @@ class PortainerWebhookTests(unittest.TestCase):
 
         self.assertEqual(result, "Service image refreshed: luma-control_luma-control -> ghcr.io/liutianjie/luma-control:latest")
         command = remote.sudo.call_args.args[0]
-        self.assertIn("docker service update --image ghcr.io/liutianjie/luma-control:latest --force luma-control_luma-control", command)
+        self.assertIn("docker service update --image ghcr.io/liutianjie/luma-control:latest", command)
+        self.assertIn("--update-order start-first", command)
+        self.assertIn("--update-failure-action rollback", command)
+        self.assertIn("--update-parallelism 1", command)
+        self.assertIn("--force luma-control_luma-control", command)
+
+    def test_manager_control_refresh_only_updates_control_stack(self):
+        config = LumaConfig(
+            {
+                "nodes": {
+                    "manager": {
+                        "host": "localhost",
+                        "publicIp": "127.0.0.1",
+                        "roles": ["swarm-manager", "edge"],
+                    }
+                }
+            },
+            None,
+        )
+        node = config.get_node("manager")
+        state = {"clusterId": "luma-test", "deployToken": "deploy", "joinToken": "join", "portainerAdminPassword": "secret"}
+        with patch("luma.bootstrap.local_swarm_join_info", return_value={"managerAddr": "127.0.0.1:2377", "swarmJoinToken": "swarm", "swarmId": "sid"}), patch(
+            "luma.bootstrap.install_control_config", return_value="config"
+        ) as install_config, patch("luma.bootstrap.install_control_state", return_value="state") as install_state, patch(
+            "luma.bootstrap.deploy_control_stack", return_value=["control"]
+        ) as deploy_control, patch("luma.bootstrap._deploy_traefik") as traefik, patch(
+            "luma.bootstrap._deploy_portainer"
+        ) as portainer, patch("luma.bootstrap.bind_portainer_credentials") as bind, patch(
+            "luma.bootstrap.install_docker"
+        ) as docker, patch("luma.bootstrap.setup_egress") as egress, patch(
+            "luma.bootstrap._refresh_core_services"
+        ) as refresh_core:
+            result = refresh_manager_control_local(config, node, "luma.example.com", state)
+
+        self.assertIn("config", result)
+        self.assertIn("state", result)
+        self.assertIn("control", result)
+        self.assertEqual(state["domain"], "luma.example.com")
+        self.assertEqual(state["managerAddr"], "127.0.0.1:2377")
+        self.assertEqual(state["portainerAdminPassword"], "secret")
+        install_config.assert_called_once()
+        install_state.assert_called_once()
+        deploy_control.assert_called_once()
+        traefik.assert_not_called()
+        portainer.assert_not_called()
+        bind.assert_not_called()
+        docker.assert_not_called()
+        egress.assert_not_called()
+        refresh_core.assert_not_called()
 
     def test_install_docker_repairs_known_bad_apt_mirror(self):
         remote = Mock()

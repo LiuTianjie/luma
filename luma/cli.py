@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, TypeVar
 
-from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, install_docker, join_local_node, local_docker_node_id, local_docker_node_name, setup_egress, setup_portainer, setup_tailscale
+from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, install_docker, join_local_node, local_docker_node_id, local_docker_node_name, refresh_manager_control_local, setup_egress, setup_portainer, setup_tailscale
 from .cloudflare import find_zone, sync_dns
 from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
@@ -101,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     update = sub.add_parser(
         "update",
         description=(
-            "Update the local CLI. With no target, Luma refreshes the manager only "
+            "Update the local CLI. With no target, Luma hot-refreshes manager control only "
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_update_manager_arguments(update)
     update_sub = update.add_subparsers(dest="update_command", required=False, metavar="[target]")
-    update_manager = update_sub.add_parser("manager", help="force a manager bootstrap refresh")
+    update_manager = update_sub.add_parser("manager", help="force a manager control-plane refresh")
     _add_update_manager_arguments(update_manager)
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks such as docker pull through egress")
@@ -891,16 +891,13 @@ def cmd_update(args: argparse.Namespace) -> int:
         if args.update_command is None:
             should_refresh, reason = _manager_refresh_decision(args)
             if not should_refresh:
-                print(f"[skip] Manager bootstrap refresh skipped: {reason}")
+                print(f"[skip] Manager control-plane refresh skipped: {reason}")
                 return 0
-            print(f"[info] Manager bootstrap refresh required: {reason}")
+            print(f"[info] Manager control-plane refresh required: {reason}")
         else:
-            print("[info] Manager bootstrap refresh forced")
-        print("[start] Refresh manager bootstrap")
-        command = _updated_manager_bootstrap_command(args)
-        completed = subprocess.run(command, check=False)
-        if completed.returncode != 0:
-            raise LumaError(f"manager bootstrap refresh failed with exit code {completed.returncode}")
+            print("[info] Manager control-plane refresh forced")
+        print("[start] Refresh manager control plane")
+        _refresh_manager_control(args)
         print("[ok] Manager update complete")
         return 0
     raise LumaError(f"unknown update command: {args.update_command}")
@@ -936,28 +933,27 @@ def _run_luma_installer(*, install_ref: str | None = None) -> None:
     subprocess.run(command, shell=True, check=True, env=env)
 
 
-def _updated_manager_bootstrap_command(args: argparse.Namespace) -> list[str]:
+def _refresh_manager_control(args: argparse.Namespace) -> None:
+    _reject_bootstrap_only_update_options(args)
     domain = _manager_update_domain(args.domain)
-    command = [
-        _luma_executable(),
-        "bootstrap",
-        "manager",
-        "--domain",
-        domain,
-        "--profile",
-        args.profile,
-    ]
-    if args.node:
-        command.extend(["--node", args.node])
-    if args.http_port is not None:
-        command.extend(["--http-port", str(args.http_port)])
-    if args.https_port is not None:
-        command.extend(["--https-port", str(args.https_port)])
+    state = _existing_control_state()
+    if not state:
+        raise LumaError("manager control state not found. Run luma bootstrap manager --domain <control-domain> for first install or repair.")
+    state["domain"] = domain
+    config = load_config(args.config)
+    node = config.get_node(args.node) if args.node else (config.default_manager() or _local_node(args.profile))
+    if not node:
+        raise LumaError("no manager node configured. Add a node or pass --node.")
+    refresh_manager_control_local(config, node, domain, state, emit=log)
+
+
+def _reject_bootstrap_only_update_options(args: argparse.Namespace) -> None:
+    if args.http_port is not None or args.https_port is not None:
+        raise LumaError("luma update no longer changes Traefik ports. Use luma bootstrap manager --domain <control-domain> for ingress repair.")
     if args.skip_egress:
-        command.append("--skip-egress")
+        raise LumaError("luma update no longer runs egress setup. Use luma bootstrap manager --skip-egress only during full bootstrap repair.")
     if args.overwrite_control_state:
-        command.append("--overwrite-control-state")
-    return command
+        raise LumaError("luma update preserves control state. Use luma bootstrap manager --overwrite-control-state only for explicit repair.")
 
 
 def _manager_update_domain(explicit_domain: str | None) -> str:
@@ -986,10 +982,6 @@ def _existing_control_state() -> Dict[str, object] | None:
     end = raw.rfind("}")
     data = json.loads(raw[start : end + 1] if start >= 0 and end >= start else raw)
     return data if isinstance(data, dict) else None
-
-
-def _luma_executable() -> str:
-    return shutil.which("luma") or sys.argv[0]
 
 
 def _apply_bootstrap_port_overrides(config: LumaConfig, *, http_port: int | None, https_port: int | None) -> None:
