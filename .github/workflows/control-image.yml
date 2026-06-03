@@ -24,7 +24,6 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/liutianjie/luma-control
-  PYTHON_IMAGE: docker.1panel.live/library/python:3.11-slim
 
 jobs:
   build:
@@ -62,7 +61,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            PYTHON_IMAGE=${{ env.PYTHON_IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
