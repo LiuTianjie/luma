@@ -22,15 +22,34 @@ type DetailState =
 export function App() {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
   const [detail, setDetail] = useState<DetailState>(null);
+  const [theme, setThemeState] = useState<"light" | "dark">(() => {
+    const saved = localStorage.getItem("luma.dashboard.theme");
+    if (saved === "light" || saved === "dark") return saved;
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  });
   const { token, payload, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData();
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   }, [lang]);
 
+  useEffect(() => {
+    if (theme === "light") {
+      document.documentElement.classList.add("light");
+    } else {
+      document.documentElement.classList.remove("light");
+    }
+  }, [theme]);
+
   const setLang = (nextLang: Lang) => {
     setLangState(nextLang);
     localStorage.setItem(LANG_KEY, nextLang);
+  };
+
+  const toggleTheme = () => {
+    const nextTheme = theme === "light" ? "dark" : "light";
+    setThemeState(nextTheme);
+    localStorage.setItem("luma.dashboard.theme", nextTheme);
   };
 
   const visibleStatus: SyncStatus = token ? syncStatus : "notConnected";
@@ -121,11 +140,15 @@ export function App() {
             onRefresh={() => void loadDashboard()}
             onSignOut={signOut}
             syncStatus={visibleStatus}
+            theme={theme}
+            onThemeToggle={toggleTheme}
           />
         </div>
 
         {!token ? (
-          <LoginPanel lang={lang} onSubmit={setToken} />
+          <div className="login-panel-container">
+            <LoginPanel lang={lang} onSubmit={setToken} />
+          </div>
         ) : (
           <>
             <section className="hero-strip" id="section-0">
@@ -149,8 +172,8 @@ export function App() {
                   <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} />
                   <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
                 </section>
-                <NodeTopology lang={lang} nodes={nodes} services={services} />
-                <TrafficPaths lang={lang} paths={paths} />
+                <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
+                <TrafficPaths lang={lang} paths={paths} theme={theme} />
                 <StoragePanel lang={lang} volumes={storageVolumes} storageClasses={storageClasses} warnings={storageWarnings} />
               </>
             ) : (

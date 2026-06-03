@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import dagre from "dagre";
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
@@ -54,7 +55,7 @@ function buildTopology(paths: TrafficPath[]): {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
 } {
-  const nodeData = new Map<string, Omit<TopologyNode, "x" | "y" | "routes">>();
+  const nodeData = new Map<string, Omit<TopologyNode, "x" | "y" | "routes" | "routesLabel">>();
   const routeCounts = new Map<string, Set<string>>();
   const segmentIds = new Map<string, string>();
   const edges: TopologyEdge[] = [];
@@ -65,21 +66,6 @@ function buildTopology(paths: TrafficPath[]): {
     routeCounts.set(id, routeSet);
   };
 
-  const addSegmentNode = (segment: string, routeLabel: string) => {
-    const id = getSegmentId(segment);
-    const classification = classifySegment(segment);
-    addRouteCount(id, routeLabel);
-    if (!nodeData.has(id)) {
-      nodeData.set(id, {
-        id,
-        label: segment,
-        meta: classification.meta,
-        kind: classification.kind,
-      });
-    }
-    return id;
-  };
-
   const getSegmentId = (segment: string) => {
     const key = segment.trim() || "unknown";
     const existing = segmentIds.get(key);
@@ -87,6 +73,32 @@ function buildTopology(paths: TrafficPath[]): {
     const nextId = `n-${segmentIds.size + 1}`;
     segmentIds.set(key, nextId);
     return nextId;
+  };
+
+  const addSegmentNode = (segment: string, routeLabel: string) => {
+    const id = getSegmentId(segment);
+    const classification = classifySegment(segment);
+    addRouteCount(id, routeLabel);
+
+    let emojiLabel = segment;
+    if (classification.kind === "domain") emojiLabel = `🌐 Domain\n${segment}`;
+    else if (classification.kind === "edge") emojiLabel = `☁️ Edge\n${segment}`;
+    else if (classification.kind === "proxy") emojiLabel = `🚦 Proxy\n${segment}`;
+    else if (classification.kind === "tunnel") emojiLabel = `🔒 Tunnel\n${segment}`;
+    else if (classification.kind === "internal") emojiLabel = `💻 Client\n${segment}`;
+    else if (classification.kind === "issue") emojiLabel = `⚠️ Issue\n${segment}`;
+    else if (classification.kind === "target") emojiLabel = `🎯 Target\n${segment}`;
+    else emojiLabel = `📦 Swarm\n${segment}`;
+
+    if (!nodeData.has(id)) {
+      nodeData.set(id, {
+        id,
+        label: emojiLabel,
+        meta: classification.meta,
+        kind: classification.kind,
+      });
+    }
+    return id;
   };
 
   paths.forEach((path, pathIndex) => {
@@ -117,9 +129,10 @@ function buildTopology(paths: TrafficPath[]): {
 
   const nodes = Array.from(nodeData.values()).map((node) => {
     const positioned = graph.node(node.id);
+    const count = routeCounts.get(node.id)?.size || 1;
     return {
       ...node,
-      routes: routeCounts.get(node.id)?.size || 1,
+      routes: count,
       x: positioned.x,
       y: positioned.y,
     };
@@ -152,62 +165,153 @@ function buildTopology(paths: TrafficPath[]): {
   return { elements, nodes, edges };
 }
 
-const stylesheet: cytoscape.StylesheetJsonBlock[] = [
-  {
-    selector: "node",
-    style: {
-      "background-color": "#ffffff",
-      "border-color": "#eaeaea",
-      "border-width": 1,
-      "border-style": "solid",
-      "font-family": '"Inter", -apple-system, sans-serif',
-      "font-size": 13,
-      "font-weight": 500,
-      "height": `${NODE_HEIGHT}px`,
-      "label": "data(label)",
-      "padding": "16px",
-      "shape": "round-rectangle",
-      "text-halign": "center",
-      "text-max-width": "160px",
-      "text-valign": "center",
-      "text-wrap": "ellipsis",
-      "width": `${NODE_WIDTH}px`,
-      "color": "#171717",
-    },
-  },
-  { selector: "node.edge", style: { "border-color": "#eaeaea" } },
-  { selector: "node.domain", style: { "border-width": 2, "border-color": "#171717", "background-color": "#ffffff" } },
-  { selector: "node.proxy", style: { "border-width": 2, "border-color": "#171717" } },
-  { selector: "node.tunnel", style: { "border-color": "#eaeaea" } },
-  { selector: "node.target", style: { "border-color": "#eaeaea", "color": "#666666" } },
-  { selector: "node.issue", style: { "border-width": 2, "border-color": "#ef4444" } },
-  {
-    selector: "edge",
-    style: {
-      "curve-style": "taxi",
-      "taxi-direction": "horizontal",
-      "taxi-turn": 12,
-      "taxi-turn-min-distance": 5,
-      "font-family": '"Inter", -apple-system, sans-serif',
-      "font-size": 10,
-      "font-weight": 500,
-      "label": "data(label)",
-      "line-color": "#d4d4d8",
-      "target-arrow-color": "#d4d4d8",
-      "target-arrow-shape": "triangle",
-      "text-background-color": "#fafafa",
-      "text-background-opacity": 1,
-      "text-background-padding": "4px",
-      "text-background-shape": "roundrectangle",
-      "width": "1.5px",
-    },
-  },
-  { selector: "edge.cn-edge, edge.external-edge", style: { "line-color": "#171717", "target-arrow-color": "#171717" } },
-  { selector: "edge.tailscale-relay, edge.cloudflare-tunnel", style: { "line-color": "#171717", "target-arrow-color": "#171717" } },
-];
+function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[] {
+  const isDark = theme === "dark";
+  const textColor = isDark ? "#f8fafc" : "#0f172a";
+  const nodeBg = isDark ? "#0f172a" : "#ffffff";
+  const nodeBorder = isDark ? "rgba(99, 102, 241, 0.35)" : "rgba(99, 102, 241, 0.15)";
+  const edgeColor = isDark ? "rgba(148, 163, 184, 0.3)" : "rgba(148, 163, 184, 0.6)";
 
-export function TrafficPaths({ lang, paths }: { lang: Lang; paths: TrafficPath[] }) {
-  const { elements, nodes, edges } = buildTopology(paths);
+  const domainBorder = "#10b981"; // Emerald
+  const proxyBorder = "#8b5cf6"; // Violet
+  const issueBorder = "#f43f5e"; // Rose
+  const targetBorder = isDark ? "#475569" : "#cbd5e1";
+
+  return [
+    {
+      selector: "node",
+      style: {
+        "background-color": nodeBg,
+        "border-color": nodeBorder,
+        "border-width": 1.5,
+        "font-family": '"Outfit", "Inter", sans-serif',
+        "font-size": 12,
+        "font-weight": 500,
+        "height": `${NODE_HEIGHT}px`,
+        "label": "data(label)",
+        "padding": "16px",
+        "shape": "round-rectangle",
+        "text-halign": "center",
+        "text-max-width": "160px",
+        "text-valign": "center",
+        "text-wrap": "wrap",
+        "width": `${NODE_WIDTH}px`,
+        "color": textColor,
+      },
+    },
+    { selector: "node.edge", style: { "border-color": nodeBorder } },
+    { selector: "node.domain", style: { "border-width": 2.5, "border-color": domainBorder, "background-color": isDark ? "#064e3b" : "#ecfdf5" } },
+    { selector: "node.proxy", style: { "border-width": 2.5, "border-color": proxyBorder, "background-color": isDark ? "#1e1b4b" : "#eef2ff" } },
+    { selector: "node.tunnel", style: { "border-color": nodeBorder } },
+    { selector: "node.target", style: { "border-color": targetBorder, "color": isDark ? "#94a3b8" : "#475569" } },
+    { selector: "node.issue", style: { "border-width": 2.5, "border-color": issueBorder, "background-color": isDark ? "#4c0519" : "#fff1f2" } },
+    {
+      selector: "edge",
+      style: {
+        "curve-style": "taxi",
+        "taxi-direction": "horizontal",
+        "taxi-turn": 20,
+        "line-color": edgeColor,
+        "target-arrow-color": edgeColor,
+        "target-arrow-shape": "triangle",
+        "width": "1.8px",
+      },
+    },
+    { selector: "edge.cn-edge, edge.external-edge", style: { "line-color": isDark ? "#8b5cf6" : "#6366f1", "target-arrow-color": isDark ? "#8b5cf6" : "#6366f1" } },
+    { selector: "edge.tailscale-relay, edge.cloudflare-tunnel", style: { "line-color": "#10b981", "target-arrow-color": "#10b981" } },
+    {
+      selector: ".dimmed",
+      style: {
+        "opacity": 0.15,
+      },
+    },
+    {
+      selector: "node.highlighted",
+      style: {
+        "border-color": "#8b5cf6",
+        "border-width": 3,
+        "background-color": isDark ? "#2e1065" : "#f5f3ff",
+      },
+    },
+    {
+      selector: "edge.highlighted",
+      style: {
+        "line-color": "#6366f1",
+        "target-arrow-color": "#6366f1",
+        "width": "3px",
+      },
+    },
+  ];
+}
+
+export function TrafficPaths({
+  lang,
+  paths,
+  theme,
+}: {
+  lang: Lang;
+  paths: TrafficPath[];
+  theme: "light" | "dark";
+}) {
+  const [cyRef, setCyRef] = useState<cytoscape.Core | null>(null);
+
+  const { elements, nodes, edges } = useMemo(() => buildTopology(paths), [paths]);
+  const stylesheet = useMemo(() => getStylesheet(theme), [theme]);
+
+  useEffect(() => {
+    if (cyRef) {
+      cyRef.style(stylesheet);
+    }
+  }, [cyRef, stylesheet]);
+
+  useEffect(() => {
+    if (!cyRef) return;
+
+    const handleMouseOver = (event: any) => {
+      const target = event.target;
+      if (target.isNode()) {
+        cyRef.elements().addClass("dimmed");
+        target.removeClass("dimmed").addClass("highlighted");
+        
+        const connectedEdges = target.connectedEdges();
+        connectedEdges.removeClass("dimmed").addClass("highlighted");
+        
+        const connectedNodes = target.neighborhood().nodes();
+        connectedNodes.removeClass("dimmed").addClass("highlighted");
+      }
+    };
+
+    const handleMouseOut = () => {
+      cyRef.elements().removeClass("dimmed").removeClass("highlighted");
+    };
+
+    cyRef.on("mouseover", "node", handleMouseOver);
+    cyRef.on("mouseout", "node", handleMouseOut);
+
+    return () => {
+      cyRef.off("mouseover", "node", handleMouseOver);
+      cyRef.off("mouseout", "node", handleMouseOut);
+    };
+  }, [cyRef]);
+
+  const handleZoomIn = () => {
+    if (cyRef) {
+      cyRef.zoom(cyRef.zoom() * 1.25);
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (cyRef) {
+      cyRef.zoom(cyRef.zoom() / 1.25);
+    }
+  };
+
+  const handleReset = () => {
+    if (cyRef) {
+      cyRef.reset();
+      cyRef.fit(undefined, 48);
+    }
+  };
 
   return (
     <section className="panel path-panel" id="section-4">
@@ -229,7 +333,14 @@ export function TrafficPaths({ lang, paths }: { lang: Lang; paths: TrafficPath[]
               minZoom={0.35}
               stylesheet={stylesheet}
               wheelSensitivity={0.16}
+              cy={(cy) => setCyRef(cy)}
             />
+            
+            <div className="cy-controls" aria-label="Topology controls">
+              <button className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</button>
+              <button className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</button>
+              <button className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">⟲</button>
+            </div>
           </div>
           <aside className="route-index" aria-label={t(lang, "trafficPaths")}>
             {paths.map((path, index) => (

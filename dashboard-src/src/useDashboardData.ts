@@ -3,9 +3,10 @@ import type { DashboardPayload, SyncStatus } from "./types";
 
 const TOKEN_KEY = "luma.dashboard.deployToken";
 const REFRESH_MS = 30000;
+const isDev = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 
 export function useDashboardData() {
-  const [token, setTokenState] = useState(() => localStorage.getItem(TOKEN_KEY) || "");
+  const [token, setTokenState] = useState(() => localStorage.getItem(TOKEN_KEY) || (isDev ? "dev-token" : ""));
   const [payload, setPayload] = useState<DashboardPayload | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(token ? "refreshing" : "notConnected");

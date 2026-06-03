@@ -115,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.31 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.32 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     update_sub = update.add_subparsers(dest="update_command", required=False, metavar="[target]")
@@ -416,16 +416,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     )
     dns = payload.get("dns") if isinstance(payload.get("dns"), dict) else {}
     token_env = dns.get("tokenEnv") or "CLOUDFLARE_API_TOKEN"
+    dns_rows = [
+        ("Ready", _yes_no(bool(dns.get("ready")))),
+        ("Provider", _status_value(dns.get("provider") or "not configured")),
+        ("Zone", _status_value(dns.get("zone"))),
+        ("Zone ID", _configured_label(bool(dns.get("zoneIdConfigured")))),
+        ("Token", f"{_configured_label(bool(dns.get('tokenConfigured')))} ({token_env})"),
+        ("Target", _status_value(dns.get("target"))),
+    ]
+    missing = dns.get("missing") if isinstance(dns.get("missing"), list) else []
+    if missing and not dns.get("ready"):
+        dns_rows.append(("Missing", ", ".join(str(item) for item in missing)))
     _print_key_values(
         "DNS",
-        [
-            ("Ready", _yes_no(bool(dns.get("ready")))),
-            ("Provider", _status_value(dns.get("provider") or "not configured")),
-            ("Zone", _status_value(dns.get("zone"))),
-            ("Zone ID", _configured_label(bool(dns.get("zoneIdConfigured")))),
-            ("Token", f"{_configured_label(bool(dns.get('tokenConfigured')))} ({token_env})"),
-            ("Target", _status_value(dns.get("target"))),
-        ],
+        dns_rows,
     )
     portainer = payload.get("portainer") if isinstance(payload.get("portainer"), dict) else {}
     _print_key_values(
@@ -437,6 +441,15 @@ def cmd_status(args: argparse.Namespace) -> int:
             ("Swarm ID", _configured_label(bool(portainer.get("swarmIdConfigured")))),
         ],
     )
+    storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
+    storage_classes = storage.get("storageClasses") if isinstance(storage.get("storageClasses"), list) else []
+    print()
+    print("Storage")
+    print(f"  Summary: storageClasses={len(storage_classes)}")
+    if storage_classes:
+        _print_table(["NAME", "MODE", "PROVIDER", "NODE", "PATH/ENDPOINT", "REGIONS"], _status_storage_rows(storage_classes))
+    else:
+        print("  No storage classes registered")
     nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
     registered_items = nodes.get("items") if isinstance(nodes.get("items"), list) else []
     swarm = payload.get("swarm") if isinstance(payload.get("swarm"), dict) else {}
@@ -606,6 +619,23 @@ def _status_node_rows(registered_items: list[object], swarm_nodes: list[object])
                 _status_value(swarm_dict.get("availability")),
                 "yes" if swarm_dict.get("leader") else "-",
                 display,
+            ]
+        )
+    return rows
+
+
+def _status_storage_rows(storage_classes: list[object]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for item in sorted((value for value in storage_classes if isinstance(value, dict)), key=lambda value: str(value.get("name") or "")):
+        regions = item.get("regions") if isinstance(item.get("regions"), list) else []
+        rows.append(
+            [
+                _status_value(item.get("name")),
+                _status_value(item.get("mode")),
+                _status_value(item.get("provider")),
+                _status_value(item.get("node")),
+                _status_value(item.get("path") or item.get("endpoint")),
+                ", ".join(str(region) for region in regions) or "-",
             ]
         )
     return rows

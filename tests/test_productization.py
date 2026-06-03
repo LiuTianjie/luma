@@ -1123,6 +1123,18 @@ class CliTests(unittest.TestCase):
                         "swarmIdConfigured": True,
                         "ready": True,
                     },
+                    "storage": {
+                        "storageClasses": [
+                            {
+                                "name": "cn-nfs",
+                                "provider": "nfs",
+                                "mode": "managed",
+                                "node": "manager",
+                                "path": "/srv/luma",
+                                "regions": ["cn"],
+                            }
+                        ]
+                    },
                     "nodes": {
                         "registered": 2,
                         "items": [
@@ -1167,11 +1179,56 @@ class CliTests(unittest.TestCase):
         self.assertIn("Ready     yes", printed_text)
         self.assertIn("Provider  cloudflare", printed_text)
         self.assertIn("Portainer", printed_text)
+        self.assertIn("Storage", printed_text)
+        self.assertIn("Summary: storageClasses=1", printed_text)
+        self.assertIn("cn-nfs", printed_text)
+        self.assertIn("/srv/luma", printed_text)
         self.assertIn("Nodes", printed_text)
         self.assertIn("Summary: registered=2, swarm=2", printed_text)
         self.assertIn("NAME         REGION", printed_text)
         self.assertIn("docker-home  home    labeled     ready  worker", printed_text)
         self.assertIn("manager      cn      labeled     ready  manager", printed_text)
+
+    def test_status_prints_dns_missing_reasons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.status.return_value = {
+                    "clusterId": "luma-test",
+                    "version": "0.1.2",
+                    "configPath": "/opt/luma/luma.yaml",
+                    "dns": {
+                        "provider": "not configured",
+                        "zone": "",
+                        "zoneIdConfigured": False,
+                        "tokenEnv": "CLOUDFLARE_API_TOKEN",
+                        "tokenConfigured": True,
+                        "target": "",
+                        "ready": False,
+                        "missing": ["provider", "zoneId", "target"],
+                    },
+                    "portainer": {
+                        "apiUrl": "https://100.64.0.1:9443/api",
+                        "endpointIdConfigured": True,
+                        "swarmIdConfigured": True,
+                        "ready": True,
+                    },
+                    "storage": {"storageClasses": []},
+                    "nodes": {"registered": 0, "items": []},
+                    "swarm": {"available": True, "nodes": []},
+                }
+                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                    code = main(["status"])
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+        self.assertEqual(code, 0)
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("Ready     no", printed_text)
+        self.assertIn("Provider  not configured", printed_text)
+        self.assertIn("Missing   provider, zoneId, target", printed_text)
 
     def test_status_uses_env_context_without_login(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2648,6 +2705,15 @@ class ControlApiTests(unittest.TestCase):
                     "manager": {"region": "cn", "status": "labeled", "labels": {"region": "cn"}},
                     "docker-home": {"displayName": "mini-gaojiu", "region": "home", "status": "labeled"},
                 }
+                state["storageClasses"] = {
+                    "cn-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "manager",
+                        "path": "/srv/luma",
+                        "regions": ["cn"],
+                    }
+                }
                 from luma.control.state import save_state
 
                 save_state(state)
@@ -2690,12 +2756,15 @@ class ControlApiTests(unittest.TestCase):
                 self.assertTrue(result["dns"]["tokenConfigured"])
                 self.assertTrue(result["dns"]["zoneIdConfigured"])
                 self.assertEqual(result["dns"]["target"], "203.0.113.10")
+                self.assertEqual(result["dns"]["missing"], [])
                 self.assertTrue(result["portainer"]["ready"])
                 self.assertEqual(result["nodes"]["registered"], 2)
                 self.assertEqual(result["nodes"]["items"][0]["name"], "docker-home")
                 self.assertEqual(result["nodes"]["items"][0]["displayName"], "mini-gaojiu")
                 self.assertEqual(result["swarm"]["nodes"][0]["hostname"], "docker-home")
                 self.assertEqual(result["swarm"]["nodes"][1]["leader"], True)
+                self.assertEqual(result["storage"]["storageClasses"][0]["name"], "cn-nfs")
+                self.assertEqual(result["storage"]["storageClasses"][0]["path"], "/srv/luma")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

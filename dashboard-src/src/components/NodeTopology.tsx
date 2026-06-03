@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import dagre from "dagre";
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
@@ -32,20 +33,25 @@ function buildNodeTopology(nodes: DashboardNode[], services: DashboardService[])
   nodes.forEach((node) => {
     const name = node.name || node.displayName;
     if (!name) return;
+    const isLeader = node.leader;
+    const labelText = isLeader ? `👑 Leader\n${name}` : `🖥️ Worker\n${name}`;
     graphNodes.set(`node:${name}`, {
       id: `node:${name}`,
-      label: name,
-      kind: node.leader ? "leader" : "host",
+      label: labelText,
+      kind: isLeader ? "leader" : "host",
     });
   });
 
   services.forEach((service, serviceIndex) => {
     const title = serviceTitle(service);
     const serviceId = `service:${service.fullName || title || serviceIndex}`;
+    const isExposed = service.exposure && service.exposure !== "none";
+    const labelText = isExposed ? `🌐 Public\n${title}` : `📦 Swarm\n${title}`;
+    
     graphNodes.set(serviceId, {
       id: serviceId,
-      label: title,
-      kind: service.exposure && service.exposure !== "none" ? "exposedService" : "service",
+      label: labelText,
+      kind: isExposed ? "exposedService" : "service",
     });
 
     (service.nodes || []).forEach((nodeName, nodeIndex) => {
@@ -53,7 +59,7 @@ function buildNodeTopology(nodes: DashboardNode[], services: DashboardService[])
       if (!graphNodes.has(hostId)) {
         graphNodes.set(hostId, {
           id: hostId,
-          label: nodeName,
+          label: `🖥️ Worker\n${nodeName}`,
           kind: "host",
         });
       }
@@ -105,48 +111,181 @@ function buildNodeTopology(nodes: DashboardNode[], services: DashboardService[])
   return { elements, nodes: positionedNodes, edges };
 }
 
-const stylesheet: cytoscape.StylesheetJsonBlock[] = [
-  {
-    selector: "node",
-    style: {
-      "background-color": "#ffffff",
-      "border-color": "#eaeaea",
-      "border-width": 1,
-      "font-family": '"Inter", -apple-system, sans-serif',
-      "font-size": 13,
-      "font-weight": 500,
-      "height": `${NODE_HEIGHT}px`,
-      "label": "data(label)",
-      "padding": "16px",
-      "shape": "round-rectangle",
-      "text-halign": "center",
-      "text-max-width": "160px",
-      "text-valign": "center",
-      "text-wrap": "ellipsis",
-      "width": `${NODE_WIDTH}px`,
-      "color": "#171717",
+function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[] {
+  const isDark = theme === "dark";
+  const textColor = isDark ? "#f8fafc" : "#0f172a";
+  const nodeBg = isDark ? "#0f172a" : "#ffffff";
+  const nodeBorder = isDark ? "rgba(99, 102, 241, 0.35)" : "rgba(99, 102, 241, 0.15)";
+  const edgeColor = isDark ? "rgba(148, 163, 184, 0.3)" : "rgba(148, 163, 184, 0.6)";
+  
+  const leaderBorder = "#8b5cf6";
+  const hostBg = isDark ? "#131b2e" : "#f1f5f9";
+  const hostBorder = isDark ? "#334155" : "#cbd5e1";
+  
+  const serviceBorder = isDark ? "rgba(99, 102, 241, 0.45)" : "rgba(99, 102, 241, 0.2)";
+  const exposedBorder = "#10b981";
+  
+  return [
+    {
+      selector: "node",
+      style: {
+        "background-color": nodeBg,
+        "border-color": nodeBorder,
+        "border-width": 1.5,
+        "font-family": '"Outfit", "Inter", sans-serif',
+        "font-size": 12,
+        "font-weight": 500,
+        "height": `${NODE_HEIGHT}px`,
+        "label": "data(label)",
+        "padding": "16px",
+        "shape": "round-rectangle",
+        "text-halign": "center",
+        "text-max-width": "160px",
+        "text-valign": "center",
+        "text-wrap": "wrap",
+        "width": `${NODE_WIDTH}px`,
+        "color": textColor,
+      },
     },
-  },
-  { selector: "node.leader", style: { "border-width": 2, "border-color": "#171717" } },
-  { selector: "node.host", style: { "background-color": "#fafafa", "border-color": "#d4d4d8" } },
-  { selector: "node.service", style: { "border-color": "#eaeaea" } },
-  { selector: "node.exposedService", style: { "border-width": 2, "border-color": "#171717" } },
-  {
-    selector: "edge",
-    style: {
-      "curve-style": "taxi",
-      "taxi-direction": "horizontal",
-      "taxi-turn": 12,
-      "line-color": "#d4d4d8",
-      "target-arrow-color": "#d4d4d8",
-      "target-arrow-shape": "triangle",
-      "width": "1.3px",
+    {
+      selector: "node.leader",
+      style: {
+        "border-width": 2.5,
+        "border-color": leaderBorder,
+        "background-color": isDark ? "#1e1b4b" : "#eef2ff",
+      },
     },
-  },
-];
+    {
+      selector: "node.host",
+      style: {
+        "background-color": hostBg,
+        "border-color": hostBorder,
+        "border-width": 1.5,
+      },
+    },
+    {
+      selector: "node.service",
+      style: {
+        "border-color": serviceBorder,
+        "border-width": 1.5,
+      },
+    },
+    {
+      selector: "node.exposedService",
+      style: {
+        "border-width": 2.5,
+        "border-color": exposedBorder,
+        "background-color": isDark ? "#064e3b" : "#ecfdf5",
+      },
+    },
+    {
+      selector: "edge",
+      style: {
+        "curve-style": "taxi",
+        "taxi-direction": "horizontal",
+        "taxi-turn": 20,
+        "line-color": edgeColor,
+        "target-arrow-color": edgeColor,
+        "target-arrow-shape": "triangle",
+        "width": "1.8px",
+      },
+    },
+    {
+      selector: ".dimmed",
+      style: {
+        "opacity": 0.15,
+      },
+    },
+    {
+      selector: "node.highlighted",
+      style: {
+        "border-color": "#8b5cf6",
+        "border-width": 3,
+        "background-color": isDark ? "#2e1065" : "#f5f3ff",
+      },
+    },
+    {
+      selector: "edge.highlighted",
+      style: {
+        "line-color": "#6366f1",
+        "target-arrow-color": "#6366f1",
+        "width": "3px",
+      },
+    },
+  ];
+}
 
-export function NodeTopology({ lang, nodes, services }: { lang: Lang; nodes: DashboardNode[]; services: DashboardService[] }) {
-  const topology = buildNodeTopology(nodes, services);
+export function NodeTopology({
+  lang,
+  nodes,
+  services,
+  theme,
+}: {
+  lang: Lang;
+  nodes: DashboardNode[];
+  services: DashboardService[];
+  theme: "light" | "dark";
+}) {
+  const [cyRef, setCyRef] = useState<cytoscape.Core | null>(null);
+
+  const topology = useMemo(() => buildNodeTopology(nodes, services), [nodes, services]);
+  const stylesheet = useMemo(() => getStylesheet(theme), [theme]);
+
+  useEffect(() => {
+    if (cyRef) {
+      cyRef.style(stylesheet);
+    }
+  }, [cyRef, stylesheet]);
+
+  useEffect(() => {
+    if (!cyRef) return;
+
+    const handleMouseOver = (event: any) => {
+      const target = event.target;
+      if (target.isNode()) {
+        cyRef.elements().addClass("dimmed");
+        target.removeClass("dimmed").addClass("highlighted");
+        
+        // Highlight neighbors
+        const connectedEdges = target.connectedEdges();
+        connectedEdges.removeClass("dimmed").addClass("highlighted");
+        
+        const connectedNodes = target.neighborhood().nodes();
+        connectedNodes.removeClass("dimmed").addClass("highlighted");
+      }
+    };
+
+    const handleMouseOut = () => {
+      cyRef.elements().removeClass("dimmed").removeClass("highlighted");
+    };
+
+    cyRef.on("mouseover", "node", handleMouseOver);
+    cyRef.on("mouseout", "node", handleMouseOut);
+
+    return () => {
+      cyRef.off("mouseover", "node", handleMouseOver);
+      cyRef.off("mouseout", "node", handleMouseOut);
+    };
+  }, [cyRef]);
+
+  const handleZoomIn = () => {
+    if (cyRef) {
+      cyRef.zoom(cyRef.zoom() * 1.25);
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (cyRef) {
+      cyRef.zoom(cyRef.zoom() / 1.25);
+    }
+  };
+
+  const handleReset = () => {
+    if (cyRef) {
+      cyRef.reset();
+      cyRef.fit(undefined, 48);
+    }
+  };
 
   return (
     <section className="panel topology-panel" id="section-3">
@@ -166,7 +305,14 @@ export function NodeTopology({ lang, nodes, services }: { lang: Lang; nodes: Das
           minZoom={0.35}
           stylesheet={stylesheet}
           wheelSensitivity={0.16}
+          cy={(cy) => setCyRef(cy)}
         />
+        
+        <div className="cy-controls" aria-label="Topology controls">
+          <button className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</button>
+          <button className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</button>
+          <button className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">⟲</button>
+        </div>
       </div>
     </section>
   );

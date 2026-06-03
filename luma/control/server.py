@@ -83,10 +83,12 @@ def handle_control_status(token: str) -> Dict[str, Any]:
     token_env = str(dns.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
     zone_id = os.environ.get(str(dns.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID"))) or dns.get("zoneId")
     dns_target = dns.get("edgeTarget") or config.default_dns_target()
+    secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+    dns_token_configured = bool(os.environ.get(token_env) or token_env in secrets)
+    dns_missing = _dns_missing_reasons(dns_provider, zone_id=zone_id, token_configured=dns_token_configured, token_env=token_env, target=dns_target)
     portainer_api_url = str(state.get("portainerApiUrl") or config.portainer.get("apiUrl") or "")
     portainer_endpoint_id = state.get("portainerEndpointId") or config.portainer.get("endpointId")
     swarm_id = str(state.get("swarmId") or config.portainer.get("swarmId") or "")
-    secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     registered_nodes = _registered_nodes_summary(nodes)
     return {
@@ -98,9 +100,10 @@ def handle_control_status(token: str) -> Dict[str, Any]:
             "zone": str(dns.get("zone") or ""),
             "zoneIdConfigured": bool(zone_id),
             "tokenEnv": token_env,
-            "tokenConfigured": bool(os.environ.get(token_env) or token_env in secrets),
+            "tokenConfigured": dns_token_configured,
             "target": str(dns_target or ""),
-            "ready": dns_provider == "cloudflare" and bool(zone_id) and bool(os.environ.get(token_env) or token_env in secrets) and bool(dns_target),
+            "ready": not dns_missing,
+            "missing": dns_missing,
         },
         "portainer": {
             "apiUrl": _redact_url(portainer_api_url),
@@ -115,6 +118,9 @@ def handle_control_status(token: str) -> Dict[str, Any]:
             "items": registered_nodes,
         },
         "swarm": _swarm_nodes_summary(),
+        "storage": {
+            "storageClasses": _storage_classes_summary(state),
+        },
     }
 
 
@@ -131,6 +137,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     dns_target = str(dns.get("edgeTarget") or config.default_dns_target() or "")
     secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
     dns_token_configured = bool(os.environ.get(token_env) or token_env in secrets)
+    dns_missing = _dns_missing_reasons(dns_provider, zone_id=zone_id, token_configured=dns_token_configured, token_env=token_env, target=dns_target)
     portainer_endpoint_id = state.get("portainerEndpointId") or config.portainer.get("endpointId")
     swarm_id = str(state.get("swarmId") or config.portainer.get("swarmId") or "")
     errors: list[str] = []
@@ -155,10 +162,11 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         },
         "readiness": {
             "dns": {
-                "ready": dns_provider == "cloudflare" and bool(zone_id) and dns_token_configured and bool(dns_target),
+                "ready": not dns_missing,
                 "provider": dns_provider,
                 "zone": str(dns.get("zone") or ""),
                 "target": dns_target,
+                "missing": dns_missing,
             },
             "portainer": {
                 "ready": bool((state.get("portainerApiUrl") or config.portainer.get("apiUrl")) and portainer_endpoint_id and swarm_id),
@@ -175,6 +183,19 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         "storage": storage,
         "errors": errors,
     }
+
+
+def _dns_missing_reasons(dns_provider: str, *, zone_id: object, token_configured: bool, token_env: str, target: object) -> list[str]:
+    missing: list[str] = []
+    if dns_provider != "cloudflare":
+        missing.append("provider")
+    if not zone_id:
+        missing.append("zoneId")
+    if not token_configured:
+        missing.append(f"token:{token_env}")
+    if not target:
+        missing.append("target")
+    return missing
 
 
 def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
