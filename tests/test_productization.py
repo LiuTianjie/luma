@@ -1605,6 +1605,22 @@ class CliTests(unittest.TestCase):
         self.assertIn("control API is older than this CLI", str(raised.exception))
         self.assertIn("luma update", str(raised.exception))
 
+    def test_control_client_reports_legacy_storage_api_for_simplified_storage_set(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        error = urllib.error.HTTPError(
+            "https://luma.example.com/v1/storage",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(b'{"error": "storage class cn-nfs endpoint is required for nfs"}'),
+        )
+        with patch("urllib.request.urlopen", side_effect=error), self.assertRaises(LumaError) as raised:
+            client.set_storage(name="cn-nfs", provider="nfs", node="cn-node", path="/srv/luma")
+
+        self.assertIn("control API is older than this CLI", str(raised.exception))
+        self.assertIn("storage endpoints for managed NFS", str(raised.exception))
+        self.assertIn("luma update manager", str(raised.exception))
+
     def test_control_client_reports_timeout_without_traceback(self):
         client = ControlClient("https://luma.example.com", "secret")
         with patch("urllib.request.urlopen", side_effect=TimeoutError("read timed out")), self.assertRaises(LumaError) as raised:

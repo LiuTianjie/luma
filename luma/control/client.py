@@ -77,6 +77,12 @@ class ControlClient:
                     "`luma update` "
                     "or rerun `luma bootstrap manager --domain <control-domain>`."
                 ) from exc
+            if _looks_like_legacy_storage_api_error(detail):
+                raise LumaError(
+                    "control API is older than this CLI and still expects storage endpoints for managed NFS. "
+                    "Update the manager first: run the installer on the manager, then run "
+                    "`luma update manager --domain <control-domain>`."
+                ) from exc
             raise LumaError(f"control API error {exc.code}: {detail}") from exc
         except (TimeoutError, socket.timeout) as exc:
             raise LumaError(_timeout_message(path, timeout)) from exc
@@ -335,6 +341,10 @@ class ControlClient:
 
 def _looks_like_legacy_node_api_error(detail: str) -> bool:
     return "nodeName, profile, and region are required" in detail
+
+
+def _looks_like_legacy_storage_api_error(detail: str) -> bool:
+    return "endpoint is required for nfs" in detail
 
 
 def _timeout_message(path: str, timeout: int) -> str:

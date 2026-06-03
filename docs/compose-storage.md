@@ -26,6 +26,12 @@ Use the Luma node name, not the Docker hostname, when declaring node pins or man
 
 Register storage classes against Luma Control. This writes manager state; it does not edit any deployment file.
 
+The simplified storage CLI requires the manager Control API from this release. If `luma storage set ... --node ... --path ...` returns `endpoint is required for nfs`, the client is talking to an older manager. Run the installer on the manager, then run:
+
+```bash
+luma update manager --domain <control-domain>
+```
+
 ```bash
 luma storage set home-nfs \
   --node home-nas \
