@@ -124,7 +124,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     compose: composeDraft({
       name: "uptime-kuma",
       region: "home",
-      services: [{ name: "uptime-kuma", region: "home", node: "", exposure: "tailscale-relay", domain: "kuma.example.com", port: "3001", publishPort: "", replicas: 1, proxy: false }],
+      services: [{ name: "uptime-kuma", region: "home", node: "", exposure: "tailscale-relay", domain: "kuma.example.com", port: "3001", publishPort: "", replicas: 1, proxy: false, env: [] }],
       volumes: [{ name: "kuma-data", target: "/app/data", storageMode: "storageClass", storageClass: "", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
@@ -147,7 +147,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     compose: composeDraft({
       name: "vaultwarden",
       region: "home",
-      services: [{ name: "vaultwarden", region: "home", node: "", exposure: "tailscale-relay", domain: "vault.example.com", port: "80", publishPort: "", replicas: 1, proxy: false }],
+      services: [{ name: "vaultwarden", region: "home", node: "", exposure: "tailscale-relay", domain: "vault.example.com", port: "80", publishPort: "", replicas: 1, proxy: false, env: [row("WEBSOCKET_ENABLED", "true")] }],
       volumes: [{ name: "vaultwarden-data", target: "/data", storageMode: "storageClass", storageClass: "", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
@@ -172,7 +172,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     compose: composeDraft({
       name: "gitea",
       region: "home",
-      services: [{ name: "gitea", region: "home", node: "", exposure: "tailscale-relay", domain: "git.example.com", port: "3000", publishPort: "", replicas: 1, proxy: false }],
+      services: [{ name: "gitea", region: "home", node: "", exposure: "tailscale-relay", domain: "git.example.com", port: "3000", publishPort: "", replicas: 1, proxy: false, env: [row("USER_UID", "1000"), row("USER_GID", "1000")] }],
       volumes: [{ name: "gitea-data", target: "/data", storageMode: "storageClass", storageClass: "", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
@@ -198,7 +198,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     compose: composeDraft({
       name: "n8n",
       region: "home",
-      services: [{ name: "n8n", region: "home", node: "", exposure: "tailscale-relay", domain: "n8n.example.com", port: "5678", publishPort: "", replicas: 1, proxy: true }],
+      services: [{ name: "n8n", region: "home", node: "", exposure: "tailscale-relay", domain: "n8n.example.com", port: "5678", publishPort: "", replicas: 1, proxy: true, env: [row("N8N_HOST", "n8n.example.com"), row("N8N_PORT", "5678"), row("N8N_PROTOCOL", "https"), row("WEBHOOK_URL", "https://n8n.example.com/")] }],
       volumes: [{ name: "n8n-data", target: "/home/node/.n8n", storageMode: "storageClass", storageClass: "", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",

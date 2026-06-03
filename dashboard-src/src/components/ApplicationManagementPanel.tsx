@@ -95,6 +95,7 @@ function appToComposeDraft(app: Application): ComposeDeploymentDraft {
     publishPort: "",
     replicas: service.desired || 1,
     proxy: false,
+    env: [],
   }));
   const volumeNames = new Set<string>();
   for (const service of app.services) {

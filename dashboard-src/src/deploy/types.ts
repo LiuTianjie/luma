@@ -8,6 +8,7 @@ export type KeyValueRow = {
   id: string;
   key: string;
   value: string;
+  kind?: "plain" | "secret";
 };
 
 export type ServiceManifestDraft = {
@@ -43,6 +44,7 @@ export type ComposeServiceDraft = {
   publishPort: string;
   replicas: number;
   proxy: boolean;
+  env: KeyValueRow[];
 };
 
 export type ComposeVolumeDraft = {

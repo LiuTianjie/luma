@@ -15,6 +15,12 @@ function validRows(rows: KeyValueRow[]): KeyValueRow[] {
   return rows.filter((row) => row.key.trim());
 }
 
+function envValue(row: KeyValueRow): string {
+  const value = row.value.trim();
+  if (row.kind !== "secret") return value;
+  return value;
+}
+
 export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
   const lines = [
     `name: ${scalar(draft.name)}`,
@@ -33,7 +39,7 @@ export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
   const envRows = validRows(draft.env);
   if (envRows.length) {
     lines.push("env:");
-    for (const row of envRows) lines.push(`  ${row.key.trim()}: ${scalar(row.value.trim())}`);
+    for (const row of envRows) lines.push(`  ${row.key.trim()}: ${scalar(envValue(row))}`);
   }
   if (draft.command.trim()) lines.push(`command: ${scalar(draft.command.trim())}`);
   const labels = linesFromList(draft.labels);
@@ -65,6 +71,73 @@ export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
     lines.push("  retries: 3");
   }
   return `${lines.join("\n")}\n`;
+}
+
+function indentOf(line: string): number {
+  return line.match(/^ */)?.[0].length || 0;
+}
+
+function environmentLines(rows: KeyValueRow[]): string[] {
+  const envRows = validRows(rows);
+  if (!envRows.length) return [];
+  return [
+    "    environment:",
+    ...envRows.map((row) => `      ${row.key.trim()}: ${scalar(envValue(row))}`),
+  ];
+}
+
+export function syncComposeYamlWithDraft(draft: ComposeDeploymentDraft): ComposeDeploymentDraft {
+  if (!draft.dockerComposeYaml.trim()) return draft;
+  const lines = draft.dockerComposeYaml.split("\n");
+  let nextLines = lines;
+  for (const service of draft.services) {
+    nextLines = syncServiceEnvironment(nextLines, service);
+  }
+  return { ...draft, dockerComposeYaml: nextLines.join("\n") };
+}
+
+function syncServiceEnvironment(lines: string[], service: ComposeServiceDraft): string[] {
+  const serviceHeader = `  ${service.name}:`;
+  const start = lines.findIndex((line, index) => {
+    if (line !== serviceHeader) return false;
+    return lines.slice(0, index).some((item) => item.trim() === "services:");
+  });
+  if (start < 0) return lines;
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() && indentOf(line) <= 2 && /^  [A-Za-z0-9_.-]+:\s*$/.test(line)) {
+      end = index;
+      break;
+    }
+    if (line.trim() && indentOf(line) === 0) {
+      end = index;
+      break;
+    }
+  }
+
+  const block = lines.slice(start, end);
+  const envStart = block.findIndex((line) => /^    environment:\s*$/.test(line));
+  let cleanedBlock = block;
+  if (envStart >= 0) {
+    let envEnd = block.length;
+    for (let index = envStart + 1; index < block.length; index += 1) {
+      const line = block[index];
+      if (line.trim() && indentOf(line) <= 4) {
+        envEnd = index;
+        break;
+      }
+    }
+    cleanedBlock = [...block.slice(0, envStart), ...block.slice(envEnd)];
+  }
+
+  const env = environmentLines(service.env || []);
+  if (env.length) {
+    const imageIndex = cleanedBlock.findIndex((line) => /^    image:\s*/.test(line));
+    const insertAt = imageIndex >= 0 ? imageIndex + 1 : 1;
+    cleanedBlock = [...cleanedBlock.slice(0, insertAt), ...env, ...cleanedBlock.slice(insertAt)];
+  }
+  return [...lines.slice(0, start), ...cleanedBlock, ...lines.slice(end)];
 }
 
 export function composeDraftToSidecarYaml(draft: ComposeDeploymentDraft): string {

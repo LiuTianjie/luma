@@ -3485,6 +3485,39 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_storage_set_creates_managed_path_for_local_storage_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "manager-host": {
+                        "region": "cn",
+                        "swarmHostname": "manager-host",
+                        "swarmNodeId": "manager-node-id",
+                        "labels": {"luma.node.name": "manager-host", "luma.node.id": "manager-node-id", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                storage_path = root / "srv" / "luma"
+
+                def fake_docker_request(method, path, body=None):
+                    if method == "GET" and path == "/info":
+                        return {"Name": "manager-host", "Swarm": {"NodeID": "manager-node-id"}}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request):
+                    result = handle_storage_set(
+                        state["deployToken"],
+                        {"name": "cn-nfs", "node": "manager-host", "path": str(storage_path)},
+                    )
+                self.assertTrue(result["saved"])
+                self.assertTrue(storage_path.is_dir())
+                self.assertEqual(result["storageStack"]["applied"], "pending: Portainer is not configured")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_compose_deployment_resolves_storage_class_from_control_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3523,6 +3556,36 @@ class ControlApiTests(unittest.TestCase):
                 stack_text = upsert.call_args.args[2]
                 self.assertIn("home-nas", stack_text)
                 self.assertEqual(result["storage"]["storageClasses"][0]["name"], "home-nfs")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_storage_set_applies_managed_storage_stack_when_portainer_is_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["portainerApiUrl"] = "https://127.0.0.1:9443/api"
+                state["portainerAdminPassword"] = "secret"
+                state["portainerEndpointId"] = 1
+                state["swarmId"] = "swarm"
+                state["nodes"] = {"cn-node": {"name": "cn-node", "region": "cn", "status": "labeled"}}
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                with patch("luma.control.server.upsert_stack", return_value="Portainer stack updated") as upsert:
+                    result = handle_storage_set(
+                        state["deployToken"],
+                        {"name": "cn-nfs", "provider": "nfs", "node": "cn-node", "path": "/srv/luma"},
+                    )
+                upsert.assert_called_once()
+                self.assertEqual(upsert.call_args.args[1].name, "luma-storage-cn-nfs")
+                self.assertEqual(result["storageStack"]["name"], "luma-storage-cn-nfs")
+                self.assertEqual(result["storageStack"]["applied"], "Portainer stack updated")
+                storage_stack = root / "stacks" / "storage" / "luma-storage-cn-nfs" / "stack.yml"
+                self.assertTrue(storage_stack.exists())
+                self.assertIn("/srv/luma:/srv/luma", storage_stack.read_text(encoding="utf-8"))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

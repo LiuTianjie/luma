@@ -23,6 +23,7 @@ from ..assets import asset_path
 from ..cloudflare import delete_dns, sync_dns
 from ..compose import (
     ComposeDeploymentSpec,
+    StorageClassSpec,
     compose_public_services,
     compose_route_path,
     compose_stack_path,
@@ -44,7 +45,7 @@ from ..registry import (
 )
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service
-from ..storage import managed_storage_stacks
+from ..storage import managed_storage_stack, managed_storage_stacks
 from .. import __version__
 from .state import init_state, load_state, require_token, save_state
 
@@ -867,7 +868,94 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         state["storageClasses"] = storage_classes
     storage_classes[name] = {key: value for key, value in item.items() if value not in ("", [], None)}
     save_state(state)
-    return {"name": name, "saved": True, "storageClass": _public_storage_class(name, storage_classes[name])}
+    storage_stack = _apply_managed_storage_class(name, storage_classes[name], state)
+    result = {"name": name, "saved": True, "storageClass": _public_storage_class(name, storage_classes[name])}
+    if storage_stack:
+        result["storageStack"] = storage_stack
+    return result
+
+
+def _apply_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, str] | None:
+    storage_class = StorageClassSpec(
+        name=name,
+        provider=str(item.get("provider") or "nfs"),
+        mode=str(item.get("mode") or "managed"),
+        node=str(item.get("node") or "") or None,
+        path=str(item.get("path") or "") or None,
+        endpoint=str(item.get("endpoint") or "") or None,
+        mount_options=str(item.get("mountOptions") or "nfsvers=4,rw"),
+        nodes=[str(value) for value in item.get("nodes") or []],
+        regions=[str(value) for value in item.get("regions") or []],
+        raw=dict(item),
+    )
+    stack = managed_storage_stack(storage_class)
+    if not stack:
+        return None
+    _ensure_managed_storage_host_path(storage_class, state)
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    target = _resolve_control_path(config.stack_root / "storage" / stack.name / "stack.yml", config_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(stack.content, encoding="utf-8")
+    if not _storage_apply_available(state):
+        return {"name": stack.name, "path": str(target), "applied": "pending: Portainer is not configured"}
+    applied = upsert_stack(
+        config,
+        _storage_stack_service_spec(stack.name),
+        stack.content,
+        state,
+        missing_webhook_env="PORTAINER_WEBHOOK_URL",
+        stack_env=[],
+        registry_auth=None,
+    )
+    return {"name": stack.name, "path": str(target), "applied": applied}
+
+
+def _ensure_managed_storage_host_path(storage_class: StorageClassSpec, state: Dict[str, Any]) -> None:
+    if storage_class.mode != "managed" or not storage_class.node or not storage_class.path:
+        return
+    if not Path(storage_class.path).is_absolute():
+        raise LumaError(f"managed storage path must be absolute: {storage_class.path}")
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, storage_class.node) or {}
+    if not _storage_node_is_local(record, storage_class.node):
+        return
+    try:
+        Path(storage_class.path).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise LumaError(f"failed to create managed storage path {storage_class.path}: {exc}") from exc
+
+
+def _storage_node_is_local(record: Dict[str, Any], node_name: str) -> bool:
+    try:
+        info = docker_request("GET", "/info")
+    except (LumaError, AssertionError):
+        return False
+    if not isinstance(info, dict):
+        return False
+    swarm = info.get("Swarm") if isinstance(info.get("Swarm"), dict) else {}
+    local_values = {
+        str(info.get("Name") or ""),
+        str(swarm.get("NodeID") or ""),
+    }
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    record_values = {
+        str(node_name or ""),
+        str(record.get("displayName") or ""),
+        str(record.get("swarmHostname") or ""),
+        str(record.get("swarmNodeId") or ""),
+        str(labels.get("luma.node.name") or ""),
+        str(labels.get("luma.node.id") or ""),
+    }
+    return bool((local_values - {""}) & (record_values - {""}))
+
+
+def _storage_apply_available(state: Dict[str, Any]) -> bool:
+    return bool(
+        os.environ.get("PORTAINER_WEBHOOK_URL")
+        or os.environ.get("PORTAINER_WEBHOOK_API")
+        or (state.get("portainerApiUrl") and state.get("portainerEndpointId") and state.get("portainerAdminPassword"))
+    )
 
 
 def handle_storage_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:

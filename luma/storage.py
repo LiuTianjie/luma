@@ -20,12 +20,18 @@ class StorageStack:
 def managed_storage_stacks(deployment: ComposeDeploymentSpec) -> List[StorageStack]:
     stacks: List[StorageStack] = []
     for storage_class in deployment.storage_classes.values():
-        if storage_class.mode != "managed":
-            continue
-        if storage_class.provider != "nfs":
-            raise LumaError(f"managed storage provider not supported yet: {storage_class.provider}")
-        stacks.append(_nfs_storage_stack(storage_class))
+        stack = managed_storage_stack(storage_class)
+        if stack:
+            stacks.append(stack)
     return stacks
+
+
+def managed_storage_stack(storage_class: StorageClassSpec) -> StorageStack | None:
+    if storage_class.mode != "managed":
+        return None
+    if storage_class.provider != "nfs":
+        raise LumaError(f"managed storage provider not supported yet: {storage_class.provider}")
+    return _nfs_storage_stack(storage_class)
 
 
 def storage_check_plan(deployment: ComposeDeploymentSpec, *, node_records: Dict[str, Any] | None = None) -> Dict[str, Any]:

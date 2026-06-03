@@ -774,7 +774,7 @@ code {
 .deploy-env-editor button { height: 30px; padding: 0 12px; border-radius: 6px; font-size: 0.78rem; }
 .deploy-env-row { display: grid; grid-template-columns: minmax(120px, 0.7fr) minmax(180px, 1fr) auto; gap: 8px; }
 .deploy-env-row button { height: 36px; }
-.compose-service-list, .compose-volume-list { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.compose-service-list, .compose-volume-list, .compose-env-list { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .compose-service-card {
   padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-alt);
 }
@@ -783,6 +783,16 @@ code {
   color: var(--ink); font-size: 0.875rem;
 }
 .compose-service-card small { color: var(--muted); font-family: var(--font-mono); font-weight: 500; font-size: 0.75rem; }
+.compose-env-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px;
+}
+.compose-env-header strong { color: var(--ink); font-size: 0.875rem; }
+.compose-env-header div { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.compose-env-header button { height: 30px; padding: 0 12px; border-radius: 6px; font-size: 0.78rem; }
+.compose-env-row {
+  grid-template-columns: minmax(120px, 0.7fr) minmax(120px, 0.45fr) minmax(180px, 1fr) auto;
+  margin-top: 10px;
+}
 .deploy-yaml-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
 }

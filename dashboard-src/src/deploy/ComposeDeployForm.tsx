@@ -1,5 +1,5 @@
 import type { DashboardNode, DashboardStorageClass } from "../types";
-import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, Region } from "./types";
+import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, KeyValueRow, Region } from "./types";
 import { updateComposeServiceExposure } from "./yaml";
 
 const exposures: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"];
@@ -21,6 +21,17 @@ export function ComposeDeployForm({
   const patch = (next: Partial<ComposeDeploymentDraft>) => onChange({ ...draft, ...next });
   const updateService = (name: string, next: Partial<ComposeServiceDraft>) => {
     patch({ services: draft.services.map((service) => service.name === name ? { ...service, ...next } : service) });
+  };
+  const updateEnv = (serviceName: string, id: string, next: Partial<KeyValueRow>) => {
+    const service = draft.services.find((item) => item.name === serviceName);
+    if (!service) return;
+    updateService(serviceName, { env: (service.env || []).map((row) => row.id === id ? { ...row, ...next } : row) });
+  };
+  const addEnv = (service: ComposeServiceDraft, kind: KeyValueRow["kind"] = "plain") => {
+    updateService(service.name, { env: [...(service.env || []), { id: `env-${service.name}-${Date.now()}`, key: "", value: "", kind }] });
+  };
+  const removeEnv = (service: ComposeServiceDraft, id: string) => {
+    updateService(service.name, { env: (service.env || []).filter((row) => row.id !== id) });
   };
   const updateVolume = (name: string, next: Partial<ComposeVolumeDraft>) => {
     patch({ volumes: draft.volumes.map((volume) => volume.name === name ? { ...volume, ...next } : volume) });
@@ -66,8 +77,40 @@ export function ComposeDeployForm({
           ))}
         </div>
       </section>
+      <section className="deploy-config-section" id="compose-env">
+        <header><span>03</span><h3>环境变量与密钥</h3></header>
+        <div className="compose-env-list">
+          {draft.services.length ? draft.services.map((service) => (
+            <article className="compose-service-card" key={`${service.name}-env`}>
+              <div className="compose-env-header">
+                <strong>{service.name}</strong>
+                <div>
+                  <button type="button" className="ghost" onClick={() => addEnv(service)}>添加变量</button>
+                  <button type="button" className="ghost" onClick={() => addEnv(service, "secret")}>添加密钥引用</button>
+                </div>
+              </div>
+              <p className="deploy-muted">普通变量会写入 docker-compose.yml；密钥只填写 ${"{NAME}"} 引用，明文请先存入 Luma Control。</p>
+              {(service.env || []).length ? (service.env || []).map((row) => (
+                <div className="deploy-env-row compose-env-row" key={row.id}>
+                  <input value={row.key} onChange={(event) => updateEnv(service.name, row.id, { key: event.target.value })} placeholder="NAME" />
+                  <select value={row.kind || "plain"} onChange={(event) => updateEnv(service.name, row.id, { kind: event.target.value as KeyValueRow["kind"] })}>
+                    <option value="plain">普通变量</option>
+                    <option value="secret">密钥引用</option>
+                  </select>
+                  <input
+                    value={row.value}
+                    onChange={(event) => updateEnv(service.name, row.id, { value: event.target.value })}
+                    placeholder={row.kind === "secret" ? "${DATABASE_URL}" : "value"}
+                  />
+                  <button type="button" className="ghost" onClick={() => removeEnv(service, row.id)}>删除</button>
+                </div>
+              )) : <p className="deploy-muted">当前服务还没有环境变量。</p>}
+            </article>
+          )) : <p className="deploy-muted">先在 docker-compose.yml 中声明服务，再配置服务环境变量。</p>}
+        </div>
+      </section>
       <section className="deploy-config-section" id="compose-storage">
-        <header><span>03</span><h3>存储卷</h3></header>
+        <header><span>04</span><h3>存储卷</h3></header>
         <div className="compose-volume-list">
           {draft.volumes.length ? draft.volumes.map((volume) => (
             <article className="compose-service-card" key={volume.name}>
@@ -88,7 +131,7 @@ export function ComposeDeployForm({
         </div>
       </section>
       <section className="deploy-config-section" id="compose-advanced">
-        <header><span>04</span><h3>部署开关</h3></header>
+        <header><span>05</span><h3>部署开关</h3></header>
         <div className="deploy-switch-grid">
           <label className="deploy-toggle">
             <input type="checkbox" checked={draft.skipDns} onChange={(event) => patch({ skipDns: event.target.checked })} />

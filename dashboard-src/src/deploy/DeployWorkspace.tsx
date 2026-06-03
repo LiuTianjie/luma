@@ -6,7 +6,7 @@ import { DeploySummary } from "./DeploySummary";
 import { DeployTemplates } from "./DeployTemplates";
 import { DEPLOY_TEMPLATES } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeployTemplate, ServiceManifestDraft } from "./types";
-import { composeDraftToSidecarYaml, serviceDraftToYaml } from "./yaml";
+import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
 import { SingleServiceDeployForm } from "./SingleServiceDeployForm";
 import { YamlPreviewEditor } from "./YamlPreviewEditor";
 
@@ -40,6 +40,12 @@ function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, compos
   for (const service of draft.services) {
     if (service.exposure !== "none" && !service.domain.trim()) errors.push(`${service.name} 必须填写域名`);
     if (service.exposure !== "none" && !service.port.trim()) errors.push(`${service.name} 必须填写容器端口`);
+    for (const row of service.env || []) {
+      if (!row.key.trim() && row.value.trim()) errors.push(`${service.name} 环境变量缺少名称`);
+      if (row.kind === "secret" && row.key.trim() && !/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(row.value.trim())) {
+        errors.push(`${service.name}.${row.key.trim()} 密钥值必须使用 \${NAME} 引用`);
+      }
+    }
   }
   for (const volume of draft.volumes) {
     if (volume.storageMode === "storageClass" && !volume.storageClass) errors.push(`${volume.name} 必须选择 storageClass`);
@@ -153,10 +159,11 @@ export function DeployWorkspace({
   };
 
   const updateComposeDraft = (next: ComposeDeploymentDraft) => {
-    setComposeDraft(next);
+    const normalized = syncComposeYamlWithDraft(next);
+    setComposeDraft(normalized);
     if (!yamlDirty) {
-      setComposeYaml(next.dockerComposeYaml);
-      setSidecarYaml(composeDraftToSidecarYaml(next));
+      setComposeYaml(normalized.dockerComposeYaml);
+      setSidecarYaml(composeDraftToSidecarYaml(normalized));
     }
   };
 
