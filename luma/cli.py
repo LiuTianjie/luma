@@ -105,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.24 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.25 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     update_sub = update.add_subparsers(dest="update_command", required=False, metavar="[target]")
