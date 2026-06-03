@@ -26,26 +26,12 @@ Use the Luma node name when declaring node pins. For the first manager-hosted st
 
 Register storage classes against Luma Control. This writes manager state; it does not edit any deployment file.
 
-The simplified storage CLI requires the manager Control API from this release. If `luma storage set ... --node ... --path ...` returns `endpoint is required for nfs`, the client is talking to an older manager. Run the installer on the manager, then run:
+> [!NOTE]
+> The sidecar's `volumes.<name>.storageClass` field does not declare the NFS storage server itself. It simply specifies that the named volume declared in Compose should map to a subdirectory within that storage class. The actual physical node, endpoint, and topology of the storage class are resolved dynamically by Luma Control from the registered storage class state.
+
+To use the current manager as the first managed NFS node (recommended for single node or initial setups), register a class named `cn-nfs`:
 
 ```bash
-luma update manager --domain <control-domain>
-```
-
-```bash
-luma storage set home-nfs \
-  --node home-nas \
-  --path /srv/luma \
-  --region cn \
-  --region home
-
-luma storage list
-```
-
-To use the current manager as the first managed NFS node:
-
-```bash
-luma update manager --domain <control-domain>
 luma status
 luma storage set cn-nfs \
   --node <manager-swarm-hostname> \
@@ -53,25 +39,24 @@ luma storage set cn-nfs \
   --region cn
 ```
 
-If the manager has not yet been written into Luma's node registry, Control adopts the matching Swarm node during `storage set`. The manager node still needs a region label; the normal bootstrap/update flow writes it from the manager profile.
+- `cn-nfs` is the stable storage class name deployments reference.
+- `--node <manager-swarm-hostname>` pins that storage component to the manager node (or any registered node name).
+- `--path /srv/luma` is the host export directory.
+- `--region cn` restricts which service regions can use this storage class.
 
-The command means:
+For an existing external or dedicated NFS node:
 
-- `home-nfs` is the stable storage class name deployments reference.
-- `--provider nfs` is optional; NFS is the only v1 user-facing provider.
-- `--node home-nas` pins that storage component to a registered Luma node, or to the manager Swarm hostname for first manager-hosted storage.
-- `--path /srv/luma` is both the host persistent directory and the managed NFS export root.
-- `--region` values restrict which service regions may use the class.
+```bash
+luma storage set home-nfs \
+  --node home-nas \
+  --path /srv/luma \
+  --region cn \
+  --region home
+```
 
-Managed endpoint resolution is automatic:
+### Register an External Independent NFS Server
 
-- Same service region as the storage node: Docker mounts `<storage-node-name>:<path>`.
-- Different service region from the storage node: Docker mounts `<storage-node-tailscale-ip>:<path>`.
-- Cross-region managed storage requires the storage node to have reported `tailscaleIP` during `luma node join`; otherwise validate/render/deploy blocks and asks you to rerun join or refresh node labels.
-
-`storageClass.regions` is the allowed business usage range. It does not prove network reachability; managed cross-region reachability comes from the storage node's Tailscale address.
-
-For an existing external NFS server:
+If using an external, non-Luma-managed NFS server, use the `--external` flag:
 
 ```bash
 luma storage set company-nfs \
@@ -80,15 +65,7 @@ luma storage set company-nfs \
   --region cn
 ```
 
-External NFS uses the endpoint exactly as provided. Luma does not infer network paths for external storage, so at least one `--region` is required and external reachability remains the operator's responsibility.
-
-The storage class remains in manager state until explicitly removed:
-
-```bash
-luma storage remove home-nfs
-```
-
-Removing a storage class only removes the manager declaration. It does not delete data from the storage backend.
+---
 
 ## Sidecar Shape
 
@@ -107,7 +84,7 @@ region: cn
 
 volumes:
   pg-data:
-    storageClass: home-nfs
+    storageClass: cn-nfs
     path: postgres/pg-data
     accessMode: ReadWriteOnce
 
@@ -149,6 +126,34 @@ Sidecar fields:
 | `services.<name>.replicas` | no | Swarm replicas, must be at least `1`. |
 | `services.<name>.proxy` | no | Adds Luma egress proxy env/network for runtime outbound HTTP/HTTPS traffic. |
 
+## ⚠️ Critical Storage Mounting Caveats
+
+When configuring and deploying Luma-managed storage, pay attention to the following three points:
+
+1. **Named Volume Declaration Match**
+   The named volume referenced in the sidecar `luma.compose.yml` MUST be declared in the standard `docker-compose.yml`, and at least one service must mount it. For example:
+   ```yaml
+   # docker-compose.yml
+   services:
+     postgres:
+       image: postgres:15
+       volumes:
+         - pg-data:/var/lib/postgresql/data
+
+   volumes:
+     pg-data: {}  # Must declare the named volume here
+   ```
+
+2. **Cross-Region Networking and Tailscale Dependency**
+   If the storage service's physical node and the application service running node are in different regions, Luma will treat it as a cross-region managed storage mount.
+   **Prerequisite**: The storage node must have a valid `tailscaleIP` (reported via `luma node join`). Without Tailscale reachability, `validate`/`render`/`deploy` will fail to resolve network paths and block execution.
+
+3. **Consistent Class Names and Regions**
+   To keep your layout clean, match your StorageClass names with their physical location and region scope. For example, for manager-hosted storage in region `cn`, name it `cn-nfs` and register it accordingly:
+   `luma storage set cn-nfs --node <manager-swarm-hostname> --path /srv/luma --region cn`
+
+---
+
 ## Validate And Preview
 
 ```bash
@@ -172,7 +177,7 @@ luma storage apply luma.compose.yml --dry-run
 luma storage apply luma.compose.yml
 ```
 
-The storage component stack is manager-scoped by storage class name, for example `luma-storage-home-nfs`. Multiple Compose deployments that reference the same class use the same storage infrastructure.
+The storage component stack is manager-scoped by storage class name, for example `luma-storage-cn-nfs`. Multiple Compose deployments that reference the same class use the same storage infrastructure.
 
 Managed NFS is a convenience component, not high-availability storage. For production HA state, use an external NFS service, a distributed provider, or a managed database/object store.
 
@@ -194,7 +199,7 @@ Storage backend changes are guarded. If an existing deployed volume changes from
 ```yaml
 volumes:
   pg-data:
-    storageClass: home-nfs
+    storageClass: cn-nfs
     path: postgres/pg-data
     adopted: true
 ```
@@ -204,7 +209,7 @@ Use `adopted: true` only after manually copying or verifying the existing data. 
 ```yaml
 volumes:
   pg-data:
-    storageClass: home-nfs
+    storageClass: cn-nfs
     path: postgres/pg-data
     initialize: empty
 ```

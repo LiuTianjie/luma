@@ -18,9 +18,25 @@ Luma 支持通过一个旁车配置文件 `luma.compose.yml` 部署标准的 `do
 
 在 Luma 中，存储服务（如 NFS 共享存储）是控制面管理的共享基础设施。你需要先在控制面注册存储类，之后在各应用的旁车清单中通过名称引用它们。
 
-### 注册 NFS 共享存储
-在客户端执行以下命令注册一个名为 `home-nfs` 的存储类，并指定其所在的物理节点及路径：
+> [!NOTE]
+> 旁车文件里的 `volumes.<name>.storageClass` 并不是声明 NFS 服务本身，只是说明 Compose 里的该命名卷（named volume）要挂载到对应存储类的指定子目录。具体的 NFS 物理节点、导出路径及网络拓扑，由控制面保存的 Storage 状态决定。
 
+### 推荐：注册 Manager 作为首个托管 NFS 存储
+如果是单节点或刚开始使用，建议将 Manager 主机作为第一块 NFS 存储。注册名为 `cn-nfs` 的存储类：
+
+```bash
+luma storage set cn-nfs \
+  --node <manager-swarm-hostname> \
+  --path /srv/luma \
+  --region cn
+```
+
+- `cn-nfs` 为部署引用的存储类名称。
+- `--node` 绑定存储服务的 Luma 节点名（在此处为 Manager 的 Swarm 主机名，可通过 `luma status` 查看）。
+- `--path` NFS 导出的物理根路径（也是主机的持久化数据目录）。
+- `--region` 限制可以使用该存储类的业务区域。
+
+### 进阶：注册独立的专用 NFS 存储（如局域网 NAS）
 ```bash
 luma storage set home-nfs \
   --node home-nas \
@@ -29,13 +45,8 @@ luma storage set home-nfs \
   --region home
 ```
 
-- `home-nfs` 为部署引用的存储类名称。
-- `--node` 绑定存储服务的 Luma 节点名。
-- `--path` NFS 导出的物理根路径。
-- `--region` 限制可以使用该存储类的业务区域。
-
-### 注册外部独立 NFS 服务器
-如果是外部已有的 NFS 服务，可以使用 `--external` 参数：
+### 注册外部独立 NFS 服务器（非托管）
+如果使用的是外部已有的非 Luma 托管的 NFS 服务，可以使用 `--external` 参数：
 
 ```bash
 luma storage set company-nfs \
@@ -63,7 +74,7 @@ region: cn
 
 volumes:
   pg-data:
-    storageClass: home-nfs
+    storageClass: cn-nfs
     path: postgres/pg-data
     accessMode: ReadWriteOnce
 
@@ -76,8 +87,36 @@ services:
 
 ### 核心字段说明：
 * `compose`：指向标准 Compose 文件的相对路径。
-* `volumes.<name>.storageClass`：引用的控制面存储类名称（例如 `home-nfs`）。
+* `volumes.<name>.storageClass`：引用的控制面存储类名称（例如 `cn-nfs`）。
 * `services.<name>.exposure`：暴露入口，如 `cn-edge`、`tailscale-relay`、`none` 等。
+
+---
+
+## ⚠️ 存储挂载的关键注意事项
+
+在配置和使用 Luma 托管存储时，请务必注意以下三点：
+
+1. **同名卷声明匹配**
+   `docker-compose.yml` 里也必须真的有对应的命名卷，并且某个 service 使用它。例如：
+   ```yaml
+   # docker-compose.yml
+   services:
+     postgres:
+       image: postgres:15
+       volumes:
+         - pg-data:/var/lib/postgresql/data
+
+   volumes:
+     pg-data: {}  # 必须在此声明
+   ```
+
+2. **跨 Region 网络与 Tailscale 依赖**
+   如果存储服务所在节点（如 `home-nfs` 运行在 `home-nas` 上）与服务运行节点（如 `app` 在 `region: cn`）处于不同的 Region，Luma 会将其解析为跨 Region 托管存储。
+   **前提条件**：存储节点必须拥有 `tailscaleIP`（已通过 `luma node join` 启用 Tailscale 连接），否则 render/deploy 会因为无法穿透网络而直接失败。
+
+3. **命名与 Region 语义严谨**
+   为保证架构清晰，建议将存储类名称与其实际物理分布及 Region 语义统一。例如对于在 `cn` 区域运行的 Manager 节点存储，建议命名为 `cn-nfs`，并配套注册：
+   `luma storage set cn-nfs --node <manager-swarm-hostname> --path /srv/luma --region cn`
 
 ---
 

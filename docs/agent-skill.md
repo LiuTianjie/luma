@@ -39,7 +39,7 @@ rm -rf /tmp/luma-repo
 > **对话示例**: "检查一下我的 `luma.compose.yml` 是否符合 Luma 的格式与调度规范。"
 
 ### 3. 生成 Docker Compose 与 Luma 旁车
-> **对话示例**: "我有一个现有的 `docker-compose.yml` 服务，帮我初始化并编写一个 `luma.compose.yml`，将 `pg-data` 存储卷绑定到 `home-nfs` 存储类。"
+> **对话示例**: "我有一个现有的 `docker-compose.yml` 服务，帮我初始化并编写一个 `luma.compose.yml`，将 `pg-data` 存储卷绑定到 `cn-nfs` 存储类。"
 
 ---
 

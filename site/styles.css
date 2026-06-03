@@ -412,6 +412,35 @@ html[lang="zh-CN"] h2 {
   border-color: #fff;
 }
 
+.install-title {
+  margin-top: 28px;
+  margin-bottom: 8px;
+  color: var(--muted-strong);
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(700px, 100%);
+}
+
+.install-title .step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: 4px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  letter-spacing: 0;
+  text-transform: none;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
 .install-strip {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
