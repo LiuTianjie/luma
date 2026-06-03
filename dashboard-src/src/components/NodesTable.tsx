@@ -12,7 +12,7 @@ export function NodesTable({
   onSelect: (node: DashboardNode) => void;
 }) {
   return (
-    <article className="panel nodes-panel" id="section-1">
+    <article className="panel nodes-panel" id="section-2">
       <div className="panel-heading">
         <div>
           <p className="eyebrow">{t(lang, "nodesEyebrow")}</p>

@@ -14,7 +14,7 @@ export function StoragePanel({
   warnings: string[];
 }) {
   return (
-    <article className="panel storage-panel" id="section-5">
+    <article className="panel storage-panel" id="section-6">
       <div className="panel-heading">
         <div>
           <p className="eyebrow">{t(lang, "storageEyebrow")}</p>

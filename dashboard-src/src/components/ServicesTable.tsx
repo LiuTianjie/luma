@@ -12,7 +12,7 @@ export function ServicesTable({
   onSelect: (service: DashboardService) => void;
 }) {
   return (
-    <article className="panel services-panel" id="section-2">
+    <article className="panel services-panel" id="section-3">
       <div className="panel-heading">
         <div>
           <p className="eyebrow">{t(lang, "servicesEyebrow")}</p>

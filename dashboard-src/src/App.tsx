@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ErrorBanner } from "./components/ErrorBanner";
+import { ApplicationManagementPanel } from "./components/ApplicationManagementPanel";
 import { LoginPanel } from "./components/LoginPanel";
 import { NodeTopology } from "./components/NodeTopology";
 import { NodesTable } from "./components/NodesTable";
@@ -56,6 +57,10 @@ export function App() {
   const clusterId = payload?.cluster?.id || "-";
   const nodes = payload?.nodes || [];
   const services = payload?.services || [];
+  const businessServices = services.filter((service) => {
+    const stack = service.stack || service.name || "";
+    return !["traefik", "portainer", "egress", "luma-control"].includes(stack) && !stack.startsWith("luma-storage") && service.name !== "cloudflared";
+  });
   const paths = payload?.trafficPaths || [];
   const storageVolumes = payload?.storage?.volumes || [];
   const storageClasses = payload?.storage?.storageClasses || [];
@@ -64,13 +69,14 @@ export function App() {
   const navItems = useMemo(
     () => [
       { label: t(lang, "navOverview"), value: clusterId },
+      { label: t(lang, "navApplications"), value: new Set(businessServices.map((service) => service.stack || service.name)).size },
       { label: t(lang, "navNodes"), value: nodes.length },
       { label: t(lang, "navServices"), value: services.length },
       { label: t(lang, "navTopology"), value: nodes.length },
       { label: t(lang, "navTraffic"), value: paths.length },
       { label: t(lang, "navStorage"), value: storageVolumes.length + storageClasses.length },
     ],
-    [clusterId, lang, nodes.length, paths.length, services.length, storageClasses.length, storageVolumes.length],
+    [businessServices, clusterId, lang, nodes.length, paths.length, services.length, storageClasses.length, storageVolumes.length],
   );
 
   const openNodeDetail = (node: DashboardNode) => {
@@ -168,6 +174,7 @@ export function App() {
             {payload ? (
               <>
                 <ReadinessCards lang={lang} payload={payload} />
+                <ApplicationManagementPanel lang={lang} token={token} payload={payload} onRefresh={loadDashboard} />
                 <section className="table-grid">
                   <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} />
                   <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />

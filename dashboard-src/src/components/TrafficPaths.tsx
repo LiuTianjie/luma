@@ -314,7 +314,7 @@ export function TrafficPaths({
   };
 
   return (
-    <section className="panel path-panel" id="section-4">
+    <section className="panel path-panel" id="section-5">
       <div className="panel-heading">
         <div>
           <p className="eyebrow">{t(lang, "pathsEyebrow")}</p>

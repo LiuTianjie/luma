@@ -288,7 +288,7 @@ export function NodeTopology({
   };
 
   return (
-    <section className="panel topology-panel" id="section-3">
+    <section className="panel topology-panel" id="section-4">
       <div className="panel-heading">
         <div>
           <p className="eyebrow">{t(lang, "nodesEyebrow")}</p>

@@ -377,6 +377,62 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     }
 
 
+def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    manifest = body.get("manifest")
+    source_name = str(body.get("sourceName") or "service.yaml")
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise LumaError("manifest is required")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", encoding="utf-8", delete=False) as fh:
+        fh.write(manifest)
+        service_path = Path(fh.name)
+    try:
+        service = load_service(service_path)
+    finally:
+        service_path.unlink(missing_ok=True)
+    service = resolve_service_node_pin(service, state)
+    stack_text = render_stack(config, service)
+    stack_env = _stack_env_for_text(stack_text)
+    artifacts = [
+        {
+            "kind": "stack",
+            "path": str(stack_path(config, service)),
+            "content": stack_text,
+        }
+    ]
+    if service.exposure == "tailscale-relay":
+        artifacts.append(
+            {
+                "kind": "route",
+                "path": str(route_path(config, service)),
+                "content": render_tailscale_route(config, service),
+            }
+        )
+    return {
+        "clusterId": state["clusterId"],
+        "service": service.name,
+        "sourceName": source_name,
+        "summary": {
+            "name": service.name,
+            "image": service.image,
+            "region": service.region,
+            "node": service.node or "",
+            "exposure": service.exposure,
+            "domain": service.domain or "",
+            "port": service.port,
+            "replicas": service.replicas,
+            "proxy": service.proxy,
+            "secrets": [item["name"] for item in stack_env],
+        },
+        "artifacts": artifacts,
+        "warnings": [],
+    }
+
+
 def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -441,6 +497,73 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
         "dryRun": dry_run,
         "steps": steps,
     }
+
+
+SYSTEM_STACKS = {"traefik", "portainer", "egress", "luma-control"}
+
+
+def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    stack = str(body.get("stack") or "").strip()
+    service_name = str(body.get("service") or "").strip()
+    if not stack:
+        raise LumaError("stack is required")
+    if _is_system_stack(stack):
+        raise LumaError(f"system stack cannot be restarted from application management: {stack}")
+    services = docker_request("GET", "/services")
+    if not isinstance(services, list):
+        raise LumaError("Docker API returned invalid service list")
+    targets = []
+    for service in services:
+        if not isinstance(service, dict):
+            continue
+        spec = service.get("Spec") if isinstance(service.get("Spec"), dict) else {}
+        full_name = str(spec.get("Name") or service.get("ID") or "")
+        item_stack, item_service = _split_swarm_service_name(full_name)
+        if item_stack != stack:
+            continue
+        if service_name and item_service != service_name:
+            continue
+        service_id = str(service.get("ID") or "")
+        if service_id:
+            targets.append({"id": service_id, "name": full_name, "service": item_service})
+    if not targets:
+        suffix = f"/{service_name}" if service_name else ""
+        raise LumaError(f"application service not found: {stack}{suffix}")
+    restarted = []
+    for target in targets:
+        restarted.append(_force_update_service(str(target["id"]), str(target["name"])))
+    return {
+        "clusterId": state["clusterId"],
+        "stack": stack,
+        "service": service_name,
+        "restarted": restarted,
+    }
+
+
+def _is_system_stack(stack: str) -> bool:
+    return stack in SYSTEM_STACKS or stack.startswith("luma-storage")
+
+
+def _force_update_service(service_id: str, display_name: str) -> Dict[str, Any]:
+    inspected = docker_request("GET", f"/services/{urllib.parse.quote(service_id, safe='')}")
+    if not isinstance(inspected, dict):
+        raise LumaError(f"Docker API returned invalid service detail: {display_name}")
+    version = inspected.get("Version", {}).get("Index")
+    spec = inspected.get("Spec")
+    if not version or not isinstance(spec, dict):
+        raise LumaError(f"Docker API returned invalid service spec: {display_name}")
+    task_template = spec.setdefault("TaskTemplate", {})
+    if not isinstance(task_template, dict):
+        raise LumaError(f"Docker API returned invalid task template: {display_name}")
+    task_template["ForceUpdate"] = int(task_template.get("ForceUpdate") or 0) + 1
+    docker_request(
+        "POST",
+        f"/services/{urllib.parse.quote(service_id, safe='')}/update?version={version}",
+        spec,
+    )
+    return {"id": service_id, "name": display_name, "forceUpdate": task_template["ForceUpdate"]}
 
 
 def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
@@ -532,6 +655,70 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         "probe": probe_results,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
         "steps": steps,
+    }
+
+
+def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    source_name = str(body.get("sourceName") or "luma.compose.yml")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    deployment = _load_compose_request(body, source_name)
+    stack_text = render_compose_stack(
+        config,
+        deployment,
+        node_id_resolver=_compose_node_id_resolver(state),
+        node_records=_state_nodes(state),
+    )
+    target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
+    storage_guard = _guard_compose_storage_switch(target, stack_text, deployment)
+    _stack_env_for_text(stack_text)
+    route_texts = render_compose_routes(config, deployment)
+    artifacts = [
+        {
+            "kind": "stack",
+            "path": str(compose_stack_path(config, deployment)),
+            "content": stack_text,
+        }
+    ]
+    for service_name, route_text in route_texts.items():
+        artifacts.append(
+            {
+                "kind": "route",
+                "path": str(compose_route_path(config, deployment, service_name)),
+                "content": route_text,
+            }
+        )
+    services = []
+    for service_name, service in sorted(deployment.services.items()):
+        services.append(
+            {
+                "name": service_name,
+                "region": service.region or deployment.region,
+                "node": service.node or "",
+                "exposure": service.exposure,
+                "domain": service.domain or "",
+                "port": service.port,
+                "publishPort": service.publish_port,
+                "replicas": service.replicas,
+                "proxy": service.proxy,
+            }
+        )
+    return {
+        "clusterId": state["clusterId"],
+        "deployment": deployment.name,
+        "sourceName": source_name,
+        "summary": {
+            "name": deployment.name,
+            "region": deployment.region,
+            "services": services,
+            "storageGuard": storage_guard,
+        },
+        "artifacts": artifacts,
+        "storage": storage_summary(deployment, node_records=_state_nodes(state)),
+        "warnings": deployment.warnings,
     }
 
 
@@ -2136,11 +2323,17 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/deployments":
                 self._json(200, handle_deployment(token, body))
                 return
+            if self.path == "/v1/deployments/preview":
+                self._json(200, handle_deployment_preview(token, body))
+                return
             if self.path == "/v1/deployments/stream":
                 self._stream_deployment(token, body)
                 return
             if self.path == "/v1/compose-deployments":
                 self._json(200, handle_compose_deployment(token, body))
+                return
+            if self.path == "/v1/compose-deployments/preview":
+                self._json(200, handle_compose_deployment_preview(token, body))
                 return
             if self.path == "/v1/compose-deployments/stream":
                 self._stream_compose_deployment(token, body)
@@ -2159,6 +2352,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/services/remove":
                 self._json(200, handle_service_remove(token, body))
+                return
+            if self.path == "/v1/applications/restart":
+                self._json(200, handle_application_restart(token, body))
                 return
             if self.path == "/v1/secrets":
                 self._json(200, handle_secret_set(token, body))

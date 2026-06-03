@@ -145,6 +145,10 @@ const devDashboardPayload = {
     { id: "portainer", kind: "internal", domain: "", segments: ["client/internal", "portainer", "home-mac-mini"] },
   ],
   storage: {
+    storageClasses: [
+      { name: "home-nfs", provider: "nfs", mode: "external", endpoint: "nas:/srv/luma", regions: ["home"] },
+      { name: "cn-nfs", provider: "nfs", mode: "managed", node: "cn-edge", path: "/srv/luma", regions: ["cn"] },
+    ],
     volumes: [
       { name: "portainer-data", kind: "bind", storageClass: "local", node: "home-mac-mini", services: ["portainer"] },
       { name: "gitea-data", kind: "bind", storageClass: "local", node: "tailscale-relay", services: ["codex-gitea"] },
@@ -175,6 +179,19 @@ export default defineConfig({
     {
       name: "dev-dashboard-api",
       configureServer(server) {
+        const readBody = (request: any) => new Promise<Record<string, any>>((resolve) => {
+          let raw = "";
+          request.on("data", (chunk: unknown) => {
+            raw += chunk.toString("utf-8");
+          });
+          request.on("end", () => {
+            try {
+              resolve(raw ? JSON.parse(raw) : {});
+            } catch {
+              resolve({});
+            }
+          });
+        });
         server.middlewares.use("/v1/dashboard", (request, response) => {
           if (request.method !== "GET") {
             response.statusCode = 405;
@@ -192,6 +209,66 @@ export default defineConfig({
           response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.setHeader("Cache-Control", "no-store");
           response.end(JSON.stringify({ ...devDashboardPayload, cluster: { ...devDashboardPayload.cluster, updatedAt: new Date().toISOString() } }));
+        });
+        server.middlewares.use("/v1/deployments/preview", async (request, response) => {
+          if (request.method !== "POST") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          const body = await readBody(request);
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.end(JSON.stringify({
+            service: "preview-service",
+            summary: { name: "preview-service" },
+            artifacts: [{ kind: "stack", path: "stacks/cn/preview-service/stack.yml", content: body.manifest || "" }],
+            warnings: [],
+          }));
+        });
+        server.middlewares.use("/v1/compose-deployments/preview", async (request, response) => {
+          if (request.method !== "POST") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          const body = await readBody(request);
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.end(JSON.stringify({
+            deployment: "preview-compose",
+            summary: { name: "preview-compose" },
+            artifacts: [{ kind: "stack", path: "stacks/compose/preview-compose/stack.yml", content: body.composeContent || "" }],
+            storage: { storageClasses: devDashboardPayload.storage.storageClasses, volumes: [], warnings: [] },
+            warnings: [],
+          }));
+        });
+        server.middlewares.use("/v1/deployments/stream", async (_request, response) => {
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/x-ndjson");
+          response.write(JSON.stringify({ status: "start", name: "Render stack", message: "started" }) + "\n");
+          response.write(JSON.stringify({ status: "ok", name: "Render stack", message: "Stack rendered" }) + "\n");
+          response.write(JSON.stringify({ status: "ok", name: "Deploy Portainer stack", message: "Mock deploy complete" }) + "\n");
+          response.end(JSON.stringify({ status: "done", result: { service: "preview-service" } }) + "\n");
+        });
+        server.middlewares.use("/v1/compose-deployments/stream", async (_request, response) => {
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/x-ndjson");
+          response.write(JSON.stringify({ status: "start", name: "Render compose stack", message: "started" }) + "\n");
+          response.write(JSON.stringify({ status: "ok", name: "Render compose stack", message: "Compose rendered" }) + "\n");
+          response.write(JSON.stringify({ status: "ok", name: "Deploy Portainer stack", message: "Mock compose deploy complete" }) + "\n");
+          response.end(JSON.stringify({ status: "done", result: { deployment: "preview-compose" } }) + "\n");
+        });
+        server.middlewares.use("/v1/applications/restart", async (request, response) => {
+          if (request.method !== "POST") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          const body = await readBody(request);
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.end(JSON.stringify({ stack: body.stack, restarted: [{ name: `${body.stack}_app`, forceUpdate: 1 }] }));
         });
       },
     },

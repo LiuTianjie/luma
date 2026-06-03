@@ -32,7 +32,12 @@ export type DashboardService = {
   fullName?: string;
   stack?: string;
   region?: string;
+  node?: string;
   exposure?: string;
+  domain?: string;
+  targetPort?: string;
+  routeId?: string;
+  network?: string;
   image?: string;
   running?: number;
   desired?: number;
