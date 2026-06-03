@@ -310,10 +310,14 @@ env:
 | [docs/secrets.md](docs/secrets.md) | secret 和环境变量处理。 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 常见失败和修复。 |
 | [docs/release.md](docs/release.md) | 发布 tag、安装器和 control image 的流程。 |
+| [docs/agent-skill.md](docs/agent-skill.md) | AI 助手 (Agent Skill) 技能的安装与使用文档。 |
+| [docs/compose-storage.zh-CN.md](docs/compose-storage.zh-CN.md) | Docker Compose 部署与 NFS/本地共享存储的管理和迁移说明。 |
 
 ## Agent Skill
 
-Agent 可以使用 [skills/luma-deployment-yaml](skills/luma-deployment-yaml) 里的可安装 skill 来生成或审阅部署 YAML。在 Codex 里可以直接说：
+Agent 可以使用 [skills/luma-deployment-yaml](skills/luma-deployment-yaml) 里的可安装 skill 来生成或审阅部署 YAML。具体安装、配置与使用方式详见 [docs/agent-skill.md](docs/agent-skill.md)。
+
+在 Codex 里可以直接说：
 
 ```text
 Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml

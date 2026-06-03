@@ -5,7 +5,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="Luma 将 YAML 服务清单转换为 DNS 记录、HTTPS 证书、Traefik 路由和 Swarm 工作负载更新。" />
-  <title>Luma - 自托管服务发布控制面</title>
+  <title>Luma - 轻量多服务器管理控制面</title>
   <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
   <link rel="alternate" hreflang="en" href="./" />
@@ -44,7 +44,10 @@
     <section class="hero">
       <div class="hero-copy reveal">
         <p class="hero-kicker">自托管部署控制面</p>
-        <h1>Luma Depoly</h1>
+        <h1>
+          <span class="hero-title-brand">luma</span>
+          <span class="text-gradient">轻量多服务器管理控制面</span>
+        </h1>
         <p class="hero-lede">
           把域名、端口、入口和 region 写进 YAML。Luma 负责同步 Cloudflare DNS、
           Traefik HTTPS 路由和 Swarm 服务；每台服务器只需要在本机加入集群。
@@ -64,6 +67,34 @@
           <button class="copy-button"
             data-copy="curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh">复制</button>
         </div>
+        <div class="agent-copilot-panel">
+          <div class="agent-badge-list">
+            <span class="agent-badge-item">
+              <svg class="agent-icon-svg" viewBox="0 0 24 24" fill="currentColor"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>
+              Codex
+            </span>
+            <span class="agent-badge-item">
+              <svg class="agent-icon-svg" viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409z"/></svg>
+              Claude Code
+            </span>
+            <span class="agent-badge-item">
+              <svg class="agent-icon-svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-.4 4.8-4.8 9.2-9.6 9.6 4.8.4 9.2 4.8 9.6 9.6.4-4.8 4.8-9.2 9.6-9.6-4.8-.4-9.2-4.8-9.6-9.6z"/></svg>
+              Gemini
+            </span>
+          </div>
+          <p>直接让你的 AI 助手（Codex / Claude Code / Gemini 等）安装 Luma 技能：</p>
+          <div class="agent-prompt-strip">
+            <code>Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml</code>
+            <button class="copy-button" data-copy="Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml">复制指令</button>
+          </div>
+          <details>
+            <summary>或在终端手动安装 (Manual Install)</summary>
+            <div class="install-strip compact" aria-label="手动安装">
+              <code>mkdir -p ~/.codex/skills && git clone --depth 1 https://github.com/LiuTianjie/luma.git /tmp/luma-repo && cp -R /tmp/luma-repo/skills/luma-deployment-yaml ~/.codex/skills/ && rm -rf /tmp/luma-repo</code>
+              <button class="copy-button" data-copy="mkdir -p ~/.codex/skills && git clone --depth 1 https://github.com/LiuTianjie/luma.git /tmp/luma-repo && cp -R /tmp/luma-repo/skills/luma-deployment-yaml ~/.codex/skills/ && rm -rf /tmp/luma-repo">复制</button>
+            </div>
+          </details>
+        </div>
       </div>
 
       <div class="hero-visual deploy-dashboard reveal" aria-label="Luma 部署架构图">
@@ -72,10 +103,27 @@
           <strong>status.example.com</strong>
         </div>
         <div class="architecture-flow">
-          <span class="arch-line arch-line-input" aria-hidden="true"></span>
-          <span class="arch-line arch-line-dns" aria-hidden="true"></span>
-          <span class="arch-line arch-line-edge" aria-hidden="true"></span>
-          <span class="arch-line arch-line-swarm" aria-hidden="true"></span>
+          <!-- Animated SVG Paths for connections -->
+          <svg class="arch-svg" viewBox="0 0 800 320" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="arch-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#6366f1" />
+                <stop offset="100%" stop-color="#06b6d4" />
+              </linearGradient>
+            </defs>
+            <!-- Manifest -> Control -->
+            <path class="arch-svg-bg" d="M 265,160 L 332,160" />
+            <path class="arch-svg-pulse" d="M 265,160 L 332,160" />
+            <!-- Control -> DNS -->
+            <path class="arch-svg-bg" d="M 531,130 C 580,130 600,53 667,53" />
+            <path class="arch-svg-pulse" d="M 531,130 C 580,130 600,53 667,53" />
+            <!-- Control -> Edge -->
+            <path class="arch-svg-bg" d="M 531,160 L 667,160" />
+            <path class="arch-svg-pulse" d="M 531,160 L 667,160" />
+            <!-- Control -> Swarm -->
+            <path class="arch-svg-bg" d="M 531,190 C 580,190 600,267 667,267" />
+            <path class="arch-svg-pulse" d="M 531,190 C 580,190 600,267 667,267" />
+          </svg>
           <div class="arch-card arch-manifest">
             <span class="arch-label">01 Manifest</span>
             <strong>status.yaml</strong>
@@ -132,8 +180,16 @@ ok swarm   status replicated x2</code></pre>
         <span>每个 Host 都走自己的证书</span>
       </div>
       <div>
-        <strong>私有镜像</strong>
+        <strong>支持私有镜像</strong>
         <span>registry token 不写进 YAML</span>
+      </div>
+      <div>
+        <strong>支持 Docker Compose</strong>
+        <span>标准 <code>compose.yml</code> 配合 Luma 旁车，轻松编排多服务</span>
+      </div>
+      <div>
+        <strong>声明式共享存储卷</strong>
+        <span>在控制面注册存储类，Luma 在多节点间自动调度挂载</span>
       </div>
     </section>
 
@@ -248,34 +304,57 @@ ok swarm   status replicated x2</code></pre>
               <strong>Client</strong>
               <span data-demo-client>未登录</span>
             </div>
-            <span class="stage-link link-client"></span>
-            <span class="stage-link link-edge"></span>
-            <span class="stage-link link-worker"></span>
-            <span class="stage-link link-global"></span>
-            <span class="flow-packet flow-client"></span>
-            <span class="flow-packet flow-edge"></span>
-            <span class="flow-packet flow-worker"></span>
-            <span class="flow-packet flow-global"></span>
+            <!-- Interactive SVG Stepper Map Connections -->
+            <svg class="stage-svg" viewBox="0 0 600 300" preserveAspectRatio="none" aria-hidden="true">
+              <!-- Client -> Manager -->
+              <path class="stage-path stage-path-client" d="M 160,100 L 240,100" />
+              <path class="stage-path-pulse stage-path-client-pulse" d="M 160,100 L 240,100" />
+              <!-- Manager -> Edge -->
+              <path class="stage-path stage-path-edge" d="M 360,100 L 440,100" />
+              <path class="stage-path-pulse stage-path-edge-pulse" d="M 360,100 L 440,100" />
+              <!-- Manager -> Worker (CN) -->
+              <path class="stage-path stage-path-worker" d="M 270,140 L 140,210" />
+              <path class="stage-path-pulse stage-path-worker-pulse" d="M 270,140 L 140,210" />
+              <!-- Manager -> Worker (Global) -->
+              <path class="stage-path stage-path-global" d="M 330,140 L 460,210" />
+              <path class="stage-path-pulse stage-path-global-pulse" d="M 330,140 L 460,210" />
+            </svg>
           </div>
 
           <div class="effect-grid">
             <div class="effect-card domain-card">
-              <span><span class="brand-icon icon-cloudflare"></span>域名</span>
+              <span>
+                <span class="brand-icon icon-cloudflare"></span>
+                域名
+                <span class="status-dot"></span>
+              </span>
               <strong data-demo-domain>还没有服务</strong>
               <small data-demo-domain-status>deploy 时读取 manifest</small>
             </div>
             <div class="effect-card dns-card">
-              <span><span class="brand-icon icon-cloudflare"></span>DNS</span>
+              <span>
+                <span class="brand-icon icon-cloudflare"></span>
+                DNS
+                <span class="status-dot"></span>
+              </span>
               <strong data-demo-dns>等待中</strong>
               <small data-demo-dns-status>deploy 时写入记录</small>
             </div>
             <div class="effect-card tls-card">
-              <span><span class="brand-icon icon-traefik"></span>证书</span>
+              <span>
+                <span class="brand-icon icon-traefik"></span>
+                证书
+                <span class="status-dot"></span>
+              </span>
               <strong data-demo-tls>等待中</strong>
               <small data-demo-tls-status>Traefik 按 Host 申请证书</small>
             </div>
             <div class="effect-card stack-card">
-              <span><span class="brand-icon icon-docker"></span>路由与负载</span>
+              <span>
+                <span class="brand-icon icon-docker"></span>
+                路由与负载
+                <span class="status-dot"></span>
+              </span>
               <strong data-demo-stack>等待中</strong>
               <small data-demo-stack-status>Traefik 转发到 service:port</small>
             </div>
@@ -348,6 +427,80 @@ resources:
             </div>
           </li>
         </ul>
+      </div>
+    </section>
+
+    <section class="section split reveal" id="compose-storage">
+      <div class="section-copy">
+        <h2>多服务 Compose 与持久化存储卷</h2>
+        <ul class="capability-list">
+          <li>
+            <span>01</span>
+            <div>
+              <strong>标准的 docker-compose.yml 编排</strong>
+              <p>无侵入设计。继续使用原本的 Compose 文件描述服务依赖与容器网络，方便本地开发测试。</p>
+            </div>
+          </li>
+          <li>
+            <span>02</span>
+            <div>
+              <strong>Luma 旁车文件 (luma.compose.yml)</strong>
+              <p>将 Luma 特有的部署选项（如 Region、域名入口、存储挂载）隔离在旁车中，实现平滑集成。</p>
+            </div>
+          </li>
+          <li>
+            <span>03</span>
+            <div>
+              <strong>声明式共享存储类 (StorageClass)</strong>
+              <p>在控制面注册 <code>cn-nfs</code> 存储。Luma 自动按 Region 与网络拓扑动态解析端点并配置挂载。</p>
+            </div>
+          </li>
+          <li>
+            <span>04</span>
+            <div>
+              <strong>数据防丢保护与平滑迁移</strong>
+              <p>严格的安全检查。变更存储位置时自动拦截并要求明确声明 <code>adopted</code>（已迁入）或 <code>initialize: empty</code>（空挂载）。</p>
+            </div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="manifest-panel">
+        <div class="panel-header">
+          <span></span><span></span><span></span>
+          <strong>luma.compose.yml</strong>
+        </div>
+        <pre><code>name: app-stack
+compose: docker-compose.yml
+region: cn
+
+volumes:
+  pg-data:
+    storageClass: cn-nfs
+    path: postgres/pg-data
+
+services:
+  app:
+    exposure: cn-edge
+    domain: app.example.com
+    port: 3000</code></pre>
+        <div class="panel-header secondary-header">
+          <span></span><span></span><span></span>
+          <strong>docker-compose.yml</strong>
+        </div>
+        <pre><code>version: '3.8'
+services:
+  app:
+    image: company/app:latest
+    volumes:
+      - pg-data:/var/lib/pg/data
+  postgres:
+    image: postgres:15
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+volumes:
+  pg-data: {}</code></pre>
       </div>
     </section>
 
@@ -438,7 +591,7 @@ luma deploy status.yaml</code></pre>
 
   <footer>
     <span>Luma</span>
-    <span>面向小型 Swarm 集群的 YAML 部署工具。</span>
+    <span>轻量多服务器管理控制面</span>
   </footer>
 
   <script src="./app.js?v=20260601-dubstyle1"></script>

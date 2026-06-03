@@ -813,6 +813,7 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
     _step(results, emit, "Save Portainer credentials", lambda: install_control_state(remote, state))
     manager_info = local_swarm_join_info(node)
     state.update(manager_info)
+    _remember_local_manager_node(state, node, profile, remote)
     state["portainerApiUrl"] = _portainer_api_url_for_control(node, manager_info)
     _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
@@ -827,6 +828,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
     state["domain"] = domain
     manager_info = local_swarm_join_info(node)
     state.update(manager_info)
+    _remember_local_manager_node(state, node, None, remote)
     state["portainerApiUrl"] = _portainer_api_url_for_control(node, manager_info)
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
@@ -838,6 +840,38 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         fix="Check luma-control service logs and rerun luma update manager",
     )
     return results
+
+
+def _remember_local_manager_node(state: dict[str, object], node: NodeConfig, profile: Profile | None, remote: Executor) -> None:
+    hostname = local_docker_node_name()
+    node_id = local_docker_node_id()
+    labels = {**(profile.labels if profile else {"region": node.region})}
+    roles = profile.roles if profile else node.roles
+    for role in roles:
+        labels[f"role.{role}"] = "true"
+    region = str(labels.get("region") or node.region or "cn")
+    values: dict[str, object] = {
+        "region": region,
+        "status": "manager",
+        "displayName": hostname,
+        "swarmHostname": hostname,
+        "labels": labels,
+        "swarmRole": "manager",
+        "swarmManager": True,
+    }
+    if node_id:
+        values["swarmNodeId"] = node_id
+    tailscale_ip = _tailscale_ip(remote)
+    if tailscale_ip:
+        values["tailscaleIP"] = tailscale_ip
+    nodes = state.setdefault("nodes", {})
+    if not isinstance(nodes, dict):
+        nodes = {}
+        state["nodes"] = nodes
+    nodes[hostname] = {**(nodes.get(hostname) if isinstance(nodes.get(hostname), dict) else {}), **values}
+    if node.name and node.name != hostname:
+        alias_values = {**values, "displayName": node.name}
+        nodes[node.name] = {**(nodes.get(node.name) if isinstance(nodes.get(node.name), dict) else {}), **alias_values}
 
 
 def join_local_node(

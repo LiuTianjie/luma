@@ -175,7 +175,7 @@ By default this leaves Docker Swarm and removes `/opt/luma`, while keeping Tails
 
 Provider config and secrets are copied into the manager control state during `luma bootstrap manager`. If you change `luma.yaml`, Cloudflare settings, or legacy Portainer webhook env vars after bootstrap, rerun:
 
-If the local manager config has `CLOUDFLARE_API_TOKEN` but no `providers.dns`, bootstrap infers the Cloudflare zone from the control domain, looks up the zone id, and writes `providers.dns` before installing `/opt/luma/luma.yaml`. If no DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET` and writes it as `providers.dns.edgeTarget`.
+If the local manager config has `CLOUDFLARE_API_TOKEN` but no `providers.dns`, bootstrap and `luma update manager` infer the Cloudflare zone from the control domain, look up the zone id, and write `providers.dns` before installing `/opt/luma/luma.yaml`. If no DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET`; non-interactive update uses the configured edge node public IP or an existing `LUMA_DNS_EDGE_TARGET`.
 
 ```bash
 luma bootstrap manager --domain luma.example.com
@@ -187,7 +187,7 @@ Use `luma update` after upgrading Luma itself:
 luma update
 ```
 
-The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and hot-refreshes only the Luma Control API: it preserves existing tokens, Portainer credentials, nodes, and app stacks; refreshes control config/state metadata; pulls the current Luma Control image; and rolls the `luma-control` service with healthcheck-based rollback. It does not redeploy or force-restart Traefik, Portainer, Docker, egress, or user services. On a client or worker node, it skips manager control-plane refresh and exits after updating the CLI. Use `luma update manager` to force the same control-only refresh when you need to pass `--domain`.
+The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and hot-refreshes only the Luma Control API: it preserves existing tokens, Portainer credentials, nodes, and app stacks; refreshes control config/state metadata; refreshes inferred DNS provider config when local Cloudflare credentials are available; pulls the current Luma Control image; and rolls the `luma-control` service with healthcheck-based rollback. It does not redeploy or force-restart Traefik, Portainer, Docker, egress, or user services. On a client or worker node, it skips manager control-plane refresh and exits after updating the CLI. Use `luma update manager` to force the same control-only refresh when you need to pass `--domain`.
 
 Use `luma bootstrap manager --domain ...` for first install or explicit infrastructure repair. Full bootstrap can touch Docker, firewall, Traefik, Portainer, and egress, so treat it as a maintenance-window operation. If an old installed CLI still implements the previous update behavior, update the CLI first through the installer or package manager, then rerun the new `luma update manager` control-only refresh.
 

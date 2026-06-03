@@ -1019,6 +1019,8 @@ def _refresh_manager_control(args: argparse.Namespace) -> None:
     node = config.get_node(args.node) if args.node else (config.default_manager() or _local_node(args.profile))
     if not node:
         raise LumaError("no manager node configured. Add a node or pass --node.")
+    _ensure_cloudflare_dns_from_local_config(config, domain, node)
+    _attach_control_secrets(state, config)
     refresh_manager_control_local(config, node, domain, state, emit=log)
 
 

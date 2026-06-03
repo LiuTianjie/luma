@@ -908,6 +908,72 @@ class CliTests(unittest.TestCase):
         self.assertEqual(refresh.call_args.args[2], "luma.example.com")
         self.assertIs(refresh.call_args.args[3], state)
 
+    def test_update_manager_infers_cloudflare_dns_before_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "luma.yaml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "nodes": {
+                            "manager": {
+                                "host": "localhost",
+                                "publicIp": "203.0.113.10",
+                                "region": "cn",
+                                "roles": ["swarm-manager", "edge"],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = {"clusterId": "luma-test", "domain": "luma.itool.tech", "deployToken": "deploy", "joinToken": "join"}
+            old_cf = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            old_target = _set_env("LUMA_DNS_EDGE_TARGET", "")
+            try:
+                captured = {}
+
+                def refresh_side_effect(config, _node, _domain, current_state, **_kwargs):
+                    captured["config"] = config.raw
+                    captured["state"] = dict(current_state)
+                    return ["Control refreshed"]
+
+                def find_zone_side_effect(_config, zone_name):
+                    if zone_name == "itool.tech":
+                        return {"id": "zone-itool"}
+                    raise LumaError("not found")
+
+                with patch("luma.cli._run_luma_installer"), patch(
+                    "luma.cli._existing_control_state", return_value=state
+                ), patch("luma.cli.find_zone", side_effect=find_zone_side_effect), patch(
+                    "luma.cli.refresh_manager_control_local", side_effect=refresh_side_effect
+                ), patch("builtins.print"):
+                    code = main(
+                        [
+                            "--config",
+                            str(config_path),
+                            "update",
+                            "manager",
+                            "--domain",
+                            "luma.itool.tech",
+                            "--node",
+                            "manager",
+                        ]
+                    )
+
+                self.assertEqual(code, 0)
+                dns = captured["config"]["providers"]["dns"]
+                self.assertEqual(dns["type"], "cloudflare")
+                self.assertEqual(dns["zone"], "itool.tech")
+                self.assertEqual(dns["zoneId"], "zone-itool")
+                self.assertEqual(dns["edgeTarget"], "203.0.113.10")
+                self.assertEqual(captured["state"]["secrets"]["CLOUDFLARE_API_TOKEN"], "cf-token")
+                saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["providers"]["dns"]["zoneId"], "zone-itool")
+                self.assertEqual(saved["providers"]["dns"]["edgeTarget"], "203.0.113.10")
+            finally:
+                _restore_env("CLOUDFLARE_API_TOKEN", old_cf)
+                _restore_env("LUMA_DNS_EDGE_TARGET", old_target)
+
     def test_update_infers_domain_and_refreshes_when_manager_state_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp) / "state"
@@ -3026,8 +3092,9 @@ class ControlApiTests(unittest.TestCase):
                     "home-nas": {"name": "home-nas", "region": "home", "status": "labeled"},
                 }
                 save_state(state)
-                with self.assertRaisesRegex(LumaError, "unknown Luma node"):
-                    handle_storage_set(state["deployToken"], {"name": "bad-nfs", "provider": "nfs", "node": "missing", "path": "/srv/luma"})
+                with patch("luma.control.server.docker_request", return_value=[]):
+                    with self.assertRaisesRegex(LumaError, "unknown Luma node"):
+                        handle_storage_set(state["deployToken"], {"name": "bad-nfs", "provider": "nfs", "node": "missing", "path": "/srv/luma"})
                 with self.assertRaisesRegex(LumaError, "cannot set endpoint"):
                     handle_storage_set(
                         state["deployToken"],
@@ -3047,6 +3114,112 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(saved["provider"], "nfs")
                 self.assertEqual(saved["mode"], "external")
                 self.assertEqual(saved["regions"], ["cn"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_set_can_adopt_manager_swarm_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "home-mac-mini": {"name": "home-mac-mini", "region": "home", "status": "labeled"},
+                }
+                save_state(state)
+                swarm_nodes = [
+                    {
+                        "ID": "manager-node-id-1234567890",
+                        "Spec": {
+                            "Role": "manager",
+                            "Labels": {"region": "cn", "ingress": "true"},
+                        },
+                        "Description": {"Hostname": "iZ0jl8auywzycory05d9cuZ"},
+                        "Status": {"State": "ready"},
+                        "ManagerStatus": {"Leader": True, "Reachability": "reachable"},
+                    }
+                ]
+                docker_calls = []
+
+                def fake_docker_request(method, path, body=None):
+                    docker_calls.append((method, path, body))
+                    if method == "GET" and path == "/nodes":
+                        return swarm_nodes
+                    if method == "GET" and path.startswith("/nodes/"):
+                        return {
+                            "Version": {"Index": 12},
+                            "Spec": {
+                                "Role": "manager",
+                                "Labels": {"region": "cn", "ingress": "true"},
+                            },
+                        }
+                    if method == "POST" and path.startswith("/nodes/manager-node-id-1234567890/update"):
+                        return {}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request):
+                    result = handle_storage_set(
+                        state["deployToken"],
+                        {"name": "cn-nfs", "provider": "nfs", "node": "iZ0jl8auywzycory05d9cuZ", "path": "/srv/luma"},
+                    )
+                self.assertTrue(result["saved"])
+                persisted = load_state()
+                self.assertEqual(persisted["storageClasses"]["cn-nfs"]["path"], "/srv/luma")
+                manager = persisted["nodes"]["iZ0jl8auywzycory05d9cuZ"]
+                self.assertEqual(manager["region"], "cn")
+                self.assertEqual(manager["swarmHostname"], "iZ0jl8auywzycory05d9cuZ")
+                self.assertEqual(manager["swarmNodeId"], "manager-node-id-1234567890")
+                self.assertEqual(manager["status"], "adopted")
+                self.assertEqual(manager["labels"]["luma.node.name"], "iZ0jl8auywzycory05d9cuZ")
+                self.assertTrue(any(method == "POST" and "/update" in path for method, path, _ in docker_calls))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_set_labels_registered_manager_for_storage_placement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "manager-host": {
+                        "region": "cn",
+                        "status": "manager",
+                        "swarmHostname": "manager-host",
+                        "swarmNodeId": "manager-node-id",
+                        "labels": {"region": "cn", "ingress": "true"},
+                    }
+                }
+                save_state(state)
+                docker_calls = []
+
+                def fake_docker_request(method, path, body=None):
+                    docker_calls.append((method, path, body))
+                    if method == "GET" and path == "/nodes":
+                        return [
+                            {
+                                "ID": "manager-node-id",
+                                "Spec": {"Role": "manager", "Labels": {"region": "cn", "ingress": "true"}},
+                                "Description": {"Hostname": "manager-host"},
+                            }
+                        ]
+                    if method == "GET" and path.startswith("/nodes/"):
+                        return {
+                            "Version": {"Index": 5},
+                            "Spec": {"Role": "manager", "Labels": {"region": "cn", "ingress": "true"}},
+                        }
+                    if method == "POST" and path.startswith("/nodes/manager-node-id/update"):
+                        return {}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request):
+                    result = handle_storage_set(
+                        state["deployToken"],
+                        {"name": "cn-nfs", "node": "manager-host", "path": "/srv/luma"},
+                    )
+                self.assertTrue(result["saved"])
+                manager = load_state()["nodes"]["manager-host"]
+                self.assertEqual(manager["labels"]["luma.node.name"], "manager-host")
+                self.assertEqual(manager["labels"]["luma.node.id"], "manager-node-id")
+                self.assertTrue(any(method == "POST" and "/update" in path for method, path, _ in docker_calls))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

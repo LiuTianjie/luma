@@ -20,7 +20,7 @@ export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
 ```
 
-Use the Luma node name, not the Docker hostname, when declaring node pins or managed storage nodes.
+Use the Luma node name when declaring node pins. For the first manager-hosted storage service, you may also use the manager Swarm hostname shown by `luma status`, because the manager might not have gone through `luma node join`.
 
 ## Declare Storage Services
 
@@ -42,11 +42,24 @@ luma storage set home-nfs \
 luma storage list
 ```
 
+To use the current manager as the first managed NFS node:
+
+```bash
+luma update manager --domain <control-domain>
+luma status
+luma storage set cn-nfs \
+  --node <manager-swarm-hostname> \
+  --path /srv/luma \
+  --region cn
+```
+
+If the manager has not yet been written into Luma's node registry, Control adopts the matching Swarm node during `storage set`. The manager node still needs a region label; the normal bootstrap/update flow writes it from the manager profile.
+
 The command means:
 
 - `home-nfs` is the stable storage class name deployments reference.
 - `--provider nfs` is optional; NFS is the only v1 user-facing provider.
-- `--node home-nas` pins that storage component to the Luma node named `home-nas`.
+- `--node home-nas` pins that storage component to a registered Luma node, or to the manager Swarm hostname for first manager-hosted storage.
 - `--path /srv/luma` is both the host persistent directory and the managed NFS export root.
 - `--region` values restrict which service regions may use the class.
 

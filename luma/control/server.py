@@ -842,9 +842,16 @@ def _validate_storage_class_record(name: str, item: Dict[str, Any], state: Dict[
         if item.get("endpoint"):
             raise LumaError(f"managed storage class {name} cannot set endpoint")
         nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-        if not _node_record_for_name(nodes, str(item.get("node") or "")):
+        node_name = str(item.get("node") or "")
+        record = _node_record_for_name(nodes, node_name)
+        if not record:
+            _adopt_swarm_node_for_storage(state, node_name)
+            nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+            record = _node_record_for_name(nodes, node_name)
+        if not record:
             names = ", ".join(sorted(str(key) for key in nodes)) or "none"
             raise LumaError(f"managed storage class {name} references unknown Luma node: {item.get('node')}. Registered nodes: {names}")
+        _ensure_storage_node_swarm_label(node_name, record)
     regions = item.get("regions") if isinstance(item.get("regions"), list) else []
     for region in regions:
         if region not in VALID_REGIONS:
@@ -1134,6 +1141,70 @@ def _node_record_for_name(nodes: Dict[str, Any], name: str) -> Dict[str, Any] | 
         if isinstance(value, dict) and value.get("displayName") == name:
             return value
     return None
+
+
+def _adopt_swarm_node_for_storage(state: Dict[str, Any], node_name: str) -> None:
+    node_name = str(node_name or "").strip()
+    if not node_name:
+        return
+    try:
+        nodes = docker_request("GET", "/nodes")
+    except LumaError:
+        return
+    if not isinstance(nodes, list):
+        return
+    match = _match_luma_swarm_node(nodes, node_name=node_name)
+    if not match:
+        return
+    spec = match.get("Spec") if isinstance(match.get("Spec"), dict) else {}
+    labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
+    description = match.get("Description") if isinstance(match.get("Description"), dict) else {}
+    manager_status = match.get("ManagerStatus") if isinstance(match.get("ManagerStatus"), dict) else {}
+    hostname = str(description.get("Hostname") or "")
+    swarm_node_id = str(match.get("ID") or "").strip()
+    luma_name = str(node_name or labels.get("luma.node.name") or hostname or swarm_node_id[:12]).strip()
+    region = str(labels.get("region") or "").strip()
+    values: Dict[str, Any] = {
+        "status": "adopted",
+        "displayName": luma_name,
+        "swarmHostname": hostname,
+        "labels": {str(key): str(value) for key, value in labels.items()},
+    }
+    if region:
+        values["region"] = region
+    if swarm_node_id:
+        values["swarmNodeId"] = swarm_node_id
+    if spec.get("Role"):
+        values["swarmRole"] = str(spec.get("Role") or "")
+    if manager_status:
+        values["swarmManager"] = True
+    _remember_node(state, luma_name, **values)
+    if node_name != luma_name and not _node_record_for_name(_state_nodes(state), node_name):
+        _remember_node(state, node_name, **values)
+
+
+def _ensure_storage_node_swarm_label(node_name: str, record: Dict[str, Any]) -> None:
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    if labels.get("luma.node.name") == node_name:
+        return
+    node_id = str(record.get("swarmNodeId") or labels.get("luma.node.id") or "").strip()
+    hostname = str(record.get("swarmHostname") or "").strip()
+    if not node_id and not hostname:
+        return
+    region = str(record.get("region") or labels.get("region") or "").strip()
+    if not region:
+        raise LumaError(f"managed storage node {node_name} has no region; rerun luma update manager or luma node join")
+    applied = labels_for_node(region, luma_name=node_name, node_id=node_id)
+    try:
+        label_swarm_node(hostname or node_name, applied, node_id=node_id)
+    except LumaError as exc:
+        raise LumaError(f"managed storage node {node_name} could not be labeled for storage placement: {exc}") from exc
+    merged = {str(key): str(value) for key, value in labels.items()}
+    merged.update(applied)
+    record["labels"] = merged
+    record["status"] = str(record.get("status") or "labeled")
+    if node_id:
+        record["swarmNodeId"] = node_id
 
 
 def _remember_node(state: Dict[str, Any], node_name: str, *, merge_from: str = "", **values: Any) -> None:

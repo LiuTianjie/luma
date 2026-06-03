@@ -333,10 +333,14 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | [docs/secrets.md](docs/secrets.md) | secret and environment variable handling. |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | common failures and fixes. |
 | [docs/release.md](docs/release.md) | publishing tags, installer, and control image releases. |
+| [docs/agent-skill.md](docs/agent-skill.md) | Installation and usage guide for the AI Agent Skill. |
+| [docs/compose-storage.md](docs/compose-storage.md) | Multi-service Docker Compose deployment and NFS/local storage class setup and migration. |
 
 ## Agent Skill
 
-Agents can use the installable skill in [skills/luma-deployment-yaml](skills/luma-deployment-yaml) to generate or review deployment YAML. In Codex, ask:
+Agents can use the installable skill in [skills/luma-deployment-yaml](skills/luma-deployment-yaml) to generate or review deployment YAML. See [docs/agent-skill.md](docs/agent-skill.md) for detailed installation and usage guidelines.
+
+In Codex, ask:
 
 ```text
 Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml
