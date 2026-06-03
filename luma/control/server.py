@@ -203,6 +203,8 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     node_name = str(body.get("nodeName") or "").strip()
     registered_name = str(body.get("registeredName") or "").strip()
     node_id = str(body.get("nodeId") or "").strip()
+    tailscale_ip = str(body.get("tailscaleIP") or "").strip()
+    tailscale_name = str(body.get("tailscaleName") or "").strip()
     region = str(body.get("region") or "").strip()
     if not node_name or not region:
         raise LumaError("nodeName and region are required")
@@ -220,6 +222,10 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     }
     if node_id:
         values["swarmNodeId"] = node_id
+    if tailscale_ip:
+        values["tailscaleIP"] = tailscale_ip
+    if tailscale_name:
+        values["tailscaleName"] = tailscale_name
     _remember_node(state, luma_name, **values)
     save_state(state)
     return {
@@ -228,6 +234,8 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "swarmHostname": node_name,
         "swarmNodeId": node_id,
         "displayName": luma_name,
+        "tailscaleIP": tailscale_ip,
+        "tailscaleName": tailscale_name,
         "labels": labels,
         "message": f"Node labels applied: {luma_name}",
     }
@@ -433,7 +441,12 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     stack_text = _deploy_step(
         steps,
         "Render compose stack",
-        lambda: render_compose_stack(config, deployment, node_id_resolver=_compose_node_id_resolver(state)),
+        lambda: render_compose_stack(
+            config,
+            deployment,
+            node_id_resolver=_compose_node_id_resolver(state),
+            node_records=_state_nodes(state),
+        ),
         progress=progress,
     )
     _deploy_step(steps, "Check storage migration", lambda: _guard_compose_storage_switch(target, stack_text, deployment), progress=progress)
@@ -496,7 +509,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         "dns": dns_results,
         "webhook": portainer_result,
         "probe": probe_results,
-        "storage": storage_summary(deployment),
+        "storage": storage_summary(deployment, node_records=_state_nodes(state)),
         "steps": steps,
     }
 
@@ -572,6 +585,12 @@ def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     deployment = _load_compose_request(body, source_name)
+    _deploy_step(
+        steps,
+        "Resolve storage endpoints",
+        lambda: render_compose_stack(config, deployment, node_records=_state_nodes(state)),
+        progress=progress,
+    )
     stacks = managed_storage_stacks(deployment)
     written: list[str] = []
     applied: list[str] = []
@@ -601,7 +620,7 @@ def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable
         "sourceName": source_name,
         "written": written,
         "applied": applied,
-        "storage": storage_summary(deployment),
+        "storage": storage_summary(deployment, node_records=_state_nodes(state)),
         "steps": steps,
     }
 
@@ -618,24 +637,22 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     name = str(body.get("name") or "").strip()
     if not name:
         raise LumaError("storage class name is required")
-    provider = str(body.get("provider") or "").strip()
-    if provider not in {"nfs", "juicefs", "efs", "ceph", "external"}:
-        raise LumaError("storage provider must be one of ['ceph', 'efs', 'external', 'juicefs', 'nfs']")
-    mode = str(body.get("mode") or "external").strip()
-    if mode not in {"managed", "external"}:
-        raise LumaError("storage mode must be one of ['external', 'managed']")
+    provider = str(body.get("provider") or "nfs").strip()
+    if provider != "nfs":
+        raise LumaError("storage provider must be: nfs")
+    mode = "external" if bool(body.get("external")) else "managed"
     item = {
         "provider": provider,
         "mode": mode,
         "node": str(body.get("node") or "").strip(),
         "endpoint": str(body.get("endpoint") or "").strip(),
-        "exportRoot": str(body.get("exportRoot") or "").strip(),
-        "mountOptions": str(body.get("mountOptions") or "").strip(),
+        "path": str(body.get("path") or "").strip(),
+        "mountOptions": str(body.get("mountOptions") or "nfsvers=4,rw").strip(),
         "regions": [str(value) for value in body.get("regions") or [] if str(value)],
         "nodes": [str(value) for value in body.get("nodes") or [] if str(value)],
         "updatedAt": int(time.time()),
     }
-    _validate_storage_class_record(name, item)
+    _validate_storage_class_record(name, item, state)
     storage_classes = state.setdefault("storageClasses", {})
     if not isinstance(storage_classes, dict):
         storage_classes = {}
@@ -719,6 +736,11 @@ def _compose_node_id_resolver(state: Dict[str, Any]) -> Callable[[str], str | No
     return resolve
 
 
+def _state_nodes(state: Dict[str, Any]) -> Dict[str, Any]:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    return {str(name): dict(value) for name, value in nodes.items() if isinstance(value, dict)}
+
+
 def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service: Any) -> ServiceSpec:
     return ServiceSpec(
         source=deployment.source,
@@ -798,7 +820,7 @@ def _public_storage_class(name: str, value: Dict[str, Any]) -> Dict[str, Any]:
         "mode": str(value.get("mode") or "external"),
         "node": str(value.get("node") or ""),
         "endpoint": str(value.get("endpoint") or ""),
-        "exportRoot": str(value.get("exportRoot") or ""),
+        "path": str(value.get("path") or ""),
         "mountOptions": str(value.get("mountOptions") or ""),
         "regions": [str(item) for item in value.get("regions") or []],
         "nodes": [str(item) for item in value.get("nodes") or []],
@@ -806,11 +828,23 @@ def _public_storage_class(name: str, value: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _validate_storage_class_record(name: str, item: Dict[str, Any]) -> None:
-    if item["provider"] == "nfs" and not item.get("endpoint"):
-        raise LumaError(f"storage class {name} endpoint is required for nfs")
-    if item["mode"] == "managed" and not item.get("node"):
-        raise LumaError(f"managed storage class {name} requires node")
+def _validate_storage_class_record(name: str, item: Dict[str, Any], state: Dict[str, Any]) -> None:
+    if item["mode"] == "external":
+        if not item.get("endpoint"):
+            raise LumaError(f"external storage class {name} requires endpoint")
+        if not item.get("regions"):
+            raise LumaError(f"external storage class {name} requires at least one region")
+        if item.get("node") or item.get("path"):
+            raise LumaError(f"external storage class {name} cannot set node or path")
+    if item["mode"] == "managed":
+        if not item.get("node") or not item.get("path"):
+            raise LumaError(f"managed storage class {name} requires node and path")
+        if item.get("endpoint"):
+            raise LumaError(f"managed storage class {name} cannot set endpoint")
+        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        if not _node_record_for_name(nodes, str(item.get("node") or "")):
+            names = ", ".join(sorted(str(key) for key in nodes)) or "none"
+            raise LumaError(f"managed storage class {name} references unknown Luma node: {item.get('node')}. Registered nodes: {names}")
     regions = item.get("regions") if isinstance(item.get("regions"), list) else []
     for region in regions:
         if region not in VALID_REGIONS:
@@ -1131,6 +1165,8 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
                 "swarmHostname": str(raw.get("swarmHostname") or ""),
                 "swarmNodeId": str(raw.get("swarmNodeId") or labels.get("luma.node.id") or ""),
                 "region": str(raw.get("region") or labels.get("region") or ""),
+                "tailscaleIP": str(raw.get("tailscaleIP") or ""),
+                "tailscaleName": str(raw.get("tailscaleName") or ""),
                 "status": str(raw.get("status") or "registered"),
                 "labels": {str(key): str(value) for key, value in labels.items()},
             }
@@ -1333,6 +1369,12 @@ def _storage_from_labels(labels: Dict[str, Any]) -> list[Dict[str, str]]:
         elif label.startswith("luma.storageClass."):
             name = label.removeprefix("luma.storageClass.")
             volumes.setdefault(name, {"name": name})["storageClass"] = raw_value
+        elif label.startswith("luma.storageEndpoint."):
+            name = label.removeprefix("luma.storageEndpoint.")
+            volumes.setdefault(name, {"name": name})["endpoint"] = raw_value
+        elif label.startswith("luma.storagePath."):
+            name = label.removeprefix("luma.storagePath.")
+            volumes.setdefault(name, {"name": name})["networkPath"] = raw_value
         elif label.startswith("luma.storageNode."):
             name = label.removeprefix("luma.storageNode.")
             volumes.setdefault(name, {"name": name})["node"] = raw_value
@@ -1371,6 +1413,8 @@ def _dashboard_storage(services: list[Dict[str, Any]], storage_classes: list[Dic
                     "kind": str(item.get("kind") or "unmanaged"),
                     "storageClass": str(item.get("storageClass") or ""),
                     "node": str(item.get("node") or ""),
+                    "endpoint": str(item.get("endpoint") or ""),
+                    "networkPath": str(item.get("networkPath") or ""),
                     "services": [],
                 },
             )

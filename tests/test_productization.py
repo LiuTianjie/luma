@@ -40,7 +40,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, ensure_image_present, handle_compose_deployment, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_list, handle_storage_set, resolve_service_image
+from luma.control.server import ControlHandler, ensure_image_present, handle_compose_deployment, handle_control_status, handle_dashboard, handle_deployment, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_set, resolve_service_image
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -343,12 +343,10 @@ class CliTests(unittest.TestCase):
                 "home-nfs",
                 "--provider",
                 "nfs",
-                "--mode",
-                "managed",
                 "--node",
                 "home-nas",
-                "--endpoint",
-                "home-nas:/srv/luma",
+                "--path",
+                "/srv/luma",
                 "--control-url",
                 "https://luma.example.com",
                 "--token",
@@ -358,7 +356,43 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.storage_command, "set")
         self.assertEqual(args.name, "home-nfs")
         self.assertEqual(args.node, "home-nas")
+        self.assertEqual(args.path, "/srv/luma")
+        self.assertFalse(args.external)
         self.assertEqual(args.control_url, "https://luma.example.com")
+        args = build_parser().parse_args(
+            [
+                "storage",
+                "set",
+                "company-nfs",
+                "--external",
+                "--endpoint",
+                "nfs.example.com:/srv/luma",
+                "--region",
+                "cn",
+            ]
+        )
+        self.assertTrue(args.external)
+        self.assertEqual(args.endpoint, "nfs.example.com:/srv/luma")
+        self.assertEqual(args.regions, ["cn"])
+        for argv in (
+            ["storage", "set", "home-nfs", "--mode", "managed"],
+            ["storage", "set", "home-nfs", "--export-root", "/srv/luma"],
+            ["storage", "set", "home-nfs", "--provider", "external"],
+        ):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(argv)
+
+    def test_storage_set_command_validates_new_shape_before_control_call(self):
+        cases = (
+            ["storage", "set", "home-nfs", "--node", "home-nas"],
+            ["storage", "set", "home-nfs", "--node", "home-nas", "--path", "/srv/luma", "--endpoint", "home-nas:/srv/luma"],
+            ["storage", "set", "company-nfs", "--external", "--endpoint", "nfs.example.com:/srv/luma"],
+        )
+        for argv in cases:
+            with self.subTest(argv=argv), patch("luma.cli.ControlClient") as client_cls, patch("builtins.print"):
+                code = main(argv)
+            self.assertEqual(code, 1)
+            client_cls.assert_not_called()
 
     def test_service_remove_submits_manifest_to_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1235,6 +1269,8 @@ class CliTests(unittest.TestCase):
                     "luma.cli.local_docker_node_name", return_value="worker-1"
                 ), patch(
                     "luma.cli.local_docker_node_id", return_value="node-id-1"
+                ), patch(
+                    "luma.cli._local_tailscale_ip", return_value="100.64.0.10"
                 ):
                     code = main(
                         [
@@ -1256,6 +1292,7 @@ class CliTests(unittest.TestCase):
                     region="global",
                     registered_name="global-sg-1",
                     node_id="node-id-1",
+                    tailscale_ip="100.64.0.10",
                 )
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
                 self.assertIn("LUMA_SUDO_PASSWORD", configured_keys(config_path))
@@ -1346,6 +1383,8 @@ class CliTests(unittest.TestCase):
                     "luma.cli.join_local_node", return_value=[]
                 ), patch("luma.cli.local_docker_node_name", return_value="docker-home"), patch(
                     "luma.cli.local_docker_node_id", return_value="home-id-1"
+                ), patch(
+                    "luma.cli._local_tailscale_ip", return_value="100.64.0.20"
                 ):
                     code = main(
                         [
@@ -1367,6 +1406,7 @@ class CliTests(unittest.TestCase):
                     region="home",
                     registered_name="home-mac-mini",
                     node_id="home-id-1",
+                    tailscale_ip="100.64.0.20",
                 )
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
             finally:
@@ -2183,14 +2223,20 @@ class ControlApiTests(unittest.TestCase):
                             "nodeId": "node-id-1",
                             "registeredName": "global-sg-1",
                             "region": "global",
+                            "tailscaleIP": "100.64.0.30",
+                            "tailscaleName": "global-sg-1.ts.net",
                         },
                     )
                 saved = load_state()
                 self.assertEqual(result["nodeName"], "global-sg-1")
                 self.assertEqual(result["displayName"], "global-sg-1")
+                self.assertEqual(result["tailscaleIP"], "100.64.0.30")
+                self.assertEqual(result["tailscaleName"], "global-sg-1.ts.net")
                 self.assertIn("global-sg-1", saved["nodes"])
                 self.assertEqual(saved["nodes"]["global-sg-1"]["swarmHostname"], "docker-hostname")
                 self.assertEqual(saved["nodes"]["global-sg-1"]["swarmNodeId"], "node-id-1")
+                self.assertEqual(saved["nodes"]["global-sg-1"]["tailscaleIP"], "100.64.0.30")
+                self.assertEqual(saved["nodes"]["global-sg-1"]["tailscaleName"], "global-sg-1.ts.net")
                 self.assertEqual(saved["nodes"]["global-sg-1"]["labels"]["luma.node.id"], "node-id-1")
                 self.assertEqual(saved["nodes"]["global-sg-1"]["status"], "labeled")
             finally:
@@ -2810,7 +2856,7 @@ class ControlApiTests(unittest.TestCase):
                 state["portainerEndpointId"] = 1
                 state["swarmId"] = "swarm"
                 state["storageClasses"] = {
-                    "nfs": {"provider": "nfs", "mode": "external", "endpoint": "nas:/srv/luma"}
+                    "nfs": {"provider": "nfs", "mode": "external", "endpoint": "nas:/srv/luma", "regions": ["cn"]}
                 }
                 save_state(state)
                 stack_dir = root / "stacks" / "compose" / "app-stack"
@@ -2850,7 +2896,7 @@ class ControlApiTests(unittest.TestCase):
                 state["portainerEndpointId"] = 1
                 state["swarmId"] = "swarm"
                 state["storageClasses"] = {
-                    "nfs": {"provider": "nfs", "mode": "external", "endpoint": "nas:/srv/luma"}
+                    "nfs": {"provider": "nfs", "mode": "external", "endpoint": "nas:/srv/luma", "regions": ["cn"]}
                 }
                 save_state(state)
                 stack_dir = root / "stacks" / "compose" / "app-stack"
@@ -2929,24 +2975,62 @@ class ControlApiTests(unittest.TestCase):
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "home-nas": {"name": "home-nas", "region": "home", "status": "labeled"},
+                }
+                save_state(state)
                 result = handle_storage_set(
                     state["deployToken"],
                     {
                         "name": "home-nfs",
                         "provider": "nfs",
-                        "mode": "managed",
                         "node": "home-nas",
-                        "endpoint": "home-nas:/srv/luma",
-                        "exportRoot": "/srv/luma",
+                        "path": "/srv/luma",
                         "regions": ["home", "cn"],
                     },
                 )
                 self.assertTrue(result["saved"])
                 listed = handle_storage_list(state["deployToken"])
                 self.assertEqual(listed["storageClasses"][0]["name"], "home-nfs")
-                self.assertEqual(listed["storageClasses"][0]["endpoint"], "home-nas:/srv/luma")
+                self.assertEqual(listed["storageClasses"][0]["path"], "/srv/luma")
+                self.assertNotIn("exportRoot", listed["storageClasses"][0])
                 persisted = load_state()
                 self.assertEqual(persisted["storageClasses"]["home-nfs"]["provider"], "nfs")
+                self.assertEqual(persisted["storageClasses"]["home-nfs"]["mode"], "managed")
+                self.assertEqual(persisted["storageClasses"]["home-nfs"]["path"], "/srv/luma")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_set_validates_new_managed_and_external_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "home-nas": {"name": "home-nas", "region": "home", "status": "labeled"},
+                }
+                save_state(state)
+                with self.assertRaisesRegex(LumaError, "unknown Luma node"):
+                    handle_storage_set(state["deployToken"], {"name": "bad-nfs", "provider": "nfs", "node": "missing", "path": "/srv/luma"})
+                with self.assertRaisesRegex(LumaError, "cannot set endpoint"):
+                    handle_storage_set(
+                        state["deployToken"],
+                        {"name": "bad-nfs", "provider": "nfs", "node": "home-nas", "path": "/srv/luma", "endpoint": "home-nas:/srv/luma"},
+                    )
+                with self.assertRaisesRegex(LumaError, "requires at least one region"):
+                    handle_storage_set(
+                        state["deployToken"],
+                        {"name": "company-nfs", "provider": "nfs", "external": True, "endpoint": "nfs.example.com:/srv/luma"},
+                    )
+                result = handle_storage_set(
+                    state["deployToken"],
+                    {"name": "company-nfs", "external": True, "endpoint": "nfs.example.com:/srv/luma", "regions": ["cn"]},
+                )
+                self.assertTrue(result["saved"])
+                saved = load_state()["storageClasses"]["company-nfs"]
+                self.assertEqual(saved["provider"], "nfs")
+                self.assertEqual(saved["mode"], "external")
+                self.assertEqual(saved["regions"], ["cn"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -2966,6 +3050,7 @@ class ControlApiTests(unittest.TestCase):
                         "provider": "nfs",
                         "mode": "external",
                         "endpoint": "home-nas:/srv/luma",
+                        "regions": ["cn"],
                     }
                 }
                 save_state(state)
@@ -2991,11 +3076,65 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_storage_apply_only_targets_storage_classes_referenced_by_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["portainerApiUrl"] = "https://127.0.0.1:9443/api"
+                state["portainerAdminPassword"] = "secret"
+                state["portainerEndpointId"] = 1
+                state["swarmId"] = "swarm"
+                state["nodes"] = {
+                    "home-nas": {"name": "home-nas", "region": "cn", "status": "labeled"},
+                    "archive-nas": {"name": "archive-nas", "region": "cn", "status": "labeled"},
+                }
+                state["storageClasses"] = {
+                    "home-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "home-nas",
+                        "path": "/srv/luma",
+                    },
+                    "archive-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "archive-nas",
+                        "path": "/srv/archive",
+                    },
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                compose = yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}})
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "pg-data"}},
+                    }
+                )
+                with patch("luma.control.server.upsert_stack", return_value="Portainer stack updated") as upsert:
+                    result = handle_storage_apply(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
+                    )
+                self.assertEqual(len(result["storage"]["storageClasses"]), 1)
+                self.assertEqual(result["storage"]["storageClasses"][0]["name"], "home-nfs")
+                upsert.assert_called_once()
+                self.assertEqual(upsert.call_args.args[1].name, "luma-storage-home-nfs")
+                self.assertNotIn("archive-nas", upsert.call_args.args[2])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_managed_storage_stack_name_is_manager_scoped(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "docker-compose.yml").write_text(
-                yaml.safe_dump({"services": {"app": {"image": "nginx:alpine"}}}),
+                yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}}),
                 encoding="utf-8",
             )
             (root / "luma.compose.yml").write_text(
@@ -3009,10 +3148,10 @@ class ControlApiTests(unittest.TestCase):
                                 "provider": "nfs",
                                 "mode": "managed",
                                 "node": "home-nas",
-                                "endpoint": "home-nas:/srv/luma",
-                                "exportRoot": "/srv/luma",
+                                "path": "/srv/luma",
                             }
                         },
+                        "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "pg-data"}},
                     }
                 ),
                 encoding="utf-8",

@@ -1,6 +1,159 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const devDashboardPayload = {
+  cluster: { id: "luma-266ba124", leader: "cn-edge", updatedAt: new Date().toISOString() },
+  summary: {
+    totalNodes: 4,
+    readyNodes: 4,
+    totalServices: 8,
+    readyServices: 8,
+    degradedServices: 0,
+    failedServices: 0,
+  },
+  readiness: {
+    dns: { ready: true, provider: "Cloudflare", zone: "itool.tech", target: "8.130.148.30" },
+    portainer: { ready: true, apiConfigured: true, endpointConfigured: true },
+    swarm: { available: true },
+  },
+  nodes: [
+    { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true },
+    { name: "home-mac-mini", displayName: "home-mac-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false },
+    { name: "tailscale-relay", displayName: "tailscale-relay", region: "home", role: "worker", state: "ready", availability: "active", leader: false },
+    { name: "m4mini", displayName: "m4mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false },
+  ],
+  services: [
+    {
+      name: "codex-gitea",
+      fullName: "codex-gitea_codex-gitea",
+      stack: "codex-gitea",
+      region: "home",
+      exposure: "tailscale-relay",
+      image: "ghcr.io/liutianjie/codex-gitea@sha256:ade6c61734a1b7d53b342356c82251afe9fba93d3a2d7509510320c86652834e",
+      desired: 1,
+      running: 1,
+      pending: 0,
+      failed: 0,
+      health: "running",
+      nodes: ["tailscale-relay"],
+    },
+    {
+      name: "mihomo",
+      fullName: "egress_mihomo",
+      stack: "egress",
+      region: "home",
+      exposure: "internal",
+      image: "docker.1panel.live/metacubex/mihomo:latest",
+      desired: 1,
+      running: 1,
+      pending: 0,
+      failed: 0,
+      health: "running",
+      nodes: ["m4mini"],
+    },
+    {
+      name: "linkshell-gateway",
+      fullName: "linkshell-gateway_linkshell-gateway",
+      stack: "linkshell-gateway",
+      region: "cn",
+      exposure: "cn-edge",
+      image: "nickname4th/linkshell-gateway@sha256:a0fdd4f49fd5a9ee4e8990b5b403e32cb75fe883d59477ae3397edc598a04ea2",
+      desired: 1,
+      running: 1,
+      pending: 0,
+      failed: 0,
+      health: "running",
+      nodes: ["cn-edge"],
+    },
+    {
+      name: "luma-control",
+      fullName: "luma-control_luma-control",
+      stack: "luma-control",
+      region: "cn",
+      exposure: "cn-edge",
+      image: "ghcr.io/liutianjie/luma-control:latest",
+      desired: 1,
+      running: 1,
+      pending: 0,
+      failed: 0,
+      health: "running",
+      nodes: ["cn-edge"],
+    },
+    {
+      name: "agent",
+      fullName: "portainer_agent",
+      stack: "portainer",
+      region: "home",
+      exposure: "internal",
+      image: "docker.m.daocloud.io/portainer/agent:2.21.5",
+      desired: 1,
+      running: 1,
+      pending: 0,
+      failed: 0,
+      health: "running",
+      nodes: ["home-mac-mini"],
+    },
+    {
+      name: "portainer",
+      fullName: "portainer_portainer",
+      stack: "portainer",
+      region: "home",
+      exposure: "internal",
+      image: "portainer/portainer-ce:2.21.5",
+      desired: 1,
+      running: 1,
+      pending: 0,
+      failed: 0,
+      health: "running",
+      nodes: ["home-mac-mini"],
+    },
+    {
+      name: "tifenxia-docs",
+      fullName: "docs_tifenxia-docs",
+      stack: "docs",
+      region: "home",
+      exposure: "tailscale-relay",
+      image: "registry.itool.tech/docs/tifenxia-docs:latest",
+      desired: 1,
+      running: 1,
+      pending: 0,
+      failed: 0,
+      health: "running",
+      nodes: ["tailscale-relay"],
+    },
+    {
+      name: "traefik",
+      fullName: "traefik_traefik",
+      stack: "traefik",
+      region: "cn",
+      exposure: "internal",
+      image: "traefik:v3",
+      desired: 1,
+      running: 1,
+      pending: 0,
+      failed: 0,
+      health: "running",
+      nodes: ["cn-edge"],
+    },
+  ],
+  trafficPaths: [
+    { id: "linkshell-gateway", kind: "cn-edge", domain: "gateway.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "linkshell-gateway:8787", "cn-edge"] },
+    { id: "luma-control", kind: "cn-edge", domain: "luma.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "luma-control:8080", "cn-edge"] },
+    { id: "codex-gitea", kind: "tailscale-relay", domain: "codex-bot.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "Tailscale", "http://100.115.5.84:8080"] },
+    { id: "tifenxia-docs", kind: "tailscale-relay", domain: "tifenxia-docs.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "Tailscale", "http://100.115.5.84:18080"] },
+    { id: "egress", kind: "internal", domain: "", segments: ["client/internal", "mihomo", "m4mini"] },
+    { id: "portainer", kind: "internal", domain: "", segments: ["client/internal", "portainer", "home-mac-mini"] },
+  ],
+  storage: {
+    volumes: [
+      { name: "portainer-data", kind: "bind", storageClass: "local", node: "home-mac-mini", services: ["portainer"] },
+      { name: "gitea-data", kind: "bind", storageClass: "local", node: "tailscale-relay", services: ["codex-gitea"] },
+    ],
+    warnings: [],
+  },
+  errors: [],
+};
+
 export default defineConfig({
   base: "/dashboard/",
   root: __dirname,
@@ -17,6 +170,29 @@ export default defineConfig({
             item.source = item.source.replace(/[ \t]+$/gm, "");
           }
         }
+      },
+    },
+    {
+      name: "dev-dashboard-api",
+      configureServer(server) {
+        server.middlewares.use("/v1/dashboard", (request, response) => {
+          if (request.method !== "GET") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({ ...devDashboardPayload, cluster: { ...devDashboardPayload.cluster, updatedAt: new Date().toISOString() } }));
+        });
       },
     },
   ],

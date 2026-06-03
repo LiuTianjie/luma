@@ -243,11 +243,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_arguments(storage_list)
     storage_set = storage_sub.add_parser("set")
     storage_set.add_argument("name")
-    storage_set.add_argument("--provider", choices=("nfs", "juicefs", "efs", "ceph", "external"), default="nfs")
-    storage_set.add_argument("--mode", choices=("managed", "external"), default="external")
+    storage_set.add_argument("--provider", choices=("nfs",), default="nfs")
+    storage_set.add_argument("--external", action="store_true")
     storage_set.add_argument("--node", default="")
+    storage_set.add_argument("--path", default="")
     storage_set.add_argument("--endpoint", default="")
-    storage_set.add_argument("--export-root", default="")
     storage_set.add_argument("--mount-options", default="")
     storage_set.add_argument("--region", action="append", dest="regions", default=[])
     storage_set.add_argument("--eligible-node", action="append", dest="nodes", default=[])
@@ -783,6 +783,7 @@ def cmd_node(args: argparse.Namespace) -> int:
             region=args.region,
             registered_name=args.name,
             node_id=actual_node_id,
+            tailscale_ip=_local_tailscale_ip(),
         )
         print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
         print("Node join complete")
@@ -1395,10 +1396,14 @@ def _repair_node(config: LumaConfig, node_name: str | None, profile_name: str):
 
 
 def _local_tailscale_connected() -> bool:
+    return bool(_local_tailscale_ip())
+
+
+def _local_tailscale_ip() -> str:
     result = LocalExecutor().run_result("command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -1")
     if result.code != 0:
-        return False
-    return bool(_last_output_line(result.output))
+        return ""
+    return _last_output_line(result.output)
 
 
 def _last_output_line(output: str) -> str:
@@ -1678,9 +1683,10 @@ def cmd_compose(args: argparse.Namespace) -> int:
 def cmd_compose_validate(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
-    stack = render_compose_stack(config, deployment)
+    node_records = _control_node_records_for_local(args)
+    stack = render_compose_stack(config, deployment, node_records=node_records)
     routes = render_compose_routes(config, deployment)
-    result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment)}
+    result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment, node_records=node_records)}
     if _output_format(args) != "text":
         _print_success(args, result)
         return 0
@@ -1693,7 +1699,7 @@ def cmd_compose_validate(args: argparse.Namespace) -> int:
 def cmd_compose_render(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
-    print(render_compose_stack(config, deployment))
+    print(render_compose_stack(config, deployment, node_records=_control_node_records_for_local(args)))
     for service_name, route_text in render_compose_routes(config, deployment).items():
         print(f"# route: {compose_route_path(config, deployment, service_name)}")
         print(route_text)
@@ -1702,13 +1708,15 @@ def cmd_compose_render(args: argparse.Namespace) -> int:
 
 def cmd_compose_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
-    stack = render_compose_stack(config, deployment)
+    storage_classes = _control_storage_classes_for_local(args, required=True)
+    node_records = _control_node_records_for_local(args, required=True)
+    deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
+    stack = render_compose_stack(config, deployment, node_records=node_records)
     routes = render_compose_routes(config, deployment)
     output_format = _output_format(args)
     quiet = _quiet(args) or output_format != "text"
     if args.dry_run:
-        result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment), "dryRun": True}
+        result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment, node_records=node_records), "dryRun": True}
         if output_format != "text":
             _print_success(args, result)
             return 0
@@ -1830,19 +1838,34 @@ def cmd_storage_list(args: argparse.Namespace) -> int:
         _print_success(args, result)
         return 0
     for item in result.get("storageClasses") or []:
-        print(f"{item.get('name')}: {item.get('provider')} {item.get('mode')} {item.get('endpoint') or item.get('node') or ''}".rstrip())
+        location = item.get("endpoint") or item.get("path") or item.get("node") or ""
+        print(f"{item.get('name')}: {item.get('provider')} {item.get('mode')} {location}".rstrip())
     return 0
 
 
 def cmd_storage_set(args: argparse.Namespace) -> int:
+    if args.external:
+        if not args.endpoint:
+            raise LumaError("external storage requires --endpoint")
+        if not args.regions:
+            raise LumaError("external storage requires at least one --region")
+        if args.node or args.path:
+            raise LumaError("external storage cannot set --node or --path")
+    else:
+        if not args.node:
+            raise LumaError("managed storage requires --node")
+        if not args.path:
+            raise LumaError("managed storage requires --path")
+        if args.endpoint:
+            raise LumaError("managed storage endpoint is resolved automatically; do not pass --endpoint")
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).set_storage(
         name=args.name,
         provider=args.provider,
-        mode=args.mode,
+        external=args.external,
         node=args.node,
+        path=args.path,
         endpoint=args.endpoint,
-        export_root=args.export_root,
         mount_options=args.mount_options,
         regions=args.regions,
         nodes=args.nodes,
@@ -1860,7 +1883,10 @@ def cmd_storage_remove(args: argparse.Namespace) -> int:
 
 
 def cmd_storage_apply(args: argparse.Namespace) -> int:
-    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
+    storage_classes = _control_storage_classes_for_local(args, required=True)
+    node_records = _control_node_records_for_local(args, required=True)
+    deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
+    render_compose_stack(load_config(args.config), deployment, node_records=node_records)
     stacks = managed_storage_stacks(deployment)
     if args.dry_run:
         if not stacks:
@@ -1890,11 +1916,18 @@ def cmd_storage_apply(args: argparse.Namespace) -> int:
 
 
 def cmd_storage_check(args: argparse.Namespace) -> int:
-    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
-    result = storage_check_plan(deployment)
+    storage_classes = _control_storage_classes_for_local(args, required=True)
+    node_records = _control_node_records_for_local(args, required=True)
+    deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
+    result = storage_check_plan(deployment, node_records=node_records)
     if _output_format(args) != "text":
         _print_success(args, result)
         return 0
+    for item in result.get("mounts") or []:
+        print(
+            f"{item['service']}/{item['volume']}: {item['storageClass']} "
+            f"{item.get('mode', '')} via {item['networkPath']} {item['endpoint']} path={item.get('path', '')}".rstrip()
+        )
     for item in result["storageClasses"]:
         print(f"{item['name']}: {item['message']}")
     for warning in result["warnings"]:
@@ -1953,6 +1986,23 @@ def _control_storage_classes_for_local(args: argparse.Namespace, *, required: bo
         name = str(item["name"])
         storage[name] = {key: value for key, value in item.items() if key != "name" and value not in ("", [], None)}
     return storage
+
+
+def _control_node_records_for_local(args: argparse.Namespace, *, required: bool = False) -> Dict[str, Any] | None:
+    try:
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).status()
+    except LumaError:
+        if required:
+            raise
+        return None
+    node_items = ((result.get("nodes") or {}).get("items") if isinstance(result, dict) else []) or []
+    records: Dict[str, Any] = {}
+    for item in node_items:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        records[str(item["name"])] = dict(item)
+    return records
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:

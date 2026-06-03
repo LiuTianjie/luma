@@ -22,6 +22,15 @@ export function ServicesTable({
       </div>
       <div className="table-wrap">
         <table className="services-table">
+          <colgroup>
+            <col className="service-name-col" />
+            <col className="service-region-col" />
+            <col className="service-exposure-col" />
+            <col className="service-image-col" />
+            <col className="service-replicas-col" />
+            <col className="service-health-col" />
+            <col className="service-nodes-col" />
+          </colgroup>
           <thead>
             <tr>
               <th>{t(lang, "service")}</th>

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .compose import ComposeDeploymentSpec, StorageClassSpec
+from .compose import ComposeDeploymentSpec, StorageClassSpec, resolve_storage_mounts
 from .errors import LumaError
 from .io import dump_yaml
 from .service import slugify
@@ -28,7 +28,7 @@ def managed_storage_stacks(deployment: ComposeDeploymentSpec) -> List[StorageSta
     return stacks
 
 
-def storage_check_plan(deployment: ComposeDeploymentSpec) -> Dict[str, Any]:
+def storage_check_plan(deployment: ComposeDeploymentSpec, *, node_records: Dict[str, Any] | None = None) -> Dict[str, Any]:
     checks = []
     for storage_class in deployment.storage_classes.values():
         checks.append(
@@ -44,7 +44,7 @@ def storage_check_plan(deployment: ComposeDeploymentSpec) -> Dict[str, Any]:
                 "message": _check_message(storage_class),
             }
         )
-    return {"storageClasses": checks, "warnings": deployment.warnings}
+    return {"storageClasses": checks, "mounts": resolve_storage_mounts(deployment, node_records=node_records), "warnings": deployment.warnings}
 
 
 def storage_migration_plan(
@@ -76,19 +76,19 @@ def storage_migration_plan(
 def _nfs_storage_stack(storage_class: StorageClassSpec) -> StorageStack:
     if not storage_class.node:
         raise LumaError(f"managed storageClasses.{storage_class.name}.node is required")
-    export_root = storage_class.export_root or _export_path_from_endpoint(storage_class.endpoint or "")
-    if not export_root:
-        raise LumaError(f"managed storageClasses.{storage_class.name}.exportRoot is required")
+    storage_path = storage_class.path
+    if not storage_path:
+        raise LumaError(f"managed storageClasses.{storage_class.name}.path is required")
     stack_name = f"luma-storage-{slugify(storage_class.name)}"
     stack = {
         "services": {
             "nfs": {
                 "image": "itsthenetwork/nfs-server-alpine:12",
                 "environment": {
-                    "SHARED_DIRECTORY": export_root,
+                    "SHARED_DIRECTORY": storage_path,
                 },
                 "volumes": [
-                    f"{export_root}:{export_root}",
+                    f"{storage_path}:{storage_path}",
                     "/lib/modules:/lib/modules:ro",
                 ],
                 "ports": [
@@ -107,13 +107,6 @@ def _nfs_storage_stack(storage_class: StorageClassSpec) -> StorageStack:
         }
     }
     return StorageStack(name=stack_name, storage_class=storage_class.name, content=dump_yaml(stack))
-
-
-def _export_path_from_endpoint(endpoint: str) -> str:
-    if endpoint.startswith("nfs://"):
-        endpoint = endpoint[len("nfs://") :]
-    _, sep, path = endpoint.partition(":")
-    return path if sep else ""
 
 
 def _check_message(storage_class: StorageClassSpec) -> str:

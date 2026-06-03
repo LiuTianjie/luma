@@ -26,8 +26,20 @@ type TopologyEdge = {
 const NODE_WIDTH = 190;
 const NODE_HEIGHT = 68;
 
+function normalizePathSegments(path: TrafficPath) {
+  const segments = (path.segments || []).filter(Boolean);
+  const kind = path.kind || "";
+  const domain = (path.domain || "").trim();
+  const publicPrefix = domain ? [domain] : [];
+  if (kind === "cn-edge" || kind === "external-edge") return [...publicPrefix, ...segments.slice(0, 4)];
+  if (kind === "cloudflare-tunnel") return [...publicPrefix, ...segments.slice(0, 3)];
+  if (kind === "tailscale-relay") return [...publicPrefix, ...segments];
+  return segments.slice(0, 2);
+}
+
 function classifySegment(segment: string) {
   const value = segment.toLowerCase();
+  if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(segment) && !value.includes("cloudflare")) return { kind: "domain", meta: "Public domain" };
   if (value.includes("cloudflare")) return { kind: "edge", meta: "Cloudflare" };
   if (value.includes("traefik")) return { kind: "proxy", meta: "Ingress proxy" };
   if (value.includes("tailscale") || value.includes("cloudflared")) return { kind: "tunnel", meta: "Private bridge" };
@@ -47,6 +59,27 @@ function buildTopology(paths: TrafficPath[]): {
   const segmentIds = new Map<string, string>();
   const edges: TopologyEdge[] = [];
 
+  const addRouteCount = (id: string, routeLabel: string) => {
+    const routeSet = routeCounts.get(id) || new Set<string>();
+    routeSet.add(routeLabel);
+    routeCounts.set(id, routeSet);
+  };
+
+  const addSegmentNode = (segment: string, routeLabel: string) => {
+    const id = getSegmentId(segment);
+    const classification = classifySegment(segment);
+    addRouteCount(id, routeLabel);
+    if (!nodeData.has(id)) {
+      nodeData.set(id, {
+        id,
+        label: segment,
+        meta: classification.meta,
+        kind: classification.kind,
+      });
+    }
+    return id;
+  };
+
   const getSegmentId = (segment: string) => {
     const key = segment.trim() || "unknown";
     const existing = segmentIds.get(key);
@@ -58,31 +91,17 @@ function buildTopology(paths: TrafficPath[]): {
 
   paths.forEach((path, pathIndex) => {
     const routeLabel = path.domain || path.id || `route-${pathIndex + 1}`;
-    const segments = path.segments || [];
+    const segments = normalizePathSegments(path);
 
     segments.forEach((segment, segmentIndex) => {
-      const id = getSegmentId(segment);
-      const classification = classifySegment(segment);
-      const routeSet = routeCounts.get(id) || new Set<string>();
-      routeSet.add(routeLabel);
-      routeCounts.set(id, routeSet);
-
-      if (!nodeData.has(id)) {
-        nodeData.set(id, {
-          id,
-          label: segment,
-          meta: classification.meta,
-          kind: classification.kind,
-        });
-      }
-
+      const id = addSegmentNode(segment, routeLabel);
       const nextSegment = segments[segmentIndex + 1];
       if (!nextSegment) return;
       edges.push({
         id: `e-${pathIndex}-${segmentIndex}`,
         source: id,
         target: getSegmentId(nextSegment),
-        label: segmentIndex === segments.length - 2 ? path.id || path.kind || "" : "",
+        label: "",
         kind: path.kind || "unknown",
       });
     });
@@ -157,6 +176,7 @@ const stylesheet: cytoscape.StylesheetJsonBlock[] = [
     },
   },
   { selector: "node.edge", style: { "border-color": "#eaeaea" } },
+  { selector: "node.domain", style: { "border-width": 2, "border-color": "#171717", "background-color": "#ffffff" } },
   { selector: "node.proxy", style: { "border-width": 2, "border-color": "#171717" } },
   { selector: "node.tunnel", style: { "border-color": "#eaeaea" } },
   { selector: "node.target", style: { "border-color": "#eaeaea", "color": "#666666" } },
@@ -190,7 +210,7 @@ export function TrafficPaths({ lang, paths }: { lang: Lang; paths: TrafficPath[]
   const { elements, nodes, edges } = buildTopology(paths);
 
   return (
-    <section className="panel path-panel" id="section-3">
+    <section className="panel path-panel" id="section-4">
       <div className="panel-heading">
         <div>
           <p className="eyebrow">{t(lang, "pathsEyebrow")}</p>

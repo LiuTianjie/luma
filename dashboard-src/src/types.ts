@@ -49,7 +49,20 @@ export type DashboardVolume = {
   kind?: string;
   storageClass?: string;
   node?: string;
+  endpoint?: string;
+  networkPath?: string;
   services?: string[];
+};
+
+export type DashboardStorageClass = {
+  name?: string;
+  provider?: string;
+  mode?: string;
+  node?: string;
+  path?: string;
+  endpoint?: string;
+  regions?: string[];
+  nodes?: string[];
 };
 
 export type TrafficPath = {
@@ -69,6 +82,7 @@ export type DashboardPayload = {
   services?: DashboardService[];
   trafficPaths?: TrafficPath[];
   storage?: {
+    storageClasses?: DashboardStorageClass[];
     volumes?: DashboardVolume[];
     warnings?: string[];
   };

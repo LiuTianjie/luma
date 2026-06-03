@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { LoginPanel } from "./components/LoginPanel";
+import { NodeTopology } from "./components/NodeTopology";
 import { NodesTable } from "./components/NodesTable";
 import { ReadinessCards } from "./components/ReadinessCards";
 import { ServicesTable } from "./components/ServicesTable";
@@ -38,6 +39,7 @@ export function App() {
   const services = payload?.services || [];
   const paths = payload?.trafficPaths || [];
   const storageVolumes = payload?.storage?.volumes || [];
+  const storageClasses = payload?.storage?.storageClasses || [];
   const storageWarnings = payload?.storage?.warnings || [];
 
   const navItems = useMemo(
@@ -45,10 +47,11 @@ export function App() {
       { label: t(lang, "navOverview"), value: clusterId },
       { label: t(lang, "navNodes"), value: nodes.length },
       { label: t(lang, "navServices"), value: services.length },
+      { label: t(lang, "navTopology"), value: nodes.length },
       { label: t(lang, "navTraffic"), value: paths.length },
-      { label: t(lang, "navStorage"), value: storageVolumes.length },
+      { label: t(lang, "navStorage"), value: storageVolumes.length + storageClasses.length },
     ],
-    [clusterId, lang, nodes.length, paths.length, services.length, storageVolumes.length],
+    [clusterId, lang, nodes.length, paths.length, services.length, storageClasses.length, storageVolumes.length],
   );
 
   const openNodeDetail = (node: DashboardNode) => {
@@ -146,8 +149,9 @@ export function App() {
                   <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} />
                   <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
                 </section>
+                <NodeTopology lang={lang} nodes={nodes} services={services} />
                 <TrafficPaths lang={lang} paths={paths} />
-                <StoragePanel lang={lang} volumes={storageVolumes} warnings={storageWarnings} />
+                <StoragePanel lang={lang} volumes={storageVolumes} storageClasses={storageClasses} warnings={storageWarnings} />
               </>
             ) : (
               <section className="empty-state">

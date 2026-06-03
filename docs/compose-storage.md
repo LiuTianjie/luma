@@ -4,7 +4,7 @@ Luma can deploy a standard `docker-compose.yml` with a sidecar file named `luma.
 
 Use this path for multi-service applications that already have a Compose service graph. Keep the Compose file standard so it remains useful for local development. Put Luma-specific deployment semantics in the sidecar: region, exposure, routing, local node pins, and references to manager-managed storage classes.
 
-Storage services are manager-owned infrastructure. A sidecar can reference `storageClass: home-nfs`, but the provider, storage node, endpoint, export path, and eligible regions/nodes live in Luma Control state. Luma Control rejects non-empty `storageClasses` blocks in submitted sidecars so deleting or editing one deployment file cannot accidentally delete or redefine shared storage infrastructure.
+Storage services are manager-owned infrastructure. A sidecar can reference `storageClass: home-nfs`, but the provider, storage node/path, external endpoint, and eligible regions/nodes live in Luma Control state. For managed storage, Luma resolves the actual NFS endpoint at render/deploy time from the service region and storage node reachability. Luma Control rejects non-empty `storageClasses` blocks in submitted sidecars so deleting or editing one deployment file cannot accidentally delete or redefine shared storage infrastructure.
 
 ## Prerequisites
 
@@ -28,11 +28,8 @@ Register storage classes against Luma Control. This writes manager state; it doe
 
 ```bash
 luma storage set home-nfs \
-  --provider nfs \
-  --mode managed \
   --node home-nas \
-  --endpoint home-nas:/srv/luma \
-  --export-root /srv/luma \
+  --path /srv/luma \
   --region cn \
   --region home
 
@@ -42,23 +39,29 @@ luma storage list
 The command means:
 
 - `home-nfs` is the stable storage class name deployments reference.
-- `--provider nfs` selects the provider implementation.
-- `--mode managed` asks Luma to deploy the NFS storage component.
+- `--provider nfs` is optional; NFS is the only v1 user-facing provider.
 - `--node home-nas` pins that storage component to the Luma node named `home-nas`.
-- `--endpoint home-nas:/srv/luma` is the NFS endpoint application nodes mount through Docker.
-- `--export-root /srv/luma` is the path exported by the managed NFS component.
+- `--path /srv/luma` is both the host persistent directory and the managed NFS export root.
 - `--region` values restrict which service regions may use the class.
+
+Managed endpoint resolution is automatic:
+
+- Same service region as the storage node: Docker mounts `<storage-node-name>:<path>`.
+- Different service region from the storage node: Docker mounts `<storage-node-tailscale-ip>:<path>`.
+- Cross-region managed storage requires the storage node to have reported `tailscaleIP` during `luma node join`; otherwise validate/render/deploy blocks and asks you to rerun join or refresh node labels.
+
+`storageClass.regions` is the allowed business usage range. It does not prove network reachability; managed cross-region reachability comes from the storage node's Tailscale address.
 
 For an existing external NFS server:
 
 ```bash
-luma storage set home-nfs \
-  --provider nfs \
-  --mode external \
-  --endpoint home-nas:/srv/luma \
-  --region cn \
-  --region home
+luma storage set company-nfs \
+  --external \
+  --endpoint nfs.example.com:/srv/luma \
+  --region cn
 ```
+
+External NFS uses the endpoint exactly as provided. Luma does not infer network paths for external storage, so at least one `--region` is required and external reachability remains the operator's responsibility.
 
 The storage class remains in manager state until explicitly removed:
 
@@ -137,9 +140,9 @@ luma storage check luma.compose.yml
 luma storage apply luma.compose.yml --dry-run
 ```
 
-`compose validate`, `compose render`, `storage check`, and `storage apply --dry-run` read manager storage classes through the current login context or `--control-url/--token`. If no control context is available, local sidecar storage definitions are only useful for offline experimentation; production deploys must use manager-managed storage declarations.
+`compose validate`, `compose render`, `storage check`, and `storage apply --dry-run` read manager storage classes and node reachability through the current login context or `--control-url/--token`. Production deploys must use manager-managed storage declarations. Local sidecar `storageClasses` are only for narrow offline render experiments; managed storage still needs node reachability data, so use a control context for realistic checks.
 
-`storage check` is a readiness plan in v1. It reports the storage classes used by the stack and what must be checked. Docker performs NFS mounts on the workload node using the rendered local volume driver options when the task starts.
+`storage check` reports each `service/volume -> storageClass -> resolved endpoint -> path mode` plan. It also blocks on storage class region/node restrictions and managed cross-region storage nodes without `tailscaleIP`. Docker performs NFS mounts on the workload node using the rendered local volume driver options when the task starts.
 
 ## Apply Managed Storage
 
@@ -215,7 +218,8 @@ This removes the application Portainer stack, generated route files, and DNS rec
 
 ## Storage Rules
 
-- `storageClass` is the Luma-managed path. The sidecar references the class by name; Luma Control provides its provider and endpoint from manager state. For `provider: nfs`, Luma renders Docker local volume driver options with NFS mount settings, so application tasks mount the NFS export through Docker.
+- `storageClass` is the Luma-managed path. The sidecar references the class by name; Luma Control provides the storage declaration from manager state and Luma resolves the service-specific endpoint during validation/render/deploy. For `provider: nfs`, Luma renders Docker local volume driver options with NFS mount settings, so application tasks mount the NFS export through Docker.
+- If the same top-level Compose volume is used by services in different regions and managed storage would resolve to different endpoints, validation fails. Split the data into region-specific volume names instead.
 - `local.node` is allowed for explicitly node-pinned local state. Luma rewrites the mount to a bind path and pins every service using that volume to the specified Luma node.
 - Bare compose volumes are allowed, but Luma marks them unmanaged. If Swarm reschedules the service, Docker may use a different node-local volume. Luma does not guarantee data consistency for unmanaged volumes.
 - Switching an existing deployed volume from unmanaged/local to `storageClass` is blocked by default. Run an explicit migration first and set `adopted: true` on that volume after verifying copied data, or set `initialize: empty` when starting from a fresh storage path.

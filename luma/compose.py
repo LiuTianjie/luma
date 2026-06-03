@@ -12,7 +12,7 @@ from .io import dump_yaml, load_yaml
 from .service import VALID_EXPOSURES, VALID_REGIONS, slugify
 
 
-VALID_STORAGE_PROVIDERS = {"nfs", "juicefs", "efs", "ceph", "external"}
+VALID_STORAGE_PROVIDERS = {"nfs"}
 VALID_STORAGE_MODES = {"managed", "external"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
 
@@ -21,9 +21,9 @@ VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
 class StorageClassSpec:
     name: str
     provider: str
-    mode: str = "external"
+    mode: str = "managed"
     node: Optional[str] = None
-    export_root: Optional[str] = None
+    path: Optional[str] = None
     endpoint: Optional[str] = None
     mount_options: str = "nfsvers=4,rw"
     nodes: List[str] = field(default_factory=list)
@@ -116,6 +116,16 @@ def load_compose_deployment(
         storage_raw = sidecar.get("storageClasses") or {}
     storage_classes_loaded = _load_storage_classes(storage_raw)
     volumes = _load_compose_volumes(sidecar.get("volumes") or {}, storage_classes_loaded)
+    referenced_storage_classes = {
+        volume.storage_class
+        for volume in volumes.values()
+        if volume.storage_class
+    }
+    storage_classes_loaded = {
+        name: storage_classes_loaded[name]
+        for name in sorted(referenced_storage_classes)
+        if name in storage_classes_loaded
+    }
     services = _load_compose_services(sidecar.get("services") or {})
     warnings = validate_compose_deployment_data(compose, storage_classes_loaded, volumes, services, default_region=str(region))
     return ComposeDeploymentSpec(
@@ -144,6 +154,7 @@ def render_compose_stack(
     deployment: ComposeDeploymentSpec,
     *,
     node_id_resolver: Callable[[str], str | None] | None = None,
+    node_records: Dict[str, Any] | None = None,
 ) -> str:
     rendered = copy.deepcopy(deployment.compose)
     rendered.pop("version", None)
@@ -155,6 +166,21 @@ def render_compose_stack(
 
     service_volume_usage = _compose_service_volume_usage(deployment.compose)
     volume_nodes = _local_volume_nodes(deployment.volumes)
+    resolved_mounts = resolve_storage_mounts(deployment, node_records=node_records)
+    mount_lookup = {
+        (str(item["service"]), str(item["volume"])): item
+        for item in resolved_mounts
+    }
+    volume_endpoints: Dict[str, str] = {}
+    for item in resolved_mounts:
+        volume_name = str(item["volume"])
+        endpoint = str(item["endpoint"])
+        previous = volume_endpoints.get(volume_name)
+        if previous and previous != endpoint:
+            raise LumaError(
+                f"compose volume {volume_name} is used from multiple regions with different storage endpoints; split it into region-specific volumes"
+            )
+        volume_endpoints[volume_name] = endpoint
     extra_services: Dict[str, Any] = {}
 
     for service_name, service_body in list(services.items()):
@@ -206,7 +232,13 @@ def render_compose_stack(
                 constraints.append(f"node.labels.luma.node.name == {node_name}")
 
         _merge_deploy(service_body, constraints=constraints, replicas=override.replicas if override else None)
-        _apply_luma_labels(deployment, str(service_name), service_body, service_volume_usage.get(str(service_name), []))
+        _apply_luma_labels(
+            deployment,
+            str(service_name),
+            service_body,
+            service_volume_usage.get(str(service_name), []),
+            mount_lookup=mount_lookup,
+        )
         extra_services.update(_apply_service_exposure(config, deployment, str(service_name), service_body, override))
         _apply_proxy(config, service_body, bool(override and override.proxy))
         service_body["volumes"] = [
@@ -218,7 +250,12 @@ def render_compose_stack(
     for volume_name, volume in deployment.volumes.items():
         if volume.storage_class:
             storage_class = deployment.storage_classes[volume.storage_class]
-            top_volumes[volume_name] = _render_storage_class_volume(storage_class, volume)
+            endpoint = volume_endpoints.get(volume_name) or _storage_endpoint_for_region(
+                storage_class,
+                deployment.region,
+                node_records,
+            )[0]
+            top_volumes[volume_name] = _render_storage_class_volume(storage_class, volume, endpoint)
 
     if top_volumes:
         rendered["volumes"] = top_volumes
@@ -262,7 +299,7 @@ def compose_public_services(deployment: ComposeDeploymentSpec) -> List[ComposeSe
     return [service for service in deployment.services.values() if service.exposure != "none"]
 
 
-def storage_summary(deployment: ComposeDeploymentSpec) -> Dict[str, Any]:
+def storage_summary(deployment: ComposeDeploymentSpec, *, node_records: Dict[str, Any] | None = None) -> Dict[str, Any]:
     unmanaged = sorted(
         volume_name
         for volume_name in _compose_declared_volume_names(deployment.compose)
@@ -276,6 +313,7 @@ def storage_summary(deployment: ComposeDeploymentSpec) -> Dict[str, Any]:
                 "mode": item.mode,
                 "node": item.node or "",
                 "endpoint": item.endpoint or "",
+                "path": item.path or "",
                 "regions": item.regions,
                 "nodes": item.nodes,
             }
@@ -294,6 +332,7 @@ def storage_summary(deployment: ComposeDeploymentSpec) -> Dict[str, Any]:
             }
             for item in deployment.volumes.values()
         ],
+        "mounts": resolve_storage_mounts(deployment, node_records=node_records) if node_records is not None else [],
         "unmanagedVolumes": unmanaged,
         "warnings": list(deployment.warnings),
     }
@@ -381,13 +420,21 @@ def _load_storage_classes(raw: Any) -> Dict[str, StorageClassSpec]:
         provider = str(value.get("provider") or "")
         if provider not in VALID_STORAGE_PROVIDERS:
             raise LumaError(f"storageClasses.{name}.provider must be one of {sorted(VALID_STORAGE_PROVIDERS)}")
-        mode = str(value.get("mode") or "external")
+        mode = str(value.get("mode") or "managed")
         if mode not in VALID_STORAGE_MODES:
             raise LumaError(f"storageClasses.{name}.mode must be one of {sorted(VALID_STORAGE_MODES)}")
-        if provider == "nfs" and not value.get("endpoint"):
-            raise LumaError(f"storageClasses.{name}.endpoint is required for nfs")
+        if mode == "external" and not value.get("endpoint"):
+            raise LumaError(f"storageClasses.{name}.endpoint is required for external nfs")
+        if mode == "external" and (value.get("node") or value.get("path")):
+            raise LumaError(f"storageClasses.{name} external nfs cannot set node or path")
+        if mode == "managed" and (not value.get("node") or not value.get("path")):
+            raise LumaError(f"storageClasses.{name} managed nfs requires node and path")
+        if mode == "managed" and value.get("endpoint"):
+            raise LumaError(f"storageClasses.{name} managed nfs endpoint is resolved automatically")
         nodes = _string_list(value.get("nodes") or [])
         regions = _string_list(value.get("regions") or [])
+        if mode == "external" and not regions:
+            raise LumaError(f"storageClasses.{name}.regions requires at least one region for external nfs")
         for region in regions:
             if region not in VALID_REGIONS:
                 raise LumaError(f"storageClasses.{name}.regions contains invalid region: {region}")
@@ -396,7 +443,7 @@ def _load_storage_classes(raw: Any) -> Dict[str, StorageClassSpec]:
             provider=provider,
             mode=mode,
             node=str(value["node"]).strip() if value.get("node") else None,
-            export_root=str(value["exportRoot"]).strip() if value.get("exportRoot") else None,
+            path=str(value["path"]).strip() if value.get("path") else None,
             endpoint=str(value["endpoint"]).strip() if value.get("endpoint") else None,
             mount_options=str(value.get("mountOptions") or "nfsvers=4,rw"),
             nodes=nodes,
@@ -548,6 +595,8 @@ def _apply_luma_labels(
     service_name: str,
     service_body: Dict[str, Any],
     used_volumes: List[str],
+    *,
+    mount_lookup: Dict[tuple[str, str], Dict[str, Any]] | None = None,
 ) -> None:
     deploy = service_body.setdefault("deploy", {})
     labels = _labels_as_list(deploy)
@@ -563,6 +612,10 @@ def _apply_luma_labels(
         labels.append(f"luma.storage.{volume_name}={kind}")
         if spec and spec.storage_class:
             labels.append(f"luma.storageClass.{volume_name}={spec.storage_class}")
+        mount = (mount_lookup or {}).get((service_name, volume_name))
+        if mount:
+            labels.append(f"luma.storageEndpoint.{volume_name}={mount.get('endpoint', '')}")
+            labels.append(f"luma.storagePath.{volume_name}={mount.get('networkPath', '')}")
         if spec and spec.local_node:
             labels.append(f"luma.storageNode.{volume_name}={spec.local_node}")
     deploy["labels"] = _dedupe(labels)
@@ -599,10 +652,10 @@ def _render_service_volume(volume: Any, volumes: Dict[str, ComposeVolumeSpec]) -
     return volume
 
 
-def _render_storage_class_volume(storage_class: StorageClassSpec, volume: ComposeVolumeSpec) -> Dict[str, Any]:
+def _render_storage_class_volume(storage_class: StorageClassSpec, volume: ComposeVolumeSpec, endpoint: str) -> Dict[str, Any]:
     if storage_class.provider != "nfs":
         return {"driver": "local"}
-    host, export_path = _parse_nfs_endpoint(storage_class)
+    host, export_path = _parse_nfs_endpoint(storage_class, endpoint)
     sub_path = volume.path or volume.name
     device = f":{export_path.rstrip('/')}/{sub_path.strip('/')}"
     options = storage_class.mount_options
@@ -618,14 +671,105 @@ def _render_storage_class_volume(storage_class: StorageClassSpec, volume: Compos
     }
 
 
-def _parse_nfs_endpoint(storage_class: StorageClassSpec) -> tuple[str, str]:
-    endpoint = storage_class.endpoint or ""
+def _parse_nfs_endpoint(storage_class: StorageClassSpec, endpoint: str) -> tuple[str, str]:
     if endpoint.startswith("nfs://"):
         endpoint = endpoint[len("nfs://") :]
     host, sep, export_path = endpoint.partition(":")
     if not sep or not host or not export_path:
         raise LumaError(f"storage class {storage_class.name} endpoint must look like host:/export/path")
     return host, export_path
+
+
+def resolve_storage_mounts(
+    deployment: ComposeDeploymentSpec,
+    *,
+    node_records: Dict[str, Any] | None = None,
+) -> List[Dict[str, Any]]:
+    usage = _compose_service_volume_usage(deployment.compose)
+    mounts: List[Dict[str, Any]] = []
+    for service_name, used_volumes in usage.items():
+        override = deployment.services.get(service_name)
+        region = override.region if override and override.region else deployment.region
+        for volume_name in used_volumes:
+            volume = deployment.volumes.get(volume_name)
+            if not volume or not volume.storage_class:
+                continue
+            storage_class = deployment.storage_classes[volume.storage_class]
+            _validate_storage_class_service_use(storage_class, service_name=service_name, region=region, explicit_node=override.node if override else None)
+            endpoint, network_path = _storage_endpoint_for_region(storage_class, region, node_records)
+            mounts.append(
+                {
+                    "service": service_name,
+                    "volume": volume_name,
+                    "storageClass": storage_class.name,
+                    "provider": storage_class.provider,
+                    "mode": storage_class.mode,
+                    "region": region,
+                    "endpoint": endpoint,
+                    "networkPath": network_path,
+                    "path": volume.path or volume.name,
+                }
+            )
+    return mounts
+
+
+def _validate_storage_class_service_use(
+    storage_class: StorageClassSpec,
+    *,
+    service_name: str,
+    region: str,
+    explicit_node: str | None,
+) -> None:
+    if storage_class.regions and region not in storage_class.regions:
+        raise LumaError(
+            f"compose service {service_name} region {region} is not allowed by storageClass {storage_class.name}"
+        )
+    if storage_class.nodes:
+        if explicit_node and explicit_node not in storage_class.nodes:
+            raise LumaError(
+                f"compose service {service_name} node {explicit_node} is not allowed by storageClass {storage_class.name}"
+            )
+        if len(storage_class.nodes) > 1 and not explicit_node:
+            raise LumaError(
+                f"compose service {service_name} must set node because storageClass {storage_class.name} allows multiple nodes"
+            )
+
+
+def _storage_endpoint_for_region(
+    storage_class: StorageClassSpec,
+    region: str,
+    node_records: Dict[str, Any] | None,
+) -> tuple[str, str]:
+    if storage_class.mode == "external":
+        if not storage_class.endpoint:
+            raise LumaError(f"external storageClass {storage_class.name} requires endpoint")
+        return storage_class.endpoint, "external"
+    if not storage_class.node or not storage_class.path:
+        raise LumaError(f"managed storageClass {storage_class.name} requires node and path")
+    record = _node_record_for_name(node_records or {}, storage_class.node)
+    if not record:
+        raise LumaError(f"managed storageClass {storage_class.name} references unknown Luma node: {storage_class.node}")
+    node_region = str(record.get("region") or "")
+    if not node_region:
+        raise LumaError(f"managed storageClass {storage_class.name} node {storage_class.node} has no region; rerun luma node join")
+    if node_region == region:
+        return f"{storage_class.node}:{storage_class.path}", "same-region"
+    tailscale_endpoint = str(record.get("tailscaleIP") or record.get("tailscaleName") or "").strip()
+    if not tailscale_endpoint:
+        raise LumaError(
+            f"managed storageClass {storage_class.name} crosses {region}->{node_region} but node {storage_class.node} has no tailscaleIP; rerun luma node join"
+        )
+    return f"{tailscale_endpoint}:{storage_class.path}", "tailscale"
+
+
+def _node_record_for_name(nodes: Dict[str, Any], name: str) -> Dict[str, Any] | None:
+    direct = nodes.get(name)
+    if isinstance(direct, dict):
+        return direct
+    for value in nodes.values():
+        if isinstance(value, dict) and value.get("displayName") == name:
+            return value
+    return None
 
 
 def _compose_declared_volume_names(compose: Dict[str, Any]) -> set[str]:

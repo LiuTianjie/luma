@@ -114,12 +114,18 @@ class ControlClient:
         region: str,
         registered_name: str | None = None,
         node_id: str | None = None,
+        tailscale_ip: str | None = None,
+        tailscale_name: str | None = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"nodeName": node_name, "region": region}
         if registered_name and registered_name != node_name:
             body["registeredName"] = registered_name
         if node_id:
             body["nodeId"] = node_id
+        if tailscale_ip:
+            body["tailscaleIP"] = tailscale_ip
+        if tailscale_name:
+            body["tailscaleName"] = tailscale_name
         return self.request("POST", "/v1/nodes/label", body, timeout=120)
 
     def unregister_node(self, *, node_name: str) -> Dict[str, Any]:
@@ -299,10 +305,10 @@ class ControlClient:
         *,
         name: str,
         provider: str,
-        mode: str = "external",
+        external: bool = False,
         node: str = "",
+        path: str = "",
         endpoint: str = "",
-        export_root: str = "",
         mount_options: str = "",
         regions: list[str] | None = None,
         nodes: list[str] | None = None,
@@ -313,10 +319,10 @@ class ControlClient:
             {
                 "name": name,
                 "provider": provider,
-                "mode": mode,
+                "external": external,
                 "node": node,
+                "path": path,
                 "endpoint": endpoint,
-                "exportRoot": export_root,
                 "mountOptions": mount_options,
                 "regions": regions or [],
                 "nodes": nodes or [],

@@ -7,8 +7,10 @@ import yaml
 
 from luma.config import LumaConfig
 from luma.compose import load_compose_deployment, render_compose_stack
+from luma.errors import LumaError
 from luma.render import render_stack, render_tailscale_route, route_path, stack_path
 from luma.service import load_service
+from luma.storage import storage_check_plan
 
 
 class RenderStackTests(unittest.TestCase):
@@ -113,6 +115,177 @@ replicas: 2
         self.assertIn("luma.storage.pg-data=storageClass", app["deploy"]["labels"])
         self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["type"], "nfs")
         self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["device"], ":/srv/luma/postgres/pg-data")
+
+    def test_managed_compose_storage_uses_node_name_for_same_region(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}}),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "storageClasses": {
+                            "home-nfs": {"provider": "nfs", "mode": "managed", "node": "home-nas", "path": "/srv/luma"}
+                        },
+                        "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "postgres/pg-data"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            rendered = yaml.safe_load(render_compose_stack(self.config(), deployment, node_records={"home-nas": {"region": "cn"}}))
+        opts = rendered["volumes"]["pg-data"]["driver_opts"]
+        self.assertIn("addr=home-nas", opts["o"])
+        self.assertEqual(opts["device"], ":/srv/luma/postgres/pg-data")
+
+    def test_compose_storage_class_rejects_invalid_new_shape(self):
+        cases = (
+            (
+                {"provider": "nfs", "mode": "managed", "node": "home-nas", "path": "/srv/luma", "endpoint": "home-nas:/srv/luma"},
+                "endpoint is resolved automatically",
+            ),
+            (
+                {"provider": "nfs", "mode": "external", "endpoint": "home-nas:/srv/luma", "path": "/srv/luma", "regions": ["cn"]},
+                "external nfs cannot set node or path",
+            ),
+        )
+        for storage_class, message in cases:
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "docker-compose.yml").write_text(
+                    yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}}),
+                    encoding="utf-8",
+                )
+                (root / "luma.compose.yml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "name": "app-stack",
+                            "compose": "docker-compose.yml",
+                            "region": "cn",
+                            "storageClasses": {"home-nfs": storage_class},
+                            "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "postgres/pg-data"}},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(LumaError, message):
+                    load_compose_deployment(root / "luma.compose.yml")
+
+    def test_storage_check_enforces_storage_class_region(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}}),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "home",
+                        "storageClasses": {
+                            "company-nfs": {"provider": "nfs", "mode": "external", "endpoint": "nfs.example.com:/srv/luma", "regions": ["cn"]}
+                        },
+                        "volumes": {"pg-data": {"storageClass": "company-nfs", "path": "postgres/pg-data"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            with self.assertRaisesRegex(LumaError, "region home is not allowed"):
+                storage_check_plan(deployment, node_records={})
+
+    def test_managed_compose_storage_uses_tailscale_for_cross_region(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}}),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "storageClasses": {
+                            "home-nfs": {"provider": "nfs", "mode": "managed", "node": "home-nas", "path": "/srv/luma"}
+                        },
+                        "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "postgres/pg-data"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            rendered = yaml.safe_load(
+                render_compose_stack(self.config(), deployment, node_records={"home-nas": {"region": "home", "tailscaleIP": "100.64.0.50"}})
+            )
+        self.assertIn("addr=100.64.0.50", rendered["volumes"]["pg-data"]["driver_opts"]["o"])
+
+    def test_managed_compose_storage_requires_tailscale_for_cross_region(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}}),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "storageClasses": {
+                            "home-nfs": {"provider": "nfs", "mode": "managed", "node": "home-nas", "path": "/srv/luma"}
+                        },
+                        "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "postgres/pg-data"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            with self.assertRaisesRegex(LumaError, "has no tailscaleIP"):
+                render_compose_stack(self.config(), deployment, node_records={"home-nas": {"region": "home"}})
+
+    def test_shared_compose_volume_cannot_need_different_storage_endpoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "services": {
+                            "app-cn": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]},
+                            "app-home": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]},
+                        },
+                        "volumes": {"pg-data": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "storageClasses": {
+                            "home-nfs": {"provider": "nfs", "mode": "managed", "node": "home-nas", "path": "/srv/luma"}
+                        },
+                        "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "postgres/pg-data"}},
+                        "services": {"app-home": {"region": "home"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            with self.assertRaisesRegex(LumaError, "split it into region-specific volumes"):
+                render_compose_stack(self.config(), deployment, node_records={"home-nas": {"region": "home", "tailscaleIP": "100.64.0.50"}})
 
     def test_compose_local_volume_pins_service_to_node(self):
         with tempfile.TemporaryDirectory() as tmp:

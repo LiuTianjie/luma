@@ -22,6 +22,14 @@ export function NodesTable({
       </div>
       <div className="table-wrap">
         <table className="nodes-table">
+          <colgroup>
+            <col className="node-name-col" />
+            <col className="node-region-col" />
+            <col className="node-role-col" />
+            <col className="node-state-col" />
+            <col className="node-availability-col" />
+            <col className="node-leader-col" />
+          </colgroup>
           <thead>
             <tr>
               <th>{t(lang, "name")}</th>
