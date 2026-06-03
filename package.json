@@ -1,0 +1,24 @@
+{
+  "scripts": {
+    "dev:dashboard": "vite --config dashboard-src/vite.config.ts",
+    "build:dashboard": "vite build --config dashboard-src/vite.config.ts",
+    "typecheck:dashboard": "tsc -p dashboard-src/tsconfig.json"
+  },
+  "dependencies": {
+    "cytoscape": "^3.34.0",
+    "dagre": "^0.8.5",
+    "react": "^19.2.3",
+    "react-cytoscapejs": "^2.0.0",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@types/cytoscape": "^3.21.9",
+    "@types/dagre": "^0.7.54",
+    "@types/react": "^19.2.16",
+    "@types/react-cytoscapejs": "^1.2.6",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6"
+  }
+}
