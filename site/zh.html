@@ -30,8 +30,7 @@
     <nav class="nav-links" aria-label="主导航">
       <a href="#demo">演示</a>
       <a href="#deploy">工作链路</a>
-      <a href="#prerequisites">准备</a>
-      <a href="#guide">上手指南</a>
+      <a href="#docs">文档</a>
       <a href="https://github.com/LiuTianjie/luma">GitHub</a>
       <span class="lang-switch" aria-label="Language">
         <a href="./">EN</a>
@@ -61,13 +60,20 @@
           <a class="button primary" href="#demo">查看部署流程</a>
           <a class="button ghost" href="https://github.com/LiuTianjie/luma">查看源码</a>
         </div>
-        <div class="install-strip" aria-label="安装命令">
+        <div class="install-title">
+          <span class="step-badge">步骤 1</span> 安装 Luma 命令行工具 (在你的服务器/控制端执行)
+        </div>
+        <div class="install-strip" aria-label="安装命令" style="margin-top: 8px;">
           <span>$</span>
           <code>curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh</code>
           <button class="copy-button"
             data-copy="curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh">复制</button>
         </div>
-        <div class="agent-copilot-panel">
+        
+        <div class="install-title" style="margin-top: 24px;">
+          <span class="step-badge">步骤 2</span> 安装 Luma 技能
+        </div>
+        <div class="agent-copilot-panel" style="margin-top: 8px;">
           <div class="agent-badge-list">
             <span class="agent-badge-item">
               <svg class="agent-icon-svg" viewBox="0 0 24 24" fill="currentColor"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>
@@ -82,10 +88,9 @@
               Gemini
             </span>
           </div>
-          <p>直接让你的 AI 助手（Codex / Claude Code / Gemini 等）安装 Luma 技能：</p>
           <div class="agent-prompt-strip">
             <code>Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml</code>
-            <button class="copy-button" data-copy="Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml">复制指令</button>
+            <button class="copy-button" data-copy="Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml">复制</button>
           </div>
           <details>
             <summary>或在终端手动安装 (Manual Install)</summary>
@@ -587,12 +592,65 @@ luma deploy status.yaml</code></pre>
       </div>
     </section>
 
+    <section class="section docs" id="docs">
+      <div class="section-heading reveal">
+        <h2>官方文档与指南</h2>
+        <p class="section-lead">查阅详细的规则设计、架构原理以及各角色的使用指南。</p>
+      </div>
+
+      <div class="docs-grid">
+        <a class="docs-card reveal" href="../docs/bootstrap.md">
+          <div class="docs-card-icon">🚀</div>
+          <h3>控制面引导与部署</h3>
+          <p>了解如何通过 <code>luma bootstrap</code> 快速初始化并部署集群控制面基础设施。</p>
+          <span class="docs-link-arrow">阅读文档 →</span>
+        </a>
+
+        <a class="docs-card reveal" href="../docs/compose-storage.zh-CN.md">
+          <div class="docs-card-icon">💾</div>
+          <h3>Compose 与共享存储</h3>
+          <p>详细阐述 <code>luma.compose.yml</code> 旁车编写、多服务编排与 NFS 存储类绑定规则。</p>
+          <span class="docs-link-arrow">阅读文档 →</span>
+        </a>
+
+        <a class="docs-card reveal" href="../docs/agent-skill.md">
+          <div class="docs-card-icon">🤖</div>
+          <h3>AI 编码助手技能</h3>
+          <p>为你的 Codex、Claude Code 或 Gemini 安装 Luma 部署技能，实现 YAML 智能生成与校验。</p>
+          <span class="docs-link-arrow">阅读文档 →</span>
+        </a>
+
+        <a class="docs-card reveal" href="../docs/luma-cli.md">
+          <div class="docs-card-icon">💻</div>
+          <h3>CLI 命令行手册</h3>
+          <p>Luma 命令行工具（luma）所有子命令、参数选项说明与常用操作指南手册。</p>
+          <span class="docs-link-arrow">阅读文档 →</span>
+        </a>
+      </div>
+    </section>
+
   </main>
 
   <footer>
     <span>Luma</span>
     <span>轻量多服务器管理控制面</span>
   </footer>
+
+  <!-- Documentation Viewer Modal -->
+  <div class="docs-modal-overlay" id="docsModal" aria-hidden="true">
+    <div class="docs-modal-container">
+      <div class="docs-modal-header">
+        <h3 id="docsModalTitle">文档内容</h3>
+        <button class="docs-modal-close" id="closeDocsBtn" aria-label="关闭文档">&times;</button>
+      </div>
+      <div class="docs-modal-body" id="docsModalBody">
+        <div class="docs-modal-loading">
+          <div class="spinner"></div>
+          <span>正在加载文档...</span>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="./app.js?v=20260601-dubstyle1"></script>
 </body>

@@ -242,3 +242,188 @@ if (demoStage && demoButtons.length) {
 
   activateStep(demoButtons[0].dataset.demoStep);
 }
+
+// Markdown Parser and Docs Modal Overlay Handler
+(function initDocsModal() {
+  const modal = document.getElementById("docsModal");
+  const modalTitle = document.getElementById("docsModalTitle");
+  const modalBody = document.getElementById("docsModalBody");
+  const closeBtn = document.getElementById("closeDocsBtn");
+  const docCards = document.querySelectorAll(".docs-card");
+
+  if (!modal || !modalTitle || !modalBody || !closeBtn) return;
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function parseInlineMarkdown(str) {
+    return str
+      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+      .replace(/`(.*?)`/g, "<code>$1</code>")
+      .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>');
+  }
+
+  function parseMarkdownToHtml(md) {
+    let html = '<div class="docs-content">';
+    let inCodeBlock = false;
+    let codeContent = '';
+    let codeLang = '';
+    let inList = false;
+
+    const lines = md.split("\n");
+    for (let line of lines) {
+      const trimmed = line.trim();
+
+      // Code blocks
+      if (trimmed.startsWith("```")) {
+        if (inCodeBlock) {
+          html += `<pre><code class="language-${codeLang}">${escapeHtml(codeContent.trim())}</code></pre>`;
+          inCodeBlock = false;
+          codeContent = '';
+        } else {
+          if (inList) {
+            html += "</ul>";
+            inList = false;
+          }
+          inCodeBlock = true;
+          codeLang = trimmed.slice(3);
+        }
+        continue;
+      }
+
+      if (inCodeBlock) {
+        codeContent += line + "\n";
+        continue;
+      }
+
+      // Horizontal rule
+      if (trimmed === "---") {
+        if (inList) { html += "</ul>"; inList = false; }
+        html += "<hr>";
+        continue;
+      }
+
+      // Headers
+      if (line.startsWith("# ")) {
+        if (inList) { html += "</ul>"; inList = false; }
+        html += `<h1>${parseInlineMarkdown(line.slice(2))}</h1>`;
+        continue;
+      }
+      if (line.startsWith("## ")) {
+        if (inList) { html += "</ul>"; inList = false; }
+        html += `<h2>${parseInlineMarkdown(line.slice(3))}</h2>`;
+        continue;
+      }
+      if (line.startsWith("### ")) {
+        if (inList) { html += "</ul>"; inList = false; }
+        html += `<h3>${parseInlineMarkdown(line.slice(4))}</h3>`;
+        continue;
+      }
+      if (line.startsWith("#### ")) {
+        if (inList) { html += "</ul>"; inList = false; }
+        html += `<h4>${parseInlineMarkdown(line.slice(5))}</h4>`;
+        continue;
+      }
+
+      // Alert/Callout blocks or Blockquotes
+      if (trimmed.startsWith(">")) {
+        if (inList) { html += "</ul>"; inList = false; }
+        let quoteContent = trimmed.slice(1).trim();
+        if (quoteContent.startsWith("[!NOTE]") || quoteContent.startsWith("[!IMPORTANT]") || quoteContent.startsWith("[!WARNING]") || quoteContent.startsWith("[!TIP]") || quoteContent.startsWith("[!CAUTION]")) {
+          let alertClass = "alert-note";
+          let alertLabel = "NOTE";
+          if (quoteContent.startsWith("[!IMPORTANT]")) { alertClass = "alert-important"; alertLabel = "IMPORTANT"; }
+          else if (quoteContent.startsWith("[!WARNING]")) { alertClass = "alert-warning"; alertLabel = "WARNING"; }
+          else if (quoteContent.startsWith("[!CAUTION]")) { alertClass = "alert-warning"; alertLabel = "CAUTION"; }
+          
+          let alertText = quoteContent.replace(/^\[!.*?\]/, "").trim();
+          html += `<div class="doc-alert ${alertClass}"><strong>${alertLabel}: </strong>${parseInlineMarkdown(alertText)}</div>`;
+        } else {
+          html += `<blockquote>${parseInlineMarkdown(quoteContent)}</blockquote>`;
+        }
+        continue;
+      }
+
+      // Lists
+      if (line.startsWith("- ") || line.startsWith("* ")) {
+        if (!inList) {
+          html += "<ul>";
+          inList = true;
+        }
+        html += `<li>${parseInlineMarkdown(line.slice(2))}</li>`;
+        continue;
+      }
+
+      // Paragraphs
+      if (trimmed === "") {
+        if (inList) {
+          html += "</ul>";
+          inList = false;
+        }
+      } else {
+        if (inList) {
+          html += "</ul>";
+          inList = false;
+        }
+        html += `<p>${parseInlineMarkdown(line)}</p>`;
+      }
+    }
+
+    if (inList) {
+      html += "</ul>";
+    }
+    html += "</div>";
+    return html;
+  }
+
+  async function loadDoc(url, cardTitle) {
+    modalBody.innerHTML = `
+      <div class="docs-modal-loading">
+        <div class="spinner"></div>
+        <span>${document.documentElement.lang === "zh-CN" ? "正在加载文档..." : "Loading document..."}</span>
+      </div>
+    `;
+    modalTitle.textContent = cardTitle;
+    modal.classList.add("active");
+    document.body.style.overflow = "hidden"; // Prevent scrolling behind modal
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Network response was not ok");
+      const mdText = await response.text();
+      const htmlContent = parseMarkdownToHtml(mdText);
+      modalBody.innerHTML = htmlContent;
+    } catch (err) {
+      console.warn("Dynamic doc fetch failed, falling back to direct link", err);
+      // Fallback: close modal and redirect to raw markdown file
+      closeModal();
+      window.open(url, "_blank");
+    }
+  }
+
+  function closeModal() {
+    modal.classList.remove("active");
+    document.body.style.overflow = "";
+  }
+
+  docCards.forEach((card) => {
+    card.addEventListener("click", (e) => {
+      e.preventDefault();
+      const url = card.getAttribute("href");
+      const title = card.querySelector("h3").textContent;
+      loadDoc(url, title);
+    });
+  });
+
+  closeBtn.addEventListener("click", closeModal);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeModal();
+  });
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal.classList.contains("active")) {
+      closeModal();
+    }
+  });
+})();
