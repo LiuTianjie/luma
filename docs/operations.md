@@ -32,6 +32,17 @@ port: 3000
 replicas: 2
 ```
 
+For multi-service applications, keep `docker-compose.yml` standard and add a Luma sidecar:
+
+```bash
+luma compose init --compose docker-compose.yml --output luma.compose.yml
+luma compose validate luma.compose.yml
+luma compose deploy luma.compose.yml --dry-run
+luma compose deploy luma.compose.yml
+```
+
+Storage services are registered in Luma Control with `luma storage set`; compose deployments only reference them by name. Luma Control rejects deployment-side storage class definitions, and backend switches require either verified `adopted: true` or `initialize: empty`. Storage ownership, local node pins, and NFS storage classes are described in `docs/compose-storage.md`.
+
 ## Update Image Tag
 
 Change the manifest:

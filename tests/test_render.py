@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 
 from luma.config import LumaConfig
+from luma.compose import load_compose_deployment, render_compose_stack
 from luma.render import render_stack, render_tailscale_route, route_path, stack_path
 from luma.service import load_service
 
@@ -55,6 +56,111 @@ replicas: 2
             app["deploy"]["labels"],
         )
         self.assertIn("traefik.swarm.network=public", app["deploy"]["labels"])
+
+    def test_compose_storage_class_renders_nfs_volume_and_traefik_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "services": {
+                            "app": {
+                                "image": "nginx:alpine",
+                                "volumes": ["pg-data:/data"],
+                            }
+                        },
+                        "volumes": {"pg-data": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "storageClasses": {
+                            "home-nfs": {
+                                "provider": "nfs",
+                                "mode": "external",
+                                "endpoint": "home-nas:/srv/luma",
+                                "regions": ["cn"],
+                            }
+                        },
+                        "volumes": {
+                            "pg-data": {
+                                "storageClass": "home-nfs",
+                                "path": "postgres/pg-data",
+                            }
+                        },
+                        "services": {
+                            "app": {
+                                "exposure": "cn-edge",
+                                "domain": "app.example.com",
+                                "port": 80,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            rendered = yaml.safe_load(render_compose_stack(self.config(), deployment))
+        app = rendered["services"]["app"]
+        self.assertIn("node.labels.region == cn", app["deploy"]["placement"]["constraints"])
+        self.assertIn("traefik.http.routers.app-stack-app.rule=Host(`app.example.com`)", app["deploy"]["labels"])
+        self.assertIn("luma.storage.pg-data=storageClass", app["deploy"]["labels"])
+        self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["type"], "nfs")
+        self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["device"], ":/srv/luma/postgres/pg-data")
+
+    def test_compose_local_volume_pins_service_to_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump({"services": {"cache": {"image": "redis:7", "volumes": ["cache-data:/data"]}}, "volumes": {"cache-data": {}}}),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "cache-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "home",
+                        "volumes": {
+                            "cache-data": {
+                                "local": {
+                                    "node": "home-mac-mini",
+                                    "path": "/opt/luma/state/cache-data",
+                                }
+                            }
+                        },
+                        "services": {"cache": {"region": "home"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            rendered = yaml.safe_load(render_compose_stack(self.config(), deployment))
+        cache = rendered["services"]["cache"]
+        self.assertIn("node.labels.luma.node.name == home-mac-mini", cache["deploy"]["placement"]["constraints"])
+        self.assertEqual(cache["volumes"], ["/opt/luma/state/cache-data:/data"])
+
+    def test_compose_unmanaged_volume_warns_but_renders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump({"services": {"db": {"image": "postgres:16", "volumes": ["pg-data:/var/lib/postgresql/data"]}}, "volumes": {"pg-data": {}}}),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump({"name": "db-stack", "compose": "docker-compose.yml", "region": "cn"}),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            rendered = yaml.safe_load(render_compose_stack(self.config(), deployment))
+        self.assertTrue(any("pg-data is unmanaged" in warning for warning in deployment.warnings))
+        self.assertIn("luma.storage.pg-data=unmanaged", rendered["services"]["db"]["deploy"]["labels"])
 
     def test_global_worker_uses_region_constraint_only_by_default(self):
         service = self.load(

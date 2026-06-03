@@ -167,6 +167,52 @@ class ControlClient:
             timeout=timeout,
         )
 
+    def deploy_compose(
+        self,
+        *,
+        manifest: str,
+        compose_content: str,
+        source_name: str,
+        skip_dns: bool = False,
+        skip_webhook: bool = False,
+        timeout: int = 1800,
+    ) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/compose-deployments",
+            {
+                "manifest": manifest,
+                "composeContent": compose_content,
+                "sourceName": source_name,
+                "skipDns": skip_dns,
+                "skipWebhook": skip_webhook,
+            },
+            timeout=timeout,
+        )
+
+    def deploy_compose_events(
+        self,
+        *,
+        manifest: str,
+        compose_content: str,
+        source_name: str,
+        skip_dns: bool = False,
+        skip_webhook: bool = False,
+        timeout: int = 1800,
+    ) -> Iterator[Dict[str, Any]]:
+        return self.stream(
+            "POST",
+            "/v1/compose-deployments/stream",
+            {
+                "manifest": manifest,
+                "composeContent": compose_content,
+                "sourceName": source_name,
+                "skipDns": skip_dns,
+                "skipWebhook": skip_webhook,
+            },
+            timeout=timeout,
+        )
+
     def remove_service(
         self,
         *,
@@ -190,6 +236,46 @@ class ControlClient:
             timeout=timeout,
         )
 
+    def remove_compose(
+        self,
+        *,
+        manifest: str,
+        compose_content: str,
+        source_name: str,
+        skip_dns: bool = False,
+        skip_portainer: bool = False,
+        dry_run: bool = False,
+        timeout: int = 300,
+    ) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/compose-deployments/remove",
+            {
+                "manifest": manifest,
+                "composeContent": compose_content,
+                "sourceName": source_name,
+                "skipDns": skip_dns,
+                "skipPortainer": skip_portainer,
+                "dryRun": dry_run,
+            },
+            timeout=timeout,
+        )
+
+    def apply_storage(
+        self,
+        *,
+        manifest: str,
+        compose_content: str,
+        source_name: str,
+        timeout: int = 300,
+    ) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/storage/apply",
+            {"manifest": manifest, "composeContent": compose_content, "sourceName": source_name},
+            timeout=timeout,
+        )
+
     def list_secrets(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/secrets")
 
@@ -204,6 +290,41 @@ class ControlClient:
 
     def remove_registry(self, *, host: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/registries/remove", {"host": host})
+
+    def list_storage(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/storage")
+
+    def set_storage(
+        self,
+        *,
+        name: str,
+        provider: str,
+        mode: str = "external",
+        node: str = "",
+        endpoint: str = "",
+        export_root: str = "",
+        mount_options: str = "",
+        regions: list[str] | None = None,
+        nodes: list[str] | None = None,
+    ) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/storage",
+            {
+                "name": name,
+                "provider": provider,
+                "mode": mode,
+                "node": node,
+                "endpoint": endpoint,
+                "exportRoot": export_root,
+                "mountOptions": mount_options,
+                "regions": regions or [],
+                "nodes": nodes or [],
+            },
+        )
+
+    def remove_storage(self, *, name: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/storage/remove", {"name": name})
 
 
 def _looks_like_legacy_node_api_error(detail: str) -> bool:

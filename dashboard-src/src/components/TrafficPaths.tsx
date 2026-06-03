@@ -178,7 +178,7 @@ const stylesheet: cytoscape.StylesheetJsonBlock[] = [
       "text-background-color": "#fafafa",
       "text-background-opacity": 1,
       "text-background-padding": "4px",
-      "text-background-shape": "round-rectangle",
+      "text-background-shape": "roundrectangle",
       "width": "1.5px",
     },
   },

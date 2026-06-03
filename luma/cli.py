@@ -16,6 +16,15 @@ from typing import Any, Callable, Dict, TypeVar
 
 from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, install_docker, join_local_node, local_docker_node_id, local_docker_node_name, refresh_manager_control_local, setup_egress, setup_portainer, setup_tailscale
 from .cloudflare import find_zone, sync_dns
+from .compose import (
+    compose_route_path,
+    compose_stack_path,
+    init_compose_sidecar,
+    load_compose_deployment,
+    render_compose_routes,
+    render_compose_stack,
+    storage_summary,
+)
 from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
 from .control.context import list_contexts, load_current_context, save_context, use_context
@@ -28,6 +37,7 @@ from .profiles import PROFILES
 from .remote import RemoteExecutor
 from .render import render_stack, render_tailscale_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
+from .storage import managed_storage_stacks, storage_check_plan, storage_migration_plan
 from .userconfig import configured_keys, ensure_interactive_config, interactive_configure, load_user_config, masked_config_lines, user_config_path
 from . import __version__
 
@@ -197,6 +207,70 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--via", choices=("portainer",), default="portainer", help="Deployment runner")
+
+    compose = sub.add_parser("compose")
+    compose_sub = compose.add_subparsers(dest="compose_command", required=True)
+    compose_init = compose_sub.add_parser("init")
+    compose_init.add_argument("--compose", type=Path, default=Path("docker-compose.yml"))
+    compose_init.add_argument("--output", type=Path, default=Path("luma.compose.yml"))
+    compose_validate = compose_sub.add_parser("validate")
+    compose_validate.add_argument("sidecar", type=Path)
+    _add_control_arguments(compose_validate)
+    _add_output_arguments(compose_validate)
+    compose_render = compose_sub.add_parser("render")
+    compose_render.add_argument("sidecar", type=Path)
+    _add_control_arguments(compose_render)
+    compose_deploy = compose_sub.add_parser("deploy")
+    compose_deploy.add_argument("sidecar", type=Path)
+    _add_control_arguments(compose_deploy)
+    _add_output_arguments(compose_deploy)
+    compose_deploy.add_argument("--dry-run", action="store_true")
+    compose_deploy.add_argument("--skip-dns", action="store_true")
+    compose_deploy.add_argument("--skip-webhook", action="store_true")
+    compose_deploy.add_argument("--timeout", type=int, default=1800)
+    compose_remove = compose_sub.add_parser("remove")
+    compose_remove.add_argument("sidecar", type=Path)
+    _add_control_arguments(compose_remove)
+    compose_remove.add_argument("--skip-dns", action="store_true")
+    compose_remove.add_argument("--skip-portainer", action="store_true")
+    compose_remove.add_argument("--dry-run", action="store_true")
+    compose_remove.add_argument("--timeout", type=int, default=300)
+
+    storage = sub.add_parser("storage")
+    storage_sub = storage.add_subparsers(dest="storage_command", required=True)
+    storage_list = storage_sub.add_parser("list")
+    _add_control_arguments(storage_list)
+    _add_output_arguments(storage_list)
+    storage_set = storage_sub.add_parser("set")
+    storage_set.add_argument("name")
+    storage_set.add_argument("--provider", choices=("nfs", "juicefs", "efs", "ceph", "external"), default="nfs")
+    storage_set.add_argument("--mode", choices=("managed", "external"), default="external")
+    storage_set.add_argument("--node", default="")
+    storage_set.add_argument("--endpoint", default="")
+    storage_set.add_argument("--export-root", default="")
+    storage_set.add_argument("--mount-options", default="")
+    storage_set.add_argument("--region", action="append", dest="regions", default=[])
+    storage_set.add_argument("--eligible-node", action="append", dest="nodes", default=[])
+    _add_control_arguments(storage_set)
+    storage_remove = storage_sub.add_parser("remove")
+    storage_remove.add_argument("name")
+    _add_control_arguments(storage_remove)
+    storage_apply = storage_sub.add_parser("apply")
+    storage_apply.add_argument("sidecar", type=Path)
+    _add_control_arguments(storage_apply)
+    storage_apply.add_argument("--dry-run", action="store_true")
+    storage_apply.add_argument("--timeout", type=int, default=300)
+    storage_check = storage_sub.add_parser("check")
+    storage_check.add_argument("sidecar", type=Path)
+    _add_control_arguments(storage_check)
+    _add_output_arguments(storage_check)
+    storage_migrate = storage_sub.add_parser("migrate")
+    storage_migrate.add_argument("sidecar", type=Path)
+    storage_migrate.add_argument("--volume", required=True)
+    storage_migrate.add_argument("--from-node", required=True)
+    storage_migrate.add_argument("--from-volume", required=True)
+    _add_control_arguments(storage_migrate)
+    _add_output_arguments(storage_migrate)
 
     return parser
 
@@ -1585,6 +1659,302 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compose(args: argparse.Namespace) -> int:
+    if args.compose_command == "init":
+        init_compose_sidecar(args.compose, args.output)
+        print(f"Compose sidecar created: {args.output}")
+        return 0
+    if args.compose_command == "validate":
+        return cmd_compose_validate(args)
+    if args.compose_command == "render":
+        return cmd_compose_render(args)
+    if args.compose_command == "deploy":
+        return cmd_compose_deploy(args)
+    if args.compose_command == "remove":
+        return cmd_compose_remove(args)
+    raise LumaError(f"unknown compose command: {args.compose_command}")
+
+
+def cmd_compose_validate(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
+    stack = render_compose_stack(config, deployment)
+    routes = render_compose_routes(config, deployment)
+    result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment)}
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    print(f"Compose deployment valid: {deployment.name}")
+    for warning in deployment.warnings:
+        print(f"[warn] {warning}")
+    return 0
+
+
+def cmd_compose_render(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
+    print(render_compose_stack(config, deployment))
+    for service_name, route_text in render_compose_routes(config, deployment).items():
+        print(f"# route: {compose_route_path(config, deployment, service_name)}")
+        print(route_text)
+    return 0
+
+
+def cmd_compose_deploy(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
+    stack = render_compose_stack(config, deployment)
+    routes = render_compose_routes(config, deployment)
+    output_format = _output_format(args)
+    quiet = _quiet(args) or output_format != "text"
+    if args.dry_run:
+        result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment), "dryRun": True}
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        print(f"Dry run: would write {compose_stack_path(config, deployment)}")
+        print(stack)
+        for service_name, route_text in routes.items():
+            print(f"Dry run: would write {compose_route_path(config, deployment, service_name)}")
+            print(route_text)
+        for warning in deployment.warnings:
+            print(f"[warn] {warning}")
+        return 0
+    if args.timeout < 1:
+        raise LumaError("--timeout must be at least 1 second")
+    if not quiet:
+        print(f"[start] Load compose deploy context: {args.sidecar}", flush=True)
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    if not quiet:
+        print(f"[ok] Control endpoint: {endpoint}", flush=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    manifest_text, compose_text = _compose_request_text(args.sidecar, deployment)
+    result: Dict[str, Any] | None = None
+    try:
+        for event in client.deploy_compose_events(
+            manifest=manifest_text,
+            compose_content=compose_text,
+            source_name=str(args.sidecar),
+            skip_dns=args.skip_dns,
+            skip_webhook=args.skip_webhook,
+            timeout=args.timeout,
+        ):
+            status = str(event.get("status") or "")
+            if output_format == "ndjson":
+                _print_json({"type": "event", **event})
+            if status in {"start", "ok", "fail"}:
+                if not quiet:
+                    _print_deploy_step(event)
+                if status == "fail":
+                    raise LumaError(str(event.get("message") or "compose deploy failed"))
+            elif status == "done":
+                payload = event.get("result")
+                if not isinstance(payload, dict):
+                    raise LumaError("control API stream ended without a compose deploy result")
+                result = payload
+    except LumaError as exc:
+        if "control API error 404" not in str(exc):
+            raise
+    if result is None:
+        result = _run_with_wait_heartbeat(
+            lambda: client.deploy_compose(
+                manifest=manifest_text,
+                compose_content=compose_text,
+                source_name=str(args.sidecar),
+                skip_dns=args.skip_dns,
+                skip_webhook=args.skip_webhook,
+                timeout=args.timeout,
+            ),
+            timeout=args.timeout,
+            emit=not quiet,
+        )
+        for step in result.get("steps") or []:
+            if isinstance(step, dict) and not quiet:
+                _print_deploy_step(step)
+    if output_format != "text":
+        _print_success(args, result)
+        return 0
+    print(f"[ok] Compose deploy finished: {result.get('deployment', deployment.name)}")
+    for warning in (result.get("storage") or {}).get("warnings") or []:
+        print(f"[warn] {warning}")
+    return 0
+
+
+def cmd_compose_remove(args: argparse.Namespace) -> int:
+    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
+    if args.timeout < 1:
+        raise LumaError("--timeout must be at least 1 second")
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    manifest_text, compose_text = _compose_request_text(args.sidecar, deployment)
+    result = _run_with_wait_heartbeat(
+        lambda: client.remove_compose(
+            manifest=manifest_text,
+            compose_content=compose_text,
+            source_name=str(args.sidecar),
+            skip_dns=args.skip_dns,
+            skip_portainer=args.skip_portainer,
+            dry_run=args.dry_run,
+            timeout=args.timeout,
+        ),
+        timeout=args.timeout,
+    )
+    for step in result.get("steps") or []:
+        if isinstance(step, dict):
+            _print_deploy_step(step)
+    action = "Compose remove dry run finished" if result.get("dryRun") else "Compose remove finished"
+    print(f"[ok] {action}: {result.get('deployment', deployment.name)}")
+    return 0
+
+
+def cmd_storage(args: argparse.Namespace) -> int:
+    if args.storage_command == "list":
+        return cmd_storage_list(args)
+    if args.storage_command == "set":
+        return cmd_storage_set(args)
+    if args.storage_command == "remove":
+        return cmd_storage_remove(args)
+    if args.storage_command == "apply":
+        return cmd_storage_apply(args)
+    if args.storage_command == "check":
+        return cmd_storage_check(args)
+    if args.storage_command == "migrate":
+        return cmd_storage_migrate(args)
+    raise LumaError(f"unknown storage command: {args.storage_command}")
+
+
+def cmd_storage_list(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).list_storage()
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    for item in result.get("storageClasses") or []:
+        print(f"{item.get('name')}: {item.get('provider')} {item.get('mode')} {item.get('endpoint') or item.get('node') or ''}".rstrip())
+    return 0
+
+
+def cmd_storage_set(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).set_storage(
+        name=args.name,
+        provider=args.provider,
+        mode=args.mode,
+        node=args.node,
+        endpoint=args.endpoint,
+        export_root=args.export_root,
+        mount_options=args.mount_options,
+        regions=args.regions,
+        nodes=args.nodes,
+    )
+    print(f"Storage class saved: {result.get('name', args.name)}")
+    return 0
+
+
+def cmd_storage_remove(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).remove_storage(name=args.name)
+    status = "removed" if result.get("removed") else "not configured"
+    print(f"Storage class {status}: {args.name}")
+    return 0
+
+
+def cmd_storage_apply(args: argparse.Namespace) -> int:
+    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
+    stacks = managed_storage_stacks(deployment)
+    if args.dry_run:
+        if not stacks:
+            print("No managed storage stacks to apply")
+            return 0
+        for stack in stacks:
+            print(f"# storage stack: {stack.name}")
+            print(stack.content)
+        return 0
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    manifest_text, compose_text = _compose_request_text(args.sidecar, deployment)
+    result = _run_with_wait_heartbeat(
+        lambda: client.apply_storage(
+            manifest=manifest_text,
+            compose_content=compose_text,
+            source_name=str(args.sidecar),
+            timeout=args.timeout,
+        ),
+        timeout=args.timeout,
+    )
+    for step in result.get("steps") or []:
+        if isinstance(step, dict):
+            _print_deploy_step(step)
+    print(f"[ok] Storage apply finished: {result.get('deployment', deployment.name)}")
+    return 0
+
+
+def cmd_storage_check(args: argparse.Namespace) -> int:
+    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
+    result = storage_check_plan(deployment)
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    for item in result["storageClasses"]:
+        print(f"{item['name']}: {item['message']}")
+    for warning in result["warnings"]:
+        print(f"[warn] {warning}")
+    return 0
+
+
+def cmd_storage_migrate(args: argparse.Namespace) -> int:
+    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
+    result = storage_migration_plan(
+        deployment,
+        volume=args.volume,
+        from_node=args.from_node,
+        from_volume=args.from_volume,
+    )
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    print(result["message"])
+    return 0
+
+
+def _compose_summary(config: LumaConfig, deployment: Any, stack: str, routes: Dict[str, str]) -> Dict[str, Any]:
+    artifacts = [{"kind": "stack", "path": str(compose_stack_path(config, deployment)), "content": stack}]
+    for service_name, route_text in routes.items():
+        artifacts.append({"kind": "route", "path": str(compose_route_path(config, deployment, service_name)), "content": route_text})
+    return {
+        "source": str(deployment.source),
+        "name": deployment.name,
+        "slug": deployment.slug,
+        "compose": str(deployment.compose_path),
+        "services": sorted(str(name) for name in deployment.compose.get("services", {}).keys()),
+        "artifacts": artifacts,
+        "warnings": deployment.warnings,
+    }
+
+
+def _compose_request_text(sidecar: Path, deployment: Any) -> tuple[str, str]:
+    return sidecar.read_text(encoding="utf-8"), deployment.compose_path.read_text(encoding="utf-8")
+
+
+def _control_storage_classes_for_local(args: argparse.Namespace, *, required: bool = False) -> Dict[str, Any] | None:
+    try:
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).list_storage()
+    except LumaError:
+        if required:
+            raise
+        return None
+    if not isinstance(result, dict):
+        return None
+    storage: Dict[str, Any] = {}
+    for item in result.get("storageClasses") or []:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        name = str(item["name"])
+        storage[name] = {key: value for key, value in item.items() if key != "name" and value not in ("", [], None)}
+    return storage
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     checks: list[tuple[str, bool, str]] = []
@@ -1729,6 +2099,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_dns_sync(args)
         if args.command == "deploy":
             return cmd_deploy(args)
+        if args.command == "compose":
+            return cmd_compose(args)
+        if args.command == "storage":
+            return cmd_storage(args)
     except LumaError as exc:
         if _print_structured_error(args, exc):
             return 1

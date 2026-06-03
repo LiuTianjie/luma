@@ -40,6 +40,16 @@ export type DashboardService = {
   failed?: number;
   health?: string;
   nodes?: string[];
+  storage?: DashboardVolume[];
+  diagnostics?: string[];
+};
+
+export type DashboardVolume = {
+  name?: string;
+  kind?: string;
+  storageClass?: string;
+  node?: string;
+  services?: string[];
 };
 
 export type TrafficPath = {
@@ -58,6 +68,10 @@ export type DashboardPayload = {
   nodes?: DashboardNode[];
   services?: DashboardService[];
   trafficPaths?: TrafficPath[];
+  storage?: {
+    volumes?: DashboardVolume[];
+    warnings?: string[];
+  };
   errors?: string[];
 };
 

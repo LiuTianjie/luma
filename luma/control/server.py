@@ -17,12 +17,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict
 
+import yaml
+
 from ..assets import asset_path
 from ..cloudflare import delete_dns, sync_dns
+from ..compose import (
+    ComposeDeploymentSpec,
+    compose_public_services,
+    compose_route_path,
+    compose_stack_path,
+    load_compose_deployment,
+    render_compose_routes,
+    render_compose_stack,
+    storage_summary,
+)
 from ..config import load_config
 from ..errors import LumaError
 from ..io import load_yaml
-from ..portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack
+from ..portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack, upsert_stack
 from ..registry import (
     docker_registry_auth_header,
     image_uses_mutable_latest_tag,
@@ -32,6 +44,7 @@ from ..registry import (
 )
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service
+from ..storage import managed_storage_stacks
 from .. import __version__
 from .state import init_state, load_state, require_token, save_state
 
@@ -132,6 +145,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     route_files = _dashboard_route_files(config, config_path, errors)
     services = _dashboard_services(raw_services, raw_tasks, node_by_id, route_files)
     traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target)
+    storage = _dashboard_storage(services, _storage_classes_summary(state))
 
     return {
         "cluster": {
@@ -158,6 +172,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         "nodes": nodes,
         "services": [_public_dashboard_service(item) for item in services],
         "trafficPaths": traffic_paths,
+        "storage": storage,
         "errors": errors,
     }
 
@@ -399,6 +414,409 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
     }
 
 
+def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    steps: list[dict[str, str]] = []
+    source_name = str(body.get("sourceName") or "luma.compose.yml")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    deployment = _load_compose_request(body, source_name)
+    parse_step = {"name": "Parse compose deployment", "status": "ok", "message": f"{deployment.name} ({len(deployment.compose.get('services', {}))} services)"}
+    steps.append(parse_step)
+    _emit_progress(progress, parse_step)
+    _emit_compose_warnings(steps, progress, deployment)
+
+    target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stack_text = _deploy_step(
+        steps,
+        "Render compose stack",
+        lambda: render_compose_stack(config, deployment, node_id_resolver=_compose_node_id_resolver(state)),
+        progress=progress,
+    )
+    _deploy_step(steps, "Check storage migration", lambda: _guard_compose_storage_switch(target, stack_text, deployment), progress=progress)
+    stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
+    _deploy_step(steps, "Write compose stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
+    written = [str(target)]
+
+    dns_results: list[str] = []
+    for service in compose_public_services(deployment):
+        service_spec = _compose_service_as_service_spec(deployment, service)
+        dns_results.append(
+            _deploy_step(
+                steps,
+                f"Sync DNS {service.name}",
+                lambda service_spec=service_spec: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service_spec),
+                progress=progress,
+            )
+        )
+
+    portainer_result = _deploy_step(
+        steps,
+        "Deploy Portainer stack",
+        lambda: "Portainer deploy skipped: --skip-webhook"
+        if body.get("skipWebhook")
+        else upsert_stack(
+            config,
+            _stack_service_spec(deployment),
+            stack_text,
+            state,
+            missing_webhook_env="PORTAINER_WEBHOOK_URL",
+            stack_env=stack_env,
+            registry_auth=None,
+        ),
+        progress=progress,
+    )
+
+    route_texts = render_compose_routes(config, deployment)
+    for service_name, route_text in route_texts.items():
+        route_target = _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
+        route_target.parent.mkdir(parents=True, exist_ok=True)
+        _deploy_step(steps, f"Write route {service_name}", lambda route_target=route_target, route_text=route_text: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
+        written.append(str(route_target))
+
+    probe_results: list[str] = []
+    for service in compose_public_services(deployment):
+        service_spec = _compose_service_as_service_spec(deployment, service)
+        probe_results.append(
+            _deploy_step(
+                steps,
+                f"Probe public route {service.name}",
+                lambda service_spec=service_spec: "Public route probe skipped: --skip-webhook" if body.get("skipWebhook") else _probe_public_route(service_spec),
+                progress=progress,
+            )
+        )
+    return {
+        "clusterId": state["clusterId"],
+        "deployment": deployment.name,
+        "sourceName": source_name,
+        "written": written,
+        "dns": dns_results,
+        "webhook": portainer_result,
+        "probe": probe_results,
+        "storage": storage_summary(deployment),
+        "steps": steps,
+    }
+
+
+def handle_compose_remove(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    steps: list[dict[str, str]] = []
+    source_name = str(body.get("sourceName") or "luma.compose.yml")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    deployment = _load_compose_request(body, source_name)
+    parse_step = {"name": "Parse compose deployment", "status": "ok", "message": deployment.name}
+    steps.append(parse_step)
+    _emit_progress(progress, parse_step)
+    dry_run = bool(body.get("dryRun"))
+    stack_target = _resolve_control_path(compose_stack_path(config, deployment), config_path).parent
+    route_targets = [
+        _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
+        for service_name, service in deployment.services.items()
+        if service.exposure == "tailscale-relay"
+    ]
+    files = [str(stack_target), *[str(path) for path in route_targets]]
+    dns_results = []
+    for service in compose_public_services(deployment):
+        service_spec = _compose_service_as_service_spec(deployment, service)
+        dns_results.append(
+            _deploy_step(
+                steps,
+                f"Delete DNS {service.name}",
+                lambda service_spec=service_spec: "DNS skipped: --skip-dns"
+                if body.get("skipDns")
+                else (_planned_delete_dns_message(service_spec) if dry_run else delete_dns(config, service_spec)),
+                progress=progress,
+            )
+        )
+    portainer_result = _deploy_step(
+        steps,
+        "Remove Portainer stack",
+        lambda: "Portainer remove skipped: --skip-portainer"
+        if body.get("skipPortainer")
+        else (_planned_remove_message("Portainer stack would be removed", deployment.slug) if dry_run else remove_stack(config, _stack_service_spec(deployment), state)),
+        progress=progress,
+    )
+    files_result = _deploy_step(
+        steps,
+        "Delete generated files",
+        lambda: _planned_remove_message("Generated files would be removed", ", ".join(files))
+        if dry_run
+        else _remove_generated_files(stack_target, *route_targets),
+        progress=progress,
+    )
+    return {
+        "clusterId": state["clusterId"],
+        "deployment": deployment.name,
+        "sourceName": source_name,
+        "files": files,
+        "dns": dns_results,
+        "portainer": portainer_result,
+        "generatedFiles": files_result,
+        "dryRun": dry_run,
+        "steps": steps,
+    }
+
+
+def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    steps: list[dict[str, str]] = []
+    source_name = str(body.get("sourceName") or "luma.compose.yml")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    deployment = _load_compose_request(body, source_name)
+    stacks = managed_storage_stacks(deployment)
+    written: list[str] = []
+    applied: list[str] = []
+    for stack in stacks:
+        target = _resolve_control_path(config.stack_root / "storage" / stack.name / "stack.yml", config_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _deploy_step(steps, f"Write storage {stack.storage_class}", lambda target=target, stack=stack: target.write_text(stack.content, encoding="utf-8"), progress=progress)
+        written.append(str(target))
+        result = _deploy_step(
+            steps,
+            f"Deploy storage {stack.storage_class}",
+            lambda stack=stack: upsert_stack(
+                config,
+                _storage_stack_service_spec(stack.name),
+                stack.content,
+                state,
+                missing_webhook_env="PORTAINER_WEBHOOK_URL",
+                stack_env=[],
+                registry_auth=None,
+            ),
+            progress=progress,
+        )
+        applied.append(result)
+    return {
+        "clusterId": state["clusterId"],
+        "deployment": deployment.name,
+        "sourceName": source_name,
+        "written": written,
+        "applied": applied,
+        "storage": storage_summary(deployment),
+        "steps": steps,
+    }
+
+
+def handle_storage_list(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    return {"storageClasses": _storage_classes_summary(state)}
+
+
+def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise LumaError("storage class name is required")
+    provider = str(body.get("provider") or "").strip()
+    if provider not in {"nfs", "juicefs", "efs", "ceph", "external"}:
+        raise LumaError("storage provider must be one of ['ceph', 'efs', 'external', 'juicefs', 'nfs']")
+    mode = str(body.get("mode") or "external").strip()
+    if mode not in {"managed", "external"}:
+        raise LumaError("storage mode must be one of ['external', 'managed']")
+    item = {
+        "provider": provider,
+        "mode": mode,
+        "node": str(body.get("node") or "").strip(),
+        "endpoint": str(body.get("endpoint") or "").strip(),
+        "exportRoot": str(body.get("exportRoot") or "").strip(),
+        "mountOptions": str(body.get("mountOptions") or "").strip(),
+        "regions": [str(value) for value in body.get("regions") or [] if str(value)],
+        "nodes": [str(value) for value in body.get("nodes") or [] if str(value)],
+        "updatedAt": int(time.time()),
+    }
+    _validate_storage_class_record(name, item)
+    storage_classes = state.setdefault("storageClasses", {})
+    if not isinstance(storage_classes, dict):
+        storage_classes = {}
+        state["storageClasses"] = storage_classes
+    storage_classes[name] = {key: value for key, value in item.items() if value not in ("", [], None)}
+    save_state(state)
+    return {"name": name, "saved": True, "storageClass": _public_storage_class(name, storage_classes[name])}
+
+
+def handle_storage_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise LumaError("storage class name is required")
+    storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
+    removed = bool(storage_classes.pop(name, None))
+    state["storageClasses"] = storage_classes
+    save_state(state)
+    return {"name": name, "removed": removed}
+
+
+def _load_compose_request(body: Dict[str, Any], source_name: str) -> ComposeDeploymentSpec:
+    manifest = body.get("manifest")
+    compose_content = body.get("composeContent")
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise LumaError("manifest is required")
+    if not isinstance(compose_content, str) or not compose_content.strip():
+        raise LumaError("composeContent is required")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        sidecar_name = Path(source_name).name or "luma.compose.yml"
+        sidecar_path = root / sidecar_name
+        sidecar_path.write_text(manifest, encoding="utf-8")
+        sidecar_data = load_yaml(sidecar_path)
+        compose_value = sidecar_data.get("compose", "docker-compose.yml")
+        if not isinstance(compose_value, str) or not compose_value.strip():
+            raise LumaError("compose deployment requires string field: compose")
+        compose_path = _safe_compose_upload_path(sidecar_path, compose_value)
+        compose_path.parent.mkdir(parents=True, exist_ok=True)
+        compose_path.write_text(compose_content, encoding="utf-8")
+        state = load_state()
+        return load_compose_deployment(
+            sidecar_path,
+            storage_classes=_state_storage_classes(state),
+            allow_sidecar_storage_classes=False,
+        )
+
+
+def _safe_compose_upload_path(sidecar_path: Path, compose_value: str) -> Path:
+    compose_path = Path(compose_value)
+    if compose_path.is_absolute() or ".." in compose_path.parts or not compose_path.name:
+        raise LumaError("compose path must be a relative path without .. when deploying through Luma Control")
+    return sidecar_path.parent / compose_path
+
+
+def _emit_compose_warnings(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    deployment: ComposeDeploymentSpec,
+) -> None:
+    for warning in deployment.warnings:
+        step = {"name": "Compose warning", "status": "ok", "message": warning}
+        steps.append(step)
+        _emit_progress(progress, step)
+
+
+def _compose_node_id_resolver(state: Dict[str, Any]) -> Callable[[str], str | None]:
+    def resolve(node_name: str) -> str | None:
+        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        record = _node_record_for_name(nodes, node_name)
+        if not record:
+            names = ", ".join(sorted(str(name) for name in nodes)) or "none"
+            raise LumaError(f"unknown Luma node: {node_name}. Registered nodes: {names}")
+        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+        node_id = str(record.get("swarmNodeId") or labels.get("luma.node.id") or "").strip()
+        if not node_id:
+            raise LumaError(f"Luma node {node_name} has no Swarm NodeID; rerun luma node join on that node")
+        return node_id
+
+    return resolve
+
+
+def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service: Any) -> ServiceSpec:
+    return ServiceSpec(
+        source=deployment.source,
+        name=f"{deployment.slug}-{service.name}",
+        image="compose",
+        region=service.region or deployment.region,
+        node=service.node,
+        public=service.exposure != "none",
+        exposure=service.exposure,
+        domain=service.domain,
+        port=service.port,
+        publish_port=service.publish_port,
+        replicas=service.replicas or 1,
+        relay=service.relay,
+        tunnel=service.tunnel,
+        proxy=service.proxy,
+    )
+
+
+def _stack_service_spec(deployment: ComposeDeploymentSpec) -> ServiceSpec:
+    return ServiceSpec(source=deployment.source, name=deployment.name, image="compose", region=deployment.region)
+
+
+def _storage_stack_service_spec(stack_name: str) -> ServiceSpec:
+    return ServiceSpec(source=Path("storage"), name=stack_name, image="storage", region="cn")
+
+
+def _guard_compose_storage_switch(target: Path, stack_text: str, deployment: ComposeDeploymentSpec) -> str:
+    if not target.exists():
+        return "No previous compose stack"
+    previous = _safe_yaml_mapping(target.read_text(encoding="utf-8"))
+    current = _safe_yaml_mapping(stack_text)
+    previous_volumes = previous.get("volumes") if isinstance(previous.get("volumes"), dict) else {}
+    current_volumes = current.get("volumes") if isinstance(current.get("volumes"), dict) else {}
+    changed = []
+    for name, spec in deployment.volumes.items():
+        if not spec.storage_class:
+            continue
+        if spec.initialize == "empty" or spec.adopted:
+            continue
+        before = previous_volumes.get(name)
+        after = current_volumes.get(name)
+        if before != after:
+            changed.append(name)
+    if changed:
+        raise LumaError(
+            "storage backend changed for "
+            + ", ".join(sorted(changed))
+            + "; run luma storage migrate and set adopted: true after verification, or set initialize: empty for a fresh volume"
+        )
+    return "Storage backend unchanged"
+
+
+def _safe_yaml_mapping(text: str) -> Dict[str, Any]:
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise LumaError(f"invalid generated YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise LumaError("generated YAML must be a mapping")
+    return data
+
+
+def _state_storage_classes(state: Dict[str, Any]) -> Dict[str, Any]:
+    storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
+    return {str(name): dict(value) for name, value in storage_classes.items() if isinstance(value, dict)}
+
+
+def _storage_classes_summary(state: Dict[str, Any]) -> list[Dict[str, Any]]:
+    return [_public_storage_class(name, value) for name, value in sorted(_state_storage_classes(state).items())]
+
+
+def _public_storage_class(name: str, value: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "name": str(name),
+        "provider": str(value.get("provider") or ""),
+        "mode": str(value.get("mode") or "external"),
+        "node": str(value.get("node") or ""),
+        "endpoint": str(value.get("endpoint") or ""),
+        "exportRoot": str(value.get("exportRoot") or ""),
+        "mountOptions": str(value.get("mountOptions") or ""),
+        "regions": [str(item) for item in value.get("regions") or []],
+        "nodes": [str(item) for item in value.get("nodes") or []],
+        "updatedAt": value.get("updatedAt") or "",
+    }
+
+
+def _validate_storage_class_record(name: str, item: Dict[str, Any]) -> None:
+    if item["provider"] == "nfs" and not item.get("endpoint"):
+        raise LumaError(f"storage class {name} endpoint is required for nfs")
+    if item["mode"] == "managed" and not item.get("node"):
+        raise LumaError(f"managed storage class {name} requires node")
+    regions = item.get("regions") if isinstance(item.get("regions"), list) else []
+    for region in regions:
+        if region not in VALID_REGIONS:
+            raise LumaError(f"storage class {name} region must be one of {sorted(VALID_REGIONS)}")
+
+
 def handle_secret_list(token: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -508,10 +926,10 @@ def _generated_stack_remove_target(config: Any, service: ServiceSpec, config_pat
     return target.parent
 
 
-def _remove_generated_files(stack_target: Path, route_target: Path | None) -> str:
+def _remove_generated_files(stack_target: Path, *route_targets: Path | None) -> str:
     removed = []
     missing = []
-    for target in [stack_target, route_target]:
+    for target in [stack_target, *route_targets]:
         if target is None:
             continue
         result = _remove_path(target)
@@ -894,12 +1312,74 @@ def _dashboard_service(
         "targetPort": str(route.get("port") or ""),
         "network": str(route.get("network") or ""),
         "health": _service_health(desired, counts),
+        "storage": _storage_from_labels(labels),
+        "diagnostics": _service_diagnostics(desired, counts, labels),
         "_routeFile": route_file or {},
     }
 
 
 def _public_dashboard_service(item: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in item.items() if not key.startswith("_")}
+
+
+def _storage_from_labels(labels: Dict[str, Any]) -> list[Dict[str, str]]:
+    volumes: dict[str, Dict[str, str]] = {}
+    for key, value in labels.items():
+        label = str(key)
+        raw_value = str(value)
+        if label.startswith("luma.storage."):
+            name = label.removeprefix("luma.storage.")
+            volumes.setdefault(name, {"name": name})["kind"] = raw_value
+        elif label.startswith("luma.storageClass."):
+            name = label.removeprefix("luma.storageClass.")
+            volumes.setdefault(name, {"name": name})["storageClass"] = raw_value
+        elif label.startswith("luma.storageNode."):
+            name = label.removeprefix("luma.storageNode.")
+            volumes.setdefault(name, {"name": name})["node"] = raw_value
+    return [volumes[name] for name in sorted(volumes)]
+
+
+def _service_diagnostics(desired: int, counts: Dict[str, int], labels: Dict[str, Any]) -> list[str]:
+    diagnostics: list[str] = []
+    if desired > 0 and counts["running"] == 0:
+        diagnostics.append("No running tasks")
+    if counts["failed"] > 0:
+        diagnostics.append(f"{counts['failed']} failed task(s)")
+    if counts["pending"] > 0:
+        diagnostics.append(f"{counts['pending']} pending task(s)")
+    for volume in _storage_from_labels(labels):
+        if volume.get("kind") == "unmanaged":
+            diagnostics.append(f"Volume {volume['name']} is unmanaged by Luma storage")
+    return diagnostics
+
+
+def _dashboard_storage(services: list[Dict[str, Any]], storage_classes: list[Dict[str, Any]] | None = None) -> Dict[str, Any]:
+    volumes: dict[str, Dict[str, Any]] = {}
+    warnings: list[str] = []
+    for service in services:
+        service_name = str(service.get("fullName") or service.get("name") or "")
+        for item in service.get("storage") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if not name:
+                continue
+            volume = volumes.setdefault(
+                name,
+                {
+                    "name": name,
+                    "kind": str(item.get("kind") or "unmanaged"),
+                    "storageClass": str(item.get("storageClass") or ""),
+                    "node": str(item.get("node") or ""),
+                    "services": [],
+                },
+            )
+            volume["services"].append(service_name)
+            if volume["kind"] == "unmanaged":
+                warning = f"Volume {name} is unmanaged by Luma; rescheduling may use node-local data"
+                if warning not in warnings:
+                    warnings.append(warning)
+    return {"storageClasses": storage_classes or [], "volumes": list(volumes.values()), "warnings": warnings}
 
 
 def _split_swarm_service_name(name: str) -> tuple[str, str]:
@@ -1486,6 +1966,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if parsed_path == "/v1/secrets":
                 self._json(200, handle_secret_list(token))
                 return
+            if parsed_path == "/v1/storage":
+                self._json(200, handle_storage_list(token))
+                return
             if parsed_path == "/v1/status":
                 self._json(200, handle_control_status(token))
                 return
@@ -1519,6 +2002,24 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/deployments/stream":
                 self._stream_deployment(token, body)
+                return
+            if self.path == "/v1/compose-deployments":
+                self._json(200, handle_compose_deployment(token, body))
+                return
+            if self.path == "/v1/compose-deployments/stream":
+                self._stream_compose_deployment(token, body)
+                return
+            if self.path == "/v1/compose-deployments/remove":
+                self._json(200, handle_compose_remove(token, body))
+                return
+            if self.path == "/v1/storage/apply":
+                self._json(200, handle_storage_apply(token, body))
+                return
+            if self.path == "/v1/storage":
+                self._json(200, handle_storage_set(token, body))
+                return
+            if self.path == "/v1/storage/remove":
+                self._json(200, handle_storage_remove(token, body))
                 return
             if self.path == "/v1/services/remove":
                 self._json(200, handle_service_remove(token, body))
@@ -1554,6 +2055,24 @@ class ControlHandler(BaseHTTPRequestHandler):
 
         try:
             result = handle_deployment(token, body, progress=emit)
+            emit({"status": "done", "result": result})
+        except LumaError as exc:
+            emit({"status": "fail", "message": str(exc)})
+        except Exception as exc:
+            emit({"status": "fail", "message": str(exc)})
+
+    def _stream_compose_deployment(self, token: str, body: Dict[str, Any]) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        def emit(event: Dict[str, Any]) -> None:
+            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+
+        try:
+            result = handle_compose_deployment(token, body, progress=emit)
             emit({"status": "done", "result": result})
         except LumaError as exc:
             emit({"status": "fail", "message": str(exc)})

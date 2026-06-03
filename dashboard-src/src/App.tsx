@@ -4,6 +4,7 @@ import { LoginPanel } from "./components/LoginPanel";
 import { NodesTable } from "./components/NodesTable";
 import { ReadinessCards } from "./components/ReadinessCards";
 import { ServicesTable } from "./components/ServicesTable";
+import { StoragePanel } from "./components/StoragePanel";
 import { Topbar } from "./components/Topbar";
 import { TrafficPaths } from "./components/TrafficPaths";
 import { t } from "./i18n";
@@ -36,6 +37,8 @@ export function App() {
   const nodes = payload?.nodes || [];
   const services = payload?.services || [];
   const paths = payload?.trafficPaths || [];
+  const storageVolumes = payload?.storage?.volumes || [];
+  const storageWarnings = payload?.storage?.warnings || [];
 
   const navItems = useMemo(
     () => [
@@ -43,8 +46,9 @@ export function App() {
       { label: t(lang, "navNodes"), value: nodes.length },
       { label: t(lang, "navServices"), value: services.length },
       { label: t(lang, "navTraffic"), value: paths.length },
+      { label: t(lang, "navStorage"), value: storageVolumes.length },
     ],
-    [clusterId, lang, nodes.length, paths.length, services.length],
+    [clusterId, lang, nodes.length, paths.length, services.length, storageVolumes.length],
   );
 
   const openNodeDetail = (node: DashboardNode) => {
@@ -76,6 +80,8 @@ export function App() {
         failed: service.failed,
         health: service.health,
         nodes: (service.nodes || []).join(", "),
+        storage: (service.storage || []).map((item) => `${item.name || "-"}:${item.kind || "unmanaged"}`).join(", "),
+        diagnostics: (service.diagnostics || []).join("; "),
       },
     });
   };
@@ -141,6 +147,7 @@ export function App() {
                   <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
                 </section>
                 <TrafficPaths lang={lang} paths={paths} />
+                <StoragePanel lang={lang} volumes={storageVolumes} warnings={storageWarnings} />
               </>
             ) : (
               <section className="empty-state">
