@@ -16,7 +16,7 @@ export function ComposeDeployForm({
   onChange: (draft: ComposeDeploymentDraft) => void;
   onEditYaml: () => void;
 }) {
-  const storageReadyNodes = nodes.filter((node) => node.agentStatus === "ready" && (node.storageCapabilities || []).includes("nfs-host"));
+  const localReadyNodes = nodes.filter((node) => node.agentStatus === "ready" && node.state !== "down");
   const patch = (next: Partial<ComposeDeploymentDraft>) => onChange({ ...draft, ...next });
   const updateService = (name: string, next: Partial<ComposeServiceDraft>) => {
     patch({ services: draft.services.map((service) => service.name === name ? { ...service, ...next } : service) });
@@ -145,14 +145,16 @@ export function ComposeDeployForm({
             <article className="compose-service-card" key={volume.name}>
               <strong>{volume.name}<small>{volume.target}</small></strong>
               <div className="deploy-field-grid compact">
-                <label><span>存储模式</span><select value={volume.storageMode} onChange={(event) => updateVolume(volume.name, { storageMode: event.target.value as ComposeVolumeDraft["storageMode"] })}><option value="storageClass">storageClass</option><option value="local">local node path</option></select></label>
+                <label><span>存储模式</span><select value={volume.storageMode} onChange={(event) => updateVolume(volume.name, { storageMode: event.target.value as ComposeVolumeDraft["storageMode"] })}><option value="unmanaged">unmanaged volume</option><option value="storageClass">storageClass</option><option value="local">local node path</option></select></label>
                 {volume.storageMode === "storageClass" ? (
-                  <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolume(volume.name, { storageClass: event.target.value })}><option value="">选择已注册存储</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
-                ) : (
+                  <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolume(volume.name, { storageClass: event.target.value })}><option value="">选择已注册存储</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}{item.workloads?.length ? ` (${item.workloads.join(",")})` : ""}{item.verifiedWorkloads?.length ? ` verified:${item.verifiedWorkloads.join(",")}` : ""}</option>)}</select></label>
+                ) : volume.storageMode === "local" ? (
                   <>
-                    <label><span>节点</span><select value={volume.localNode} onChange={(event) => updateVolume(volume.name, { localNode: event.target.value })}><option value="">选择 agent ready 节点</option>{storageReadyNodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>
+                    <label><span>节点</span><select value={volume.localNode} onChange={(event) => updateVolume(volume.name, { localNode: event.target.value })}><option value="">选择 agent ready 节点</option>{localReadyNodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>
                     <label><span>本地路径</span><input value={volume.localPath} onChange={(event) => updateVolume(volume.name, { localPath: event.target.value })} placeholder="/opt/luma/state/app" /></label>
                   </>
+                ) : (
+                  <label><span>说明</span><input value="保留为 Compose 命名卷，Luma 不接管存储后端" disabled /></label>
                 )}
               </div>
             </article>

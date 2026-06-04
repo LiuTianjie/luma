@@ -27,6 +27,7 @@ export type ServiceManifestDraft = {
   labels: string;
   networks: string;
   volumes: string;
+  storage: string;
   cpuLimit: string;
   memoryLimit: string;
   healthcheckUrl: string;
@@ -50,7 +51,7 @@ export type ComposeServiceDraft = {
 export type ComposeVolumeDraft = {
   name: string;
   target: string;
-  storageMode: "storageClass" | "local";
+  storageMode: "unmanaged" | "storageClass" | "local";
   storageClass: string;
   localNode: string;
   localPath: string;

@@ -345,6 +345,7 @@ class ControlClient:
         mount_options: str = "",
         regions: list[str] | None = None,
         nodes: list[str] | None = None,
+        workloads: list[str] | None = None,
     ) -> Dict[str, Any]:
         return self.request(
             "POST",
@@ -359,11 +360,15 @@ class ControlClient:
                 "mountOptions": mount_options,
                 "regions": regions or [],
                 "nodes": nodes or [],
+                "workloads": workloads or [],
             },
         )
 
     def remove_storage(self, *, name: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/storage/remove", {"name": name})
+
+    def probe_storage(self, *, name: str, workload: str, node: str = "", timeout: int = 300) -> Dict[str, Any]:
+        return self.request("POST", "/v1/storage/probe", {"name": name, "workload": workload, "node": node}, timeout=timeout)
 
 
 def _looks_like_legacy_node_api_error(detail: str) -> bool:

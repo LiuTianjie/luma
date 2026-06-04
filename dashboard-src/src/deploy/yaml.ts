@@ -57,6 +57,13 @@ export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
     lines.push("volumes:");
     for (const volume of volumes) lines.push(`  - ${scalar(volume)}`);
   }
+  if (draft.storage.trim()) {
+    lines.push("storage:");
+    for (const line of draft.storage.split("\n")) {
+      if (!line.trim()) continue;
+      lines.push(`  ${line}`);
+    }
+  }
   if (draft.cpuLimit || draft.memoryLimit) {
     lines.push("resources:");
     lines.push("  limits:");
@@ -154,7 +161,7 @@ export function composeDraftToSidecarYaml(draft: ComposeDeploymentDraft): string
       if (volume.storageMode === "storageClass") {
         lines.push(`    storageClass: ${scalar(volume.storageClass)}`);
         lines.push(`    path: ${scalar(`${draft.name}/${volume.name}`)}`);
-      } else {
+      } else if (volume.storageMode === "local") {
         lines.push("    local:");
         lines.push(`      node: ${scalar(volume.localNode)}`);
         lines.push(`      path: ${scalar(volume.localPath)}`);

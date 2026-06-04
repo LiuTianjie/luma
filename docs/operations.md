@@ -141,7 +141,7 @@ luma service remove <service> --dry-run --delete-storage
 luma service remove <service> --delete-storage
 ```
 
-For single-service deployments, this deletes named Docker volumes declared in the manifest and skips bind mounts. For Compose deployments, this deletes managed volume subdirectories referenced by the sidecar, not the storage class itself. It cannot be combined with `--skip-portainer`.
+For single-service deployments, this deletes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects declared in the manifest; bind mounts are skipped. For Compose deployments, this deletes managed volume subdirectories referenced by the sidecar, not the storage class itself. It cannot be combined with `--skip-portainer`.
 
 Preview the cleanup without changing the manager:
 

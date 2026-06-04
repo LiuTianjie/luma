@@ -20,6 +20,7 @@ export function serviceDraft(overrides: Partial<ServiceManifestDraft> = {}): Ser
     labels: "",
     networks: "",
     volumes: "",
+    storage: "",
     cpuLimit: "",
     memoryLimit: "",
     healthcheckUrl: "",
@@ -64,7 +65,7 @@ function composeVolume(name: string, target: string, overrides: Partial<ComposeV
   return {
     name,
     target,
-    storageMode: "storageClass",
+    storageMode: "unmanaged",
     storageClass: "",
     localNode: "",
     localPath: "",
@@ -77,11 +78,11 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "service-custom",
     mode: "service",
     name: "自定义配置",
-    description: "从空白配置开始创建单服务。",
-    tags: ["custom", "blank"],
+    description: "内部单服务起点，默认镜像 traefik/whoami。",
+    tags: ["custom", "service"],
     service: serviceDraft({
-      name: "",
-      image: "",
+      name: "custom-service",
+      image: "traefik/whoami:latest",
       domain: "",
       port: "",
       exposure: "none",
@@ -91,15 +92,16 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-custom",
     mode: "compose",
     name: "自定义配置",
-    description: "从空白配置开始创建 Compose 应用。",
-    tags: ["custom", "blank"],
+    description: "单容器 Compose 起点，默认 app 服务不暴露入口。",
+    tags: ["custom", "compose"],
     compose: composeDraft({
-      name: "",
-      services: [],
+      name: "custom-compose",
+      services: [composeService({ name: "app", exposure: "none" })],
       volumes: [],
       dockerComposeYaml: [
         "services:",
-        "  # 在此编写您的 docker-compose 服务",
+        "  app:",
+        "    image: traefik/whoami:latest",
         "",
       ].join("\n"),
     }),
@@ -108,7 +110,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "service-whoami",
     mode: "service",
     name: "whoami",
-    description: "最小 HTTP 探针服务，用来验证 DNS、Traefik 和调度。",
+    description: "traefik/whoami，cn-edge，容器端口 80。",
     tags: ["test", "cn-edge"],
     service: serviceDraft(),
   },
@@ -116,7 +118,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "service-nginx",
     mode: "service",
     name: "nginx",
-    description: "公开静态 Web 服务模板，适合快速验证入口。",
+    description: "nginx:alpine，cn-edge，容器端口 80。",
     tags: ["web", "public"],
     service: serviceDraft({
       name: "nginx",
@@ -131,7 +133,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "service-redis-worker",
     mode: "service",
     name: "redis worker",
-    description: "内部 Redis 服务，不公开入口，可作为 worker/internal 示例。",
+    description: "redis:7-alpine，内部访问，挂载 redis-data。",
     tags: ["internal", "state"],
     service: serviceDraft({
       name: "redis",
@@ -148,7 +150,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "service-grafana",
     mode: "service",
     name: "Grafana",
-    description: "流行的监控看板，默认通过 home relay 暴露。",
+    description: "grafana-oss，home relay，容器端口 3000。",
     tags: ["monitoring", "dashboard"],
     service: serviceDraft({
       name: "grafana",
@@ -167,7 +169,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "service-minio",
     mode: "service",
     name: "MinIO",
-    description: "S3 兼容对象存储，模板暴露 Console 端口。",
+    description: "minio/minio，home relay，Console 端口 9001。",
     tags: ["storage", "s3"],
     service: serviceDraft({
       name: "minio",
@@ -190,7 +192,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "service-jellyfin",
     mode: "service",
     name: "Jellyfin",
-    description: "家庭媒体库服务，默认通过 home relay 暴露。",
+    description: "jellyfin/jellyfin，home relay，容器端口 8096。",
     tags: ["media", "home"],
     service: serviceDraft({
       name: "jellyfin",
@@ -211,7 +213,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "service-code-server",
     mode: "service",
     name: "code-server",
-    description: "浏览器里的 VS Code，适合私有开发环境。",
+    description: "linuxserver/code-server，home relay，端口 8443。",
     tags: ["dev", "ide"],
     service: serviceDraft({
       name: "code-server",
@@ -234,7 +236,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-uptime-kuma",
     mode: "compose",
     name: "Uptime Kuma",
-    description: "自托管监控面板，默认通过 home relay 暴露。",
+    description: "1 个服务，home relay，容器端口 3001。",
     tags: ["monitoring", "stateful"],
     compose: composeDraft({
       name: "uptime-kuma",
@@ -257,7 +259,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-vaultwarden",
     mode: "compose",
     name: "Vaultwarden",
-    description: "轻量密码库，建议使用已注册 storageClass。",
+    description: "1 个服务，home relay，容器端口 80。",
     tags: ["security", "stateful"],
     compose: composeDraft({
       name: "vaultwarden",
@@ -282,7 +284,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-gitea",
     mode: "compose",
     name: "Gitea",
-    description: "Git 服务模板，默认公开 Web 端口 3000。",
+    description: "1 个服务，home relay，Web 端口 3000。",
     tags: ["git", "stateful"],
     compose: composeDraft({
       name: "gitea",
@@ -308,7 +310,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-n8n",
     mode: "compose",
     name: "n8n",
-    description: "自动化工作流服务，domain 会用于 webhook URL。",
+    description: "1 个服务，home relay，Webhook URL 来自域名。",
     tags: ["automation", "stateful"],
     compose: composeDraft({
       name: "n8n",
@@ -336,7 +338,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-nextcloud",
     mode: "compose",
     name: "Nextcloud",
-    description: "文件同步与协作套件，内置 Postgres 与 Redis。",
+    description: "3 个服务：nextcloud、postgres、redis。",
     tags: ["files", "collaboration"],
     compose: composeDraft({
       name: "nextcloud",
@@ -368,8 +370,8 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
         composeService({ name: "redis" }),
       ],
       volumes: [
-        composeVolume("nextcloud-data", "/var/www/html"),
-        composeVolume("nextcloud-db", "/var/lib/postgresql/data"),
+        composeVolume("nextcloud-data", "/var/www/html", { storageMode: "storageClass" }),
+        composeVolume("nextcloud-db", "/var/lib/postgresql/data", { storageMode: "storageClass" }),
       ],
       dockerComposeYaml: [
         "services:",
@@ -409,7 +411,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-ghost",
     mode: "compose",
     name: "Ghost",
-    description: "流行博客与出版平台，配套 MySQL 数据库。",
+    description: "2 个服务：ghost、mysql，端口 2368。",
     tags: ["blog", "cms"],
     compose: composeDraft({
       name: "ghost",
@@ -440,8 +442,8 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
         }),
       ],
       volumes: [
-        composeVolume("ghost-content", "/var/lib/ghost/content"),
-        composeVolume("ghost-mysql", "/var/lib/mysql"),
+        composeVolume("ghost-content", "/var/lib/ghost/content", { storageMode: "storageClass" }),
+        composeVolume("ghost-mysql", "/var/lib/mysql", { storageMode: "storageClass" }),
       ],
       dockerComposeYaml: [
         "services:",
@@ -478,7 +480,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-paperless-ngx",
     mode: "compose",
     name: "Paperless-ngx",
-    description: "文档归档与 OCR 管理，配套 Postgres 与 Redis。",
+    description: "3 个服务：paperless、postgres、redis。",
     tags: ["documents", "ocr"],
     compose: composeDraft({
       name: "paperless",
@@ -510,9 +512,9 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
         }),
       ],
       volumes: [
-        composeVolume("paperless-data", "/usr/src/paperless/data"),
-        composeVolume("paperless-media", "/usr/src/paperless/media"),
-        composeVolume("paperless-db", "/var/lib/postgresql/data"),
+        composeVolume("paperless-data", "/usr/src/paperless/data", { storageMode: "storageClass" }),
+        composeVolume("paperless-media", "/usr/src/paperless/media", { storageMode: "storageClass" }),
+        composeVolume("paperless-db", "/var/lib/postgresql/data", { storageMode: "storageClass" }),
       ],
       dockerComposeYaml: [
         "services:",
@@ -554,7 +556,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-stirling-pdf",
     mode: "compose",
     name: "Stirling PDF",
-    description: "热门 PDF 工具箱，适合做内部文档处理入口。",
+    description: "1 个服务，home relay，容器端口 8080。",
     tags: ["documents", "utility"],
     compose: composeDraft({
       name: "stirling-pdf",

@@ -36,13 +36,15 @@ luma status
 luma storage set cn-nfs \
   --node <manager-swarm-hostname> \
   --path /srv/luma \
-  --region cn
+  --region cn \
+  --workload filesystem
 ```
 
 - `cn-nfs` is the stable storage class name deployments reference.
 - `--node <manager-swarm-hostname>` identifies the host that owns and exports the storage path.
 - `--path /srv/luma` is the host export directory.
 - `--region cn` restricts which service regions can use this storage class.
+- `--workload filesystem` declares the class as general file storage.
 
 For managed NFS on the local control node, `storage set` also prepares the host: it installs the NFS server/client packages when needed, creates the export directory, writes the NFS export, starts the host NFS service, and removes any legacy `luma-storage-*` storage stack left by older Luma versions. It does not delete data. If the target node is not local to the current Luma Control process, the command fails instead of saving a pending storage class; use an external NFS registration or run the operation from the control node that can prepare that host.
 
@@ -53,7 +55,8 @@ luma storage set home-nfs \
   --node home-nas \
   --path /srv/luma \
   --region cn \
-  --region home
+  --region home \
+  --workload filesystem
 ```
 
 ### Register an External Independent NFS Server
@@ -64,8 +67,54 @@ If using an external, non-Luma-managed NFS server, use the `--external` flag:
 luma storage set company-nfs \
   --external \
   --endpoint nfs.example.com:/srv/luma \
-  --region cn
+  --region cn \
+  --workload filesystem
 ```
+
+### Storage Workloads
+
+Storage classes are infrastructure services. Every Compose named volume can use a storage class, including database container volumes, but the storage class must advertise the workload semantics it has been provisioned and probed for.
+
+Supported workload labels are:
+
+| Workload | Meaning |
+| --- | --- |
+| `filesystem` | General files, uploads, app state, media, config, and other normal file workloads. |
+| `postgres` | PostgreSQL data directories such as `/var/lib/postgresql/data`. |
+| `mysql` | MySQL/MariaDB data directories such as `/var/lib/mysql`. |
+| `database` | Database-capable storage for both PostgreSQL and MySQL/MariaDB style data directories. |
+| `any` | Operator-approved catch-all for custom infrastructure where Luma should not gate by workload. |
+
+After provisioning a database-capable storage service, register it with the database workload:
+
+```bash
+luma storage set db-storage \
+  --node storage-node \
+  --path /srv/luma-db \
+  --region home \
+  --region cn \
+  --workload filesystem \
+  --workload postgres
+```
+
+Then database volumes can reference that storage service:
+
+```yaml
+volumes:
+  nextcloud-db:
+    storageClass: db-storage
+    path: nextcloud/nextcloud-db
+```
+
+If a PostgreSQL/MySQL data directory is attached to a storage class that only advertises `filesystem`, Luma warns during preview/check and blocks deploy. This is not a ban on database volumes using storage services; it is a capability gate so generic file storage is not silently treated as database-safe infrastructure.
+
+Declaring a workload is not enough for database directories. Run a workload probe from a Docker-capable Luma node that represents where workloads will run:
+
+```bash
+luma storage probe db-storage --workload postgres --node home-mac-mini
+```
+
+The probe creates a temporary Docker local volume using the storage class endpoint and runs the workload-specific check. For `postgres`, Luma runs a real `initdb` inside `postgres:16-alpine` against a temporary directory under the mounted storage. On success, Luma records `verifiedWorkloads: [postgres]` for the storage class. Database deploys are blocked until the matching workload is verified, unless the class is registered as `any` to indicate external operator validation.
 
 ---
 
@@ -181,7 +230,7 @@ luma storage apply luma.compose.yml
 
 `storage apply` resolves the manager storage classes and creates the concrete volume subdirectories referenced by the sidecar, for example `/srv/luma/app-stack/pg-data`. Compose deployments also run the same preparation step before deploying the application stack.
 
-Managed NFS is convenience storage, not high-availability storage. For production HA state, use an external NFS service, a distributed provider, or a managed database/object store.
+Managed NFS is a storage service, but its workload capability depends on the underlying implementation and probe results. It is acceptable for file workloads by default. Mark it as `postgres`, `mysql`, `database`, or `any` only after the storage service has been provisioned for those semantics, then run the corresponding `luma storage probe` before attaching database data directories.
 
 ## Deploy And Update
 
@@ -258,7 +307,7 @@ This uses the Compose sidecar content recorded by the control plane during the l
 - `local.node` is allowed for explicitly node-pinned local state. Luma rewrites the mount to a bind path and pins every service using that volume to the specified Luma node.
 - Bare compose volumes are allowed, but Luma marks them unmanaged. If Swarm reschedules the service, Docker may use a different node-local volume. Luma does not guarantee data consistency for unmanaged volumes.
 - Switching an existing deployed volume from unmanaged/local to `storageClass` is blocked by default. Run an explicit migration first and set `adopted: true` on that volume after verifying copied data, or set `initialize: empty` when starting from a fresh storage path.
-- Removing a compose stack does not delete storage data by default. Use `luma service remove <name> --delete-storage` only when you intentionally want to delete the managed storage paths referenced by that Compose deployment. The same flag also works for single-service deployments, where it removes named Docker volumes declared in the recorded manifest while skipping bind mounts.
+- Removing a stack does not delete storage data by default. Use `luma service remove <name> --delete-storage` only when you intentionally want to delete removable data referenced by the recorded deployment. For Compose this deletes managed storage paths referenced by the sidecar. For single-service manifests this deletes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects, while skipping bind mounts.
 
 ## Local Node Volumes
 

@@ -154,11 +154,13 @@ export function ApplicationManagementPanel({
   token,
   payload,
   onRefresh,
+  onCreateApplication,
 }: {
   lang: Lang;
   token: string;
   payload: DashboardPayload | null;
   onRefresh: () => Promise<void> | void;
+  onCreateApplication?: () => void;
 }) {
   const [selected, setSelected] = useState<Application | null>(null);
   const [deployContext, setDeployContext] = useState<DeployContext | null>(null);
@@ -201,7 +203,13 @@ export function ApplicationManagementPanel({
     }
   };
 
-  const openCreate = () => setDeployContext({ mode: "create", app: null });
+  const openCreate = () => {
+    if (onCreateApplication) {
+      onCreateApplication();
+      return;
+    }
+    setDeployContext({ mode: "create", app: null });
+  };
   const openDetails = (app: Application) => {
     setDeploymentConfig(null);
     setDeploymentConfigFor("");

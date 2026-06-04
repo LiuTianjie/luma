@@ -11,6 +11,7 @@ from .io import load_yaml
 
 VALID_REGIONS = {"cn", "global", "home"}
 VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge"}
+VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
 
 
 def slugify(value: str) -> str:
@@ -18,6 +19,17 @@ def slugify(value: str) -> str:
     if not slug:
         raise LumaError("service name must contain at least one letter or number")
     return slug
+
+
+@dataclass(frozen=True)
+class ServiceVolumeStorageSpec:
+    name: str
+    storage_class: str
+    path: Optional[str] = None
+    access_mode: str = "ReadWriteOnce"
+    initialize: Optional[str] = None
+    adopted: bool = False
+    raw: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -40,6 +52,7 @@ class ServiceSpec:
     labels: List[str] = field(default_factory=list)
     networks: List[str] = field(default_factory=list)
     volumes: List[str] = field(default_factory=list)
+    storage: Dict[str, ServiceVolumeStorageSpec] = field(default_factory=dict)
     resources: Dict[str, Any] = field(default_factory=dict)
     healthcheck: Dict[str, Any] = field(default_factory=dict)
     stack_path: Optional[Path] = None
@@ -138,6 +151,7 @@ def load_service(path: Path) -> ServiceSpec:
     labels = raw.get("labels") or []
     networks = raw.get("networks") or []
     volumes = raw.get("volumes") or []
+    storage = _load_service_storage(raw.get("storage") or {}, volumes)
     resources = raw.get("resources") or {}
     healthcheck = raw.get("healthcheck") or {}
     for field_name, value in {
@@ -186,6 +200,7 @@ def load_service(path: Path) -> ServiceSpec:
         labels=labels,
         networks=networks,
         volumes=volumes,
+        storage=storage,
         resources=resources,
         healthcheck=healthcheck,
         stack_path=Path(stack_path) if stack_path else None,
@@ -196,3 +211,47 @@ def load_service(path: Path) -> ServiceSpec:
         tunnel=tunnel,
         proxy=bool(raw.get("proxy", False)),
     )
+
+
+def _load_service_storage(raw: Any, volumes: List[str]) -> Dict[str, ServiceVolumeStorageSpec]:
+    if not isinstance(raw, dict):
+        raise LumaError("storage must be a mapping")
+    named_volumes = _named_volume_sources(volumes)
+    result: Dict[str, ServiceVolumeStorageSpec] = {}
+    for name, value in raw.items():
+        if value is None:
+            value = {}
+        if not isinstance(value, dict):
+            raise LumaError(f"storage.{name} must be a mapping")
+        volume_name = str(name)
+        if volume_name not in named_volumes:
+            raise LumaError(f"storage.{name} references unknown named volume")
+        storage_class = str(value.get("storageClass") or "").strip()
+        if not storage_class:
+            raise LumaError(f"storage.{name}.storageClass is required")
+        access_mode = str(value.get("accessMode") or "ReadWriteOnce")
+        if access_mode not in VALID_ACCESS_MODES:
+            raise LumaError(f"storage.{name}.accessMode must be one of {sorted(VALID_ACCESS_MODES)}")
+        initialize = value.get("initialize")
+        if initialize is not None and str(initialize) != "empty":
+            raise LumaError(f"storage.{name}.initialize only supports: empty")
+        result[volume_name] = ServiceVolumeStorageSpec(
+            name=volume_name,
+            storage_class=storage_class,
+            path=str(value["path"]).strip().strip("/") if value.get("path") else None,
+            access_mode=access_mode,
+            initialize=str(initialize) if initialize is not None else None,
+            adopted=bool(value.get("adopted", False)),
+            raw=dict(value),
+        )
+    return result
+
+
+def _named_volume_sources(volumes: List[str]) -> set[str]:
+    names: set[str] = set()
+    for spec in volumes:
+        source = spec.split(":", 1)[0].strip()
+        if not source or source.startswith("/") or source.startswith(".") or source == "~":
+            continue
+        names.add(source)
+    return names

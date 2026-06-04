@@ -65,6 +65,7 @@ export function SingleServiceDeployForm({
         <div className="deploy-field-grid">
           <label><span>命令</span><input value={draft.command} onChange={(event) => patch({ command: event.target.value })} /></label>
           <label><span>卷挂载</span><textarea value={draft.volumes} onChange={(event) => patch({ volumes: event.target.value })} placeholder="data:/data" /></label>
+          <label><span>托管存储 YAML</span><textarea value={draft.storage} onChange={(event) => patch({ storage: event.target.value })} placeholder={"data:\n  storageClass: cn-nfs\n  path: app/data"} /></label>
           <label><span>CPU limit</span><input value={draft.cpuLimit} onChange={(event) => patch({ cpuLimit: event.target.value })} placeholder="0.50" /></label>
           <label><span>Memory limit</span><input value={draft.memoryLimit} onChange={(event) => patch({ memoryLimit: event.target.value })} placeholder="512M" /></label>
           <label><span>健康检查 URL</span><input value={draft.healthcheckUrl} onChange={(event) => patch({ healthcheckUrl: event.target.value })} placeholder="http://127.0.0.1:80/healthz" /></label>

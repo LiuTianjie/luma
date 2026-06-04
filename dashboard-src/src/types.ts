@@ -72,6 +72,8 @@ export type DashboardStorageClass = {
   endpoint?: string;
   regions?: string[];
   nodes?: string[];
+  workloads?: string[];
+  verifiedWorkloads?: string[];
 };
 
 export type TrafficPath = {

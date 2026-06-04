@@ -20,7 +20,6 @@ function firstTemplate(mode: DeployMode) {
 }
 
 const secretRefPattern = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
-
 function isPositiveInteger(value: string | number) {
   const numeric = Number(value);
   return Number.isInteger(numeric) && numeric > 0;
@@ -103,8 +102,8 @@ function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, compos
     if (volume.storageMode === "local" && volume.localNode) {
       const node = findNode(nodes, volume.localNode);
       if (!node) errors.push(`${volume.name} 本地存储节点 ${volume.localNode} 不在当前节点清单中`);
-      else if (!isReadyNode(node) || node.agentStatus !== "ready" || !(node.storageCapabilities || []).includes("nfs-host")) {
-        errors.push(`${volume.name} 本地存储节点 ${volume.localNode} 不是可用存储节点`);
+      else if (!isReadyNode(node) || node.agentStatus !== "ready") {
+        errors.push(`${volume.name} 本地存储节点 ${volume.localNode} 不是 ready agent 节点`);
       }
     }
   }

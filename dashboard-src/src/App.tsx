@@ -9,6 +9,8 @@ import { ServicesTable } from "./components/ServicesTable";
 import { StoragePanel } from "./components/StoragePanel";
 import { Topbar } from "./components/Topbar";
 import { TrafficPaths } from "./components/TrafficPaths";
+import { DeployWorkspace } from "./deploy/DeployWorkspace";
+import { DEPLOY_TEMPLATES } from "./deploy/templates";
 import { t } from "./i18n";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
 import { useDashboardData } from "./useDashboardData";
@@ -22,6 +24,7 @@ type DetailState =
 
 export function App() {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
+  const [activePage, setActivePage] = useState<"deploy" | "status">("deploy");
   const [detail, setDetail] = useState<DetailState>(null);
   const [theme, setThemeState] = useState<"light" | "dark">(() => {
     const saved = localStorage.getItem("luma.dashboard.theme");
@@ -57,10 +60,6 @@ export function App() {
   const clusterId = payload?.cluster?.id || "-";
   const nodes = payload?.nodes || [];
   const services = payload?.services || [];
-  const businessServices = services.filter((service) => {
-    const stack = service.stack || service.name || "";
-    return !["traefik", "portainer", "egress", "luma-control"].includes(stack) && !stack.startsWith("luma-storage") && service.name !== "cloudflared";
-  });
   const paths = payload?.trafficPaths || [];
   const storageVolumes = payload?.storage?.volumes || [];
   const storageClasses = payload?.storage?.storageClasses || [];
@@ -68,15 +67,20 @@ export function App() {
 
   const navItems = useMemo(
     () => [
-      { label: t(lang, "navOverview"), value: clusterId },
-      { label: t(lang, "navApplications"), value: new Set(businessServices.map((service) => service.stack || service.name)).size },
-      { label: t(lang, "navNodes"), value: nodes.length },
-      { label: t(lang, "navServices"), value: services.length },
-      { label: t(lang, "navTopology"), value: nodes.length },
-      { label: t(lang, "navTraffic"), value: paths.length },
-      { label: t(lang, "navStorage"), value: storageVolumes.length + storageClasses.length },
+      {
+        id: "deploy" as const,
+        label: lang === "zh" ? "部署" : "Deploy",
+        value: DEPLOY_TEMPLATES.length,
+        detail: lang === "zh" ? "模板与 YAML" : "Templates and YAML",
+      },
+      {
+        id: "status" as const,
+        label: lang === "zh" ? "状态查看" : "Status",
+        value: services.length,
+        detail: lang === "zh" ? `${nodes.length} 节点 · ${paths.length} 路径` : `${nodes.length} nodes · ${paths.length} paths`,
+      },
     ],
-    [businessServices, clusterId, lang, nodes.length, paths.length, services.length, storageClasses.length, storageVolumes.length],
+    [lang, nodes.length, paths.length, services.length],
   );
 
   const openNodeDetail = (node: DashboardNode) => {
@@ -123,16 +127,20 @@ export function App() {
           <strong>{t(lang, "title")}</strong>
         </div>
         <nav aria-label="Dashboard">
-          {navItems.map((item, index) => (
-            <a className={index === 0 ? "active" : ""} href={`#section-${index}`} key={item.label}>
-              <span>{item.label}</span>
+          {navItems.map((item) => (
+            <button
+              className={activePage === item.id ? "nav-item active" : "nav-item"}
+              type="button"
+              key={item.id}
+              onClick={() => setActivePage(item.id)}
+            >
+              <span>
+                <b>{item.label}</b>
+                <small>{item.detail}</small>
+              </span>
               <strong>{item.value}</strong>
-            </a>
+            </button>
           ))}
-          <a className="muted-link" href="#future">
-            <span>{t(lang, "navFuture")}</span>
-            <strong>{t(lang, "reserved")}</strong>
-          </a>
         </nav>
       </aside>
 
@@ -157,32 +165,56 @@ export function App() {
           </div>
         ) : (
           <>
-            <section className="hero-strip" id="section-0">
-              <div>
-                <p className="eyebrow">{t(lang, "controlPlane")}</p>
-                <h1>{t(lang, "title")}</h1>
-                <p>{t(lang, "subtitle")}</p>
-              </div>
-              <div className="hero-metrics" aria-label="Cluster summary">
-                <span>{nodes.length} {t(lang, "nodes")}</span>
-                <span>{services.length} {t(lang, "services")}</span>
-                <span>{paths.length} {t(lang, "trafficPaths")}</span>
-              </div>
-            </section>
-
             <ErrorBanner errors={errors} />
             {payload ? (
-              <>
-                <ReadinessCards lang={lang} payload={payload} />
-                <ApplicationManagementPanel lang={lang} token={token} payload={payload} onRefresh={loadDashboard} />
-                <section className="table-grid">
-                  <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} />
-                  <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
-                </section>
-                <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
-                <TrafficPaths lang={lang} paths={paths} theme={theme} />
-                <StoragePanel lang={lang} volumes={storageVolumes} storageClasses={storageClasses} warnings={storageWarnings} />
-              </>
+              activePage === "deploy" ? (
+                <>
+                  <section className="hero-strip deploy-page-hero" id="section-deploy">
+                    <div>
+                      <p className="eyebrow">{lang === "zh" ? "部署工作台" : "Deploy workspace"}</p>
+                      <h1>{lang === "zh" ? "选择模板，编辑表单或 YAML，提交前先校验。" : "Select a template, edit form or YAML, validate before submit."}</h1>
+                      <p>{lang === "zh" ? "模板会生成 Luma 配置；页面不会在选择模板后自动部署。" : "Templates generate Luma config. Selecting a template does not deploy it."}</p>
+                    </div>
+                    <div className="hero-metrics" aria-label="Deploy summary">
+                      <span>{lang === "zh" ? "单服务" : "Service"} {DEPLOY_TEMPLATES.filter((item) => item.mode === "service").length}</span>
+                      <span>Compose {DEPLOY_TEMPLATES.filter((item) => item.mode === "compose").length}</span>
+                      <span>storageClass {storageClasses.length}</span>
+                    </div>
+                  </section>
+                  <DeployWorkspace lang={lang} token={token} payload={payload} onRefresh={loadDashboard} />
+                </>
+              ) : (
+                <>
+                  <section className="hero-strip status-page-hero" id="section-status">
+                    <div>
+                      <p className="eyebrow">{t(lang, "controlPlane")}</p>
+                      <h1>{t(lang, "title")}</h1>
+                      <p>{lang === "zh" ? "当前控制面、节点、服务、流量路径和存储状态。" : "Current control-plane, node, service, route, and storage state."}</p>
+                    </div>
+                    <div className="hero-metrics" aria-label="Cluster summary">
+                      <span>{nodes.length} {t(lang, "nodes")}</span>
+                      <span>{services.length} {t(lang, "services")}</span>
+                      <span>{paths.length} {t(lang, "trafficPaths")}</span>
+                    </div>
+                  </section>
+
+                  <ReadinessCards lang={lang} payload={payload} />
+                  <ApplicationManagementPanel
+                    lang={lang}
+                    token={token}
+                    payload={payload}
+                    onRefresh={loadDashboard}
+                    onCreateApplication={() => setActivePage("deploy")}
+                  />
+                  <section className="table-grid">
+                    <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} />
+                    <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
+                  </section>
+                  <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
+                  <TrafficPaths lang={lang} paths={paths} theme={theme} />
+                  <StoragePanel lang={lang} volumes={storageVolumes} storageClasses={storageClasses} warnings={storageWarnings} />
+                </>
+              )
             ) : (
               <section className="empty-state">
                 <p>{t(lang, visibleStatus)}</p>

@@ -6,9 +6,9 @@ from pathlib import Path
 import yaml
 
 from luma.config import LumaConfig
-from luma.compose import load_compose_deployment, render_compose_stack
+from luma.compose import guard_compose_database_storage, load_compose_deployment, render_compose_stack
 from luma.errors import LumaError
-from luma.render import render_stack, render_tailscale_route, route_path, stack_path
+from luma.render import guard_service_database_storage, render_stack, render_tailscale_route, route_path, stack_path
 from luma.service import load_service
 from luma.storage import storage_check_plan
 
@@ -115,6 +115,133 @@ replicas: 2
         self.assertIn("luma.storage.pg-data=storageClass", app["deploy"]["labels"])
         self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["type"], "nfs")
         self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["device"], ":/srv/luma/postgres/pg-data")
+
+    def test_database_volume_can_use_database_capable_storage_class(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "services": {
+                            "postgres": {
+                                "image": "postgres:16-alpine",
+                                "volumes": ["pg-data:/var/lib/postgresql/data"],
+                            }
+                        },
+                        "volumes": {"pg-data": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "db-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "storageClasses": {
+                            "db-storage": {
+                                "provider": "nfs",
+                                "mode": "external",
+                                "endpoint": "storage.example:/srv/luma",
+                                "regions": ["cn"],
+                                "workloads": ["filesystem", "postgres"],
+                                "verifiedWorkloads": ["postgres"],
+                            }
+                        },
+                        "volumes": {"pg-data": {"storageClass": "db-storage", "path": "postgres/pg-data"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+            rendered = yaml.safe_load(render_compose_stack(self.config(), deployment))
+        self.assertEqual(deployment.warnings, [])
+        self.assertEqual(guard_compose_database_storage(deployment), "Database storage check passed")
+        self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["device"], ":/srv/luma/postgres/pg-data")
+
+    def test_database_volume_requires_matching_storage_workload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "services": {
+                            "postgres": {
+                                "image": "postgres:16-alpine",
+                                "volumes": ["pg-data:/var/lib/postgresql/data"],
+                            }
+                        },
+                        "volumes": {"pg-data": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "db-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "storageClasses": {
+                            "file-storage": {
+                                "provider": "nfs",
+                                "mode": "external",
+                                "endpoint": "storage.example:/srv/luma",
+                                "regions": ["cn"],
+                            }
+                        },
+                        "volumes": {"pg-data": {"storageClass": "file-storage", "path": "postgres/pg-data"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+        self.assertIn("register it with workload postgres", deployment.warnings[0])
+        with self.assertRaisesRegex(LumaError, "workload postgres"):
+            guard_compose_database_storage(deployment)
+
+    def test_database_volume_requires_verified_storage_workload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "services": {
+                            "postgres": {
+                                "image": "postgres:16-alpine",
+                                "volumes": ["pg-data:/var/lib/postgresql/data"],
+                            }
+                        },
+                        "volumes": {"pg-data": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "db-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "storageClasses": {
+                            "db-storage": {
+                                "provider": "nfs",
+                                "mode": "external",
+                                "endpoint": "storage.example:/srv/luma",
+                                "regions": ["cn"],
+                                "workloads": ["filesystem", "postgres"],
+                            }
+                        },
+                        "volumes": {"pg-data": {"storageClass": "db-storage", "path": "postgres/pg-data"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(root / "luma.compose.yml")
+        self.assertIn("has not been verified", deployment.warnings[0])
+        with self.assertRaisesRegex(LumaError, "storage probe db-storage --workload postgres"):
+            guard_compose_database_storage(deployment)
 
     def test_managed_compose_storage_uses_swarm_hostname_for_same_region(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -532,6 +659,73 @@ volumes:
         self.assertEqual(app["volumes"], ["stateful_data:/data", "stateful_home:/codex-home"])
         self.assertIn("stateful_data", rendered["volumes"])
         self.assertIn("stateful_home", rendered["volumes"])
+
+    def test_service_named_volume_can_use_storage_class(self):
+        service = self.load(
+            """
+name: stateful app
+image: ghcr.io/acme/stateful-app:latest
+region: cn
+exposure: none
+volumes:
+  - app-data:/data
+storage:
+  app-data:
+    storageClass: cn-nfs
+    path: stateful/app-data
+"""
+        )
+        rendered = yaml.safe_load(
+            render_stack(
+                self.config(),
+                service,
+                storage_classes={
+                    "cn-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "storage-node",
+                        "path": "/srv/luma",
+                        "workloads": ["filesystem"],
+                    }
+                },
+                node_records={"storage-node": {"region": "cn", "swarmHostname": "storage.internal"}},
+            )
+        )
+        app = rendered["services"]["stateful-app"]
+        self.assertIn("luma.storage.app-data=storageClass", app["deploy"]["labels"])
+        self.assertIn("luma.storageClass.app-data=cn-nfs", app["deploy"]["labels"])
+        opts = rendered["volumes"]["app-data"]["driver_opts"]
+        self.assertIn("addr=storage.internal", opts["o"])
+        self.assertEqual(opts["device"], ":/srv/luma/stateful/app-data")
+
+    def test_service_database_volume_requires_verified_storage_workload(self):
+        service = self.load(
+            """
+name: postgres
+image: postgres:16-alpine
+region: cn
+exposure: none
+volumes:
+  - pg-data:/var/lib/postgresql/data
+storage:
+  pg-data:
+    storageClass: cn-nfs
+    path: postgres/pg-data
+"""
+        )
+        storage_classes = {
+            "cn-nfs": {
+                "provider": "nfs",
+                "mode": "external",
+                "endpoint": "storage.example:/srv/luma",
+                "regions": ["cn"],
+                "workloads": ["filesystem", "postgres"],
+            }
+        }
+        with self.assertRaisesRegex(LumaError, "storage probe cn-nfs --workload postgres"):
+            guard_service_database_storage(service, storage_classes)
+        with self.assertRaisesRegex(LumaError, "storage probe cn-nfs --workload postgres"):
+            render_stack(self.config(), service, storage_classes=storage_classes)
 
     def test_default_stack_path_uses_region_and_slug(self):
         service = self.load(

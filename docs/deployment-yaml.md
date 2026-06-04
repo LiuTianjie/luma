@@ -191,6 +191,38 @@ placement:
 
 `node` 使用的是 Luma 节点名，不是 Docker hostname。这个区别对 OrbStack 很重要：多台 Mac 的 Docker hostname 可能都叫 `orbstack`，但 Luma 会用 `luma.node.id` 指向唯一的 Swarm NodeID，避免服务跑到错误机器。
 
+### 普通服务使用 storageClass
+
+单服务 manifest 也可以把任意 named volume 交给控制面注册的 storageClass。`volumes` 仍然是容器挂载声明；顶层 `storage` 只描述这些 named volume 应该落到哪个基础设施存储服务的哪个子目录：
+
+```yaml
+name: home-db
+image: postgres:16
+region: home
+exposure: none
+volumes:
+  - pg-data:/var/lib/postgresql/data
+storage:
+  pg-data:
+    storageClass: db-storage
+    path: home-db/pg-data
+    accessMode: ReadWriteOnce
+```
+
+`storageClass` 本身由 manager 维护，例如：
+
+```bash
+luma storage set db-storage \
+  --node home-nas \
+  --path /srv/luma \
+  --region home \
+  --workload filesystem \
+  --workload postgres
+luma storage probe db-storage --workload postgres --node home-mac-mini
+```
+
+如果挂载目标是 PostgreSQL/MySQL 数据目录，部署前会要求 storageClass 声明并通过相应 workload probe。普通文件目录只需要 `filesystem` workload。
+
 ### 需要代理的 worker
 
 如果服务运行时需要通过 Luma egress proxy 访问外网，声明 `proxy: true`。不要为了使用默认代理手写 `networks: [egress]` 或 `HTTP_PROXY` / `HTTPS_PROXY`；Luma 会自动渲染这些字段。如果你显式写了同名 env，Luma 会保留你的值。

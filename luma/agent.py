@@ -236,6 +236,17 @@ def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
         name = _safe_docker_volume_name(_required(payload, "name"))
         _run_fixed_host_task(_docker_volume_remove_command(name), prefer_container=False)
         return {"name": name, "message": "Docker volume removed"}
+    if action == "probe-storage-class":
+        name = _safe_docker_volume_name(_required(payload, "name"))
+        endpoint = _required(payload, "endpoint")
+        mount_options = str(payload.get("mountOptions") or "nfsvers=4,rw")
+        workload = str(payload.get("workload") or "filesystem")
+        probe_id = _safe_probe_id(str(payload.get("probeId") or name))
+        _run_fixed_host_task(
+            _storage_probe_command(name=name, endpoint=endpoint, mount_options=mount_options, workload=workload, probe_id=probe_id),
+            prefer_container=False,
+        )
+        return {"name": name, "workload": workload, "probeId": probe_id, "message": f"storage workload probe passed: {workload}"}
     if action == "remove-managed-nfs-export":
         name = _required(payload, "name")
         return remove_managed_nfs_export(name=name)
@@ -420,6 +431,79 @@ def _docker_volume_remove_command(name: str) -> str:
         f"docker volume inspect {quoted} >/dev/null 2>&1 || exit 0; "
         f"docker volume rm -f {quoted}"
     )
+
+
+def _storage_probe_command(*, name: str, endpoint: str, mount_options: str, workload: str, probe_id: str) -> str:
+    host, export_path = _parse_nfs_endpoint(endpoint)
+    options = str(mount_options or "nfsvers=4,rw")
+    if "addr=" not in options:
+        options = f"addr={host},{options}" if options else f"addr={host}"
+    volume_name = _safe_docker_volume_name(f"luma-probe-{name}-{probe_id}")[:128]
+    container_name = _safe_docker_volume_name(f"luma-probe-{probe_id}")[:128]
+    probe_dir = f"/mnt/.luma-probes/{probe_id}"
+    if workload == "filesystem":
+        image = "alpine:3.20"
+        script = (
+            "set -eu; "
+            f"dir={shlex.quote(probe_dir)}; "
+            'rm -rf "$dir"; mkdir -p "$dir"; '
+            'dd if=/dev/zero of="$dir/write-test" bs=1024 count=1 conv=fsync; '
+            'mv "$dir/write-test" "$dir/write-test-renamed"; '
+            'rm -rf "$dir"'
+        )
+    elif workload in {"postgres", "database"}:
+        image = "postgres:16-alpine"
+        script = (
+            "set -eu; "
+            f"dir={shlex.quote(probe_dir)}; "
+            'rm -rf "$dir"; mkdir -p "$dir"; chown -R postgres:postgres "$dir"; '
+            'timeout 180 su postgres -c "initdb -D \\"$dir\\""; '
+            'rm -rf "$dir"'
+        )
+    elif workload == "mysql":
+        image = "mysql:8"
+        script = (
+            "set -eu; "
+            f"dir={shlex.quote(probe_dir)}; "
+            'rm -rf "$dir"; mkdir -p "$dir"; chown -R mysql:mysql "$dir"; '
+            'timeout 240 mysqld --initialize-insecure --user=mysql --datadir="$dir"; '
+            'rm -rf "$dir"'
+        )
+    else:
+        raise LumaError(f"storage probe workload is not implemented yet: {workload}")
+    return (
+        "set -euo pipefail; "
+        "command -v docker >/dev/null 2>&1 || { echo 'docker command not found' >&2; exit 1; }; "
+        f"volume={shlex.quote(volume_name)}; "
+        f"container={shlex.quote(container_name)}; "
+        "cleanup() { "
+        'timeout 30 docker rm -f "$container" >/dev/null 2>&1 || true; '
+        'timeout 30 docker volume rm -f "$volume" >/dev/null 2>&1 || true; '
+        "}; "
+        "trap cleanup EXIT; "
+        'docker volume rm -f "$volume" >/dev/null 2>&1 || true; '
+        "docker volume create --driver local "
+        "--opt type=nfs "
+        f"--opt o={shlex.quote(options)} "
+        f"--opt device={shlex.quote(':' + export_path)} "
+        '"$volume" >/dev/null; '
+        f"timeout 240 docker run --name \"$container\" --rm -v \"$volume:/mnt\" {shlex.quote(image)} sh -c {shlex.quote(script)}"
+    )
+
+
+def _parse_nfs_endpoint(endpoint: str) -> tuple[str, str]:
+    value = endpoint[len("nfs://") :] if endpoint.startswith("nfs://") else endpoint
+    host, sep, export_path = value.partition(":")
+    if not sep or not host or not export_path.startswith("/"):
+        raise LumaError(f"NFS endpoint must look like host:/export/path: {endpoint}")
+    return host, export_path.rstrip("/") or "/"
+
+
+def _safe_probe_id(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip(".-")
+    if not safe:
+        raise LumaError("invalid storage probe id")
+    return safe[:80]
 
 
 def _required(payload: Dict[str, Any], key: str) -> str:
