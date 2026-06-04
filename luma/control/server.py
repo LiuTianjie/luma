@@ -702,6 +702,26 @@ def _compose_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, An
     return record if isinstance(record, dict) else None
 
 
+def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    wanted = str(name or "").strip()
+    if not wanted:
+        raise LumaError("deployment name is required")
+    record = _service_deployment_record(state, wanted) or _compose_deployment_record(state, wanted)
+    if not record:
+        raise LumaError(f"deployment not found: {wanted}")
+    return {
+        "kind": str(record.get("kind") or ""),
+        "name": str(record.get("name") or wanted),
+        "slug": str(record.get("slug") or slugify(wanted)),
+        "sourceName": str(record.get("sourceName") or ""),
+        "updatedAt": record.get("updatedAt") or 0,
+        "manifest": str(record.get("manifest") or ""),
+        "composeContent": str(record.get("composeContent") or ""),
+    }
+
+
 def _live_service_remove_request(config: Any, config_path: Path, name: str) -> tuple[ServiceSpec, str] | None:
     service = _live_service_for_remove(config, config_path, name)
     if not service:
@@ -3280,6 +3300,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if parsed_path == "/v1/dashboard":
                 self._json(200, handle_dashboard(token))
+                return
+            config_match = re.fullmatch(r"/v1/deployments/([^/]+)/config", parsed_path)
+            if config_match:
+                name = urllib.parse.unquote(config_match.group(1))
+                self._json(200, handle_deployment_config(token, name))
                 return
         except LumaError as exc:
             code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400

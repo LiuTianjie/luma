@@ -454,6 +454,36 @@ code {
 .application-service-detail dl { margin: 0; padding: 0; display: grid; gap: 10px; }
 .application-service-detail dl div { display: grid; grid-template-columns: 120px 1fr; gap: 10px; padding: 0; background: transparent; border: 0; box-shadow: none; }
 .application-service-detail dd { overflow-wrap: anywhere; }
+.deployment-config-section { overflow: hidden; }
+.deployment-config-heading {
+  min-height: 58px; padding: 0 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  border-bottom: 1px solid var(--line); background: var(--surface-alt);
+}
+.deployment-config-heading h3 { padding: 0; border-bottom: 0; background: transparent; }
+.deployment-config-heading span {
+  display: block; margin-top: 4px; color: var(--muted); font-size: 0.75rem; overflow-wrap: anywhere;
+}
+.deployment-config-tabs {
+  display: inline-flex; align-items: center; gap: 4px; padding: 4px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+}
+.deployment-config-tabs button {
+  height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent;
+  color: var(--text); box-shadow: none; font-size: 0.76rem; font-weight: 700;
+}
+.deployment-config-tabs button.active {
+  color: var(--ink); background: var(--surface-alt); border: 1px solid var(--line);
+}
+.deployment-config-code {
+  max-height: min(52vh, 560px); margin: 0; padding: 18px; overflow: auto;
+  color: var(--ink); background: rgba(2, 6, 23, 0.2); font-family: var(--font-mono);
+  font-size: 0.78rem; line-height: 1.55; white-space: pre;
+}
+.deployment-config-code code {
+  display: block; padding: 0; border: 0; border-radius: 0; background: transparent;
+  overflow: visible; text-overflow: clip; white-space: inherit; color: inherit; font-size: inherit;
+}
+.deployment-config-empty { margin: 0; padding: 18px; color: var(--muted); }
 .application-diagnostics-list { padding: 18px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .application-diagnostics-list div, .application-diagnostics-list p {
   margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-alt);

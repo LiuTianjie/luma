@@ -44,7 +44,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
+from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -2865,6 +2865,71 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_deployment_config_returns_saved_service_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                manifest = yaml.safe_dump({"name": "api", "image": "nginx:alpine", "region": "cn", "exposure": "none"})
+                state["deployments"] = {
+                    "services": {
+                        "api": {
+                            "kind": "service",
+                            "name": "api",
+                            "slug": "api",
+                            "manifest": manifest,
+                            "sourceName": "console:api.yaml",
+                            "updatedAt": 123,
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
+                result = handle_deployment_config(state["deployToken"], "api")
+                self.assertEqual(result["kind"], "service")
+                self.assertEqual(result["name"], "api")
+                self.assertEqual(result["sourceName"], "console:api.yaml")
+                self.assertEqual(result["updatedAt"], 123)
+                self.assertEqual(result["manifest"], manifest)
+                self.assertEqual(result["composeContent"], "")
+                with self.assertRaisesRegex(LumaError, "unauthorized"):
+                    handle_deployment_config(state["joinToken"], "api")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_deployment_config_returns_saved_compose_manifest_and_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                sidecar = yaml.safe_dump({"name": "app-stack", "compose": "docker-compose.yml", "region": "cn"})
+                compose = yaml.safe_dump({"services": {"web": {"image": "nginx:alpine"}}})
+                state["deployments"] = {
+                    "services": {},
+                    "compose": {
+                        "app-stack": {
+                            "kind": "compose",
+                            "name": "app-stack",
+                            "slug": "app-stack",
+                            "manifest": sidecar,
+                            "composeContent": compose,
+                            "sourceName": "console:luma.compose.yml",
+                            "updatedAt": 456,
+                        }
+                    },
+                }
+                save_state(state)
+                result = handle_deployment_config(state["deployToken"], "app-stack")
+                self.assertEqual(result["kind"], "compose")
+                self.assertEqual(result["name"], "app-stack")
+                self.assertEqual(result["manifest"], sidecar)
+                self.assertEqual(result["composeContent"], compose)
+                self.assertEqual(result["updatedAt"], 456)
+                with self.assertRaisesRegex(LumaError, "deployment not found"):
+                    handle_deployment_config(state["deployToken"], "missing")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
     def test_deployment_preview_rejects_invalid_region_exposure_pair(self):
         with tempfile.TemporaryDirectory() as tmp:

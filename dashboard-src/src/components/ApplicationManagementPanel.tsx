@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
 import { restartApplication } from "../lifecycleApi";
 import type { DashboardPayload, DashboardService, Lang } from "../types";
@@ -26,6 +27,8 @@ type DeployContext = {
   serviceDraft?: ServiceManifestDraft;
   composeDraft?: ComposeDeploymentDraft;
 };
+
+type ConfigTab = "manifest" | "compose";
 
 const SYSTEM_STACKS = new Set(["traefik", "portainer", "egress", "luma-control"]);
 const DEPLOY_ROOT = typeof document === "undefined" ? null : document.body;
@@ -139,6 +142,11 @@ function accessHref(domain: string) {
   return domain.startsWith("http://") || domain.startsWith("https://") ? domain : `https://${domain}`;
 }
 
+function configUpdatedLabel(updatedAt?: number) {
+  if (!updatedAt) return "-";
+  return new Date(updatedAt * 1000).toLocaleString();
+}
+
 export function ApplicationManagementPanel({
   lang,
   token,
@@ -152,8 +160,12 @@ export function ApplicationManagementPanel({
 }) {
   const [selected, setSelected] = useState<Application | null>(null);
   const [deployContext, setDeployContext] = useState<DeployContext | null>(null);
+  const [deploymentConfig, setDeploymentConfig] = useState<DeploymentConfig | null>(null);
+  const [deploymentConfigFor, setDeploymentConfigFor] = useState("");
+  const [configTab, setConfigTab] = useState<ConfigTab>("manifest");
   const [actionError, setActionError] = useState("");
   const [actionBusy, setActionBusy] = useState("");
+  const [configBusy, setConfigBusy] = useState("");
   const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
   const updateContext = useMemo(() => {
     if (!deployContext) return null;
@@ -179,14 +191,39 @@ export function ApplicationManagementPanel({
   };
 
   const openCreate = () => setDeployContext({ mode: "create", app: null });
+  const openDetails = (app: Application) => {
+    setDeploymentConfig(null);
+    setDeploymentConfigFor("");
+    setSelected(app);
+  };
   const openUpdate = (app: Application) => {
     setSelected(null);
     setDeployContext({ mode: "update", app });
   };
   const closeDeploy = () => setDeployContext(null);
+  const openConfig = async (app: Application) => {
+    setActionError("");
+    setConfigBusy(app.stack);
+    try {
+      const config = await fetchDeploymentConfig({ token, name: app.stack });
+      setDeploymentConfig(config);
+      setDeploymentConfigFor(app.stack);
+      setConfigTab(config.manifest ? "manifest" : "compose");
+    } catch (error) {
+      setActionError(String(error instanceof Error ? error.message : error));
+    } finally {
+      setConfigBusy("");
+    }
+  };
 
   const selectedDiagnostics = selected?.services.flatMap((service) => service.diagnostics || []) || [];
   const selectedVolumes = selected?.services.flatMap((service) => service.storage || []) || [];
+  const selectedConfig = selected && deploymentConfigFor === selected.stack ? deploymentConfig : null;
+  const selectedConfigTabs: ConfigTab[] = [
+    ...(selectedConfig?.manifest ? ["manifest" as const] : []),
+    ...(selectedConfig?.composeContent ? ["compose" as const] : []),
+  ];
+  const selectedConfigContent = configTab === "compose" ? selectedConfig?.composeContent : selectedConfig?.manifest;
   const serviceCountLabel = (count: number) => lang === "zh" ? `${count} 个服务` : `${count} service${count === 1 ? "" : "s"}`;
   const replicaLabel = (running: number, desired: number) => lang === "zh" ? `${running}/${desired} 副本` : `${running}/${desired} replicas`;
   const detailOverlay = selected && DEPLOY_ROOT ? createPortal(
@@ -199,6 +236,7 @@ export function ApplicationManagementPanel({
             <span>{serviceCountLabel(selected.services.length)} · {replicaLabel(selected.running, selected.desired)}</span>
           </div>
           <div className="application-detail-actions">
+            <button type="button" className="ghost" disabled={Boolean(configBusy)} onClick={() => void openConfig(selected)}>{configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "viewConfig")}</button>
             <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(selected)}>{actionBusy === selected.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
             <button type="button" onClick={() => openUpdate(selected)}>{t(lang, "updateApp")}</button>
             <button type="button" className="icon-button" onClick={() => setSelected(null)}>{t(lang, "close")}</button>
@@ -219,6 +257,28 @@ export function ApplicationManagementPanel({
               )) : <p>{t(lang, "internalOnly")}</p>}
             </div>
           </section>
+          {selectedConfig ? (
+            <section className="application-detail-section deployment-config-section">
+              <div className="deployment-config-heading">
+                <div>
+                  <h3>{t(lang, "deploymentConfig")}</h3>
+                  <span>{t(lang, "source")}: {selectedConfig.sourceName || "-"} · {t(lang, "lastUpdated")}: {configUpdatedLabel(selectedConfig.updatedAt)}</span>
+                </div>
+                <div className="deployment-config-tabs">
+                  {selectedConfigTabs.map((tab) => (
+                    <button type="button" className={configTab === tab ? "active" : ""} key={tab} onClick={() => setConfigTab(tab)}>
+                      {tab === "compose" ? t(lang, "composeFile") : t(lang, "lumaManifest")}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {selectedConfigContent ? (
+                <pre className="deployment-config-code"><code>{selectedConfigContent}</code></pre>
+              ) : (
+                <p className="deployment-config-empty">{t(lang, "noDeploymentConfig")}</p>
+              )}
+            </section>
+          ) : null}
           <section className="application-detail-section">
             <h3>服务</h3>
             <div className="application-service-grid">
@@ -322,7 +382,7 @@ export function ApplicationManagementPanel({
           <tbody>
             {applications.length ? applications.map((app) => (
               <tr key={app.stack}>
-                <td onClick={() => setSelected(app)}><PrimaryCell title={app.stack} meta={serviceCountLabel(app.services.length)} /></td>
+                <td onClick={() => openDetails(app)}><PrimaryCell title={app.stack} meta={serviceCountLabel(app.services.length)} /></td>
                 <td><StatePill label={localizeState(lang, app.status)} value={app.status} /></td>
                 <td>
                   {app.domains.length ? <CodeCell value={app.domains.join(", ")} /> : <Badge value={t(lang, "internalOnly")} />}
@@ -331,7 +391,7 @@ export function ApplicationManagementPanel({
                 <td><Badge value={`${app.running}/${app.desired}`} /></td>
                 <td>
                   <div className="app-action-row">
-                    <button type="button" className="ghost" onClick={() => setSelected(app)}>{t(lang, "details")}</button>
+                    <button type="button" className="ghost" onClick={() => openDetails(app)}>{t(lang, "details")}</button>
                     <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(app)}>{actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
                     <button type="button" onClick={() => openUpdate(app)}>{t(lang, "updateApp")}</button>
                   </div>
