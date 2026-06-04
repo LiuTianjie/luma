@@ -51,7 +51,16 @@ def minimal_mihomo_config_from_bytes(raw: bytes) -> str:
             "nameserver": ["223.5.5.5", "119.29.29.29", "1.1.1.1"],
         },
         "proxies": proxies,
-        "proxy-groups": [{"name": "EGRESS", "type": "select", "proxies": [proxy["name"] for proxy in proxies]}],
+        "proxy-groups": [
+            {
+                "name": "EGRESS",
+                "type": "url-test",
+                "proxies": [proxy["name"] for proxy in proxies],
+                "url": "https://www.gstatic.com/generate_204",
+                "interval": 300,
+                "tolerance": 50,
+            }
+        ],
         "rules": ["MATCH,EGRESS"],
     }
     return yaml.safe_dump(config, allow_unicode=True, sort_keys=False)

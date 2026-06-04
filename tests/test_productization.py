@@ -259,7 +259,11 @@ class EgressConfigTests(unittest.TestCase):
         self.assertEqual(generated["mode"], "rule")
         self.assertEqual(generated["rules"], ["MATCH,EGRESS"])
         self.assertNotIn("rule-providers", generated)
-        self.assertEqual(generated["proxy-groups"][0]["proxies"], ["proxy-a"])
+        group = generated["proxy-groups"][0]
+        self.assertEqual(group["type"], "url-test")
+        self.assertEqual(group["proxies"], ["proxy-a"])
+        self.assertEqual(group["url"], "https://www.gstatic.com/generate_204")
+        self.assertEqual(group["interval"], 300)
 
 
 class CliTests(unittest.TestCase):
