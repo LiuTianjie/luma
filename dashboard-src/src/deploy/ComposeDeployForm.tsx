@@ -18,6 +18,7 @@ export function ComposeDeployForm({
   onChange: (draft: ComposeDeploymentDraft) => void;
   onEditYaml: () => void;
 }) {
+  const storageReadyNodes = nodes.filter((node) => node.agentStatus === "ready" && (node.storageCapabilities || []).includes("nfs-host"));
   const patch = (next: Partial<ComposeDeploymentDraft>) => onChange({ ...draft, ...next });
   const updateService = (name: string, next: Partial<ComposeServiceDraft>) => {
     patch({ services: draft.services.map((service) => service.name === name ? { ...service, ...next } : service) });
@@ -121,7 +122,7 @@ export function ComposeDeployForm({
                   <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolume(volume.name, { storageClass: event.target.value })}><option value="">选择已注册存储</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
                 ) : (
                   <>
-                    <label><span>节点</span><select value={volume.localNode} onChange={(event) => updateVolume(volume.name, { localNode: event.target.value })}><option value="">选择节点</option>{nodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>
+                    <label><span>节点</span><select value={volume.localNode} onChange={(event) => updateVolume(volume.name, { localNode: event.target.value })}><option value="">选择 agent ready 节点</option>{storageReadyNodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>
                     <label><span>本地路径</span><input value={volume.localPath} onChange={(event) => updateVolume(volume.name, { localPath: event.target.value })} placeholder="/opt/luma/state/app" /></label>
                   </>
                 )}

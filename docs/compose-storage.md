@@ -13,11 +13,11 @@ Storage services are manager-owned infrastructure. A sidecar can reference `stor
 - Login from the client or set stateless control auth:
 
 ```bash
-luma login https://luma.example.com --token <deploy-token>
+luma login https://luma.example.com --token <management-token>
 
 # or in CI
 export LUMA_CONTROL_URL="https://luma.example.com"
-export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 ```
 
 Use the Luma node name when declaring node pins. For the first manager-hosted storage service, you may also use the manager Swarm hostname shown by `luma status`, because the manager might not have gone through `luma node join`.
@@ -277,7 +277,7 @@ CI should use stateless control auth:
 python -m pip install "luma-infra==0.1.26"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
-export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
 luma compose validate luma.compose.yml --format json
 luma storage check luma.compose.yml --format json

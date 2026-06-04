@@ -15,7 +15,7 @@ Luma uses the Portainer API by default. Webhooks remain supported for older Git-
 ```bash
 luma service new
 luma deploy <service>.yaml --dry-run
-luma login https://luma.example.com --token <deploy-token>
+luma login https://luma.example.com --token <management-token>
 luma deploy <service>.yaml
 luma doctor
 ```

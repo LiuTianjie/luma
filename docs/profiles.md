@@ -40,9 +40,9 @@ Domestic public edge:
 Worker nodes are now region-first:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
-luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
-luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
+luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1
+luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <node-join-token> --region home --name home-mac-mini
 ```
 
 - `region` is the scheduling boundary.

@@ -78,7 +78,7 @@ luma doctor --legacy-ssh --deep
 If deploy prints `not logged in`, authenticate against the manager's control API:
 
 ```bash
-luma login https://luma.example.com --token <deploy-token>
+luma login https://luma.example.com --token <management-token>
 luma context list
 ```
 

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import http.client
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -48,7 +51,10 @@ from ..registry import (
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service, slugify
 from .. import __version__
-from .state import init_state, load_state, require_token, save_state
+from .state import init_state, load_state, require_token, save_state, state_path
+
+AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
+AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SECONDS", "300"))
 
 
 def bearer_token(headers: Any) -> str:
@@ -72,6 +78,292 @@ def require_control_node_token(state: Dict[str, Any], token: str) -> None:
     except LumaError:
         pass
     require_token(state, token, token_type="join")
+
+
+def _token_has_type(state: Dict[str, Any], token: str, token_type: str) -> bool:
+    try:
+        require_token(state, token, token_type=token_type)
+        return True
+    except LumaError:
+        return False
+
+
+def _hash_agent_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _node_agent_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    agent = record.setdefault("agent", {})
+    if not isinstance(agent, dict):
+        agent = {}
+        record["agent"] = agent
+    return agent
+
+
+def _issue_node_agent_token(state: Dict[str, Any], node_name: str, *, node_id: str = "") -> str:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    if record is None:
+        raise LumaError(f"node is not registered: {node_name}")
+    token = secrets.token_urlsafe(32)
+    agent = _node_agent_record(record)
+    agent.update(
+        {
+            "tokenHash": _hash_agent_token(token),
+            "status": str(agent.get("status") or "provisioned"),
+            "updatedAt": int(time.time()),
+        }
+    )
+    if node_id:
+        record["swarmNodeId"] = node_id
+    return token
+
+
+def _node_record_entry_for_name_or_id(nodes: Dict[str, Any], node_name: str, node_id: str = "") -> tuple[str, Dict[str, Any]] | None:
+    if node_name:
+        direct = nodes.get(node_name)
+        if isinstance(direct, dict):
+            return node_name, direct
+        for key, value in nodes.items():
+            if isinstance(value, dict) and value.get("displayName") == node_name:
+                return str(key), value
+    for key, value in nodes.items():
+        if not isinstance(value, dict):
+            continue
+        labels = value.get("labels") if isinstance(value.get("labels"), dict) else {}
+        values = {
+            str(value.get("swarmNodeId") or ""),
+            str(labels.get("luma.node.id") or ""),
+            str(value.get("swarmHostname") or ""),
+            str(value.get("displayName") or ""),
+        }
+        if node_id and node_id in values:
+            return str(key), value
+        if node_name and node_name in values:
+            return str(key), value
+    return None
+
+
+def _require_node_agent_token(state: Dict[str, Any], token: str, node_name: str, *, node_id: str = "") -> Dict[str, Any]:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    if record is None:
+        raise LumaError("unauthorized")
+    if node_id:
+        known_id = str(record.get("swarmNodeId") or "")
+        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+        known_label_id = str(labels.get("luma.node.id") or "")
+        known_ids = {value for value in {known_id, known_label_id} if value}
+        if known_ids and node_id not in known_ids:
+            raise LumaError("unauthorized")
+    agent = _node_agent_record(record)
+    expected = str(agent.get("tokenHash") or "")
+    if not expected or not secrets.compare_digest(expected, _hash_agent_token(token)):
+        raise LumaError("unauthorized")
+    return record
+
+
+def _update_agent_heartbeat(record: Dict[str, Any], body: Dict[str, Any]) -> None:
+    agent = _node_agent_record(record)
+    capabilities = body.get("capabilities")
+    agent.update(
+        {
+            "status": "online",
+            "lastSeen": int(time.time()),
+            "os": str(body.get("os") or agent.get("os") or ""),
+            "capabilities": [str(value) for value in capabilities] if isinstance(capabilities, list) else agent.get("capabilities", []),
+            "version": str(body.get("version") or agent.get("version") or __version__),
+        }
+    )
+
+
+def _node_agent_status(record: Dict[str, Any]) -> str:
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    status = str(agent.get("status") or "")
+    last_seen = int(agent.get("lastSeen") or 0)
+    if status == "online" and last_seen and int(time.time()) - last_seen <= AGENT_STALE_SECONDS:
+        return "ready"
+    if status == "provisioned":
+        return "provisioned"
+    if status:
+        return "offline"
+    if agent.get("tokenHash"):
+        return "provisioned"
+    return "missing"
+
+
+def _node_agent_supports_storage(record: Dict[str, Any]) -> bool:
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    capabilities = {str(value) for value in agent.get("capabilities") or []}
+    return _node_agent_status(record) == "ready" and "nfs-host" in capabilities
+
+
+def _agent_tasks(state: Dict[str, Any]) -> Dict[str, Any]:
+    tasks = state.setdefault("agentTasks", {})
+    if not isinstance(tasks, dict):
+        tasks = {}
+        state["agentTasks"] = tasks
+    return tasks
+
+
+def _mutate_control_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
+    lock_path = state_path().with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = load_state()
+        result = mutator(state)
+        save_state(state)
+        return result
+
+
+def handle_node_agent_token(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    node_name = str(body.get("nodeName") or "").strip()
+    node_id = str(body.get("nodeId") or "").strip()
+
+    def mutate(state: Dict[str, Any]) -> tuple[str, str]:
+        is_deploy_token = _token_has_type(state, token, "deploy")
+        if not is_deploy_token:
+            require_token(state, token, token_type="join")
+        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        if is_deploy_token:
+            entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
+        else:
+            if not node_id:
+                raise LumaError("nodeId is required when refreshing node agent credentials with a node join token")
+            entry = _node_record_entry_for_name_or_id(nodes, "", node_id)
+        if entry is None:
+            raise LumaError("nodeName or nodeId must match a registered node")
+        matched_name, _record = entry
+        return matched_name, _issue_node_agent_token(state, matched_name, node_id=node_id)
+
+    matched_name, agent_token = _mutate_control_state(mutate)
+    state = load_state()
+    return {
+        "nodeName": matched_name,
+        "nodeId": node_id,
+        "agentToken": agent_token,
+        "endpoint": state.get("domain", ""),
+    }
+
+
+def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    node_name = str(body.get("nodeName") or "").strip()
+    node_id = str(body.get("nodeId") or "").strip()
+    if not node_name:
+        raise LumaError("nodeName is required")
+    leased: Dict[str, Any] | None = None
+    wait_seconds = min(max(int(body.get("waitSeconds") or 0), 0), 30)
+    deadline = time.time() + wait_seconds
+    while True:
+        def mutate(state: Dict[str, Any]) -> Dict[str, Any] | None:
+            record = _require_node_agent_token(state, token, node_name, node_id=node_id)
+            _update_agent_heartbeat(record, body)
+            tasks = _agent_tasks(state)
+            now = int(time.time())
+            for task_id in sorted(tasks):
+                task = tasks.get(task_id)
+                if not isinstance(task, dict):
+                    continue
+                if task.get("nodeName") != node_name or task.get("status") != "queued":
+                    continue
+                task["status"] = "running"
+                task["leasedAt"] = now
+                task["updatedAt"] = now
+                return {
+                    "id": task_id,
+                    "action": task.get("action"),
+                    "payload": task.get("payload") if isinstance(task.get("payload"), dict) else {},
+                }
+            return None
+
+        leased = _mutate_control_state(mutate)
+        if leased or time.time() >= deadline:
+            break
+        time.sleep(1)
+    return {"task": leased}
+
+
+def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    node_name = str(body.get("nodeName") or "").strip()
+    node_id = str(body.get("nodeId") or "").strip()
+    task_id = str(body.get("taskId") or "").strip()
+    status = str(body.get("status") or "").strip()
+    if status not in {"succeeded", "failed"}:
+        raise LumaError("status must be succeeded or failed")
+    if not node_name or not task_id:
+        raise LumaError("nodeName and taskId are required")
+
+    def mutate(state: Dict[str, Any]) -> None:
+        record = _require_node_agent_token(state, token, node_name, node_id=node_id)
+        _update_agent_heartbeat(record, body)
+        tasks = _agent_tasks(state)
+        task = tasks.get(task_id)
+        if not isinstance(task, dict) or task.get("nodeName") != node_name:
+            raise LumaError(f"agent task not found: {task_id}")
+        now = int(time.time())
+        task.update(
+            {
+                "status": status,
+                "message": str(body.get("message") or ""),
+                "result": body.get("result") if isinstance(body.get("result"), dict) else {},
+                "completedAt": now,
+                "updatedAt": now,
+            }
+        )
+
+    _mutate_control_state(mutate)
+    return {"taskId": task_id, "status": status}
+
+
+def _run_node_agent_task(state: Dict[str, Any], node_name: str, action: str, payload: Dict[str, Any], *, timeout: int | None = None) -> Dict[str, Any]:
+    task_id = f"task-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+
+    def mutate(current: Dict[str, Any]) -> None:
+        nodes = current.get("nodes") if isinstance(current.get("nodes"), dict) else {}
+        record = _node_record_for_name(nodes, node_name)
+        if record is None:
+            raise LumaError(f"storage node is not registered: {node_name}")
+        if not _node_agent_supports_storage(record):
+            agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+            raise LumaError(
+                f"node agent is not ready on {node_name}; "
+                f"status={_node_agent_status(record)}, os={agent.get('os') or 'unknown'}, "
+                f"capabilities={','.join(str(value) for value in agent.get('capabilities') or []) or '-'}"
+            )
+        now = int(time.time())
+        _agent_tasks(current)[task_id] = {
+            "id": task_id,
+            "nodeName": node_name,
+            "action": action,
+            "payload": dict(payload),
+            "status": "queued",
+            "createdAt": now,
+            "updatedAt": now,
+        }
+
+    _mutate_control_state(mutate)
+    deadline = time.time() + float(timeout or AGENT_TASK_TIMEOUT_SECONDS)
+    while time.time() < deadline:
+        current = load_state()
+        task = (current.get("agentTasks") if isinstance(current.get("agentTasks"), dict) else {}).get(task_id)
+        if isinstance(task, dict):
+            status = str(task.get("status") or "")
+            if status == "succeeded":
+                result = task.get("result") if isinstance(task.get("result"), dict) else {}
+                return {"taskId": task_id, **result}
+            if status == "failed":
+                raise LumaError(str(task.get("message") or f"agent task failed: {task_id}"))
+        time.sleep(1)
+    current = load_state()
+    tasks = _agent_tasks(current)
+    task = tasks.get(task_id)
+    if isinstance(task, dict) and task.get("status") in {"queued", "running"}:
+        task["status"] = "timeout"
+        task["message"] = "agent task timed out"
+        task["updatedAt"] = int(time.time())
+        save_state(current)
+    raise LumaError(f"node agent task timed out on {node_name}: {action}")
 
 
 def handle_control_status(token: str) -> Dict[str, Any]:
@@ -250,6 +542,7 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if tailscale_name:
         values["tailscaleName"] = tailscale_name
     _remember_node(state, luma_name, **values)
+    agent_token = _issue_node_agent_token(state, luma_name, node_id=node_id)
     save_state(state)
     return {
         "clusterId": state["clusterId"],
@@ -259,6 +552,7 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "displayName": luma_name,
         "tailscaleIP": tailscale_ip,
         "tailscaleName": tailscale_name,
+        "agentToken": agent_token,
         "labels": labels,
         "message": f"Node labels applied: {luma_name}",
     }
@@ -977,12 +1271,14 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "updatedAt": int(time.time()),
     }
     _validate_storage_class_record(name, item, state)
+    save_state(state)
+    storage_class_record = {key: value for key, value in item.items() if value not in ("", [], None)}
+    storage_host = _apply_managed_storage_class(name, storage_class_record, state)
+    state = load_state()
     storage_classes = state.setdefault("storageClasses", {})
     if not isinstance(storage_classes, dict):
         storage_classes = {}
         state["storageClasses"] = storage_classes
-    storage_class_record = {key: value for key, value in item.items() if value not in ("", [], None)}
-    storage_host = _apply_managed_storage_class(name, storage_class_record, state)
     storage_classes[name] = storage_class_record
     save_state(state)
     result = {"name": name, "saved": True, "storageClass": _public_storage_class(name, storage_class_record)}
@@ -1024,18 +1320,28 @@ def _prepare_managed_nfs_host(storage_class: StorageClassSpec, state: Dict[str, 
         raise LumaError(f"managed storageClass {storage_class.name}.node is required")
     if not storage_class.path:
         raise LumaError(f"managed storageClass {storage_class.name}.path is required")
-    if not Path(storage_class.path).is_absolute():
+    storage_root = Path(storage_class.path)
+    if not storage_root.is_absolute():
         raise LumaError(f"managed storage path must be absolute: {storage_class.path}")
+    if ".." in storage_root.parts:
+        raise LumaError(f"managed storage path must not contain ..: {storage_class.path}")
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, storage_class.node) or {}
     if not _storage_node_is_local(record, storage_class.node):
-        raise LumaError(
-            f"managed storageClass {storage_class.name} targets node {storage_class.node}, "
-            "but that node is not local to this Luma Control process. "
-            "Run luma storage set on the manager/control node that owns the Docker socket for that storage host, "
-            "or register the storage as external NFS with --external --endpoint <host:/path>."
+        result = _run_node_agent_task(
+            state,
+            storage_class.node,
+            "prepare-managed-nfs-host",
+            {"name": storage_class.name, "path": storage_class.path},
         )
-    _prepare_local_nfs_export(storage_class)
+        return {
+            "name": storage_class.name,
+            "node": storage_class.node,
+            "path": storage_class.path,
+            "prepared": str(result.get("message") or "host NFS export ready"),
+            "taskId": str(result.get("taskId") or ""),
+        }
+    _prepare_local_nfs_export(storage_class, record)
     return {
         "name": storage_class.name,
         "node": storage_class.node,
@@ -1044,44 +1350,17 @@ def _prepare_managed_nfs_host(storage_class: StorageClassSpec, state: Dict[str, 
     }
 
 
-def _prepare_local_nfs_export(storage_class: StorageClassSpec) -> None:
+def _prepare_local_nfs_export(storage_class: StorageClassSpec, record: Dict[str, Any] | None = None) -> None:
     if not storage_class.path:
         raise LumaError(f"managed storageClass {storage_class.name}.path is required")
-    path = storage_class.path.rstrip("/") or "/"
-    export_file = f"/etc/exports.d/luma-{slugify(storage_class.name)}.exports"
-    export_line = f"{path} *(rw,async,no_subtree_check,no_auth_nlm,insecure,no_root_squash)"
-    command = (
-        "set -euo pipefail; "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        "command -v apt-get >/dev/null 2>&1 || { "
-        "echo 'automatic managed NFS preparation currently supports apt-based Linux only' >&2; "
-        "exit 1; "
-        "}; "
-        "if ! command -v exportfs >/dev/null 2>&1 || ! command -v mount.nfs >/dev/null 2>&1; then "
-        "for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do "
-        "[ -f \"$file\" ] || continue; "
-        "sed -i "
-        "-e 's#http://mirrors.ivolces.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
-        "-e 's#https://mirrors.ivolces.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
-        "-e 's#http://mirrors.cloud.aliyuncs.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
-        "-e 's#https://mirrors.cloud.aliyuncs.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
-        "\"$file\"; "
-        "done; "
-        "apt-get update; "
-        "apt-get install -y nfs-kernel-server nfs-common; "
-        "fi; "
-        f"install -d -m 755 {shlex.quote(path)}; "
-        "install -d -m 755 /etc/exports.d; "
-        f"printf '%s\\n' {shlex.quote(export_line)} > {shlex.quote(export_file)}; "
-        "mountpoint -q /proc/fs/nfsd || mount -t nfsd nfsd /proc/fs/nfsd; "
-        "systemctl enable --now nfs-server >/dev/null 2>&1 "
-        "|| systemctl enable --now nfs-kernel-server >/dev/null 2>&1 "
-        "|| service nfs-kernel-server restart; "
-        "exportfs -ra; "
-        f"exportfs -v | grep -F {shlex.quote(path)} >/dev/null"
-    )
     try:
-        _run_host_prep_command(command)
+        from ..agent import _linux_prepare_nfs_command, _macos_prepare_nfs_command
+
+        agent = record.get("agent") if isinstance(record, dict) and isinstance(record.get("agent"), dict) else {}
+        if str(agent.get("os") or "") == "darwin":
+            LocalExecutor().sudo(_macos_prepare_nfs_command(storage_class.name, storage_class.path))
+        else:
+            _run_host_prep_command(_linux_prepare_nfs_command(storage_class.name, storage_class.path))
     except LumaError as exc:
         raise LumaError(f"failed to prepare managed NFS storage {storage_class.name} on local node: {exc}") from exc
 
@@ -1247,15 +1526,24 @@ def _remove_local_nfs_export(storage_class: StorageClassSpec, state: Dict[str, A
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, storage_class.node) or {}
     if not _storage_node_is_local(record, storage_class.node):
-        return "skipped: storage node is not local to this control process"
-    export_file = f"/etc/exports.d/luma-{slugify(storage_class.name)}.exports"
-    command = (
-        "set -euo pipefail; "
-        f"rm -f {shlex.quote(export_file)}; "
-        "if command -v exportfs >/dev/null 2>&1; then exportfs -ra; fi"
-    )
+        try:
+            result = _run_node_agent_task(
+                state,
+                storage_class.node,
+                "remove-managed-nfs-export",
+                {"name": storage_class.name},
+            )
+            return f"removed by node agent: {result.get('taskId') or ''}".rstrip()
+        except LumaError as exc:
+            return f"skipped: node agent remove failed: {exc}"
     try:
-        _run_host_prep_command(command)
+        from ..agent import _linux_remove_nfs_command, _macos_remove_nfs_command
+
+        agent = record.get("agent") if isinstance(record, dict) and isinstance(record.get("agent"), dict) else {}
+        if str(agent.get("os") or "") == "darwin":
+            LocalExecutor().sudo(_macos_remove_nfs_command(storage_class.name))
+        else:
+            _run_host_prep_command(_linux_remove_nfs_command(storage_class.name))
     except LumaError as exc:
         raise LumaError(f"failed to remove managed NFS export {storage_class.name} on local node: {exc}") from exc
     return "removed local NFS export"
@@ -1330,10 +1618,18 @@ def _prepare_managed_volume_path(storage_class: StorageClassSpec, sub_path: str,
     record = _node_record_for_name(nodes, storage_class.node) or {}
     full_path = Path(storage_class.path) / relative
     if not _storage_node_is_local(record, storage_class.node):
-        raise LumaError(
-            f"managed storageClass {storage_class.name} volume path {full_path} cannot be prepared because "
-            f"storage node {storage_class.node} is not local to this Luma Control process"
+        result = _run_node_agent_task(
+            state,
+            storage_class.node,
+            "prepare-managed-volume-path",
+            {"root": storage_class.path, "relative": str(relative)},
         )
+        return {
+            "storageClass": storage_class.name,
+            "path": str(full_path),
+            "prepared": str(result.get("message") or "volume path ready"),
+            "taskId": str(result.get("taskId") or ""),
+        }
     command = f"install -d -m 755 {shlex.quote(str(full_path))}"
     try:
         _run_host_prep_command(command)
@@ -1869,6 +2165,7 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
         if not isinstance(raw, dict):
             raw = {}
         labels = raw.get("labels") if isinstance(raw.get("labels"), dict) else {}
+        agent = raw.get("agent") if isinstance(raw.get("agent"), dict) else {}
         items.append(
             {
                 "name": name,
@@ -1880,6 +2177,10 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
                 "tailscaleName": str(raw.get("tailscaleName") or ""),
                 "status": str(raw.get("status") or "registered"),
                 "labels": {str(key): str(value) for key, value in labels.items()},
+                "agentStatus": _node_agent_status(raw),
+                "agentOs": str(agent.get("os") or ""),
+                "agentLastSeen": int(agent.get("lastSeen") or 0),
+                "storageCapabilities": [str(value) for value in agent.get("capabilities") or []],
             }
         )
     return items
@@ -1937,6 +2238,10 @@ def _dashboard_nodes(registered_nodes: list[Dict[str, Any]], raw_nodes: list[Dic
                 "state": str(swarm.get("state") or "missing"),
                 "availability": str(swarm.get("availability") or ""),
                 "leader": bool(swarm.get("leader")),
+                "agentStatus": str(registered.get("agentStatus") or "missing"),
+                "agentOs": str(registered.get("agentOs") or ""),
+                "agentLastSeen": int(registered.get("agentLastSeen") or 0),
+                "storageCapabilities": [str(value) for value in registered.get("storageCapabilities") or []],
             }
         )
     return rows
@@ -2709,7 +3014,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "version": __version__,
                     "nodeJoinModel": "region-first",
-                    "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove"],
+                    "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove", "node-agent-storage"],
                 },
             )
             return
@@ -2748,6 +3053,15 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/nodes/label":
                 self._json(200, handle_node_label(token, body))
+                return
+            if self.path == "/v1/nodes/agent-token":
+                self._json(200, handle_node_agent_token(token, body))
+                return
+            if self.path == "/v1/node-agent/lease":
+                self._json(200, handle_node_agent_lease(token, body))
+                return
+            if self.path == "/v1/node-agent/tasks/complete":
+                self._json(200, handle_node_agent_complete(token, body))
                 return
             if self.path == "/v1/nodes/unregister":
                 self._json(200, handle_node_unregister(token, body))
@@ -2882,8 +3196,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init":
         state = init_state(domain=args.domain, cluster_id=args.cluster_id, overwrite=args.overwrite)
         print(f"Cluster: {state['clusterId']}")
-        print(f"Deploy token: {state['deployToken']}")
-        print(f"Join token: {state['joinToken']}")
+        print(f"Management token: {state['deployToken']}")
+        print(f"Node join token: {state['joinToken']}")
         return 0
     if args.command == "serve":
         serve(args.host, args.port)

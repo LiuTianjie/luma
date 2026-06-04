@@ -102,11 +102,18 @@ Portainer URL: https://203.0.113.10:9443
 Portainer username: admin
 Portainer password: sudo jq -r '.portainerAdminPassword' /opt/luma/control/control.json
 Cluster: luma-...
-Deploy token: ...
-Join token: ...
+Management token: ...
+Node join token: ...
 ```
 
-Keep the deploy token, join token, and Portainer admin password private.
+Keep the management token, node join token, and Portainer admin password private.
+
+Luma exposes only two user-facing tokens:
+
+- **Management token**: used by trusted CLI clients and the dashboard to deploy, configure storage, manage secrets/registries, and operate nodes. For compatibility, the CLI environment variable is still `LUMA_DEPLOY_TOKEN`.
+- **Node join token**: used only on servers that are joining the cluster or refreshing their local node agent.
+
+Per-node agent credentials are internal. `luma node join` and `luma update` request and install them automatically, and Control stores only their hash.
 
 The `--domain` value is the Luma Control URL. Portainer is not routed through that domain by default.
 Bootstrap exposes Portainer directly on the manager at `https://<manager-ip>:9443`, with Traefik disabled for
@@ -121,11 +128,11 @@ sudo jq -r '.portainerAdminUsername, .portainerAdminPassword' /opt/luma/control/
 From any machine that should be allowed to deploy:
 
 ```bash
-luma login https://luma.example.com --token <deploy-token>
+luma login https://luma.example.com --token <management-token>
 luma context list
 ```
 
-The client stores the endpoint, cluster id, and deploy token in `~/.config/luma/contexts/`. It does not need Docker, SSH access, Cloudflare credentials, or Portainer webhooks.
+The client stores the endpoint, cluster id, and management token in `~/.config/luma/contexts/`. It does not need Docker, SSH access, Cloudflare credentials, or Portainer webhooks.
 
 For a read-only Web view, open:
 
@@ -133,19 +140,19 @@ For a read-only Web view, open:
 https://luma.example.com/dashboard/
 ```
 
-Paste the same deploy token to see control readiness, nodes, services, and inferred traffic paths. Use this only on trusted devices because the browser stores the token in local storage.
+Paste the same management token to see control readiness, nodes, services, and inferred traffic paths. Use this only on trusted devices because the browser stores the token in local storage.
 
 ## 5. Join Worker Nodes
 
 Run this directly on each additional server:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
-luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
-luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
+luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1
+luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <node-join-token> --region home --name home-mac-mini
 ```
 
-The node asks the manager for the Swarm join token and manager address, then joins the cluster locally.
+The node asks the manager for the Docker Swarm join token and manager address, then joins the cluster locally.
 After the local join succeeds, it calls back to Luma Control so the manager applies the region and Luma node labels automatically. `--name` is the Luma node name used in status output and service manifests; Luma stores the real Swarm NodeID separately and uses that NodeID for pinned scheduling. `--region` is the scheduling boundary.
 
 ### Required node ports
@@ -169,7 +176,7 @@ If a node needs to leave a broken or rebuilt manager before joining again, run t
 luma node exit
 ```
 
-By default this leaves Docker Swarm and removes `/opt/luma`, while keeping Tailscale login state and Docker caches. Add `--endpoint <control-url> --token <token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` only when the node should leave the tailnet too; add `--prune-docker` only when unused Docker cache and volumes should be removed.
+By default this leaves Docker Swarm and removes `/opt/luma`, while keeping Tailscale login state and Docker caches. Add `--endpoint <control-url> --token <management-token-or-node-join-token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` only when the node should leave the tailnet too; add `--prune-docker` only when unused Docker cache and volumes should be removed.
 
 ## 6. Configure Or Refresh Providers
 
@@ -187,7 +194,15 @@ Use `luma update` after upgrading Luma itself:
 luma update
 ```
 
-The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and hot-refreshes only the Luma Control API: it preserves existing tokens, Portainer credentials, nodes, and app stacks; refreshes control config/state metadata; refreshes inferred DNS provider config when local Cloudflare credentials are available; pulls the current Luma Control image; and rolls the `luma-control` service with healthcheck-based rollback. It does not redeploy or force-restart Traefik, Portainer, Docker, egress, or user services. On a client or worker node, it skips manager control-plane refresh and exits after updating the CLI. Use `luma update manager` to force the same control-only refresh when you need to pass `--domain`.
+The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and hot-refreshes only the Luma Control API: it preserves existing tokens, Portainer credentials, nodes, and app stacks; refreshes control config/state metadata; refreshes inferred DNS provider config when local Cloudflare credentials are available; pulls the current Luma Control image; rolls the `luma-control` service with healthcheck-based rollback; and refreshes the manager's local node agent when possible. It does not redeploy or force-restart Traefik, Portainer, Docker, egress, or user services.
+
+On a joined worker/home node, `luma update` updates the CLI and refreshes the local node agent. If an older node has no saved agent metadata, pass the Control URL and node join token once:
+
+```bash
+luma update --control-url https://luma.example.com --token <node-join-token>
+```
+
+On an ordinary client, `luma update` only updates the CLI. Use `luma update manager` on a manager to force the same control-only refresh when you need to pass `--domain`.
 
 Use `luma bootstrap manager --domain ...` for first install or explicit infrastructure repair. Full bootstrap can touch Docker, firewall, Traefik, Portainer, and egress, so treat it as a maintenance-window operation. If an old installed CLI still implements the previous update behavior, update the CLI first through the installer or package manager, then rerun the new `luma update manager` control-only refresh.
 

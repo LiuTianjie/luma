@@ -34,11 +34,24 @@ def load_state(path: Path | None = None) -> Dict[str, Any]:
 def save_state(data: Dict[str, Any], path: Path | None = None) -> None:
     path = path or state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
-        path.chmod(0o600)
-    except PermissionError:
-        pass
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            tmp_path.chmod(0o600)
+        except PermissionError:
+            pass
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def new_state(*, domain: str, cluster_id: str | None = None) -> Dict[str, Any]:

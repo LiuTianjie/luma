@@ -8,7 +8,7 @@ For normal use, run the target command directly. If local values are missing, Lu
 
 ```bash
 luma bootstrap manager --domain luma.example.com
-luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
 This writes `~/.luma.config.json` with mode `0600`. `luma configure --role manager|worker` remains available for pre-filling values, and `luma configure --show` masks secret values.
@@ -43,16 +43,16 @@ Control-plane state is written on the manager:
 /opt/luma/control/control.json
 ```
 
-It contains the cluster id, deploy token, join token, Swarm worker join token, and copied Cloudflare/Portainer environment values needed by the control API. This file must not be committed or copied to client machines.
+It contains the cluster id, management token, node join token, Docker Swarm worker join token, and copied Cloudflare/Portainer environment values needed by the control API. This file must not be committed or copied to client machines.
 
-Luma Control also mounts `/var/run/docker.sock` so it can apply node labels after workers join. Treat deploy and join tokens as cluster-admin sensitive.
+Luma Control also mounts `/var/run/docker.sock` so it can apply node labels after workers join. Treat management and node join tokens as cluster-admin sensitive.
 
 ## Deployment Secrets
 
 Service manifests can reference control-plane deployment secrets with `${NAME}` in fields such as `env`.
 
 ```bash
-luma login https://luma.example.com --token <deploy-token>
+luma login https://luma.example.com --token <management-token>
 luma secret set API_TOKEN
 luma secret list
 ```
@@ -77,7 +77,7 @@ This file must not be committed.
 Private image registry credentials are stored separately from deployment secrets:
 
 ```bash
-luma login https://luma.example.com --token <deploy-token>
+luma login https://luma.example.com --token <management-token>
 printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --password-stdin
 luma registry list
 ```
@@ -96,9 +96,9 @@ Client login state is written per user:
 ~/.config/luma/current-context
 ```
 
-`~/.luma.config.json` contains local setup secrets such as Cloudflare, Tailscale, egress, and sudo values. The context contains only the control endpoint, cluster id, and deploy token. Both should be treated as secrets.
+`~/.luma.config.json` contains local setup secrets such as Cloudflare, Tailscale, egress, and sudo values. The context contains only the control endpoint, cluster id, and management token. Both should be treated as secrets.
 
-The Web status panel at `https://<control-domain>/dashboard/` also uses the deploy token. The browser stores it in local storage for that control domain, so use the panel only on trusted devices and clear browser storage or rotate the deploy token if the device is no longer trusted.
+The Web status panel at `https://<control-domain>/dashboard/` also uses the management token. The browser stores it in local storage for that control domain, so use the panel only on trusted devices and clear browser storage or rotate the management token if the device is no longer trusted.
 
 ## Rotation
 

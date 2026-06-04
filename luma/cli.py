@@ -29,6 +29,7 @@ from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
 from .control.context import list_contexts, load_current_context, save_context, use_context
 from .control.state import load_state, new_state, state_path
+from .agent import DEFAULT_AGENT_CONFIG, install_node_agent, run_node_agent
 from .envfile import load_env_file
 from .errors import LumaError
 from .io import dump_yaml, write_yaml
@@ -61,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("--local", action="store_true", help="Only print the local CLI version")
     status = sub.add_parser("status")
     status.add_argument("--control-url", help="Control API URL to check instead of the current login context")
-    status.add_argument("--token", help="Deploy token to use with --control-url")
+    status.add_argument("--token", help="Management token to use with --control-url")
     status.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API check")
     status.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
     _add_output_arguments(status)
@@ -115,12 +116,14 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.36 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.37 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
+    _add_control_arguments(update)
     update_sub = update.add_subparsers(dest="update_command", required=False, metavar="[target]")
     update_manager = update_sub.add_parser("manager", help="force a manager control-plane refresh")
     _add_update_manager_arguments(update_manager)
+    _add_control_arguments(update_manager)
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks such as docker pull through egress")
     doctor.add_argument("--legacy-ssh", action="store_true", help="Also run legacy SSH checks for nodes in luma.yaml")
@@ -142,7 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     node_join.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
     node_exit = node_sub.add_parser("exit")
     node_exit.add_argument("--endpoint", help="Control endpoint; when set, unregister this node from Luma Control")
-    node_exit.add_argument("--token", help="Deploy or join token used with --endpoint")
+    node_exit.add_argument("--token", help="Management token or node join token used with --endpoint")
     node_exit.add_argument("--name", help="Luma node name to unregister; defaults to this node's registered label or Docker name")
     node_exit.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
     node_exit.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
@@ -151,9 +154,19 @@ def build_parser() -> argparse.ArgumentParser:
     node_remove = node_sub.add_parser("remove")
     node_remove.add_argument("name")
     node_remove.add_argument("--control-url", help="Control API URL to use instead of the current login context")
-    node_remove.add_argument("--token", help="Deploy token to use with --control-url")
+    node_remove.add_argument("--token", help="Management token to use with --control-url")
     node_remove.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
     node_remove.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
+    node_status = node_sub.add_parser("status")
+    _add_control_arguments(node_status)
+    _add_output_arguments(node_status)
+
+    node_agent = sub.add_parser("node-agent", help=argparse.SUPPRESS)
+    node_agent_sub = node_agent.add_subparsers(dest="node_agent_command", required=True)
+    node_agent_run = node_agent_sub.add_parser("run", help=argparse.SUPPRESS)
+    node_agent_run.add_argument("--config", type=Path, default=DEFAULT_AGENT_CONFIG)
+    node_agent_run.add_argument("--once", action="store_true")
+    node_agent_run.add_argument("--poll-interval", type=int)
 
     cf = sub.add_parser("cloudflare")
     cf_sub = cf.add_subparsers(dest="cloudflare_command", required=True)
@@ -269,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_control_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--control-url", help="Control API URL to use instead of the current login context")
-    parser.add_argument("--token", help="Deploy token to use with --control-url")
+    parser.add_argument("--token", help="Management token to use with --control-url")
     parser.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API")
     parser.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
 
@@ -355,7 +368,7 @@ def cmd_configure(args: argparse.Namespace) -> int:
             print(line)
         return 0
     if args.role == "client":
-        print("Client machines usually do not need local secrets. Run luma login <control-url> --token <deploy-token>.")
+        print("Client machines usually do not need local secrets. Run luma login <control-url> --token <management-token>.")
     path = interactive_configure(args.role, path=path)
     print(f"Config saved: {path}")
     for line in masked_config_lines(configured_keys(path)):
@@ -454,7 +467,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  Summary: registered={nodes.get('registered', len(registered_items))}, swarm={len(swarm_nodes)}")
     rows = _status_node_rows(registered_items, swarm_nodes)
     if rows:
-        _print_table(["NAME", "REGION", "REGISTERED", "SWARM", "ROLE", "AVAIL", "LEADER", "DISPLAY"], rows)
+        _print_table(["NAME", "REGION", "REGISTERED", "SWARM", "ROLE", "AVAIL", "LEADER", "DISPLAY", "AGENT"], rows)
     elif isinstance(nodes.get("names"), list) and nodes.get("names"):
         print("  Registered: " + ", ".join(str(name) for name in nodes["names"]))
     else:
@@ -611,6 +624,7 @@ def _status_node_rows(registered_items: list[object], swarm_nodes: list[object])
                 _status_value(swarm_dict.get("availability")),
                 "yes" if swarm_dict.get("leader") else "-",
                 display,
+                _status_value(registered_dict.get("agentStatus")),
             ]
         )
     return rows
@@ -689,7 +703,7 @@ def _control_context(args: argparse.Namespace, *, require_token: bool) -> tuple[
     if not control_url:
         raise LumaError("control URL is required; pass --control-url, set LUMA_CONTROL_URL, or run luma login")
     if require_token and not token:
-        raise LumaError("deploy token is required; pass --token, set LUMA_DEPLOY_TOKEN, or run luma login")
+        raise LumaError("management token is required; pass --token, set LUMA_DEPLOY_TOKEN, or run luma login")
     if not token:
         token = "health"
     return (
@@ -808,6 +822,20 @@ def cmd_node(args: argparse.Namespace) -> int:
             tailscale_ip=_local_tailscale_ip(),
         )
         print(label_result.get("message", f"Node labels applied: {actual_node_name}"))
+        agent_token = str(label_result.get("agentToken") or "")
+        if agent_token:
+            print("[start] Install Luma node agent")
+            _install_node_agent_from_token(
+                endpoint=args.endpoint,
+                agent_token=agent_token,
+                node_name=str(label_result.get("nodeName") or args.name),
+                node_id=actual_node_id,
+                insecure=args.insecure,
+                resolve_ip=args.resolve_ip,
+            )
+            print("[ok] Luma node agent installed")
+        else:
+            print("[skip] Luma node agent not installed: manager control API did not return node agent credentials; update the manager first")
         print("Node join complete")
         return 0
     if args.node_command == "exit":
@@ -827,6 +855,33 @@ def cmd_node(args: argparse.Namespace) -> int:
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).unregister_node(node_name=args.name)
         print(result.get("message", f"Node removed: {args.name}"))
+        return 0
+    if args.node_command == "status":
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        payload = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).status()
+        if _output_format(args) != "text":
+            _print_success(args, payload)
+            return 0
+        registered = ((payload.get("nodes") or {}).get("items") if isinstance(payload.get("nodes"), dict) else [])
+        if not isinstance(registered, list) or not registered:
+            print("No nodes registered")
+            return 0
+        rows = []
+        for item in registered:
+            if not isinstance(item, dict):
+                continue
+            rows.append(
+                [
+                    str(item.get("name") or ""),
+                    str(item.get("region") or "-"),
+                    str(item.get("status") or "-"),
+                    str(item.get("agentStatus") or "missing"),
+                    str(item.get("agentOs") or "-"),
+                    ",".join(str(value) for value in item.get("storageCapabilities") or []) or "-",
+                    _format_epoch(int(item.get("agentLastSeen") or 0)),
+                ]
+            )
+        _print_table(["NODE", "REGION", "NODE STATUS", "AGENT", "OS", "CAPABILITIES", "LAST SEEN"], rows)
         return 0
     raise LumaError(f"unknown node command: {args.node_command}")
 
@@ -848,11 +903,36 @@ def cmd_login(args: argparse.Namespace) -> int:
     return 0
 
 
+def _install_node_agent_from_token(
+    *,
+    endpoint: str,
+    agent_token: str,
+    node_name: str,
+    node_id: str = "",
+    insecure: bool = False,
+    resolve_ip: str | None = None,
+) -> None:
+    install_node_agent(
+        endpoint=endpoint,
+        token=agent_token,
+        node_name=node_name,
+        node_id=node_id,
+        insecure=insecure,
+        resolve_ip=resolve_ip,
+    )
+
+
+def _format_epoch(value: int) -> str:
+    if not value:
+        return "-"
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(value))
+
+
 def cmd_context(args: argparse.Namespace) -> int:
     if args.context_command == "list":
         contexts = list_contexts()
         if not contexts:
-            print("No contexts. Run: luma login <control-url> --token <token>")
+            print("No contexts. Run: luma login <control-url> --token <management-token>")
             return 0
         for item in contexts:
             marker = "*" if item.get("current") else " "
@@ -971,8 +1051,8 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
             print(f"Portainer username: {state.get('portainerAdminUsername', 'admin')}")
             print("Portainer password: sudo jq -r '.portainerAdminPassword' /opt/luma/control/control.json")
         print(f"Cluster: {state['clusterId']}")
-        print(f"Deploy token: {state['deployToken']}")
-        print(f"Join token: {state['joinToken']}")
+        print(f"Management token: {state['deployToken']}")
+        print(f"Node join token: {state['joinToken']}")
         print("Join additional nodes:")
         for label, command in _node_join_examples(control_url, str(state["joinToken"])):
             print(f"  {label}: {command}")
@@ -981,23 +1061,150 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    if args.update_command in {None, "manager"}:
-        print("[start] Update Luma CLI")
-        _run_luma_installer(install_ref=args.install_ref)
-        print("[ok] Luma CLI updated")
-        if args.update_command is None:
-            should_refresh, reason = _manager_refresh_decision(args)
-            if not should_refresh:
-                print(f"[skip] Manager control-plane refresh skipped: {reason}")
-                return 0
-            print(f"[info] Manager control-plane refresh required: {reason}")
-        else:
-            print("[info] Manager control-plane refresh forced")
+    if args.update_command not in {None, "manager"}:
+        raise LumaError(f"unknown update command: {args.update_command}")
+    print("[start] Update Luma CLI")
+    _run_luma_installer(install_ref=args.install_ref)
+    print("[ok] Luma CLI updated")
+    if args.update_command == "manager":
+        print("[info] Role: manager")
+        print("[info] Manager control-plane refresh forced")
         print("[start] Refresh manager control plane")
         _refresh_manager_control(args)
+        print("[ok] Manager control plane refreshed")
+        _try_refresh_manager_agent(args)
         print("[ok] Manager update complete")
         return 0
-    raise LumaError(f"unknown update command: {args.update_command}")
+
+    should_refresh, reason = _manager_refresh_decision(args)
+    if should_refresh:
+        print("[info] Role: manager")
+        print(f"[info] Manager control-plane refresh required: {reason}")
+        print("[start] Refresh manager control plane")
+        _refresh_manager_control(args)
+        print("[ok] Manager control plane refreshed")
+        _try_refresh_manager_agent(args)
+        print("[ok] Manager update complete")
+        return 0
+
+    if _local_agent_config() or _safe_local_docker_node_id():
+        print("[info] Role: joined node")
+        _refresh_joined_node_agent(args)
+        print("[ok] Joined node update complete")
+        return 0
+
+    print("[info] Role: client")
+    print(f"[skip] Manager control-plane refresh skipped: {reason}")
+    print("[skip] Node agent refresh skipped: no local joined-node metadata found")
+    return 0
+
+
+def _try_refresh_manager_agent(args: argparse.Namespace) -> None:
+    state = _existing_control_state()
+    if not state:
+        print("[skip] Manager node agent skipped: local manager control state not found")
+        return
+    domain = str(state.get("domain") or "").strip()
+    token = str(state.get("joinToken") or state.get("deployToken") or "").strip()
+    if not domain or not token:
+        print("[skip] Manager node agent skipped: control domain or token is missing")
+        return
+    try:
+        endpoint = _control_url(domain, args.https_port or _config_https_port(load_config(args.config)))
+        _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=bool(getattr(args, "insecure", False)), resolve_ip=getattr(args, "resolve_ip", None), allow_skip=True)
+    except LumaError as exc:
+        print(f"[skip] Manager node agent skipped: {exc}")
+
+
+def _refresh_joined_node_agent(args: argparse.Namespace) -> None:
+    config = _local_agent_config()
+    if config:
+        endpoint = str(config.get("endpoint") or "")
+        token = str(config.get("token") or "")
+        node_name = str(config.get("nodeName") or "")
+        node_id = str(config.get("nodeId") or "")
+        if endpoint and token and node_name:
+            print("[start] Refresh Luma node agent from local metadata")
+            _install_node_agent_from_token(
+                endpoint=endpoint,
+                agent_token=token,
+                node_name=node_name,
+                node_id=node_id,
+                insecure=bool(config.get("insecure")),
+                resolve_ip=str(config.get("resolveIp") or "") or None,
+            )
+            print("[ok] Luma node agent refreshed")
+            return
+    try:
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    except LumaError as exc:
+        raise LumaError(
+            "joined node metadata is missing; pass --control-url https://<control-domain> --token <node-join-token> once"
+        ) from exc
+    _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=insecure, resolve_ip=resolve_ip, allow_skip=False)
+
+
+def _refresh_local_node_agent(
+    *,
+    endpoint: str,
+    token: str,
+    insecure: bool,
+    resolve_ip: str | None,
+    allow_skip: bool,
+) -> None:
+    local_name = local_docker_node_name()
+    local_id = _safe_local_docker_node_id()
+    if not local_id:
+        message = "local Docker Swarm node id is unavailable"
+        if allow_skip:
+            raise LumaError(message)
+        raise LumaError(message + "; run this command on a joined node")
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    print("[start] Request node agent credentials")
+    issued = client.issue_agent_token(node_name=local_name, node_id=local_id)
+    node_name = str(issued.get("nodeName") or "")
+    if not node_name:
+        raise LumaError(f"this Swarm node is not registered in Luma Control: hostname={local_name}, nodeId={local_id}")
+    agent_token = str(issued.get("agentToken") or "")
+    if not agent_token:
+        raise LumaError("control API did not return node agent credentials")
+    print("[start] Install Luma node agent")
+    _install_node_agent_from_token(
+        endpoint=endpoint,
+        agent_token=agent_token,
+        node_name=node_name,
+        node_id=local_id,
+        insecure=insecure,
+        resolve_ip=resolve_ip,
+    )
+    print("[ok] Luma node agent installed")
+
+def _local_agent_config() -> Dict[str, Any] | None:
+    path = DEFAULT_AGENT_CONFIG
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        pass
+    result = LocalExecutor().sudo_result(f"test -f {shlex.quote(str(path))} && cat {shlex.quote(str(path))}")
+    if result.code != 0 or not result.output.strip():
+        return None
+    try:
+        raw = result.output.strip()
+        start = raw.find("{")
+        end = raw.rfind("}")
+        data = json.loads(raw[start : end + 1] if start >= 0 and end >= start else raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _safe_local_docker_node_id() -> str:
+    try:
+        return local_docker_node_id()
+    except LumaError:
+        return ""
 
 
 def _manager_refresh_decision(args: argparse.Namespace) -> tuple[bool, str]:
@@ -2018,7 +2225,7 @@ def _control_node_records_for_local(args: argparse.Namespace, *, required: bool 
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     checks: list[tuple[str, bool, str]] = []
-    checks.append(("Login context", False, "Run: luma login <control-url> --token <deploy-token>"))
+    checks.append(("Login context", False, "Run: luma login <control-url> --token <management-token>"))
     try:
         context = load_current_context()
         checks[-1] = ("Login context", True, str(context.get("endpoint") or "current context loaded"))
@@ -2141,6 +2348,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_doctor(args)
         if args.command == "node":
             return cmd_node(args)
+        if args.command == "node-agent":
+            if args.node_agent_command == "run":
+                return run_node_agent(args.config, once=args.once, poll_interval=args.poll_interval)
+            raise LumaError(f"unknown node-agent command: {args.node_agent_command}")
         if args.command == "cloudflare":
             return cmd_cloudflare(args)
         if args.command == "egress":

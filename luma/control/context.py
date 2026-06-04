@@ -73,7 +73,7 @@ def current_context_name(*, required: bool = True) -> str | None:
     path = current_path()
     if not path.exists():
         if required:
-            raise LumaError("not logged in: run luma login <control-url> --token <token>")
+            raise LumaError("not logged in: run luma login <control-url> --token <management-token>")
         return None
     name = path.read_text(encoding="utf-8").strip()
     if not name and required:

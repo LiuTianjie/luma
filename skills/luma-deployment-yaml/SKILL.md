@@ -9,6 +9,12 @@ Use this skill to create Luma service manifests consumed by `luma deploy`.
 
 Luma manifests are not Docker Compose. They describe one service: image, region, optional node pin, exposure, domain, port, replicas, and a few runtime options. Luma renders Swarm stacks, DNS, Traefik routes, and Portainer deployment actions.
 
+## Token Vocabulary
+
+- In user-facing docs and examples, say "management token" for the control-plane token. The historical CLI env var remains `LUMA_DEPLOY_TOKEN`.
+- Say "node join token" for `luma node join` and old-node `luma update --control-url ... --token ...` examples.
+- Do not ask users for internal node agent credentials. If the internal mechanism matters, explain that Luma installs them automatically.
+
 ## Workflow
 
 1. Identify the service type:
@@ -115,7 +121,7 @@ CI clients should authenticate with environment variables and avoid persistent l
 
 ```bash
 export LUMA_CONTROL_URL="https://luma.example.com"
-export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 ```
 
 PR checks should validate and dry-run without changing the control plane:
@@ -132,7 +138,7 @@ luma status --format json
 luma deploy deploy/app.yaml --format ndjson --timeout 1800
 ```
 
-Do not tell CI users to install Docker, configure SSH, store Cloudflare/Portainer credentials, or run `luma login`. CI only needs `LUMA_CONTROL_URL` and `LUMA_DEPLOY_TOKEN`; optional advanced variables are `LUMA_INSECURE=true|false` and `LUMA_RESOLVE_IP`.
+Do not tell CI users to install Docker, configure SSH, store Cloudflare/Portainer credentials, or run `luma login`. CI only needs `LUMA_CONTROL_URL` and `LUMA_DEPLOY_TOKEN` containing a management token; optional advanced variables are `LUMA_INSECURE=true|false` and `LUMA_RESOLVE_IP`.
 
 Home Tailscale relay:
 

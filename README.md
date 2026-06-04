@@ -15,7 +15,7 @@ client laptop -> Luma Control -> Portainer -> Docker Swarm -> service tasks
 | Good fit | Poor fit |
 | --- | --- |
 | You have one or a few VPS machines and want to deploy your own Web/API/worker services. | You already need Kubernetes-level multi-tenancy, network policy, and orchestration. |
-| You want client machines to hold only a deploy token, not SSH, Docker, Cloudflare, or Portainer credentials. | You do not want to use a public domain or Cloudflare DNS. |
+| You want client machines to hold only a management token, not SSH, Docker, Cloudflare, or Portainer credentials. | You do not want to use a public domain or Cloudflare DNS. |
 | You want to place services by regions such as `cn`, `global`, and `home`. | You only run a few local compose services on one host and do not need scheduling. |
 | You want to expose some home/private services through Tailscale or Cloudflare Tunnel. | You cannot install Docker/Swarm/Traefik/Portainer on the manager. |
 
@@ -31,6 +31,17 @@ client laptop -> Luma Control -> Portainer -> Docker Swarm -> service tasks
 | Egress subscription | As needed | Used for image-pull proxying and runtime proxying for `proxy: true` services. You can start with `--skip-egress`. |
 
 Client machines only need the CLI and network access to the control domain. They do not need Docker, SSH keys, Cloudflare tokens, Portainer passwords, or Portainer webhooks.
+
+## Token Model
+
+Users only need to handle two Luma tokens:
+
+| Token | Used by | Purpose |
+| --- | --- | --- |
+| Management token | Trusted clients, dashboard, and CI | Login, deploy apps, manage secrets, registries, storage, and nodes. For compatibility, the CLI environment variable is still `LUMA_DEPLOY_TOKEN`. |
+| Node join token | Servers that are joining or refreshing their node agent | `luma node join ... --token ...` and one-time old-node repair with `luma update --control-url ... --token ...`. |
+
+Node agent credentials are internal. Luma signs one for each joined node, writes it to that node's local agent config, and stores only a hash in Control. Users should only see agent connection status, not copy or manage agent credentials.
 
 ## Core Model
 
@@ -61,7 +72,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.36"
+python -m pip install "luma-infra==0.1.37"
 ```
 
 Install without cloning the repository:
@@ -76,7 +87,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.36 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.37 sh
 ```
 
 Develop from source:
@@ -147,7 +158,7 @@ You can skip editing `.env` and run `luma bootstrap manager --domain ...` direct
 luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
-Bootstrap installs/checks Docker, initializes Swarm, creates overlay networks, deploys Traefik, Portainer, and Luma Control, configures the firewall, and sets up egress when requested. It prints a deploy token and a join token.
+Bootstrap installs/checks Docker, initializes Swarm, creates overlay networks, deploys Traefik, Portainer, and Luma Control, configures the firewall, and sets up egress when requested. It prints a management token and a node join token.
 
 If one layer fails, re-run bootstrap or repair only that layer:
 
@@ -165,8 +176,8 @@ The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For s
 | --- | --- | --- |
 | manager | First control-plane install | `luma bootstrap manager --domain luma.example.com` |
 | manager | Update CLI and control plane | `luma update` |
-| worker/home node | Join the cluster | `luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1` |
-| client laptop | Login to control plane | `luma login https://luma.example.com --token <deploy-token>` |
+| worker/home node | Join the cluster | `luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1` |
+| client laptop | Login to control plane | `luma login https://luma.example.com --token <management-token>` |
 | client laptop | Deploy a service | `luma deploy app.yaml` |
 | browser on trusted device | View status panel | `https://luma.example.com/dashboard/` |
 | any logged-in client | Manage deploy secrets | `luma secret set DATABASE_URL` |
@@ -182,10 +193,10 @@ The installer is the same on every machine. The next command defines the role:
 
 ## Add Nodes
 
-Bootstrap prints a join token. Run this on each new server itself:
+Bootstrap prints a node join token. Run this on each new server itself:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
 `--name` is the Luma node name used in status output and service manifests. Luma also records the real Swarm NodeID so pinned services target the intended machine even when Docker hostnames are not unique.
@@ -193,9 +204,9 @@ luma node join https://luma.example.com --token <join-token> --region global --n
 `--region` is the scheduling label. Service manifests match it through `region`:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
-luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
-luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
+luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1
+luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <node-join-token> --region home --name home-mac-mini
 ```
 
 For macOS home nodes, install and start Docker Desktop and Tailscale first. When `luma node join --region home ...` runs and the node is not connected to Tailscale yet, the CLI requires `TAILSCALE_AUTHKEY` before registering the node and joining Swarm. For non-apt Linux distributions, install Docker manually before joining.
@@ -208,7 +219,7 @@ Before removing or rebuilding a node, run this on that node:
 luma node exit
 ```
 
-By default it leaves Swarm and removes local Luma runtime state under `/opt/luma`, while keeping Tailscale and Docker image/volume cache. Add `--endpoint <control-url> --token <token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` to also log out of Tailscale. Add `--prune-docker` only when you intentionally want to remove unused Docker cache and volumes.
+By default it leaves Swarm and removes local Luma runtime state under `/opt/luma`, while keeping Tailscale and Docker image/volume cache. Add `--endpoint <control-url> --token <management-token-or-node-join-token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` to also log out of Tailscale. Add `--prune-docker` only when you intentionally want to remove unused Docker cache and volumes.
 
 To remove a node from the control plane and Swarm, run `luma node remove <name>` from any logged-in client. The manager deletes the Luma registration and the matching Swarm worker node; manager nodes are protected.
 
@@ -234,13 +245,13 @@ luma deploy --dry-run status.yaml
 luma deploy status.yaml
 ```
 
-In CI, pass the control endpoint and deploy token through environment variables instead of creating a login context:
+In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.36"
+python -m pip install "luma-infra==0.1.37"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
-export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
 luma validate status.yaml --format json
 luma deploy status.yaml --dry-run --format json
@@ -300,10 +311,10 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 
 | Question | What to do |
 | --- | --- |
-| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI and hot-refreshes only Luma Control, without restarting Traefik, Portainer, Docker, or app stacks. |
+| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI, hot-refreshes Luma Control, and refreshes the manager node agent when possible, without restarting Traefik, Portainer, Docker, or app stacks. |
 | View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, Portainer, registered nodes, and actual Swarm nodes. |
-| View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the deploy token on a trusted device. |
-| What happens if I run `luma update` on a client or worker? | It updates only the local CLI and skips manager control-plane refresh. |
+| View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the management token on a trusted device. |
+| What happens if I run `luma update` on a joined node or client? | On a joined node it updates the CLI and refreshes the local node agent; on a client it updates only the CLI and skips manager control-plane refresh. |
 | When does `luma update` need `--domain`? | Only when you intentionally changed the control domain. If manager state is missing, run `luma bootstrap manager --domain ...` for first install or repair. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
 | Pin service A to one node | Set manifest `node` to the Luma node name passed to `luma node join --name`, keep the matching `region`, then deploy again. Control resolves it to the Swarm NodeID before scheduling. |
@@ -361,9 +372,10 @@ Restart Codex after installing so the skill is loaded.
 
 ## Security Boundary
 
-- Do not commit API tokens, Portainer webhooks, deploy tokens, join tokens, or proxy subscription URLs.
+- Do not commit API tokens, Portainer webhooks, management tokens, node join tokens, or proxy subscription URLs.
 - Do not write registry tokens into manifests or container environment variables. Use `luma registry login` and rotate/revoke the provider token if it is exposed.
-- Client machines should not need SSH/Docker/Cloudflare/Portainer credentials; distribute deploy tokens instead.
-- The Web status panel uses the deploy token and stores it in browser local storage. Use it on trusted devices only.
-- Join tokens should only be used on servers that are joining the cluster.
+- Client machines should not need SSH/Docker/Cloudflare/Portainer credentials; distribute management tokens instead.
+- The Web status panel uses the management token and stores it in browser local storage. Use it on trusted devices only.
+- Do not expose node agent credentials; they are internal per-node credentials managed automatically by Luma.
+- Node join tokens should only be used on servers that are joining the cluster or refreshing an existing joined node agent.
 - If a token or subscription URL is pasted into chat, logs, or issues, rotate it before publishing.

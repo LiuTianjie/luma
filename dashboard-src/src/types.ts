@@ -25,6 +25,10 @@ export type DashboardNode = {
   state?: string;
   availability?: string;
   leader?: boolean;
+  agentStatus?: string;
+  agentOs?: string;
+  agentLastSeen?: number;
+  storageCapabilities?: string[];
 };
 
 export type DashboardService = {

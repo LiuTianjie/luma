@@ -22,7 +22,7 @@ export function LoginPanel({ lang, onSubmit }: { lang: Lang; onSubmit: (token: s
         <input
           autoComplete="off"
           onChange={(event) => setToken(event.target.value)}
-          placeholder="Deploy token"
+          placeholder={lang === "zh" ? "管理 Token" : "Management token"}
           spellCheck={false}
           type="password"
           value={token}

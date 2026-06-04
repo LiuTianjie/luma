@@ -15,7 +15,7 @@ Portainer is required and installed by bootstrap. It shows stacks, services, log
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.36"
+python -m pip install "luma-infra==0.1.37"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.36 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.37 sh
 ```
 
 Development checkout:
@@ -63,10 +63,10 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.36"
+python -m pip install "luma-infra==0.1.37"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
-export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
 luma validate deploy/app.yaml --format json
 luma deploy deploy/app.yaml --dry-run --format json
@@ -75,10 +75,10 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.36"
+python -m pip install "luma-infra==0.1.37"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
-export LUMA_DEPLOY_TOKEN="$CI_LUMA_DEPLOY_TOKEN"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
 luma status --format json
 luma deploy deploy/app.yaml --format ndjson --timeout 1800
@@ -140,7 +140,7 @@ luma bootstrap manager --domain luma.example.com
 If required local values are missing, Luma prompts for them before continuing and saves them to `~/.luma.config.json` with mode `0600`. On worker servers, the same happens during:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
 `luma configure --role manager|worker` remains available if you want to edit local secrets ahead of time, and `luma configure --show` lists configured keys without printing values. Luma loads `.env` and `~/.luma.config.json` automatically. Use `--env-file <path>` to load another project-local env file or `--no-env` to disable local secret loading. Values already exported in your shell take priority. On the manager node, bootstrap and update copy the required Cloudflare and Portainer values into `/opt/luma/control/control.json` so client machines do not need those secrets. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, bootstrap and `luma update manager` infer the Cloudflare zone from the control domain and write the provider config before installing `/opt/luma/luma.yaml`. If no edge DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET`; non-interactive update uses the configured edge node public IP or an existing `LUMA_DNS_EDGE_TARGET`.
@@ -181,7 +181,14 @@ The same control plane also serves a read-only Web status panel:
 https://<control-domain>/dashboard/
 ```
 
-Paste the deploy token to view readiness, nodes, services, and inferred traffic paths from a trusted browser.
+Paste the management token to view readiness, nodes, services, and inferred traffic paths from a trusted browser.
+
+Luma has two user-facing tokens:
+
+- **Management token**: for trusted CLI clients and the dashboard. Use it with `luma login`, dashboard login, deployments, storage, secrets, registries, and node operations.
+- **Node join token**: for servers that are joining the cluster or refreshing their local node agent. Use it with `luma node join` and, for older nodes without saved agent metadata, `luma update --control-url ... --token ...`.
+
+The per-node agent credential is internal and is installed automatically on the node. Users should check agent status with `luma node status`, not copy or manage agent credentials.
 
 List nodes from local `luma.yaml` only:
 
@@ -216,7 +223,7 @@ luma bootstrap manager --domain luma.example.com --skip-egress
 Login from any client machine:
 
 ```bash
-luma login https://luma.example.com --token <deploy-token>
+luma login https://luma.example.com --token <management-token>
 luma context list
 luma context use <cluster-id>
 ```
@@ -224,17 +231,23 @@ luma context use <cluster-id>
 Join additional servers by running this on each server:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --region cn --name cn-worker-1
-luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
-luma node join https://luma.example.com --token <join-token> --region home --name home-mac-mini
+luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1
+luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <node-join-token> --region home --name home-mac-mini
 ```
 
 `--name` is the Luma node name used by `luma status` and by service manifests. Luma labels the Swarm node with both `luma.node.name` and `luma.node.id`, then uses the NodeID label for pinned scheduling.
 
+Refresh a joined node agent after upgrading an older node:
+
+```bash
+luma update --control-url https://luma.example.com --token <node-join-token>
+```
+
 Leave Swarm and optionally unregister the node from the control plane:
 
 ```bash
-luma node exit --endpoint https://luma.example.com --token <deploy-or-join-token> --name home-mac-mini
+luma node exit --endpoint https://luma.example.com --token <management-or-node-join-token> --name home-mac-mini
 ```
 
 Remove a node from any logged-in client:

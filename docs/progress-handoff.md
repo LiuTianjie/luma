@@ -9,7 +9,7 @@ This is a short handoff for the current control-plane implementation. Public doc
 Luma uses a self-hosted control plane instead of SSH-driven deployment:
 
 - The first full node runs `luma bootstrap manager --domain luma.example.com` locally on the server.
-- Worker nodes run `luma node join https://luma.example.com --token <join-token> --region cn|global|home --name <node-name>` locally on each server.
+- Worker nodes run `luma node join https://luma.example.com --token <node-join-token> --region cn|global|home --name <node-name>` locally on each server.
 - Client machines only run `luma login` and `luma deploy`; they do not need Docker, SSH, Cloudflare credentials, or Portainer credentials.
 - Portainer is mandatory as the operations UI and deployment runner.
 - Luma Control owns login tokens, node registration, node labels, DNS sync, stack rendering, image pull fallback, and Portainer API/webhook orchestration.
@@ -21,8 +21,8 @@ Luma uses a self-hosted control plane instead of SSH-driven deployment:
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh
 ~/.local/bin/luma preflight
 luma bootstrap manager --domain luma.example.com
-luma login https://luma.example.com --token <deploy-token>
-luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
+luma login https://luma.example.com --token <management-token>
+luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 luma deploy app.yaml
 luma doctor
 ```

@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.36 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.37 sh
 ```
 
 For local development from a checkout:
@@ -170,17 +170,17 @@ To intentionally skip egress during first bootstrap:
 luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
-The bootstrap output includes a deploy token and a join token. Use the deploy token on client machines:
+The bootstrap output includes a management token and a node join token. Use the management token on client machines:
 
 ```bash
-luma login https://luma.example.com --token <deploy-token>
+luma login https://luma.example.com --token <management-token>
 luma context list
 ```
 
-Use the join token on additional servers:
+Use the node join token on additional servers:
 
 ```bash
-luma node join https://luma.example.com --token <join-token> --region global --name global-sg-1
+luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
 The manager applies scheduling labels automatically after the node joins Swarm. `--name` is the Luma node name used in service manifests. Luma also stores the real Swarm NodeID in `luma.node.id` and uses that NodeID for pinned scheduling, so generic Docker hostnames such as OrbStack's `orbstack` do not collide.

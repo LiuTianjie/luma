@@ -137,6 +137,57 @@ class ControlClient:
     def unregister_node(self, *, node_name: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/nodes/unregister", {"nodeName": node_name})
 
+    def issue_agent_token(self, *, node_name: str, node_id: str | None = None) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"nodeName": node_name}
+        if node_id:
+            body["nodeId"] = node_id
+        return self.request("POST", "/v1/nodes/agent-token", body)
+
+    def lease_agent_task(
+        self,
+        *,
+        node_name: str,
+        node_id: str = "",
+        os_name: str = "",
+        capabilities: list[str] | None = None,
+        timeout: int = 30,
+    ) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/node-agent/lease",
+            {
+                "nodeName": node_name,
+                "nodeId": node_id,
+                "os": os_name,
+                "capabilities": capabilities or [],
+                "waitSeconds": max(timeout - 5, 1),
+            },
+            timeout=timeout,
+        )
+
+    def complete_agent_task(
+        self,
+        *,
+        task_id: str,
+        node_name: str,
+        node_id: str = "",
+        status: str,
+        message: str = "",
+        result: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/node-agent/tasks/complete",
+            {
+                "taskId": task_id,
+                "nodeName": node_name,
+                "nodeId": node_id,
+                "status": status,
+                "message": message,
+                "result": result or {},
+            },
+        )
+
     def deploy(
         self,
         *,

@@ -27,6 +27,7 @@ export function NodesTable({
             <col className="node-region-col" />
             <col className="node-role-col" />
             <col className="node-state-col" />
+            <col className="node-agent-col" />
             <col className="node-availability-col" />
             <col className="node-leader-col" />
           </colgroup>
@@ -36,6 +37,7 @@ export function NodesTable({
               <th>{t(lang, "region")}</th>
               <th>{t(lang, "role")}</th>
               <th>{t(lang, "state")}</th>
+              <th>Agent</th>
               <th>{t(lang, "availability")}</th>
               <th>{t(lang, "leader")}</th>
             </tr>
@@ -47,6 +49,7 @@ export function NodesTable({
                 <td><Badge value={node.region || "-"} /></td>
                 <td><Badge value={node.role || "-"} /></td>
                 <td><StatePill label={localizeState(lang, node.state)} value={node.state} /></td>
+                <td><Badge value={`${node.agentStatus || "missing"}${node.agentOs ? ` / ${node.agentOs}` : ""}`} /></td>
                 <td><Badge value={node.availability || "-"} /></td>
                 <td>{node.leader ? <Badge value={t(lang, "yes")} /> : "-"}</td>
               </tr>

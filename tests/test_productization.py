@@ -40,7 +40,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_preview, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, resolve_service_image
+from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, resolve_service_image
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -3701,7 +3701,7 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_storage_set_rejects_non_local_managed_storage_node(self):
+    def test_storage_set_rejects_remote_managed_storage_when_agent_offline(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -3725,13 +3725,197 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
                     "luma.control.server._run_host_prep_command"
                 ) as host_prep:
-                    with self.assertRaisesRegex(LumaError, "is not local to this Luma Control process"):
+                    with self.assertRaisesRegex(LumaError, "node agent is not ready"):
                         handle_storage_set(
                             state["deployToken"],
                             {"name": "worker-nfs", "node": "worker-storage", "path": "/srv/luma"},
                         )
                 host_prep.assert_not_called()
                 self.assertNotIn("worker-nfs", load_state().get("storageClasses", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_set_uses_remote_node_agent_before_saving_storage_class(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                        "labels": {"luma.node.name": "worker-storage", "luma.node.id": "worker-node-id", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "worker-storage", "nodeId": "worker-node-id"})
+                agent_token = issued["agentToken"]
+                handle_node_agent_lease(
+                    agent_token,
+                    {
+                        "nodeName": "worker-storage",
+                        "nodeId": "worker-node-id",
+                        "os": "linux",
+                        "capabilities": ["nfs-host", "managed-volume-path"],
+                        "waitSeconds": 0,
+                    },
+                )
+
+                errors = []
+
+                def fake_docker_request(method, path, body=None):
+                    if method == "GET" and path == "/info":
+                        return {"Name": "manager-host", "Swarm": {"NodeID": "manager-node-id"}}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                def agent_worker():
+                    try:
+                        for _ in range(10):
+                            leased = handle_node_agent_lease(
+                                agent_token,
+                                {
+                                    "nodeName": "worker-storage",
+                                    "nodeId": "worker-node-id",
+                                    "os": "linux",
+                                    "capabilities": ["nfs-host", "managed-volume-path"],
+                                    "waitSeconds": 1,
+                                },
+                            ).get("task")
+                            if not leased:
+                                continue
+                            self.assertEqual(leased["action"], "prepare-managed-nfs-host")
+                            self.assertEqual(leased["payload"]["path"], "/srv/luma")
+                            handle_node_agent_complete(
+                                agent_token,
+                                {
+                                    "nodeName": "worker-storage",
+                                    "nodeId": "worker-node-id",
+                                    "taskId": leased["id"],
+                                    "status": "succeeded",
+                                    "message": "prepared",
+                                    "result": {"message": "host NFS export ready"},
+                                },
+                            )
+                            return
+                        errors.append("agent did not receive task")
+                    except Exception as exc:
+                        errors.append(str(exc))
+
+                thread = threading.Thread(target=agent_worker)
+                thread.start()
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command"
+                ) as host_prep:
+                    result = handle_storage_set(
+                        state["deployToken"],
+                        {"name": "worker-nfs", "node": "worker-storage", "path": "/srv/luma"},
+                    )
+                thread.join(timeout=5)
+                self.assertFalse(errors)
+                host_prep.assert_not_called()
+                self.assertTrue(result["saved"])
+                self.assertEqual(result["storageHost"]["prepared"], "host NFS export ready")
+                self.assertIn("worker-nfs", load_state().get("storageClasses", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_join_token_cannot_issue_agent_token_by_node_name_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                        "labels": {"luma.node.name": "worker-storage", "luma.node.id": "worker-node-id", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                with self.assertRaisesRegex(LumaError, "nodeId is required"):
+                    handle_node_agent_token(state["joinToken"], {"nodeName": "worker-storage"})
+                issued = handle_node_agent_token(state["joinToken"], {"nodeName": "anything", "nodeId": "worker-node-id"})
+                self.assertEqual(issued["nodeName"], "worker-storage")
+                self.assertTrue(issued["agentToken"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_agent_token_issuance_reports_provisioned_until_heartbeat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                    }
+                }
+                save_state(state)
+                handle_node_agent_token(state["deployToken"], {"nodeName": "worker-storage"})
+                status = handle_control_status(state["deployToken"])
+                item = status["nodes"]["items"][0]
+                self.assertEqual(item["agentStatus"], "provisioned")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_agent_long_poll_does_not_drop_task_queued_while_waiting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                        "labels": {"luma.node.name": "worker-storage", "luma.node.id": "worker-node-id", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "worker-storage", "nodeId": "worker-node-id"})
+                agent_token = issued["agentToken"]
+                leased: list[dict[str, object] | None] = []
+                errors: list[str] = []
+
+                def lease_worker():
+                    try:
+                        result = handle_node_agent_lease(
+                            agent_token,
+                            {
+                                "nodeName": "worker-storage",
+                                "nodeId": "worker-node-id",
+                                "os": "linux",
+                                "capabilities": ["nfs-host"],
+                                "waitSeconds": 2,
+                            },
+                        )
+                        leased.append(result.get("task"))
+                    except Exception as exc:
+                        errors.append(str(exc))
+
+                thread = threading.Thread(target=lease_worker)
+                thread.start()
+                time.sleep(0.2)
+                current = load_state()
+                current.setdefault("agentTasks", {})["task-race"] = {
+                    "id": "task-race",
+                    "nodeName": "worker-storage",
+                    "action": "prepare-managed-nfs-host",
+                    "payload": {"name": "race", "path": "/srv/luma"},
+                    "status": "queued",
+                }
+                save_state(current)
+                thread.join(timeout=5)
+                self.assertFalse(errors)
+                self.assertTrue(leased)
+                self.assertIsNotNone(leased[0])
+                self.assertEqual(leased[0]["id"], "task-race")
+                self.assertEqual(load_state()["agentTasks"]["task-race"]["status"], "running")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
