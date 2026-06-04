@@ -45,6 +45,7 @@ from . import __version__
 
 T = TypeVar("T")
 OUTPUT_FORMATS = ("text", "json", "ndjson")
+UPDATE_REEXEC_ENV = "LUMA_UPDATE_REEXECED"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1063,9 +1064,13 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
 def cmd_update(args: argparse.Namespace) -> int:
     if args.update_command not in {None, "manager"}:
         raise LumaError(f"unknown update command: {args.update_command}")
-    print("[start] Update Luma CLI")
-    _run_luma_installer(install_ref=args.install_ref)
-    print("[ok] Luma CLI updated")
+    if os.environ.get(UPDATE_REEXEC_ENV) == "1":
+        print("[skip] Luma CLI already updated in this run")
+    else:
+        print("[start] Update Luma CLI")
+        _run_luma_installer(install_ref=args.install_ref)
+        print("[ok] Luma CLI updated")
+        _reexec_after_luma_update()
     if args.update_command == "manager":
         print("[info] Role: manager")
         print("[info] Manager control-plane refresh forced")
@@ -1249,6 +1254,23 @@ def _run_luma_installer(*, install_ref: str | None = None) -> None:
         env["LUMA_INSTALL_REF"] = install_ref
     command = "curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
     subprocess.run(command, shell=True, check=True, env=env)
+
+
+def _reexec_after_luma_update() -> None:
+    executable = _current_luma_executable()
+    if not executable:
+        print("[warn] Unable to re-exec updated Luma CLI; continuing in current process")
+        return
+    env = os.environ.copy()
+    env[UPDATE_REEXEC_ENV] = "1"
+    os.execvpe(executable, [executable, *sys.argv[1:]], env)
+
+
+def _current_luma_executable() -> str:
+    candidate = str(sys.argv[0] or "").strip()
+    if candidate and (Path(candidate).is_absolute() or "/" in candidate):
+        return candidate
+    return shutil.which("luma") or candidate
 
 
 def _refresh_manager_control(args: argparse.Namespace) -> None:

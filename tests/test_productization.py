@@ -895,7 +895,7 @@ class CliTests(unittest.TestCase):
 
     def test_update_manager_installs_cli_then_refreshes_control_only(self):
         state = {"clusterId": "luma-test", "domain": "luma.example.com", "deployToken": "deploy", "joinToken": "join"}
-        with patch("luma.cli._run_luma_installer") as installer, patch(
+        with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update") as reexec, patch(
             "luma.cli._existing_control_state", return_value=state
         ), patch(
             "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
@@ -915,6 +915,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         installer.assert_called_once_with(install_ref="main")
+        reexec.assert_called_once()
         refresh.assert_called_once()
         self.assertEqual(refresh.call_args.args[2], "luma.example.com")
         self.assertIs(refresh.call_args.args[3], state)
@@ -953,7 +954,7 @@ class CliTests(unittest.TestCase):
                         return {"id": "zone-itool"}
                     raise LumaError("not found")
 
-                with patch("luma.cli._run_luma_installer"), patch(
+                with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch(
                     "luma.cli._existing_control_state", return_value=state
                 ), patch("luma.cli.find_zone", side_effect=find_zone_side_effect), patch(
                     "luma.cli.refresh_manager_control_local", side_effect=refresh_side_effect
@@ -995,7 +996,7 @@ class CliTests(unittest.TestCase):
             )
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(state_dir))
             try:
-                with patch("luma.cli._run_luma_installer") as installer, patch(
+                with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
                     "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
                 ) as refresh:
                     code = main(["update"])
@@ -1017,7 +1018,7 @@ class CliTests(unittest.TestCase):
             )
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(state_dir))
             try:
-                with patch("luma.cli._run_luma_installer") as installer, patch(
+                with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
                     "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
                 ) as refresh, patch("builtins.print") as printed:
                     code = main(["update"])
@@ -1032,7 +1033,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("local manager control state found", printed_text)
 
     def test_update_joined_node_skips_agent_refresh_when_control_is_too_old(self):
-        with patch("luma.cli._run_luma_installer") as installer, patch(
+        with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
             "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
         ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_docker_node_id", return_value="node-1"), patch(
             "luma.cli._refresh_local_node_agent",
@@ -1047,10 +1048,27 @@ class CliTests(unittest.TestCase):
         self.assertIn("[skip] Luma node agent skipped", printed_text)
         self.assertIn("[ok] Joined node update complete", printed_text)
 
+    def test_update_after_reexec_skips_installer_and_refreshes_manager(self):
+        old_reexec = _set_env("LUMA_UPDATE_REEXECED", "1")
+        try:
+            with patch("luma.cli._run_luma_installer") as installer, patch(
+                "luma.cli._manager_refresh_decision", return_value=(True, "local manager control state found")
+            ), patch("luma.cli._refresh_manager_control") as refresh, patch("luma.cli._try_refresh_manager_agent"), patch("builtins.print") as printed:
+                code = main(["update"])
+        finally:
+            _restore_env("LUMA_UPDATE_REEXECED", old_reexec)
+
+        self.assertEqual(code, 0)
+        installer.assert_not_called()
+        refresh.assert_called_once()
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("[skip] Luma CLI already updated in this run", printed_text)
+        self.assertIn("[ok] Manager update complete", printed_text)
+
     def test_update_without_manager_state_updates_cli_only(self):
         with patch("luma.cli._existing_control_state", return_value=None), patch(
             "luma.cli._run_luma_installer"
-        ) as installer, patch("luma.cli.refresh_manager_control_local") as refresh, patch("builtins.print") as printed:
+        ) as installer, patch("luma.cli._reexec_after_luma_update"), patch("luma.cli.refresh_manager_control_local") as refresh, patch("builtins.print") as printed:
             code = main(["update"])
 
         self.assertEqual(code, 0)
@@ -1061,7 +1079,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Manager control-plane refresh skipped", printed_text)
 
     def test_update_manager_rejects_bootstrap_only_options(self):
-        with patch("luma.cli._run_luma_installer"), patch(
+        with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch(
             "luma.cli._existing_control_state", return_value={"domain": "luma.example.com"}
         ), patch("luma.cli.refresh_manager_control_local") as refresh:
             code = main(["update", "manager", "--domain", "luma.example.com", "--http-port", "8080"])
@@ -1071,7 +1089,7 @@ class CliTests(unittest.TestCase):
 
     def test_update_manager_does_not_call_full_bootstrap_paths(self):
         state = {"clusterId": "luma-test", "domain": "luma.example.com", "deployToken": "deploy", "joinToken": "join"}
-        with patch("luma.cli._run_luma_installer"), patch("luma.cli._existing_control_state", return_value=state), patch(
+        with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch("luma.cli._existing_control_state", return_value=state), patch(
             "luma.cli.refresh_manager_control_local", return_value=["Control refreshed"]
         ), patch("luma.cli.bootstrap_manager_local") as bootstrap_manager, patch("luma.cli.bootstrap_node") as bootstrap_node_call, patch(
             "luma.cli.install_docker"
