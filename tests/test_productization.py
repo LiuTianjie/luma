@@ -2331,6 +2331,7 @@ class PortainerWebhookTests(unittest.TestCase):
         remote.run_result.return_value = Mock(code=1, output="")
         remote.sudo.return_value = ""
         uploaded = {}
+        progress = []
 
         def capture_upload(local_path, remote_path):
             uploaded["stack"] = Path(local_path).read_text(encoding="utf-8")
@@ -2338,12 +2339,23 @@ class PortainerWebhookTests(unittest.TestCase):
         remote.upload.side_effect = capture_upload
         config = LumaConfig({}, None)
 
-        with patch("luma.bootstrap._resolve_control_image", return_value=(digest_image, "Control image pulled: latest; resolved digest: abc123")), patch(
+        with patch(
+            "luma.bootstrap._ensure_control_image_pull_egress",
+            return_value="Control image pull egress ready for ghcr.io: Docker daemon proxy http://127.0.0.1:7890",
+        ), patch("luma.bootstrap._ensure_control_image", return_value="Control image pulled: ghcr.io/liutianjie/luma-control:latest"), patch(
+            "luma.bootstrap._control_image_repo_digest", return_value=digest_image
+        ), patch(
             "luma.bootstrap._wait_service_ready", return_value="Service ready: luma-control_luma-control"
         ):
-            result = deploy_control_stack(remote, config, "luma.example.com")
+            result = deploy_control_stack(remote, config, "luma.example.com", emit=progress.append)
 
-        self.assertEqual(result[0], "Control image pulled: latest; resolved digest: abc123")
+        self.assertIn("Control image pull egress ready for ghcr.io", result[0])
+        self.assertEqual(result[1], "Control image pulled: ghcr.io/liutianjie/luma-control:latest")
+        self.assertEqual(result[2], f"Control image digest resolved: {digest_image}")
+        progress_text = "\n".join(progress)
+        self.assertIn("[start] Ensure control image pull egress", progress_text)
+        self.assertIn("[start] Pull Luma control image", progress_text)
+        self.assertIn("[start] Resolve Luma control image digest", progress_text)
         self.assertIn(f"image: {digest_image}", uploaded["stack"])
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
         self.assertTrue(any(f"docker service update --image {digest_image}" in cmd for cmd in docker_commands))

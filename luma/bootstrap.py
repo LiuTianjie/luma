@@ -280,18 +280,30 @@ def _reset_portainer_state(remote: Executor) -> str:
     return "Portainer state reset"
 
 
-def deploy_control_stack(remote: Executor, config: LumaConfig, domain: str) -> list[str]:
+def deploy_control_stack(remote: Executor, config: LumaConfig, domain: str, *, emit: Progress | None = None) -> list[str]:
+    results: list[str] = []
     image = _control_image(config)
-    deploy_image, image_result = _resolve_control_image(remote, image)
+    if _control_image_pull_requires_egress(image):
+        _step(results, emit, "Ensure control image pull egress", lambda: _ensure_control_image_pull_egress(remote, image))
+    _step(results, emit, "Pull Luma control image", lambda: _ensure_control_image(remote, image))
+    deploy_image = image
+    if image_uses_mutable_latest_tag(image):
+        resolved: dict[str, str] = {}
+
+        def resolve_digest() -> str:
+            digest = _control_image_repo_digest(remote, image)
+            resolved["image"] = digest
+            return f"Control image digest resolved: {digest}"
+
+        _step(results, emit, "Resolve Luma control image digest", resolve_digest)
+        deploy_image = resolved["image"]
     stack_text = asset_text("stacks/core/luma-control/stack.yml")
     stack_text = stack_text.replace("${LUMA_CONTROL_DOMAIN:-luma.local}", domain)
     stack_text = stack_text.replace(f"${{LUMA_CONTROL_IMAGE:-{DEFAULT_CONTROL_IMAGE}}}", deploy_image)
-    return [
-        image_result,
-        _deploy_stack_text(remote, stack_text, "luma-control"),
-        _force_update_service_image(remote, "luma-control_luma-control", deploy_image),
-        _wait_service_ready(remote, "luma-control_luma-control"),
-    ]
+    _step(results, emit, "Deploy Luma control stack", lambda: _deploy_stack_text(remote, stack_text, "luma-control"))
+    _step(results, emit, "Refresh Luma control service image", lambda: _force_update_service_image(remote, "luma-control_luma-control", deploy_image))
+    _step(results, emit, "Wait Luma control service", lambda: _wait_service_ready(remote, "luma-control_luma-control"))
+    return results
 
 
 def _force_update_service_image(remote: Executor, service: str, image: str) -> str:
@@ -315,9 +327,12 @@ def _ensure_control_image(remote: Executor, image: str) -> str:
             f"docker pull {image_arg}",
         )
     except Exception as exc:
+        detail = str(exc)
+        suffix = f" Docker error: {detail}" if detail else ""
         raise LumaError(
             f"failed to pull Luma Control image: {image}. "
             "Publish the image or set LUMA_CONTROL_IMAGE/defaults.images.lumaControl to a pullable image tag."
+            f"{suffix}"
         ) from exc
     else:
         return f"Control image pulled: {image}"
@@ -335,7 +350,7 @@ def _resolve_control_image(remote: Executor, image: str) -> tuple[str, str]:
 
 def _ensure_control_image_pull_egress(remote: Executor, image: str) -> str:
     registry = registry_host_from_image(image)
-    if registry not in _egress_pull_registries():
+    if not _control_image_pull_requires_egress(image):
         return ""
     _require_egress_gateway_running(remote)
     if _docker_daemon_uses_egress_proxy(remote):
@@ -349,6 +364,10 @@ def _ensure_control_image_pull_egress(remote: Executor, image: str) -> str:
             pass
         time.sleep(1)
     raise LumaError(f"control image pull egress proxy was configured, but Docker daemon did not report {EGRESS_PROXY_URL}")
+
+
+def _control_image_pull_requires_egress(image: str) -> bool:
+    return registry_host_from_image(image) in _egress_pull_registries()
 
 
 def _egress_pull_registries() -> set[str]:
@@ -901,7 +920,7 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
     _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
-    _step(results, emit, "Deploy Luma control API", lambda: deploy_control_stack(remote, config, domain), fix="Build and publish the Luma control image, then rerun bootstrap manager")
+    _step(results, emit, "Deploy Luma control API", lambda: deploy_control_stack(remote, config, domain, emit=emit), fix="Build and publish the Luma control image, then rerun bootstrap manager")
     return results
 
 
@@ -919,7 +938,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         results,
         emit,
         "Refresh Luma control API",
-        lambda: deploy_control_stack(remote, config, domain),
+        lambda: deploy_control_stack(remote, config, domain, emit=emit),
         fix="Check luma-control service logs and rerun luma update manager",
     )
     return results
