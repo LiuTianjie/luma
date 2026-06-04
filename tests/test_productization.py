@@ -267,6 +267,11 @@ class EgressConfigTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_last_command_value_preserves_digest_colon_after_sudo_prompt(self):
+        output = '[sudo] password for tao: ["ghcr.io/liutianjie/luma-control@sha256:abc123"]\n'
+
+        self.assertEqual(_last_command_value(output), '["ghcr.io/liutianjie/luma-control@sha256:abc123"]')
+
     def test_init_writes_new_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "luma.yaml"

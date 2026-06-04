@@ -1011,7 +1011,7 @@ def _last_command_value(output: str) -> str:
         return ""
     line = lines[-1]
     if line.startswith("[sudo]") and ":" in line:
-        return line.rsplit(":", 1)[-1].strip()
+        return line.split(":", 1)[-1].strip()
     return line
 
 
