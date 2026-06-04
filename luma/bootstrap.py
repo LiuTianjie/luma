@@ -22,7 +22,7 @@ from .errors import LumaError
 from .io import dump_yaml
 from .local import LocalExecutor
 from .profiles import PROFILES, Profile
-from .registry import image_uses_mutable_latest_tag
+from .registry import image_uses_mutable_latest_tag, registry_host_from_image
 from .remote import RemoteExecutor
 
 
@@ -33,6 +33,21 @@ DEFAULT_PORTAINER_AGENT_IMAGE = "docker.1panel.live/portainer/agent:2.21.5"
 DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
 DEFAULT_PORTAINER_API_URL = "https://127.0.0.1:9443/api"
+EGRESS_PROXY_URL = "http://127.0.0.1:7890"
+EGRESS_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
+DEFAULT_EGRESS_PULL_REGISTRIES = {
+    "docker.io",
+    "registry-1.docker.io",
+    "index.docker.io",
+    "ghcr.io",
+    "quay.io",
+    "gcr.io",
+    "k8s.gcr.io",
+    "registry.k8s.io",
+    "mcr.microsoft.com",
+    "public.ecr.aws",
+    "nvcr.io",
+}
 PORTAINER_IMAGE_FALLBACKS = [
     "docker.m.daocloud.io/portainer/portainer-ce:2.21.5",
     "docker.1ms.run/portainer/portainer-ce:2.21.5",
@@ -309,11 +324,63 @@ def _ensure_control_image(remote: Executor, image: str) -> str:
 
 
 def _resolve_control_image(remote: Executor, image: str) -> tuple[str, str]:
-    result = _ensure_control_image(remote, image)
+    egress_result = _ensure_control_image_pull_egress(remote, image)
+    pull_result = _ensure_control_image(remote, image)
+    result = "; ".join(part for part in [egress_result, pull_result] if part)
     if not image_uses_mutable_latest_tag(image):
         return image, result
     digest_image = _control_image_repo_digest(remote, image)
     return digest_image, f"{result}; resolved digest: {digest_image}"
+
+
+def _ensure_control_image_pull_egress(remote: Executor, image: str) -> str:
+    registry = registry_host_from_image(image)
+    if registry not in _egress_pull_registries():
+        return ""
+    _require_egress_gateway_running(remote)
+    if _docker_daemon_uses_egress_proxy(remote):
+        return f"Control image pull egress ready for {registry}: Docker daemon proxy {EGRESS_PROXY_URL}"
+    _configure_docker_proxy(remote)
+    for _attempt in range(30):
+        try:
+            if _docker_daemon_uses_egress_proxy(remote):
+                return f"Control image pull egress configured for {registry}: Docker daemon proxy {EGRESS_PROXY_URL}"
+        except Exception:
+            pass
+        time.sleep(1)
+    raise LumaError(f"control image pull egress proxy was configured, but Docker daemon did not report {EGRESS_PROXY_URL}")
+
+
+def _egress_pull_registries() -> set[str]:
+    raw = os.environ.get("LUMA_EGRESS_PULL_REGISTRIES")
+    if raw is None:
+        return set(DEFAULT_EGRESS_PULL_REGISTRIES)
+    values = {item.strip().lower() for item in raw.split(",") if item.strip()}
+    if values == {"none"}:
+        return set()
+    return values
+
+
+def _require_egress_gateway_running(remote: Executor) -> None:
+    try:
+        _docker(
+            remote,
+            "set -euo pipefail; "
+            "docker service inspect egress_mihomo >/dev/null; "
+            "docker service ps egress_mihomo --filter desired-state=running --format '{{.CurrentState}}' | grep -q '^Running '",
+        )
+    except Exception as exc:
+        raise LumaError("control image pull egress requires a running egress_mihomo task; run `luma egress setup` on the manager") from exc
+
+
+def _docker_daemon_uses_egress_proxy(remote: Executor) -> bool:
+    output = _docker(
+        remote,
+        "docker info --format 'HTTPProxy={{.HTTPProxy}} HTTPSProxy={{.HTTPSProxy}}'",
+    )
+    values = _parse_key_values(output)
+    expected = EGRESS_PROXY_URL.rstrip("/")
+    return any(str(values.get(key) or "").rstrip("/") == expected for key in ("HTTPProxy", "HTTPSProxy"))
 
 
 def _control_image_repo_digest(remote: Executor, image: str) -> str:
@@ -1139,9 +1206,9 @@ def _configure_docker_proxy(remote: Executor) -> str:
         "mkdir -p /etc/systemd/system/docker.service.d; "
         "cat > /etc/systemd/system/docker.service.d/http-proxy.conf <<'EOF'\n"
         "[Service]\n"
-        "Environment=\"HTTP_PROXY=http://127.0.0.1:7890\"\n"
-        "Environment=\"HTTPS_PROXY=http://127.0.0.1:7890\"\n"
-        "Environment=\"NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run\"\n"
+        f"Environment=\"HTTP_PROXY={EGRESS_PROXY_URL}\"\n"
+        f"Environment=\"HTTPS_PROXY={EGRESS_PROXY_URL}\"\n"
+        f"Environment=\"NO_PROXY={EGRESS_NO_PROXY}\"\n"
         "EOF\n"
         "systemctl daemon-reload; "
         "systemctl restart docker"

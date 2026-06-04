@@ -24,6 +24,7 @@ from luma.cloudflare import delete_dns, sync_control_dns
 from luma.bootstrap import (
     _acme_email,
     _ensure_control_image,
+    _ensure_control_image_pull_egress,
     _force_update_service_image,
     _is_tailscale_manager_addr,
     _last_command_value,
@@ -2230,6 +2231,10 @@ class PortainerWebhookTests(unittest.TestCase):
         remote = Mock()
 
         def sudo(command):
+            if "docker service inspect egress_mihomo" in command:
+                return ""
+            if "docker info --format" in command:
+                return "HTTPProxy=http://127.0.0.1:7890 HTTPSProxy=http://127.0.0.1:7890\n"
             if "docker pull" in command:
                 return ""
             if "docker image inspect --format" in command:
@@ -2246,14 +2251,61 @@ class PortainerWebhookTests(unittest.TestCase):
 
     def test_control_pinned_image_does_not_require_repo_digest_lookup(self):
         remote = Mock()
-        remote.sudo.return_value = ""
+
+        def sudo(command):
+            if "docker service inspect egress_mihomo" in command:
+                return ""
+            if "docker info --format" in command:
+                return "HTTPProxy=http://127.0.0.1:7890 HTTPSProxy=http://127.0.0.1:7890\n"
+            return ""
+
+        remote.sudo.side_effect = sudo
 
         image, result = _resolve_control_image(remote, "ghcr.io/liutianjie/luma-control@sha256:abc123")
 
         self.assertEqual(image, "ghcr.io/liutianjie/luma-control@sha256:abc123")
-        self.assertEqual(result, "Control image pulled: ghcr.io/liutianjie/luma-control@sha256:abc123")
+        self.assertIn("Control image pull egress ready for ghcr.io", result)
+        self.assertIn("Control image pulled: ghcr.io/liutianjie/luma-control@sha256:abc123", result)
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
         self.assertFalse(any("docker image inspect --format" in cmd for cmd in docker_commands))
+
+    def test_control_image_pull_configures_docker_daemon_egress_proxy(self):
+        remote = Mock()
+        info_calls = 0
+
+        def sudo(command):
+            nonlocal info_calls
+            if "docker service inspect egress_mihomo" in command:
+                return ""
+            if "docker info --format" in command:
+                info_calls += 1
+                if info_calls == 1:
+                    return "HTTPProxy= HTTPSProxy=\n"
+                return "HTTPProxy=http://127.0.0.1:7890 HTTPSProxy=http://127.0.0.1:7890\n"
+            if "systemctl restart docker" in command:
+                return ""
+            return ""
+
+        remote.sudo.side_effect = sudo
+
+        result = _ensure_control_image_pull_egress(remote, "ghcr.io/liutianjie/luma-control:latest")
+
+        self.assertEqual(result, "Control image pull egress configured for ghcr.io: Docker daemon proxy http://127.0.0.1:7890")
+        docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
+        self.assertTrue(any("docker service inspect egress_mihomo" in cmd for cmd in docker_commands))
+        self.assertTrue(any("HTTP_PROXY=http://127.0.0.1:7890" in cmd for cmd in docker_commands))
+        self.assertTrue(any("NO_PROXY=localhost,127.0.0.1" in cmd for cmd in docker_commands))
+
+    def test_control_image_pull_requires_running_egress_gateway(self):
+        remote = Mock()
+        remote.sudo.side_effect = Exception("missing")
+
+        with self.assertRaisesRegex(LumaError, "control image pull egress requires a running egress_mihomo"):
+            _ensure_control_image_pull_egress(remote, "ghcr.io/liutianjie/luma-control:latest")
+
+        docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
+        self.assertTrue(any("docker service inspect egress_mihomo" in cmd for cmd in docker_commands))
+        self.assertFalse(any("docker pull" in cmd for cmd in docker_commands))
 
     def test_control_stack_deploy_uses_resolved_digest_image(self):
         digest_image = "ghcr.io/liutianjie/luma-control@sha256:abc123"
