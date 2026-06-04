@@ -79,7 +79,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.37 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.38 sh
 ```
 
 Develop from source:
@@ -160,7 +160,7 @@ luma egress setup
 luma tailscale connect
 ```
 
-The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For source-checkout development, set `LUMA_CONTROL_IMAGE=luma-control:local` before bootstrap, or set `defaults.images.lumaControl` in `luma.yaml`.
+The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For predictable upgrades, prefer a published immutable tag and set `LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:<tag>` before bootstrap/update, or set `defaults.images.lumaControl` in `luma.yaml`. Luma fails if the configured control image cannot be pulled.
 
 ## Command Map
 

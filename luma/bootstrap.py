@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Union
 
-from .assets import asset_path, asset_text
+from .assets import asset_text
 from .config import LumaConfig, NodeConfig
 from .cloudflare import sync_control_dns
 from .egress import minimal_mihomo_config_from_url
@@ -292,47 +292,18 @@ def _force_update_service_image(remote: Executor, service: str, image: str) -> s
 
 def _ensure_control_image(remote: Executor, image: str) -> str:
     image_arg = shlex.quote(image)
-    if "/" in image:
-        try:
-            _docker(remote, f"docker pull {image_arg} >/dev/null 2>&1")
-            return f"Control image pulled: {image}"
-        except Exception:
-            exists = _last_command_value(_docker(remote, f"docker image inspect {image_arg} >/dev/null 2>&1 && echo yes || echo no"))
-            if exists == "yes":
-                return f"Control image already present: {image}"
-    status = _last_command_value(
+    try:
         _docker(
             remote,
-            "set -euo pipefail; "
-            f"if docker image inspect {image_arg} >/dev/null 2>&1; then "
-            "echo present; "
-            f"elif docker pull {image_arg} >/dev/null 2>&1; then "
-            "echo pulled; "
-            "else "
-            "echo build; "
-            "fi",
+            f"docker pull {image_arg}",
         )
-    )
-    if status == "present":
-        return f"Control image already present: {image}"
-    if status == "pulled":
+    except Exception as exc:
+        raise LumaError(
+            f"failed to pull Luma Control image: {image}. "
+            "Publish the image or set LUMA_CONTROL_IMAGE/defaults.images.lumaControl to a pullable image tag."
+        ) from exc
+    else:
         return f"Control image pulled: {image}"
-    dockerfile = asset_path("Dockerfile.control")
-    pyproject = asset_path("pyproject.toml")
-    readme = asset_path("README.md")
-    package_dir = Path(__file__).resolve().parent
-    remote.run("rm -rf /tmp/luma-control-build; mkdir -p /tmp/luma-control-build")
-    remote.upload(dockerfile, "/tmp/luma-Dockerfile.control")
-    remote.upload(pyproject, "/tmp/luma-control-build/pyproject.toml")
-    remote.upload(readme, "/tmp/luma-control-build/README.md")
-    remote.upload(package_dir, "/tmp/luma-control-build/luma")
-    _docker(
-        remote,
-        "set -euo pipefail; "
-        "cp /tmp/luma-Dockerfile.control /tmp/luma-control-build/Dockerfile.control; "
-        f"docker build -f /tmp/luma-control-build/Dockerfile.control -t {shlex.quote(image)} /tmp/luma-control-build",
-    )
-    return f"Control image built: {image}"
 
 
 def install_control_config(remote: Executor, config: LumaConfig, node: NodeConfig | None = None) -> str:

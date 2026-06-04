@@ -47,7 +47,7 @@ EGRESS_SUBSCRIPTION_URL=...
 
 Put them in `.env`; Luma loads it automatically.
 
-The default manager bootstrap uses the published control image configured in Luma. If you are developing the control API locally and want the manager to build it from the installed package, set `defaults.images.lumaControl: luma-control:local` or export `LUMA_CONTROL_IMAGE=luma-control:local`.
+The default manager bootstrap uses the published control image configured in Luma. Publish a pullable image first, then pin that image through `defaults.images.lumaControl` or `LUMA_CONTROL_IMAGE`. Luma does not reuse stale local images or build a fallback image during bootstrap/update; if the configured image cannot be pulled, the operation fails.
 
 To publish a custom control image:
 

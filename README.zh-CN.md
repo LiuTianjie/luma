@@ -164,7 +164,7 @@ luma egress setup
 luma tailscale connect
 ```
 
-默认 control API 镜像是 `ghcr.io/liutianjie/luma-control:latest`。源码开发时可以在 bootstrap 前设置 `LUMA_CONTROL_IMAGE=luma-control:local`，或在 `luma.yaml` 中设置 `defaults.images.lumaControl`。
+默认 control API 镜像是 `ghcr.io/liutianjie/luma-control:latest`。为了让升级可预测，建议发布不可变 tag，并在 bootstrap/update 前设置 `LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:<tag>`，或在 `luma.yaml` 中设置 `defaults.images.lumaControl`。如果配置的 control 镜像拉取失败，Luma 会直接失败。
 
 ## 角色和命令速查
 

@@ -72,7 +72,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.37"
+python -m pip install "luma-infra==0.1.38"
 ```
 
 Install without cloning the repository:
@@ -87,7 +87,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.37 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.38 sh
 ```
 
 Develop from source:
@@ -168,7 +168,7 @@ luma egress setup
 luma tailscale connect
 ```
 
-The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For source-checkout development, set `LUMA_CONTROL_IMAGE=luma-control:local` before bootstrap, or set `defaults.images.lumaControl` in `luma.yaml`.
+The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For predictable upgrades, prefer a published immutable tag and set `LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:<tag>` before bootstrap/update, or set `defaults.images.lumaControl` in `luma.yaml`. Luma fails if the configured control image cannot be pulled.
 
 ## Command Map
 
@@ -248,7 +248,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.37"
+python -m pip install "luma-infra==0.1.38"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"

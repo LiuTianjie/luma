@@ -90,10 +90,19 @@ def _agent_install_command(config_path: Path) -> str:
 
 
 def _agent_executable_args(config_path: Path) -> list[str]:
-    executable = os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or sys.argv[0] or "luma"
+    executable = os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or _current_executable() or sys.executable
     if Path(executable).name.startswith("python"):
         return [executable, "-m", "luma.cli", "node-agent", "run", "--config", str(config_path)]
     return [executable, "node-agent", "run", "--config", str(config_path)]
+
+
+def _current_executable() -> str:
+    candidate = str(sys.argv[0] or "").strip()
+    if not candidate or candidate == "-":
+        return ""
+    if "/" in candidate or Path(candidate).is_absolute():
+        return candidate
+    return shutil.which(candidate) or ""
 
 
 def _systemd_unit(config_path: Path) -> str:

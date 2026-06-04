@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, Mock, patch
 import yaml
 
 from luma import __version__
+from luma.agent import _agent_executable_args, _systemd_unit
 from luma.assets import asset_text
 from luma.config import LumaConfig
 from luma.compose import load_compose_deployment
@@ -79,6 +80,18 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("[project.urls]", pyproject)
         self.assertIn('license = "MIT"', pyproject)
         self.assertIn('license-files = ["LICENSE"]', pyproject)
+
+    def test_node_agent_unit_uses_python_module_when_invoked_from_stdin(self):
+        with patch.dict(os.environ, {"LUMA_AGENT_EXECUTABLE": ""}, clear=False), patch("shutil.which", return_value=None), patch(
+            "sys.argv", ["-"]
+        ):
+            args = _agent_executable_args(Path("/opt/luma/node-agent/agent.json"))
+            unit = _systemd_unit(Path("/opt/luma/node-agent/agent.json"))
+
+        self.assertIn("-m", args)
+        self.assertIn("luma.cli", args)
+        self.assertNotIn("ExecStart=- ", unit)
+        self.assertIn("node-agent run --config /opt/luma/node-agent/agent.json", unit)
 
     def test_installer_does_not_change_system_dns(self):
         root = Path(__file__).resolve().parents[1]
@@ -2155,18 +2168,18 @@ class PortainerWebhookTests(unittest.TestCase):
         self.assertEqual(data["nodes"]["manager"]["host"], "localhost")
         self.assertEqual(data["defaults"]["publicNetwork"], "public")
 
-    def test_control_image_builds_when_remote_pull_is_unavailable(self):
+    def test_control_image_pull_failure_is_fatal(self):
         remote = Mock()
-        remote.run.return_value = ""
-        remote.sudo.side_effect = [Exception("pull failed"), "no\n", "build\n", ""]
+        remote.sudo.side_effect = Exception("pull failed")
 
-        result = _ensure_control_image(remote, "ghcr.io/liutianjie/luma-control:latest")
+        with self.assertRaisesRegex(LumaError, "failed to pull Luma Control image"):
+            _ensure_control_image(remote, "ghcr.io/liutianjie/luma-control:latest")
 
-        self.assertEqual(result, "Control image built: ghcr.io/liutianjie/luma-control:latest")
-        self.assertGreaterEqual(remote.upload.call_count, 4)
+        remote.upload.assert_not_called()
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
         self.assertTrue(any("docker pull ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
-        self.assertTrue(any("docker build" in cmd and "-t ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
+        self.assertFalse(any("docker image inspect" in cmd for cmd in docker_commands))
+        self.assertFalse(any("docker build" in cmd for cmd in docker_commands))
 
     def test_control_image_pulls_published_image_during_bootstrap(self):
         remote = Mock()
