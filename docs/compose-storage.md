@@ -44,7 +44,7 @@ luma storage set cn-nfs \
 - `--path /srv/luma` is the host export directory.
 - `--region cn` restricts which service regions can use this storage class.
 
-For managed NFS on the local control node, `storage set` also prepares the host: it installs the NFS server/client packages when needed, creates the export directory, writes the NFS export, starts the host NFS service, and removes any legacy `luma-storage-*` storage stack left by older Luma versions. It does not delete data.
+For managed NFS on the local control node, `storage set` also prepares the host: it installs the NFS server/client packages when needed, creates the export directory, writes the NFS export, starts the host NFS service, and removes any legacy `luma-storage-*` storage stack left by older Luma versions. It does not delete data. If the target node is not local to the current Luma Control process, the command fails instead of saving a pending storage class; use an external NFS registration or run the operation from the control node that can prepare that host.
 
 For an existing external or dedicated NFS node:
 
@@ -233,11 +233,11 @@ Then run a maintenance copy job or host-level copy procedure appropriate for you
 
 ## Remove
 
-Remove the Compose stack:
+Remove the Compose application by its deployed name:
 
 ```bash
-luma compose remove luma.compose.yml --dry-run
-luma compose remove luma.compose.yml
+luma service remove app-stack --dry-run
+luma service remove app-stack
 ```
 
 This removes the application Portainer stack, generated route files, and DNS records for public services. It does not delete storage data and does not remove manager storage class declarations. Remove storage class declarations separately with `luma storage remove <name>` only when no deployments depend on them.

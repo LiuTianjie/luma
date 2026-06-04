@@ -116,7 +116,7 @@ replicas: 2
         self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["type"], "nfs")
         self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["device"], ":/srv/luma/postgres/pg-data")
 
-    def test_managed_compose_storage_uses_node_name_for_same_region(self):
+    def test_managed_compose_storage_uses_swarm_hostname_for_same_region(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "docker-compose.yml").write_text(
@@ -138,9 +138,15 @@ replicas: 2
                 encoding="utf-8",
             )
             deployment = load_compose_deployment(root / "luma.compose.yml")
-            rendered = yaml.safe_load(render_compose_stack(self.config(), deployment, node_records={"home-nas": {"region": "cn"}}))
+            rendered = yaml.safe_load(
+                render_compose_stack(
+                    self.config(),
+                    deployment,
+                    node_records={"home-nas": {"region": "cn", "swarmHostname": "storage-host.internal"}},
+                )
+            )
         opts = rendered["volumes"]["pg-data"]["driver_opts"]
-        self.assertIn("addr=home-nas", opts["o"])
+        self.assertIn("addr=storage-host.internal", opts["o"])
         self.assertEqual(opts["device"], ":/srv/luma/postgres/pg-data")
 
     def test_compose_storage_class_rejects_invalid_new_shape(self):

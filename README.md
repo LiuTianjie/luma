@@ -307,7 +307,7 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | When does `luma update` need `--domain`? | Only when you intentionally changed the control domain. If manager state is missing, run `luma bootstrap manager --domain ...` for first install or repair. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
 | Pin service A to one node | Set manifest `node` to the Luma node name passed to `luma node join --name`, keep the matching `region`, then deploy again. Control resolves it to the Swarm NodeID before scheduling. |
-| Remove service A | Run `luma service remove app.yaml`. It removes DNS, the Portainer stack, and generated stack/route files; use `--dry-run` to preview or `--skip-dns` to keep DNS. |
+| Remove service A | Run `luma service remove app` after it has been deployed through Luma Control. It removes the matching single-service or Compose deployment, including DNS, the Portainer stack, and generated stack/route files; use `--dry-run` to preview or `--skip-dns` to keep DNS. |
 | Make a public service internal | Change `exposure` to `none`, remove public-only domain/ingress config if no longer needed, then deploy again. |
 | Make an internal service public | Set a matching `region` + `exposure`, add `domain` and `port`, then deploy again. |
 | Deploy a private GHCR image | Save the credential with `luma registry login ghcr.io --username <user> --password-stdin`, then deploy the normal manifest. |

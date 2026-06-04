@@ -36,7 +36,7 @@ luma storage set cn-nfs \
 - `--path` NFS 导出的物理根路径（也是主机的持久化数据目录）。
 - `--region` 限制可以使用该存储类的业务区域。
 
-对于本地控制节点上的托管 NFS，`storage set` 会自动准备宿主机：按需安装 NFS server/client 包、创建导出目录、写入 NFS export、启动宿主机 NFS 服务，并清理旧版本留下的 `luma-storage-*` 存储栈。这个过程不会删除已有数据。
+对于本地控制节点上的托管 NFS，`storage set` 会自动准备宿主机：按需安装 NFS server/client 包、创建导出目录、写入 NFS export、启动宿主机 NFS 服务，并清理旧版本留下的 `luma-storage-*` 存储栈。这个过程不会删除已有数据。如果目标节点不在当前 Luma Control 进程本地，命令会失败，不会保存 pending 的存储类；此时请注册外部 NFS，或在能准备该宿主机的控制节点上执行。
 
 ### 进阶：注册独立的专用 NFS 存储（如局域网 NAS）
 ```bash

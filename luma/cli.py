@@ -181,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     service_new = service_sub.add_parser("new")
     service_new.add_argument("--output", type=Path)
     service_remove = service_sub.add_parser("remove")
-    service_remove.add_argument("service", type=Path)
+    service_remove.add_argument("service", help="Deployed service or Compose application name")
     service_remove.add_argument("--skip-dns", action="store_true", help="Keep Cloudflare DNS records")
     service_remove.add_argument("--skip-portainer", action="store_true", help="Keep the Portainer stack running")
     service_remove.add_argument("--dry-run", action="store_true", help="Show what would be removed without changing the manager")
@@ -228,14 +228,6 @@ def build_parser() -> argparse.ArgumentParser:
     compose_deploy.add_argument("--skip-dns", action="store_true")
     compose_deploy.add_argument("--skip-webhook", action="store_true")
     compose_deploy.add_argument("--timeout", type=int, default=1800)
-    compose_remove = compose_sub.add_parser("remove")
-    compose_remove.add_argument("sidecar", type=Path)
-    _add_control_arguments(compose_remove)
-    compose_remove.add_argument("--skip-dns", action="store_true")
-    compose_remove.add_argument("--skip-portainer", action="store_true")
-    compose_remove.add_argument("--dry-run", action="store_true")
-    compose_remove.add_argument("--timeout", type=int, default=300)
-
     storage = sub.add_parser("storage")
     storage_sub = storage.add_subparsers(dest="storage_command", required=True)
     storage_list = storage_sub.add_parser("list")
@@ -1488,10 +1480,14 @@ def cmd_service_new(args: argparse.Namespace) -> int:
 
 
 def cmd_service_remove(args: argparse.Namespace) -> int:
-    service = load_service(args.service)
     if args.timeout < 1:
         raise LumaError("--timeout must be at least 1 second")
-    print(f"[start] Load remove context: {args.service}", flush=True)
+    service_name = str(args.service).strip()
+    if not service_name:
+        raise LumaError("service name is required")
+    if service_name.endswith((".yaml", ".yml")) or any(part in service_name for part in ("/", "\\")):
+        raise LumaError("service remove expects a deployed service name, not a manifest path")
+    print(f"[start] Load remove context: {service_name}", flush=True)
     context = load_current_context()
     print(f"[ok] Logged in: {context['clusterId']} ({context['endpoint']})", flush=True)
     client = ControlClient(
@@ -1500,12 +1496,10 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
         insecure=bool(context.get("insecure")),
         resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
     )
-    print(f"[start] Submit remove: {service.name} -> {service.region}/{service.exposure}", flush=True)
-    manifest_text = args.service.read_text(encoding="utf-8")
+    print(f"[start] Submit remove: {service_name}", flush=True)
     result = _run_with_wait_heartbeat(
         lambda: client.remove_service(
-            manifest=manifest_text,
-            source_name=str(args.service),
+            name=service_name,
             skip_dns=args.skip_dns,
             skip_portainer=args.skip_portainer,
             dry_run=args.dry_run,
@@ -1517,7 +1511,7 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
         if isinstance(step, dict):
             _print_deploy_step(step)
     action = "Remove dry run finished" if result.get("dryRun") else "Remove finished"
-    print(f"[ok] {action}: {result.get('service', service.name)}")
+    print(f"[ok] {action}: {result.get('service') or result.get('deployment') or service_name}")
     if result.get("dns"):
         print(result["dns"])
     if result.get("portainer"):
@@ -1707,8 +1701,6 @@ def cmd_compose(args: argparse.Namespace) -> int:
         return cmd_compose_render(args)
     if args.compose_command == "deploy":
         return cmd_compose_deploy(args)
-    if args.compose_command == "remove":
-        return cmd_compose_remove(args)
     raise LumaError(f"unknown compose command: {args.compose_command}")
 
 
@@ -1817,33 +1809,6 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
     print(f"[ok] Compose deploy finished: {result.get('deployment', deployment.name)}")
     for warning in (result.get("storage") or {}).get("warnings") or []:
         print(f"[warn] {warning}")
-    return 0
-
-
-def cmd_compose_remove(args: argparse.Namespace) -> int:
-    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
-    if args.timeout < 1:
-        raise LumaError("--timeout must be at least 1 second")
-    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
-    manifest_text, compose_text = _compose_request_text(args.sidecar, deployment)
-    result = _run_with_wait_heartbeat(
-        lambda: client.remove_compose(
-            manifest=manifest_text,
-            compose_content=compose_text,
-            source_name=str(args.sidecar),
-            skip_dns=args.skip_dns,
-            skip_portainer=args.skip_portainer,
-            dry_run=args.dry_run,
-            timeout=args.timeout,
-        ),
-        timeout=args.timeout,
-    )
-    for step in result.get("steps") or []:
-        if isinstance(step, dict):
-            _print_deploy_step(step)
-    action = "Compose remove dry run finished" if result.get("dryRun") else "Compose remove finished"
-    print(f"[ok] {action}: {result.get('deployment', deployment.name)}")
     return 0
 
 

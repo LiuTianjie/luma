@@ -301,17 +301,17 @@ Submit to the control plane, render/write files on the manager, but skip DNS syn
 luma deploy app.yaml --skip-dns --skip-webhook
 ```
 
-Remove a service with the same manifest:
+Remove a service or Compose application by its deployed name:
 
 ```bash
-luma service remove app.yaml
+luma service remove app
 ```
 
-This deletes the Cloudflare DNS record for public services, removes the Portainer stack, and deletes generated manager files such as `/opt/luma/stacks/<region>/<service>` and `routes/<service>.yml` for `tailscale-relay`. Preview first or keep DNS when needed:
+Luma Control uses the manifest recorded during the last successful deploy. This deletes the Cloudflare DNS record for public services, removes the Portainer stack, and deletes generated manager files such as `/opt/luma/stacks/<region>/<service>` and `routes/<service>.yml` for `tailscale-relay`. The same command removes single-service and Compose deployments. Preview first or keep DNS when needed:
 
 ```bash
-luma service remove app.yaml --dry-run
-luma service remove app.yaml --skip-dns
+luma service remove app --dry-run
+luma service remove app --skip-dns
 ```
 
 ## 8. Exposure Modes

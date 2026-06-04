@@ -292,8 +292,8 @@ luma deploy examples/public-cn-service.yaml
 Remove a deployed service:
 
 ```bash
-luma service remove examples/public-cn-service.yaml
-luma service remove examples/public-cn-service.yaml --dry-run
+luma service remove public-cn-service
+luma service remove public-cn-service --dry-run
 ```
 
 `depoly` is accepted as a compatibility alias:
@@ -406,7 +406,7 @@ Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service
 
 `--dry-run` renders locally and does not contact the control API. `--skip-dns` and `--skip-webhook` are sent to the control API. `--commit` and `--push` are deprecated in control-plane deploy mode.
 
-For `luma service remove service.yaml`, Luma submits the manifest to the control plane and removes the matching service slug. By default it deletes Luma-managed Cloudflare DNS, removes the Portainer stack, and deletes generated stack files. `tailscale-relay` route files are removed too. Use `--dry-run` to preview, `--skip-dns` to keep the DNS record, and `--skip-portainer` only when you intentionally want to remove generated Luma files without stopping the stack. `cloudflare-tunnel` public hostnames are still managed in Cloudflare Zero Trust, so Luma reports that cleanup as skipped.
+For `luma service remove <name>`, Luma looks up the manifest recorded by the control plane during the last successful deploy and removes the matching single-service or Compose deployment slug. By default it deletes Luma-managed Cloudflare DNS, removes the Portainer stack, and deletes generated stack files. `tailscale-relay` route files are removed too. Use `--dry-run` to preview, `--skip-dns` to keep the DNS record, and `--skip-portainer` only when you intentionally want to remove generated Luma files without stopping the stack. `cloudflare-tunnel` public hostnames are still managed in Cloudflare Zero Trust, so Luma reports that cleanup as skipped.
 
 Legacy Portainer webhooks are still supported for existing GitOps stacks. For more than one GitOps stack, use per-service webhook env vars:
 

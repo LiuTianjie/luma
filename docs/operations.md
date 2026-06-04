@@ -124,27 +124,27 @@ Emergency Docker rollback:
 sudo docker service rollback <stack>_<service>
 ```
 
-## Remove A Service
+## Remove A Deployment
 
-Use the original service manifest as the source of truth:
+Use the deployed service or Compose application name:
 
 ```bash
-luma service remove <service>.yaml
+luma service remove <service>
 ```
 
-The control plane deletes the Luma-managed Cloudflare DNS record for public services, removes the Portainer stack, and deletes generated manager files. For `tailscale-relay`, it also deletes `/opt/luma/routes/<service>.yml`. For `cloudflare-tunnel`, Cloudflare Tunnel public hostname cleanup is skipped because that hostname is still managed in Cloudflare Zero Trust.
+The control plane uses the manifest recorded during the last successful deploy, deletes the Luma-managed Cloudflare DNS record for public services, removes the Portainer stack, and deletes generated manager files. The same command removes single-service and Compose deployments. For `tailscale-relay`, it also deletes `/opt/luma/routes/<service>.yml`. For `cloudflare-tunnel`, Cloudflare Tunnel public hostname cleanup is skipped because that hostname is still managed in Cloudflare Zero Trust.
 
 Preview the cleanup without changing the manager:
 
 ```bash
-luma service remove <service>.yaml --dry-run
+luma service remove <service> --dry-run
 ```
 
 Keep DNS or the Portainer stack when you are doing a partial cleanup:
 
 ```bash
-luma service remove <service>.yaml --skip-dns
-luma service remove <service>.yaml --skip-portainer
+luma service remove <service> --skip-dns
+luma service remove <service> --skip-portainer
 ```
 
 If the control plane is unavailable, remove the stack in Portainer, then remove generated files on the manager:

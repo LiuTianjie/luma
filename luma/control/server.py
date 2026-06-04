@@ -303,6 +303,114 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _load_service_manifest(manifest: str) -> ServiceSpec:
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", encoding="utf-8", delete=False) as fh:
+        fh.write(manifest)
+        service_path = Path(fh.name)
+    try:
+        return load_service(service_path)
+    finally:
+        service_path.unlink(missing_ok=True)
+
+
+def _deployments_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    deployments = state.get("deployments")
+    if not isinstance(deployments, dict):
+        deployments = {}
+        state["deployments"] = deployments
+    for key in ("services", "compose"):
+        if not isinstance(deployments.get(key), dict):
+            deployments[key] = {}
+    return deployments
+
+
+def _ensure_deployment_slug_available(state: Dict[str, Any], kind: str, slug: str, name: str) -> None:
+    deployments = _deployments_state(state)
+    for bucket_kind in ("services", "compose"):
+        existing = deployments[bucket_kind].get(slug)
+        if not isinstance(existing, dict):
+            continue
+        existing_name = str(existing.get("name") or slug)
+        existing_kind = "service" if bucket_kind == "services" else "compose"
+        if existing_kind != kind or existing_name != name:
+            raise LumaError(f"deployment name already exists: {existing_name}")
+
+
+def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, manifest: str, source_name: str) -> None:
+    deployments = _deployments_state(state)
+    deployments["services"][service.slug] = {
+        "kind": "service",
+        "name": service.name,
+        "slug": service.slug,
+        "manifest": manifest,
+        "sourceName": source_name,
+        "updatedAt": int(time.time()),
+    }
+
+
+def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploymentSpec, body: Dict[str, Any], source_name: str) -> None:
+    deployments = _deployments_state(state)
+    record: Dict[str, Any] = {
+        "kind": "compose",
+        "name": deployment.name,
+        "slug": deployment.slug,
+        "manifest": str(body.get("manifest") or ""),
+        "sourceName": source_name,
+        "updatedAt": int(time.time()),
+    }
+    compose_content = body.get("composeContent")
+    if isinstance(compose_content, str):
+        record["composeContent"] = compose_content
+    deployments["compose"][deployment.slug] = record
+
+
+def _service_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, Any] | None:
+    services = _deployments_state(state)["services"]
+    record = services.get(slugify(name))
+    return record if isinstance(record, dict) else None
+
+
+def _compose_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, Any] | None:
+    compose = _deployments_state(state)["compose"]
+    record = compose.get(slugify(name))
+    return record if isinstance(record, dict) else None
+
+
+def _remove_request_name(body: Dict[str, Any]) -> str:
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise LumaError("service name is required")
+    return name
+
+
+def _service_remove_request(record: Dict[str, Any], name: str) -> tuple[ServiceSpec, str]:
+    manifest = record.get("manifest")
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise LumaError(f"service deployment manifest is missing: {name}")
+    return _load_service_manifest(manifest), str(record.get("sourceName") or f"{name}.yaml")
+
+
+def _compose_remove_request(record: Dict[str, Any], name: str) -> tuple[ComposeDeploymentSpec, str]:
+    manifest = record.get("manifest")
+    compose_content = record.get("composeContent")
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise LumaError(f"compose deployment manifest is missing: {name}")
+    if not isinstance(compose_content, str) or not compose_content.strip():
+        raise LumaError(f"compose deployment content is missing: {name}")
+    source_name = str(record.get("sourceName") or "luma.compose.yml")
+    return _load_compose_request({"manifest": manifest, "composeContent": compose_content}, source_name), source_name
+
+
+def _forget_service_deployment(state: Dict[str, Any], service: ServiceSpec) -> bool:
+    services = _deployments_state(state)["services"]
+    return services.pop(service.slug, None) is not None
+
+
+def _forget_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploymentSpec) -> bool:
+    compose = _deployments_state(state)["compose"]
+    return compose.pop(deployment.slug, None) is not None
+
+
 def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -314,13 +422,8 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         raise LumaError("manifest is required")
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml", encoding="utf-8", delete=False) as fh:
-        fh.write(manifest)
-        service_path = Path(fh.name)
-    try:
-        service = load_service(service_path)
-    finally:
-        service_path.unlink(missing_ok=True)
+    service = _load_service_manifest(manifest)
+    _ensure_deployment_slug_available(state, "service", service.slug, service.name)
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
@@ -366,6 +469,8 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         lambda: "Public route probe skipped: --skip-webhook" if body.get("skipWebhook") else _probe_public_route(service),
         progress=progress,
     )
+    _register_service_deployment(state, service, manifest, source_name)
+    save_state(state)
     return {
         "clusterId": state["clusterId"],
         "service": service.name,
@@ -439,20 +544,31 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
     state = load_state()
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
-    steps: list[dict[str, str]] = []
-    manifest = body.get("manifest")
-    source_name = str(body.get("sourceName") or "service.yaml")
-    if not isinstance(manifest, str) or not manifest.strip():
-        raise LumaError("manifest is required")
+    name = _remove_request_name(body)
+    service_record = _service_deployment_record(state, name)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml", encoding="utf-8", delete=False) as fh:
-        fh.write(manifest)
-        service_path = Path(fh.name)
-    try:
-        service = load_service(service_path)
-    finally:
-        service_path.unlink(missing_ok=True)
+    if service_record:
+        service, source_name = _service_remove_request(service_record, name)
+        return _remove_service_deployment(state, config, config_path, service, source_name, body, progress=progress)
+    compose_record = _compose_deployment_record(state, name)
+    if compose_record:
+        deployment, source_name = _compose_remove_request(compose_record, name)
+        return _remove_compose_deployment(state, config, config_path, deployment, source_name, body, progress=progress)
+    raise LumaError(f"deployment not found: {name}")
+
+
+def _remove_service_deployment(
+    state: Dict[str, Any],
+    config: Any,
+    config_path: Path,
+    service: ServiceSpec,
+    source_name: str,
+    body: Dict[str, Any],
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> Dict[str, Any]:
+    steps: list[dict[str, str]] = []
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
@@ -488,12 +604,80 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
         else _remove_generated_files(stack_target, route_target),
         progress=progress,
     )
+    if not dry_run and not body.get("skipPortainer") and _forget_service_deployment(state, service):
+        save_state(state)
     return {
         "clusterId": state["clusterId"],
         "service": service.name,
         "sourceName": source_name,
         "files": files,
         "dns": dns_result,
+        "portainer": portainer_result,
+        "generatedFiles": files_result,
+        "dryRun": dry_run,
+        "steps": steps,
+    }
+
+
+def _remove_compose_deployment(
+    state: Dict[str, Any],
+    config: Any,
+    config_path: Path,
+    deployment: ComposeDeploymentSpec,
+    source_name: str,
+    body: Dict[str, Any],
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> Dict[str, Any]:
+    steps: list[dict[str, str]] = []
+    parse_step = {"name": "Parse compose deployment", "status": "ok", "message": deployment.name}
+    steps.append(parse_step)
+    _emit_progress(progress, parse_step)
+    dry_run = bool(body.get("dryRun"))
+    stack_target = _resolve_control_path(compose_stack_path(config, deployment), config_path).parent
+    route_targets = [
+        _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
+        for service_name, service in deployment.services.items()
+        if service.exposure == "tailscale-relay"
+    ]
+    files = [str(stack_target), *[str(path) for path in route_targets]]
+    dns_results = []
+    for service in compose_public_services(deployment):
+        service_spec = _compose_service_as_service_spec(deployment, service)
+        dns_results.append(
+            _deploy_step(
+                steps,
+                f"Delete DNS {service.name}",
+                lambda service_spec=service_spec: "DNS skipped: --skip-dns"
+                if body.get("skipDns")
+                else (_planned_delete_dns_message(service_spec) if dry_run else delete_dns(config, service_spec)),
+                progress=progress,
+            )
+        )
+    portainer_result = _deploy_step(
+        steps,
+        "Remove Portainer stack",
+        lambda: "Portainer remove skipped: --skip-portainer"
+        if body.get("skipPortainer")
+        else (_planned_remove_message("Portainer stack would be removed", deployment.slug) if dry_run else remove_stack(config, _stack_service_spec(deployment), state)),
+        progress=progress,
+    )
+    files_result = _deploy_step(
+        steps,
+        "Delete generated files",
+        lambda: _planned_remove_message("Generated files would be removed", ", ".join(files))
+        if dry_run
+        else _remove_generated_files(stack_target, *route_targets),
+        progress=progress,
+    )
+    if not dry_run and not body.get("skipPortainer") and _forget_compose_deployment(state, deployment):
+        save_state(state)
+    return {
+        "clusterId": state["clusterId"],
+        "deployment": deployment.name,
+        "sourceName": source_name,
+        "files": files,
+        "dns": dns_results,
         "portainer": portainer_result,
         "generatedFiles": files_result,
         "dryRun": dry_run,
@@ -577,6 +761,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     deployment = _load_compose_request(body, source_name)
+    _ensure_deployment_slug_available(state, "compose", deployment.slug, deployment.name)
     parse_step = {"name": "Parse compose deployment", "status": "ok", "message": f"{deployment.name} ({len(deployment.compose.get('services', {}))} services)"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
@@ -651,8 +836,10 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 f"Probe public route {service.name}",
                 lambda service_spec=service_spec: "Public route probe skipped: --skip-webhook" if body.get("skipWebhook") else _probe_public_route(service_spec),
                 progress=progress,
-            )
         )
+    )
+    _register_compose_deployment(state, deployment, body, source_name)
+    save_state(state)
     return {
         "clusterId": state["clusterId"],
         "deployment": deployment.name,
@@ -731,68 +918,6 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     }
 
 
-def handle_compose_remove(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    _apply_state_secrets(state)
-    steps: list[dict[str, str]] = []
-    source_name = str(body.get("sourceName") or "luma.compose.yml")
-    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
-    config = load_config(config_path)
-    deployment = _load_compose_request(body, source_name)
-    parse_step = {"name": "Parse compose deployment", "status": "ok", "message": deployment.name}
-    steps.append(parse_step)
-    _emit_progress(progress, parse_step)
-    dry_run = bool(body.get("dryRun"))
-    stack_target = _resolve_control_path(compose_stack_path(config, deployment), config_path).parent
-    route_targets = [
-        _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
-        for service_name, service in deployment.services.items()
-        if service.exposure == "tailscale-relay"
-    ]
-    files = [str(stack_target), *[str(path) for path in route_targets]]
-    dns_results = []
-    for service in compose_public_services(deployment):
-        service_spec = _compose_service_as_service_spec(deployment, service)
-        dns_results.append(
-            _deploy_step(
-                steps,
-                f"Delete DNS {service.name}",
-                lambda service_spec=service_spec: "DNS skipped: --skip-dns"
-                if body.get("skipDns")
-                else (_planned_delete_dns_message(service_spec) if dry_run else delete_dns(config, service_spec)),
-                progress=progress,
-            )
-        )
-    portainer_result = _deploy_step(
-        steps,
-        "Remove Portainer stack",
-        lambda: "Portainer remove skipped: --skip-portainer"
-        if body.get("skipPortainer")
-        else (_planned_remove_message("Portainer stack would be removed", deployment.slug) if dry_run else remove_stack(config, _stack_service_spec(deployment), state)),
-        progress=progress,
-    )
-    files_result = _deploy_step(
-        steps,
-        "Delete generated files",
-        lambda: _planned_remove_message("Generated files would be removed", ", ".join(files))
-        if dry_run
-        else _remove_generated_files(stack_target, *route_targets),
-        progress=progress,
-    )
-    return {
-        "clusterId": state["clusterId"],
-        "deployment": deployment.name,
-        "sourceName": source_name,
-        "files": files,
-        "dns": dns_results,
-        "portainer": portainer_result,
-        "generatedFiles": files_result,
-        "dryRun": dry_run,
-        "steps": steps,
-    }
-
-
 def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -856,10 +981,11 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(storage_classes, dict):
         storage_classes = {}
         state["storageClasses"] = storage_classes
-    storage_classes[name] = {key: value for key, value in item.items() if value not in ("", [], None)}
+    storage_class_record = {key: value for key, value in item.items() if value not in ("", [], None)}
+    storage_host = _apply_managed_storage_class(name, storage_class_record, state)
+    storage_classes[name] = storage_class_record
     save_state(state)
-    storage_host = _apply_managed_storage_class(name, storage_classes[name], state)
-    result = {"name": name, "saved": True, "storageClass": _public_storage_class(name, storage_classes[name])}
+    result = {"name": name, "saved": True, "storageClass": _public_storage_class(name, storage_class_record)}
     if storage_host:
         result["storageHost"] = storage_host
     return result
@@ -869,8 +995,8 @@ def _apply_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[st
     storage_class = _storage_class_spec_from_record(name, item)
     if storage_class.mode != "managed":
         return None
-    host_result = _prepare_managed_nfs_host(storage_class, state)
     legacy_stack = _remove_legacy_managed_storage_stack(storage_class, state)
+    host_result = _prepare_managed_nfs_host(storage_class, state)
     if legacy_stack:
         host_result["legacyStack"] = legacy_stack
     return host_result
@@ -903,12 +1029,12 @@ def _prepare_managed_nfs_host(storage_class: StorageClassSpec, state: Dict[str, 
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, storage_class.node) or {}
     if not _storage_node_is_local(record, storage_class.node):
-        return {
-            "name": storage_class.name,
-            "node": storage_class.node,
-            "path": storage_class.path,
-            "prepared": "pending: storage node is not local to this control process",
-        }
+        raise LumaError(
+            f"managed storageClass {storage_class.name} targets node {storage_class.node}, "
+            "but that node is not local to this Luma Control process. "
+            "Run luma storage set on the manager/control node that owns the Docker socket for that storage host, "
+            "or register the storage as external NFS with --external --endpoint <host:/path>."
+        )
     _prepare_local_nfs_export(storage_class)
     return {
         "name": storage_class.name,
@@ -1172,6 +1298,12 @@ def _safe_compose_upload_path(sidecar_path: Path, compose_value: str) -> Path:
 def _prepare_compose_managed_storage(deployment: ComposeDeploymentSpec, state: Dict[str, Any]) -> list[dict[str, str]]:
     results: list[dict[str, str]] = []
     prepared_classes: set[str] = set()
+    for volume in deployment.volumes.values():
+        if not volume.storage_class:
+            continue
+        storage_class = deployment.storage_classes[volume.storage_class]
+        if storage_class.mode == "managed":
+            _managed_volume_relative_path(volume.path or volume.name)
     for storage_class in deployment.storage_classes.values():
         if storage_class.mode != "managed":
             continue
@@ -1193,24 +1325,28 @@ def _prepare_compose_managed_storage(deployment: ComposeDeploymentSpec, state: D
 def _prepare_managed_volume_path(storage_class: StorageClassSpec, sub_path: str, state: Dict[str, Any]) -> dict[str, str]:
     if not storage_class.node or not storage_class.path:
         raise LumaError(f"managed storageClass {storage_class.name} requires node and path")
-    relative = Path(str(sub_path).strip().strip("/"))
-    if relative.is_absolute() or ".." in relative.parts or not str(relative):
-        raise LumaError(f"managed storage volume path must be relative and cannot contain ..: {sub_path}")
+    relative = _managed_volume_relative_path(sub_path)
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, storage_class.node) or {}
     full_path = Path(storage_class.path) / relative
     if not _storage_node_is_local(record, storage_class.node):
-        return {
-            "storageClass": storage_class.name,
-            "path": str(full_path),
-            "prepared": "pending: storage node is not local to this control process",
-        }
+        raise LumaError(
+            f"managed storageClass {storage_class.name} volume path {full_path} cannot be prepared because "
+            f"storage node {storage_class.node} is not local to this Luma Control process"
+        )
     command = f"install -d -m 755 {shlex.quote(str(full_path))}"
     try:
         _run_host_prep_command(command)
     except LumaError as exc:
         raise LumaError(f"failed to create managed storage volume path {full_path}: {exc}") from exc
     return {"storageClass": storage_class.name, "path": str(full_path), "prepared": "volume path ready"}
+
+
+def _managed_volume_relative_path(sub_path: str) -> Path:
+    relative = Path(str(sub_path).strip().strip("/"))
+    if relative.is_absolute() or ".." in relative.parts or not str(relative):
+        raise LumaError(f"managed storage volume path must be relative and cannot contain ..: {sub_path}")
+    return relative
 
 
 def _emit_compose_warnings(
@@ -2633,9 +2769,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/compose-deployments/stream":
                 self._stream_compose_deployment(token, body)
-                return
-            if self.path == "/v1/compose-deployments/remove":
-                self._json(200, handle_compose_remove(token, body))
                 return
             if self.path == "/v1/storage/apply":
                 self._json(200, handle_storage_apply(token, body))

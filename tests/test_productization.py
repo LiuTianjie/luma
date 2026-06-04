@@ -393,23 +393,24 @@ class CliTests(unittest.TestCase):
             self.assertEqual(code, 1)
             client_cls.assert_not_called()
 
-    def test_service_remove_submits_manifest_to_control_plane(self):
+    def test_service_remove_rejects_manifest_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "api",
-                        "image": "nginx:alpine",
-                        "region": "cn",
-                        "exposure": "cn-edge",
-                        "domain": "api.example.com",
-                        "port": 80,
-                    }
-                ),
-                encoding="utf-8",
-            )
+            service_path.write_text("name: api\nimage: nginx:alpine\nregion: cn\nexposure: none\n", encoding="utf-8")
+            old_home = _set_env("LUMA_CONFIG_HOME", str(home))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                with patch("luma.cli.ControlClient") as client_cls, patch("builtins.print"):
+                    code = main(["service", "remove", str(service_path), "--timeout", "12", "--dry-run"])
+                self.assertEqual(code, 1)
+                client_cls.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_service_remove_submits_name_to_control_plane(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
             old_home = _set_env("LUMA_CONFIG_HOME", str(home))
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
@@ -417,26 +418,21 @@ class CliTests(unittest.TestCase):
                 client.remove_service.return_value = {
                     "service": "api",
                     "dryRun": True,
-                    "dns": "DNS deleted: api.example.com",
-                    "portainer": "Portainer stack removed: api",
-                    "generatedFiles": "Generated files removed",
+                    "portainer": "Portainer stack would be removed: api",
+                    "generatedFiles": "Generated files would be removed: /opt/luma/stacks/cn/api",
                     "steps": [
-                        {"name": "Delete DNS", "status": "ok", "message": "DNS deleted: api.example.com"},
-                        {"name": "Remove Portainer stack", "status": "ok", "message": "Portainer stack removed: api"},
+                        {"name": "Remove Portainer stack", "status": "ok", "message": "Portainer stack would be removed: api"},
                     ],
                 }
                 with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
-                    code = main(["service", "remove", str(service_path), "--timeout", "12", "--dry-run"])
+                    code = main(["service", "remove", "api", "--dry-run"])
                 self.assertEqual(code, 0)
                 client.remove_service.assert_called_once()
                 kwargs = client.remove_service.call_args.kwargs
-                self.assertEqual(kwargs["source_name"], str(service_path))
-                self.assertEqual(kwargs["timeout"], 12)
+                self.assertEqual(kwargs["name"], "api")
                 self.assertTrue(kwargs["dry_run"])
-                self.assertFalse(kwargs["skip_dns"])
                 printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
-                self.assertIn("[start] Submit remove: api -> cn/cn-edge", printed_text)
-                self.assertIn("[ok] Remove Portainer stack: Portainer stack removed: api", printed_text)
+                self.assertIn("[start] Submit remove: api", printed_text)
                 self.assertIn("[ok] Remove dry run finished: api", printed_text)
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -2593,6 +2589,9 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn("Sync DNS=ok:DNS updated", steps)
                 self.assertIn("Deploy Portainer stack=ok:Portainer deploy triggered", steps)
                 self.assertIn("Probe public route=ok:Public route reachable: https://api.example.com/ -> HTTP 404", steps)
+                deployment_state = load_state()
+                self.assertEqual(deployment_state["deployments"]["services"]["api"]["name"], "api")
+                self.assertEqual(deployment_state["deployments"]["services"]["api"]["manifest"], manifest)
                 with self.assertRaises(Exception):
                     handle_deployment(state["joinToken"], {"manifest": manifest, "sourceName": "api.yaml"})
             finally:
@@ -2639,6 +2638,35 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn("node.labels.luma.node.id == edge-node-id", result["artifacts"][0]["content"])
                 self.assertFalse((root / "stacks").exists())
                 sync.assert_not_called()
+                deploy.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_deployment_rejects_existing_compose_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["deployments"] = {
+                    "services": {},
+                    "compose": {
+                        "api": {
+                            "kind": "compose",
+                            "name": "api",
+                            "slug": "api",
+                            "manifest": "name: api\nregion: cn\ncompose: docker-compose.yml\n",
+                        }
+                    },
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                manifest = yaml.safe_dump({"name": "api", "image": "nginx:alpine", "region": "cn", "exposure": "none"})
+                with patch("luma.control.server.deploy_with_portainer") as deploy:
+                    with self.assertRaisesRegex(LumaError, "deployment name already exists"):
+                        handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
                 deploy.assert_not_called()
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -2722,9 +2750,6 @@ class ControlApiTests(unittest.TestCase):
                 state["portainerApiUrl"] = "https://127.0.0.1:9443/api"
                 state["portainerAdminPassword"] = "secret"
                 state["portainerEndpointId"] = 1
-                from luma.control.state import save_state
-
-                save_state(state)
                 stack_dir = root / "stacks" / "home" / "home-panel"
                 stack_dir.mkdir(parents=True)
                 (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
@@ -2750,10 +2775,23 @@ class ControlApiTests(unittest.TestCase):
                         "port": 8080,
                     }
                 )
+                state["deployments"] = {
+                    "services": {
+                        "home-panel": {
+                            "kind": "service",
+                            "name": "home-panel",
+                            "slug": "home-panel",
+                            "manifest": manifest,
+                            "sourceName": "console:home-panel",
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
                 with patch("luma.control.server.delete_dns", return_value="DNS deleted: panel.example.com") as dns, patch(
                     "luma.control.server.remove_stack", return_value="Portainer stack removed: home-panel"
                 ) as stack:
-                    result = handle_service_remove(state["deployToken"], {"manifest": manifest, "sourceName": "home-panel.yaml"})
+                    result = handle_service_remove(state["deployToken"], {"name": "home-panel"})
                 dns.assert_called_once()
                 stack.assert_called_once()
                 self.assertFalse(stack_dir.exists())
@@ -2785,8 +2823,21 @@ class ControlApiTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 manifest = yaml.safe_dump({"name": "api", "image": "nginx:alpine", "region": "cn", "exposure": "none"})
+                state["deployments"] = {
+                    "services": {
+                        "api": {
+                            "kind": "service",
+                            "name": "api",
+                            "slug": "api",
+                            "manifest": manifest,
+                            "sourceName": "console:api",
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
                 with patch("luma.control.server.delete_dns") as dns, patch("luma.control.server.remove_stack") as stack:
-                    result = handle_service_remove(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml", "dryRun": True})
+                    result = handle_service_remove(state["deployToken"], {"name": "api", "dryRun": True})
                 dns.assert_not_called()
                 stack.assert_not_called()
                 self.assertTrue(stack_dir.exists())
@@ -2794,6 +2845,80 @@ class ControlApiTests(unittest.TestCase):
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Portainer stack would be removed: api", steps)
                 self.assertIn("Generated files would be removed", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_remove_by_name_uses_registered_manifest_and_forgets_deployment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                manifest = yaml.safe_dump({"name": "api", "image": "nginx:alpine", "region": "cn", "exposure": "none"})
+                state["deployments"] = {
+                    "services": {
+                        "api": {
+                            "kind": "service",
+                            "name": "api",
+                            "slug": "api",
+                            "manifest": manifest,
+                            "sourceName": "console:api",
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
+                stack_dir = root / "stacks" / "cn" / "api"
+                stack_dir.mkdir(parents=True)
+                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: api") as stack:
+                    result = handle_service_remove(state["deployToken"], {"name": "api"})
+                stack.assert_called_once()
+                self.assertEqual(result["service"], "api")
+                self.assertEqual(result["sourceName"], "console:api")
+                self.assertFalse(stack_dir.exists())
+                self.assertNotIn("api", load_state()["deployments"]["services"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_remove_by_name_removes_registered_compose_deployment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                sidecar = yaml.safe_dump({"name": "app-stack", "compose": "docker-compose.yml", "region": "cn"})
+                compose = yaml.safe_dump({"services": {"web": {"image": "nginx:alpine"}}})
+                state["deployments"] = {
+                    "services": {},
+                    "compose": {
+                        "app-stack": {
+                            "kind": "compose",
+                            "name": "app-stack",
+                            "slug": "app-stack",
+                            "manifest": sidecar,
+                            "composeContent": compose,
+                            "sourceName": "console:app-stack",
+                        }
+                    },
+                }
+                save_state(state)
+                stack_dir = root / "stacks" / "compose" / "app-stack"
+                stack_dir.mkdir(parents=True)
+                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: app-stack") as stack:
+                    result = handle_service_remove(state["deployToken"], {"name": "app-stack"})
+                stack.assert_called_once()
+                self.assertEqual(result["deployment"], "app-stack")
+                self.assertEqual(result["sourceName"], "console:app-stack")
+                self.assertFalse(stack_dir.exists())
+                self.assertNotIn("app-stack", load_state()["deployments"]["compose"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -3319,19 +3444,33 @@ class ControlApiTests(unittest.TestCase):
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 state["nodes"] = {
-                    "home-nas": {"name": "home-nas", "region": "home", "status": "labeled"},
+                    "home-nas": {
+                        "name": "home-nas",
+                        "region": "home",
+                        "status": "labeled",
+                        "swarmNodeId": "home-node-id",
+                        "labels": {"luma.node.name": "home-nas", "luma.node.id": "home-node-id", "region": "home"},
+                    },
                 }
                 save_state(state)
-                result = handle_storage_set(
-                    state["deployToken"],
-                    {
-                        "name": "home-nfs",
-                        "provider": "nfs",
-                        "node": "home-nas",
-                        "path": "/srv/luma",
-                        "regions": ["home", "cn"],
-                    },
-                )
+                def fake_docker_request(method, path, body=None):
+                    if method == "GET" and path == "/info":
+                        return {"Name": "home-nas", "Swarm": {"NodeID": "home-node-id"}}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command", return_value="ok"
+                ):
+                    result = handle_storage_set(
+                        state["deployToken"],
+                        {
+                            "name": "home-nfs",
+                            "provider": "nfs",
+                            "node": "home-nas",
+                            "path": "/srv/luma",
+                            "regions": ["home", "cn"],
+                        },
+                    )
                 self.assertTrue(result["saved"])
                 listed = handle_storage_list(state["deployToken"])
                 self.assertEqual(listed["storageClasses"][0]["name"], "home-nfs")
@@ -3403,6 +3542,8 @@ class ControlApiTests(unittest.TestCase):
 
                 def fake_docker_request(method, path, body=None):
                     docker_calls.append((method, path, body))
+                    if method == "GET" and path == "/info":
+                        return {"Name": "iZ0jl8auywzycory05d9cuZ", "Swarm": {"NodeID": "manager-node-id-1234567890"}}
                     if method == "GET" and path == "/nodes":
                         return swarm_nodes
                     if method == "GET" and path.startswith("/nodes/"):
@@ -3417,7 +3558,9 @@ class ControlApiTests(unittest.TestCase):
                         return {}
                     raise AssertionError(f"unexpected Docker request: {method} {path}")
 
-                with patch("luma.control.server.docker_request", side_effect=fake_docker_request):
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command", return_value="ok"
+                ):
                     result = handle_storage_set(
                         state["deployToken"],
                         {"name": "cn-nfs", "provider": "nfs", "node": "iZ0jl8auywzycory05d9cuZ", "path": "/srv/luma"},
@@ -3454,6 +3597,8 @@ class ControlApiTests(unittest.TestCase):
 
                 def fake_docker_request(method, path, body=None):
                     docker_calls.append((method, path, body))
+                    if method == "GET" and path == "/info":
+                        return {"Name": "manager-host", "Swarm": {"NodeID": "manager-node-id"}}
                     if method == "GET" and path == "/nodes":
                         return [
                             {
@@ -3471,7 +3616,9 @@ class ControlApiTests(unittest.TestCase):
                         return {}
                     raise AssertionError(f"unexpected Docker request: {method} {path}")
 
-                with patch("luma.control.server.docker_request", side_effect=fake_docker_request):
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command", return_value="ok"
+                ):
                     result = handle_storage_set(
                         state["deployToken"],
                         {"name": "cn-nfs", "node": "manager-host", "path": "/srv/luma"},
@@ -3518,6 +3665,73 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn("nfs-kernel-server", command)
                 self.assertIn(str(storage_path), command)
                 self.assertEqual(result["storageHost"]["prepared"], "host NFS export ready")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_set_does_not_save_managed_class_when_host_prep_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "manager-host": {
+                        "region": "cn",
+                        "swarmHostname": "manager-host",
+                        "swarmNodeId": "manager-node-id",
+                        "labels": {"luma.node.name": "manager-host", "luma.node.id": "manager-node-id", "region": "cn"},
+                    }
+                }
+                save_state(state)
+
+                def fake_docker_request(method, path, body=None):
+                    if method == "GET" and path == "/info":
+                        return {"Name": "manager-host", "Swarm": {"NodeID": "manager-node-id"}}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command", side_effect=LumaError("prep failed")
+                ):
+                    with self.assertRaisesRegex(LumaError, "failed to prepare managed NFS storage"):
+                        handle_storage_set(
+                            state["deployToken"],
+                            {"name": "bad-nfs", "node": "manager-host", "path": "/srv/luma"},
+                        )
+                self.assertNotIn("bad-nfs", load_state().get("storageClasses", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_set_rejects_non_local_managed_storage_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                        "labels": {"luma.node.name": "worker-storage", "luma.node.id": "worker-node-id", "region": "cn"},
+                    }
+                }
+                save_state(state)
+
+                def fake_docker_request(method, path, body=None):
+                    if method == "GET" and path == "/info":
+                        return {"Name": "manager-host", "Swarm": {"NodeID": "manager-node-id"}}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command"
+                ) as host_prep:
+                    with self.assertRaisesRegex(LumaError, "is not local to this Luma Control process"):
+                        handle_storage_set(
+                            state["deployToken"],
+                            {"name": "worker-nfs", "node": "worker-storage", "path": "/srv/luma"},
+                        )
+                host_prep.assert_not_called()
+                self.assertNotIn("worker-nfs", load_state().get("storageClasses", {}))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -3699,17 +3913,33 @@ class ControlApiTests(unittest.TestCase):
                 state["portainerAdminPassword"] = "secret"
                 state["portainerEndpointId"] = 1
                 state["swarmId"] = "swarm"
-                state["nodes"] = {"cn-node": {"name": "cn-node", "region": "cn", "status": "labeled"}}
+                state["nodes"] = {
+                    "cn-node": {
+                        "name": "cn-node",
+                        "region": "cn",
+                        "status": "labeled",
+                        "swarmHostname": "cn-node",
+                        "swarmNodeId": "cn-node-id",
+                        "labels": {"luma.node.name": "cn-node", "luma.node.id": "cn-node-id", "region": "cn"},
+                    }
+                }
                 save_state(state)
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                with patch("luma.control.server.remove_stack", return_value="Portainer stack not found: luma-storage-cn-nfs") as remove:
+                def fake_docker_request(method, path, body=None):
+                    if method == "GET" and path == "/info":
+                        return {"Name": "cn-node", "Swarm": {"NodeID": "cn-node-id"}}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command", return_value="ok"
+                ), patch("luma.control.server.remove_stack", return_value="Portainer stack not found: luma-storage-cn-nfs") as remove:
                     result = handle_storage_set(
                         state["deployToken"],
                         {"name": "cn-nfs", "provider": "nfs", "node": "cn-node", "path": "/srv/luma"},
                     )
                 remove.assert_called_once()
                 self.assertEqual(remove.call_args.args[1].name, "luma-storage-cn-nfs")
-                self.assertEqual(result["storageHost"]["prepared"], "pending: storage node is not local to this control process")
+                self.assertEqual(result["storageHost"]["prepared"], "host NFS export ready")
                 self.assertEqual(result["storageHost"]["legacyStack"], "Portainer stack not found: luma-storage-cn-nfs")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)

@@ -228,50 +228,19 @@ class ControlClient:
     def remove_service(
         self,
         *,
-        manifest: str,
-        source_name: str,
+        name: str,
         skip_dns: bool = False,
         skip_portainer: bool = False,
         dry_run: bool = False,
         timeout: int = 300,
     ) -> Dict[str, Any]:
-        return self.request(
-            "POST",
-            "/v1/services/remove",
-            {
-                "manifest": manifest,
-                "sourceName": source_name,
-                "skipDns": skip_dns,
-                "skipPortainer": skip_portainer,
-                "dryRun": dry_run,
-            },
-            timeout=timeout,
-        )
-
-    def remove_compose(
-        self,
-        *,
-        manifest: str,
-        compose_content: str,
-        source_name: str,
-        skip_dns: bool = False,
-        skip_portainer: bool = False,
-        dry_run: bool = False,
-        timeout: int = 300,
-    ) -> Dict[str, Any]:
-        return self.request(
-            "POST",
-            "/v1/compose-deployments/remove",
-            {
-                "manifest": manifest,
-                "composeContent": compose_content,
-                "sourceName": source_name,
-                "skipDns": skip_dns,
-                "skipPortainer": skip_portainer,
-                "dryRun": dry_run,
-            },
-            timeout=timeout,
-        )
+        body: Dict[str, Any] = {
+            "name": name,
+            "skipDns": skip_dns,
+            "skipPortainer": skip_portainer,
+            "dryRun": dry_run,
+        }
+        return self.request("POST", "/v1/services/remove", body, timeout=timeout)
 
     def apply_storage(
         self,
