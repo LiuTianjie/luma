@@ -40,7 +40,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, ensure_image_present, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_preview, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, resolve_service_image
+from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_preview, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, resolve_service_image
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -49,7 +49,6 @@ from luma.portainer import deploy_with_portainer, remove_luma_portainer_registry
 from luma.profiles import PROFILES
 from luma.registry import registry_provider_type
 from luma.service import load_service
-from luma.storage import managed_storage_stacks
 from luma.cli import _node_join_examples, _portainer_url_from_state, _run_with_wait_heartbeat, build_parser, exit_local_node, main
 from luma.userconfig import configured_keys, ensure_interactive_config, load_user_config
 
@@ -3507,16 +3506,58 @@ class ControlApiTests(unittest.TestCase):
                         return {"Name": "manager-host", "Swarm": {"NodeID": "manager-node-id"}}
                     raise AssertionError(f"unexpected Docker request: {method} {path}")
 
-                with patch("luma.control.server.docker_request", side_effect=fake_docker_request):
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command", return_value="ok"
+                ) as host_prep:
                     result = handle_storage_set(
                         state["deployToken"],
                         {"name": "cn-nfs", "node": "manager-host", "path": str(storage_path)},
                     )
                 self.assertTrue(result["saved"])
-                self.assertTrue(storage_path.is_dir())
-                self.assertEqual(result["storageStack"]["applied"], "pending: Portainer is not configured")
+                command = host_prep.call_args.args[0]
+                self.assertIn("nfs-kernel-server", command)
+                self.assertIn(str(storage_path), command)
+                self.assertEqual(result["storageHost"]["prepared"], "host NFS export ready")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_host_prep_runs_privileged_chroot_container(self):
+        docker_calls = []
+        raw_calls = []
+
+        def fake_docker_request(method, path, body=None):
+            docker_calls.append((method, path, body))
+            if method == "GET" and path == "/images/ubuntu%3A22.04/json":
+                return {}
+            if method == "POST" and path.startswith("/containers/create"):
+                return {"Id": "container-id"}
+            if method == "POST" and path == "/containers/container-id/start":
+                return None
+            if method == "POST" and path == "/containers/container-id/wait":
+                return {"StatusCode": 0}
+            if method == "DELETE" and path.startswith("/containers/container-id"):
+                return None
+            raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+        def fake_docker_request_raw(method, path, headers=None):
+            raw_calls.append((method, path, headers))
+            if method == "GET" and path.startswith("/containers/container-id/logs"):
+                return 200, "prepared"
+            raise AssertionError(f"unexpected raw Docker request: {method} {path}")
+
+        with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+            "luma.control.server.docker_request_raw", side_effect=fake_docker_request_raw
+        ):
+            result = _run_host_prep_container("echo ready")
+
+        self.assertEqual(result, "prepared")
+        create_body = next(body for method, path, body in docker_calls if method == "POST" and path.startswith("/containers/create"))
+        self.assertEqual(create_body["Cmd"], ["chroot", "/host", "bash", "-lc", "echo ready"])
+        self.assertTrue(create_body["HostConfig"]["Privileged"])
+        self.assertEqual(create_body["HostConfig"]["PidMode"], "host")
+        self.assertEqual(create_body["HostConfig"]["NetworkMode"], "host")
+        self.assertIn("/:/host", create_body["HostConfig"]["Binds"])
+        self.assertTrue(any(method == "DELETE" and path.startswith("/containers/container-id") for method, path, _ in docker_calls))
 
     def test_storage_remove_removes_managed_storage_stack_when_portainer_is_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3543,7 +3584,7 @@ class ControlApiTests(unittest.TestCase):
                     result = handle_storage_remove(state["deployToken"], {"name": "cn-nfs"})
                 remove.assert_called_once()
                 self.assertEqual(remove.call_args.args[1].name, "luma-storage-cn-nfs")
-                self.assertEqual(result["storageStack"]["removed"], "Portainer stack removed: luma-storage-cn-nfs")
+                self.assertEqual(result["storageHost"]["removed"], "Portainer stack removed: luma-storage-cn-nfs")
                 self.assertNotIn("cn-nfs", load_state().get("storageClasses", {}))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -3591,7 +3632,63 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_storage_set_applies_managed_storage_stack_when_portainer_is_configured(self):
+    def test_compose_deployment_prepares_managed_storage_paths_before_deploy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "home-nas": {
+                        "name": "home-nas",
+                        "region": "cn",
+                        "status": "labeled",
+                        "swarmNodeId": "home-node-id",
+                    }
+                }
+                state["storageClasses"] = {
+                    "home-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "home-nas",
+                        "path": "/srv/luma",
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                compose = yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}})
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "app-stack/pg-data", "initialize": "empty"}},
+                    }
+                )
+
+                def fake_docker_request(method, path, body=None):
+                    if method == "GET" and path == "/info":
+                        return {"Name": "home-nas", "Swarm": {"NodeID": "home-node-id"}}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command", return_value="ok"
+                ) as host_prep:
+                    result = handle_compose_deployment(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipWebhook": True},
+                    )
+                commands = [call.args[0] for call in host_prep.call_args_list]
+                self.assertTrue(any("nfs-kernel-server" in command for command in commands))
+                self.assertTrue(any("/srv/luma/app-stack/pg-data" in command for command in commands))
+                self.assertEqual(result["storagePreparation"][0]["prepared"], "host NFS export ready")
+                self.assertEqual(result["storagePreparation"][1]["prepared"], "volume path ready")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_storage_set_prepares_managed_host_and_removes_legacy_storage_stack_when_portainer_is_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -3605,18 +3702,15 @@ class ControlApiTests(unittest.TestCase):
                 state["nodes"] = {"cn-node": {"name": "cn-node", "region": "cn", "status": "labeled"}}
                 save_state(state)
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                with patch("luma.control.server.upsert_stack", return_value="Portainer stack updated") as upsert:
+                with patch("luma.control.server.remove_stack", return_value="Portainer stack not found: luma-storage-cn-nfs") as remove:
                     result = handle_storage_set(
                         state["deployToken"],
                         {"name": "cn-nfs", "provider": "nfs", "node": "cn-node", "path": "/srv/luma"},
                     )
-                upsert.assert_called_once()
-                self.assertEqual(upsert.call_args.args[1].name, "luma-storage-cn-nfs")
-                self.assertEqual(result["storageStack"]["name"], "luma-storage-cn-nfs")
-                self.assertEqual(result["storageStack"]["applied"], "Portainer stack updated")
-                storage_stack = root / "stacks" / "storage" / "luma-storage-cn-nfs" / "stack.yml"
-                self.assertTrue(storage_stack.exists())
-                self.assertIn("/srv/luma:/srv/luma", storage_stack.read_text(encoding="utf-8"))
+                remove.assert_called_once()
+                self.assertEqual(remove.call_args.args[1].name, "luma-storage-cn-nfs")
+                self.assertEqual(result["storageHost"]["prepared"], "pending: storage node is not local to this control process")
+                self.assertEqual(result["storageHost"]["legacyStack"], "Portainer stack not found: luma-storage-cn-nfs")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -3661,49 +3755,60 @@ class ControlApiTests(unittest.TestCase):
                         "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "pg-data"}},
                     }
                 )
-                with patch("luma.control.server.upsert_stack", return_value="Portainer stack updated") as upsert:
+                def fake_docker_request(method, path, body=None):
+                    if method == "GET" and path == "/info":
+                        return {"Name": "home-nas", "Swarm": {"NodeID": "home-node-id"}}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command", return_value="ok"
+                ) as host_prep:
                     result = handle_storage_apply(
                         state["deployToken"],
                         {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
                     )
                 self.assertEqual(len(result["storage"]["storageClasses"]), 1)
                 self.assertEqual(result["storage"]["storageClasses"][0]["name"], "home-nfs")
-                upsert.assert_called_once()
-                self.assertEqual(upsert.call_args.args[1].name, "luma-storage-home-nfs")
-                self.assertNotIn("archive-nas", upsert.call_args.args[2])
+                commands = [call.args[0] for call in host_prep.call_args_list]
+                self.assertTrue(any("nfs-kernel-server" in command for command in commands))
+                self.assertTrue(any("/srv/luma/pg-data" in command for command in commands))
+                self.assertFalse(any("/srv/archive" in command for command in commands))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_managed_storage_stack_name_is_manager_scoped(self):
+    def test_storage_apply_rejects_unsafe_managed_volume_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "docker-compose.yml").write_text(
-                yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}}),
-                encoding="utf-8",
-            )
-            (root / "luma.compose.yml").write_text(
-                yaml.safe_dump(
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {"home-nas": {"name": "home-nas", "region": "cn", "status": "labeled"}}
+                state["storageClasses"] = {
+                    "home-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "home-nas",
+                        "path": "/srv/luma",
+                    }
+                }
+                save_state(state)
+                compose = yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}})
+                sidecar = yaml.safe_dump(
                     {
                         "name": "app-stack",
                         "compose": "docker-compose.yml",
                         "region": "cn",
-                        "storageClasses": {
-                            "home-nfs": {
-                                "provider": "nfs",
-                                "mode": "managed",
-                                "node": "home-nas",
-                                "path": "/srv/luma",
-                            }
-                        },
-                        "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "pg-data"}},
+                        "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "../escape"}},
                     }
-                ),
-                encoding="utf-8",
-            )
-            deployment = load_compose_deployment(root / "luma.compose.yml")
-            stacks = managed_storage_stacks(deployment)
-        self.assertEqual(stacks[0].name, "luma-storage-home-nfs")
+                )
+                with self.assertRaisesRegex(LumaError, "relative and cannot contain"):
+                    handle_storage_apply(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
+                    )
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
     def test_registry_credentials_are_saved_without_returning_password(self):
         with tempfile.TemporaryDirectory() as tmp:

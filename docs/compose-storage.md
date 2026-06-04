@@ -40,9 +40,11 @@ luma storage set cn-nfs \
 ```
 
 - `cn-nfs` is the stable storage class name deployments reference.
-- `--node <manager-swarm-hostname>` pins that storage component to the manager node (or any registered node name).
+- `--node <manager-swarm-hostname>` identifies the host that owns and exports the storage path.
 - `--path /srv/luma` is the host export directory.
 - `--region cn` restricts which service regions can use this storage class.
+
+For managed NFS on the local control node, `storage set` also prepares the host: it installs the NFS server/client packages when needed, creates the export directory, writes the NFS export, starts the host NFS service, and removes any legacy `luma-storage-*` storage stack left by older Luma versions. It does not delete data.
 
 For an existing external or dedicated NFS node:
 
@@ -170,16 +172,16 @@ luma storage apply luma.compose.yml --dry-run
 
 ## Apply Managed Storage
 
-For managed NFS, deploy the storage component before deploying dependent applications:
+For managed NFS, prepare storage before deploying dependent applications:
 
 ```bash
 luma storage apply luma.compose.yml --dry-run
 luma storage apply luma.compose.yml
 ```
 
-The storage component stack is manager-scoped by storage class name, for example `luma-storage-cn-nfs`. Multiple Compose deployments that reference the same class use the same storage infrastructure.
+`storage apply` resolves the manager storage classes and creates the concrete volume subdirectories referenced by the sidecar, for example `/srv/luma/app-stack/pg-data`. Compose deployments also run the same preparation step before deploying the application stack.
 
-Managed NFS is a convenience component, not high-availability storage. For production HA state, use an external NFS service, a distributed provider, or a managed database/object store.
+Managed NFS is convenience storage, not high-availability storage. For production HA state, use an external NFS service, a distributed provider, or a managed database/object store.
 
 ## Deploy And Update
 

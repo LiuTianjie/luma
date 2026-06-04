@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List
 
 from .compose import ComposeDeploymentSpec, StorageClassSpec, resolve_storage_mounts
 from .errors import LumaError
-from .io import dump_yaml
-from .service import slugify
 
 
 @dataclass(frozen=True)
@@ -27,11 +24,13 @@ def managed_storage_stacks(deployment: ComposeDeploymentSpec) -> List[StorageSta
 
 
 def managed_storage_stack(storage_class: StorageClassSpec) -> StorageStack | None:
+    # Managed NFS is prepared on the storage host by Luma Control during
+    # storage set/apply. Older versions rendered a Swarm storage stack here.
     if storage_class.mode != "managed":
         return None
     if storage_class.provider != "nfs":
         raise LumaError(f"managed storage provider not supported yet: {storage_class.provider}")
-    return _nfs_storage_stack(storage_class)
+    return None
 
 
 def storage_check_plan(deployment: ComposeDeploymentSpec, *, node_records: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -77,42 +76,6 @@ def storage_migration_plan(
             "verify the copied data, set adopted: true on the Luma volume entry, then redeploy the compose stack."
         ),
     }
-
-
-def _nfs_storage_stack(storage_class: StorageClassSpec) -> StorageStack:
-    if not storage_class.node:
-        raise LumaError(f"managed storageClasses.{storage_class.name}.node is required")
-    storage_path = storage_class.path
-    if not storage_path:
-        raise LumaError(f"managed storageClasses.{storage_class.name}.path is required")
-    stack_name = f"luma-storage-{slugify(storage_class.name)}"
-    stack = {
-        "services": {
-            "nfs": {
-                "image": "itsthenetwork/nfs-server-alpine:12",
-                "environment": {
-                    "SHARED_DIRECTORY": storage_path,
-                },
-                "volumes": [
-                    f"{storage_path}:{storage_path}",
-                    "/lib/modules:/lib/modules:ro",
-                ],
-                "ports": [
-                    {"target": 2049, "published": 2049, "protocol": "tcp", "mode": "host"},
-                ],
-                "deploy": {
-                    "replicas": 1,
-                    "placement": {
-                        "constraints": [
-                            f"node.labels.luma.node.name == {storage_class.node}",
-                        ]
-                    },
-                },
-                "cap_add": ["SYS_ADMIN", "SETPCAP"],
-            }
-        }
-    }
-    return StorageStack(name=stack_name, storage_class=storage_class.name, content=dump_yaml(stack))
 
 
 def _check_message(storage_class: StorageClassSpec) -> str:

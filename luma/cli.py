@@ -37,7 +37,7 @@ from .profiles import PROFILES
 from .remote import RemoteExecutor
 from .render import render_stack, render_tailscale_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
-from .storage import managed_storage_stacks, storage_check_plan, storage_migration_plan
+from .storage import storage_check_plan, storage_migration_plan
 from .userconfig import configured_keys, ensure_interactive_config, interactive_configure, load_user_config, masked_config_lines, user_config_path
 from . import __version__
 
@@ -115,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.35 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.36 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     update_sub = update.add_subparsers(dest="update_command", required=False, metavar="[target]")
@@ -1903,6 +1903,7 @@ def cmd_storage_set(args: argparse.Namespace) -> int:
         nodes=args.nodes,
     )
     print(f"Storage class saved: {result.get('name', args.name)}")
+    _print_storage_host_result(result.get("storageHost"))
     return 0
 
 
@@ -1911,7 +1912,25 @@ def cmd_storage_remove(args: argparse.Namespace) -> int:
     result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).remove_storage(name=args.name)
     status = "removed" if result.get("removed") else "not configured"
     print(f"Storage class {status}: {args.name}")
+    _print_storage_host_result(result.get("storageHost"))
     return 0
+
+
+def _print_storage_host_result(value: Any) -> None:
+    if not isinstance(value, dict):
+        return
+    prepared = value.get("prepared")
+    removed = value.get("removed")
+    export = value.get("export")
+    legacy = value.get("legacyStack")
+    if prepared:
+        print(f"Storage host: {prepared}")
+    if removed:
+        print(f"Storage cleanup: {removed}")
+    if export:
+        print(f"Storage export: {export}")
+    if legacy:
+        print(f"Legacy storage stack: {legacy}")
 
 
 def cmd_storage_apply(args: argparse.Namespace) -> int:
@@ -1919,14 +1938,8 @@ def cmd_storage_apply(args: argparse.Namespace) -> int:
     node_records = _control_node_records_for_local(args, required=True)
     deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
     render_compose_stack(load_config(args.config), deployment, node_records=node_records)
-    stacks = managed_storage_stacks(deployment)
     if args.dry_run:
-        if not stacks:
-            print("No managed storage stacks to apply")
-            return 0
-        for stack in stacks:
-            print(f"# storage stack: {stack.name}")
-            print(stack.content)
+        print(dump_yaml(storage_summary(deployment, node_records=node_records)))
         return 0
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)

@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import ssl
@@ -35,6 +36,7 @@ from ..compose import (
 from ..config import load_config
 from ..errors import LumaError
 from ..io import load_yaml
+from ..local import LocalExecutor
 from ..portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack, upsert_stack
 from ..registry import (
     docker_registry_auth_header,
@@ -44,8 +46,7 @@ from ..registry import (
     registry_auth_matches_image,
 )
 from ..render import render_stack, render_tailscale_route, route_path, stack_path
-from ..service import VALID_REGIONS, ServiceSpec, load_service
-from ..storage import managed_storage_stack, managed_storage_stacks
+from ..service import VALID_REGIONS, ServiceSpec, load_service, slugify
 from .. import __version__
 from .state import init_state, load_state, require_token, save_state
 
@@ -581,6 +582,12 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     _emit_progress(progress, parse_step)
     _emit_compose_warnings(steps, progress, deployment)
 
+    storage_preparation = _deploy_step(
+        steps,
+        "Prepare managed storage",
+        lambda: _prepare_compose_managed_storage(deployment, state),
+        progress=progress,
+    )
     target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     stack_text = _deploy_step(
@@ -654,6 +661,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         "dns": dns_results,
         "webhook": portainer_result,
         "probe": probe_results,
+        "storagePreparation": storage_preparation,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
         "steps": steps,
     }
@@ -800,34 +808,16 @@ def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable
         lambda: render_compose_stack(config, deployment, node_records=_state_nodes(state)),
         progress=progress,
     )
-    stacks = managed_storage_stacks(deployment)
-    written: list[str] = []
-    applied: list[str] = []
-    for stack in stacks:
-        target = _resolve_control_path(config.stack_root / "storage" / stack.name / "stack.yml", config_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _deploy_step(steps, f"Write storage {stack.storage_class}", lambda target=target, stack=stack: target.write_text(stack.content, encoding="utf-8"), progress=progress)
-        written.append(str(target))
-        result = _deploy_step(
-            steps,
-            f"Deploy storage {stack.storage_class}",
-            lambda stack=stack: upsert_stack(
-                config,
-                _storage_stack_service_spec(stack.name),
-                stack.content,
-                state,
-                missing_webhook_env="PORTAINER_WEBHOOK_URL",
-                stack_env=[],
-                registry_auth=None,
-            ),
-            progress=progress,
-        )
-        applied.append(result)
+    applied = _deploy_step(
+        steps,
+        "Prepare managed storage",
+        lambda: _prepare_compose_managed_storage(deployment, state),
+        progress=progress,
+    )
     return {
         "clusterId": state["clusterId"],
         "deployment": deployment.name,
         "sourceName": source_name,
-        "written": written,
         "applied": applied,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
         "steps": steps,
@@ -868,15 +858,26 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         state["storageClasses"] = storage_classes
     storage_classes[name] = {key: value for key, value in item.items() if value not in ("", [], None)}
     save_state(state)
-    storage_stack = _apply_managed_storage_class(name, storage_classes[name], state)
+    storage_host = _apply_managed_storage_class(name, storage_classes[name], state)
     result = {"name": name, "saved": True, "storageClass": _public_storage_class(name, storage_classes[name])}
-    if storage_stack:
-        result["storageStack"] = storage_stack
+    if storage_host:
+        result["storageHost"] = storage_host
     return result
 
 
 def _apply_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, str] | None:
-    storage_class = StorageClassSpec(
+    storage_class = _storage_class_spec_from_record(name, item)
+    if storage_class.mode != "managed":
+        return None
+    host_result = _prepare_managed_nfs_host(storage_class, state)
+    legacy_stack = _remove_legacy_managed_storage_stack(storage_class, state)
+    if legacy_stack:
+        host_result["legacyStack"] = legacy_stack
+    return host_result
+
+
+def _storage_class_spec_from_record(name: str, item: Dict[str, Any]) -> StorageClassSpec:
+    return StorageClassSpec(
         name=name,
         provider=str(item.get("provider") or "nfs"),
         mode=str(item.get("mode") or "managed"),
@@ -888,42 +889,166 @@ def _apply_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[st
         regions=[str(value) for value in item.get("regions") or []],
         raw=dict(item),
     )
-    stack = managed_storage_stack(storage_class)
-    if not stack:
-        return None
-    _ensure_managed_storage_host_path(storage_class, state)
-    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
-    config = load_config(config_path)
-    target = _resolve_control_path(config.stack_root / "storage" / stack.name / "stack.yml", config_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(stack.content, encoding="utf-8")
-    if not _storage_apply_available(state):
-        return {"name": stack.name, "path": str(target), "applied": "pending: Portainer is not configured"}
-    applied = upsert_stack(
-        config,
-        _storage_stack_service_spec(stack.name),
-        stack.content,
-        state,
-        missing_webhook_env="PORTAINER_WEBHOOK_URL",
-        stack_env=[],
-        registry_auth=None,
-    )
-    return {"name": stack.name, "path": str(target), "applied": applied}
 
 
-def _ensure_managed_storage_host_path(storage_class: StorageClassSpec, state: Dict[str, Any]) -> None:
-    if storage_class.mode != "managed" or not storage_class.node or not storage_class.path:
-        return
+def _prepare_managed_nfs_host(storage_class: StorageClassSpec, state: Dict[str, Any]) -> Dict[str, str]:
+    if storage_class.provider != "nfs":
+        raise LumaError(f"managed storage provider not supported yet: {storage_class.provider}")
+    if not storage_class.node:
+        raise LumaError(f"managed storageClass {storage_class.name}.node is required")
+    if not storage_class.path:
+        raise LumaError(f"managed storageClass {storage_class.name}.path is required")
     if not Path(storage_class.path).is_absolute():
         raise LumaError(f"managed storage path must be absolute: {storage_class.path}")
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, storage_class.node) or {}
     if not _storage_node_is_local(record, storage_class.node):
-        return
+        return {
+            "name": storage_class.name,
+            "node": storage_class.node,
+            "path": storage_class.path,
+            "prepared": "pending: storage node is not local to this control process",
+        }
+    _prepare_local_nfs_export(storage_class)
+    return {
+        "name": storage_class.name,
+        "node": storage_class.node,
+        "path": storage_class.path,
+        "prepared": "host NFS export ready",
+    }
+
+
+def _prepare_local_nfs_export(storage_class: StorageClassSpec) -> None:
+    if not storage_class.path:
+        raise LumaError(f"managed storageClass {storage_class.name}.path is required")
+    path = storage_class.path.rstrip("/") or "/"
+    export_file = f"/etc/exports.d/luma-{slugify(storage_class.name)}.exports"
+    export_line = f"{path} *(rw,async,no_subtree_check,no_auth_nlm,insecure,no_root_squash)"
+    command = (
+        "set -euo pipefail; "
+        "export DEBIAN_FRONTEND=noninteractive; "
+        "command -v apt-get >/dev/null 2>&1 || { "
+        "echo 'automatic managed NFS preparation currently supports apt-based Linux only' >&2; "
+        "exit 1; "
+        "}; "
+        "if ! command -v exportfs >/dev/null 2>&1 || ! command -v mount.nfs >/dev/null 2>&1; then "
+        "for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do "
+        "[ -f \"$file\" ] || continue; "
+        "sed -i "
+        "-e 's#http://mirrors.ivolces.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
+        "-e 's#https://mirrors.ivolces.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
+        "-e 's#http://mirrors.cloud.aliyuncs.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
+        "-e 's#https://mirrors.cloud.aliyuncs.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' "
+        "\"$file\"; "
+        "done; "
+        "apt-get update; "
+        "apt-get install -y nfs-kernel-server nfs-common; "
+        "fi; "
+        f"install -d -m 755 {shlex.quote(path)}; "
+        "install -d -m 755 /etc/exports.d; "
+        f"printf '%s\\n' {shlex.quote(export_line)} > {shlex.quote(export_file)}; "
+        "mountpoint -q /proc/fs/nfsd || mount -t nfsd nfsd /proc/fs/nfsd; "
+        "systemctl enable --now nfs-server >/dev/null 2>&1 "
+        "|| systemctl enable --now nfs-kernel-server >/dev/null 2>&1 "
+        "|| service nfs-kernel-server restart; "
+        "exportfs -ra; "
+        f"exportfs -v | grep -F {shlex.quote(path)} >/dev/null"
+    )
     try:
-        Path(storage_class.path).mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise LumaError(f"failed to create managed storage path {storage_class.path}: {exc}") from exc
+        _run_host_prep_command(command)
+    except LumaError as exc:
+        raise LumaError(f"failed to prepare managed NFS storage {storage_class.name} on local node: {exc}") from exc
+
+
+def _run_host_prep_command(command: str) -> str:
+    docker_error = None
+    try:
+        return _run_host_prep_container(command)
+    except LumaError as exc:
+        docker_error = exc
+    try:
+        return LocalExecutor().sudo(command)
+    except LumaError as exc:
+        raise LumaError(f"Docker host-prep failed: {docker_error}; local sudo failed: {exc}") from exc
+
+
+def _run_host_prep_container(command: str) -> str:
+    image = os.environ.get("LUMA_HOST_PREP_IMAGE", "ubuntu:22.04")
+    _ensure_host_prep_image(image)
+    name = f"luma-host-prep-{os.getpid()}-{int(time.time() * 1000)}"
+    create_body = {
+        "Image": image,
+        "Cmd": ["chroot", "/host", "bash", "-lc", command],
+        "AttachStdout": True,
+        "AttachStderr": True,
+        "Tty": True,
+        "HostConfig": {
+            "Privileged": True,
+            "PidMode": "host",
+            "NetworkMode": "host",
+            "Binds": ["/:/host"],
+        },
+    }
+    container_id = ""
+    try:
+        created = docker_request("POST", f"/containers/create?{urllib.parse.urlencode({'name': name})}", create_body)
+        if not isinstance(created, dict) or not created.get("Id"):
+            raise LumaError("Docker did not return a host-prep container id")
+        container_id = str(created["Id"])
+        docker_request("POST", f"/containers/{container_id}/start")
+        waited = docker_request("POST", f"/containers/{container_id}/wait")
+        status_code = int(waited.get("StatusCode", 1)) if isinstance(waited, dict) else 1
+        logs = _docker_container_logs(container_id)
+        if status_code != 0:
+            raise LumaError(f"host-prep container exited {status_code}: {logs.strip()}")
+        return logs
+    finally:
+        if container_id:
+            try:
+                docker_request("DELETE", f"/containers/{container_id}?{urllib.parse.urlencode({'force': 'true', 'v': 'true'})}")
+            except LumaError:
+                pass
+
+
+def _ensure_host_prep_image(image: str) -> None:
+    try:
+        docker_request("GET", f"/images/{urllib.parse.quote(image, safe='')}/json")
+        return
+    except LumaError:
+        pass
+    repo, tag = _split_image_tag(image)
+    status, raw = docker_request_raw(
+        "POST",
+        f"/images/create?{urllib.parse.urlencode({'fromImage': repo, 'tag': tag})}",
+    )
+    if status >= 400:
+        raise LumaError(f"Docker image pull failed for {image}: {raw}")
+
+
+def _split_image_tag(image: str) -> tuple[str, str]:
+    if ":" in image.rsplit("/", 1)[-1]:
+        repo, tag = image.rsplit(":", 1)
+        return repo, tag
+    return image, "latest"
+
+
+def _docker_container_logs(container_id: str) -> str:
+    status, raw = docker_request_raw(
+        "GET",
+        f"/containers/{container_id}/logs?{urllib.parse.urlencode({'stdout': 1, 'stderr': 1})}",
+    )
+    if status >= 400:
+        return ""
+    return raw
+
+
+def _remove_legacy_managed_storage_stack(storage_class: StorageClassSpec, state: Dict[str, Any]) -> str | None:
+    if not _storage_apply_available(state):
+        return None
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    stack_name = f"luma-storage-{slugify(storage_class.name)}"
+    return remove_stack(config, _storage_stack_service_spec(stack_name), state)
 
 
 def _storage_node_is_local(record: Dict[str, Any], node_name: str) -> bool:
@@ -967,37 +1092,47 @@ def handle_storage_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
     existing = storage_classes.pop(name, None)
     removed = bool(existing)
-    storage_stack = _remove_managed_storage_class(name, existing, state) if isinstance(existing, dict) else None
+    storage_host = _remove_managed_storage_class(name, existing, state) if isinstance(existing, dict) else None
     state["storageClasses"] = storage_classes
     save_state(state)
     result = {"name": name, "removed": removed}
-    if storage_stack:
-        result["storageStack"] = storage_stack
+    if storage_host:
+        result["storageHost"] = storage_host
     return result
 
 
 def _remove_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, str] | None:
-    storage_class = StorageClassSpec(
-        name=name,
-        provider=str(item.get("provider") or "nfs"),
-        mode=str(item.get("mode") or "managed"),
-        node=str(item.get("node") or "") or None,
-        path=str(item.get("path") or "") or None,
-        endpoint=str(item.get("endpoint") or "") or None,
-        mount_options=str(item.get("mountOptions") or "nfsvers=4,rw"),
-        nodes=[str(value) for value in item.get("nodes") or []],
-        regions=[str(value) for value in item.get("regions") or []],
-        raw=dict(item),
-    )
-    stack = managed_storage_stack(storage_class)
-    if not stack:
+    storage_class = _storage_class_spec_from_record(name, item)
+    if storage_class.mode != "managed":
         return None
+    export_removed = _remove_local_nfs_export(storage_class, state)
     if not _storage_apply_available(state):
-        return {"name": stack.name, "removed": "pending: Portainer is not configured"}
+        return {"name": name, "removed": "pending: Portainer is not configured", "export": export_removed}
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
-    removed = remove_stack(config, _storage_stack_service_spec(stack.name), state)
-    return {"name": stack.name, "removed": removed}
+    stack_name = f"luma-storage-{slugify(storage_class.name)}"
+    removed = remove_stack(config, _storage_stack_service_spec(stack_name), state)
+    return {"name": name, "removed": removed, "export": export_removed}
+
+
+def _remove_local_nfs_export(storage_class: StorageClassSpec, state: Dict[str, Any]) -> str:
+    if not storage_class.node:
+        return "skipped: no node"
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, storage_class.node) or {}
+    if not _storage_node_is_local(record, storage_class.node):
+        return "skipped: storage node is not local to this control process"
+    export_file = f"/etc/exports.d/luma-{slugify(storage_class.name)}.exports"
+    command = (
+        "set -euo pipefail; "
+        f"rm -f {shlex.quote(export_file)}; "
+        "if command -v exportfs >/dev/null 2>&1; then exportfs -ra; fi"
+    )
+    try:
+        _run_host_prep_command(command)
+    except LumaError as exc:
+        raise LumaError(f"failed to remove managed NFS export {storage_class.name} on local node: {exc}") from exc
+    return "removed local NFS export"
 
 
 def _load_compose_request(body: Dict[str, Any], source_name: str) -> ComposeDeploymentSpec:
@@ -1032,6 +1167,50 @@ def _safe_compose_upload_path(sidecar_path: Path, compose_value: str) -> Path:
     if compose_path.is_absolute() or ".." in compose_path.parts or not compose_path.name:
         raise LumaError("compose path must be a relative path without .. when deploying through Luma Control")
     return sidecar_path.parent / compose_path
+
+
+def _prepare_compose_managed_storage(deployment: ComposeDeploymentSpec, state: Dict[str, Any]) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    prepared_classes: set[str] = set()
+    for storage_class in deployment.storage_classes.values():
+        if storage_class.mode != "managed":
+            continue
+        prepared_classes.add(storage_class.name)
+        results.append(_prepare_managed_nfs_host(storage_class, state))
+    for volume in deployment.volumes.values():
+        if not volume.storage_class:
+            continue
+        storage_class = deployment.storage_classes[volume.storage_class]
+        if storage_class.mode != "managed":
+            continue
+        if storage_class.name not in prepared_classes:
+            results.append(_prepare_managed_nfs_host(storage_class, state))
+            prepared_classes.add(storage_class.name)
+        results.append(_prepare_managed_volume_path(storage_class, volume.path or volume.name, state))
+    return results
+
+
+def _prepare_managed_volume_path(storage_class: StorageClassSpec, sub_path: str, state: Dict[str, Any]) -> dict[str, str]:
+    if not storage_class.node or not storage_class.path:
+        raise LumaError(f"managed storageClass {storage_class.name} requires node and path")
+    relative = Path(str(sub_path).strip().strip("/"))
+    if relative.is_absolute() or ".." in relative.parts or not str(relative):
+        raise LumaError(f"managed storage volume path must be relative and cannot contain ..: {sub_path}")
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, storage_class.node) or {}
+    full_path = Path(storage_class.path) / relative
+    if not _storage_node_is_local(record, storage_class.node):
+        return {
+            "storageClass": storage_class.name,
+            "path": str(full_path),
+            "prepared": "pending: storage node is not local to this control process",
+        }
+    command = f"install -d -m 755 {shlex.quote(str(full_path))}"
+    try:
+        _run_host_prep_command(command)
+    except LumaError as exc:
+        raise LumaError(f"failed to create managed storage volume path {full_path}: {exc}") from exc
+    return {"storageClass": storage_class.name, "path": str(full_path), "prepared": "volume path ready"}
 
 
 def _emit_compose_warnings(
