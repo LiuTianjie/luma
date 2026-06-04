@@ -2014,7 +2014,7 @@ class CliTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         body = json.loads(request.data.decode("utf-8"))
         self.assertEqual(body["timeout"], 180)
-        self.assertEqual(urlopen.call_args.kwargs["timeout"], 180)
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 240)
 
     def test_secret_set_sends_value_to_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4407,6 +4407,8 @@ class ControlApiTests(unittest.TestCase):
                 payload = run_task.call_args.args[3]
                 self.assertEqual(payload["endpoint"], "storage-node.local:/srv/luma-db")
                 self.assertEqual(payload["workload"], "postgres")
+                self.assertEqual(payload["timeout"], 300)
+                self.assertEqual(run_task.call_args.kwargs["timeout"], 330)
                 saved = load_state()["storageClasses"]["db-storage"]
                 self.assertEqual(saved["verifiedWorkloads"], ["postgres"])
                 self.assertEqual(saved["workloadProbes"]["postgres"]["taskId"], "task-1")

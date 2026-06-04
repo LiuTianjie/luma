@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import shlex
 import shutil
 import subprocess
@@ -19,22 +20,27 @@ class LocalResult:
 
 class LocalExecutor:
     def run_result(self, command: str, *, timeout: int | None = None) -> LocalResult:
+        process = subprocess.Popen(
+            ["bash", "-lc", command],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         try:
-            result = subprocess.run(
-                ["bash", "-lc", command],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-                timeout=timeout,
-            )
+            stdout, _ = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            output = exc.stdout or ""
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, _ = process.communicate()
+            output = (exc.stdout or "") + (stdout or "")
             if isinstance(output, bytes):
                 output = output.decode(errors="replace")
             message = f"command timed out after {timeout}s"
             return LocalResult(code=124, output=(str(output) + "\n" + message).strip())
-        return LocalResult(code=result.returncode, output=result.stdout)
+        return LocalResult(code=process.returncode or 0, output=stdout or "")
 
     def run(self, command: str, *, check: bool = True, timeout: int | None = None) -> str:
         result = self.run_result(command, timeout=timeout)

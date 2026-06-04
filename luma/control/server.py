@@ -1471,6 +1471,7 @@ def handle_storage_probe(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     node_record = _require_storage_probe_node(state, node_name)
     endpoint = _storage_probe_endpoint(storage_class, node_record, state)
     probe_id = f"{slugify(name)}-{slugify(workload)}-{secrets.token_hex(4)}"
+    probe_timeout = int(body.get("timeout") or 300)
     result = _run_node_agent_task(
         state,
         node_name,
@@ -1481,9 +1482,9 @@ def handle_storage_probe(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             "mountOptions": storage_class.mount_options,
             "workload": workload,
             "probeId": probe_id,
-            "timeout": int(body.get("timeout") or 300),
+            "timeout": probe_timeout,
         },
-        timeout=int(body.get("timeout") or 300),
+        timeout=probe_timeout + 30,
         required_capability="docker-volume",
     )
     state = load_state()

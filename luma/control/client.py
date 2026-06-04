@@ -368,11 +368,12 @@ class ControlClient:
         return self.request("POST", "/v1/storage/remove", {"name": name})
 
     def probe_storage(self, *, name: str, workload: str, node: str = "", timeout: int = 300) -> Dict[str, Any]:
+        wait_timeout = timeout + 60
         return self.request(
             "POST",
             "/v1/storage/probe",
             {"name": name, "workload": workload, "node": node, "timeout": timeout},
-            timeout=timeout,
+            timeout=wait_timeout,
         )
 
 
