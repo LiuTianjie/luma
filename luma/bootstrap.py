@@ -22,6 +22,7 @@ from .errors import LumaError
 from .io import dump_yaml
 from .local import LocalExecutor
 from .profiles import PROFILES, Profile
+from .registry import image_uses_mutable_latest_tag
 from .remote import RemoteExecutor
 
 
@@ -266,13 +267,14 @@ def _reset_portainer_state(remote: Executor) -> str:
 
 def deploy_control_stack(remote: Executor, config: LumaConfig, domain: str) -> list[str]:
     image = _control_image(config)
-    _ensure_control_image(remote, image)
+    deploy_image, image_result = _resolve_control_image(remote, image)
     stack_text = asset_text("stacks/core/luma-control/stack.yml")
     stack_text = stack_text.replace("${LUMA_CONTROL_DOMAIN:-luma.local}", domain)
-    stack_text = stack_text.replace(f"${{LUMA_CONTROL_IMAGE:-{DEFAULT_CONTROL_IMAGE}}}", image)
+    stack_text = stack_text.replace(f"${{LUMA_CONTROL_IMAGE:-{DEFAULT_CONTROL_IMAGE}}}", deploy_image)
     return [
+        image_result,
         _deploy_stack_text(remote, stack_text, "luma-control"),
-        _force_update_service_image(remote, "luma-control_luma-control", image),
+        _force_update_service_image(remote, "luma-control_luma-control", deploy_image),
         _wait_service_ready(remote, "luma-control_luma-control"),
     ]
 
@@ -304,6 +306,47 @@ def _ensure_control_image(remote: Executor, image: str) -> str:
         ) from exc
     else:
         return f"Control image pulled: {image}"
+
+
+def _resolve_control_image(remote: Executor, image: str) -> tuple[str, str]:
+    result = _ensure_control_image(remote, image)
+    if not image_uses_mutable_latest_tag(image):
+        return image, result
+    digest_image = _control_image_repo_digest(remote, image)
+    return digest_image, f"{result}; resolved digest: {digest_image}"
+
+
+def _control_image_repo_digest(remote: Executor, image: str) -> str:
+    inspect_output = _last_command_value(
+        _docker(remote, f"docker image inspect --format '{{{{json .RepoDigests}}}}' {shlex.quote(image)}")
+    )
+    try:
+        repo_digests = json.loads(inspect_output)
+    except json.JSONDecodeError as exc:
+        raise LumaError(f"failed to read repo digest for Luma Control image: {image}") from exc
+    if not isinstance(repo_digests, list):
+        raise LumaError(f"failed to read repo digest for Luma Control image: {image}")
+
+    repository = _image_repository(image)
+    digests = [str(item) for item in repo_digests if isinstance(item, str) and "@sha256:" in item]
+    for digest in digests:
+        if digest.split("@", 1)[0] == repository:
+            return digest
+    if digests:
+        return digests[0]
+    raise LumaError(
+        f"Docker pulled Luma Control image {image}, but no immutable repo digest was available. "
+        "Set LUMA_CONTROL_IMAGE/defaults.images.lumaControl to a digest-pinned image."
+    )
+
+
+def _image_repository(image: str) -> str:
+    reference = str(image or "").strip().split("@", 1)[0]
+    slash = reference.rfind("/")
+    colon = reference.rfind(":")
+    if colon > slash:
+        return reference[:colon]
+    return reference
 
 
 def install_control_config(remote: Executor, config: LumaConfig, node: NodeConfig | None = None) -> str:

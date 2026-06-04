@@ -116,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.39 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.40 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1141,7 +1141,13 @@ def _refresh_joined_node_agent(args: argparse.Namespace) -> None:
         raise LumaError(
             "joined node metadata is missing; pass --control-url https://<control-domain> --token <node-join-token> once"
         ) from exc
-    _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=insecure, resolve_ip=resolve_ip, allow_skip=False)
+    try:
+        _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=insecure, resolve_ip=resolve_ip, allow_skip=False)
+    except LumaError as exc:
+        if _node_agent_credentials_unsupported(exc):
+            print(f"[skip] Luma node agent skipped: {exc}")
+            return
+        raise
 
 
 def _refresh_local_node_agent(
@@ -1178,6 +1184,14 @@ def _refresh_local_node_agent(
         resolve_ip=resolve_ip,
     )
     print("[ok] Luma node agent installed")
+
+
+def _node_agent_credentials_unsupported(exc: LumaError) -> bool:
+    message = str(exc)
+    return "does not support node-agent credentials" in message or (
+        "control API error 404" in message and "not found" in message
+    )
+
 
 def _local_agent_config() -> Dict[str, Any] | None:
     path = DEFAULT_AGENT_CONFIG

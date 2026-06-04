@@ -28,10 +28,12 @@ from luma.bootstrap import (
     _is_tailscale_manager_addr,
     _last_command_value,
     _portainer_agent_image_candidates,
+    _resolve_control_image,
     _reset_portainer_state,
     _traefik_ports,
     bootstrap_node,
     bootstrap_manager_local,
+    deploy_control_stack,
     initialize_portainer,
     install_control_config,
     install_docker,
@@ -1028,6 +1030,22 @@ class CliTests(unittest.TestCase):
         self.assertIn("Manager control-plane refresh required", printed_text)
         self.assertIn("local manager control state found", printed_text)
 
+    def test_update_joined_node_skips_agent_refresh_when_control_is_too_old(self):
+        with patch("luma.cli._run_luma_installer") as installer, patch(
+            "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
+        ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_docker_node_id", return_value="node-1"), patch(
+            "luma.cli._refresh_local_node_agent",
+            side_effect=LumaError("control API does not support node-agent credentials yet. Update the manager control plane first."),
+        ), patch("builtins.print") as printed:
+            code = main(["update"])
+
+        self.assertEqual(code, 0)
+        installer.assert_called_once_with(install_ref=None)
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("[info] Role: joined node", printed_text)
+        self.assertIn("[skip] Luma node agent skipped", printed_text)
+        self.assertIn("[ok] Joined node update complete", printed_text)
+
     def test_update_without_manager_state_updates_cli_only(self):
         with patch("luma.cli._existing_control_state", return_value=None), patch(
             "luma.cli._run_luma_installer"
@@ -1752,6 +1770,21 @@ class CliTests(unittest.TestCase):
         self.assertIn("storage endpoints for managed NFS", str(raised.exception))
         self.assertIn("luma update manager", str(raised.exception))
 
+    def test_control_client_reports_missing_agent_token_endpoint_as_old_control(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        error = urllib.error.HTTPError(
+            "https://luma.example.com/v1/nodes/agent-token",
+            404,
+            "Not Found",
+            {},
+            io.BytesIO(b'{"error": "not found"}'),
+        )
+        with patch("urllib.request.urlopen", side_effect=error), self.assertRaises(LumaError) as raised:
+            client.issue_agent_token(node_name="home-mac-mini", node_id="node-1")
+
+        self.assertIn("does not support node-agent credentials", str(raised.exception))
+        self.assertIn("luma update manager", str(raised.exception))
+
     def test_control_client_reports_timeout_without_traceback(self):
         client = ControlClient("https://luma.example.com", "secret")
         with patch("urllib.request.urlopen", side_effect=TimeoutError("read timed out")), self.assertRaises(LumaError) as raised:
@@ -2192,6 +2225,59 @@ class PortainerWebhookTests(unittest.TestCase):
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
         self.assertTrue(any("docker pull ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
         self.assertFalse(any("docker build" in cmd for cmd in docker_commands))
+
+    def test_control_latest_image_resolves_to_pulled_repo_digest(self):
+        remote = Mock()
+
+        def sudo(command):
+            if "docker pull" in command:
+                return ""
+            if "docker image inspect --format" in command:
+                return '["ghcr.io/liutianjie/luma-control@sha256:abc123","mirror.local/luma-control@sha256:def456"]\n'
+            return ""
+
+        remote.sudo.side_effect = sudo
+
+        image, result = _resolve_control_image(remote, "ghcr.io/liutianjie/luma-control:latest")
+
+        self.assertEqual(image, "ghcr.io/liutianjie/luma-control@sha256:abc123")
+        self.assertIn("Control image pulled: ghcr.io/liutianjie/luma-control:latest", result)
+        self.assertIn("resolved digest: ghcr.io/liutianjie/luma-control@sha256:abc123", result)
+
+    def test_control_pinned_image_does_not_require_repo_digest_lookup(self):
+        remote = Mock()
+        remote.sudo.return_value = ""
+
+        image, result = _resolve_control_image(remote, "ghcr.io/liutianjie/luma-control@sha256:abc123")
+
+        self.assertEqual(image, "ghcr.io/liutianjie/luma-control@sha256:abc123")
+        self.assertEqual(result, "Control image pulled: ghcr.io/liutianjie/luma-control@sha256:abc123")
+        docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
+        self.assertFalse(any("docker image inspect --format" in cmd for cmd in docker_commands))
+
+    def test_control_stack_deploy_uses_resolved_digest_image(self):
+        digest_image = "ghcr.io/liutianjie/luma-control@sha256:abc123"
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=1, output="")
+        remote.sudo.return_value = ""
+        uploaded = {}
+
+        def capture_upload(local_path, remote_path):
+            uploaded["stack"] = Path(local_path).read_text(encoding="utf-8")
+
+        remote.upload.side_effect = capture_upload
+        config = LumaConfig({}, None)
+
+        with patch("luma.bootstrap._resolve_control_image", return_value=(digest_image, "Control image pulled: latest; resolved digest: abc123")), patch(
+            "luma.bootstrap._wait_service_ready", return_value="Service ready: luma-control_luma-control"
+        ):
+            result = deploy_control_stack(remote, config, "luma.example.com")
+
+        self.assertEqual(result[0], "Control image pulled: latest; resolved digest: abc123")
+        self.assertIn(f"image: {digest_image}", uploaded["stack"])
+        docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
+        self.assertTrue(any(f"docker service update --image {digest_image}" in cmd for cmd in docker_commands))
+        self.assertFalse(any("docker service update --image ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
 
     def test_control_service_force_updates_image_after_stack_deploy(self):
         remote = Mock()

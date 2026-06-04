@@ -70,6 +70,11 @@ class ControlClient:
             return urllib.request.urlopen(req, **kwargs)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 404 and path == "/v1/nodes/agent-token":
+                raise LumaError(
+                    "control API does not support node-agent credentials yet. "
+                    "Update the manager control plane first: run `luma update manager` on the manager."
+                ) from exc
             if _looks_like_legacy_node_api_error(detail):
                 raise LumaError(
                     "control API is older than this CLI and still expects node join profiles. "
