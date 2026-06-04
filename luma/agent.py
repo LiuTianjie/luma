@@ -249,7 +249,7 @@ def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
             _storage_probe_command(name=name, endpoint=endpoint, mount_options=mount_options, workload=workload, probe_id=probe_id),
             prefer_container=False,
             timeout_seconds=timeout_seconds,
-            cleanup_command=_storage_probe_cleanup_command(container_name=container_name, volume_name=volume_name),
+            cleanup_command=f"{_storage_probe_cleanup_command(container_name=container_name, volume_name=volume_name)}; cleanup",
         )
         return {"name": name, "workload": workload, "probeId": probe_id, "message": f"storage workload probe passed: {workload}"}
     if action == "remove-managed-nfs-export":

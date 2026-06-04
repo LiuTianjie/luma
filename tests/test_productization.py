@@ -174,6 +174,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertNotIn("timeout ", command)
         self.assertEqual(run.call_args.kwargs["timeout_seconds"], 300)
         self.assertIn('"$docker_cli" rm -f', run.call_args.kwargs["cleanup_command"])
+        self.assertTrue(run.call_args.kwargs["cleanup_command"].endswith("; cleanup"))
         self.assertFalse(run.call_args.kwargs.get("prefer_container", True))
         self.assertEqual(result["workload"], "postgres")
 
