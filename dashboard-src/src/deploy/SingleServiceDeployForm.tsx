@@ -1,9 +1,7 @@
 import type { DashboardNode } from "../types";
 import type { Exposure, KeyValueRow, Region, ServiceManifestDraft } from "./types";
+import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, REGIONS, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { serviceExposureRegion } from "./yaml";
-
-const exposures: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"];
-const regions: Region[] = ["cn", "global", "home"];
 
 export function SingleServiceDeployForm({
   draft,
@@ -15,6 +13,15 @@ export function SingleServiceDeployForm({
   onChange: (draft: ServiceManifestDraft) => void;
 }) {
   const patch = (next: Partial<ServiceManifestDraft>) => onChange({ ...draft, ...next });
+  const nodeOptions = nodesForRegion(nodes, draft.region);
+  const selectedNodeMissing = draft.node && !nodeOptions.some((node) => node.name === draft.node);
+  const patchRegion = (region: Region) => {
+    patch({ region, node: clearNodeIfIncompatible(nodes, draft.node, region) });
+  };
+  const patchExposure = (exposure: Exposure) => {
+    const region = serviceExposureRegion(exposure, draft.region);
+    patch({ exposure, region, node: clearNodeIfIncompatible(nodes, draft.node, region) });
+  };
   const updateEnv = (id: string, next: Partial<KeyValueRow>) => {
     patch({ env: draft.env.map((row) => row.id === id ? { ...row, ...next } : row) });
   };
@@ -25,8 +32,16 @@ export function SingleServiceDeployForm({
         <div className="deploy-field-grid">
           <label><span>服务名</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
           <label><span>镜像</span><input value={draft.image} onChange={(event) => patch({ image: event.target.value })} /></label>
-          <label><span>区域</span><select value={draft.region} onChange={(event) => patch({ region: event.target.value as Region })}>{regions.map((region) => <option key={region}>{region}</option>)}</select></label>
-          <label><span>节点</span><select value={draft.node} onChange={(event) => patch({ node: event.target.value })}><option value="">自动调度</option>{nodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>
+          <label><span>区域</span><select value={draft.region} onChange={(event) => patchRegion(event.target.value as Region)}>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region)}</option>)}</select></label>
+          <label>
+            <span>节点</span>
+            <select value={draft.node} onChange={(event) => patch({ node: event.target.value })}>
+              <option value="">自动调度到 {draft.region} ready 节点</option>
+              {selectedNodeMissing ? <option value={draft.node} disabled>{draft.node} (当前不可用)</option> : null}
+              {nodeOptions.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}
+            </select>
+            <small>仅在必须固定机器时选择节点。</small>
+          </label>
           <label><span>副本</span><input type="number" min={1} value={draft.replicas} onChange={(event) => patch({ replicas: Number(event.target.value || 1) })} /></label>
           <label className="deploy-toggle"><input type="checkbox" checked={draft.proxy} onChange={(event) => patch({ proxy: event.target.checked })} /><span>启用 egress proxy</span></label>
         </div>
@@ -34,10 +49,10 @@ export function SingleServiceDeployForm({
       <section className="deploy-config-section" id="deploy-network">
         <header><span>02</span><h3>入口与网络</h3></header>
         <div className="deploy-field-grid">
-          <label><span>入口类型</span><select value={draft.exposure} onChange={(event) => {
-            const exposure = event.target.value as Exposure;
-            patch({ exposure, region: serviceExposureRegion(exposure, draft.region) });
-          }}>{exposures.map((exposure) => <option key={exposure}>{exposure}</option>)}</select></label>
+          <label><span>入口类型</span><select value={draft.exposure} onChange={(event) => patchExposure(event.target.value as Exposure)}>{EXPOSURES.map((exposure) => {
+            const requiredRegion = requiredRegionForExposure(exposure);
+            return <option key={exposure} value={exposure} disabled={Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion))}>{exposureOptionLabel(nodes, exposure)}</option>;
+          })}</select></label>
           <label><span>域名</span><input value={draft.domain} disabled={draft.exposure === "none"} onChange={(event) => patch({ domain: event.target.value })} /></label>
           <label><span>容器端口</span><input value={draft.port} disabled={draft.exposure === "none"} onChange={(event) => patch({ port: event.target.value })} /></label>
           <label><span>发布端口</span><input value={draft.publishPort} disabled={draft.exposure !== "tailscale-relay"} onChange={(event) => patch({ publishPort: event.target.value })} /></label>

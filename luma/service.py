@@ -49,6 +49,7 @@ class ServiceSpec:
     relay: Dict[str, Any] = field(default_factory=dict)
     tunnel: Dict[str, Any] = field(default_factory=dict)
     proxy: bool = False
+    swarm_service_name: Optional[str] = None
 
     @property
     def slug(self) -> str:

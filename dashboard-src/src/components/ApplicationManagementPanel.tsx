@@ -80,7 +80,7 @@ function serviceToDraft(app: Application): ServiceManifestDraft {
     name: app.stack,
     image: primary.image || "",
     region: (primary.region as ServiceManifestDraft["region"]) || "cn",
-    node: primary.node || "",
+    node: "",
     exposure: (primary.exposure as ServiceManifestDraft["exposure"]) || "none",
     domain: primary.domain || "",
     port: primary.targetPort || "",
@@ -93,7 +93,7 @@ function appToComposeDraft(app: Application): ComposeDeploymentDraft {
   const composeServices: ComposeServiceDraft[] = app.services.map((service) => ({
     name: service.name || "app",
     region: (service.region as ComposeServiceDraft["region"]) || "",
-    node: service.node || "",
+    node: "",
     exposure: (service.exposure as ComposeServiceDraft["exposure"]) || "none",
     domain: service.domain || "",
     port: service.targetPort || "",

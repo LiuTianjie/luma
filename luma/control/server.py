@@ -48,7 +48,7 @@ from ..registry import (
     registry_auth_for_image,
     registry_auth_matches_image,
 )
-from ..render import render_stack, render_tailscale_route, route_path, stack_path
+from ..render import named_volume_sources, render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service, slugify
 from .. import __version__
 from .state import init_state, load_state, require_token, save_state, state_path
@@ -972,6 +972,8 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
     name = _remove_request_name(body)
+    if body.get("deleteStorage") and body.get("skipPortainer"):
+        raise LumaError("--delete-storage cannot be combined with --skip-portainer")
     service_record = _service_deployment_record(state, name)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
@@ -1010,6 +1012,7 @@ def _remove_service_deployment(
     files = [str(stack_target)]
     if route_target:
         files.append(str(route_target))
+    storage_task_nodes = _service_task_nodes(service) if body.get("deleteStorage") and _service_docker_volume_names(service) and not dry_run else []
 
     dns_result = _deploy_step(
         steps,
@@ -1035,6 +1038,14 @@ def _remove_service_deployment(
         else _remove_generated_files(stack_target, route_target),
         progress=progress,
     )
+    storage_cleanup = _deploy_step(
+        steps,
+        "Delete storage",
+        lambda: _cleanup_service_storage(service, state, dry_run=dry_run, task_nodes=storage_task_nodes)
+        if body.get("deleteStorage")
+        else "Storage cleanup skipped",
+        progress=progress,
+    )
     if not dry_run and not body.get("skipPortainer") and _forget_service_deployment(state, service):
         save_state(state)
     return {
@@ -1045,6 +1056,7 @@ def _remove_service_deployment(
         "dns": dns_result,
         "portainer": portainer_result,
         "generatedFiles": files_result,
+        "storageCleanup": storage_cleanup,
         "dryRun": dry_run,
         "steps": steps,
     }
@@ -1101,6 +1113,14 @@ def _remove_compose_deployment(
         else _remove_generated_files(stack_target, *route_targets),
         progress=progress,
     )
+    storage_cleanup = _deploy_step(
+        steps,
+        "Delete storage",
+        lambda: _cleanup_compose_managed_storage(deployment, state, dry_run=dry_run)
+        if body.get("deleteStorage")
+        else "Storage cleanup skipped",
+        progress=progress,
+    )
     if not dry_run and not body.get("skipPortainer") and _forget_compose_deployment(state, deployment):
         save_state(state)
     return {
@@ -1111,6 +1131,7 @@ def _remove_compose_deployment(
         "dns": dns_results,
         "portainer": portainer_result,
         "generatedFiles": files_result,
+        "storageCleanup": storage_cleanup,
         "dryRun": dry_run,
         "steps": steps,
     }
@@ -1251,10 +1272,29 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         progress=progress,
     )
 
-    route_texts = render_compose_routes(config, deployment)
-    for service_name, route_text in route_texts.items():
+    for service_name, service in deployment.services.items():
+        if service.exposure != "tailscale-relay" or not service.domain or not service.port:
+            continue
         route_target = _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
         route_target.parent.mkdir(parents=True, exist_ok=True)
+        service_spec = _compose_service_as_service_spec(deployment, service)
+        relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host"))
+        if body.get("skipWebhook") and not relay_is_explicit:
+            _deploy_step(
+                steps,
+                f"Write route {service_name}",
+                lambda: "Route skipped: --skip-webhook requires deploy to infer tailscale relay",
+                progress=progress,
+            )
+            continue
+        if not body.get("skipWebhook"):
+            service_spec = _deploy_step(
+                steps,
+                f"Resolve relay {service.name}",
+                lambda service_spec=service_spec: resolve_tailscale_relay(service_spec),
+                progress=progress,
+            )
+        route_text = render_tailscale_route(config, service_spec)
         _deploy_step(steps, f"Write route {service_name}", lambda route_target=route_target, route_text=route_text: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
         written.append(str(route_target))
 
@@ -1775,6 +1815,191 @@ def _prepare_managed_volume_path(storage_class: StorageClassSpec, sub_path: str,
     return {"storageClass": storage_class.name, "path": str(full_path), "prepared": "volume path ready"}
 
 
+def _cleanup_service_storage(
+    service: ServiceSpec,
+    state: Dict[str, Any],
+    *,
+    dry_run: bool,
+    task_nodes: list[dict[str, str]] | None = None,
+) -> str:
+    volume_names = _service_docker_volume_names(service)
+    if not volume_names:
+        return "No named Docker volumes referenced"
+    if dry_run:
+        return "Docker volumes would be removed: " + ", ".join(volume_names)
+    targets = [_remove_docker_volume_across_nodes(volume_name, task_nodes or [], state) for volume_name in volume_names]
+    removed = sum(1 for item in targets if "removed" in item.get("status", ""))
+    skipped = sum(1 for item in targets if item.get("status", "").startswith("skipped"))
+    return f"Docker volume cleanup finished: removed={removed}, skipped={skipped}"
+
+
+def _service_docker_volume_names(service: ServiceSpec) -> list[str]:
+    return [f"{service.slug}_{source}" for source in named_volume_sources(service.volumes)]
+
+
+def _service_task_nodes(service: ServiceSpec) -> list[dict[str, str]]:
+    node_by_id = _swarm_node_map()
+    service_name = service.swarm_service_name or f"{service.slug}_{service.slug}"
+    filters = urllib.parse.quote(json.dumps({"service": {service_name: True}, "desired-state": {"running": True}}), safe="")
+    tasks = docker_request("GET", f"/tasks?filters={filters}")
+    if not isinstance(tasks, list):
+        raise LumaError("Docker API returned invalid task list")
+    nodes: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        node_id = str(task.get("NodeID") or "")
+        node = node_by_id.get(node_id)
+        if not node:
+            continue
+        key = str(node.get("id") or node_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        nodes.append(node)
+    if not nodes and service.node:
+        for node in node_by_id.values():
+            if service.node in {str(node.get("lumaNode") or ""), str(node.get("hostname") or "")}:
+                nodes.append(node)
+                break
+    return nodes
+
+
+def _remove_docker_volume_across_nodes(volume_name: str, task_nodes: list[dict[str, str]], state: Dict[str, Any]) -> dict[str, str]:
+    if not task_nodes:
+        return _remove_local_docker_volume(volume_name)
+    statuses: list[str] = []
+    seen: set[str] = set()
+    for node in task_nodes:
+        key = str(node.get("id") or node.get("hostname") or node.get("lumaNode") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        if _swarm_node_is_local(node):
+            result = _remove_local_docker_volume(volume_name)
+            statuses.append(result["status"])
+            continue
+        node_name = str(node.get("lumaNode") or node.get("hostname") or "").strip()
+        if not node_name:
+            statuses.append("skipped: task node has no Luma node name")
+            continue
+        result = _run_node_agent_task(
+            state,
+            node_name,
+            "remove-docker-volume",
+            {"name": volume_name},
+            required_capability="docker-volume",
+        )
+        statuses.append(str(result.get("message") or "removed by node agent"))
+    status = "; ".join(statuses) if statuses else "skipped: no task nodes"
+    return {"name": volume_name, "status": status}
+
+
+def _remove_local_docker_volume(volume_name: str) -> dict[str, str]:
+    from ..agent import _safe_docker_volume_name
+
+    safe_name = _safe_docker_volume_name(volume_name)
+    encoded = urllib.parse.quote(safe_name, safe="")
+    deadline = time.monotonic() + 30
+    while True:
+        status, raw = docker_request_raw("DELETE", f"/volumes/{encoded}?force=true")
+        if status == 404:
+            return {"name": safe_name, "status": "skipped: Docker volume not found"}
+        if status < 400:
+            return {"name": safe_name, "status": "removed local Docker volume"}
+        if status == 409 and time.monotonic() < deadline:
+            time.sleep(2)
+            continue
+        raise LumaError(f"failed to remove Docker volume {safe_name}: Docker API error {status}: {raw}")
+
+
+def _swarm_node_is_local(node: dict[str, str]) -> bool:
+    try:
+        info = docker_request("GET", "/info")
+    except (LumaError, AssertionError):
+        return False
+    if not isinstance(info, dict):
+        return False
+    swarm = info.get("Swarm") if isinstance(info.get("Swarm"), dict) else {}
+    local_values = {
+        str(info.get("Name") or ""),
+        str(swarm.get("NodeID") or ""),
+    }
+    node_values = {
+        str(node.get("id") or ""),
+        str(node.get("hostname") or ""),
+        str(node.get("lumaNode") or ""),
+        str(node.get("lumaNodeId") or ""),
+    }
+    return bool((local_values - {""}) & (node_values - {""}))
+
+
+def _cleanup_compose_managed_storage(deployment: ComposeDeploymentSpec, state: Dict[str, Any], *, dry_run: bool) -> str:
+    targets: list[dict[str, str]] = []
+    for volume in deployment.volumes.values():
+        if not volume.storage_class:
+            continue
+        storage_class = deployment.storage_classes[volume.storage_class]
+        if storage_class.mode != "managed":
+            targets.append(
+                {
+                    "volume": volume.name,
+                    "storageClass": storage_class.name,
+                    "path": volume.path or volume.name,
+                    "status": "skipped: storageClass is not managed",
+                }
+            )
+            continue
+        targets.append(_remove_managed_volume_path(storage_class, volume.path or volume.name, state, dry_run=dry_run))
+    if not targets:
+        return "No managed storage paths referenced"
+    if dry_run:
+        paths = ", ".join(item["path"] for item in targets if not item["status"].startswith("skipped"))
+        skipped = sum(1 for item in targets if item["status"].startswith("skipped"))
+        suffix = f"; skipped={skipped}" if skipped else ""
+        return f"Managed storage paths would be removed: {paths or '-'}{suffix}"
+    removed = sum(1 for item in targets if "removed" in item["status"])
+    skipped = sum(1 for item in targets if item["status"].startswith("skipped"))
+    return f"Managed storage cleanup finished: removed={removed}, skipped={skipped}"
+
+
+def _remove_managed_volume_path(storage_class: StorageClassSpec, sub_path: str, state: Dict[str, Any], *, dry_run: bool) -> dict[str, str]:
+    if not storage_class.node or not storage_class.path:
+        raise LumaError(f"managed storageClass {storage_class.name} requires node and path")
+    relative = _managed_volume_relative_path(sub_path)
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, storage_class.node) or {}
+    full_path = Path(storage_class.path) / relative
+    item = {"storageClass": storage_class.name, "path": str(full_path)}
+    if dry_run:
+        return {**item, "status": "planned"}
+    if not _storage_node_is_local(record, storage_class.node):
+        result = _run_node_agent_task(
+            state,
+            storage_class.node,
+            "remove-managed-volume-path",
+            {"root": storage_class.path, "relative": str(relative)},
+        )
+        return {
+            **item,
+            "status": str(result.get("message") or "removed by node agent"),
+            "taskId": str(result.get("taskId") or ""),
+        }
+    command = _remove_managed_volume_command(storage_class.path, str(relative))
+    try:
+        _run_host_prep_command(command)
+    except LumaError as exc:
+        raise LumaError(f"failed to remove managed storage volume path {full_path}: {exc}") from exc
+    return {**item, "status": "removed local path"}
+
+
+def _remove_managed_volume_command(root: str, relative: str) -> str:
+    from ..agent import _remove_volume_path_command
+
+    return _remove_volume_path_command(root, relative)
+
+
 def _managed_volume_relative_path(sub_path: str) -> Path:
     relative = Path(str(sub_path).strip().strip("/"))
     if relative.is_absolute() or ".." in relative.parts or not str(relative):
@@ -1830,6 +2055,7 @@ def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service:
         relay=service.relay,
         tunnel=service.tunnel,
         proxy=service.proxy,
+        swarm_service_name=f"{deployment.slug}_{service.name}",
     )
 
 
@@ -2590,8 +2816,10 @@ def _dashboard_service(
     constraints = placement.get("Constraints") if isinstance(placement.get("Constraints"), list) else []
     labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
     route = _traefik_route_from_labels(labels)
-    route_id = stack or name
-    route_file = route_files.get(route_id) or route_files.get(name)
+    compose_stack = str(labels.get("luma.compose.stack") or "").strip()
+    compose_service = str(labels.get("luma.compose.service") or "").strip()
+    route_id = f"{compose_stack}-{slugify(compose_service)}" if compose_stack and compose_service else stack or name
+    route_file = route_files.get(route_id) or route_files.get(stack or name) or route_files.get(name)
     counts, task_nodes = _dashboard_task_counts(tasks, node_by_id)
     desired = _service_desired_replicas(spec, counts)
     region = _constraint_value(constraints, "node.labels.region")
@@ -3014,7 +3242,7 @@ def _swarm_task_upstream_urls(service: ServiceSpec) -> list[str]:
 
 def _running_task_upstream_urls(service: ServiceSpec, port: int) -> tuple[list[str], int]:
     node_by_id = _swarm_node_map()
-    service_name = f"{service.slug}_{service.slug}"
+    service_name = service.swarm_service_name or f"{service.slug}_{service.slug}"
     filters = urllib.parse.quote(json.dumps({"service": {service_name: True}, "desired-state": {"running": True}}), safe="")
     tasks = docker_request("GET", f"/tasks?filters={filters}")
     if not isinstance(tasks, list):
@@ -3065,6 +3293,7 @@ def _swarm_node_map() -> dict[str, dict[str, str]]:
         labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
         status = node.get("Status") if isinstance(node.get("Status"), dict) else {}
         result[node_id] = {
+            "id": node_id,
             "hostname": str(description.get("Hostname") or ""),
             "region": str(labels.get("region") or ""),
             "lumaNode": str(labels.get("luma.node.name") or ""),

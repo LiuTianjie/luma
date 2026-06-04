@@ -181,3 +181,23 @@ luma storage migrate luma.compose.yml \
   --from-node home-mac-mini \
   --from-volume pg-data
 ```
+
+---
+
+## 6. 移除与清理
+
+默认移除 Compose 应用时，Luma 会删除应用 Stack、生成的 route 文件和公网 DNS，但**不会删除存储数据**：
+
+```bash
+luma service remove app-stack --dry-run
+luma service remove app-stack
+```
+
+如果确定要连该应用引用的托管存储子目录一起删除，显式加 `--delete-storage`：
+
+```bash
+luma service remove app-stack --dry-run --delete-storage
+luma service remove app-stack --delete-storage
+```
+
+清理依据来自 control-plane 在上次成功部署时保存的 sidecar/manifest，不依赖执行命令的 client 机器上还有 YAML 文件。Compose 部署只删除旁车清单里 `volumes.<name>.path` 指向的 managed storage 子目录，不删除 storageClass 本身，也不清理 unmanaged/external 存储。普通单服务部署也支持 `--delete-storage`，会删除记录 manifest 中声明的 named Docker volume，例如 `data:/data`，但会跳过 bind mount 路径。`--delete-storage` 不能和 `--skip-portainer` 一起使用。

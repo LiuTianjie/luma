@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, Mock, patch
 import yaml
 
 from luma import __version__
-from luma.agent import _agent_executable_args, _systemd_unit
+from luma.agent import _agent_executable_args, _systemd_unit, execute_agent_task
 from luma.assets import asset_text
 from luma.config import LumaConfig
 from luma.compose import load_compose_deployment
@@ -124,6 +124,30 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("luma.cli", args)
         self.assertNotIn("ExecStart=- ", unit)
         self.assertIn("node-agent run --config /opt/luma/node-agent/agent.json", unit)
+
+    def test_node_agent_can_remove_managed_volume_path(self):
+        with patch("luma.agent._run_fixed_host_task") as run:
+            result = execute_agent_task(
+                {
+                    "action": "remove-managed-volume-path",
+                    "payload": {"root": "/srv/luma", "relative": "nextcloud/nextcloud-db"},
+                }
+            )
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        self.assertIn("/srv/luma/nextcloud/nextcloud-db", command)
+        self.assertIn("rm -rf", command)
+        self.assertEqual(result["path"], "/srv/luma/nextcloud/nextcloud-db")
+
+    def test_node_agent_can_remove_docker_volume(self):
+        with patch("luma.agent._run_fixed_host_task") as run:
+            result = execute_agent_task({"action": "remove-docker-volume", "payload": {"name": "nextcloud_nextcloud-db"}})
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        self.assertIn("docker volume inspect nextcloud_nextcloud-db", command)
+        self.assertIn("docker volume rm -f nextcloud_nextcloud-db", command)
+        self.assertFalse(run.call_args.kwargs.get("prefer_container", True))
+        self.assertEqual(result["name"], "nextcloud_nextcloud-db")
 
     def test_installer_does_not_change_system_dns(self):
         root = Path(__file__).resolve().parents[1]
@@ -357,8 +381,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.service_command, "remove")
         self.assertFalse(args.skip_dns)
         self.assertFalse(args.skip_portainer)
+        self.assertFalse(args.delete_storage)
         self.assertFalse(args.dry_run)
         self.assertEqual(args.timeout, 300)
+        args = build_parser().parse_args(["service", "remove", "app", "--delete-storage"])
+        self.assertTrue(args.delete_storage)
 
     def test_compose_and_storage_parsers_accept_planned_commands(self):
         args = build_parser().parse_args(["compose", "deploy", "luma.compose.yml", "--dry-run"])
@@ -485,6 +512,7 @@ class CliTests(unittest.TestCase):
                 kwargs = client.remove_service.call_args.kwargs
                 self.assertEqual(kwargs["name"], "api")
                 self.assertTrue(kwargs["dry_run"])
+                self.assertFalse(kwargs["delete_storage"])
                 printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
                 self.assertIn("[start] Submit remove: api", printed_text)
                 self.assertIn("[ok] Remove dry run finished: api", printed_text)
@@ -3348,6 +3376,187 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_service_remove_can_delete_single_service_named_volumes_from_recorded_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "volumes": ["api-data:/data", "/host/data:/host-data", "./local-data:/local-data"],
+                    }
+                )
+                state["deployments"] = {
+                    "services": {
+                        "api": {
+                            "kind": "service",
+                            "name": "api",
+                            "slug": "api",
+                            "manifest": manifest,
+                            "sourceName": "console:api",
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
+                stack_dir = root / "stacks" / "cn" / "api"
+                stack_dir.mkdir(parents=True)
+                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                task_nodes = [{"id": "node-1", "hostname": "worker-1", "lumaNode": "worker-1"}]
+                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: api"), patch(
+                    "luma.control.server._service_task_nodes", return_value=task_nodes
+                ) as task_lookup, patch(
+                    "luma.control.server._remove_docker_volume_across_nodes",
+                    return_value={"name": "api_api-data", "status": "removed local Docker volume"},
+                ) as remove_volume:
+                    result = handle_service_remove(
+                        state["deployToken"],
+                        {"name": "api", "skipDns": True, "deleteStorage": True},
+                    )
+                task_lookup.assert_called_once()
+                remove_volume.assert_called_once()
+                self.assertEqual(remove_volume.call_args.args[0], "api_api-data")
+                self.assertEqual(remove_volume.call_args.args[1], task_nodes)
+                self.assertIn("removed=1", result["storageCleanup"])
+                self.assertNotIn("api", load_state()["deployments"]["services"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_remove_can_delete_compose_managed_storage_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["storageClasses"] = {
+                    "home-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "home-node",
+                        "path": "/srv/luma",
+                    }
+                }
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "nextcloud",
+                        "compose": "docker-compose.yml",
+                        "region": "home",
+                        "volumes": {
+                            "nextcloud-data": {"storageClass": "home-nfs", "path": "nextcloud/nextcloud-data"},
+                            "nextcloud-db": {"storageClass": "home-nfs", "path": "nextcloud/nextcloud-db"},
+                        },
+                    }
+                )
+                compose = yaml.safe_dump(
+                    {
+                        "services": {
+                            "nextcloud": {"image": "nextcloud:apache", "volumes": ["nextcloud-data:/var/www/html"]},
+                            "postgres": {"image": "postgres:16", "volumes": ["nextcloud-db:/var/lib/postgresql/data"]},
+                        },
+                        "volumes": {"nextcloud-data": {}, "nextcloud-db": {}},
+                    }
+                )
+                state["deployments"] = {
+                    "services": {},
+                    "compose": {
+                        "nextcloud": {
+                            "kind": "compose",
+                            "name": "nextcloud",
+                            "slug": "nextcloud",
+                            "manifest": sidecar,
+                            "composeContent": compose,
+                            "sourceName": "console:nextcloud",
+                        }
+                    },
+                }
+                save_state(state)
+                stack_dir = root / "stacks" / "compose" / "nextcloud"
+                stack_dir.mkdir(parents=True)
+                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: nextcloud"), patch(
+                    "luma.control.server._storage_node_is_local", return_value=True
+                ), patch("luma.control.server._run_host_prep_command", return_value="removed") as host_prep:
+                    result = handle_service_remove(state["deployToken"], {"name": "nextcloud", "deleteStorage": True})
+                self.assertEqual(host_prep.call_count, 2)
+                commands = "\n".join(call.args[0] for call in host_prep.call_args_list)
+                self.assertIn("/srv/luma/nextcloud/nextcloud-data", commands)
+                self.assertIn("/srv/luma/nextcloud/nextcloud-db", commands)
+                self.assertIn("removed=2", result["storageCleanup"])
+                self.assertNotIn("nextcloud", load_state()["deployments"]["compose"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_remove_storage_cleanup_dry_run_does_not_delete_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["storageClasses"] = {
+                    "home-nfs": {"provider": "nfs", "mode": "managed", "node": "home-node", "path": "/srv/luma"}
+                }
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "nextcloud",
+                        "compose": "docker-compose.yml",
+                        "region": "home",
+                        "volumes": {"nextcloud-db": {"storageClass": "home-nfs", "path": "nextcloud/nextcloud-db"}},
+                    }
+                )
+                compose = yaml.safe_dump(
+                    {
+                        "services": {"postgres": {"image": "postgres:16", "volumes": ["nextcloud-db:/var/lib/postgresql/data"]}},
+                        "volumes": {"nextcloud-db": {}},
+                    }
+                )
+                state["deployments"] = {
+                    "services": {},
+                    "compose": {
+                        "nextcloud": {
+                            "kind": "compose",
+                            "name": "nextcloud",
+                            "slug": "nextcloud",
+                            "manifest": sidecar,
+                            "composeContent": compose,
+                            "sourceName": "console:nextcloud",
+                        }
+                    },
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                with patch("luma.control.server.remove_stack") as remove, patch("luma.control.server._run_host_prep_command") as host_prep:
+                    result = handle_service_remove(state["deployToken"], {"name": "nextcloud", "deleteStorage": True, "dryRun": True})
+                remove.assert_not_called()
+                host_prep.assert_not_called()
+                self.assertIn("/srv/luma/nextcloud/nextcloud-db", result["storageCleanup"])
+                self.assertIn("nextcloud", load_state()["deployments"]["compose"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_remove_rejects_delete_storage_with_skip_portainer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                save_state(state)
+                with self.assertRaisesRegex(LumaError, "delete-storage"):
+                    handle_service_remove(state["deployToken"], {"name": "nextcloud", "deleteStorage": True, "skipPortainer": True})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_control_status_reports_dns_and_portainer_readiness(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -3465,6 +3674,21 @@ class ControlApiTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
+                (root / "routes" / "nextcloud-nextcloud.yml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "http": {
+                                "routers": {"nextcloud-nextcloud": {"rule": "Host(`next.example.com`)"}},
+                                "services": {
+                                    "nextcloud-nextcloud": {
+                                        "loadBalancer": {"servers": [{"url": "http://100.64.0.2:80"}]}
+                                    }
+                                },
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 (root / "luma.yaml").write_text(
                     yaml.safe_dump(
                         {
@@ -3518,6 +3742,14 @@ class ControlApiTests(unittest.TestCase):
                         {"luma.storage.pg-data": "unmanaged"},
                     ),
                     _docker_service("svc-home", "home-panel_home-panel", "ghcr.io/me/panel:1", 1, ["node.labels.region == home"], {}),
+                    _docker_service(
+                        "svc-nextcloud",
+                        "nextcloud_nextcloud",
+                        "nextcloud:apache",
+                        1,
+                        ["node.labels.region == home"],
+                        {"luma.compose.stack": "nextcloud", "luma.compose.service": "nextcloud"},
+                    ),
                 ]
                 docker_tasks = [
                     _docker_task("svc-api", "node-manager", "running"),
@@ -3525,6 +3757,7 @@ class ControlApiTests(unittest.TestCase):
                     _docker_task("svc-api", "node-home", "failed"),
                     _docker_task("svc-worker", "node-manager", "running"),
                     _docker_task("svc-home", "node-home", "running"),
+                    _docker_task("svc-nextcloud", "node-home", "running"),
                 ]
 
                 def fake_docker(method, path, body=None):
@@ -3561,6 +3794,10 @@ class ControlApiTests(unittest.TestCase):
                 home_path = next(item for item in result["trafficPaths"] if item["id"] == "home-panel")
                 self.assertEqual(home_path["kind"], "tailscale-relay")
                 self.assertIn("http://100.64.0.2:8080", home_path["segments"])
+                nextcloud = next(item for item in result["services"] if item["fullName"] == "nextcloud_nextcloud")
+                self.assertEqual(nextcloud["routeId"], "nextcloud-nextcloud")
+                self.assertEqual(nextcloud["domain"], "next.example.com")
+                self.assertEqual(nextcloud["exposure"], "tailscale-relay")
                 serialized = json.dumps(result)
                 self.assertNotIn("portainer-secret", serialized)
                 self.assertNotIn(state["deployToken"], serialized)
@@ -4810,6 +5047,70 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn("http://100.64.0.3:8080", route)
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Resolve relay=ok", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_compose_tailscale_relay_follows_actual_home_task_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                compose = yaml.safe_dump({"services": {"nextcloud": {"image": "nextcloud:apache"}}})
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "nextcloud",
+                        "compose": "docker-compose.yml",
+                        "region": "home",
+                        "services": {
+                            "nextcloud": {
+                                "region": "home",
+                                "exposure": "tailscale-relay",
+                                "domain": "next.example.com",
+                                "port": 80,
+                            }
+                        },
+                    }
+                )
+                docker_nodes = [
+                    {
+                        "ID": "home-1",
+                        "Description": {"Hostname": "orbstack"},
+                        "Spec": {"Labels": {"region": "home"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
+                    }
+                ]
+                docker_tasks = [
+                    {
+                        "NodeID": "home-1",
+                        "DesiredState": "running",
+                        "Status": {"State": "running"},
+                    }
+                ]
+                with patch("luma.control.server.upsert_stack", return_value="Portainer stack updated"), patch(
+                    "luma.control.server.sync_dns", return_value="DNS synced"
+                ), patch("luma.control.server._probe_public_route", return_value="Public route probe skipped"), patch(
+                    "luma.control.server.docker_request", side_effect=[docker_nodes, docker_tasks]
+                ):
+                    result = handle_compose_deployment(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
+                    )
+                route = (root / "routes" / "nextcloud-nextcloud.yml").read_text(encoding="utf-8")
+                self.assertIn("http://100.64.0.2:80", route)
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Resolve relay nextcloud=ok", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

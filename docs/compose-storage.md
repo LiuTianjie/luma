@@ -242,6 +242,15 @@ luma service remove app-stack
 
 This removes the application Portainer stack, generated route files, and DNS records for public services. It does not delete storage data and does not remove manager storage class declarations. Remove storage class declarations separately with `luma storage remove <name>` only when no deployments depend on them.
 
+To deliberately remove the managed storage paths referenced by this Compose deployment, add `--delete-storage`:
+
+```bash
+luma service remove app-stack --dry-run --delete-storage
+luma service remove app-stack --delete-storage
+```
+
+This uses the Compose sidecar content recorded by the control plane during the last successful deploy, not a YAML file on the client running the command. It deletes only the application volume subdirectories declared in the sidecar, such as `volumes.pg-data.path`. It does not delete the storage class itself or unmanaged/external storage. `--delete-storage` cannot be combined with `--skip-portainer`.
+
 ## Storage Rules
 
 - `storageClass` is the Luma-managed path. The sidecar references the class by name; Luma Control provides the storage declaration from manager state and Luma resolves the service-specific endpoint during validation/render/deploy. For `provider: nfs`, Luma renders Docker local volume driver options with NFS mount settings, so application tasks mount the NFS export through Docker.
@@ -249,7 +258,7 @@ This removes the application Portainer stack, generated route files, and DNS rec
 - `local.node` is allowed for explicitly node-pinned local state. Luma rewrites the mount to a bind path and pins every service using that volume to the specified Luma node.
 - Bare compose volumes are allowed, but Luma marks them unmanaged. If Swarm reschedules the service, Docker may use a different node-local volume. Luma does not guarantee data consistency for unmanaged volumes.
 - Switching an existing deployed volume from unmanaged/local to `storageClass` is blocked by default. Run an explicit migration first and set `adopted: true` on that volume after verifying copied data, or set `initialize: empty` when starting from a fresh storage path.
-- Removing a compose stack does not delete storage data. Delete or migrate state separately.
+- Removing a compose stack does not delete storage data by default. Use `luma service remove <name> --delete-storage` only when you intentionally want to delete the managed storage paths referenced by that Compose deployment. The same flag also works for single-service deployments, where it removes named Docker volumes declared in the recorded manifest while skipping bind mounts.
 
 ## Local Node Volumes
 

@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.48 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.49 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -198,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     service_remove.add_argument("service", help="Deployed service or Compose application name")
     service_remove.add_argument("--skip-dns", action="store_true", help="Keep Cloudflare DNS records")
     service_remove.add_argument("--skip-portainer", action="store_true", help="Keep the Portainer stack running")
+    service_remove.add_argument("--delete-storage", action="store_true", help="Delete removable storage referenced by the recorded deployment")
     service_remove.add_argument("--dry-run", action="store_true", help="Show what would be removed without changing the manager")
     service_remove.add_argument("--timeout", type=int, default=300, help="Seconds to wait for the control-plane remove response")
 
@@ -1758,6 +1759,7 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
             name=service_name,
             skip_dns=args.skip_dns,
             skip_portainer=args.skip_portainer,
+            delete_storage=args.delete_storage,
             dry_run=args.dry_run,
             timeout=args.timeout,
         ),
@@ -1774,6 +1776,8 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
         print(result["portainer"])
     if result.get("generatedFiles"):
         print(result["generatedFiles"])
+    if result.get("storageCleanup"):
+        print(result["storageCleanup"])
     return 0
 
 

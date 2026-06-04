@@ -1,9 +1,7 @@
 import type { DashboardNode, DashboardStorageClass } from "../types";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, KeyValueRow, Region } from "./types";
+import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, REGIONS, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { updateComposeServiceExposure } from "./yaml";
-
-const exposures: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"];
-const regions: Region[] = ["cn", "global", "home"];
 
 export function ComposeDeployForm({
   draft,
@@ -31,6 +29,24 @@ export function ComposeDeployForm({
   const addEnv = (service: ComposeServiceDraft, kind: KeyValueRow["kind"] = "plain") => {
     updateService(service.name, { env: [...(service.env || []), { id: `env-${service.name}-${Date.now()}`, key: "", value: "", kind }] });
   };
+  const updateDefaultRegion = (region: Region) => {
+    patch({
+      region,
+      services: draft.services.map((service) => {
+        if (service.region) return service;
+        return { ...service, node: clearNodeIfIncompatible(nodes, service.node, region) };
+      }),
+    });
+  };
+  const updateServiceRegion = (service: ComposeServiceDraft, region: Region | "") => {
+    const effectiveRegion = region || draft.region;
+    updateService(service.name, { region, node: clearNodeIfIncompatible(nodes, service.node, effectiveRegion) });
+  };
+  const updateServiceExposureSafe = (service: ComposeServiceDraft, exposure: Exposure) => {
+    const next = updateComposeServiceExposure(service, exposure);
+    const effectiveRegion = next.region || draft.region;
+    updateService(service.name, { ...next, node: clearNodeIfIncompatible(nodes, service.node, effectiveRegion) });
+  };
   const removeEnv = (service: ComposeServiceDraft, id: string) => {
     updateService(service.name, { env: (service.env || []).filter((row) => row.id !== id) });
   };
@@ -52,30 +68,42 @@ export function ComposeDeployForm({
             <span>Compose 内容</span>
             <button type="button" className="ghost" onClick={onEditYaml}>编辑 docker-compose.yml</button>
           </div>
-          <label><span>默认区域</span><select value={draft.region} onChange={(event) => patch({ region: event.target.value as Region })}>{regions.map((region) => <option key={region}>{region}</option>)}</select></label>
+          <label><span>默认区域</span><select value={draft.region} onChange={(event) => updateDefaultRegion(event.target.value as Region)}>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region)}</option>)}</select></label>
         </div>
       </section>
       <section className="deploy-config-section" id="compose-services">
         <header><span>02</span><h3>服务入口</h3></header>
         <div className="compose-service-list">
-          {draft.services.map((service) => (
-            <article className="compose-service-card" key={service.name}>
-              <strong>{service.name}</strong>
+          {draft.services.map((service) => {
+            const effectiveRegion = service.region || draft.region;
+            const nodeOptions = nodesForRegion(nodes, effectiveRegion);
+            const selectedNodeMissing = service.node && !nodeOptions.some((node) => node.name === service.node);
+            return (
+              <article className="compose-service-card" key={service.name}>
+                <strong>{service.name}</strong>
               <div className="deploy-field-grid compact">
-                <label><span>入口</span><select value={service.exposure} onChange={(event) => {
-                  const exposure = event.target.value as Exposure;
-                  updateService(service.name, updateComposeServiceExposure(service, exposure));
-                }}>{exposures.map((exposure) => <option key={exposure}>{exposure}</option>)}</select></label>
-                <label><span>区域</span><select value={service.region} onChange={(event) => updateService(service.name, { region: event.target.value as Region })}><option value="">默认</option>{regions.map((region) => <option key={region}>{region}</option>)}</select></label>
-                <label><span>节点</span><select value={service.node} onChange={(event) => updateService(service.name, { node: event.target.value })}><option value="">自动调度</option>{nodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>
+                <label><span>入口</span><select value={service.exposure} onChange={(event) => updateServiceExposureSafe(service, event.target.value as Exposure)}>{EXPOSURES.map((exposure) => {
+                  const requiredRegion = requiredRegionForExposure(exposure);
+                  return <option key={exposure} value={exposure} disabled={Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion))}>{exposureOptionLabel(nodes, exposure)}</option>;
+                })}</select></label>
+                <label><span>区域</span><select value={service.region} onChange={(event) => updateServiceRegion(service, event.target.value as Region | "")}><option value="">默认 ({draft.region})</option>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region)}</option>)}</select></label>
+                <label>
+                  <span>节点</span>
+                  <select value={service.node} onChange={(event) => updateService(service.name, { node: event.target.value })}>
+                    <option value="">自动调度到 {effectiveRegion} ready 节点</option>
+                    {selectedNodeMissing ? <option value={service.node} disabled>{service.node} (当前不可用)</option> : null}
+                    {nodeOptions.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}
+                  </select>
+                </label>
                 <label><span>域名</span><input value={service.domain} disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { domain: event.target.value })} /></label>
                 <label><span>容器端口</span><input value={service.port} disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { port: event.target.value })} /></label>
                 <label><span>发布端口</span><input value={service.publishPort} disabled={service.exposure !== "tailscale-relay"} onChange={(event) => updateService(service.name, { publishPort: event.target.value })} /></label>
                 <label><span>副本</span><input type="number" min={1} value={service.replicas} onChange={(event) => updateService(service.name, { replicas: Number(event.target.value || 1) })} /></label>
                 <label className="deploy-toggle"><input type="checkbox" checked={service.proxy} onChange={(event) => updateService(service.name, { proxy: event.target.checked })} /><span>egress proxy</span></label>
               </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       </section>
       <section className="deploy-config-section" id="compose-env">

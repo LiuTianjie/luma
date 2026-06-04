@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import shlex
 import sys
@@ -30,9 +31,9 @@ def node_agent_os() -> str:
 def node_agent_capabilities(os_name: str | None = None) -> list[str]:
     os_value = os_name or node_agent_os()
     if os_value == "linux":
-        return ["nfs-host", "nfs-client", "managed-volume-path", "docker-egress-proxy"]
+        return ["nfs-host", "nfs-client", "managed-volume-path", "docker-volume", "docker-egress-proxy"]
     if os_value == "darwin":
-        return ["nfs-host", "managed-volume-path"]
+        return ["nfs-host", "managed-volume-path", "docker-volume"]
     return []
 
 
@@ -225,6 +226,16 @@ def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
         full_path = str(Path(root) / relative)
         _run_fixed_host_task(_volume_path_command(full_path))
         return {"path": full_path, "message": "volume path ready"}
+    if action == "remove-managed-volume-path":
+        root = _safe_absolute_path(_required(payload, "root"))
+        relative = _safe_relative_path(_required(payload, "relative"))
+        full_path = str(Path(root) / relative)
+        _run_fixed_host_task(_remove_volume_path_command(root, relative))
+        return {"path": full_path, "message": "volume path removed"}
+    if action == "remove-docker-volume":
+        name = _safe_docker_volume_name(_required(payload, "name"))
+        _run_fixed_host_task(_docker_volume_remove_command(name), prefer_container=False)
+        return {"name": name, "message": "Docker volume removed"}
     if action == "remove-managed-nfs-export":
         name = _required(payload, "name")
         return remove_managed_nfs_export(name=name)
@@ -379,6 +390,38 @@ def _volume_path_command(path: str) -> str:
     return f"set -euo pipefail; install -d -m 755 {shlex.quote(safe_path)}"
 
 
+def _remove_volume_path_command(root: str, relative: str) -> str:
+    safe_root = Path(_safe_absolute_path(root))
+    safe_relative = Path(_safe_relative_path(relative))
+    full_path = safe_root / safe_relative
+    if full_path == safe_root:
+        raise LumaError("refusing to remove storage root")
+    return (
+        "set -euo pipefail; "
+        f"root={shlex.quote(str(safe_root))}; "
+        f"target={shlex.quote(str(full_path))}; "
+        'case "$target" in "$root"/*) ;; *) echo "target outside storage root" >&2; exit 1;; esac; '
+        'if [ -L "$target" ]; then echo "refusing to remove symlink" >&2; exit 1; fi; '
+        'rm -rf -- "$target"'
+    )
+
+
+def _docker_volume_remove_command(name: str) -> str:
+    safe_name = _safe_docker_volume_name(name)
+    quoted = shlex.quote(safe_name)
+    return (
+        "set -euo pipefail; "
+        "command -v docker >/dev/null 2>&1 || { echo 'docker command not found' >&2; exit 1; }; "
+        "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do "
+        f"docker volume inspect {quoted} >/dev/null 2>&1 || exit 0; "
+        f"docker volume rm -f {quoted} && exit 0; "
+        "sleep 2; "
+        "done; "
+        f"docker volume inspect {quoted} >/dev/null 2>&1 || exit 0; "
+        f"docker volume rm -f {quoted}"
+    )
+
+
 def _required(payload: Dict[str, Any], key: str) -> str:
     value = str(payload.get(key) or "").strip()
     if not value:
@@ -405,3 +448,10 @@ def _safe_relative_path(value: str) -> str:
     if path.is_absolute() or ".." in path.parts or not str(path):
         raise LumaError(f"volume path must be relative without ..: {value}")
     return str(path)
+
+
+def _safe_docker_volume_name(value: str) -> str:
+    name = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+        raise LumaError(f"invalid Docker volume name: {value}")
+    return name

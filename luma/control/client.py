@@ -287,6 +287,7 @@ class ControlClient:
         name: str,
         skip_dns: bool = False,
         skip_portainer: bool = False,
+        delete_storage: bool = False,
         dry_run: bool = False,
         timeout: int = 300,
     ) -> Dict[str, Any]:
@@ -294,6 +295,7 @@ class ControlClient:
             "name": name,
             "skipDns": skip_dns,
             "skipPortainer": skip_portainer,
+            "deleteStorage": delete_storage,
             "dryRun": dry_run,
         }
         return self.request("POST", "/v1/services/remove", body, timeout=timeout)

@@ -132,7 +132,16 @@ Use the deployed service or Compose application name:
 luma service remove <service>
 ```
 
-The control plane uses the manifest recorded during the last successful deploy, deletes the Luma-managed Cloudflare DNS record for public services, removes the Portainer stack, and deletes generated manager files. The same command removes single-service and Compose deployments. For `tailscale-relay`, it also deletes `/opt/luma/routes/<service>.yml`. For `cloudflare-tunnel`, Cloudflare Tunnel public hostname cleanup is skipped because that hostname is still managed in Cloudflare Zero Trust.
+The control plane uses the manifest recorded during the last successful deploy, deletes the Luma-managed Cloudflare DNS record for public services, removes the Portainer stack, and deletes generated manager files. The same command removes single-service and Compose deployments. Because the control plane stores the manifest, this also works for deployments created through the web UI when the client no longer has a local YAML file. For `tailscale-relay`, it also deletes `/opt/luma/routes/<service>.yml`. For `cloudflare-tunnel`, Cloudflare Tunnel public hostname cleanup is skipped because that hostname is still managed in Cloudflare Zero Trust.
+
+Storage data is preserved by default. To intentionally delete removable storage referenced by the recorded deployment, preview and then run:
+
+```bash
+luma service remove <service> --dry-run --delete-storage
+luma service remove <service> --delete-storage
+```
+
+For single-service deployments, this deletes named Docker volumes declared in the manifest and skips bind mounts. For Compose deployments, this deletes managed volume subdirectories referenced by the sidecar, not the storage class itself. It cannot be combined with `--skip-portainer`.
 
 Preview the cleanup without changing the manager:
 

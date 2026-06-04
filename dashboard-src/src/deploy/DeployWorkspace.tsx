@@ -6,6 +6,7 @@ import { DeploySummary } from "./DeploySummary";
 import { DeployTemplates } from "./DeployTemplates";
 import { DEPLOY_TEMPLATES } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeployTemplate, ServiceManifestDraft } from "./types";
+import { findNode, hasReadyNodeInRegion, isReadyNode } from "./options";
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
 import { SingleServiceDeployForm } from "./SingleServiceDeployForm";
 import { YamlPreviewEditor } from "./YamlPreviewEditor";
@@ -32,13 +33,29 @@ function exposureRegionError(exposure: ServiceManifestDraft["exposure"], region:
   return "";
 }
 
-function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceYaml: string) {
+function regionNodeErrors(nodes: NonNullable<DashboardPayload["nodes"]>, region: ServiceManifestDraft["region"] | "", nodeName: string, label: string) {
+  if (!nodes.length || !region) return [];
+  const errors = [];
+  if (!hasReadyNodeInRegion(nodes, region)) errors.push(`${label} region=${region} 当前没有 ready/active 节点`);
+  if (nodeName) {
+    const node = findNode(nodes, nodeName);
+    if (!node) errors.push(`${label} 节点 ${nodeName} 不在当前节点清单中`);
+    else {
+      if (!isReadyNode(node)) errors.push(`${label} 节点 ${nodeName} 当前不是 ready/active`);
+      if (node.region !== region) errors.push(`${label} 节点 ${nodeName} 属于 region=${node.region || "-"}，不能用于 region=${region}`);
+    }
+  }
+  return errors;
+}
+
+function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>) {
   if (yamlDirty) return serviceYaml.trim() ? [] : ["service.yaml 不能为空"];
   const errors = [];
   if (!draft.name.trim()) errors.push("服务名不能为空");
   if (!draft.image.trim()) errors.push("镜像不能为空");
   const regionError = exposureRegionError(draft.exposure, draft.region, draft.name || "服务");
   if (regionError) errors.push(regionError);
+  errors.push(...regionNodeErrors(nodes, draft.region, draft.node, draft.name || "服务"));
   if (draft.exposure !== "none" && !draft.domain.trim()) errors.push("公开入口必须填写域名");
   if (draft.exposure !== "none" && !draft.port.trim()) errors.push("公开入口必须填写容器端口");
   if (draft.exposure !== "none" && draft.port.trim() && !isPositiveInteger(draft.port)) errors.push("容器端口必须是正整数");
@@ -53,7 +70,7 @@ function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceY
   return errors;
 }
 
-function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, composeYaml: string, sidecarYaml: string) {
+function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, composeYaml: string, sidecarYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>) {
   if (yamlDirty) {
     const errors = [];
     if (!composeYaml.trim()) errors.push("docker-compose.yml 不能为空");
@@ -62,10 +79,12 @@ function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, compos
   }
   const errors = [];
   if (!draft.name.trim()) errors.push("应用名不能为空");
+  errors.push(...regionNodeErrors(nodes, draft.region, "", draft.name || "应用"));
   for (const service of draft.services) {
     const region = service.region || draft.region;
     const regionError = exposureRegionError(service.exposure, region, service.name);
     if (regionError) errors.push(regionError);
+    errors.push(...regionNodeErrors(nodes, region, service.node, service.name));
     if (service.exposure !== "none" && !service.domain.trim()) errors.push(`${service.name} 必须填写域名`);
     if (service.exposure !== "none" && !service.port.trim()) errors.push(`${service.name} 必须填写容器端口`);
     if (service.exposure !== "none" && service.port.trim() && !isPositiveInteger(service.port)) errors.push(`${service.name} 容器端口必须是正整数`);
@@ -81,6 +100,13 @@ function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, compos
   for (const volume of draft.volumes) {
     if (volume.storageMode === "storageClass" && !volume.storageClass) errors.push(`${volume.name} 必须选择 storageClass`);
     if (volume.storageMode === "local" && (!volume.localNode || !volume.localPath)) errors.push(`${volume.name} 必须填写本地节点和路径`);
+    if (volume.storageMode === "local" && volume.localNode) {
+      const node = findNode(nodes, volume.localNode);
+      if (!node) errors.push(`${volume.name} 本地存储节点 ${volume.localNode} 不在当前节点清单中`);
+      else if (!isReadyNode(node) || node.agentStatus !== "ready" || !(node.storageCapabilities || []).includes("nfs-host")) {
+        errors.push(`${volume.name} 本地存储节点 ${volume.localNode} 不是可用存储节点`);
+      }
+    }
   }
   return errors;
 }
@@ -172,9 +198,9 @@ export function DeployWorkspace({
 
   const validationErrors = useMemo(
     () => mode === "service"
-      ? serviceErrors(serviceDraft, yamlDirty, serviceYaml)
-      : composeErrors(composeDraft, yamlDirty, composeYaml, sidecarYaml),
-    [composeDraft, composeYaml, mode, serviceDraft, serviceYaml, sidecarYaml, yamlDirty],
+      ? serviceErrors(serviceDraft, yamlDirty, serviceYaml, nodes)
+      : composeErrors(composeDraft, yamlDirty, composeYaml, sidecarYaml, nodes),
+    [composeDraft, composeYaml, mode, nodes, serviceDraft, serviceYaml, sidecarYaml, yamlDirty],
   );
   const allErrors = [...validationErrors, ...runtimeErrors];
 
