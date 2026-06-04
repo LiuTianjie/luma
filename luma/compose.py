@@ -15,7 +15,6 @@ from .service import VALID_EXPOSURES, VALID_REGIONS, slugify
 VALID_STORAGE_PROVIDERS = {"nfs"}
 VALID_STORAGE_MODES = {"managed", "external"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
-VALID_STORAGE_WORKLOADS = {"filesystem", "postgres", "mysql", "database", "any"}
 
 
 @dataclass(frozen=True)
@@ -29,8 +28,6 @@ class StorageClassSpec:
     mount_options: str = "nfsvers=4,rw"
     nodes: List[str] = field(default_factory=list)
     regions: List[str] = field(default_factory=list)
-    workloads: List[str] = field(default_factory=list)
-    verified_workloads: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -393,7 +390,6 @@ def validate_compose_deployment_data(
             nodes.add(override.node)
         if len(nodes) > 1:
             raise LumaError(f"compose service {service_name} has conflicting local volume nodes: {sorted(nodes)}")
-    warnings.extend(compose_database_storage_warnings(compose, storage_classes, volumes))
     for service_name, override in services.items():
         region = override.region or default_region
         if region not in VALID_REGIONS:
@@ -412,43 +408,6 @@ def validate_compose_deployment_data(
         if override.exposure == "tailscale-relay" and region != "home":
             raise LumaError(f"compose service {service_name} exposure=tailscale-relay requires region=home")
     return warnings
-
-
-def compose_database_storage_warnings(
-    compose: Dict[str, Any],
-    storage_classes: Dict[str, StorageClassSpec],
-    volumes: Dict[str, ComposeVolumeSpec],
-) -> List[str]:
-    warnings: List[str] = []
-    for service_name, volume_name, target, database_name in _compose_database_volume_mounts(compose):
-        volume = volumes.get(volume_name)
-        if not volume or not volume.storage_class:
-            continue
-        storage_class = storage_classes.get(volume.storage_class)
-        if not storage_class:
-            continue
-        if not _storage_class_supports_workload(storage_class, database_name):
-            required_workload = _normalize_storage_workload(database_name)
-            warnings.append(
-                f"volume {volume_name} mounts {database_name} data directory {target} on storageClass {storage_class.name}, "
-                f"but the storageClass workloads are {storage_class.workloads or ['filesystem']}; "
-                f"provision a database-capable storage service and register it with workload {required_workload}"
-            )
-            continue
-        if not _storage_class_verified_for_workload(storage_class, database_name):
-            required_workload = _normalize_storage_workload(database_name)
-            warnings.append(
-                f"volume {volume_name} mounts {database_name} data directory {target} on storageClass {storage_class.name}, "
-                f"but workload {required_workload} has not been verified; run luma storage probe {storage_class.name} --workload {required_workload}"
-            )
-    return warnings
-
-
-def guard_compose_database_storage(deployment: ComposeDeploymentSpec) -> str:
-    warnings = compose_database_storage_warnings(deployment.compose, deployment.storage_classes, deployment.volumes)
-    if warnings:
-        raise LumaError("; ".join(warnings))
-    return "Database storage check passed"
 
 
 def _load_storage_classes(raw: Any) -> Dict[str, StorageClassSpec]:
@@ -479,14 +438,6 @@ def _load_storage_classes(raw: Any) -> Dict[str, StorageClassSpec]:
         for region in regions:
             if region not in VALID_REGIONS:
                 raise LumaError(f"storageClasses.{name}.regions contains invalid region: {region}")
-        workloads = _string_list(value.get("workloads") or ["filesystem"])
-        for workload in workloads:
-            if workload not in VALID_STORAGE_WORKLOADS:
-                raise LumaError(f"storageClasses.{name}.workloads contains invalid workload: {workload}")
-        verified_workloads = _string_list(value.get("verifiedWorkloads") or [])
-        for workload in verified_workloads:
-            if workload not in VALID_STORAGE_WORKLOADS:
-                raise LumaError(f"storageClasses.{name}.verifiedWorkloads contains invalid workload: {workload}")
         result[str(name)] = StorageClassSpec(
             name=str(name),
             provider=provider,
@@ -497,8 +448,6 @@ def _load_storage_classes(raw: Any) -> Dict[str, StorageClassSpec]:
             mount_options=str(value.get("mountOptions") or "nfsvers=4,rw"),
             nodes=nodes,
             regions=regions,
-            workloads=workloads,
-            verified_workloads=verified_workloads,
             raw=dict(value),
         )
     return result
@@ -870,59 +819,6 @@ def _compose_service_volume_mounts(compose: Dict[str, Any]) -> Dict[str, List[tu
                 used.append((source, target))
         result[str(service_name)] = used
     return result
-
-
-def _compose_database_volume_mounts(compose: Dict[str, Any]) -> List[tuple[str, str, str, str]]:
-    result: List[tuple[str, str, str, str]] = []
-    services = compose.get("services") if isinstance(compose.get("services"), dict) else {}
-    mounts = _compose_service_volume_mounts(compose)
-    for service_name, used in mounts.items():
-        service = services.get(service_name) if isinstance(services.get(service_name), dict) else {}
-        image = str(service.get("image") or "")
-        for volume_name, target in used:
-            database_name = _database_volume_name(service_name, image, target)
-            if database_name:
-                result.append((service_name, volume_name, target, database_name))
-    return result
-
-
-def _storage_class_supports_workload(storage_class: StorageClassSpec, workload: str) -> bool:
-    workloads = set(storage_class.workloads or ["filesystem"])
-    normalized = _normalize_storage_workload(workload)
-    return bool({"any", normalized}.intersection(workloads) or ("database" in workloads and normalized in {"postgres", "mysql"}))
-
-
-def _storage_class_verified_for_workload(storage_class: StorageClassSpec, workload: str) -> bool:
-    workloads = set(storage_class.workloads or ["filesystem"])
-    if "any" in workloads:
-        return True
-    verified = set(storage_class.verified_workloads or [])
-    normalized = _normalize_storage_workload(workload)
-    return bool({normalized}.intersection(verified) or ("database" in verified and normalized in {"postgres", "mysql"}))
-
-
-def _normalize_storage_workload(workload: str) -> str:
-    normalized = workload.lower()
-    if normalized == "postgresql":
-        return "postgres"
-    if normalized.startswith("mysql"):
-        return "mysql"
-    return normalized
-
-
-def _database_volume_name(service_name: str, image: str, target: str) -> str:
-    normalized_target = target.rstrip("/")
-    normalized_image = image.lower()
-    normalized_service = service_name.lower()
-    if normalized_target == "/var/lib/postgresql/data":
-        return "PostgreSQL"
-    if normalized_target == "/var/lib/mysql":
-        return "MySQL/MariaDB"
-    if normalized_target.startswith("/var/lib/postgresql") and ("postgres" in normalized_image or "postgis" in normalized_image or "postgres" in normalized_service):
-        return "PostgreSQL"
-    if normalized_target.startswith("/var/lib/mysql") and ("mysql" in normalized_image or "mariadb" in normalized_image or "mysql" in normalized_service or "mariadb" in normalized_service):
-        return "MySQL/MariaDB"
-    return ""
 
 
 def _volume_source(volume: Any) -> str:

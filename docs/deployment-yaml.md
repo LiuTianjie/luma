@@ -215,13 +215,10 @@ storage:
 luma storage set db-storage \
   --node home-nas \
   --path /srv/luma \
-  --region home \
-  --workload filesystem \
-  --workload postgres
-luma storage probe db-storage --workload postgres --node home-mac-mini
+  --region home
 ```
 
-如果挂载目标是 PostgreSQL/MySQL 数据目录，部署前会要求 storageClass 声明并通过相应 workload probe。普通文件目录只需要 `filesystem` workload。
+`storageClass` 是统一的存储服务引用。无论挂载目标是 PostgreSQL/MySQL 数据目录、上传目录还是普通应用状态目录，Luma 都按同一套 storage service 解析和挂载；它只校验 storageClass 是否存在、region/node 是否允许、跨 Region 是否可达。
 
 ### 需要代理的 worker
 

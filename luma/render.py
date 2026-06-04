@@ -5,12 +5,8 @@ from typing import Any, Dict, List
 
 from .compose import (
     ComposeVolumeSpec,
-    _database_volume_name,
     _load_storage_classes,
-    _normalize_storage_workload,
     _render_storage_class_volume,
-    _storage_class_supports_workload,
-    _storage_class_verified_for_workload,
     _storage_endpoint_for_region,
     _validate_storage_class_service_use,
 )
@@ -194,9 +190,6 @@ def _service_storage_context(
     if storage_classes_raw is None:
         raise LumaError("service storage requires manager storageClasses; run with a control context or deploy through Luma Control")
     storage_classes = _load_storage_classes(storage_classes_raw)
-    warnings = service_database_storage_warnings(service, storage_classes_raw)
-    if warnings:
-        raise LumaError("; ".join(warnings))
     labels: List[str] = []
     volumes: Dict[str, Any] = {}
     node_pins: set[str] = set()
@@ -237,53 +230,3 @@ def _service_storage_context(
     if len(node_pins) > 1:
         raise LumaError(f"service {service.name} has conflicting storageClass node pins: {sorted(node_pins)}")
     return {"volumes": volumes, "labels": labels, "node_pin": next(iter(node_pins), "")}
-
-
-def service_database_storage_warnings(service: ServiceSpec, storage_classes_raw: Dict[str, Any] | None) -> List[str]:
-    if not service.storage or storage_classes_raw is None:
-        return []
-    storage_classes = _load_storage_classes(storage_classes_raw)
-    warnings: List[str] = []
-    for volume in service.volumes:
-        source, target = _service_volume_source_target(volume)
-        if not source or source not in service.storage:
-            continue
-        database_name = _database_volume_name(service.name, service.image, target)
-        if not database_name:
-            continue
-        spec = service.storage[source]
-        storage_class = storage_classes.get(spec.storage_class)
-        if not storage_class:
-            continue
-        if not _storage_class_supports_workload(storage_class, database_name):
-            required_workload = _normalize_storage_workload(database_name)
-            warnings.append(
-                f"volume {source} mounts {database_name} data directory {target} on storageClass {storage_class.name}, "
-                f"but the storageClass workloads are {storage_class.workloads or ['filesystem']}; "
-                f"provision a database-capable storage service and register it with workload {required_workload}"
-            )
-            continue
-        if not _storage_class_verified_for_workload(storage_class, database_name):
-            required_workload = _normalize_storage_workload(database_name)
-            warnings.append(
-                f"volume {source} mounts {database_name} data directory {target} on storageClass {storage_class.name}, "
-                f"but workload {required_workload} has not been verified; run luma storage probe {storage_class.name} --workload {required_workload}"
-            )
-    return warnings
-
-
-def guard_service_database_storage(service: ServiceSpec, storage_classes: Dict[str, Any] | None) -> str:
-    warnings = service_database_storage_warnings(service, storage_classes)
-    if warnings:
-        raise LumaError("; ".join(warnings))
-    return "Database storage check passed"
-
-
-def _service_volume_source_target(volume: str) -> tuple[str, str]:
-    parts = volume.split(":")
-    if len(parts) < 2:
-        return "", ""
-    source = parts[0].strip()
-    if not source or source.startswith("/") or source.startswith(".") or source == "~":
-        return "", ""
-    return source, parts[1].strip().rstrip("/")

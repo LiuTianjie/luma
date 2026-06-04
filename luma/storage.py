@@ -45,8 +45,6 @@ def storage_check_plan(deployment: ComposeDeploymentSpec, *, node_records: Dict[
                 "node": storage_class.node or "",
                 "nodes": storage_class.nodes,
                 "regions": storage_class.regions,
-                "workloads": storage_class.workloads or ["filesystem"],
-                "verifiedWorkloads": storage_class.verified_workloads,
                 "status": "planned",
                 "message": _check_message(storage_class),
             }

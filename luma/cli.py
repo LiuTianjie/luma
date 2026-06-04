@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.56 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.57 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -258,18 +258,10 @@ def build_parser() -> argparse.ArgumentParser:
     storage_set.add_argument("--mount-options", default="")
     storage_set.add_argument("--region", action="append", dest="regions", default=[])
     storage_set.add_argument("--eligible-node", action="append", dest="nodes", default=[])
-    storage_set.add_argument("--workload", action="append", dest="workloads", default=[])
     _add_control_arguments(storage_set)
     storage_remove = storage_sub.add_parser("remove")
     storage_remove.add_argument("name")
     _add_control_arguments(storage_remove)
-    storage_probe = storage_sub.add_parser("probe")
-    storage_probe.add_argument("name")
-    storage_probe.add_argument("--workload", default="filesystem")
-    storage_probe.add_argument("--node", default="")
-    storage_probe.add_argument("--timeout", type=int, default=300)
-    _add_control_arguments(storage_probe)
-    _add_output_arguments(storage_probe)
     storage_apply = storage_sub.add_parser("apply")
     storage_apply.add_argument("sidecar", type=Path)
     _add_control_arguments(storage_apply)
@@ -2098,8 +2090,6 @@ def cmd_storage(args: argparse.Namespace) -> int:
         return cmd_storage_set(args)
     if args.storage_command == "remove":
         return cmd_storage_remove(args)
-    if args.storage_command == "probe":
-        return cmd_storage_probe(args)
     if args.storage_command == "apply":
         return cmd_storage_apply(args)
     if args.storage_command == "check":
@@ -2117,8 +2107,7 @@ def cmd_storage_list(args: argparse.Namespace) -> int:
         return 0
     for item in result.get("storageClasses") or []:
         location = item.get("endpoint") or item.get("path") or item.get("node") or ""
-        workloads = ",".join(str(value) for value in item.get("workloads") or ["filesystem"])
-        print(f"{item.get('name')}: {item.get('provider')} {item.get('mode')} {location} workloads={workloads}".rstrip())
+        print(f"{item.get('name')}: {item.get('provider')} {item.get('mode')} {location}".rstrip())
     return 0
 
 
@@ -2148,7 +2137,6 @@ def cmd_storage_set(args: argparse.Namespace) -> int:
         mount_options=args.mount_options,
         regions=args.regions,
         nodes=args.nodes,
-        workloads=args.workloads,
     )
     print(f"Storage class saved: {result.get('name', args.name)}")
     _print_storage_host_result(result.get("storageHost"))
@@ -2161,21 +2149,6 @@ def cmd_storage_remove(args: argparse.Namespace) -> int:
     status = "removed" if result.get("removed") else "not configured"
     print(f"Storage class {status}: {args.name}")
     _print_storage_host_result(result.get("storageHost"))
-    return 0
-
-
-def cmd_storage_probe(args: argparse.Namespace) -> int:
-    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).probe_storage(
-        name=args.name,
-        workload=args.workload,
-        node=args.node,
-        timeout=args.timeout,
-    )
-    if _output_format(args) != "text":
-        _print_success(args, result)
-        return 0
-    print(f"Storage probe passed: {result.get('name', args.name)} workload={result.get('workload', args.workload)} node={result.get('node') or '-'}")
     return 0
 
 

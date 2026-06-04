@@ -44,7 +44,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_probe, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
+from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -149,53 +149,6 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn('"$docker_cli" volume rm -f nextcloud_nextcloud-db', command)
         self.assertFalse(run.call_args.kwargs.get("prefer_container", True))
         self.assertEqual(result["name"], "nextcloud_nextcloud-db")
-
-    def test_node_agent_can_probe_postgres_storage_workload(self):
-        with patch("luma.agent._run_fixed_host_task") as run:
-            result = execute_agent_task(
-                {
-                    "action": "probe-storage-class",
-                    "payload": {
-                        "name": "db-storage",
-                        "endpoint": "storage.example:/srv/luma-db",
-                        "mountOptions": "nfsvers=4,rw",
-                        "workload": "postgres",
-                        "probeId": "probe-1",
-                    },
-                }
-            )
-        run.assert_called_once()
-        command = run.call_args.args[0]
-        self.assertIn('"$docker_cli" volume create --driver local', command)
-        self.assertIn("--opt type=nfs", command)
-        self.assertIn("addr=storage.example,nfsvers=4,rw", command)
-        self.assertIn("postgres:16-alpine", command)
-        self.assertIn("initdb", command)
-        self.assertNotIn("timeout ", command)
-        self.assertEqual(run.call_args.kwargs["timeout_seconds"], 300)
-        self.assertIn('"$docker_cli" rm -f', run.call_args.kwargs["cleanup_command"])
-        self.assertTrue(run.call_args.kwargs["cleanup_command"].endswith("; cleanup"))
-        self.assertFalse(run.call_args.kwargs.get("prefer_container", True))
-        self.assertEqual(result["workload"], "postgres")
-
-    def test_node_agent_can_probe_mysql_storage_workload(self):
-        with patch("luma.agent._run_fixed_host_task") as run:
-            result = execute_agent_task(
-                {
-                    "action": "probe-storage-class",
-                    "payload": {
-                        "name": "db-storage",
-                        "endpoint": "storage.example:/srv/luma-db",
-                        "workload": "mysql",
-                        "probeId": "probe-1",
-                    },
-                }
-            )
-        command = run.call_args.args[0]
-        self.assertIn("mysql:8", command)
-        self.assertIn("mysqld --initialize-insecure", command)
-        self.assertNotIn("timeout ", command)
-        self.assertEqual(result["workload"], "mysql")
 
     def test_local_executor_timeout_returns_text_output(self):
         result = LocalExecutor().run_result("printf before-timeout; sleep 2", timeout=1)
@@ -481,10 +434,6 @@ class CliTests(unittest.TestCase):
                 "home-nas",
                 "--path",
                 "/srv/luma",
-                "--workload",
-                "filesystem",
-                "--workload",
-                "postgres",
                 "--control-url",
                 "https://luma.example.com",
                 "--token",
@@ -495,27 +444,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.name, "home-nfs")
         self.assertEqual(args.node, "home-nas")
         self.assertEqual(args.path, "/srv/luma")
-        self.assertEqual(args.workloads, ["filesystem", "postgres"])
         self.assertFalse(args.external)
         self.assertEqual(args.control_url, "https://luma.example.com")
-        args = build_parser().parse_args(
-            [
-                "storage",
-                "probe",
-                "home-nfs",
-                "--workload",
-                "postgres",
-                "--node",
-                "home-mac-mini",
-                "--timeout",
-                "600",
-            ]
-        )
-        self.assertEqual(args.storage_command, "probe")
-        self.assertEqual(args.name, "home-nfs")
-        self.assertEqual(args.workload, "postgres")
-        self.assertEqual(args.node, "home-mac-mini")
-        self.assertEqual(args.timeout, 600)
         args = build_parser().parse_args(
             [
                 "storage",
@@ -2010,19 +1940,6 @@ class CliTests(unittest.TestCase):
 
         timeout = urlopen.call_args.kwargs["timeout"]
         self.assertGreaterEqual(timeout, 120)
-
-    def test_control_client_sends_storage_probe_timeout_in_body(self):
-        client = ControlClient("https://luma.example.com", "secret")
-        response = MagicMock()
-        response.read.return_value = b'{"ok": true}'
-        response.__enter__.return_value = response
-        with patch("urllib.request.urlopen", return_value=response) as urlopen:
-            client.probe_storage(name="cn-nfs", workload="postgres", node="home-mac-mini", timeout=180)
-
-        request = urlopen.call_args.args[0]
-        body = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(body["timeout"], 180)
-        self.assertEqual(urlopen.call_args.kwargs["timeout"], 240)
 
     def test_secret_set_sends_value_to_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4327,20 +4244,19 @@ class ControlApiTests(unittest.TestCase):
                             "node": "home-nas",
                             "path": "/srv/luma",
                             "regions": ["home", "cn"],
-                            "workloads": ["filesystem", "postgres"],
                         },
                     )
                 self.assertTrue(result["saved"])
                 listed = handle_storage_list(state["deployToken"])
                 self.assertEqual(listed["storageClasses"][0]["name"], "home-nfs")
                 self.assertEqual(listed["storageClasses"][0]["path"], "/srv/luma")
-                self.assertEqual(listed["storageClasses"][0]["workloads"], ["filesystem", "postgres"])
+                self.assertNotIn("workloads", listed["storageClasses"][0])
                 self.assertNotIn("exportRoot", listed["storageClasses"][0])
                 persisted = load_state()
                 self.assertEqual(persisted["storageClasses"]["home-nfs"]["provider"], "nfs")
                 self.assertEqual(persisted["storageClasses"]["home-nfs"]["mode"], "managed")
                 self.assertEqual(persisted["storageClasses"]["home-nfs"]["path"], "/srv/luma")
-                self.assertEqual(persisted["storageClasses"]["home-nfs"]["workloads"], ["filesystem", "postgres"])
+                self.assertNotIn("workloads", persisted["storageClasses"]["home-nfs"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -4375,113 +4291,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(saved["provider"], "nfs")
                 self.assertEqual(saved["mode"], "external")
                 self.assertEqual(saved["regions"], ["cn"])
-                self.assertEqual(saved["workloads"], ["database"])
-                with self.assertRaisesRegex(LumaError, "workload must be one of"):
-                    handle_storage_set(
-                        state["deployToken"],
-                        {"name": "bad-workload", "external": True, "endpoint": "nfs.example.com:/srv/luma", "regions": ["cn"], "workloads": ["postgresql"]},
-                    )
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-
-    def test_storage_probe_records_verified_workload(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
-            try:
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {
-                    "storage-node": {
-                        "name": "storage-node",
-                        "region": "home",
-                        "agent": {"status": "online", "lastSeen": int(time.time()), "capabilities": ["docker-volume"]},
-                        "swarmHostname": "storage-node.local",
-                    },
-                }
-                state["storageClasses"] = {
-                    "db-storage": {
-                        "provider": "nfs",
-                        "mode": "managed",
-                        "node": "storage-node",
-                        "path": "/srv/luma-db",
-                        "regions": ["home"],
-                        "workloads": ["filesystem", "postgres"],
-                    }
-                }
-                save_state(state)
-                with patch("luma.control.server._run_node_agent_task", return_value={"taskId": "task-1", "message": "ok"}) as run_task:
-                    result = handle_storage_probe(state["deployToken"], {"name": "db-storage", "workload": "postgres"})
-                self.assertTrue(result["verified"])
-                self.assertEqual(result["node"], "storage-node")
-                payload = run_task.call_args.args[3]
-                self.assertEqual(payload["endpoint"], "storage-node.local:/srv/luma-db")
-                self.assertEqual(payload["workload"], "postgres")
-                self.assertEqual(payload["timeout"], 300)
-                self.assertEqual(run_task.call_args.kwargs["timeout"], 330)
-                saved = load_state()["storageClasses"]["db-storage"]
-                self.assertEqual(saved["verifiedWorkloads"], ["postgres"])
-                self.assertEqual(saved["workloadProbes"]["postgres"]["taskId"], "task-1")
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-
-    def test_storage_set_preserves_verified_workloads(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
-            try:
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {"home-node": {"region": "home", "swarmHostname": "home-node"}}
-                state["storageClasses"] = {
-                    "home-nfs": {
-                        "provider": "nfs",
-                        "mode": "managed",
-                        "node": "home-node",
-                        "path": "/srv/luma",
-                        "workloads": ["filesystem", "postgres"],
-                        "verifiedWorkloads": ["postgres"],
-                        "workloadProbes": {"postgres": {"taskId": "task-1"}},
-                    }
-                }
-                save_state(state)
-                with patch("luma.control.server._ensure_storage_node_swarm_label", return_value=None), patch(
-                    "luma.control.server._prepare_managed_nfs_host", return_value={"prepared": "ok"}
-                ):
-                    handle_storage_set(
-                        state["deployToken"],
-                        {"name": "home-nfs", "node": "home-node", "path": "/srv/luma", "regions": ["home"], "workloads": ["filesystem", "postgres"]},
-                    )
-                saved = load_state()["storageClasses"]["home-nfs"]
-                self.assertEqual(saved["verifiedWorkloads"], ["postgres"])
-                self.assertEqual(saved["workloadProbes"]["postgres"]["taskId"], "task-1")
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
-
-    def test_storage_set_drops_verified_workloads_when_backend_changes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
-            try:
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {"home-node": {"region": "home", "swarmHostname": "home-node"}}
-                state["storageClasses"] = {
-                    "home-nfs": {
-                        "provider": "nfs",
-                        "mode": "managed",
-                        "node": "home-node",
-                        "path": "/srv/luma-old",
-                        "workloads": ["filesystem", "postgres"],
-                        "verifiedWorkloads": ["postgres"],
-                        "workloadProbes": {"postgres": {"taskId": "task-1"}},
-                    }
-                }
-                save_state(state)
-                with patch("luma.control.server._ensure_storage_node_swarm_label", return_value=None), patch(
-                    "luma.control.server._prepare_managed_nfs_host", return_value={"prepared": "ok"}
-                ):
-                    handle_storage_set(
-                        state["deployToken"],
-                        {"name": "home-nfs", "node": "home-node", "path": "/srv/luma-new", "regions": ["home"], "workloads": ["filesystem", "postgres"]},
-                    )
-                saved = load_state()["storageClasses"]["home-nfs"]
-                self.assertNotIn("verifiedWorkloads", saved)
-                self.assertNotIn("workloadProbes", saved)
+                self.assertNotIn("workloads", saved)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

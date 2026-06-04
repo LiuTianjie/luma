@@ -28,15 +28,13 @@ Luma 支持通过一个旁车配置文件 `luma.compose.yml` 部署标准的 `do
 luma storage set cn-nfs \
   --node <manager-swarm-hostname> \
   --path /srv/luma \
-  --region cn \
-  --workload filesystem
+  --region cn
 ```
 
 - `cn-nfs` 为部署引用的存储类名称。
 - `--node` 指定拥有并导出该存储路径的 Luma 节点名（在此处为 Manager 的 Swarm 主机名，可通过 `luma status` 查看）。
 - `--path` NFS 导出的物理根路径（也是主机的持久化数据目录）。
 - `--region` 限制可以使用该存储类的业务区域。
-- `--workload filesystem` 声明该存储类承载普通文件类数据卷。
 
 对于本地控制节点上的托管 NFS，`storage set` 会自动准备宿主机：按需安装 NFS server/client 包、创建导出目录、写入 NFS export、启动宿主机 NFS 服务，并清理旧版本留下的 `luma-storage-*` 存储栈。这个过程不会删除已有数据。如果目标节点不在当前 Luma Control 进程本地，命令会失败，不会保存 pending 的存储类；此时请注册外部 NFS，或在能准备该宿主机的控制节点上执行。
 
@@ -46,8 +44,7 @@ luma storage set home-nfs \
   --node home-nas \
   --path /srv/luma \
   --region cn \
-  --region home \
-  --workload filesystem
+  --region home
 ```
 
 ### 注册外部独立 NFS 服务器（非托管）
@@ -57,53 +54,37 @@ luma storage set home-nfs \
 luma storage set company-nfs \
   --external \
   --endpoint nfs.example.com:/srv/luma \
-  --region cn \
-  --workload filesystem
+  --region cn
 ```
 
-### 存储工作负载能力
-StorageClass 是基础设施服务。任何 Compose 命名卷都可以使用 StorageClass，包括数据库容器的数据卷；但该存储服务必须声明它已经按对应工作负载语义完成准备和验证。
+### 统一存储服务
 
-支持的 workload：
+StorageClass 是基础设施服务。任何 Compose 命名卷都走同一个 StorageClass 模型，包括 PostgreSQL/MySQL 这类数据库容器的数据目录。Luma 不再按应用类型给卷分类，也不要求数据库卷先声明类型标签或执行探针。
 
-| Workload | 含义 |
-| --- | --- |
-| `filesystem` | 普通文件、上传文件、应用状态、媒体、配置等通用文件工作负载。 |
-| `postgres` | PostgreSQL 数据目录，例如 `/var/lib/postgresql/data`。 |
-| `mysql` | MySQL/MariaDB 数据目录，例如 `/var/lib/mysql`。 |
-| `database` | 同时承载 PostgreSQL 与 MySQL/MariaDB 类数据目录的数据库存储。 |
-| `any` | 运维明确认可的兜底能力，Luma 不按 workload 阻断。 |
-
-例如，一个已经按数据库语义准备好的存储服务可以这样注册：
+存储服务只需要注册一次：
 
 ```bash
 luma storage set db-storage \
   --node storage-node \
   --path /srv/luma-db \
   --region home \
-  --region cn \
-  --workload filesystem \
-  --workload postgres
+  --region cn
 ```
 
-数据库卷继续引用这个基础设施存储服务：
+之后任何命名卷都可以引用这个存储服务，并选择自己的子目录：
 
 ```yaml
 volumes:
+  nextcloud-data:
+    storageClass: db-storage
+    path: nextcloud/nextcloud-data
+
   nextcloud-db:
     storageClass: db-storage
     path: nextcloud/nextcloud-db
 ```
 
-如果 PostgreSQL/MySQL 数据目录挂到只声明了 `filesystem` 的存储类，Luma 会在预览/检查时提示，并在部署前阻断。这不是禁止数据库卷使用存储服务，而是防止把普通文件存储静默当成数据库安全存储。
-
-声明 workload 还不等于数据库目录可用。需要在代表真实业务调度位置的 Docker-capable Luma 节点上运行探针：
-
-```bash
-luma storage probe db-storage --workload postgres --node home-mac-mini
-```
-
-探针会用该存储类 endpoint 创建临时 Docker local volume，并运行对应工作负载检查。`postgres` 探针会在 `postgres:16-alpine` 容器里对挂载存储上的临时目录执行真实 `initdb`。成功后，Luma 会把 `postgres` 写入该存储类的 `verifiedWorkloads`。数据库部署要求对应 workload 已验证；除非该存储类注册为 `any`，表示运维已完成外部验证并接受该兜底能力。
+Luma 仍然会校验存储拓扑：storageClass 必须存在，允许的 region/node 必须匹配服务调度位置，跨 Region 的托管存储节点必须有可达的 `tailscaleIP`。这些检查只判断“这个存储服务能不能从目标节点挂载”，不再关心消费它的是数据库、文件服务、缓存还是其它应用类型。
 
 ---
 

@@ -147,7 +147,7 @@ export function ComposeDeployForm({
               <div className="deploy-field-grid compact">
                 <label><span>存储模式</span><select value={volume.storageMode} onChange={(event) => updateVolume(volume.name, { storageMode: event.target.value as ComposeVolumeDraft["storageMode"] })}><option value="unmanaged">unmanaged volume</option><option value="storageClass">storageClass</option><option value="local">local node path</option></select></label>
                 {volume.storageMode === "storageClass" ? (
-                  <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolume(volume.name, { storageClass: event.target.value })}><option value="">选择已注册存储</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}{item.workloads?.length ? ` (${item.workloads.join(",")})` : ""}{item.verifiedWorkloads?.length ? ` verified:${item.verifiedWorkloads.join(",")}` : ""}</option>)}</select></label>
+                  <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolume(volume.name, { storageClass: event.target.value })}><option value="">选择已注册存储</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
                 ) : volume.storageMode === "local" ? (
                   <>
                     <label><span>节点</span><select value={volume.localNode} onChange={(event) => updateVolume(volume.name, { localNode: event.target.value })}><option value="">选择 agent ready 节点</option>{localReadyNodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>

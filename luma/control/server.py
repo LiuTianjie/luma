@@ -28,11 +28,9 @@ from ..cloudflare import delete_dns, sync_dns
 from ..compose import (
     ComposeDeploymentSpec,
     StorageClassSpec,
-    VALID_STORAGE_WORKLOADS,
     compose_public_services,
     compose_route_path,
     compose_stack_path,
-    guard_compose_database_storage,
     load_compose_deployment,
     render_compose_routes,
     render_compose_stack,
@@ -50,7 +48,7 @@ from ..registry import (
     registry_auth_for_image,
     registry_auth_matches_image,
 )
-from ..render import guard_service_database_storage, named_volume_sources, render_stack, render_tailscale_route, route_path, stack_path
+from ..render import named_volume_sources, render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service, slugify
 from .. import __version__
 from .state import init_state, load_state, require_token, save_state, state_path
@@ -865,7 +863,6 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         progress=progress,
     )
     service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state), progress=progress)
-    _deploy_step(steps, "Check database storage", lambda: guard_service_database_storage(service, _state_storage_classes(state)), progress=progress)
     storage_preparation = _deploy_step(
         steps,
         "Prepare managed storage",
@@ -949,7 +946,6 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
     finally:
         service_path.unlink(missing_ok=True)
     service = resolve_service_node_pin(service, state)
-    guard_service_database_storage(service, _state_storage_classes(state))
     stack_text = render_stack(
         config,
         service,
@@ -1244,7 +1240,6 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
     _emit_compose_warnings(steps, progress, deployment)
-    _deploy_step(steps, "Check database storage", lambda: guard_compose_database_storage(deployment), progress=progress)
 
     storage_preparation = _deploy_step(
         steps,
@@ -1431,7 +1426,6 @@ def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable
         lambda: render_compose_stack(config, deployment, node_records=_state_nodes(state)),
         progress=progress,
     )
-    _deploy_step(steps, "Check database storage", lambda: guard_compose_database_storage(deployment), progress=progress)
     applied = _deploy_step(
         steps,
         "Prepare managed storage",
@@ -1454,70 +1448,6 @@ def handle_storage_list(token: str) -> Dict[str, Any]:
     return {"storageClasses": _storage_classes_summary(state)}
 
 
-def handle_storage_probe(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    name = str(body.get("name") or "").strip()
-    workload = str(body.get("workload") or "filesystem").strip()
-    if not name:
-        raise LumaError("storage class name is required")
-    if workload not in VALID_STORAGE_WORKLOADS:
-        raise LumaError(f"storage workload must be one of {sorted(VALID_STORAGE_WORKLOADS)}")
-    storage_record = _state_storage_classes(state).get(name)
-    if not storage_record:
-        raise LumaError(f"storage class not configured: {name}")
-    storage_class = _storage_class_spec_from_record(name, storage_record)
-    node_name = _storage_probe_node_name(state, storage_class, str(body.get("node") or "").strip())
-    node_record = _require_storage_probe_node(state, node_name)
-    endpoint = _storage_probe_endpoint(storage_class, node_record, state)
-    probe_id = f"{slugify(name)}-{slugify(workload)}-{secrets.token_hex(4)}"
-    probe_timeout = int(body.get("timeout") or 300)
-    result = _run_node_agent_task(
-        state,
-        node_name,
-        "probe-storage-class",
-        {
-            "name": name,
-            "endpoint": endpoint,
-            "mountOptions": storage_class.mount_options,
-            "workload": workload,
-            "probeId": probe_id,
-            "timeout": probe_timeout,
-        },
-        timeout=probe_timeout + 30,
-        required_capability="docker-volume",
-    )
-    state = load_state()
-    storage_classes = state.setdefault("storageClasses", {})
-    if not isinstance(storage_classes, dict) or name not in storage_classes or not isinstance(storage_classes[name], dict):
-        raise LumaError(f"storage class disappeared during probe: {name}")
-    item = storage_classes[name]
-    verified = [str(value) for value in item.get("verifiedWorkloads") or []]
-    if workload not in verified:
-        verified.append(workload)
-    item["verifiedWorkloads"] = sorted(verified)
-    probes = item.setdefault("workloadProbes", {})
-    if isinstance(probes, dict):
-        probes[workload] = {
-            "node": node_name,
-            "endpoint": endpoint,
-            "taskId": result.get("taskId") or "",
-            "probeId": probe_id,
-            "verifiedAt": int(time.time()),
-        }
-    item["updatedAt"] = int(time.time())
-    save_state(state)
-    return {
-        "name": name,
-        "workload": workload,
-        "node": node_name,
-        "endpoint": endpoint,
-        "verified": True,
-        "taskId": result.get("taskId") or "",
-        "storageClass": _public_storage_class(name, item),
-    }
-
-
 def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -1538,13 +1468,8 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "mountOptions": str(body.get("mountOptions") or "nfsvers=4,rw").strip(),
         "regions": [str(value) for value in body.get("regions") or [] if str(value)],
         "nodes": [str(value) for value in body.get("nodes") or [] if str(value)],
-        "workloads": [str(value) for value in body.get("workloads") or [] if str(value)] or ["filesystem"],
         "updatedAt": int(time.time()),
     }
-    if _storage_backend_unchanged(existing_record, item):
-        for key in ("verifiedWorkloads", "workloadProbes"):
-            if existing_record.get(key):
-                item[key] = existing_record[key]
     _validate_storage_class_record(name, item, state)
     save_state(state)
     storage_class_record = {key: value for key, value in item.items() if value not in ("", [], None)}
@@ -1560,14 +1485,6 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if storage_host:
         result["storageHost"] = storage_host
     return result
-
-
-def _storage_backend_unchanged(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
-    if not before:
-        return False
-    defaults = {"provider": "nfs", "mode": "managed", "mountOptions": "nfsvers=4,rw"}
-    backend_keys = ("provider", "mode", "node", "endpoint", "path", "mountOptions")
-    return all(str(before.get(key) or defaults.get(key) or "") == str(after.get(key) or defaults.get(key) or "") for key in backend_keys)
 
 
 def _apply_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, str] | None:
@@ -1592,69 +1509,8 @@ def _storage_class_spec_from_record(name: str, item: Dict[str, Any]) -> StorageC
         mount_options=str(item.get("mountOptions") or "nfsvers=4,rw"),
         nodes=[str(value) for value in item.get("nodes") or []],
         regions=[str(value) for value in item.get("regions") or []],
-        workloads=[str(value) for value in item.get("workloads") or ["filesystem"]],
-        verified_workloads=[str(value) for value in item.get("verifiedWorkloads") or []],
         raw=dict(item),
     )
-
-
-def _storage_probe_node_name(state: Dict[str, Any], storage_class: StorageClassSpec, requested: str) -> str:
-    if requested:
-        return requested
-    if storage_class.mode == "managed" and storage_class.node:
-        return storage_class.node
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    ready = [
-        str(record.get("name") or key)
-        for key, record in nodes.items()
-        if isinstance(record, dict) and _node_agent_is_ready(record, required_capability="docker-volume")
-    ]
-    if len(ready) == 1:
-        return ready[0]
-    raise LumaError("storage probe requires --node when no single ready Docker-capable node can be inferred")
-
-
-def _require_storage_probe_node(state: Dict[str, Any], node_name: str) -> Dict[str, Any]:
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    record = _node_record_for_name(nodes, node_name)
-    if not record:
-        raise LumaError(f"Luma node is not registered: {node_name}")
-    if not _node_agent_is_ready(record, required_capability="docker-volume"):
-        raise LumaError(f"node agent is not ready for storage probe on {node_name}")
-    return record
-
-
-def _storage_probe_endpoint(storage_class: StorageClassSpec, probe_node: Dict[str, Any], state: Dict[str, Any]) -> str:
-    if storage_class.mode == "external":
-        if not storage_class.endpoint:
-            raise LumaError(f"external storageClass {storage_class.name} requires endpoint")
-        return storage_class.endpoint
-    if not storage_class.node or not storage_class.path:
-        raise LumaError(f"managed storageClass {storage_class.name} requires node and path")
-    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    storage_node = _node_record_for_name(nodes, storage_class.node)
-    if not storage_node:
-        raise LumaError(f"managed storageClass {storage_class.name} references unknown Luma node: {storage_class.node}")
-    storage_region = str(storage_node.get("region") or "")
-    probe_region = str(probe_node.get("region") or "")
-    if storage_region and probe_region and storage_region != probe_region:
-        tailscale_endpoint = str(storage_node.get("tailscaleIP") or storage_node.get("tailscaleName") or "").strip()
-        if not tailscale_endpoint:
-            raise LumaError(
-                f"managed storageClass {storage_class.name} crosses {probe_region}->{storage_region} but node {storage_class.node} has no tailscaleIP"
-            )
-        return f"{tailscale_endpoint}:{storage_class.path}"
-    labels = storage_node.get("labels") if isinstance(storage_node.get("labels"), dict) else {}
-    for value in (
-        storage_node.get("swarmHostname"),
-        storage_node.get("hostname"),
-        labels.get("luma.node.hostname"),
-        storage_class.node,
-    ):
-        host = str(value or "").strip()
-        if host:
-            return f"{host}:{storage_class.path}"
-    raise LumaError(f"managed storageClass {storage_class.name} node {storage_class.node} has no usable storage host")
 
 
 def _prepare_managed_nfs_host(storage_class: StorageClassSpec, state: Dict[str, Any]) -> Dict[str, str]:
@@ -2355,9 +2211,6 @@ def _public_storage_class(name: str, value: Dict[str, Any]) -> Dict[str, Any]:
         "mountOptions": str(value.get("mountOptions") or ""),
         "regions": [str(item) for item in value.get("regions") or []],
         "nodes": [str(item) for item in value.get("nodes") or []],
-        "workloads": [str(item) for item in value.get("workloads") or ["filesystem"]],
-        "verifiedWorkloads": [str(item) for item in value.get("verifiedWorkloads") or []],
-        "workloadProbes": value.get("workloadProbes") if isinstance(value.get("workloadProbes"), dict) else {},
         "updatedAt": value.get("updatedAt") or "",
     }
 
@@ -2390,13 +2243,6 @@ def _validate_storage_class_record(name: str, item: Dict[str, Any], state: Dict[
     for region in regions:
         if region not in VALID_REGIONS:
             raise LumaError(f"storage class {name} region must be one of {sorted(VALID_REGIONS)}")
-    workloads = item.get("workloads") if isinstance(item.get("workloads"), list) else []
-    if not workloads:
-        raise LumaError(f"storage class {name} requires at least one workload")
-    for workload in workloads:
-        if workload not in VALID_STORAGE_WORKLOADS:
-            raise LumaError(f"storage class {name} workload must be one of {sorted(VALID_STORAGE_WORKLOADS)}")
-
 
 def handle_secret_list(token: str) -> Dict[str, Any]:
     state = load_state()
@@ -3750,7 +3596,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "version": __version__,
                     "nodeJoinModel": "region-first",
-                    "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove", "node-agent-storage", "storage-workload-probe"],
+                    "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove", "node-agent-storage"],
                 },
             )
             return
@@ -3827,9 +3673,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/storage/apply":
                 self._json(200, handle_storage_apply(token, body))
-                return
-            if self.path == "/v1/storage/probe":
-                self._json(200, handle_storage_probe(token, body))
                 return
             if self.path == "/v1/storage":
                 self._json(200, handle_storage_set(token, body))
