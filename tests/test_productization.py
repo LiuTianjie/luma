@@ -49,6 +49,7 @@ from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
 from luma.errors import LumaError
+from luma.local import LocalExecutor
 from luma.portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack, resolve_webhook, upsert_stack
 from luma.profiles import PROFILES
 from luma.registry import registry_provider_type
@@ -194,6 +195,12 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("mysqld --initialize-insecure", command)
         self.assertNotIn("timeout ", command)
         self.assertEqual(result["workload"], "mysql")
+
+    def test_local_executor_timeout_returns_text_output(self):
+        result = LocalExecutor().run_result("printf before-timeout; sleep 2", timeout=1)
+        self.assertEqual(result.code, 124)
+        self.assertIn("before-timeout", result.output)
+        self.assertIn("command timed out after 1s", result.output)
 
     def test_installer_does_not_change_system_dns(self):
         root = Path(__file__).resolve().parents[1]

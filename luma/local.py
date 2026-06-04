@@ -35,9 +35,7 @@ class LocalExecutor:
             except ProcessLookupError:
                 pass
             stdout, _ = process.communicate()
-            output = (exc.stdout or "") + (stdout or "")
-            if isinstance(output, bytes):
-                output = output.decode(errors="replace")
+            output = _text_output(exc.stdout) + _text_output(stdout)
             message = f"command timed out after {timeout}s"
             return LocalResult(code=124, output=(str(output) + "\n" + message).strip())
         return LocalResult(code=process.returncode or 0, output=stdout or "")
@@ -110,3 +108,11 @@ def _sudo_auth_failed(output: str) -> bool:
         or "incorrect password" in lower
         or "password is required" in lower
     )
+
+
+def _text_output(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value
