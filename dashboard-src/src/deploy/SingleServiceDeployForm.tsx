@@ -55,11 +55,21 @@ export function SingleServiceDeployForm({
           <label><span>健康检查 URL</span><input value={draft.healthcheckUrl} onChange={(event) => patch({ healthcheckUrl: event.target.value })} placeholder="http://127.0.0.1:80/healthz" /></label>
         </div>
         <div className="deploy-env-editor">
-          <div><strong>环境变量</strong><button type="button" className="ghost" onClick={() => patch({ env: [...draft.env, { id: `env-${Date.now()}`, key: "", value: "" }] })}>添加</button></div>
+          <div>
+            <strong>环境变量</strong>
+            <div>
+              <button type="button" className="ghost" onClick={() => patch({ env: [...draft.env, { id: `env-${Date.now()}`, key: "", value: "", kind: "plain" }] })}>添加变量</button>
+              <button type="button" className="ghost" onClick={() => patch({ env: [...draft.env, { id: `env-secret-${Date.now()}`, key: "", value: "", kind: "secret" }] })}>添加密钥引用</button>
+            </div>
+          </div>
           {draft.env.map((row) => (
-            <div className="deploy-env-row" key={row.id}>
+            <div className="deploy-env-row compose-env-row" key={row.id}>
               <input value={row.key} onChange={(event) => updateEnv(row.id, { key: event.target.value })} placeholder="NAME" />
-              <input value={row.value} onChange={(event) => updateEnv(row.id, { value: event.target.value })} placeholder="${SECRET_NAME} 或普通值" />
+              <select value={row.kind || "plain"} onChange={(event) => updateEnv(row.id, { kind: event.target.value as KeyValueRow["kind"] })}>
+                <option value="plain">普通变量</option>
+                <option value="secret">密钥引用</option>
+              </select>
+              <input value={row.value} onChange={(event) => updateEnv(row.id, { value: event.target.value })} placeholder={row.kind === "secret" ? "${SECRET_NAME}" : "value"} />
               <button type="button" className="ghost" onClick={() => patch({ env: draft.env.filter((item) => item.id !== row.id) })}>删除</button>
             </div>
           ))}

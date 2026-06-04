@@ -64,19 +64,22 @@ export async function deployStream(request: DeployRequest, mode: "service" | "co
   const decoder = new TextDecoder();
   let buffer = "";
   let result: unknown = null;
+  const handleLine = (line: string) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line) as DeployStep;
+    onStep(event);
+    if (event.status === "fail") throw new Error(event.message || "deployment failed");
+    if (event.status === "done") result = event.result;
+  };
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
     buffer = lines.pop() || "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      const event = JSON.parse(line) as DeployStep;
-      onStep(event);
-      if (event.status === "fail") throw new Error(event.message || "deployment failed");
-      if (event.status === "done") result = event.result;
-    }
+    for (const line of lines) handleLine(line);
   }
+  buffer += decoder.decode();
+  handleLine(buffer);
   return result;
 }

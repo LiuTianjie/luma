@@ -210,6 +210,53 @@ export default defineConfig({
           response.setHeader("Cache-Control", "no-store");
           response.end(JSON.stringify({ ...devDashboardPayload, cluster: { ...devDashboardPayload.cluster, updatedAt: new Date().toISOString() } }));
         });
+        server.middlewares.use((request, response, next) => {
+          const match = /^\/v1\/deployments\/([^/?]+)\/config(?:\?|$)/.exec(request.url || "");
+          if (!match) {
+            next();
+            return;
+          }
+          if (request.method !== "GET") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          const name = decodeURIComponent(match[1]);
+          const service = devDashboardPayload.services.find((item) => item.stack === name);
+          if (!service) {
+            response.statusCode = 404;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: `deployment not found: ${name}` }));
+            return;
+          }
+          const trafficPath = devDashboardPayload.trafficPaths.find((item) => item.id === service.stack);
+          const exposure = service.exposure === "internal" ? "none" : service.exposure;
+          const lines = [
+            `name: ${service.stack}`,
+            `image: ${service.image}`,
+            `region: ${service.region || "home"}`,
+            `exposure: ${exposure}`,
+            `replicas: ${service.desired || 1}`,
+          ];
+          if (trafficPath?.domain) lines.push(`domain: ${trafficPath.domain}`);
+          if (trafficPath?.segments?.length) {
+            const target = trafficPath.segments.find((segment) => /:\d+$/.test(segment));
+            const port = target?.match(/:(\d+)$/)?.[1];
+            if (port) lines.push(`port: ${port}`);
+          }
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({
+            kind: "service",
+            name: service.stack,
+            slug: service.stack,
+            sourceName: "console:service.yaml",
+            updatedAt: Math.floor(Date.now() / 1000),
+            manifest: `${lines.join("\n")}\n`,
+            composeContent: "",
+          }));
+        });
         server.middlewares.use("/v1/deployments/preview", async (request, response) => {
           if (request.method !== "POST") {
             response.statusCode = 405;

@@ -18,13 +18,38 @@ function firstTemplate(mode: DeployMode) {
   return DEPLOY_TEMPLATES.find((template) => template.mode === mode) || DEPLOY_TEMPLATES[0];
 }
 
+const secretRefPattern = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+function isPositiveInteger(value: string | number) {
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric > 0;
+}
+
+function exposureRegionError(exposure: ServiceManifestDraft["exposure"], region: ServiceManifestDraft["region"] | "", label: string) {
+  if (exposure === "cn-edge" && region !== "cn") return `${label} exposure=cn-edge 必须使用 region=cn`;
+  if (exposure === "external-edge" && region !== "global") return `${label} exposure=external-edge 必须使用 region=global`;
+  if (exposure === "tailscale-relay" && region !== "home") return `${label} exposure=tailscale-relay 必须使用 region=home`;
+  return "";
+}
+
 function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceYaml: string) {
   if (yamlDirty) return serviceYaml.trim() ? [] : ["service.yaml 不能为空"];
   const errors = [];
   if (!draft.name.trim()) errors.push("服务名不能为空");
   if (!draft.image.trim()) errors.push("镜像不能为空");
+  const regionError = exposureRegionError(draft.exposure, draft.region, draft.name || "服务");
+  if (regionError) errors.push(regionError);
   if (draft.exposure !== "none" && !draft.domain.trim()) errors.push("公开入口必须填写域名");
   if (draft.exposure !== "none" && !draft.port.trim()) errors.push("公开入口必须填写容器端口");
+  if (draft.exposure !== "none" && draft.port.trim() && !isPositiveInteger(draft.port)) errors.push("容器端口必须是正整数");
+  if (draft.publishPort.trim() && !isPositiveInteger(draft.publishPort)) errors.push("发布端口必须是正整数");
+  if (!isPositiveInteger(draft.replicas)) errors.push("副本数必须是大于 0 的整数");
+  for (const row of draft.env || []) {
+    if (!row.key.trim() && row.value.trim()) errors.push("环境变量缺少名称");
+    if (row.kind === "secret" && row.key.trim() && !secretRefPattern.test(row.value.trim())) {
+      errors.push(`${row.key.trim()} 密钥值必须使用 \${NAME} 引用`);
+    }
+  }
   return errors;
 }
 
@@ -38,11 +63,17 @@ function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, compos
   const errors = [];
   if (!draft.name.trim()) errors.push("应用名不能为空");
   for (const service of draft.services) {
+    const region = service.region || draft.region;
+    const regionError = exposureRegionError(service.exposure, region, service.name);
+    if (regionError) errors.push(regionError);
     if (service.exposure !== "none" && !service.domain.trim()) errors.push(`${service.name} 必须填写域名`);
     if (service.exposure !== "none" && !service.port.trim()) errors.push(`${service.name} 必须填写容器端口`);
+    if (service.exposure !== "none" && service.port.trim() && !isPositiveInteger(service.port)) errors.push(`${service.name} 容器端口必须是正整数`);
+    if (service.publishPort.trim() && !isPositiveInteger(service.publishPort)) errors.push(`${service.name} 发布端口必须是正整数`);
+    if (!isPositiveInteger(service.replicas)) errors.push(`${service.name} 副本数必须是大于 0 的整数`);
     for (const row of service.env || []) {
       if (!row.key.trim() && row.value.trim()) errors.push(`${service.name} 环境变量缺少名称`);
-      if (row.kind === "secret" && row.key.trim() && !/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(row.value.trim())) {
+      if (row.kind === "secret" && row.key.trim() && !secretRefPattern.test(row.value.trim())) {
         errors.push(`${service.name}.${row.key.trim()} 密钥值必须使用 \${NAME} 引用`);
       }
     }
@@ -62,6 +93,12 @@ export function DeployWorkspace({
   initialMode,
   initialServiceDraft,
   initialComposeDraft,
+  initialServiceYaml,
+  initialSidecarYaml,
+  initialComposeYaml,
+  initialSourceName,
+  initialEditorMode,
+  initialYamlDirty,
   contextLabel,
   modalTitle,
   modalSubtitle,
@@ -75,6 +112,12 @@ export function DeployWorkspace({
   initialMode?: DeployMode;
   initialServiceDraft?: ServiceManifestDraft;
   initialComposeDraft?: ComposeDeploymentDraft;
+  initialServiceYaml?: string;
+  initialSidecarYaml?: string;
+  initialComposeYaml?: string;
+  initialSourceName?: string;
+  initialEditorMode?: "form" | "yaml";
+  initialYamlDirty?: boolean;
   contextLabel?: string;
   modalTitle?: string;
   modalSubtitle?: string;
@@ -86,11 +129,12 @@ export function DeployWorkspace({
   const [activeTemplateId, setActiveTemplateId] = useState(initial.id);
   const [serviceDraft, setServiceDraft] = useState<ServiceManifestDraft>(() => clone(initialServiceDraft || firstTemplate("service").service!));
   const [composeDraft, setComposeDraft] = useState<ComposeDeploymentDraft>(() => clone(initialComposeDraft || firstTemplate("compose").compose!));
-  const [serviceYaml, setServiceYaml] = useState(() => serviceDraftToYaml(clone(initialServiceDraft || firstTemplate("service").service!)));
-  const [sidecarYaml, setSidecarYaml] = useState(() => composeDraftToSidecarYaml(clone(initialComposeDraft || firstTemplate("compose").compose!)));
-  const [composeYaml, setComposeYaml] = useState(() => clone((initialComposeDraft || firstTemplate("compose").compose!).dockerComposeYaml));
-  const [editorMode, setEditorMode] = useState<"form" | "yaml">("form");
-  const [yamlDirty, setYamlDirty] = useState(false);
+  const [serviceYaml, setServiceYaml] = useState(() => initialServiceYaml || serviceDraftToYaml(clone(initialServiceDraft || firstTemplate("service").service!)));
+  const [sidecarYaml, setSidecarYaml] = useState(() => initialSidecarYaml || composeDraftToSidecarYaml(clone(initialComposeDraft || firstTemplate("compose").compose!)));
+  const [composeYaml, setComposeYaml] = useState(() => initialComposeYaml || clone((initialComposeDraft || firstTemplate("compose").compose!).dockerComposeYaml));
+  const [sourceName, setSourceName] = useState(initialSourceName || (initialMode === "compose" ? "luma.compose.yml" : "service.yaml"));
+  const [editorMode, setEditorMode] = useState<"form" | "yaml">(initialEditorMode || "form");
+  const [yamlDirty, setYamlDirty] = useState(Boolean(initialYamlDirty));
   const [preview, setPreview] = useState<DeployPreviewResult | null>(null);
   const [steps, setSteps] = useState<DeployStep[]>([]);
   const [status, setStatus] = useState<"idle" | "previewing" | "deploying">("idle");
@@ -99,26 +143,32 @@ export function DeployWorkspace({
   const storageClasses = payload?.storage?.storageClasses || [];
 
   useEffect(() => {
-    if (!initialMode && !initialServiceDraft && !initialComposeDraft) return;
+    if (!initialMode && !initialServiceDraft && !initialComposeDraft && !initialServiceYaml && !initialSidecarYaml && !initialComposeYaml) return;
     setMode(initialMode || "service");
     setActiveTemplateId("current-application");
     setPreview(null);
     setSteps([]);
     setRuntimeErrors([]);
-    setYamlDirty(false);
-    setEditorMode("form");
+    setYamlDirty(Boolean(initialYamlDirty));
+    setEditorMode(initialEditorMode || "form");
+    setSourceName(initialSourceName || (initialMode === "compose" ? "luma.compose.yml" : "service.yaml"));
     if (initialServiceDraft) {
       const next = clone(initialServiceDraft);
       setServiceDraft(next);
-      setServiceYaml(serviceDraftToYaml(next));
+      setServiceYaml(initialServiceYaml || serviceDraftToYaml(next));
+    } else if (initialServiceYaml) {
+      setServiceYaml(initialServiceYaml);
     }
     if (initialComposeDraft) {
       const next = clone(initialComposeDraft);
       setComposeDraft(next);
-      setComposeYaml(next.dockerComposeYaml);
-      setSidecarYaml(composeDraftToSidecarYaml(next));
+      setComposeYaml(initialComposeYaml || next.dockerComposeYaml);
+      setSidecarYaml(initialSidecarYaml || composeDraftToSidecarYaml(next));
+    } else {
+      if (initialComposeYaml) setComposeYaml(initialComposeYaml);
+      if (initialSidecarYaml) setSidecarYaml(initialSidecarYaml);
     }
-  }, [initialMode, initialServiceDraft, initialComposeDraft]);
+  }, [initialMode, initialServiceDraft, initialComposeDraft, initialServiceYaml, initialSidecarYaml, initialComposeYaml, initialSourceName, initialEditorMode, initialYamlDirty]);
 
   const validationErrors = useMemo(
     () => mode === "service"
@@ -135,6 +185,7 @@ export function DeployWorkspace({
     setSteps([]);
     setRuntimeErrors([]);
     setYamlDirty(false);
+    setSourceName(template.mode === "compose" ? "luma.compose.yml" : "service.yaml");
     if (template.mode === "service" && template.service) {
       const next = clone(template.service);
       setServiceDraft(next);
@@ -174,8 +225,8 @@ export function DeployWorkspace({
     setStatus("previewing");
     try {
       const result = mode === "service"
-        ? await previewService({ token, manifest: serviceYaml, sourceName: "service.yaml", skipDns: serviceDraft.skipDns, skipWebhook: serviceDraft.skipWebhook })
-        : await previewCompose({ token, manifest: sidecarYaml, composeContent: composeYaml, sourceName: "luma.compose.yml", skipDns: composeDraft.skipDns, skipWebhook: composeDraft.skipWebhook });
+        ? await previewService({ token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipWebhook: serviceDraft.skipWebhook })
+        : await previewCompose({ token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipWebhook: composeDraft.skipWebhook });
       setPreview(result);
     } catch (error) {
       setRuntimeErrors([String(error instanceof Error ? error.message : error)]);
@@ -194,8 +245,8 @@ export function DeployWorkspace({
     try {
       await deployStream(
         mode === "service"
-          ? { token, manifest: serviceYaml, sourceName: "service.yaml", skipDns: serviceDraft.skipDns, skipWebhook: serviceDraft.skipWebhook }
-          : { token, manifest: sidecarYaml, composeContent: composeYaml, sourceName: "luma.compose.yml", skipDns: composeDraft.skipDns, skipWebhook: composeDraft.skipWebhook },
+          ? { token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipWebhook: serviceDraft.skipWebhook }
+          : { token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipWebhook: composeDraft.skipWebhook },
         mode,
         (step) => setSteps((current) => [...current, step]),
       );

@@ -26,6 +26,8 @@ type DeployContext = {
   deployMode?: DeployMode;
   serviceDraft?: ServiceManifestDraft;
   composeDraft?: ComposeDeploymentDraft;
+  deploymentConfig?: DeploymentConfig;
+  configWarning?: string;
 };
 
 type ConfigTab = "manifest" | "compose";
@@ -170,6 +172,15 @@ export function ApplicationManagementPanel({
   const updateContext = useMemo(() => {
     if (!deployContext) return null;
     if (deployContext.mode !== "update" || !deployContext.app) return deployContext;
+    if (deployContext.deploymentConfig?.manifest) {
+      const isCompose = deployContext.deploymentConfig.kind === "compose" || Boolean(deployContext.deploymentConfig.composeContent);
+      return {
+        ...deployContext,
+        deployMode: isCompose ? "compose" as const : "service" as const,
+        serviceDraft: isCompose ? undefined : serviceToDraft(deployContext.app),
+        composeDraft: isCompose ? appToComposeDraft(deployContext.app) : undefined,
+      };
+    }
     if (deployContext.app.services.length <= 1) {
       return { ...deployContext, deployMode: "service" as const, serviceDraft: serviceToDraft(deployContext.app) };
     }
@@ -196,9 +207,23 @@ export function ApplicationManagementPanel({
     setDeploymentConfigFor("");
     setSelected(app);
   };
-  const openUpdate = (app: Application) => {
+  const openUpdate = async (app: Application) => {
+    setActionError("");
+    setConfigBusy(app.stack);
     setSelected(null);
-    setDeployContext({ mode: "update", app });
+    try {
+      const config = await fetchDeploymentConfig({ token, name: app.stack });
+      setDeployContext({ mode: "update", app, deploymentConfig: config });
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error);
+      setDeployContext({
+        mode: "update",
+        app,
+        configWarning: `未读取到已登记部署配置，已从当前运行状态反推；提交前请重点核对 YAML。${message ? ` (${message})` : ""}`,
+      });
+    } finally {
+      setConfigBusy("");
+    }
   };
   const closeDeploy = () => setDeployContext(null);
   const openConfig = async (app: Application) => {
@@ -238,7 +263,7 @@ export function ApplicationManagementPanel({
           <div className="application-detail-actions">
             <button type="button" className="ghost" disabled={Boolean(configBusy)} onClick={() => void openConfig(selected)}>{configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "viewConfig")}</button>
             <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(selected)}>{actionBusy === selected.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
-            <button type="button" onClick={() => openUpdate(selected)}>{t(lang, "updateApp")}</button>
+            <button type="button" disabled={Boolean(configBusy)} onClick={() => void openUpdate(selected)}>{configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}</button>
             <button type="button" className="icon-button" onClick={() => setSelected(null)}>{t(lang, "close")}</button>
           </div>
         </header>
@@ -324,7 +349,8 @@ export function ApplicationManagementPanel({
     <section className="application-update-context">
       <div className="application-update-context-title">
         <strong>当前应用</strong>
-        <span>下面的表单已从现有 stack 带入，提交后会按同名应用更新。</span>
+        <span>{deployContext.deploymentConfig?.manifest ? "已读取 Luma Control 登记的部署配置，提交后会按同名应用更新。" : "下面的配置从现有 stack 带入，提交后会按同名应用更新。"}</span>
+        {deployContext.configWarning ? <span>{deployContext.configWarning}</span> : null}
       </div>
       <div className="application-update-context-grid">
         <article><span>Stack</span><strong>{deployContext.app.stack}</strong></article>
@@ -345,6 +371,12 @@ export function ApplicationManagementPanel({
           initialMode={updateContext?.deployMode}
           initialServiceDraft={updateContext?.serviceDraft}
           initialComposeDraft={updateContext?.composeDraft}
+          initialServiceYaml={updateContext?.deployMode === "service" ? updateContext.deploymentConfig?.manifest : undefined}
+          initialSidecarYaml={updateContext?.deployMode === "compose" ? updateContext.deploymentConfig?.manifest : undefined}
+          initialComposeYaml={updateContext?.deployMode === "compose" ? updateContext.deploymentConfig?.composeContent : undefined}
+          initialSourceName={updateContext?.deploymentConfig?.sourceName || undefined}
+          initialEditorMode={updateContext?.deploymentConfig?.manifest ? "yaml" : "form"}
+          initialYamlDirty={Boolean(updateContext?.deploymentConfig?.manifest)}
           contextLabel={deployContext.mode === "update" && deployContext.app ? `更新 ${deployContext.app.stack}` : ""}
           modalTitle={deployTitle}
           modalSubtitle={deploySubtitle}
@@ -393,7 +425,7 @@ export function ApplicationManagementPanel({
                   <div className="app-action-row">
                     <button type="button" className="ghost" onClick={() => openDetails(app)}>{t(lang, "details")}</button>
                     <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(app)}>{actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
-                    <button type="button" onClick={() => openUpdate(app)}>{t(lang, "updateApp")}</button>
+                    <button type="button" disabled={Boolean(configBusy)} onClick={() => void openUpdate(app)}>{configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}</button>
                   </div>
                 </td>
               </tr>

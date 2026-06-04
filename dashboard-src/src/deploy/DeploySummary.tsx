@@ -28,6 +28,7 @@ export function DeploySummary({
   const storage = mode === "compose"
     ? composeDraft.volumes.map((volume) => volume.storageMode === "storageClass" ? `${volume.name}:${volume.storageClass || "未选择"}` : `${volume.name}:${volume.localNode || "local"}`)
     : [];
+  const previewWarnings = preview ? [...(preview.warnings || []), ...(preview.storage?.warnings || [])] : [];
   return (
     <aside className="deploy-summary">
       <div className="deploy-summary-card primary">
@@ -49,8 +50,12 @@ export function DeploySummary({
           <h3>预览结果</h3>
           <dl>
             <div><dt>Artifacts</dt><dd>{preview.artifacts?.length || 0}</dd></div>
-            <div><dt>Warnings</dt><dd>{(preview.warnings || preview.storage?.warnings || []).length || 0}</dd></div>
+            <div><dt>Warnings</dt><dd>{previewWarnings.length}</dd></div>
           </dl>
+          {preview.artifacts?.length ? preview.artifacts.map((artifact) => (
+            <p key={`${artifact.kind}-${artifact.path}`}>{artifact.kind}: {artifact.path}</p>
+          )) : null}
+          {previewWarnings.map((warning, index) => <p key={`${warning}-${index}`}>{warning}</p>)}
         </div>
       ) : null}
       {errors.length ? (
