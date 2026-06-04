@@ -18,24 +18,32 @@ class LocalResult:
 
 
 class LocalExecutor:
-    def run_result(self, command: str) -> LocalResult:
-        result = subprocess.run(
-            ["bash", "-lc", command],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+    def run_result(self, command: str, *, timeout: int | None = None) -> LocalResult:
+        try:
+            result = subprocess.run(
+                ["bash", "-lc", command],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = exc.stdout or ""
+            if isinstance(output, bytes):
+                output = output.decode(errors="replace")
+            message = f"command timed out after {timeout}s"
+            return LocalResult(code=124, output=(str(output) + "\n" + message).strip())
         return LocalResult(code=result.returncode, output=result.stdout)
 
-    def run(self, command: str, *, check: bool = True) -> str:
-        result = self.run_result(command)
+    def run(self, command: str, *, check: bool = True, timeout: int | None = None) -> str:
+        result = self.run_result(command, timeout=timeout)
         if check and result.code != 0:
             raise LumaError(f"local command failed:\n{result.output.strip()}")
         return result.output
 
-    def sudo(self, command: str, *, check: bool = True) -> str:
-        result = self.sudo_result(command)
+    def sudo(self, command: str, *, check: bool = True, timeout: int | None = None) -> str:
+        result = self.sudo_result(command, timeout=timeout)
         if check and result.code != 0:
             if _sudo_auth_failed(result.output):
                 raise LumaError(
@@ -45,14 +53,17 @@ class LocalExecutor:
             raise LumaError(f"local sudo command failed:\n{result.output.strip()}")
         return result.output
 
-    def sudo_result(self, command: str) -> LocalResult:
+    def sudo_result(self, command: str, *, timeout: int | None = None) -> LocalResult:
         if os.geteuid() == 0:
-            return self.run_result(command)
+            return self.run_result(command, timeout=timeout)
         password = os.environ.get("LUMA_SUDO_PASSWORD")
         quoted = shlex.quote(command)
         if password:
-            return self.run_result(f"printf '%s\\n' {shlex.quote(password)} | sudo -S bash -lc {quoted}")
-        return self.run_result(f"sudo -n bash -lc {quoted}")
+            return self.run_result(
+                f"printf '%s\\n' {shlex.quote(password)} | sudo -S bash -lc {quoted}",
+                timeout=timeout,
+            )
+        return self.run_result(f"sudo -n bash -lc {quoted}", timeout=timeout)
 
     def upload(self, local: Path, remote_path: str) -> str:
         source = local.resolve()

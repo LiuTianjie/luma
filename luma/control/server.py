@@ -1481,6 +1481,7 @@ def handle_storage_probe(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             "mountOptions": storage_class.mount_options,
             "workload": workload,
             "probeId": probe_id,
+            "timeout": int(body.get("timeout") or 300),
         },
         timeout=int(body.get("timeout") or 300),
         required_capability="docker-volume",

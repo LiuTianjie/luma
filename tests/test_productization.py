@@ -170,6 +170,9 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("addr=storage.example,nfsvers=4,rw", command)
         self.assertIn("postgres:16-alpine", command)
         self.assertIn("initdb", command)
+        self.assertNotIn("timeout ", command)
+        self.assertEqual(run.call_args.kwargs["timeout_seconds"], 300)
+        self.assertIn("docker rm -f", run.call_args.kwargs["cleanup_command"])
         self.assertFalse(run.call_args.kwargs.get("prefer_container", True))
         self.assertEqual(result["workload"], "postgres")
 
@@ -189,6 +192,7 @@ class ProductConfigTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("mysql:8", command)
         self.assertIn("mysqld --initialize-insecure", command)
+        self.assertNotIn("timeout ", command)
         self.assertEqual(result["workload"], "mysql")
 
     def test_installer_does_not_change_system_dns(self):
@@ -1998,6 +2002,19 @@ class CliTests(unittest.TestCase):
 
         timeout = urlopen.call_args.kwargs["timeout"]
         self.assertGreaterEqual(timeout, 120)
+
+    def test_control_client_sends_storage_probe_timeout_in_body(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        response = MagicMock()
+        response.read.return_value = b'{"ok": true}'
+        response.__enter__.return_value = response
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            client.probe_storage(name="cn-nfs", workload="postgres", node="home-mac-mini", timeout=180)
+
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(body["timeout"], 180)
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 180)
 
     def test_secret_set_sends_value_to_control_plane(self):
         with tempfile.TemporaryDirectory() as tmp:

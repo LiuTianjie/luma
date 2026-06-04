@@ -242,9 +242,14 @@ def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
         mount_options = str(payload.get("mountOptions") or "nfsvers=4,rw")
         workload = str(payload.get("workload") or "filesystem")
         probe_id = _safe_probe_id(str(payload.get("probeId") or name))
+        timeout_seconds = max(int(payload.get("timeout") or 300), 1)
+        volume_name = _safe_docker_volume_name(f"luma-probe-{name}-{probe_id}")[:128]
+        container_name = _safe_docker_volume_name(f"luma-probe-{probe_id}")[:128]
         _run_fixed_host_task(
             _storage_probe_command(name=name, endpoint=endpoint, mount_options=mount_options, workload=workload, probe_id=probe_id),
             prefer_container=False,
+            timeout_seconds=timeout_seconds,
+            cleanup_command=_storage_probe_cleanup_command(container_name=container_name, volume_name=volume_name),
         )
         return {"name": name, "workload": workload, "probeId": probe_id, "message": f"storage workload probe passed: {workload}"}
     if action == "remove-managed-nfs-export":
@@ -305,7 +310,13 @@ def configure_docker_egress_proxy(*, proxy: str, no_proxy: str) -> Dict[str, Any
     return {"proxy": proxy, "noProxy": no_proxy, "message": "Docker daemon egress proxy configured"}
 
 
-def _run_fixed_host_task(command: str, *, prefer_container: bool = True) -> str:
+def _run_fixed_host_task(
+    command: str,
+    *,
+    prefer_container: bool = True,
+    timeout_seconds: int | None = None,
+    cleanup_command: str | None = None,
+) -> str:
     if prefer_container:
         try:
             from .control.server import _run_host_prep_container
@@ -313,7 +324,13 @@ def _run_fixed_host_task(command: str, *, prefer_container: bool = True) -> str:
             return _run_host_prep_container(command)
         except LumaError:
             pass
-    return LocalExecutor().sudo(command)
+    executor = LocalExecutor()
+    try:
+        return executor.sudo(command, timeout=timeout_seconds)
+    except LumaError:
+        if cleanup_command:
+            executor.sudo(cleanup_command, check=False)
+        raise
 
 
 def _linux_prepare_nfs_command(name: str, path: str) -> str:
@@ -457,7 +474,7 @@ def _storage_probe_command(*, name: str, endpoint: str, mount_options: str, work
             "set -eu; "
             f"dir={shlex.quote(probe_dir)}; "
             'rm -rf "$dir"; mkdir -p "$dir"; chown -R postgres:postgres "$dir"; '
-            'timeout 180 su postgres -c "initdb -D \\"$dir\\""; '
+            'su postgres -c "initdb -D \\"$dir\\""; '
             'rm -rf "$dir"'
         )
     elif workload == "mysql":
@@ -466,7 +483,7 @@ def _storage_probe_command(*, name: str, endpoint: str, mount_options: str, work
             "set -eu; "
             f"dir={shlex.quote(probe_dir)}; "
             'rm -rf "$dir"; mkdir -p "$dir"; chown -R mysql:mysql "$dir"; '
-            'timeout 240 mysqld --initialize-insecure --user=mysql --datadir="$dir"; '
+            'mysqld --initialize-insecure --user=mysql --datadir="$dir"; '
             'rm -rf "$dir"'
         )
     else:
@@ -476,18 +493,26 @@ def _storage_probe_command(*, name: str, endpoint: str, mount_options: str, work
         "command -v docker >/dev/null 2>&1 || { echo 'docker command not found' >&2; exit 1; }; "
         f"volume={shlex.quote(volume_name)}; "
         f"container={shlex.quote(container_name)}; "
-        "cleanup() { "
-        'timeout 30 docker rm -f "$container" >/dev/null 2>&1 || true; '
-        'timeout 30 docker volume rm -f "$volume" >/dev/null 2>&1 || true; '
-        "}; "
-        "trap cleanup EXIT; "
+        f"{_storage_probe_cleanup_command(container_name=container_name, volume_name=volume_name)}; "
+        "trap cleanup EXIT INT TERM; "
         'docker volume rm -f "$volume" >/dev/null 2>&1 || true; '
         "docker volume create --driver local "
         "--opt type=nfs "
         f"--opt o={shlex.quote(options)} "
         f"--opt device={shlex.quote(':' + export_path)} "
         '"$volume" >/dev/null; '
-        f"timeout 240 docker run --name \"$container\" --rm -v \"$volume:/mnt\" {shlex.quote(image)} sh -c {shlex.quote(script)}"
+        f"docker run --name \"$container\" --rm -v \"$volume:/mnt\" {shlex.quote(image)} sh -c {shlex.quote(script)}"
+    )
+
+
+def _storage_probe_cleanup_command(*, container_name: str, volume_name: str) -> str:
+    return (
+        f"volume={shlex.quote(volume_name)}; "
+        f"container={shlex.quote(container_name)}; "
+        "cleanup() { "
+        'docker rm -f "$container" >/dev/null 2>&1 || true; '
+        'docker volume rm -f "$volume" >/dev/null 2>&1 || true; '
+        "}"
     )
 
 
