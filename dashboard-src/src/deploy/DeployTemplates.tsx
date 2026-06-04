@@ -41,6 +41,55 @@ function getTemplateIcon(id: string) {
           </svg>
         ),
       };
+    case "service-grafana":
+      return {
+        bg: "rgba(14, 165, 233, 0.15)",
+        color: "#0ea5e9",
+        svg: (
+          <svg viewBox="0 0 24 24" {...iconProps}>
+            <path d="M4 19V5" />
+            <path d="M4 19h18" />
+            <rect x="7" y="11" width="3" height="5" />
+            <rect x="12" y="8" width="3" height="8" />
+            <rect x="17" y="6" width="3" height="10" />
+          </svg>
+        ),
+      };
+    case "service-minio":
+      return {
+        bg: "rgba(34, 197, 94, 0.15)",
+        color: "#22c55e",
+        svg: (
+          <svg viewBox="0 0 24 24" {...iconProps}>
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+            <path d="M3.3 7 12 12l8.7-5" />
+            <path d="M12 22V12" />
+          </svg>
+        ),
+      };
+    case "service-jellyfin":
+      return {
+        bg: "rgba(249, 115, 22, 0.15)",
+        color: "#f97316",
+        svg: (
+          <svg viewBox="0 0 24 24" {...iconProps}>
+            <circle cx="12" cy="12" r="9" />
+            <path d="M10 8l6 4-6 4V8Z" />
+          </svg>
+        ),
+      };
+    case "service-code-server":
+      return {
+        bg: "rgba(168, 85, 247, 0.15)",
+        color: "#a855f7",
+        svg: (
+          <svg viewBox="0 0 24 24" {...iconProps}>
+            <path d="M8 9l-4 3 4 3" />
+            <path d="M16 9l4 3-4 3" />
+            <path d="M13 5l-2 14" />
+          </svg>
+        ),
+      };
     case "compose-uptime-kuma":
       return {
         bg: "rgba(20, 184, 166, 0.15)",
@@ -86,6 +135,53 @@ function getTemplateIcon(id: string) {
             <circle cx="18" cy="19" r="3" />
             <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
             <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+          </svg>
+        ),
+      };
+    case "compose-nextcloud":
+      return {
+        bg: "rgba(37, 99, 235, 0.15)",
+        color: "#2563eb",
+        svg: (
+          <svg viewBox="0 0 24 24" {...iconProps}>
+            <circle cx="8" cy="12" r="4" />
+            <circle cx="16" cy="12" r="4" />
+            <path d="M8 12h8" />
+          </svg>
+        ),
+      };
+    case "compose-ghost":
+      return {
+        bg: "rgba(2, 132, 199, 0.15)",
+        color: "#0284c7",
+        svg: (
+          <svg viewBox="0 0 24 24" {...iconProps}>
+            <path d="M4 19.5V5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-1.5Z" />
+            <path d="M8 7h7M8 11h8M8 15h5" />
+          </svg>
+        ),
+      };
+    case "compose-paperless-ngx":
+      return {
+        bg: "rgba(16, 185, 129, 0.15)",
+        color: "#10b981",
+        svg: (
+          <svg viewBox="0 0 24 24" {...iconProps}>
+            <path d="M8 4h8l3 3v15H5V4h3Z" />
+            <path d="M15 4v4h4" />
+            <path d="M8 13h8M8 17h6" />
+          </svg>
+        ),
+      };
+    case "compose-stirling-pdf":
+      return {
+        bg: "rgba(100, 116, 139, 0.15)",
+        color: "#64748b",
+        svg: (
+          <svg viewBox="0 0 24 24" {...iconProps}>
+            <path d="M14 2H6v20h12V6l-4-4Z" />
+            <path d="M14 2v4h4" />
+            <path d="M8 13h8M8 17h8M10 9h4" />
           </svg>
         ),
       };
@@ -190,4 +286,3 @@ export function DeployTemplates({
     </div>
   );
 }
-
