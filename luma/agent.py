@@ -439,14 +439,14 @@ def _docker_volume_remove_command(name: str) -> str:
     quoted = shlex.quote(safe_name)
     return (
         "set -euo pipefail; "
-        "command -v docker >/dev/null 2>&1 || { echo 'docker command not found' >&2; exit 1; }; "
+        f"{_docker_cli_prelude()}; "
         "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do "
-        f"docker volume inspect {quoted} >/dev/null 2>&1 || exit 0; "
-        f"docker volume rm -f {quoted} && exit 0; "
+        f"\"$docker_cli\" volume inspect {quoted} >/dev/null 2>&1 || exit 0; "
+        f"\"$docker_cli\" volume rm -f {quoted} && exit 0; "
         "sleep 2; "
         "done; "
-        f"docker volume inspect {quoted} >/dev/null 2>&1 || exit 0; "
-        f"docker volume rm -f {quoted}"
+        f"\"$docker_cli\" volume inspect {quoted} >/dev/null 2>&1 || exit 0; "
+        f"\"$docker_cli\" volume rm -f {quoted}"
     )
 
 
@@ -490,29 +490,50 @@ def _storage_probe_command(*, name: str, endpoint: str, mount_options: str, work
         raise LumaError(f"storage probe workload is not implemented yet: {workload}")
     return (
         "set -euo pipefail; "
-        "command -v docker >/dev/null 2>&1 || { echo 'docker command not found' >&2; exit 1; }; "
+        f"{_docker_cli_prelude()}; "
         f"volume={shlex.quote(volume_name)}; "
         f"container={shlex.quote(container_name)}; "
         f"{_storage_probe_cleanup_command(container_name=container_name, volume_name=volume_name)}; "
         "trap cleanup EXIT INT TERM; "
-        'docker volume rm -f "$volume" >/dev/null 2>&1 || true; '
-        "docker volume create --driver local "
+        '"$docker_cli" volume rm -f "$volume" >/dev/null 2>&1 || true; '
+        '"$docker_cli" volume create --driver local '
         "--opt type=nfs "
         f"--opt o={shlex.quote(options)} "
         f"--opt device={shlex.quote(':' + export_path)} "
         '"$volume" >/dev/null; '
-        f"docker run --name \"$container\" --rm -v \"$volume:/mnt\" {shlex.quote(image)} sh -c {shlex.quote(script)}"
+        f"\"$docker_cli\" run --name \"$container\" --rm -v \"$volume:/mnt\" {shlex.quote(image)} sh -c {shlex.quote(script)}"
     )
 
 
 def _storage_probe_cleanup_command(*, container_name: str, volume_name: str) -> str:
     return (
+        f"{_docker_cli_prelude()}; "
         f"volume={shlex.quote(volume_name)}; "
         f"container={shlex.quote(container_name)}; "
         "cleanup() { "
-        'docker rm -f "$container" >/dev/null 2>&1 || true; '
-        'docker volume rm -f "$volume" >/dev/null 2>&1 || true; '
+        '"$docker_cli" rm -f "$container" >/dev/null 2>&1 || true; '
+        '"$docker_cli" volume rm -f "$volume" >/dev/null 2>&1 || true; '
         "}"
+    )
+
+
+def _docker_cli_prelude() -> str:
+    candidates = [
+        "/usr/local/bin/docker",
+        "/opt/homebrew/bin/docker",
+        "/Applications/OrbStack.app/Contents/MacOS/xbin/docker",
+        "/Applications/Docker.app/Contents/Resources/bin/docker",
+    ]
+    candidate_checks = " ".join(shlex.quote(candidate) for candidate in candidates)
+    return (
+        'docker_cli="${DOCKER:-}"; '
+        'if [ -z "$docker_cli" ]; then docker_cli="$(command -v docker 2>/dev/null || true)"; fi; '
+        'if [ -z "$docker_cli" ]; then '
+        f"for candidate in {candidate_checks}; do "
+        '[ -x "$candidate" ] || continue; docker_cli="$candidate"; break; '
+        "done; "
+        "fi; "
+        '[ -n "$docker_cli" ] || { echo "docker command not found" >&2; exit 1; }'
     )
 
 

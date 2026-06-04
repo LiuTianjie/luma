@@ -144,8 +144,8 @@ class ProductConfigTests(unittest.TestCase):
             result = execute_agent_task({"action": "remove-docker-volume", "payload": {"name": "nextcloud_nextcloud-db"}})
         run.assert_called_once()
         command = run.call_args.args[0]
-        self.assertIn("docker volume inspect nextcloud_nextcloud-db", command)
-        self.assertIn("docker volume rm -f nextcloud_nextcloud-db", command)
+        self.assertIn('"$docker_cli" volume inspect nextcloud_nextcloud-db', command)
+        self.assertIn('"$docker_cli" volume rm -f nextcloud_nextcloud-db', command)
         self.assertFalse(run.call_args.kwargs.get("prefer_container", True))
         self.assertEqual(result["name"], "nextcloud_nextcloud-db")
 
@@ -165,14 +165,14 @@ class ProductConfigTests(unittest.TestCase):
             )
         run.assert_called_once()
         command = run.call_args.args[0]
-        self.assertIn("docker volume create --driver local", command)
+        self.assertIn('"$docker_cli" volume create --driver local', command)
         self.assertIn("--opt type=nfs", command)
         self.assertIn("addr=storage.example,nfsvers=4,rw", command)
         self.assertIn("postgres:16-alpine", command)
         self.assertIn("initdb", command)
         self.assertNotIn("timeout ", command)
         self.assertEqual(run.call_args.kwargs["timeout_seconds"], 300)
-        self.assertIn("docker rm -f", run.call_args.kwargs["cleanup_command"])
+        self.assertIn('"$docker_cli" rm -f', run.call_args.kwargs["cleanup_command"])
         self.assertFalse(run.call_args.kwargs.get("prefer_container", True))
         self.assertEqual(result["workload"], "postgres")
 
