@@ -30,7 +30,7 @@ def node_agent_os() -> str:
 def node_agent_capabilities(os_name: str | None = None) -> list[str]:
     os_value = os_name or node_agent_os()
     if os_value == "linux":
-        return ["nfs-host", "nfs-client", "managed-volume-path"]
+        return ["nfs-host", "nfs-client", "managed-volume-path", "docker-egress-proxy"]
     if os_value == "darwin":
         return ["nfs-host", "managed-volume-path"]
     return []
@@ -228,6 +228,13 @@ def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
     if action == "remove-managed-nfs-export":
         name = _required(payload, "name")
         return remove_managed_nfs_export(name=name)
+    if action == "configure-docker-egress-proxy":
+        proxy = str(payload.get("proxy") or "http://127.0.0.1:7890")
+        no_proxy = str(
+            payload.get("noProxy")
+            or "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
+        )
+        return configure_docker_egress_proxy(proxy=proxy, no_proxy=no_proxy)
     raise LumaError(f"unsupported node agent task action: {action}")
 
 
@@ -252,6 +259,28 @@ def remove_managed_nfs_export(*, name: str) -> Dict[str, Any]:
     else:
         raise LumaError(f"managed NFS storage is not supported on {os_value}")
     return {"name": name, "message": "managed NFS export removed"}
+
+
+def configure_docker_egress_proxy(*, proxy: str, no_proxy: str) -> Dict[str, Any]:
+    os_value = node_agent_os()
+    if os_value != "linux":
+        raise LumaError(f"Docker daemon egress proxy setup is not supported on {os_value}")
+    if not proxy.startswith(("http://", "https://")):
+        raise LumaError("Docker daemon proxy must start with http:// or https://")
+    command = (
+        "set -euo pipefail; "
+        "mkdir -p /etc/systemd/system/docker.service.d; "
+        "cat > /etc/systemd/system/docker.service.d/http-proxy.conf <<'EOF'\n"
+        "[Service]\n"
+        f"Environment=\"HTTP_PROXY={proxy}\"\n"
+        f"Environment=\"HTTPS_PROXY={proxy}\"\n"
+        f"Environment=\"NO_PROXY={no_proxy}\"\n"
+        "EOF\n"
+        "systemctl daemon-reload; "
+        "systemctl restart docker"
+    )
+    LocalExecutor().sudo(command)
+    return {"proxy": proxy, "noProxy": no_proxy, "message": "Docker daemon egress proxy configured"}
 
 
 def _run_fixed_host_task(command: str, *, prefer_container: bool = True) -> str:

@@ -41,7 +41,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, resolve_service_image
+from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -2539,7 +2539,9 @@ class ControlApiTests(unittest.TestCase):
                         "exposure": "none",
                     }
                 )
-                with patch("luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})):
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})
+                ):
                     result = handle_deployment(
                         state["deployToken"],
                         {"manifest": manifest, "sourceName": "home-panel.yaml", "skipDns": True, "skipWebhook": True},
@@ -2591,7 +2593,9 @@ class ControlApiTests(unittest.TestCase):
                     }
                 )
                 probe_error = urllib.error.HTTPError("https://api.example.com/", 404, "not found", {}, None)
-                with patch("luma.control.server.sync_dns", return_value="DNS updated"), patch(
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.sync_dns", return_value="DNS updated"
+                ), patch(
                     "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
                 ), patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
@@ -2897,6 +2901,66 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_remove_falls_back_to_live_swarm_stack_when_state_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["deployments"] = {"services": {}, "compose": {}}
+                state["portainerApiUrl"] = "https://127.0.0.1:9443/api"
+                state["portainerAdminPassword"] = "secret"
+                state["portainerEndpointId"] = 1
+                save_state(state)
+                stack_dir = root / "stacks" / "cn" / "gitea"
+                stack_dir.mkdir(parents=True)
+                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zoneId": "zone-id"}},
+                            "defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                docker_services = [
+                    {
+                        "ID": "svc-gitea",
+                        "Spec": {
+                            "Name": "gitea_gitea",
+                            "Labels": {
+                                "traefik.enable": "true",
+                                "traefik.http.routers.gitea.rule": "Host(`gitea.example.com`)",
+                                "traefik.http.services.gitea.loadbalancer.server.port": "3000",
+                                "traefik.swarm.network": "public",
+                            },
+                            "TaskTemplate": {
+                                "ContainerSpec": {"Image": "gitea/gitea:1.22@sha256:abc"},
+                                "Placement": {"Constraints": ["node.labels.region == cn"]},
+                            },
+                            "Mode": {"Replicated": {"Replicas": 1}},
+                        },
+                    }
+                ]
+                with patch("luma.control.server.docker_request", return_value=docker_services), patch(
+                    "luma.control.server.delete_dns", return_value="DNS deleted: gitea.example.com"
+                ) as dns, patch("luma.control.server.remove_stack", return_value="Portainer stack removed: gitea") as stack:
+                    result = handle_service_remove(state["deployToken"], {"name": "gitea"})
+                dns.assert_called_once()
+                stack.assert_called_once()
+                self.assertEqual(stack.call_args.args[1].name, "gitea")
+                self.assertEqual(dns.call_args.args[1].domain, "gitea.example.com")
+                self.assertEqual(result["service"], "gitea")
+                self.assertEqual(result["sourceName"], "live:gitea")
+                self.assertFalse(stack_dir.exists())
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
     def test_service_remove_by_name_removes_registered_compose_deployment(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3230,7 +3294,9 @@ class ControlApiTests(unittest.TestCase):
                 )
                 response = MagicMock()
                 response.__enter__.return_value.status = 200
-                with patch("luma.control.server.sync_dns", return_value="DNS updated"), patch(
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.sync_dns", return_value="DNS updated"
+                ), patch(
                     "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
                 ) as deploy, patch("luma.control.server.urllib.request.urlopen", return_value=response):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
@@ -4312,7 +4378,9 @@ class ControlApiTests(unittest.TestCase):
                     captured["image_auth"] = kwargs.get("registry_auth")
                     return service, {"requested": service.image, "selected": service.image, "registryAuth": bool(kwargs.get("registry_auth"))}
 
-                with patch("luma.control.server.resolve_service_image", side_effect=fake_resolve), patch(
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.resolve_service_image", side_effect=fake_resolve
+                ), patch(
                     "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
                 ) as deploy:
                     result = handle_deployment(
@@ -4376,7 +4444,9 @@ class ControlApiTests(unittest.TestCase):
                         "Status": {"State": "running"},
                     },
                 ]
-                with patch("luma.control.server.docker_request", side_effect=[docker_nodes, docker_tasks]), patch(
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.docker_request", side_effect=[docker_nodes, docker_tasks]
+                ), patch(
                     "luma.control.server.resolve_service_image",
                     side_effect=lambda _config, service, **_kwargs: (service, {"requested": service.image, "selected": service.image}),
                 ), patch(
@@ -4419,7 +4489,7 @@ class ControlApiTests(unittest.TestCase):
                         "env": {"DATABASE_URL": "${DATABASE_URL}"},
                     }
                 )
-                with self.assertRaises(LumaError):
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), self.assertRaises(LumaError):
                     handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -4463,7 +4533,9 @@ class ControlApiTests(unittest.TestCase):
                         "port": 80,
                     }
                 )
-                with patch("luma.control.server.sync_dns") as sync, patch("luma.control.server.deploy_with_portainer") as webhook:
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.sync_dns"
+                ) as sync, patch("luma.control.server.deploy_with_portainer") as webhook:
                     result = handle_deployment(
                         state["deployToken"],
                         {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipWebhook": True},
@@ -4512,7 +4584,9 @@ class ControlApiTests(unittest.TestCase):
                         return 200, json.dumps({"RepoDigests": [digest]})
                     return 200, "{}"
 
-                with patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.docker_request_raw", side_effect=fake_raw
+                ):
                     result = handle_deployment(
                         state["deployToken"],
                         {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipWebhook": True},
@@ -4592,6 +4666,49 @@ class ControlApiTests(unittest.TestCase):
             self.assertEqual(decoded["password"], "ghp_secret1")
             self.assertEqual(decoded["serveraddress"], "ghcr.io")
 
+    def test_image_pull_egress_registry_whitelist(self):
+        self.assertTrue(image_pull_requires_egress("ghcr.io/acme/api:latest"))
+        self.assertTrue(image_pull_requires_egress("nginx:alpine"))
+        self.assertFalse(image_pull_requires_egress("docker.1panel.live/library/nginx:alpine"))
+
+    def test_image_pull_egress_configures_daemon_proxy_through_node_agent(self):
+        state = {
+            "nodes": {
+                "manager-1": {
+                    "swarmNodeId": "node-1",
+                    "swarmHostname": "manager-host",
+                    "agent": {
+                        "status": "online",
+                        "lastSeen": int(time.time()),
+                        "capabilities": ["docker-egress-proxy"],
+                    },
+                }
+            }
+        }
+        docker_calls = []
+
+        def fake_docker(method, path, body=None):
+            docker_calls.append((method, path))
+            if path == "/services/egress_mihomo":
+                return {"ID": "egress"}
+            if path.startswith("/tasks?"):
+                return [{"Status": {"State": "running"}}]
+            if path == "/info":
+                if len([call for call in docker_calls if call[1] == "/info"]) == 1:
+                    return {"Name": "manager-host", "Swarm": {"NodeID": "node-1"}}
+                return {"Name": "manager-host", "Swarm": {"NodeID": "node-1"}, "HTTPProxy": "http://127.0.0.1:7890"}
+            raise AssertionError(path)
+
+        with patch("luma.control.server.docker_request", side_effect=fake_docker), patch(
+            "luma.control.server._run_node_agent_task",
+            return_value={"message": "Docker daemon egress proxy configured"},
+        ) as agent:
+            result = ensure_image_pull_egress_proxy(state, "ghcr.io/acme/api:latest")
+        agent.assert_called_once()
+        self.assertEqual(agent.call_args.args[2], "configure-docker-egress-proxy")
+        self.assertEqual(agent.call_args.kwargs["required_capability"], "docker-egress-proxy")
+        self.assertEqual(result, "Docker daemon egress proxy configured")
+
     def test_latest_service_image_is_pulled_even_when_present_locally(self):
         calls = []
         digest = "ghcr.io/acme/api@sha256:abc123"
@@ -4619,6 +4736,18 @@ class ControlApiTests(unittest.TestCase):
         with patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
             ensure_image_present("ghcr.io/acme/api:1.0.0")
         self.assertEqual([method for method, _path, _headers in calls], ["GET"])
+
+    def test_service_image_pull_error_points_to_daemon_proxy_for_registry_network_failures(self):
+        def fake_raw(method, path, *, headers=None):
+            if method == "GET":
+                return 404, ""
+            return 500, '{"message":"failed to do request: Head \\"https://ghcr.io/v2/acme/api/manifests/latest\\": EOF"}'
+
+        with patch("luma.control.server.docker_request_raw", side_effect=fake_raw), self.assertRaisesRegex(
+            LumaError,
+            "Docker daemon could not reach the registry",
+        ):
+            ensure_image_present("ghcr.io/acme/api:latest", force_pull=True)
 
     def test_config_webhook_mapping_uses_service_slug(self):
         with tempfile.TemporaryDirectory() as tmp:

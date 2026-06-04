@@ -55,6 +55,24 @@ from .state import init_state, load_state, require_token, save_state, state_path
 
 AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
 AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SECONDS", "300"))
+EGRESS_PROXY_URL = os.environ.get("LUMA_EGRESS_PROXY_URL", "http://127.0.0.1:7890")
+EGRESS_NO_PROXY = os.environ.get(
+    "LUMA_EGRESS_NO_PROXY",
+    "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run",
+)
+DEFAULT_EGRESS_PULL_REGISTRIES = {
+    "docker.io",
+    "index.docker.io",
+    "registry-1.docker.io",
+    "ghcr.io",
+    "quay.io",
+    "gcr.io",
+    "k8s.gcr.io",
+    "registry.k8s.io",
+    "mcr.microsoft.com",
+    "public.ecr.aws",
+    "nvcr.io",
+}
 
 
 def bearer_token(headers: Any) -> str:
@@ -193,9 +211,15 @@ def _node_agent_status(record: Dict[str, Any]) -> str:
 
 
 def _node_agent_supports_storage(record: Dict[str, Any]) -> bool:
+    return _node_agent_is_ready(record, required_capability="nfs-host")
+
+
+def _node_agent_is_ready(record: Dict[str, Any], *, required_capability: str | None = None) -> bool:
     agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
     capabilities = {str(value) for value in agent.get("capabilities") or []}
-    return _node_agent_status(record) == "ready" and "nfs-host" in capabilities
+    if _node_agent_status(record) != "ready":
+        return False
+    return required_capability is None or required_capability in capabilities
 
 
 def _agent_tasks(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -316,15 +340,23 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
     return {"taskId": task_id, "status": status}
 
 
-def _run_node_agent_task(state: Dict[str, Any], node_name: str, action: str, payload: Dict[str, Any], *, timeout: int | None = None) -> Dict[str, Any]:
+def _run_node_agent_task(
+    state: Dict[str, Any],
+    node_name: str,
+    action: str,
+    payload: Dict[str, Any],
+    *,
+    timeout: int | None = None,
+    required_capability: str | None = "nfs-host",
+) -> Dict[str, Any]:
     task_id = f"task-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
 
     def mutate(current: Dict[str, Any]) -> None:
         nodes = current.get("nodes") if isinstance(current.get("nodes"), dict) else {}
         record = _node_record_for_name(nodes, node_name)
         if record is None:
-            raise LumaError(f"storage node is not registered: {node_name}")
-        if not _node_agent_supports_storage(record):
+            raise LumaError(f"Luma node is not registered: {node_name}")
+        if not _node_agent_is_ready(record, required_capability=required_capability):
             agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
             raise LumaError(
                 f"node agent is not ready on {node_name}; "
@@ -670,6 +702,79 @@ def _compose_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, An
     return record if isinstance(record, dict) else None
 
 
+def _live_service_remove_request(config: Any, config_path: Path, name: str) -> tuple[ServiceSpec, str] | None:
+    service = _live_service_for_remove(config, config_path, name)
+    if not service:
+        return None
+    return service, f"live:{service.slug}"
+
+
+def _live_service_for_remove(config: Any, config_path: Path, name: str) -> ServiceSpec | None:
+    try:
+        raw_services = docker_request("GET", "/services")
+    except LumaError as exc:
+        raise LumaError(f"deployment not found in Luma state and Docker services are unavailable: {exc}") from exc
+    if not isinstance(raw_services, list):
+        raise LumaError("Docker API returned invalid service list")
+    route_files = _dashboard_route_files(config, config_path, [])
+    items = [
+        _dashboard_service(service, [], {}, route_files)
+        for service in raw_services
+        if isinstance(service, dict)
+    ]
+    wanted = slugify(name)
+    matches = [
+        item
+        for item in items
+        if item and _live_service_matches(item, wanted)
+    ]
+    if not matches:
+        return None
+    stacks = {
+        str(item.get("stack") or item.get("name") or "").strip()
+        for item in matches
+        if str(item.get("stack") or item.get("name") or "").strip()
+    }
+    if len(stacks) > 1:
+        choices = ", ".join(sorted(stacks))
+        raise LumaError(f"multiple live deployments match {name}: {choices}; remove by exact stack name")
+    stack_name = next(iter(stacks), "")
+    if not stack_name:
+        return None
+    if _is_system_stack(stack_name):
+        raise LumaError(f"system stack cannot be removed through service remove: {stack_name}")
+    public_items = [item for item in matches if str(item.get("domain") or "").strip()]
+    if len({str(item.get("domain") or "") for item in public_items}) > 1:
+        raise LumaError(f"live deployment {stack_name} has multiple public services; remove it from Portainer or redeploy it through Luma first")
+    item = public_items[0] if public_items else matches[0]
+    exposure = str(item.get("exposure") or "none")
+    domain = str(item.get("domain") or "").strip() or None
+    port_text = str(item.get("targetPort") or "").strip()
+    port = int(port_text) if port_text.isdigit() else None
+    return ServiceSpec(
+        source=Path("live"),
+        name=stack_name,
+        image=str(item.get("image") or "live"),
+        region=str(item.get("region") or "cn"),
+        node=str(item.get("node") or "") or None,
+        public=exposure != "none",
+        exposure=exposure,
+        domain=domain,
+        port=port,
+        replicas=int(item.get("desired") or 1),
+    )
+
+
+def _live_service_matches(item: Dict[str, Any], wanted: str) -> bool:
+    values = [
+        item.get("stack"),
+        item.get("name"),
+        item.get("fullName"),
+        item.get("routeId"),
+    ]
+    return any(slugify(str(value)) == wanted for value in values if str(value or "").strip())
+
+
 def _remove_request_name(body: Dict[str, Any]) -> str:
     name = str(body.get("name") or "").strip()
     if not name:
@@ -721,6 +826,14 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
+
+    if image_pull_requires_egress(service.image):
+        _deploy_step(
+            steps,
+            "Ensure image pull egress",
+            lambda: ensure_image_pull_egress_proxy(state, service.image),
+            progress=progress,
+        )
 
     registry_auth = _registry_auth_for_service(state, service)
     service, image_result = _deploy_step(
@@ -849,6 +962,10 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
     if compose_record:
         deployment, source_name = _compose_remove_request(compose_record, name)
         return _remove_compose_deployment(state, config, config_path, deployment, source_name, body, progress=progress)
+    live_request = _live_service_remove_request(config, config_path, name)
+    if live_request:
+        service, source_name = live_request
+        return _remove_service_deployment(state, config, config_path, service, source_name, body, progress=progress)
     raise LumaError(f"deployment not found: {name}")
 
 
@@ -1952,6 +2069,123 @@ def _registry_auth_for_service(state: Dict[str, Any], service: ServiceSpec) -> D
     return registry_auth_for_image(registries, service.image)
 
 
+def image_pull_requires_egress(image: str) -> bool:
+    registry = _image_registry_host(image)
+    return registry in _egress_pull_registries()
+
+
+def ensure_image_pull_egress_proxy(state: Dict[str, Any], image: str) -> str:
+    registry = _image_registry_host(image)
+    if registry not in _egress_pull_registries():
+        return f"Image pull egress not required: {registry}"
+    _require_egress_gateway_running()
+    info = _docker_info_with_retry()
+    if _docker_info_uses_egress_proxy(info):
+        return f"Image pull egress ready for {registry}: Docker daemon proxy {EGRESS_PROXY_URL}"
+    node_name = _local_control_node_name(state, info)
+    if not node_name:
+        raise LumaError(f"image pull egress requires Docker daemon proxy for {registry}, but the control manager node is not registered")
+    result = _run_node_agent_task(
+        state,
+        node_name,
+        "configure-docker-egress-proxy",
+        {"proxy": EGRESS_PROXY_URL, "noProxy": EGRESS_NO_PROXY},
+        timeout=180,
+        required_capability="docker-egress-proxy",
+    )
+    info = _docker_info_with_retry()
+    if not _docker_info_uses_egress_proxy(info):
+        raise LumaError(f"image pull egress proxy was configured on {node_name}, but Docker daemon did not report {EGRESS_PROXY_URL}")
+    return str(result.get("message") or f"Image pull egress configured for {registry}")
+
+
+def _egress_pull_registries() -> set[str]:
+    raw = os.environ.get("LUMA_EGRESS_PULL_REGISTRIES")
+    if raw is None:
+        return set(DEFAULT_EGRESS_PULL_REGISTRIES)
+    values = {item.strip().lower() for item in raw.split(",") if item.strip()}
+    if values == {"none"}:
+        return set()
+    return values
+
+
+def _image_registry_host(image: str) -> str:
+    image_ref = image.split("@", 1)[0]
+    if "/" not in image_ref:
+        return "docker.io"
+    first = image_ref.split("/", 1)[0].lower()
+    if "." in first or ":" in first or first == "localhost":
+        return first
+    return "docker.io"
+
+
+def _require_egress_gateway_running() -> None:
+    try:
+        docker_request("GET", "/services/egress_mihomo")
+        filters = urllib.parse.quote(json.dumps({"service": {"egress_mihomo": True}, "desired-state": {"running": True}}), safe="")
+        tasks = docker_request("GET", f"/tasks?filters={filters}")
+    except LumaError as exc:
+        raise LumaError("image pull egress requires egress_mihomo; run `luma egress setup` on the manager") from exc
+    if not isinstance(tasks, list) or not any(_docker_task_is_running(task) for task in tasks):
+        raise LumaError("image pull egress requires a running egress_mihomo task; run `luma egress setup` on the manager")
+
+
+def _docker_task_is_running(task: Any) -> bool:
+    if not isinstance(task, dict):
+        return False
+    status = task.get("Status") if isinstance(task.get("Status"), dict) else {}
+    return str(status.get("State") or "").lower() == "running"
+
+
+def _docker_info_with_retry() -> Dict[str, Any]:
+    last_error: LumaError | None = None
+    for _attempt in range(30):
+        try:
+            info = docker_request("GET", "/info")
+            if isinstance(info, dict):
+                return info
+            raise LumaError("Docker API returned invalid info")
+        except LumaError as exc:
+            last_error = exc
+            time.sleep(1)
+    raise LumaError(f"Docker daemon unavailable after egress proxy update: {last_error}")
+
+
+def _docker_info_uses_egress_proxy(info: Dict[str, Any]) -> bool:
+    expected = EGRESS_PROXY_URL.rstrip("/")
+    values = [
+        str(info.get("HTTPProxy") or ""),
+        str(info.get("HTTPSProxy") or ""),
+        str(info.get("HttpProxy") or ""),
+        str(info.get("HttpsProxy") or ""),
+    ]
+    return any(value.rstrip("/") == expected for value in values)
+
+
+def _local_control_node_name(state: Dict[str, Any], info: Dict[str, Any]) -> str:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    swarm = info.get("Swarm") if isinstance(info.get("Swarm"), dict) else {}
+    local_ids = {str(info.get("ID") or ""), str(swarm.get("NodeID") or "")} - {""}
+    local_names = {str(info.get("Name") or "")} - {""}
+    for name, record in nodes.items():
+        if not isinstance(record, dict):
+            continue
+        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+        record_ids = {
+            str(record.get("swarmNodeId") or ""),
+            str(labels.get("luma.node.id") or ""),
+        } - {""}
+        record_names = {
+            str(name or ""),
+            str(record.get("displayName") or ""),
+            str(record.get("swarmHostname") or ""),
+            str(labels.get("luma.node.name") or ""),
+        } - {""}
+        if local_ids & record_ids or local_names & record_names:
+            return str(name)
+    return ""
+
+
 def _stack_env_for_text(stack_text: str) -> list[dict[str, str]]:
     names = sorted(set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", stack_text)))
     env: list[dict[str, str]] = []
@@ -2866,12 +3100,24 @@ def ensure_image_present(
         headers["X-Registry-Auth"] = auth_header
     status, raw = docker_request_raw("POST", f"/images/create?fromImage={from_image}", headers=headers)
     if status >= 400:
-        raise LumaError(f"Docker pull failed with HTTP {status}: {raw.strip()}")
+        raise LumaError(_docker_pull_error_message(status, raw))
     if '"error"' in raw:
         raise LumaError(f"Docker pull failed: {raw.strip()}")
     if force_pull:
         return _image_repo_digest(image)
     return None
+
+
+def _docker_pull_error_message(status: int, raw: str) -> str:
+    detail = raw.strip()
+    message = f"Docker pull failed with HTTP {status}: {detail}"
+    lowered = detail.lower()
+    if status >= 500 and any(marker in lowered for marker in ("failed to do request", "eof", "timeout", "connection reset")):
+        message += (
+            "; Docker daemon could not reach the registry. Verify the Luma manager egress gateway and Docker daemon proxy "
+            "with `luma egress setup` and `docker info` HTTPProxy/HTTPSProxy."
+        )
+    return message
 
 
 def _image_repo_digest(image: str) -> str:
