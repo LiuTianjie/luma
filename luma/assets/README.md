@@ -26,7 +26,7 @@ client laptop -> Luma Control -> Portainer -> Docker Swarm -> service tasks
 | One Linux manager | Yes | Runs Docker Swarm manager, Traefik, Portainer, and Luma Control. A 2c2g host is enough for evaluation. |
 | Public inbound 80/443 | For public services | Traefik needs to receive HTTP/HTTPS traffic. |
 | Tailscale | As needed | Required for private multi-node joins, `home` nodes, and `exposure: tailscale-relay`. Not required for a single public manager. |
-| Egress subscription | As needed | Used for image-pull proxying and runtime proxying for `proxy: true` services. You can start with `--skip-egress`. |
+| Egress subscription | As needed | Used for image-pull proxying and runtime proxying for `proxy: true` services. For mainland managers using the default GHCR control image, configure it before bootstrap. |
 
 Client machines only need the CLI and network access to the control domain. They do not need Docker, SSH keys, Cloudflare tokens, Portainer passwords, or Portainer webhooks.
 
@@ -79,7 +79,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.45 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.46 sh
 ```
 
 Develop from source:
@@ -144,7 +144,9 @@ EGRESS_SUBSCRIPTION_URL=...
 
 You can skip editing `.env` and run `luma bootstrap manager --domain ...` directly. When local values are missing, the CLI explains each value and prompts interactively.
 
-`EGRESS_SUBSCRIPTION_URL` is optional. If you do not have it yet:
+`EGRESS_SUBSCRIPTION_URL` is optional only when the manager can pull the configured control image directly. Mainland hosts using the default GHCR control image should set it before bootstrap and should not use `--skip-egress`.
+
+Use `--skip-egress` only when the control image registry is directly reachable, or when you have pinned `LUMA_CONTROL_IMAGE` / `defaults.images.lumaControl` to a registry the manager can pull:
 
 ```bash
 luma bootstrap manager --domain luma.example.com --skip-egress
@@ -160,7 +162,7 @@ luma egress setup
 luma tailscale connect
 ```
 
-The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For predictable upgrades, prefer a published immutable tag and set `LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:<tag>` before bootstrap/update, or set `defaults.images.lumaControl` in `luma.yaml`. Luma fails if the configured control image cannot be pulled.
+The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For predictable upgrades, prefer a published immutable tag and set `LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:<tag>` before bootstrap/update, or set `defaults.images.lumaControl` in `luma.yaml`. Luma fails if the configured control image cannot be pulled. When egress is enabled, Luma configures the Docker daemon proxy before pulling default GHCR control images.
 
 ## Command Map
 

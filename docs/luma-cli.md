@@ -15,7 +15,7 @@ Portainer is required and installed by bootstrap. It shows stacks, services, log
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.45"
+python -m pip install "luma-infra==0.1.46"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.45 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.46 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.45"
+python -m pip install "luma-infra==0.1.46"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.45"
+python -m pip install "luma-infra==0.1.46"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -202,7 +202,7 @@ Bootstrap the manager by running this directly on the manager server:
 luma bootstrap manager --domain luma.example.com
 ```
 
-For `single-node`, it installs Docker, connects Tailscale when configured, initializes Swarm, configures networks and labels, deploys Traefik, deploys Portainer, deploys Luma Control, configures firewall rules, and sets up egress. Set `EGRESS_SUBSCRIPTION_URL` first, or use `--skip-egress` and repair egress later.
+For `single-node`, it installs Docker, connects Tailscale when configured, initializes Swarm, configures networks and labels, deploys Traefik, deploys Portainer, deploys Luma Control, configures firewall rules, and sets up egress. Set `EGRESS_SUBSCRIPTION_URL` first when the manager needs a proxy to pull the configured control image. Mainland managers using the default GHCR control image should not use `--skip-egress`.
 
 It streams progress:
 
@@ -214,7 +214,7 @@ It streams progress:
   Fix: Run: luma portainer setup
 ```
 
-Skip egress only when you want to repair it later:
+Skip egress only when the control image registry is directly reachable, or when `LUMA_CONTROL_IMAGE` / `defaults.images.lumaControl` points at a registry the manager can pull:
 
 ```bash
 luma bootstrap manager --domain luma.example.com --skip-egress

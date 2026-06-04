@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.45 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.46 sh
 ```
 
 For local development from a checkout:
@@ -144,7 +144,7 @@ This does:
 - deploys egress when the profile has the `egress` role;
 - configures UFW for SSH, 80, 443, 9443, and blocks inbound 7890.
 
-Set `EGRESS_SUBSCRIPTION_URL` before running an egress profile, or use `--skip-egress` and repair it later. Bootstrap prints live step logs with `[start]`, `[ok]`, and `[fail]` markers. If one step fails, either re-run bootstrap after fixing the issue or run the focused repair command for that layer.
+Set `EGRESS_SUBSCRIPTION_URL` before running an egress profile when the manager needs a proxy to pull the configured control image. Mainland managers using the default GHCR control image should not use `--skip-egress`. Bootstrap prints live step logs with `[start]`, `[ok]`, and `[fail]` markers. If one step fails, either re-run bootstrap after fixing the issue or run the focused repair command for that layer.
 
 If only Portainer needs repair:
 
@@ -164,7 +164,7 @@ If egress was skipped or needs repair:
 luma egress setup
 ```
 
-To intentionally skip egress during first bootstrap:
+To intentionally skip egress during first bootstrap, only do this when the control image registry is directly reachable, or when `LUMA_CONTROL_IMAGE` / `defaults.images.lumaControl` points at a registry the manager can pull:
 
 ```bash
 luma bootstrap manager --domain luma.example.com --skip-egress

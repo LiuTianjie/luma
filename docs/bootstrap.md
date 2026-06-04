@@ -67,7 +67,7 @@ luma bootstrap manager --domain luma.example.com
 
 The command is idempotent and can be re-run. It installs Docker, initializes Swarm if inactive, creates overlay networks, applies labels, creates runtime directories, configures UFW, and deploys Traefik, Portainer, and Luma Control.
 It also installs Tailscale. When `TAILSCALE_AUTHKEY` is set, it logs the node into the tailnet automatically.
-For profiles with the `egress` role, it also runs egress setup. Set `EGRESS_SUBSCRIPTION_URL` first, or use `--skip-egress` and repair egress later.
+For profiles with the `egress` role, it also runs egress setup. Set `EGRESS_SUBSCRIPTION_URL` first when the manager needs a proxy to pull the configured control image. Mainland managers using the default GHCR control image should not use `--skip-egress`.
 
 During bootstrap, Luma prints live step logs:
 
@@ -87,7 +87,7 @@ luma portainer setup
 luma egress setup
 ```
 
-To bootstrap the node first and configure egress later:
+To bootstrap the node first and configure egress later, use `--skip-egress` only when the control image registry is directly reachable, or when `LUMA_CONTROL_IMAGE` / `defaults.images.lumaControl` points at a registry the manager can pull:
 
 ```bash
 luma bootstrap manager --domain luma.example.com --skip-egress

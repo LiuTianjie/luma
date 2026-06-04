@@ -1428,8 +1428,8 @@ def _apply_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[st
     storage_class = _storage_class_spec_from_record(name, item)
     if storage_class.mode != "managed":
         return None
-    legacy_stack = _remove_legacy_managed_storage_stack(storage_class, state)
     host_result = _prepare_managed_nfs_host(storage_class, state)
+    legacy_stack = _remove_legacy_managed_storage_stack(storage_class, state)
     if legacy_stack:
         host_result["legacyStack"] = legacy_stack
     return host_result

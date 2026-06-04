@@ -28,7 +28,7 @@ client laptop -> Luma Control -> Portainer -> Docker Swarm -> service tasks
 | 一台 Linux manager | 必需 | 运行 Docker Swarm manager、Traefik、Portainer、Luma Control。评估阶段 2c2g 可以用。 |
 | 公网 80/443 入站 | 公开服务必需 | Traefik 需要接收 HTTP/HTTPS 流量。 |
 | Tailscale | 按需 | 私有多节点加入、`home` 节点、`exposure: tailscale-relay` 需要。普通单公网 manager 不强制需要。 |
-| egress 订阅 | 按需 | 镜像拉取代理和 `proxy: true` 服务的运行时代理。可以先 `--skip-egress`。 |
+| egress 订阅 | 按需 | 镜像拉取代理和 `proxy: true` 服务的运行时代理。国内 manager 使用默认 GHCR control 镜像时，建议 bootstrap 前配置好。 |
 
 client 机器只需要安装 CLI，并能访问控制面域名。它不需要 Docker、SSH key、Cloudflare token、Portainer password 或 Portainer webhook。
 
@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.10 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.46 sh
 ```
 
 从源码开发：
@@ -148,7 +148,9 @@ EGRESS_SUBSCRIPTION_URL=...
 
 如果不想提前编辑 `.env`，也可以直接运行 `luma bootstrap manager --domain ...`。缺少本地配置时，CLI 会逐项说明用途并交互式询问。
 
-`EGRESS_SUBSCRIPTION_URL` 可选。如果暂时没有，先用：
+只有当 manager 能直接拉取配置的 control 镜像时，`EGRESS_SUBSCRIPTION_URL` 才可以先不配置。国内机器使用默认 GHCR control 镜像时，应先配置它，不建议用 `--skip-egress`。
+
+只有在 control 镜像 registry 可直连，或你已经把 `LUMA_CONTROL_IMAGE` / `defaults.images.lumaControl` 固定到 manager 可拉取的 registry 时，才用：
 
 ```bash
 luma bootstrap manager --domain luma.example.com --skip-egress
@@ -164,7 +166,7 @@ luma egress setup
 luma tailscale connect
 ```
 
-默认 control API 镜像是 `ghcr.io/liutianjie/luma-control:latest`。为了让升级可预测，建议发布不可变 tag，并在 bootstrap/update 前设置 `LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:<tag>`，或在 `luma.yaml` 中设置 `defaults.images.lumaControl`。如果配置的 control 镜像拉取失败，Luma 会直接失败。
+默认 control API 镜像是 `ghcr.io/liutianjie/luma-control:latest`。为了让升级可预测，建议发布不可变 tag，并在 bootstrap/update 前设置 `LUMA_CONTROL_IMAGE=ghcr.io/<you>/luma-control:<tag>`，或在 `luma.yaml` 中设置 `defaults.images.lumaControl`。如果配置的 control 镜像拉取失败，Luma 会直接失败。启用 egress 时，Luma 会先配置 Docker daemon 代理，再拉取默认 GHCR control 镜像。
 
 ## 角色和命令速查
 
@@ -295,7 +297,7 @@ env:
 | `luma update` 什么时候需要 `--domain` | 只有 `/opt/luma/control/control.json` 缺失，或你确实要切换控制面域名时。 |
 | 服务 A 从一个 region 迁到另一个 region | 改 manifest 的 `region`，必要时同步修改 `exposure`，然后重新 `luma deploy app.yaml`。 |
 | 服务 A 固定到某个节点 | 把 manifest 的 `node` 设为 `luma node join --name` 使用的 Luma 节点名，保留匹配的 `region`，然后重新 deploy。控制面会解析成 Swarm NodeID 调度。 |
-| 下掉服务 A | 运行 `luma service remove app.yaml`。它会删除 DNS、Portainer stack 和生成的 stack/route 文件；用 `--dry-run` 预览，或用 `--skip-dns` 保留 DNS。 |
+| 下掉服务 A | 运行 `luma service remove app`。它会删除 DNS、Portainer stack 和生成的 stack/route 文件；用 `--dry-run` 预览，或用 `--skip-dns` 保留 DNS。 |
 | 服务从公开变内部 | 把 `exposure` 改为 `none`，移除不再需要的 `domain`/公开入口配置，重新 deploy。 |
 | 服务从内部变公开 | 设置匹配的 `region` + `exposure`，补 `domain` 和 `port`，重新 deploy。 |
 | 部署私有 GHCR 镜像 | 先用 `luma registry login ghcr.io --username <user> --password-stdin` 保存凭证，再部署普通 manifest。 |

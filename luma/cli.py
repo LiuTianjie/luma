@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.45 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.46 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -800,19 +800,33 @@ def cmd_node(args: argparse.Namespace) -> int:
         client = ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
         result = client.register_node(node_name=args.name, region=args.region)
         print(f"Node registered: {result['nodeName']} ({result['region']})")
+        registered_node_name = str(result.get("nodeName") or args.name)
         manager_addr = result.get("managerAddr")
         swarm_token = result.get("swarmJoinToken")
         if manager_addr and _is_tailscale_manager_addr(str(manager_addr)) and not _local_tailscale_connected():
             ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
         node = _local_node_for_region(args.region, name=args.name)
-        join_local_node(
-            node,
-            _join_profile_for_region(args.region),
-            str(manager_addr or ""),
-            str(swarm_token or ""),
-            emit=log,
-            install_docker_first=False,
-        )
+        try:
+            join_local_node(
+                node,
+                _join_profile_for_region(args.region),
+                str(manager_addr or ""),
+                str(swarm_token or ""),
+                emit=log,
+                install_docker_first=False,
+            )
+        except LumaError as exc:
+            log(f"[start] Roll back node registration: {registered_node_name}")
+            try:
+                client.unregister_node(node_name=registered_node_name)
+            except LumaError as cleanup_exc:
+                log(f"[fail] Roll back node registration: {cleanup_exc}")
+                raise LumaError(
+                    f"{exc}. Node registration cleanup also failed; run `luma node remove {registered_node_name}` "
+                    "from a logged-in machine after fixing control API access."
+                ) from exc
+            log(f"[ok] Rolled back node registration: {registered_node_name}")
+            raise
         actual_node_name = local_docker_node_name()
         actual_node_id = local_docker_node_id()
         label_result = client.label_node(
@@ -2272,13 +2286,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
         )
         verified = client.verify_login()
-        checks.append(("Control API", bool(verified.get("clusterId")), "Check the control URL, token, DNS, and HTTPS route"))
+        control_ok = bool(verified.get("clusterId"))
+        checks.append(("Control API", control_ok, "Check the control URL, token, DNS, and HTTPS route"))
+        if control_ok:
+            _append_control_status_checks(checks, client)
     except LumaError as exc:
         checks.append(("Control API", False, str(exc)))
 
     if not args.legacy_ssh:
         if args.deep:
-            checks.append(("Deep node checks", False, "Run: luma doctor --legacy-ssh --deep from a machine that can SSH to the nodes"))
+            print("Deep node checks: skipped (use --legacy-ssh --deep from a machine that can SSH to the nodes)")
         for name, ok, fix in checks:
             print(f"{name}: {'ok' if ok else 'fail'}")
             if not ok:
@@ -2315,6 +2332,50 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if not ok:
             print(f"  Fix: {fix}")
     return 0 if all(ok for _, ok, _ in checks) else 1
+
+
+def _append_control_status_checks(checks: list[tuple[str, bool, str]], client: ControlClient) -> None:
+    try:
+        status = client.status()
+    except LumaError as exc:
+        checks.append(("Control status", False, str(exc)))
+        return
+    checks.append(("Control status", True, ""))
+    dns = status.get("dns") if isinstance(status.get("dns"), dict) else {}
+    dns_missing = dns.get("missing") if isinstance(dns.get("missing"), list) else []
+    checks.append(
+        (
+            "DNS readiness",
+            bool(dns.get("ready")),
+            "Configure DNS provider, zone, token, and edge target"
+            + (f"; missing: {', '.join(str(item) for item in dns_missing)}" if dns_missing else ""),
+        )
+    )
+    portainer = status.get("portainer") if isinstance(status.get("portainer"), dict) else {}
+    checks.append(
+        (
+            "Portainer readiness",
+            bool(portainer.get("ready")),
+            "Run `luma portainer setup` or rerun manager bootstrap/update to bind Portainer endpoint and swarm ID",
+        )
+    )
+    swarm = status.get("swarm") if isinstance(status.get("swarm"), dict) else {}
+    checks.append(("Swarm availability", bool(swarm.get("available")), str(swarm.get("error") or "Check Docker Swarm on the manager")))
+    nodes = status.get("nodes") if isinstance(status.get("nodes"), dict) else {}
+    node_items = nodes.get("items") if isinstance(nodes.get("items"), list) else []
+    checks.append(("Registered nodes", bool(node_items), "Run `luma node join` on at least one worker or rerun manager bootstrap"))
+    pending_agents = [
+        str(item.get("name") or "")
+        for item in node_items
+        if isinstance(item, dict) and str(item.get("agentStatus") or "") in {"provisioned", "offline"}
+    ]
+    checks.append(
+        (
+            "Node agent heartbeats",
+            not pending_agents,
+            "Restart or reinstall Luma node agent on: " + ", ".join(name for name in pending_agents if name),
+        )
+    )
 
 
 def _looks_like_sudo_auth_failure(output: str) -> bool:

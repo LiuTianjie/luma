@@ -32,6 +32,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install validation dependencies
+        run: |
+          python -m pip install -e .
+          npm ci
+
+      - name: Validate image sources
+        run: |
+          python scripts/bump-version.py --check
+          python -m unittest discover -s tests -p 'test_render.py'
+          python -m unittest discover -s tests -p 'test_productization.py'
+          npm run typecheck:dashboard
+          npm run build:dashboard
+          git diff --check
+          git diff --exit-code -- luma/assets/dashboard
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

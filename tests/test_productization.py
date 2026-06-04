@@ -84,6 +84,35 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn('license = "MIT"', pyproject)
         self.assertIn('license-files = ["LICENSE"]', pyproject)
 
+    def test_doctor_checks_control_status_without_legacy_ssh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "config"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.verify_login.return_value = {"clusterId": "luma-test"}
+                client.status.return_value = {
+                    "dns": {"ready": False, "missing": ["dns.token"]},
+                    "portainer": {"ready": True},
+                    "swarm": {"available": True, "nodes": []},
+                    "nodes": {"items": [{"name": "manager", "agentStatus": "missing"}]},
+                }
+                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                    code = main(["--no-env", "doctor"])
+
+                self.assertEqual(code, 1)
+                client.status.assert_called_once()
+                output = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("Control status: ok", output)
+                self.assertIn("DNS readiness: fail", output)
+                self.assertIn("Portainer readiness: ok", output)
+                self.assertIn("Swarm availability: ok", output)
+                self.assertIn("Registered nodes: ok", output)
+                self.assertIn("Node agent heartbeats: ok", output)
+                self.assertIn("missing: dns.token", output)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
     def test_node_agent_unit_uses_python_module_when_invoked_from_stdin(self):
         with patch.dict(os.environ, {"LUMA_AGENT_EXECUTABLE": ""}, clear=False), patch("shutil.which", return_value=None), patch(
             "sys.argv", ["-"]
@@ -1625,6 +1654,50 @@ class CliTests(unittest.TestCase):
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
 
+    def test_node_join_unregisters_when_local_swarm_join_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
+            try:
+                client = Mock()
+                client.register_node.return_value = {
+                    "nodeName": "global-sg-1",
+                    "region": "global",
+                    "managerAddr": "100.64.0.1:2377",
+                    "swarmJoinToken": "swarm-token",
+                }
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "luma.userconfig.getpass.getpass", return_value="sudo-pass"
+                ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.install_docker", return_value="Docker available"
+                ), patch("luma.cli.ControlClient", return_value=client), patch(
+                    "luma.cli.join_local_node", side_effect=LumaError("swarm join failed")
+                ), patch("builtins.print") as printed:
+                    code = main(
+                        [
+                            "node",
+                            "join",
+                            "https://luma.example.com",
+                            "--token",
+                            "join-token",
+                            "--region",
+                            "global",
+                            "--name",
+                            "global-sg-1",
+                        ]
+                    )
+
+                self.assertEqual(code, 1)
+                client.unregister_node.assert_called_once_with(node_name="global-sg-1")
+                output = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("[ok] Rolled back node registration: global-sg-1", output)
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
     def test_node_join_rejects_legacy_profile_argument(self):
         with patch("sys.stdin.isatty", return_value=True), patch("builtins.print"):
             code = main(
@@ -2369,6 +2442,39 @@ class PortainerWebhookTests(unittest.TestCase):
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
         self.assertTrue(any(f"docker service update --image {digest_image}" in cmd for cmd in docker_commands))
         self.assertFalse(any("docker service update --image ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
+
+    def test_control_stack_deploy_can_skip_pull_egress_precheck(self):
+        digest_image = "ghcr.io/liutianjie/luma-control@sha256:abc123"
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=1, output="")
+        remote.sudo.return_value = ""
+        uploaded = {}
+        progress = []
+
+        def capture_upload(local_path, remote_path):
+            uploaded["stack"] = Path(local_path).read_text(encoding="utf-8")
+
+        remote.upload.side_effect = capture_upload
+        config = LumaConfig({}, None)
+
+        with patch("luma.bootstrap._ensure_control_image_pull_egress") as ensure_egress, patch(
+            "luma.bootstrap._ensure_control_image",
+            return_value="Control image pulled: ghcr.io/liutianjie/luma-control:latest",
+        ), patch("luma.bootstrap._control_image_repo_digest", return_value=digest_image), patch(
+            "luma.bootstrap._wait_service_ready", return_value="Service ready: luma-control_luma-control"
+        ):
+            result = deploy_control_stack(
+                remote,
+                config,
+                "luma.example.com",
+                emit=progress.append,
+                require_pull_egress=False,
+            )
+
+        ensure_egress.assert_not_called()
+        self.assertEqual(result[0], "Control image pulled: ghcr.io/liutianjie/luma-control:latest")
+        self.assertNotIn("[start] Ensure control image pull egress", "\n".join(progress))
+        self.assertIn(f"image: {digest_image}", uploaded["stack"])
 
     def test_control_service_force_updates_image_after_stack_deploy(self):
         remote = Mock()
@@ -4012,13 +4118,14 @@ class ControlApiTests(unittest.TestCase):
 
                 with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
                     "luma.control.server._run_host_prep_command", side_effect=LumaError("prep failed")
-                ):
+                ), patch("luma.control.server.remove_stack") as remove:
                     with self.assertRaisesRegex(LumaError, "failed to prepare managed NFS storage"):
                         handle_storage_set(
                             state["deployToken"],
                             {"name": "bad-nfs", "node": "manager-host", "path": "/srv/luma"},
                         )
                 self.assertNotIn("bad-nfs", load_state().get("storageClasses", {}))
+                remove.assert_not_called()
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

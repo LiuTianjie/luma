@@ -280,10 +280,17 @@ def _reset_portainer_state(remote: Executor) -> str:
     return "Portainer state reset"
 
 
-def deploy_control_stack(remote: Executor, config: LumaConfig, domain: str, *, emit: Progress | None = None) -> list[str]:
+def deploy_control_stack(
+    remote: Executor,
+    config: LumaConfig,
+    domain: str,
+    *,
+    emit: Progress | None = None,
+    require_pull_egress: bool = True,
+) -> list[str]:
     results: list[str] = []
     image = _control_image(config)
-    if _control_image_pull_requires_egress(image):
+    if require_pull_egress and _control_image_pull_requires_egress(image):
         _step(results, emit, "Ensure control image pull egress", lambda: _ensure_control_image_pull_egress(remote, image))
     _step(results, emit, "Pull Luma control image", lambda: _ensure_control_image(remote, image))
     deploy_image = image
@@ -331,7 +338,9 @@ def _ensure_control_image(remote: Executor, image: str) -> str:
         suffix = f" Docker error: {detail}" if detail else ""
         raise LumaError(
             f"failed to pull Luma Control image: {image}. "
-            "Publish the image or set LUMA_CONTROL_IMAGE/defaults.images.lumaControl to a pullable image tag."
+            "Publish the image or set LUMA_CONTROL_IMAGE/defaults.images.lumaControl to a pullable image tag. "
+            "If this manager cannot reach the registry directly, configure EGRESS_SUBSCRIPTION_URL "
+            "and rerun without --skip-egress."
             f"{suffix}"
         ) from exc
     else:
@@ -920,7 +929,17 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
     _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
-    _step(results, emit, "Deploy Luma control API", lambda: deploy_control_stack(remote, config, domain, emit=emit), fix="Build and publish the Luma control image, then rerun bootstrap manager")
+    _step(
+        results,
+        emit,
+        "Deploy Luma control API",
+        lambda: deploy_control_stack(remote, config, domain, emit=emit, require_pull_egress=run_egress),
+        fix=(
+            "Build and publish the Luma control image, then rerun bootstrap manager. "
+            "For mainland managers using the default GHCR image, configure EGRESS_SUBSCRIPTION_URL "
+            "and do not use --skip-egress."
+        ),
+    )
     return results
 
 
