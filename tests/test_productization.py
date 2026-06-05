@@ -1175,6 +1175,9 @@ class CliTests(unittest.TestCase):
         with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
             "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
         ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_docker_node_id", return_value="node-1"), patch(
+            "luma.cli._control_context",
+            return_value=("https://luma.example.com", "management-token", False, None),
+        ), patch(
             "luma.cli._refresh_local_node_agent",
             side_effect=LumaError("control API does not support node-agent credentials yet. Update the manager control plane first."),
         ), patch("builtins.print") as printed:
@@ -1191,6 +1194,9 @@ class CliTests(unittest.TestCase):
         with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
             "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
         ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_docker_node_id", return_value="stale-node-id"), patch(
+            "luma.cli._control_context",
+            return_value=("https://luma.example.com", "management-token", False, None),
+        ), patch(
             "luma.cli._refresh_local_node_agent",
             side_effect=LumaError("control API error 400: {\"error\": \"nodeName or nodeId must match a registered node\"}"),
         ), patch("builtins.print") as printed:
