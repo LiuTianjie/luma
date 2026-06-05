@@ -286,7 +286,7 @@ class ProductConfigTests(unittest.TestCase):
     def test_packaged_core_stack_assets_are_available(self):
         self.assertIn("traefik", asset_text("stacks/core/traefik/stack.yml"))
         self.assertIn("luma-control", asset_text("stacks/core/luma-control/stack.yml"))
-        self.assertIn("Luma Status", asset_text("dashboard/index.html"))
+        self.assertIn("Luma · 控制台", asset_text("dashboard/index.html"))
         self.assertIn("/v1/dashboard", asset_text("dashboard/app.js"))
         root = Path(__file__).resolve().parents[1]
         self.assertIn('"assets/dashboard/*"', (root / "pyproject.toml").read_text(encoding="utf-8"))
@@ -3949,7 +3949,7 @@ class ControlApiTests(unittest.TestCase):
         try:
             with urllib.request.urlopen(base + "/dashboard/", timeout=5) as response:
                 self.assertEqual(response.status, 200)
-                self.assertIn(b"Luma Status", response.read())
+                self.assertIn("Luma · 控制台".encode("utf-8"), response.read())
             with urllib.request.urlopen(base + "/dashboard/app.js", timeout=5) as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn(b"/v1/dashboard", response.read())
