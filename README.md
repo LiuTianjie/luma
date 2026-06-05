@@ -30,7 +30,7 @@ client laptop -> Luma Control -> Portainer -> Docker Swarm -> service tasks
 | Tailscale | As needed | Required for private multi-node joins, `home` nodes, and `exposure: tailscale-relay`. Not required for a single public manager. |
 | Egress subscription | As needed | Used for image-pull proxying and runtime proxying for `proxy: true` services. For mainland managers using the default GHCR control image, configure it before bootstrap. |
 
-Client machines only need the CLI and network access to the control domain. They do not need Docker, SSH keys, Cloudflare tokens, Portainer passwords, or Portainer webhooks.
+Client machines only need the CLI and network access to the control domain. They do not need Docker, SSH keys, Cloudflare tokens, or Portainer passwords.
 
 ## Token Model
 
@@ -72,7 +72,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.63"
+python -m pip install "luma-infra==0.1.64"
 ```
 
 Install without cloning the repository:
@@ -87,7 +87,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.63 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.64 sh
 ```
 
 Develop from source:
@@ -250,7 +250,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.63"
+python -m pip install "luma-infra==0.1.64"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -374,7 +374,7 @@ Restart Codex after installing so the skill is loaded.
 
 ## Security Boundary
 
-- Do not commit API tokens, Portainer webhooks, management tokens, node join tokens, or proxy subscription URLs.
+- Do not commit API tokens, management tokens, node join tokens, or proxy subscription URLs.
 - Do not write registry tokens into manifests or container environment variables. Use `luma registry login` and rotate/revoke the provider token if it is exposed.
 - Client machines should not need SSH/Docker/Cloudflare/Portainer credentials; distribute management tokens instead.
 - The Web status panel uses the management token and stores it in browser local storage. Use it on trusted devices only.

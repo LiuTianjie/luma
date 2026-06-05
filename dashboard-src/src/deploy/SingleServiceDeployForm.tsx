@@ -147,10 +147,10 @@ export function SingleServiceDeployForm({
             </div>
           </label>
           <label className="deploy-toggle">
-            <input type="checkbox" checked={draft.skipWebhook} onChange={(event) => patch({ skipWebhook: event.target.checked })} />
+            <input type="checkbox" checked={draft.skipPortainer} onChange={(event) => patch({ skipPortainer: event.target.checked })} />
             <div>
               <strong>跳过 Portainer</strong>
-              <span>部署时不触发 Portainer Webhook 触发 Swarm 容器重启更新</span>
+              <span>部署时不通过 Portainer API 创建或更新 Swarm stack</span>
             </div>
           </label>
         </div>

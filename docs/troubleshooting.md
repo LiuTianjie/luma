@@ -70,7 +70,7 @@ Fix:
 
 ```bash
 luma egress setup
-luma doctor --legacy-ssh --deep
+luma doctor --deep
 ```
 
 ## Not logged in
@@ -124,13 +124,6 @@ docker service scale portainer_portainer=1
 ```
 
 Then rerun bootstrap with `LUMA_PORTAINER_ADMIN_PASSWORD` set to the new password printed by the helper.
-
-If you intentionally use legacy Portainer webhooks, configure them on the manager:
-
-```dotenv
-PORTAINER_WEBHOOK_URL=...
-PORTAINER_WEBHOOK_API=...
-```
 
 ## macOS node join fails at Docker
 

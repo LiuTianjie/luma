@@ -116,6 +116,6 @@ export function appToComposeDraft(app: Application): ComposeDeploymentDraft {
     volumes,
     dockerComposeYaml: composeYaml,
     skipDns: false,
-    skipWebhook: false,
+    skipPortainer: false,
   };
 }

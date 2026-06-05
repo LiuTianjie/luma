@@ -30,8 +30,6 @@ $EDITOR .env
 | `EGRESS_SUBSCRIPTION_URL` | Required only when using egress | Proxy subscription URL used to generate the Mihomo config for image-pull proxying and services with `proxy: true`. |
 | `TAILSCALE_AUTHKEY` | Needed for private/home/tailscale-relay nodes | Auth key for unattended Tailscale login. |
 | `LUMA_SUDO_PASSWORD` | Only when sudo requires a password | Local fallback password for privileged setup commands. Prefer passwordless sudo when possible. |
-| `PORTAINER_WEBHOOK_URL` | Legacy GitOps only | Optional legacy Portainer stack webhook. New installs use the Portainer API by default. |
-| `PORTAINER_WEBHOOK_*` | Legacy GitOps only | Optional per-service Portainer webhooks when multiple GitOps stacks share one repo. |
 | `LUMA_PORTAINER_ADMIN_PASSWORD` | Recovery only | Optional override when binding to an already-initialized Portainer admin account. |
 | `LUMA_CONTROL_IMAGE` | Development/pinned release only | Control API image used during manager bootstrap. |
 

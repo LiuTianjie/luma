@@ -75,19 +75,6 @@ class ControlClient:
                     "control API does not support node-agent credentials yet. "
                     "Update the manager control plane first: run `luma update manager` on the manager."
                 ) from exc
-            if _looks_like_legacy_node_api_error(detail):
-                raise LumaError(
-                    "control API is older than this CLI and still expects node join profiles. "
-                    "Update the manager first: run the installer on the manager, then run "
-                    "`luma update` "
-                    "or rerun `luma bootstrap manager --domain <control-domain>`."
-                ) from exc
-            if _looks_like_legacy_storage_api_error(detail):
-                raise LumaError(
-                    "control API is older than this CLI and still expects storage endpoints for managed NFS. "
-                    "Update the manager first: run the installer on the manager, then run "
-                    "`luma update manager --domain <control-domain>`."
-                ) from exc
             raise LumaError(f"control API error {exc.code}: {detail}") from exc
         except (TimeoutError, socket.timeout) as exc:
             raise LumaError(_timeout_message(path, timeout)) from exc
@@ -199,7 +186,7 @@ class ControlClient:
         manifest: str,
         source_name: str,
         skip_dns: bool = False,
-        skip_webhook: bool = False,
+        skip_portainer: bool = False,
         timeout: int = 1800,
     ) -> Dict[str, Any]:
         return self.request(
@@ -209,7 +196,7 @@ class ControlClient:
                 "manifest": manifest,
                 "sourceName": source_name,
                 "skipDns": skip_dns,
-                "skipWebhook": skip_webhook,
+                "skipPortainer": skip_portainer,
             },
             timeout=timeout,
         )
@@ -220,7 +207,7 @@ class ControlClient:
         manifest: str,
         source_name: str,
         skip_dns: bool = False,
-        skip_webhook: bool = False,
+        skip_portainer: bool = False,
         timeout: int = 1800,
     ) -> Iterator[Dict[str, Any]]:
         return self.stream(
@@ -230,7 +217,7 @@ class ControlClient:
                 "manifest": manifest,
                 "sourceName": source_name,
                 "skipDns": skip_dns,
-                "skipWebhook": skip_webhook,
+                "skipPortainer": skip_portainer,
             },
             timeout=timeout,
         )
@@ -242,7 +229,7 @@ class ControlClient:
         compose_content: str,
         source_name: str,
         skip_dns: bool = False,
-        skip_webhook: bool = False,
+        skip_portainer: bool = False,
         timeout: int = 1800,
     ) -> Dict[str, Any]:
         return self.request(
@@ -253,7 +240,7 @@ class ControlClient:
                 "composeContent": compose_content,
                 "sourceName": source_name,
                 "skipDns": skip_dns,
-                "skipWebhook": skip_webhook,
+                "skipPortainer": skip_portainer,
             },
             timeout=timeout,
         )
@@ -265,7 +252,7 @@ class ControlClient:
         compose_content: str,
         source_name: str,
         skip_dns: bool = False,
-        skip_webhook: bool = False,
+        skip_portainer: bool = False,
         timeout: int = 1800,
     ) -> Iterator[Dict[str, Any]]:
         return self.stream(
@@ -276,7 +263,7 @@ class ControlClient:
                 "composeContent": compose_content,
                 "sourceName": source_name,
                 "skipDns": skip_dns,
-                "skipWebhook": skip_webhook,
+                "skipPortainer": skip_portainer,
             },
             timeout=timeout,
         )
@@ -364,15 +351,6 @@ class ControlClient:
 
     def remove_storage(self, *, name: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/storage/remove", {"name": name})
-
-
-def _looks_like_legacy_node_api_error(detail: str) -> bool:
-    return "nodeName, profile, and region are required" in detail
-
-
-def _looks_like_legacy_storage_api_error(detail: str) -> bool:
-    return "endpoint is required for nfs" in detail
-
 
 def _timeout_message(path: str, timeout: int) -> str:
     message = f"control API timed out after {timeout}s waiting for {path}"

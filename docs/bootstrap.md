@@ -9,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 ~/.local/bin/luma preflight
 ```
 
-Required local tools are Python 3.9+ and curl or wget. SSH is only needed for the legacy remote bootstrap path. Docker is only needed on servers that will run workloads.
+Required local tools are Python 3.9+ and curl or wget. Docker is only needed on servers that will run workloads.
 
 ## 2. Prepare The Manager Node
 
@@ -132,7 +132,7 @@ luma login https://luma.example.com --token <management-token>
 luma context list
 ```
 
-The client stores the endpoint, cluster id, and management token in `~/.config/luma/contexts/`. It does not need Docker, SSH access, Cloudflare credentials, or Portainer webhooks.
+The client stores the endpoint, cluster id, and management token in `~/.config/luma/contexts/`. It does not need Docker, SSH access, Cloudflare credentials, or Portainer credentials.
 
 For a read-only Web view, open:
 
@@ -180,7 +180,7 @@ By default this leaves Docker Swarm and removes `/opt/luma`, while keeping Tails
 
 ## 6. Configure Or Refresh Providers
 
-Provider config and secrets are copied into the manager control state during `luma bootstrap manager`. If you change `luma.yaml`, Cloudflare settings, or legacy Portainer webhook env vars after bootstrap, rerun:
+Provider config and secrets are copied into the manager control state during `luma bootstrap manager`. If you change `luma.yaml` or Cloudflare settings after bootstrap, rerun:
 
 If the local manager config has `CLOUDFLARE_API_TOKEN` but no `providers.dns`, bootstrap and `luma update manager` infer the Cloudflare zone from the control domain, look up the zone id, and write `providers.dns` before installing `/opt/luma/luma.yaml`. If no DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET`; non-interactive update uses the configured edge node public IP or an existing `LUMA_DNS_EDGE_TARGET`.
 
@@ -224,11 +224,7 @@ export LUMA_DNS_EDGE_TARGET='203.0.113.10'
 luma cloudflare connect --zone example.com
 ```
 
-Portainer is initialized automatically during bootstrap. Luma uses the Portainer API by default, so new users do not need to create stack webhooks. If you intentionally use legacy Git-backed Portainer stacks, export the webhook URL on the manager before `luma bootstrap manager`, or rerun bootstrap after adding it:
-
-```bash
-export PORTAINER_WEBHOOK_URL='...'
-```
+Portainer is initialized automatically during bootstrap. Luma deploys through the Portainer API.
 
 Bootstrap stores the relevant Cloudflare and Portainer values in `/opt/luma/control/control.json` on the manager. Client machines do not need these values.
 
@@ -236,7 +232,6 @@ Bootstrap stores the relevant Cloudflare and Portainer values in `/opt/luma/cont
 
 ```bash
 luma doctor
-luma doctor --legacy-ssh --deep  # optional, from a machine that can SSH to nodes
 ```
 
 Expected core services:
@@ -259,7 +254,3 @@ Check DNS and Traefik:
 ```bash
 curl -I https://whoami.example.com
 ```
-
-## Legacy SSH Bootstrap
-
-`luma node bootstrap <node> --profile ...` remains available as a transition and repair path for existing SSH-based setups. New documentation and the default experience should use local manager bootstrap, local worker join, and login-based deploy.

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import fcntl
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from ..errors import LumaError
 
@@ -52,6 +53,17 @@ def save_state(data: Dict[str, Any], path: Path | None = None) -> None:
                 tmp_path.unlink()
             except OSError:
                 pass
+
+
+def mutate_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
+    lock_path = state_path().with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = load_state()
+        result = mutator(state)
+        save_state(state)
+        return result
 
 
 def new_state(*, domain: str, cluster_id: str | None = None) -> Dict[str, Any]:

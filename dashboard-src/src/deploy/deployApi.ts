@@ -6,7 +6,7 @@ type DeployRequest = {
   composeContent?: string;
   sourceName: string;
   skipDns: boolean;
-  skipWebhook: boolean;
+  skipPortainer: boolean;
 };
 
 async function readJson(response: Response) {
@@ -27,7 +27,7 @@ function bodyFor(request: DeployRequest) {
     composeContent: request.composeContent,
     sourceName: request.sourceName,
     skipDns: request.skipDns,
-    skipWebhook: request.skipWebhook,
+    skipPortainer: request.skipPortainer,
   });
 }
 

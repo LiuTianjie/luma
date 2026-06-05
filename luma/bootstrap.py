@@ -454,7 +454,7 @@ def _bootstrap_config(config: LumaConfig, node: NodeConfig | None = None) -> dic
     raw.setdefault("project", "luma")
     providers = raw.setdefault("providers", {})
     if isinstance(providers, dict):
-        providers.setdefault("portainer", {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"})
+        providers.setdefault("portainer", {})
     defaults = raw.setdefault("defaults", {})
     if isinstance(defaults, dict):
         defaults.setdefault("exposure", "cn-edge")

@@ -12,8 +12,7 @@ Luma uses a self-hosted control plane instead of SSH-driven deployment:
 - Worker nodes run `luma node join https://luma.example.com --token <node-join-token> --region cn|global|home --name <node-name>` locally on each server.
 - Client machines only run `luma login` and `luma deploy`; they do not need Docker, SSH, Cloudflare credentials, or Portainer credentials.
 - Portainer is mandatory as the operations UI and deployment runner.
-- Luma Control owns login tokens, node registration, node labels, DNS sync, stack rendering, image pull fallback, and Portainer API/webhook orchestration.
-- `depoly` remains a compatibility alias for `deploy`.
+- Luma Control owns login tokens, node registration, node labels, DNS sync, stack rendering, image pull fallback, deployment state, and Portainer API orchestration.
 
 ## Main Flow
 
@@ -46,13 +45,6 @@ luma egress setup
 luma egress refresh
 luma portainer setup
 luma tailscale connect
-```
-
-Legacy SSH commands still exist for transition cases:
-
-```bash
-luma node bootstrap manager-1 --profile single-node
-luma doctor --legacy-ssh --deep
 ```
 
 ## Release Flow

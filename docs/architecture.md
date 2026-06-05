@@ -79,4 +79,4 @@ flowchart LR
 
 Tailscale 不承载默认业务数据面。只有 `exposure: tailscale-relay` 的服务会让用户请求经过 Tailscale。
 
-Portainer 是默认部署控制面。首台节点会开放 `9443` 方便初始化；生产环境建议通过可信来源 IP、Tailscale、内网或其他受控入口访问。默认部署走 Portainer API；如果启用 legacy webhook，也要把 webhook URL 当作部署密钥管理。
+Portainer 是默认部署控制面。首台节点会开放 `9443` 方便初始化；生产环境建议通过可信来源 IP、Tailscale、内网或其他受控入口访问。默认部署走 Portainer API。

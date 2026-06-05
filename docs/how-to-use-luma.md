@@ -8,7 +8,7 @@ Luma keeps five concepts visible:
 node / region / exposure / egress / service
 ```
 
-Portainer is a required operations console and deployment runner. Luma Control runs on the manager node and owns login tokens, node registration, DNS sync, stack rendering, and Portainer deployment calls. After `luma login`, `luma deploy` can be run from a client that does not have Docker, SSH access, Cloudflare credentials, or Portainer webhooks. Tailscale is a control-plane network and a relay option for home services. Cloudflare is the DNS provider and optional tunnel provider. Egress Gateway is only for outbound traffic such as pulling images, installing dependencies, or running services that need external network access.
+Portainer is a required operations console and deployment runner. Luma Control runs on the manager node and owns login tokens, node registration, DNS sync, stack rendering, and Portainer deployment calls. After `luma login`, `luma deploy` can be run from a client that does not have Docker, SSH access, Cloudflare credentials, or Portainer credentials. Tailscale is a control-plane network and a relay option for home services. Cloudflare is the DNS provider and optional tunnel provider. Egress Gateway is only for outbound traffic such as pulling images, installing dependencies, or running services that need external network access.
 
 ## 1. Install The CLI
 
@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.63 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.64 sh
 ```
 
 For local development from a checkout:
@@ -74,8 +74,7 @@ providers:
     recordType: A
     ttl: 1
     proxied: false
-  portainer:
-    webhookUrlEnv: PORTAINER_WEBHOOK_URL
+  portainer: {}
 
 nodes:
   manager-1:
@@ -281,14 +280,6 @@ luma deploy app.yaml --timeout 3600
 
 Repeated deploys are updates. The same service `name` maps to the same Portainer stack; running deploy again rewrites the generated stack file and updates that stack. Changing `name` creates a different stack.
 
-Legacy Portainer webhooks remain supported. When existing GitOps stacks use webhooks, configure a webhook per service so Luma only triggers the changed stack:
-
-```yaml
-name: api
-portainer:
-  webhookUrlEnv: PORTAINER_WEBHOOK_API
-```
-
 Preview without side effects:
 
 ```bash
@@ -298,7 +289,7 @@ luma deploy app.yaml --dry-run
 Submit to the control plane, render/write files on the manager, but skip DNS sync and Portainer deployment:
 
 ```bash
-luma deploy app.yaml --skip-dns --skip-webhook
+luma deploy app.yaml --skip-dns --skip-portainer
 ```
 
 Remove a service or Compose application by its deployed name:
@@ -356,7 +347,6 @@ No public entrypoint. Use it for workers and internal services.
 
 ```bash
 luma doctor
-luma doctor --legacy-ssh --deep  # optional, from a machine that can SSH to nodes
 ```
 
 Each failed check includes a concrete fix command or environment variable.

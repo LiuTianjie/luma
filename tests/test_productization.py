@@ -51,7 +51,7 @@ from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
 from luma.errors import LumaError
 from luma.local import LocalExecutor
-from luma.portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack, resolve_webhook, upsert_stack
+from luma.portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack, upsert_stack
 from luma.profiles import PROFILES
 from luma.registry import registry_provider_type
 from luma.service import load_service
@@ -86,7 +86,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn('license = "MIT"', pyproject)
         self.assertIn('license-files = ["LICENSE"]', pyproject)
 
-    def test_doctor_checks_control_status_without_legacy_ssh(self):
+    def test_doctor_checks_control_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "config"))
             try:
@@ -344,15 +344,15 @@ class CliTests(unittest.TestCase):
             self.assertIn("nodes", data)
 
     def test_parser_exposes_tailscale_connect(self):
-        args = build_parser().parse_args(["tailscale", "connect", "manager-1"])
+        args = build_parser().parse_args(["tailscale", "connect"])
         self.assertEqual(args.command, "tailscale")
         self.assertEqual(args.tailscale_command, "connect")
-        self.assertEqual(args.node, "manager-1")
 
-    def test_repair_commands_default_to_local_server(self):
-        for argv in (["tailscale", "connect"], ["portainer", "setup"], ["egress", "setup"]):
-            args = build_parser().parse_args(argv)
-            self.assertIsNone(args.node)
+    def test_repair_commands_reject_remote_node_argument(self):
+        for argv in (["tailscale", "connect", "manager-1"], ["portainer", "setup", "manager-1"], ["egress", "setup", "manager-1"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit) as raised:
+                build_parser().parse_args(argv)
+            self.assertEqual(raised.exception.code, 2)
 
     def test_parser_exposes_preflight(self):
         args = build_parser().parse_args(["preflight"])
@@ -551,7 +551,7 @@ class CliTests(unittest.TestCase):
                 client.deploy.return_value = {
                     "service": "api",
                     "image": {"selected": "nginx:alpine"},
-                    "webhook": "Portainer stack updated for api: api",
+                    "portainer": "Portainer stack updated for api: api",
                     "steps": [
                         {"name": "Sync DNS", "status": "ok", "message": "DNS skipped: service is not public"},
                         {"name": "Deploy Portainer stack", "status": "ok", "message": "Portainer stack updated for api: api"},
@@ -715,6 +715,44 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["result"]["service"]["name"], "api")
         self.assertEqual(payload["result"]["artifacts"][0]["kind"], "stack")
 
+    def test_compose_validate_json_reports_degraded_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_config_home = _set_env("LUMA_CONFIG_HOME", str(root / "config-home"))
+            config_path = root / "luma.yaml"
+            compose_path = root / "docker-compose.yml"
+            sidecar_path = root / "luma.compose.yml"
+            try:
+                config_path.write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                compose_path.write_text(yaml.safe_dump({"services": {"web": {"image": "nginx:alpine"}}}), encoding="utf-8")
+                sidecar_path.write_text(
+                    yaml.safe_dump({"name": "app-stack", "compose": "docker-compose.yml", "region": "cn"}),
+                    encoding="utf-8",
+                )
+
+                with patch("builtins.print") as printed:
+                    code = main(
+                        [
+                            "--no-env",
+                            "--config",
+                            str(config_path),
+                            "compose",
+                            "validate",
+                            str(sidecar_path),
+                            "--format",
+                            "json",
+                        ]
+                    )
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_config_home)
+
+        self.assertEqual(code, 0)
+        payload = json.loads(printed.call_args_list[-1].args[0])
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["validationMode"], "degraded")
+        self.assertTrue(any("Storage classes" in warning for warning in payload["result"]["warnings"]))
+        self.assertTrue(any("Node records" in warning for warning in payload["result"]["warnings"]))
+
     def test_wait_heartbeat_prints_during_slow_deploy_request(self):
         def slow_action():
             time.sleep(0.03)
@@ -726,30 +764,6 @@ class CliTests(unittest.TestCase):
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("[wait] Control plane still working", printed_text)
         self.assertIn("timeout 42s", printed_text)
-
-    def test_depoly_aliases_deploy(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "api",
-                        "image": "nginx:alpine",
-                        "region": "cn",
-                        "exposure": "cn-edge",
-                        "domain": "api.example.com",
-                        "port": 80,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            old_home = _set_env("LUMA_CONFIG_HOME", str(home))
-            try:
-                code = main(["depoly", str(service_path)])
-                self.assertEqual(code, 1)
-            finally:
-                _restore_env("LUMA_CONFIG_HOME", old_home)
 
     def test_login_writes_context_without_printing_token(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -888,7 +902,7 @@ class CliTests(unittest.TestCase):
             config_path.write_text(
                 yaml.safe_dump(
                     {
-                        "providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}},
+                        "providers": {"portainer": {}},
                         "nodes": {
                             "manager": {
                                 "host": "localhost",
@@ -1735,9 +1749,9 @@ class CliTests(unittest.TestCase):
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
 
-    def test_node_join_rejects_legacy_profile_argument(self):
-        with patch("sys.stdin.isatty", return_value=True), patch("builtins.print"):
-            code = main(
+    def test_node_join_rejects_profile_argument(self):
+        with patch("sys.stdin.isatty", return_value=True), patch("builtins.print"), self.assertRaises(SystemExit) as raised:
+            main(
                 [
                     "node",
                     "join",
@@ -1750,7 +1764,7 @@ class CliTests(unittest.TestCase):
                     "home",
                 ]
             )
-        self.assertEqual(code, 1)
+        self.assertEqual(raised.exception.code, 2)
 
     def test_macos_tailscale_uses_authkey_when_available(self):
         node = LumaConfig({"nodes": {"mini": {"host": "localhost", "region": "home"}}}, None).get_node("mini")
@@ -1859,7 +1873,7 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             try:
-                code = main(["deploy", str(service_path), "--skip-dns", "--skip-webhook"])
+                code = main(["deploy", str(service_path), "--skip-dns", "--skip-portainer"])
                 self.assertEqual(code, 1)
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -1877,7 +1891,7 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(LumaError):
             ControlClient("https://luma.example.com", "secret", resolve_ip="203.0.113.10")
 
-    def test_control_client_reports_legacy_node_api_during_region_first_join(self):
+    def test_control_client_reports_node_api_error_directly(self):
         client = ControlClient("https://luma.example.com", "secret")
         error = urllib.error.HTTPError(
             "https://luma.example.com/v1/nodes/register",
@@ -1889,10 +1903,10 @@ class CliTests(unittest.TestCase):
         with patch("urllib.request.urlopen", side_effect=error), self.assertRaises(LumaError) as raised:
             client.register_node(node_name="m3max", region="home")
 
-        self.assertIn("control API is older than this CLI", str(raised.exception))
-        self.assertIn("luma update", str(raised.exception))
+        self.assertIn("control API error 400", str(raised.exception))
+        self.assertIn("nodeName, profile, and region are required", str(raised.exception))
 
-    def test_control_client_reports_legacy_storage_api_for_simplified_storage_set(self):
+    def test_control_client_reports_storage_api_error_directly(self):
         client = ControlClient("https://luma.example.com", "secret")
         error = urllib.error.HTTPError(
             "https://luma.example.com/v1/storage",
@@ -1904,9 +1918,8 @@ class CliTests(unittest.TestCase):
         with patch("urllib.request.urlopen", side_effect=error), self.assertRaises(LumaError) as raised:
             client.set_storage(name="cn-nfs", provider="nfs", node="cn-node", path="/srv/luma")
 
-        self.assertIn("control API is older than this CLI", str(raised.exception))
-        self.assertIn("storage endpoints for managed NFS", str(raised.exception))
-        self.assertIn("luma update manager", str(raised.exception))
+        self.assertIn("control API error 400", str(raised.exception))
+        self.assertIn("endpoint is required for nfs", str(raised.exception))
 
     def test_control_client_reports_missing_agent_token_endpoint_as_old_control(self):
         client = ControlClient("https://luma.example.com", "secret")
@@ -1994,7 +2007,7 @@ class EnvFileTests(unittest.TestCase):
                 _restore_env("LUMA_EMPTY", old_empty)
 
 
-class PortainerWebhookTests(unittest.TestCase):
+class PortainerApiTests(unittest.TestCase):
     def test_initialize_portainer_creates_local_endpoint_when_empty(self):
         state = {
             "portainerApiUrl": "https://127.0.0.1:9443/api",
@@ -2056,7 +2069,7 @@ class PortainerWebhookTests(unittest.TestCase):
             {"Username": "admin", "Password": "current"},
         )
 
-    def test_registry_auth_bypasses_webhook_and_uses_portainer_api(self):
+    def test_deploy_with_portainer_uses_api_with_registry_auth(self):
         with tempfile.TemporaryDirectory() as tmp:
             service_path = Path(tmp) / "service.yaml"
             service_path.write_text(
@@ -2066,7 +2079,6 @@ class PortainerWebhookTests(unittest.TestCase):
                         "image": "ghcr.io/acme/private-api:1",
                         "region": "cn",
                         "exposure": "none",
-                        "portainer": {"webhookUrl": "https://portainer.example.com/hook"},
                     }
                 ),
                 encoding="utf-8",
@@ -2081,16 +2093,13 @@ class PortainerWebhookTests(unittest.TestCase):
                 "swarmId": "swarm-test",
             }
             registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
-            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert, patch(
-                "luma.portainer.trigger_webhook_url"
-            ) as webhook:
+            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert:
                 result = deploy_with_portainer(config, service, "services: {}", state, registry_auth=registry_auth)
             self.assertEqual(result, "Portainer stack updated")
             upsert.assert_called_once()
             self.assertEqual(upsert.call_args.kwargs["registry_auth"], registry_auth)
-            webhook.assert_not_called()
 
-    def test_latest_image_bypasses_webhook_and_uses_portainer_api(self):
+    def test_latest_image_uses_portainer_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             service_path = Path(tmp) / "service.yaml"
             service_path.write_text(
@@ -2100,7 +2109,6 @@ class PortainerWebhookTests(unittest.TestCase):
                         "image": "nginx:latest",
                         "region": "cn",
                         "exposure": "none",
-                        "portainer": {"webhookUrl": "https://portainer.example.com/hook"},
                     }
                 ),
                 encoding="utf-8",
@@ -2114,15 +2122,12 @@ class PortainerWebhookTests(unittest.TestCase):
                 "portainerEndpointId": 1,
                 "swarmId": "swarm-test",
             }
-            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert, patch(
-                "luma.portainer.trigger_webhook_url"
-            ) as webhook:
+            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert:
                 result = deploy_with_portainer(config, service, "services: {}", state)
             self.assertEqual(result, "Portainer stack updated")
             upsert.assert_called_once()
-            webhook.assert_not_called()
 
-    def test_digest_image_bypasses_webhook_and_uses_portainer_api(self):
+    def test_digest_image_uses_portainer_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             service_path = Path(tmp) / "service.yaml"
             service_path.write_text(
@@ -2132,7 +2137,6 @@ class PortainerWebhookTests(unittest.TestCase):
                         "image": "nginx@sha256:abc123",
                         "region": "cn",
                         "exposure": "none",
-                        "portainer": {"webhookUrl": "https://portainer.example.com/hook"},
                     }
                 ),
                 encoding="utf-8",
@@ -2146,13 +2150,10 @@ class PortainerWebhookTests(unittest.TestCase):
                 "portainerEndpointId": 1,
                 "swarmId": "swarm-test",
             }
-            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert, patch(
-                "luma.portainer.trigger_webhook_url"
-            ) as webhook:
+            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert:
                 result = deploy_with_portainer(config, service, "services: {}", state)
             self.assertEqual(result, "Portainer stack updated")
             upsert.assert_called_once()
-            webhook.assert_not_called()
 
     def test_bootstrap_manager_saves_portainer_credentials_before_dns(self):
         config = LumaConfig(
@@ -2609,40 +2610,6 @@ class PortainerWebhookTests(unittest.TestCase):
         with self.assertRaisesRegex(LumaError, "Start Docker Desktop"):
             install_docker(remote)
 
-    def test_service_webhook_env_overrides_global_webhook(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "api",
-                        "image": "nginx:alpine",
-                        "region": "cn",
-                        "exposure": "cn-edge",
-                        "domain": "api.example.com",
-                        "port": 80,
-                        "portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_API"},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
-            import os
-
-            old_global = os.environ.get("PORTAINER_WEBHOOK_URL")
-            old_api = os.environ.get("PORTAINER_WEBHOOK_API")
-            try:
-                os.environ["PORTAINER_WEBHOOK_URL"] = "https://portainer/global"
-                os.environ["PORTAINER_WEBHOOK_API"] = "https://portainer/api"
-                webhook_url, webhook_env = resolve_webhook(config, service)
-                self.assertEqual(webhook_url, "https://portainer/api")
-                self.assertEqual(webhook_env, "PORTAINER_WEBHOOK_API")
-            finally:
-                _restore_env("PORTAINER_WEBHOOK_URL", old_global)
-                _restore_env("PORTAINER_WEBHOOK_API", old_api)
-
-
 class ControlApiTests(unittest.TestCase):
     def test_node_and_deploy_tokens_are_separate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2864,7 +2831,7 @@ class ControlApiTests(unittest.TestCase):
                 ):
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "home-panel.yaml", "skipDns": True, "skipWebhook": True},
+                        {"manifest": manifest, "sourceName": "home-panel.yaml", "skipDns": True, "skipPortainer": True},
                     )
                 self.assertEqual(result["service"], "home-panel")
                 stack = (root / "stacks" / "home" / "home-panel" / "stack.yml").read_text(encoding="utf-8")
@@ -2887,7 +2854,7 @@ class ControlApiTests(unittest.TestCase):
                         {
                             "providers": {
                                 "dns": {"type": "cloudflare", "zone": "example.com"},
-                                "portainer": {"webhooks": {"api": "PORTAINER_WEBHOOK_API"}},
+                                "portainer": {},
                             },
                             "defaults": {"stackRoot": str(root / "stacks")},
                             "nodes": {
@@ -2931,6 +2898,56 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(deployment_state["deployments"]["services"]["api"]["manifest"], manifest)
                 with self.assertRaises(Exception):
                     handle_deployment(state["joinToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_deployment_failure_after_manager_work_leaves_failed_partial_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "domain": "api.example.com",
+                        "port": 80,
+                    }
+                )
+
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.resolve_service_image",
+                    side_effect=lambda _config, service, **_kwargs: (service, {"requested": service.image, "selected": service.image}),
+                ), patch("luma.control.server.sync_dns", return_value="DNS updated"), patch(
+                    "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
+                ), patch("luma.control.server._probe_public_route", side_effect=LumaError("route refused")):
+                    with self.assertRaisesRegex(LumaError, "Probe public route failed"):
+                        handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+
+                deployment = load_state()["deployments"]["services"]["api"]
+                self.assertEqual(deployment["status"], "failed_partial")
+                self.assertIn("Probe public route failed", deployment["lastError"])
+                self.assertEqual(deployment["manifest"], manifest)
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in deployment["steps"])
+                self.assertIn("Sync DNS=ok:DNS updated", steps)
+                self.assertIn("Deploy Portainer stack=ok:Portainer deploy triggered", steps)
+                self.assertIn("Probe public route=fail:route refused", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -3533,7 +3550,7 @@ class ControlApiTests(unittest.TestCase):
                 ), patch("luma.control.server._storage_node_is_local", return_value=True), patch(
                     "luma.control.server._run_host_prep_command", return_value="ok"
                 ) as host_prep, patch("luma.control.server.deploy_with_portainer", return_value="Portainer deploy skipped"):
-                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "console:api", "skipDns": True, "skipWebhook": True})
+                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "console:api", "skipDns": True, "skipPortainer": True})
                 commands = "\n".join(call.args[0] for call in host_prep.call_args_list)
                 self.assertIn("/srv/luma/api/api-data", commands)
                 self.assertIn("storagePreparation", result)
@@ -3961,6 +3978,23 @@ class ControlApiTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as raised:
                 urllib.request.urlopen(base + "/v1/dashboard", timeout=5)
             self.assertEqual(raised.exception.code, 401)
+            error_payload = json.loads(raised.exception.read().decode("utf-8"))
+            self.assertEqual(error_payload["error"], "missing bearer token")
+            self.assertEqual(error_payload["errorInfo"]["code"], "luma_error")
+            self.assertEqual(error_payload["errorInfo"]["message"], "missing bearer token")
+            self.assertTrue(error_payload["requestId"].startswith("req-"))
+            missing_request = urllib.request.Request(
+                base + "/v1/missing",
+                data=b"{}",
+                headers={"Content-Type": "application/json", "Authorization": "Bearer token"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as missing:
+                urllib.request.urlopen(missing_request, timeout=5)
+            self.assertEqual(missing.exception.code, 404)
+            missing_payload = json.loads(missing.exception.read().decode("utf-8"))
+            self.assertEqual(missing_payload["errorInfo"]["code"], "not_found")
+            self.assertEqual(missing_payload["error"], "not found")
         finally:
             server.shutdown()
             server.server_close()
@@ -4127,7 +4161,7 @@ class ControlApiTests(unittest.TestCase):
                 with self.assertRaisesRegex(LumaError, "storage backend changed"):
                     handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipWebhook": True},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
                     )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -4166,7 +4200,7 @@ class ControlApiTests(unittest.TestCase):
                 )
                 result = handle_compose_deployment(
                     state["deployToken"],
-                    {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipWebhook": True},
+                    {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
                 )
                 self.assertEqual(result["deployment"], "app-stack")
             finally:
@@ -4193,7 +4227,7 @@ class ControlApiTests(unittest.TestCase):
                 with self.assertRaisesRegex(LumaError, "managed by Luma Control"):
                     handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipWebhook": True},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
                     )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -4212,7 +4246,7 @@ class ControlApiTests(unittest.TestCase):
                 with self.assertRaisesRegex(LumaError, "relative path without"):
                     handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipWebhook": True},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
                     )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -4807,7 +4841,7 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.upsert_stack", return_value="Portainer stack updated") as upsert:
                     result = handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipWebhook": False},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": False},
                     )
                 stack_text = upsert.call_args.args[2]
                 self.assertIn("home-nas", stack_text)
@@ -4861,7 +4895,7 @@ class ControlApiTests(unittest.TestCase):
                 ) as host_prep:
                     result = handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipWebhook": True},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
                     )
                 commands = [call.args[0] for call in host_prep.call_args_list]
                 self.assertTrue(any("nfs-kernel-server" in command for command in commands))
@@ -4872,17 +4906,13 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_storage_set_prepares_managed_host_and_removes_legacy_storage_stack_when_portainer_is_configured(self):
+    def test_storage_set_prepares_managed_host(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["portainerApiUrl"] = "https://127.0.0.1:9443/api"
-                state["portainerAdminPassword"] = "secret"
-                state["portainerEndpointId"] = 1
-                state["swarmId"] = "swarm"
                 state["nodes"] = {
                     "cn-node": {
                         "name": "cn-node",
@@ -4902,15 +4932,12 @@ class ControlApiTests(unittest.TestCase):
 
                 with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
                     "luma.control.server._run_host_prep_command", return_value="ok"
-                ), patch("luma.control.server.remove_stack", return_value="Portainer stack not found: luma-storage-cn-nfs") as remove:
+                ):
                     result = handle_storage_set(
                         state["deployToken"],
                         {"name": "cn-nfs", "provider": "nfs", "node": "cn-node", "path": "/srv/luma"},
                     )
-                remove.assert_called_once()
-                self.assertEqual(remove.call_args.args[1].name, "luma-storage-cn-nfs")
                 self.assertEqual(result["storageHost"]["prepared"], "host NFS export ready")
-                self.assertEqual(result["storageHost"]["legacyStack"], "Portainer stack not found: luma-storage-cn-nfs")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -5092,7 +5119,7 @@ class ControlApiTests(unittest.TestCase):
                 ) as deploy:
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipWebhook": False},
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": False},
                     )
                 self.assertTrue(result["image"]["registryAuth"])
                 self.assertEqual(captured["image_auth"]["username"], "octo")
@@ -5374,20 +5401,20 @@ class ControlApiTests(unittest.TestCase):
                 )
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.sync_dns"
-                ) as sync, patch("luma.control.server.deploy_with_portainer") as webhook:
+                ) as sync, patch("luma.control.server.deploy_with_portainer") as portainer:
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipWebhook": True},
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
                     )
                 sync.assert_not_called()
-                webhook.assert_not_called()
+                portainer.assert_not_called()
                 self.assertEqual(result["dns"], "DNS skipped: --skip-dns")
-                self.assertEqual(result["webhook"], "Portainer deploy skipped: --skip-webhook")
-                self.assertEqual(result["probe"], "Public route probe skipped: --skip-webhook")
+                self.assertEqual(result["portainer"], "Portainer deploy skipped: --skip-portainer")
+                self.assertEqual(result["probe"], "Public route probe skipped: --skip-portainer")
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Sync DNS=ok:DNS skipped: --skip-dns", steps)
-                self.assertIn("Deploy Portainer stack=ok:Portainer deploy skipped: --skip-webhook", steps)
-                self.assertIn("Probe public route=ok:Public route probe skipped: --skip-webhook", steps)
+                self.assertIn("Deploy Portainer stack=ok:Portainer deploy skipped: --skip-portainer", steps)
+                self.assertIn("Probe public route=ok:Public route probe skipped: --skip-portainer", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -5428,7 +5455,7 @@ class ControlApiTests(unittest.TestCase):
                 ):
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipWebhook": True},
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
                     )
                 stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
                 self.assertEqual(result["image"]["requested"], "ghcr.io/acme/api:latest")
@@ -5588,7 +5615,7 @@ class ControlApiTests(unittest.TestCase):
         ):
             ensure_image_present("ghcr.io/acme/api:latest", force_pull=True)
 
-    def test_config_webhook_mapping_uses_service_slug(self):
+    def test_portainer_api_binding_creates_missing_stack(self):
         with tempfile.TemporaryDirectory() as tmp:
             service_path = Path(tmp) / "service.yaml"
             service_path.write_text(
@@ -5605,36 +5632,7 @@ class ControlApiTests(unittest.TestCase):
                 encoding="utf-8",
             )
             service = load_service(service_path)
-            config = LumaConfig({"providers": {"portainer": {"webhooks": {"api-service": "PORTAINER_WEBHOOK_API"}}}}, None)
-            import os
-
-            old_api = os.environ.get("PORTAINER_WEBHOOK_API")
-            try:
-                os.environ["PORTAINER_WEBHOOK_API"] = "https://portainer/api"
-                webhook_url, webhook_env = resolve_webhook(config, service)
-                self.assertEqual(webhook_url, "https://portainer/api")
-                self.assertEqual(webhook_env, "PORTAINER_WEBHOOK_API")
-            finally:
-                _restore_env("PORTAINER_WEBHOOK_API", old_api)
-
-    def test_missing_webhook_uses_portainer_api_binding(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "API Service",
-                        "image": "nginx:alpine",
-                        "region": "cn",
-                        "exposure": "cn-edge",
-                        "domain": "api.example.com",
-                        "port": 80,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            config = LumaConfig({}, None)
             state = {
                 "portainerApiUrl": "https://portainer.example.com/api",
                 "portainerAdminUsername": "admin",
@@ -5649,7 +5647,7 @@ class ControlApiTests(unittest.TestCase):
                 {"Id": 7, "Name": "api-service"},
             ]
             with patch("luma.portainer.PortainerApi", return_value=client):
-                result = upsert_stack(config, service, "services: {}", state, missing_webhook_env="PORTAINER_WEBHOOK_URL")
+                result = upsert_stack(config, service, "services: {}", state)
             self.assertIn("Portainer stack created", result)
             client.request.assert_any_call(
                 "POST",
@@ -5701,7 +5699,7 @@ class ControlApiTests(unittest.TestCase):
                 encoding="utf-8",
             )
             service = load_service(service_path)
-            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            config = LumaConfig({}, None)
             state = {
                 "portainerApiUrl": "https://portainer.example.com/api",
                 "portainerAdminUsername": "admin",
@@ -5725,7 +5723,6 @@ class ControlApiTests(unittest.TestCase):
                     service,
                     "services: {}",
                     state,
-                    missing_webhook_env="PORTAINER_WEBHOOK_URL",
                     registry_auth=registry_auth,
                 )
             self.assertIn("Portainer stack created", result)
@@ -5780,7 +5777,7 @@ class ControlApiTests(unittest.TestCase):
                 encoding="utf-8",
             )
             service = load_service(service_path)
-            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            config = LumaConfig({}, None)
             state = {
                 "portainerApiUrl": "https://portainer.example.com/api",
                 "portainerAdminUsername": "admin",
@@ -5804,7 +5801,6 @@ class ControlApiTests(unittest.TestCase):
                     service,
                     "services: {}",
                     state,
-                    missing_webhook_env="PORTAINER_WEBHOOK_URL",
                     registry_auth=registry_auth,
                 )
             self.assertFalse(any(call.args[:2] == ("PUT", "/registries/9") for call in client.request.call_args_list))
@@ -5838,7 +5834,7 @@ class ControlApiTests(unittest.TestCase):
                 encoding="utf-8",
             )
             service = load_service(service_path)
-            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            config = LumaConfig({}, None)
             state = {
                 "portainerApiUrl": "https://portainer.example.com/api",
                 "portainerAdminUsername": "admin",
@@ -5862,7 +5858,6 @@ class ControlApiTests(unittest.TestCase):
                     service,
                     "services: {}",
                     state,
-                    missing_webhook_env="PORTAINER_WEBHOOK_URL",
                     registry_auth=registry_auth,
                 )
             self.assertIn("Portainer stack updated", result)
@@ -5894,7 +5889,7 @@ class ControlApiTests(unittest.TestCase):
                 encoding="utf-8",
             )
             service = load_service(service_path)
-            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            config = LumaConfig({}, None)
             state = {
                 "portainerApiUrl": "https://portainer.example.com/api",
                 "portainerAdminUsername": "admin",
@@ -5909,7 +5904,7 @@ class ControlApiTests(unittest.TestCase):
                 None,
             ]
             with patch("luma.portainer.PortainerApi", return_value=client):
-                result = upsert_stack(config, service, "services: {}", state, missing_webhook_env="PORTAINER_WEBHOOK_URL")
+                result = upsert_stack(config, service, "services: {}", state)
             self.assertIn("Portainer stack updated", result)
             client.request.assert_any_call(
                 "PUT",
@@ -5938,7 +5933,7 @@ class ControlApiTests(unittest.TestCase):
                 encoding="utf-8",
             )
             service = load_service(service_path)
-            config = LumaConfig({"providers": {"portainer": {"webhookUrlEnv": "PORTAINER_WEBHOOK_URL"}}}, None)
+            config = LumaConfig({}, None)
             state = {
                 "portainerApiUrl": "https://portainer.example.com/api",
                 "portainerAdminUsername": "admin",
@@ -5953,7 +5948,7 @@ class ControlApiTests(unittest.TestCase):
                 None,
             ]
             with patch("luma.portainer.PortainerApi", return_value=client):
-                result = upsert_stack(config, service, "services: {}", state, missing_webhook_env="PORTAINER_WEBHOOK_URL")
+                result = upsert_stack(config, service, "services: {}", state)
             self.assertIn("Portainer stack updated", result)
             client.request.assert_any_call(
                 "PUT",

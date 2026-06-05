@@ -509,15 +509,27 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             node=str(value["node"]).strip() if value.get("node") else None,
             exposure=str(value.get("exposure") or "none"),
             domain=str(value["domain"]).strip() if value.get("domain") else None,
-            port=int(value["port"]) if value.get("port") is not None else None,
-            publish_port=int(value["publishPort"]) if value.get("publishPort") is not None else None,
-            replicas=int(value["replicas"]) if value.get("replicas") is not None else None,
+            port=_positive_int(value["port"], f"services.{name}.port") if value.get("port") is not None else None,
+            publish_port=_positive_int(value["publishPort"], f"services.{name}.publishPort") if value.get("publishPort") is not None else None,
+            replicas=_positive_int(value["replicas"], f"services.{name}.replicas") if value.get("replicas") is not None else None,
             proxy=bool(value.get("proxy", False)),
             relay=dict(value.get("relay") or {}),
             tunnel=dict(value.get("tunnel") or {}),
             raw=dict(value),
         )
     return result
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise LumaError(f"{field_name} must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise LumaError(f"{field_name} must be a positive integer") from exc
+    if parsed < 1:
+        raise LumaError(f"{field_name} must be a positive integer")
+    return parsed
 
 
 def _merge_deploy(service_body: Dict[str, Any], *, constraints: List[str], replicas: Optional[int]) -> None:

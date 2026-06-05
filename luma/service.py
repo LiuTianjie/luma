@@ -102,21 +102,15 @@ def load_service(path: Path) -> ServiceSpec:
 
     explicit_exposure = raw.get("exposure")
     if explicit_exposure is None:
-        legacy_public = bool(raw.get("public", False))
-        if legacy_public and region == "global":
-            exposure = "external-edge"
-        elif legacy_public:
-            exposure = "cn-edge"
-        else:
-            exposure = "none"
+        if "public" in raw:
+            raise LumaError("public is no longer supported; use exposure")
+        exposure = "none"
     else:
         exposure = str(explicit_exposure)
     if exposure not in VALID_EXPOSURES:
         raise LumaError(f"exposure must be one of {sorted(VALID_EXPOSURES)}")
 
     public = exposure != "none"
-    if "public" in raw and bool(raw["public"]) != public:
-        raise LumaError("public must match exposure: public services use exposure other than none")
 
     domain = raw.get("domain")
     port = raw.get("port")
@@ -139,7 +133,7 @@ def load_service(path: Path) -> ServiceSpec:
     if not isinstance(tunnel, dict):
         raise LumaError("tunnel must be a mapping")
 
-    replicas = int(raw.get("replicas", 1))
+    replicas = _positive_int(raw.get("replicas", 1), "replicas")
     if replicas < 1:
         raise LumaError("replicas must be >= 1")
 
@@ -188,7 +182,7 @@ def load_service(path: Path) -> ServiceSpec:
         exposure=exposure,
         domain=domain.strip() if isinstance(domain, str) else None,
         port=port,
-        publish_port=int(raw["publishPort"]) if "publishPort" in raw else None,
+        publish_port=_positive_int(raw["publishPort"], "publishPort") if "publishPort" in raw else None,
         replicas=replicas,
         command=raw.get("command"),
         environment=environment,
@@ -224,6 +218,18 @@ def _normalize_service_resources(resources: Dict[str, Any]) -> Dict[str, Any]:
             normalized_section["cpus"] = str(cpu_value)
         normalized[section_name] = normalized_section
     return normalized
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise LumaError(f"{field_name} must be a positive integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise LumaError(f"{field_name} must be a positive integer") from exc
+    if parsed < 1:
+        raise LumaError(f"{field_name} must be a positive integer")
+    return parsed
 
 
 def _load_service_storage(raw: Any, volumes: List[str]) -> Dict[str, ServiceVolumeStorageSpec]:

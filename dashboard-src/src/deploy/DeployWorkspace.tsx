@@ -280,8 +280,8 @@ export function DeployWorkspace({
     setStatus("previewing");
     try {
       const result = mode === "service"
-        ? await previewService({ token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipWebhook: serviceDraft.skipWebhook })
-        : await previewCompose({ token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipWebhook: composeDraft.skipWebhook });
+        ? await previewService({ token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipPortainer: serviceDraft.skipPortainer })
+        : await previewCompose({ token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipPortainer: composeDraft.skipPortainer });
       setPreview(result);
     } catch (error) {
       setRuntimeErrors([String(error instanceof Error ? error.message : error)]);
@@ -300,8 +300,8 @@ export function DeployWorkspace({
     try {
       await deployStream(
         mode === "service"
-          ? { token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipWebhook: serviceDraft.skipWebhook }
-          : { token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipWebhook: composeDraft.skipWebhook },
+          ? { token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipPortainer: serviceDraft.skipPortainer }
+          : { token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipPortainer: composeDraft.skipPortainer },
         mode,
         (step) => setSteps((current) => [...current, step]),
       );

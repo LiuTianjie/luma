@@ -36,7 +36,6 @@ from .errors import LumaError
 from .io import dump_yaml, write_yaml
 from .local import LocalExecutor
 from .profiles import PROFILES
-from .remote import RemoteExecutor
 from .render import render_stack, render_tailscale_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
 from .storage import storage_check_plan, storage_migration_plan
@@ -118,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.63 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.64 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -127,8 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_update_manager_arguments(update_manager)
     _add_control_arguments(update_manager)
     doctor = sub.add_parser("doctor")
-    doctor.add_argument("--deep", action="store_true", help="Run slower live checks such as docker pull through egress")
-    doctor.add_argument("--legacy-ssh", action="store_true", help="Also run legacy SSH checks for nodes in luma.yaml")
+    doctor.add_argument("--deep", action="store_true", help="Run slower live checks")
 
     node = sub.add_parser("node")
     node_sub = node.add_subparsers(dest="node_command", required=True)
@@ -140,7 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
     node_join = node_sub.add_parser("join")
     node_join.add_argument("endpoint")
     node_join.add_argument("--token", required=True)
-    node_join.add_argument("--profile", nargs="?", const="__legacy_profile__", help=argparse.SUPPRESS)
     node_join.add_argument("--region", choices=sorted(VALID_REGIONS))
     node_join.add_argument("--name", default=os.uname().nodename)
     node_join.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
@@ -178,18 +175,15 @@ def build_parser() -> argparse.ArgumentParser:
     egress = sub.add_parser("egress")
     egress_sub = egress.add_subparsers(dest="egress_command", required=True)
     for name in ("setup", "refresh"):
-        cmd = egress_sub.add_parser(name)
-        cmd.add_argument("node", nargs="?", help="Legacy remote node name. Omit to repair the current server.")
+        egress_sub.add_parser(name)
 
     portainer = sub.add_parser("portainer")
     portainer_sub = portainer.add_subparsers(dest="portainer_command", required=True)
-    portainer_setup = portainer_sub.add_parser("setup")
-    portainer_setup.add_argument("node", nargs="?", help="Legacy remote node name. Omit to repair the current server.")
+    portainer_sub.add_parser("setup")
 
     tailscale = sub.add_parser("tailscale")
     tailscale_sub = tailscale.add_subparsers(dest="tailscale_command", required=True)
-    tailscale_connect = tailscale_sub.add_parser("connect")
-    tailscale_connect.add_argument("node", nargs="?", help="Legacy remote node name. Omit to repair the current server.")
+    tailscale_sub.add_parser("connect")
 
     service = sub.add_parser("service")
     service_sub = service.add_subparsers(dest="service_command", required=True)
@@ -218,7 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_arguments(deploy)
     deploy.add_argument("--dry-run", action="store_true")
     deploy.add_argument("--skip-dns", action="store_true")
-    deploy.add_argument("--skip-webhook", action="store_true")
+    deploy.add_argument("--skip-portainer", action="store_true")
     deploy.add_argument("--timeout", type=int, default=1800, help="Seconds to wait for the control-plane deploy response")
     deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
@@ -242,7 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_arguments(compose_deploy)
     compose_deploy.add_argument("--dry-run", action="store_true")
     compose_deploy.add_argument("--skip-dns", action="store_true")
-    compose_deploy.add_argument("--skip-webhook", action="store_true")
+    compose_deploy.add_argument("--skip-portainer", action="store_true")
     compose_deploy.add_argument("--timeout", type=int, default=1800)
     storage = sub.add_parser("storage")
     storage_sub = storage.add_subparsers(dest="storage_command", required=True)
@@ -323,9 +317,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "zone": "example.com",
                 "apiTokenEnv": "CLOUDFLARE_API_TOKEN",
             },
-            "portainer": {
-                "webhookUrlEnv": "PORTAINER_WEBHOOK_URL",
-            },
+            "portainer": {},
         },
         "nodes": {},
         "defaults": {
@@ -351,7 +343,6 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         ("pip", _module_available("pip"), "python -m pip", "Run: python3 -m ensurepip --upgrade"),
         ("venv", _module_available("venv"), "python -m venv", "Install python3-venv"),
         ("Git", bool(shutil.which("git")), shutil.which("git") or "-", "Optional: install Git for source-checkout development"),
-        ("SSH", bool(shutil.which("ssh")), shutil.which("ssh") or "-", "Optional: install OpenSSH client for legacy remote commands"),
         ("Env file", env_file.exists(), str(env_file), "Optional: cp .env.example .env"),
         ("Docker Compose", _docker_compose_available(), "docker compose", "Optional locally; install Docker to validate rendered stacks"),
     ]
@@ -519,6 +510,29 @@ def _output_format(args: argparse.Namespace) -> str:
 
 def _quiet(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "quiet", False))
+
+
+def _context_warnings(args: argparse.Namespace) -> list[str]:
+    warnings = getattr(args, "_luma_context_warnings", None)
+    if not isinstance(warnings, list):
+        warnings = []
+        setattr(args, "_luma_context_warnings", warnings)
+    return warnings
+
+
+def _add_context_warning(args: argparse.Namespace, message: str) -> None:
+    warnings = _context_warnings(args)
+    if message not in warnings:
+        warnings.append(message)
+
+
+def _validation_context(args: argparse.Namespace) -> Dict[str, Any]:
+    warnings = _context_warnings(args)
+    context_used = bool(getattr(args, "_luma_context_used", False))
+    return {
+        "validationMode": "degraded" if warnings else ("cluster-aware" if context_used else "local"),
+        "warnings": list(warnings),
+    }
 
 
 def _command_name(args: argparse.Namespace) -> str:
@@ -793,8 +807,6 @@ def cmd_node(args: argparse.Namespace) -> int:
         print("Bootstrap complete")
         return 0
     if args.node_command == "join":
-        if args.profile is not None:
-            raise LumaError("node join now uses --region; use --region home/global/cn and --name ...")
         if not args.region:
             raise LumaError("node join requires --region (cn, global, or home)")
         required_worker_keys = ["TAILSCALE_AUTHKEY"] if args.region == "home" and not _local_tailscale_connected() else []
@@ -1400,13 +1412,6 @@ def _attach_control_secrets(state: Dict[str, object], config: LumaConfig) -> Non
     if dns:
         names.add(str(dns.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN")))
         names.add(str(dns.get("zoneIdEnv", "CLOUDFLARE_ZONE_ID")))
-    portainer = config.portainer
-    if portainer:
-        names.add(str(portainer.get("webhookUrlEnv", "PORTAINER_WEBHOOK_URL")))
-        webhooks = portainer.get("webhooks") or {}
-        if isinstance(webhooks, dict):
-            names.update(str(value) for value in webhooks.values() if value)
-    names.update(key for key in os.environ if key == "PORTAINER_WEBHOOK_URL" or key.startswith("PORTAINER_WEBHOOK_"))
     names.update(key for key in os.environ if key in {"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID"})
 
     existing = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
@@ -1641,12 +1646,11 @@ def cmd_cloudflare(args: argparse.Namespace) -> int:
 def cmd_egress(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     ensure_interactive_config("manager", keys=["EGRESS_SUBSCRIPTION_URL"])
-    node = _repair_node(config, args.node, "egress-gateway")
-    executor = None if args.node else LocalExecutor()
+    node = _local_node("egress-gateway")
     subscription_url = os.environ.get("EGRESS_SUBSCRIPTION_URL")
     if not subscription_url:
         raise LumaError("missing EGRESS_SUBSCRIPTION_URL")
-    setup_egress(config, node, subscription_url, emit=log, executor=executor)
+    setup_egress(config, node, subscription_url, emit=log, executor=LocalExecutor())
     if args.egress_command == "refresh":
         print("Egress refreshed")
     else:
@@ -1655,30 +1659,20 @@ def cmd_egress(args: argparse.Namespace) -> int:
 
 
 def cmd_portainer(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
     if args.portainer_command == "setup":
-        node = _repair_node(config, args.node, "single-node")
-        setup_portainer(node, emit=log, executor=None if args.node else LocalExecutor())
+        setup_portainer(_local_node("single-node"), emit=log, executor=LocalExecutor())
         return 0
     raise LumaError(f"unknown portainer command: {args.portainer_command}")
 
 
 def cmd_tailscale(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
     if args.tailscale_command == "connect":
         ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
-        node = _repair_node(config, args.node, "single-node")
         log("[start] Install and connect Tailscale")
-        for line in setup_tailscale(node, executor=None if args.node else LocalExecutor()):
+        for line in setup_tailscale(_local_node("single-node"), executor=LocalExecutor()):
             log(f"[ok] {line}")
         return 0
     raise LumaError(f"unknown tailscale command: {args.tailscale_command}")
-
-
-def _repair_node(config: LumaConfig, node_name: str | None, profile_name: str):
-    if node_name:
-        return config.get_node(node_name)
-    return config.default_manager() or _local_node(profile_name)
 
 
 def _local_tailscale_connected() -> bool:
@@ -1727,7 +1721,6 @@ def cmd_service_new(args: argparse.Namespace) -> int:
         "name": name,
         "image": image,
         "region": region,
-        "public": exposure != "none",
         "exposure": exposure,
         "replicas": replicas,
     }
@@ -1872,6 +1865,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if args.dry_run:
         result = _render_result(service, target, rendered, route_target, rendered_route)
         result["dryRun"] = True
+        result.update(_validation_context(args))
         if output_format != "text":
             _print_success(args, result)
             return 0
@@ -1879,6 +1873,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             print(f"Dry run: {service.name}")
             return 0
         print(f"Dry run: would write {target}")
+        for warning in _context_warnings(args):
+            print(f"[warn] {warning}")
         print(rendered)
         if rendered_route and route_target:
             print(f"Dry run: would write {route_target}")
@@ -1906,7 +1902,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             manifest=manifest_text,
             source_name=str(args.service),
             skip_dns=args.skip_dns,
-            skip_webhook=args.skip_webhook,
+            skip_portainer=args.skip_portainer,
             timeout=args.timeout,
         ):
             status = str(event.get("status") or "")
@@ -1937,7 +1933,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 manifest=manifest_text,
                 source_name=str(args.service),
                 skip_dns=args.skip_dns,
-                skip_webhook=args.skip_webhook,
+                skip_portainer=args.skip_portainer,
                 timeout=args.timeout,
             ),
             timeout=args.timeout,
@@ -1961,8 +1957,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             print(f"Image ready: {image.get('selected')}")
     if result.get("dns"):
         print(result["dns"])
-    if result.get("webhook"):
-        print(result["webhook"])
+    if result.get("portainer"):
+        print(result["portainer"])
     return 0
 
 
@@ -1986,11 +1982,13 @@ def cmd_compose_validate(args: argparse.Namespace) -> int:
     node_records = _control_node_records_for_local(args)
     stack = render_compose_stack(config, deployment, node_records=node_records)
     routes = render_compose_routes(config, deployment)
-    result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment, node_records=node_records)}
+    result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment, node_records=node_records), **_validation_context(args)}
     if _output_format(args) != "text":
         _print_success(args, result)
         return 0
     print(f"Compose deployment valid: {deployment.name}")
+    for warning in _context_warnings(args):
+        print(f"[warn] {warning}")
     for warning in deployment.warnings:
         print(f"[warn] {warning}")
     return 0
@@ -1999,7 +1997,10 @@ def cmd_compose_validate(args: argparse.Namespace) -> int:
 def cmd_compose_render(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
-    print(render_compose_stack(config, deployment, node_records=_control_node_records_for_local(args)))
+    rendered = render_compose_stack(config, deployment, node_records=_control_node_records_for_local(args))
+    for warning in _context_warnings(args):
+        print(f"# warning: {warning}")
+    print(rendered)
     for service_name, route_text in render_compose_routes(config, deployment).items():
         print(f"# route: {compose_route_path(config, deployment, service_name)}")
         print(route_text)
@@ -2044,7 +2045,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
             compose_content=compose_text,
             source_name=str(args.sidecar),
             skip_dns=args.skip_dns,
-            skip_webhook=args.skip_webhook,
+            skip_portainer=args.skip_portainer,
             timeout=args.timeout,
         ):
             status = str(event.get("status") or "")
@@ -2070,7 +2071,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
                 compose_content=compose_text,
                 source_name=str(args.sidecar),
                 skip_dns=args.skip_dns,
-                skip_webhook=args.skip_webhook,
+                skip_portainer=args.skip_portainer,
                 timeout=args.timeout,
             ),
             timeout=args.timeout,
@@ -2163,15 +2164,12 @@ def _print_storage_host_result(value: Any) -> None:
     prepared = value.get("prepared")
     removed = value.get("removed")
     export = value.get("export")
-    legacy = value.get("legacyStack")
     if prepared:
         print(f"Storage host: {prepared}")
     if removed:
         print(f"Storage cleanup: {removed}")
     if export:
         print(f"Storage export: {export}")
-    if legacy:
-        print(f"Legacy storage stack: {legacy}")
 
 
 def cmd_storage_apply(args: argparse.Namespace) -> int:
@@ -2257,13 +2255,16 @@ def _compose_request_text(sidecar: Path, deployment: Any) -> tuple[str, str]:
 
 def _control_storage_classes_for_local(args: argparse.Namespace, *, required: bool = False) -> Dict[str, Any] | None:
     try:
+        setattr(args, "_luma_context_used", True)
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).list_storage()
-    except LumaError:
+    except LumaError as exc:
         if required:
             raise
+        _add_context_warning(args, f"Storage classes were not loaded from Luma Control; validation is using local sidecar data only ({exc})")
         return None
     if not isinstance(result, dict):
+        _add_context_warning(args, "Storage classes were not loaded from Luma Control; control API returned an invalid response")
         return None
     storage: Dict[str, Any] = {}
     for item in result.get("storageClasses") or []:
@@ -2276,11 +2277,13 @@ def _control_storage_classes_for_local(args: argparse.Namespace, *, required: bo
 
 def _control_node_records_for_local(args: argparse.Namespace, *, required: bool = False) -> Dict[str, Any] | None:
     try:
+        setattr(args, "_luma_context_used", True)
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).status()
-    except LumaError:
+    except LumaError as exc:
         if required:
             raise
+        _add_context_warning(args, f"Node records were not loaded from Luma Control; placement/storage reachability checks are degraded ({exc})")
         return None
     node_items = ((result.get("nodes") or {}).get("items") if isinstance(result, dict) else []) or []
     records: Dict[str, Any] = {}
@@ -2292,7 +2295,6 @@ def _control_node_records_for_local(args: argparse.Namespace, *, required: bool 
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
     checks: list[tuple[str, bool, str]] = []
     checks.append(("Login context", False, "Run: luma login <control-url> --token <management-token>"))
     try:
@@ -2312,40 +2314,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except LumaError as exc:
         checks.append(("Control API", False, str(exc)))
 
-    if not args.legacy_ssh:
-        if args.deep:
-            print("Deep node checks: skipped (use --legacy-ssh --deep from a machine that can SSH to the nodes)")
-        for name, ok, fix in checks:
-            print(f"{name}: {'ok' if ok else 'fail'}")
-            if not ok:
-                print(f"  Fix: {fix}")
-        return 0 if all(ok for _, ok, _ in checks) else 1
-
-    checks.append(("Config", bool(config.path and config.path.exists()), "Run: luma init or create luma.yaml on manager nodes"))
-    checks.append(("Nodes", bool(config.nodes), "Add nodes to luma.yaml"))
-    for node in config.nodes.values():
-        remote = RemoteExecutor(node)
-        ssh = remote.run_result("true")
-        checks.append((f"{node.name}: SSH", ssh.code == 0, f"Check SSH host alias: {node.host}"))
-        docker = remote.sudo_result("command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1")
-        sudo_fix = "Export LUMA_SUDO_PASSWORD or configure passwordless sudo"
-        docker_fix = sudo_fix if _looks_like_sudo_auth_failure(docker.output) else f"Run: luma node bootstrap {node.name} --profile single-node"
-        checks.append((f"{node.name}: Docker", docker.code == 0, docker_fix))
-        swarm = remote.sudo_result("docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null")
-        swarm_fix = sudo_fix if _looks_like_sudo_auth_failure(swarm.output) else f"Run: luma node bootstrap {node.name} --profile cn-edge"
-        swarm_state = _last_nonempty_line(swarm.output)
-        checks.append((f"{node.name}: Swarm", swarm_state in {"active", "pending"}, swarm_fix))
-        if docker.code == 0 and swarm_state == "active":
-            services = remote.sudo_result("docker service ls --format '{{.Name}} {{.Replicas}}' 2>/dev/null")
-            checks.append((f"{node.name}: Traefik", _service_ready(services.output, "traefik_traefik"), f"Run: luma node bootstrap {node.name} --profile single-node"))
-            checks.append((f"{node.name}: Portainer", _service_ready(services.output, "portainer_portainer"), f"Run: luma portainer setup {node.name}"))
-            if node.has_role("egress"):
-                checks.append((f"{node.name}: Egress gateway", _service_ready(services.output, "egress_mihomo"), f"Run: luma egress setup {node.name}"))
-                if args.deep:
-                    pull = remote.sudo_result("timeout 60 docker pull hello-world:latest >/dev/null 2>&1")
-                    checks.append((f"{node.name}: Docker pull through egress", pull.code == 0, f"Run: luma egress setup {node.name}"))
-        tailscale = remote.sudo_result("command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1")
-        checks.append((f"{node.name}: Tailscale", tailscale.code == 0, f"Export TAILSCALE_AUTHKEY and run: luma tailscale connect {node.name}"))
     for name, ok, fix in checks:
         print(f"{name}: {'ok' if ok else 'fail'}")
         if not ok:
@@ -2430,8 +2398,6 @@ def _service_ready(output: str, name: str) -> bool:
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    if argv and argv[0] == "depoly":
-        argv[0] = "deploy"
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

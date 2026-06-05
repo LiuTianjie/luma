@@ -34,8 +34,6 @@
 | `dns.target` | no | string | Optional DNS target override. |
 | `dns.type` | no | string | Optional DNS record type override. |
 | `dns.proxied` | no | boolean | Optional Cloudflare proxied flag. |
-| `portainer.webhookUrl` | legacy | string | Legacy GitOps webhook URL. API deploy is used when registry auth, mutable tags, or digests require it. |
-| `portainer.webhookUrlEnv` | legacy | string | Env var containing legacy webhook URL. |
 | `stackPath` | no | string | Override generated stack path. Rare. |
 | `routePath` | no | string | Override generated tailscale route path. Rare. |
 
@@ -56,7 +54,7 @@ Rules:
 - `external-edge` requires `region: global`.
 - `tailscale-relay` requires `region: home`.
 - Public services require `domain` and integer `port`.
-- `public` is a legacy field. Do not use it in new files.
+- `public` has been removed. Use `exposure`.
 
 ## Render Behavior
 
@@ -80,7 +78,7 @@ luma registry list
 luma registry remove ghcr.io
 ```
 
-During deploy, Luma matches credentials by image registry host, pre-pulls with Docker registry auth, and associates the matching Portainer/Swarm registry credential with the stack. Private image deploys use the Portainer API path because webhooks cannot carry registry auth.
+During deploy, Luma matches credentials by image registry host, pre-pulls with Docker registry auth, and associates the matching Portainer/Swarm registry credential with the stack through the Portainer API path.
 
 ## Single-Service Examples
 

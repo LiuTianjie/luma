@@ -30,7 +30,7 @@ client laptop -> Luma Control -> Portainer -> Docker Swarm -> service tasks
 | Tailscale | 按需 | 私有多节点加入、`home` 节点、`exposure: tailscale-relay` 需要。普通单公网 manager 不强制需要。 |
 | egress 订阅 | 按需 | 镜像拉取代理和 `proxy: true` 服务的运行时代理。国内 manager 使用默认 GHCR control 镜像时，建议 bootstrap 前配置好。 |
 
-client 机器只需要安装 CLI，并能访问控制面域名。它不需要 Docker、SSH key、Cloudflare token、Portainer password 或 Portainer webhook。
+client 机器只需要安装 CLI，并能访问控制面域名。它不需要 Docker、SSH key、Cloudflare token 或 Portainer password。
 
 ## Token 模型
 
@@ -351,7 +351,7 @@ rm -rf "$tmp"
 
 ## 安全边界
 
-- 不要提交 API token、Portainer webhook、管理 Token、节点加入 Token 或代理订阅 URL。
+- 不要提交 API token、Portainer password、管理 Token、节点加入 Token 或代理订阅 URL。
 - 不要把 registry token 写进 manifest 或容器环境变量。使用 `luma registry login`，凭证泄露时到 registry provider 侧轮换或吊销 token。
 - client 机器不需要 SSH/Docker/Cloudflare/Portainer 凭据，尽量只分发管理 Token。
 - 节点加入 Token 只给要加入集群或刷新已加入节点 agent 的服务器使用。

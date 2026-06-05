@@ -37,7 +37,7 @@ luma deploy status.yaml
 | `image` | 是 | string | 容器镜像，例如 `ghcr.io/acme/api:1.0.0`。`latest` 或未带 tag 会在部署时解析成 `name@sha256:...` 再部署。 |
 | `region` | 是 | `cn` / `global` / `home` | 服务运行区域。 |
 | `node` | 否 | string | 指定 Luma 节点名，也就是 `luma node join --name` 的值。用于把服务钉到某台机器；控制面会解析成 Swarm NodeID 后调度，仍会同时加 region 约束。 |
-| `exposure` | 否 | 见下方 | 访问方式。默认由 `public` 兼容推导；新文件建议显式填写。 |
+| `exposure` | 否 | 见下方 | 访问方式。新文件必须显式表达公开、隧道或内部访问语义。 |
 | `domain` | 公开服务必填 | string | 用户访问的域名。 |
 | `port` | 公开服务必填 | integer | 容器内部监听端口，不是云服务器安全组端口。 |
 | `replicas` | 否 | integer | 副本数，默认 `1`，必须大于等于 `1`。 |
@@ -53,7 +53,7 @@ luma deploy status.yaml
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随 Swarm 实际运行 task 所在的 home 节点自动推导。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
 | `dns` | 否 | map | 保留给 DNS 相关扩展。 |
-| `portainer` | 否 | map | 保留给 Portainer webhook/API 相关扩展。 |
+| `portainer` | 否 | map | 保留给 Portainer API 相关扩展。 |
 | `stackPath` | 否 | string | 覆盖生成 stack 路径。通常不用。 |
 | `routePath` | 否 | string | 覆盖 tailscale route 文件路径。通常不用。 |
 
@@ -73,7 +73,7 @@ luma deploy status.yaml
 - `exposure: external-edge` 必须配 `region: global`。
 - `exposure: tailscale-relay` 必须配 `region: home`。若未提供 `relay.host`/`relay.url`，控制面会在部署后根据实际 running task 所在节点自动推导上游。
 - 公开服务必须提供 `domain` 和整数 `port`。
-- `public` 是旧字段；新 manifest 不建议写。若写了，必须与 exposure 匹配：`exposure != none` 时 public 才能是 `true`。
+- `public` 已移除；请使用 `exposure`。
 
 ## 常用模板
 
@@ -141,7 +141,7 @@ luma registry list
 image: ghcr.io/acme/private-api:1.0.0
 ```
 
-部署时 Luma 会从 image 推断 registry host，使用匹配的凭证预拉取镜像，并把 registry 关联到 Portainer/Swarm stack，让被调度的节点可以拉取私有镜像。`luma registry list` 只显示 registry host 和 username，不显示 password/token。私有镜像部署必须使用 Portainer API 绑定；webhook 不能携带 registry auth，Luma 会在匹配到 registry credential 时自动走 API upsert。
+部署时 Luma 会从 image 推断 registry host，使用匹配的凭证预拉取镜像，并把 registry 关联到 Portainer/Swarm stack，让被调度的节点可以拉取私有镜像。`luma registry list` 只显示 registry host 和 username，不显示 password/token。
 
 常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。Luma 只需要 GHCR 的 registry credential 来拉运行时镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
 
@@ -337,4 +337,4 @@ luma validate service.yaml
 luma deploy service.yaml --dry-run
 ```
 
-`validate` 会校验 manifest 并输出渲染后的 stack。`deploy --dry-run` 不会提交控制面，只展示会生成什么。
+`validate` 会校验 manifest 并输出渲染后的 stack。`deploy --dry-run` 不会提交控制面，只展示会生成什么。若本地校验无法读取控制面的节点或 storageClass 信息，JSON 输出会带 `validationMode: "degraded"` 和 `warnings`，文本输出会打印 `[warn]`，表示这次校验没有覆盖真实集群放置/存储可达性。

@@ -42,7 +42,7 @@ export type ServiceManifestDraft = {
   memoryLimit: string;
   healthcheckUrl: string;
   skipDns: boolean;
-  skipWebhook: boolean;
+  skipPortainer: boolean;
 };
 
 export type ComposeServiceDraft = {
@@ -75,7 +75,7 @@ export type ComposeDeploymentDraft = {
   volumes: ComposeVolumeDraft[];
   dockerComposeYaml: string;
   skipDns: boolean;
-  skipWebhook: boolean;
+  skipPortainer: boolean;
 };
 
 export type DeployTemplate = {

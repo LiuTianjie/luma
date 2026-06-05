@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import http.client
 import json
@@ -12,6 +11,7 @@ import shlex
 import shutil
 import socket
 import ssl
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -52,7 +52,7 @@ from ..registry import (
 from ..render import named_volume_sources, render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service, slugify
 from .. import __version__
-from .state import init_state, load_state, require_token, save_state, state_path
+from .state import init_state, load_state, mutate_state, require_token
 
 AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
 AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SECONDS", "300"))
@@ -233,14 +233,7 @@ def _agent_tasks(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _mutate_control_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
-    lock_path = state_path().with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("w", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        state = load_state()
-        result = mutator(state)
-        save_state(state)
-        return result
+    return mutate_state(mutator)
 
 
 def handle_node_agent_token(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -389,14 +382,15 @@ def _run_node_agent_task(
             if status == "failed":
                 raise LumaError(str(task.get("message") or f"agent task failed: {task_id}"))
         time.sleep(1)
-    current = load_state()
-    tasks = _agent_tasks(current)
-    task = tasks.get(task_id)
-    if isinstance(task, dict) and task.get("status") in {"queued", "running"}:
-        task["status"] = "timeout"
-        task["message"] = "agent task timed out"
-        task["updatedAt"] = int(time.time())
-        save_state(current)
+    def mark_timeout(state: Dict[str, Any]) -> None:
+        tasks = _agent_tasks(state)
+        task = tasks.get(task_id)
+        if isinstance(task, dict) and task.get("status") in {"queued", "running"}:
+            task["status"] = "timeout"
+            task["message"] = "agent task timed out"
+            task["updatedAt"] = int(time.time())
+
+    mutate_state(mark_timeout)
     raise LumaError(f"node agent task timed out on {node_name}: {action}")
 
 
@@ -527,16 +521,18 @@ def _dns_missing_reasons(dns_provider: str, *, zone_id: object, token_configured
 
 
 def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="join")
     node_name = str(body.get("nodeName") or "").strip()
     region = str(body.get("region") or "").strip()
     if not node_name or not region:
         raise LumaError("nodeName and region are required")
     if region not in VALID_REGIONS:
         raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
-    _remember_node(state, node_name, region=region, status="registered")
-    save_state(state)
+    def mutate(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="join")
+        _remember_node(state, node_name, region=region, status="registered")
+
+    mutate_state(mutate)
+    state = load_state()
     return {
         "clusterId": state["clusterId"],
         "managerAddr": state.get("managerAddr", ""),
@@ -547,8 +543,6 @@ def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="join")
     node_name = str(body.get("nodeName") or "").strip()
     registered_name = str(body.get("registeredName") or "").strip()
     node_id = str(body.get("nodeId") or "").strip()
@@ -575,9 +569,13 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         values["tailscaleIP"] = tailscale_ip
     if tailscale_name:
         values["tailscaleName"] = tailscale_name
-    _remember_node(state, luma_name, **values)
-    agent_token = _issue_node_agent_token(state, luma_name, node_id=node_id)
-    save_state(state)
+    def mutate(state: Dict[str, Any]) -> str:
+        require_token(state, token, token_type="join")
+        _remember_node(state, luma_name, **values)
+        return _issue_node_agent_token(state, luma_name, node_id=node_id)
+
+    agent_token = mutate_state(mutate)
+    state = load_state()
     return {
         "clusterId": state["clusterId"],
         "nodeName": luma_name,
@@ -598,18 +596,28 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     node_name = str(body.get("nodeName") or "").strip()
     if not node_name:
         raise LumaError("nodeName is required")
-    nodes = state.get("nodes")
-    if not isinstance(nodes, dict):
-        nodes = {}
-        state["nodes"] = nodes
-    removed = nodes.pop(node_name, None)
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    removed = nodes.get(node_name)
+    removed_key = node_name if removed is not None else ""
     if removed is None:
-        for key, value in list(nodes.items()):
+        for key, value in nodes.items():
             if isinstance(value, dict) and value.get("displayName") == node_name:
-                removed = nodes.pop(key)
+                removed = value
+                removed_key = str(key)
                 break
     swarm_result = remove_swarm_node(node_name, removed if isinstance(removed, dict) else None)
-    save_state(state)
+    def mutate(state: Dict[str, Any]) -> None:
+        require_control_node_token(state, token)
+        nodes = state.get("nodes")
+        if not isinstance(nodes, dict):
+            nodes = {}
+            state["nodes"] = nodes
+        if removed_key:
+            nodes.pop(removed_key, None)
+        else:
+            nodes.pop(node_name, None)
+
+    mutate_state(mutate)
     registered_removed = bool(removed)
     swarm_removed = bool(swarm_result.get("removed"))
     if registered_removed and swarm_removed:
@@ -676,6 +684,26 @@ def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, ma
     }
 
 
+def _mark_service_deployment(
+    service: ServiceSpec,
+    manifest: str,
+    source_name: str,
+    *,
+    status: str,
+    steps: list[dict[str, str]] | None = None,
+    error: str = "",
+) -> None:
+    def mutate(state: Dict[str, Any]) -> None:
+        _register_service_deployment(state, service, manifest, source_name)
+        record = _deployments_state(state)["services"][service.slug]
+        record["status"] = status
+        record["lastError"] = error
+        record["steps"] = list(steps or [])
+        record["updatedAt"] = int(time.time())
+
+    mutate_state(mutate)
+
+
 def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploymentSpec, body: Dict[str, Any], source_name: str) -> None:
     deployments = _deployments_state(state)
     record: Dict[str, Any] = {
@@ -690,6 +718,26 @@ def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeplo
     if isinstance(compose_content, str):
         record["composeContent"] = compose_content
     deployments["compose"][deployment.slug] = record
+
+
+def _mark_compose_deployment(
+    deployment: ComposeDeploymentSpec,
+    body: Dict[str, Any],
+    source_name: str,
+    *,
+    status: str,
+    steps: list[dict[str, str]] | None = None,
+    error: str = "",
+) -> None:
+    def mutate(state: Dict[str, Any]) -> None:
+        _register_compose_deployment(state, deployment, body, source_name)
+        record = _deployments_state(state)["compose"][deployment.slug]
+        record["status"] = status
+        record["lastError"] = error
+        record["steps"] = list(steps or [])
+        record["updatedAt"] = int(time.time())
+
+    mutate_state(mutate)
 
 
 def _service_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, Any] | None:
@@ -848,74 +896,79 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
+    _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
 
-    if image_pull_requires_egress(service.image):
-        _deploy_step(
+    try:
+        if image_pull_requires_egress(service.image):
+            _deploy_step(
+                steps,
+                "Ensure image pull egress",
+                lambda: ensure_image_pull_egress_proxy(state, service.image),
+                progress=progress,
+            )
+
+        registry_auth = _registry_auth_for_service(state, service)
+        service, image_result = _deploy_step(
             steps,
-            "Ensure image pull egress",
-            lambda: ensure_image_pull_egress_proxy(state, service.image),
+            "Resolve image",
+            lambda: resolve_service_image(config, service, registry_auth=registry_auth),
             progress=progress,
         )
-
-    registry_auth = _registry_auth_for_service(state, service)
-    service, image_result = _deploy_step(
-        steps,
-        "Resolve image",
-        lambda: resolve_service_image(config, service, registry_auth=registry_auth),
-        progress=progress,
-    )
-    service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state), progress=progress)
-    storage_preparation = _deploy_step(
-        steps,
-        "Prepare managed storage",
-        lambda: _prepare_service_managed_storage(service, state),
-        progress=progress,
-    )
-    target = _resolve_control_path(stack_path(config, service), config_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    stack_text = _deploy_step(
-        steps,
-        "Render stack",
-        lambda: render_stack(
-            config,
-            service,
-            storage_classes=_state_storage_classes(state),
-            node_records=_state_nodes(state),
-        ),
-        progress=progress,
-    )
-    stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
-    _deploy_step(steps, "Write stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
-    written = [str(target)]
-    dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
-    webhook_result = _deploy_step(
-        steps,
-        "Deploy Portainer stack",
-        lambda: "Portainer deploy skipped: --skip-webhook"
-        if body.get("skipWebhook")
-        else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env, registry_auth=registry_auth),
-        progress=progress,
-    )
-    if service.exposure == "tailscale-relay":
-        route_target = _resolve_control_path(route_path(config, service), config_path)
-        route_target.parent.mkdir(parents=True, exist_ok=True)
-        route_service = service
-        relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host"))
-        if body.get("skipWebhook") and not relay_is_explicit:
-            _deploy_step(steps, "Write route", lambda: "Route skipped: --skip-webhook requires deploy to infer tailscale relay", progress=progress)
-        else:
-            if not body.get("skipWebhook"):
-                route_service = _deploy_step(steps, "Resolve relay", lambda: resolve_tailscale_relay(service), progress=progress)
-            _deploy_step(steps, "Write route", lambda: route_target.write_text(render_tailscale_route(config, route_service), encoding="utf-8"), progress=progress)
-            written.append(str(route_target))
-    probe_result = _deploy_step(
-        steps,
-        "Probe public route",
-        lambda: "Public route probe skipped: --skip-webhook" if body.get("skipWebhook") else _probe_public_route(service),
-        progress=progress,
-    )
-    _register_service_deployment(state, service, manifest, source_name)
-    save_state(state)
+        service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state), progress=progress)
+        _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
+        storage_preparation = _deploy_step(
+            steps,
+            "Prepare managed storage",
+            lambda: _prepare_service_managed_storage(service, state),
+            progress=progress,
+        )
+        target = _resolve_control_path(stack_path(config, service), config_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        stack_text = _deploy_step(
+            steps,
+            "Render stack",
+            lambda: render_stack(
+                config,
+                service,
+                storage_classes=_state_storage_classes(state),
+                node_records=_state_nodes(state),
+            ),
+            progress=progress,
+        )
+        stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
+        _deploy_step(steps, "Write stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
+        written = [str(target)]
+        dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
+        portainer_result = _deploy_step(
+            steps,
+            "Deploy Portainer stack",
+            lambda: "Portainer deploy skipped: --skip-portainer"
+            if body.get("skipPortainer")
+            else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env, registry_auth=registry_auth),
+            progress=progress,
+        )
+        if service.exposure == "tailscale-relay":
+            route_target = _resolve_control_path(route_path(config, service), config_path)
+            route_target.parent.mkdir(parents=True, exist_ok=True)
+            route_service = service
+            relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host"))
+            if body.get("skipPortainer") and not relay_is_explicit:
+                _deploy_step(steps, "Write route", lambda: "Route skipped: --skip-portainer requires deploy to infer tailscale relay", progress=progress)
+            else:
+                if not body.get("skipPortainer"):
+                    route_service = _deploy_step(steps, "Resolve relay", lambda: resolve_tailscale_relay(service), progress=progress)
+                _deploy_step(steps, "Write route", lambda: route_target.write_text(render_tailscale_route(config, route_service), encoding="utf-8"), progress=progress)
+                written.append(str(route_target))
+        probe_result = _deploy_step(
+            steps,
+            "Probe public route",
+            lambda: "Public route probe skipped: --skip-portainer" if body.get("skipPortainer") else _probe_public_route(service),
+            progress=progress,
+        )
+    except LumaError as exc:
+        _mark_service_deployment(service, manifest, source_name, status="failed_partial", steps=steps, error=str(exc))
+        raise
+    _mark_service_deployment(service, manifest, source_name, status="active", steps=steps)
     return {
         "clusterId": state["clusterId"],
         "service": service.name,
@@ -923,7 +976,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         "written": written,
         "image": image_result,
         "dns": dns_result,
-        "webhook": webhook_result,
+        "portainer": portainer_result,
         "probe": probe_result,
         "storagePreparation": storage_preparation,
         "steps": steps,
@@ -1070,8 +1123,11 @@ def _remove_service_deployment(
         else "Storage cleanup skipped",
         progress=progress,
     )
-    if not dry_run and not body.get("skipPortainer") and _forget_service_deployment(state, service):
-        save_state(state)
+    if not dry_run and not body.get("skipPortainer"):
+        def forget(state: Dict[str, Any]) -> None:
+            _forget_service_deployment(state, service)
+
+        mutate_state(forget)
     return {
         "clusterId": state["clusterId"],
         "service": service.name,
@@ -1145,8 +1201,11 @@ def _remove_compose_deployment(
         else "Storage cleanup skipped",
         progress=progress,
     )
-    if not dry_run and not body.get("skipPortainer") and _forget_compose_deployment(state, deployment):
-        save_state(state)
+    if not dry_run and not body.get("skipPortainer"):
+        def forget(state: Dict[str, Any]) -> None:
+            _forget_compose_deployment(state, deployment)
+
+        mutate_state(forget)
     return {
         "clusterId": state["clusterId"],
         "deployment": deployment.name,
@@ -1242,106 +1301,109 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
     _emit_compose_warnings(steps, progress, deployment)
+    _mark_compose_deployment(deployment, body, source_name, status="pending", steps=steps)
 
-    storage_preparation = _deploy_step(
-        steps,
-        "Prepare managed storage",
-        lambda: _prepare_compose_managed_storage(deployment, state),
-        progress=progress,
-    )
-    target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    stack_text = _deploy_step(
-        steps,
-        "Render compose stack",
-        lambda: render_compose_stack(
-            config,
-            deployment,
-            node_id_resolver=_compose_node_id_resolver(state),
-            node_records=_state_nodes(state),
-        ),
-        progress=progress,
-    )
-    _deploy_step(steps, "Check storage migration", lambda: _guard_compose_storage_switch(target, stack_text, deployment), progress=progress)
-    stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
-    _deploy_step(steps, "Write compose stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
-    written = [str(target)]
+    try:
+        storage_preparation = _deploy_step(
+            steps,
+            "Prepare managed storage",
+            lambda: _prepare_compose_managed_storage(deployment, state),
+            progress=progress,
+        )
+        target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        stack_text = _deploy_step(
+            steps,
+            "Render compose stack",
+            lambda: render_compose_stack(
+                config,
+                deployment,
+                node_id_resolver=_compose_node_id_resolver(state),
+                node_records=_state_nodes(state),
+            ),
+            progress=progress,
+        )
+        _deploy_step(steps, "Check storage migration", lambda: _guard_compose_storage_switch(target, stack_text, deployment), progress=progress)
+        stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
+        _deploy_step(steps, "Write compose stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
+        written = [str(target)]
 
-    dns_results: list[str] = []
-    for service in compose_public_services(deployment):
-        service_spec = _compose_service_as_service_spec(deployment, service)
-        dns_results.append(
-            _deploy_step(
-                steps,
-                f"Sync DNS {service.name}",
-                lambda service_spec=service_spec: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service_spec),
-                progress=progress,
+        dns_results: list[str] = []
+        for service in compose_public_services(deployment):
+            service_spec = _compose_service_as_service_spec(deployment, service)
+            dns_results.append(
+                _deploy_step(
+                    steps,
+                    f"Sync DNS {service.name}",
+                    lambda service_spec=service_spec: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service_spec),
+                    progress=progress,
+                )
             )
+
+        portainer_result = _deploy_step(
+            steps,
+            "Deploy Portainer stack",
+            lambda: "Portainer deploy skipped: --skip-portainer"
+            if body.get("skipPortainer")
+            else upsert_stack(
+                config,
+                _stack_service_spec(deployment),
+                stack_text,
+                state,
+                stack_env=stack_env,
+                registry_auth=None,
+            ),
+            progress=progress,
         )
 
-    portainer_result = _deploy_step(
-        steps,
-        "Deploy Portainer stack",
-        lambda: "Portainer deploy skipped: --skip-webhook"
-        if body.get("skipWebhook")
-        else upsert_stack(
-            config,
-            _stack_service_spec(deployment),
-            stack_text,
-            state,
-            missing_webhook_env="PORTAINER_WEBHOOK_URL",
-            stack_env=stack_env,
-            registry_auth=None,
-        ),
-        progress=progress,
-    )
+        for service_name, service in deployment.services.items():
+            if service.exposure != "tailscale-relay" or not service.domain or not service.port:
+                continue
+            route_target = _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
+            route_target.parent.mkdir(parents=True, exist_ok=True)
+            service_spec = _compose_service_as_service_spec(deployment, service)
+            relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host"))
+            if body.get("skipPortainer") and not relay_is_explicit:
+                _deploy_step(
+                    steps,
+                    f"Write route {service_name}",
+                    lambda: "Route skipped: --skip-portainer requires deploy to infer tailscale relay",
+                    progress=progress,
+                )
+                continue
+            if not body.get("skipPortainer"):
+                service_spec = _deploy_step(
+                    steps,
+                    f"Resolve relay {service.name}",
+                    lambda service_spec=service_spec: resolve_tailscale_relay(service_spec),
+                    progress=progress,
+                )
+            route_text = render_tailscale_route(config, service_spec)
+            _deploy_step(steps, f"Write route {service_name}", lambda route_target=route_target, route_text=route_text: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
+            written.append(str(route_target))
 
-    for service_name, service in deployment.services.items():
-        if service.exposure != "tailscale-relay" or not service.domain or not service.port:
-            continue
-        route_target = _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
-        route_target.parent.mkdir(parents=True, exist_ok=True)
-        service_spec = _compose_service_as_service_spec(deployment, service)
-        relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host"))
-        if body.get("skipWebhook") and not relay_is_explicit:
-            _deploy_step(
-                steps,
-                f"Write route {service_name}",
-                lambda: "Route skipped: --skip-webhook requires deploy to infer tailscale relay",
-                progress=progress,
+        probe_results: list[str] = []
+        for service in compose_public_services(deployment):
+            service_spec = _compose_service_as_service_spec(deployment, service)
+            probe_results.append(
+                _deploy_step(
+                    steps,
+                    f"Probe public route {service.name}",
+                    lambda service_spec=service_spec: "Public route probe skipped: --skip-portainer" if body.get("skipPortainer") else _probe_public_route(service_spec),
+                    progress=progress,
+                )
             )
-            continue
-        if not body.get("skipWebhook"):
-            service_spec = _deploy_step(
-                steps,
-                f"Resolve relay {service.name}",
-                lambda service_spec=service_spec: resolve_tailscale_relay(service_spec),
-                progress=progress,
-            )
-        route_text = render_tailscale_route(config, service_spec)
-        _deploy_step(steps, f"Write route {service_name}", lambda route_target=route_target, route_text=route_text: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
-        written.append(str(route_target))
-
-    probe_results: list[str] = []
-    for service in compose_public_services(deployment):
-        service_spec = _compose_service_as_service_spec(deployment, service)
-        probe_results.append(
-            _deploy_step(
-                steps,
-                f"Probe public route {service.name}",
-                lambda service_spec=service_spec: "Public route probe skipped: --skip-webhook" if body.get("skipWebhook") else _probe_public_route(service_spec),
-                progress=progress,
-        )
-    )
-    _register_compose_deployment(state, deployment, body, source_name)
-    save_state(state)
+    except LumaError as exc:
+        _mark_compose_deployment(deployment, body, source_name, status="failed_partial", steps=steps, error=str(exc))
+        raise
+    _mark_compose_deployment(deployment, body, source_name, status="active", steps=steps)
     return {
         "clusterId": state["clusterId"],
         "deployment": deployment.name,
         "sourceName": source_name,
         "written": written,
         "dns": dns_results,
-        "webhook": portainer_result,
+        "portainer": portainer_result,
         "probe": probe_results,
         "storagePreparation": storage_preparation,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
@@ -1456,7 +1518,6 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     name = str(body.get("name") or "").strip()
     if not name:
         raise LumaError("storage class name is required")
-    existing_record = _state_storage_classes(state).get(name) or {}
     provider = str(body.get("provider") or "nfs").strip()
     if provider != "nfs":
         raise LumaError("storage provider must be: nfs")
@@ -1472,17 +1533,24 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "nodes": [str(value) for value in body.get("nodes") or [] if str(value)],
         "updatedAt": int(time.time()),
     }
-    _validate_storage_class_record(name, item, state)
-    save_state(state)
+    def validate(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        _validate_storage_class_record(name, item, state)
+
+    mutate_state(validate)
+    state = load_state()
     storage_class_record = {key: value for key, value in item.items() if value not in ("", [], None)}
     storage_host = _apply_managed_storage_class(name, storage_class_record, state)
-    state = load_state()
-    storage_classes = state.setdefault("storageClasses", {})
-    if not isinstance(storage_classes, dict):
-        storage_classes = {}
-        state["storageClasses"] = storage_classes
-    storage_classes[name] = storage_class_record
-    save_state(state)
+
+    def save_storage_class(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        storage_classes = state.setdefault("storageClasses", {})
+        if not isinstance(storage_classes, dict):
+            storage_classes = {}
+            state["storageClasses"] = storage_classes
+        storage_classes[name] = storage_class_record
+
+    mutate_state(save_storage_class)
     result = {"name": name, "saved": True, "storageClass": _public_storage_class(name, storage_class_record)}
     if storage_host:
         result["storageHost"] = storage_host
@@ -1494,9 +1562,6 @@ def _apply_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[st
     if storage_class.mode != "managed":
         return None
     host_result = _prepare_managed_nfs_host(storage_class, state)
-    legacy_stack = _remove_legacy_managed_storage_stack(storage_class, state)
-    if legacy_stack:
-        host_result["legacyStack"] = legacy_stack
     return host_result
 
 
@@ -1649,15 +1714,6 @@ def _docker_container_logs(container_id: str) -> str:
     return raw
 
 
-def _remove_legacy_managed_storage_stack(storage_class: StorageClassSpec, state: Dict[str, Any]) -> str | None:
-    if not _storage_apply_available(state):
-        return None
-    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
-    config = load_config(config_path)
-    stack_name = f"luma-storage-{slugify(storage_class.name)}"
-    return remove_stack(config, _storage_stack_service_spec(stack_name), state)
-
-
 def _storage_node_is_local(record: Dict[str, Any], node_name: str) -> bool:
     try:
         info = docker_request("GET", "/info")
@@ -1684,9 +1740,9 @@ def _storage_node_is_local(record: Dict[str, Any], node_name: str) -> bool:
 
 def _storage_apply_available(state: Dict[str, Any]) -> bool:
     return bool(
-        os.environ.get("PORTAINER_WEBHOOK_URL")
-        or os.environ.get("PORTAINER_WEBHOOK_API")
-        or (state.get("portainerApiUrl") and state.get("portainerEndpointId") and state.get("portainerAdminPassword"))
+        state.get("portainerApiUrl")
+        and state.get("portainerEndpointId")
+        and state.get("portainerAdminPassword")
     )
 
 
@@ -1697,11 +1753,16 @@ def handle_storage_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if not name:
         raise LumaError("storage class name is required")
     storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
-    existing = storage_classes.pop(name, None)
+    existing = storage_classes.get(name)
     removed = bool(existing)
     storage_host = _remove_managed_storage_class(name, existing, state) if isinstance(existing, dict) else None
-    state["storageClasses"] = storage_classes
-    save_state(state)
+    def remove_storage_class(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
+        storage_classes.pop(name, None)
+        state["storageClasses"] = storage_classes
+
+    mutate_state(remove_storage_class)
     result = {"name": name, "removed": removed}
     if storage_host:
         result["storageHost"] = storage_host
@@ -2254,20 +2315,22 @@ def handle_secret_list(token: str) -> Dict[str, Any]:
 
 
 def handle_secret_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
     name = str(body.get("name") or "").strip()
     value = body.get("value")
     if not _valid_env_name(name):
         raise LumaError("secret name must be a valid environment variable name")
     if value is None or str(value) == "":
         raise LumaError("secret value is required")
-    secrets = state.setdefault("secrets", {})
-    if not isinstance(secrets, dict):
-        secrets = {}
-        state["secrets"] = secrets
-    secrets[name] = str(value)
-    save_state(state)
+
+    def mutate(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        secrets = state.setdefault("secrets", {})
+        if not isinstance(secrets, dict):
+            secrets = {}
+            state["secrets"] = secrets
+        secrets[name] = str(value)
+
+    mutate_state(mutate)
     return {"name": name, "saved": True}
 
 
@@ -2291,8 +2354,6 @@ def handle_registry_list(token: str) -> Dict[str, Any]:
 
 
 def handle_registry_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
     host = normalize_registry_host(str(body.get("host") or body.get("serverAddress") or ""))
     username = str(body.get("username") or "").strip()
     password = body.get("password")
@@ -2300,17 +2361,21 @@ def handle_registry_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise LumaError("registry username is required")
     if password is None or str(password) == "":
         raise LumaError("registry password is required")
-    registries = state.setdefault("registries", {})
-    if not isinstance(registries, dict):
-        registries = {}
-        state["registries"] = registries
-    registries[host] = {
-        "serverAddress": host,
-        "username": username,
-        "password": str(password),
-        "updatedAt": int(time.time()),
-    }
-    save_state(state)
+
+    def mutate(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        registries = state.setdefault("registries", {})
+        if not isinstance(registries, dict):
+            registries = {}
+            state["registries"] = registries
+        registries[host] = {
+            "serverAddress": host,
+            "username": username,
+            "password": str(password),
+            "updatedAt": int(time.time()),
+        }
+
+    mutate_state(mutate)
     return {"host": host, "username": username, "saved": True}
 
 
@@ -2319,9 +2384,7 @@ def handle_registry_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     require_token(state, token, token_type="deploy")
     host = normalize_registry_host(str(body.get("host") or ""))
     registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
-    removed = bool(registries.pop(host, None))
-    state["registries"] = registries
-    save_state(state)
+    removed = bool(registries.get(host))
     portainer_removed = False
     warning = None
     try:
@@ -2330,6 +2393,13 @@ def handle_registry_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         portainer_removed = remove_luma_portainer_registry(config, state, host)
     except LumaError as exc:
         warning = f"Portainer registry cleanup failed: {exc}"
+    def mutate(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+        registries.pop(host, None)
+        state["registries"] = registries
+
+    mutate_state(mutate)
     result: Dict[str, Any] = {"host": host, "removed": removed, "portainerRegistryRemoved": portainer_removed}
     if warning:
         result["warning"] = warning
@@ -3574,6 +3644,24 @@ def _dashboard_asset(path: str) -> tuple[bytes, str]:
     return asset_path(relative_path).read_bytes(), content_type
 
 
+def _request_id() -> str:
+    return f"req-{secrets.token_hex(6)}"
+
+
+def _error_payload(code: str, message: str, *, request_id: str, include_error: bool = True) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "requestId": request_id,
+        "errorInfo": {
+            "code": code,
+            "message": message,
+            "requestId": request_id,
+        },
+    }
+    if include_error:
+        payload["error"] = message
+    return payload
+
+
 class ControlHandler(BaseHTTPRequestHandler):
     server_version = "LumaControl/0.1"
 
@@ -3627,9 +3715,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
         except LumaError as exc:
             code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
-            self._json(code, {"error": str(exc)})
+            self._error(code, exc)
             return
-        self._json(404, {"error": "not found"})
+        self._json(404, _error_payload("not_found", "not found", request_id=_request_id()))
 
     def do_POST(self) -> None:
         try:
@@ -3698,12 +3786,12 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/registries/remove":
                 self._json(200, handle_registry_remove(token, body))
                 return
-            self._json(404, {"error": "not found"})
+            self._json(404, _error_payload("not_found", "not found", request_id=_request_id()))
         except LumaError as exc:
             code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
-            self._json(code, {"error": str(exc)})
+            self._error(code, exc)
         except Exception as exc:
-            self._json(500, {"error": str(exc)})
+            self._error(500, exc, code="internal_error")
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
@@ -3722,9 +3810,11 @@ class ControlHandler(BaseHTTPRequestHandler):
             result = handle_deployment(token, body, progress=emit)
             emit({"status": "done", "result": result})
         except LumaError as exc:
-            emit({"status": "fail", "message": str(exc)})
+            emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
         except Exception as exc:
-            emit({"status": "fail", "message": str(exc)})
+            request_id = _request_id()
+            print(f"requestId={request_id} stream deployment internal error: {exc}", file=sys.stderr, flush=True)
+            emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
 
     def _stream_compose_deployment(self, token: str, body: Dict[str, Any]) -> None:
         self.send_response(200)
@@ -3740,9 +3830,11 @@ class ControlHandler(BaseHTTPRequestHandler):
             result = handle_compose_deployment(token, body, progress=emit)
             emit({"status": "done", "result": result})
         except LumaError as exc:
-            emit({"status": "fail", "message": str(exc)})
+            emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
         except Exception as exc:
-            emit({"status": "fail", "message": str(exc)})
+            request_id = _request_id()
+            print(f"requestId={request_id} stream compose deployment internal error: {exc}", file=sys.stderr, flush=True)
+            emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
 
     def _read_json(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length") or "0")
@@ -3757,6 +3849,12 @@ class ControlHandler(BaseHTTPRequestHandler):
     def _json(self, status: int, payload: Dict[str, Any]) -> None:
         raw = json.dumps(payload, sort_keys=True).encode("utf-8")
         self._bytes(status, raw, "application/json")
+
+    def _error(self, status: int, exc: Exception, *, code: str = "luma_error") -> None:
+        request_id = _request_id()
+        if status >= 500:
+            print(f"requestId={request_id} control API error: {exc}", file=sys.stderr, flush=True)
+        self._json(status, _error_payload(code, str(exc), request_id=request_id))
 
     def _bytes(self, status: int, body: bytes, content_type: str, *, cache_control: str = "no-store") -> None:
         self.send_response(status)

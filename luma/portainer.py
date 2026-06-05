@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import ssl
 import base64
 import urllib.error
@@ -24,38 +23,14 @@ def deploy_with_portainer(
     stack_env: list[dict[str, str]] | None = None,
     registry_auth: dict[str, str] | None = None,
 ) -> str:
-    webhook_url, webhook_env = resolve_webhook(config, service)
-    if not webhook_url or registry_auth or image_uses_mutable_latest_tag(service.image) or "@" in service.image:
-        return upsert_stack(
-            config,
-            service,
-            stack_content,
-            state,
-            missing_webhook_env=webhook_env,
-            stack_env=stack_env,
-            registry_auth=registry_auth,
-        )
-    return trigger_webhook_url(service, webhook_url)
-
-
-def trigger_webhook(config: LumaConfig, service: ServiceSpec) -> str:
-    webhook_url, webhook_env = resolve_webhook(config, service)
-    if not webhook_url:
-        raise LumaError(f"missing Portainer webhook for {service.name}: set {webhook_env}")
-    return trigger_webhook_url(service, webhook_url)
-
-
-def trigger_webhook_url(service: ServiceSpec, webhook_url: str) -> str:
-    req = urllib.request.Request(webhook_url, data=b"", method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            status = resp.status
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise LumaError(f"Portainer webhook error {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise LumaError(f"Portainer webhook unavailable at {webhook_url}: {exc.reason}") from exc
-    return f"Portainer webhook triggered for {service.name}: HTTP {status}"
+    return upsert_stack(
+        config,
+        service,
+        stack_content,
+        state,
+        stack_env=stack_env,
+        registry_auth=registry_auth,
+    )
 
 
 def upsert_stack(
@@ -64,7 +39,6 @@ def upsert_stack(
     stack_content: str,
     state: Dict[str, Any],
     *,
-    missing_webhook_env: str,
     stack_env: list[dict[str, str]] | None = None,
     registry_auth: dict[str, str] | None = None,
 ) -> str:
@@ -75,7 +49,7 @@ def upsert_stack(
     swarm_id = str(state.get("swarmId") or config.portainer.get("swarmId") or "")
     if not api_url or not password or not endpoint_id or not swarm_id:
         raise LumaError(
-            f"missing Portainer API binding for {service.name}: rerun luma bootstrap manager or set {missing_webhook_env}"
+            f"missing Portainer API binding for {service.name}: rerun luma bootstrap manager"
         )
     client = PortainerApi(api_url, username=username, password=password)
     token = client.authenticate()
@@ -296,30 +270,3 @@ class PortainerApi:
         if not raw:
             return None
         return json.loads(raw)
-
-
-def resolve_webhook(config: LumaConfig, service: ServiceSpec) -> tuple[str | None, str]:
-    portainer = config.portainer
-    service_portainer = service.portainer
-
-    webhook_url = (
-        service_portainer.get("webhookUrl")
-        or service.dns.get("portainerWebhookUrl")
-    )
-    webhook_env = service_portainer.get("webhookUrlEnv")
-    if not webhook_env:
-        webhooks = portainer.get("webhooks") or {}
-        if isinstance(webhooks, dict):
-            webhook_env = webhooks.get(service.name) or webhooks.get(service.slug)
-    webhook_env = str(webhook_env or portainer.get("webhookUrlEnv", "PORTAINER_WEBHOOK_URL"))
-    webhook_url = webhook_url or os.environ.get(webhook_env) or portainer.get("webhookUrl")
-    return webhook_url, webhook_env
-
-
-def configured_webhook(config: LumaConfig, service: ServiceSpec | None = None) -> str | None:
-    if service is not None:
-        return resolve_webhook(config, service)[0]
-    portainer = config.portainer
-    webhook_url = portainer.get("webhookUrl")
-    webhook_env = str(portainer.get("webhookUrlEnv", "PORTAINER_WEBHOOK_URL"))
-    return webhook_url or os.environ.get(webhook_env)

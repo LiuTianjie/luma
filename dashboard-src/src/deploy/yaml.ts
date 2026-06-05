@@ -1,15 +1,7 @@
+import { dump, load } from "js-yaml";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, KeyValueRow, ServiceManifestDraft } from "./types";
 
-function scalar(value: string | number | boolean): string {
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (!value) return "\"\"";
-  if (/^[A-Za-z0-9._/@:+${}-]+$/.test(value)) return value;
-  return JSON.stringify(value);
-}
-
-function stringScalar(value: string): string {
-  return JSON.stringify(value);
-}
+type YamlMap = Record<string, unknown>;
 
 function linesFromList(values: string): string[] {
   return values.split("\n").map((item) => item.trim()).filter(Boolean);
@@ -25,215 +17,173 @@ function envValue(row: KeyValueRow): string {
   return value;
 }
 
+function dumpYaml(value: YamlMap): string {
+  return dump(value, {
+    lineWidth: -1,
+    noRefs: true,
+    sortKeys: false,
+  });
+}
+
+function yamlMap(value: unknown): YamlMap {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as YamlMap : {};
+}
+
+function loadYamlMap(text: string): YamlMap {
+  return yamlMap(load(text) || {});
+}
+
+function envMap(rows: KeyValueRow[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const row of validRows(rows)) result[row.key.trim()] = envValue(row);
+  return result;
+}
+
+function rawStorageMap(text: string): YamlMap {
+  if (!text.trim()) return {};
+  return loadYamlMap(text);
+}
+
 export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
-  const lines = [
-    `name: ${scalar(draft.name)}`,
-    `image: ${scalar(draft.image)}`,
-    `region: ${draft.region}`,
-  ];
-  if (draft.node) lines.push(`node: ${scalar(draft.node)}`);
-  lines.push(`exposure: ${draft.exposure}`);
+  const manifest: YamlMap = {
+    name: draft.name,
+    image: draft.image,
+    region: draft.region,
+  };
+  if (draft.node) manifest.node = draft.node;
+  manifest.exposure = draft.exposure;
   if (draft.exposure !== "none") {
-    lines.push(`domain: ${scalar(draft.domain)}`);
-    lines.push(`port: ${Number(draft.port || 0)}`);
+    manifest.domain = draft.domain;
+    manifest.port = Number(draft.port || 0);
   }
-  if (draft.publishPort) lines.push(`publishPort: ${Number(draft.publishPort)}`);
-  lines.push(`replicas: ${draft.replicas}`);
-  if (draft.proxy) lines.push("proxy: true");
-  const envRows = validRows(draft.env);
-  if (envRows.length) {
-    lines.push("env:");
-    for (const row of envRows) lines.push(`  ${row.key.trim()}: ${scalar(envValue(row))}`);
-  }
-  if (draft.command.trim()) lines.push(`command: ${scalar(draft.command.trim())}`);
+  if (draft.publishPort) manifest.publishPort = Number(draft.publishPort);
+  manifest.replicas = draft.replicas;
+  if (draft.proxy) manifest.proxy = true;
+  const environment = envMap(draft.env);
+  if (Object.keys(environment).length) manifest.env = environment;
+  if (draft.command.trim()) manifest.command = draft.command.trim();
   const labels = linesFromList(draft.labels);
-  if (labels.length) {
-    lines.push("labels:");
-    for (const label of labels) lines.push(`  - ${scalar(label)}`);
-  }
+  if (labels.length) manifest.labels = labels;
   const networks = linesFromList(draft.networks);
-  if (networks.length) {
-    lines.push("networks:");
-    for (const network of networks) lines.push(`  - ${scalar(network)}`);
-  }
+  if (networks.length) manifest.networks = networks;
   const structuredVolumes = (draft.volumeMounts || [])
     .filter((volume) => volume.name.trim() && volume.target.trim())
     .map((volume) => `${volume.name.trim()}:${volume.target.trim()}`);
   const volumes = [...structuredVolumes, ...linesFromList(draft.volumes)];
-  if (volumes.length) {
-    lines.push("volumes:");
-    for (const volume of volumes) lines.push(`  - ${scalar(volume)}`);
-  }
+  if (volumes.length) manifest.volumes = volumes;
   const storageVolumes = (draft.volumeMounts || [])
     .filter((volume) => volume.storageMode === "storageClass" && volume.name.trim() && volume.storageClass.trim());
+  const storage: YamlMap = rawStorageMap(draft.storage);
   if (storageVolumes.length) {
-    lines.push("storage:");
     for (const volume of storageVolumes) {
-      lines.push(`  ${volume.name.trim()}:`);
-      lines.push(`    storageClass: ${scalar(volume.storageClass.trim())}`);
-      lines.push(`    path: ${scalar(volume.path.trim() || `${draft.name}/${volume.name.trim()}`)}`);
+      storage[volume.name.trim()] = {
+        storageClass: volume.storageClass.trim(),
+        path: volume.path.trim() || `${draft.name}/${volume.name.trim()}`,
+      };
     }
   }
-  if (draft.storage.trim()) {
-    if (!storageVolumes.length) lines.push("storage:");
-    for (const line of draft.storage.split("\n")) {
-      if (!line.trim()) continue;
-      lines.push(`  ${line}`);
-    }
-  }
+  if (Object.keys(storage).length) manifest.storage = storage;
   if (draft.cpuLimit || draft.memoryLimit) {
-    lines.push("resources:");
-    lines.push("  limits:");
-    if (draft.cpuLimit) lines.push(`    cpus: ${stringScalar(draft.cpuLimit)}`);
-    if (draft.memoryLimit) lines.push(`    memory: ${scalar(draft.memoryLimit)}`);
+    manifest.resources = {
+      limits: {
+        ...(draft.cpuLimit ? { cpus: draft.cpuLimit } : {}),
+        ...(draft.memoryLimit ? { memory: draft.memoryLimit } : {}),
+      },
+    };
   }
   if (draft.healthcheckUrl.trim()) {
-    lines.push("healthcheck:");
-    lines.push(`  test: ["CMD-SHELL", "wget -qO- ${draft.healthcheckUrl.trim()} || exit 1"]`);
-    lines.push("  interval: 30s");
-    lines.push("  timeout: 5s");
-    lines.push("  retries: 3");
+    manifest.healthcheck = {
+      test: ["CMD-SHELL", `wget -qO- ${draft.healthcheckUrl.trim()} || exit 1`],
+      interval: "30s",
+      timeout: "5s",
+      retries: 3,
+    };
   }
-  return `${lines.join("\n")}\n`;
-}
-
-function indentOf(line: string): number {
-  return line.match(/^ */)?.[0].length || 0;
-}
-
-function environmentLines(rows: KeyValueRow[]): string[] {
-  const envRows = validRows(rows);
-  if (!envRows.length) return [];
-  return [
-    "    environment:",
-    ...envRows.map((row) => `      ${row.key.trim()}: ${scalar(envValue(row))}`),
-  ];
+  return dumpYaml(manifest);
 }
 
 export function syncComposeYamlWithDraft(draft: ComposeDeploymentDraft): ComposeDeploymentDraft {
   if (!draft.dockerComposeYaml.trim()) return draft;
-  const lines = draft.dockerComposeYaml.split("\n");
-  let nextLines = lines;
-  for (const service of draft.services) {
-    nextLines = syncServiceEnvironment(nextLines, service);
-  }
-  return { ...draft, dockerComposeYaml: nextLines.join("\n") };
-}
-
-function syncServiceEnvironment(lines: string[], service: ComposeServiceDraft): string[] {
-  const serviceHeader = `  ${service.name}:`;
-  const start = lines.findIndex((line, index) => {
-    if (line !== serviceHeader) return false;
-    return lines.slice(0, index).some((item) => item.trim() === "services:");
-  });
-  if (start < 0) return lines;
-  let end = lines.length;
-  for (let index = start + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line.trim() && indentOf(line) <= 2 && /^  [A-Za-z0-9_.-]+:\s*$/.test(line)) {
-      end = index;
-      break;
+  try {
+    const compose = loadYamlMap(draft.dockerComposeYaml);
+    const services = yamlMap(compose.services);
+    for (const service of draft.services) {
+      const serviceBody = yamlMap(services[service.name]);
+      if (!Object.keys(serviceBody).length) continue;
+      const environment = envMap(service.env || []);
+      if (Object.keys(environment).length) serviceBody.environment = environment;
+      else delete serviceBody.environment;
+      services[service.name] = serviceBody;
     }
-    if (line.trim() && indentOf(line) === 0) {
-      end = index;
-      break;
-    }
+    compose.services = services;
+    return { ...draft, dockerComposeYaml: dumpYaml(compose) };
+  } catch {
+    return draft;
   }
-
-  const block = lines.slice(start, end);
-  const envStart = block.findIndex((line) => /^    environment:\s*$/.test(line));
-  let cleanedBlock = block;
-  if (envStart >= 0) {
-    let envEnd = block.length;
-    for (let index = envStart + 1; index < block.length; index += 1) {
-      const line = block[index];
-      if (line.trim() && indentOf(line) <= 4) {
-        envEnd = index;
-        break;
-      }
-    }
-    cleanedBlock = [...block.slice(0, envStart), ...block.slice(envEnd)];
-  }
-
-  const env = environmentLines(service.env || []);
-  if (env.length) {
-    const imageIndex = cleanedBlock.findIndex((line) => /^    image:\s*/.test(line));
-    const insertAt = imageIndex >= 0 ? imageIndex + 1 : 1;
-    cleanedBlock = [...cleanedBlock.slice(0, insertAt), ...env, ...cleanedBlock.slice(insertAt)];
-  }
-  return [...lines.slice(0, start), ...cleanedBlock, ...lines.slice(end)];
 }
 
 export function composeDraftToSidecarYaml(draft: ComposeDeploymentDraft): string {
-  const lines = [
-    `name: ${scalar(draft.name)}`,
-    `compose: ${scalar(draft.composeFileName || "docker-compose.yml")}`,
-    `region: ${draft.region}`,
-  ];
+  const sidecar: YamlMap = {
+    name: draft.name,
+    compose: draft.composeFileName || "docker-compose.yml",
+    region: draft.region,
+  };
   const configuredVolumes = draft.volumes.filter((volume) => volume.storageClass || volume.localNode || volume.localPath);
   if (configuredVolumes.length) {
-    lines.push("volumes:");
+    const volumes: YamlMap = {};
     for (const volume of configuredVolumes) {
-      lines.push(`  ${volume.name}:`);
       if (volume.storageMode === "storageClass") {
-        lines.push(`    storageClass: ${scalar(volume.storageClass)}`);
-        lines.push(`    path: ${scalar(`${draft.name}/${volume.name}`)}`);
+        volumes[volume.name] = {
+          storageClass: volume.storageClass,
+          path: `${draft.name}/${volume.name}`,
+        };
       } else if (volume.storageMode === "local") {
-        lines.push("    local:");
-        lines.push(`      node: ${scalar(volume.localNode)}`);
-        lines.push(`      path: ${scalar(volume.localPath)}`);
+        volumes[volume.name] = {
+          local: {
+            node: volume.localNode,
+            path: volume.localPath,
+          },
+        };
       }
     }
+    sidecar.volumes = volumes;
   }
   if (draft.services.length) {
-    lines.push("services:");
+    const services: YamlMap = {};
     for (const service of draft.services) {
-      lines.push(`  ${service.name}:`);
-      if (service.region) lines.push(`    region: ${service.region}`);
-      if (service.node) lines.push(`    node: ${scalar(service.node)}`);
-      lines.push(`    exposure: ${service.exposure}`);
+      const item: YamlMap = { exposure: service.exposure };
+      if (service.region) item.region = service.region;
+      if (service.node) item.node = service.node;
       if (service.exposure !== "none") {
-        lines.push(`    domain: ${scalar(service.domain)}`);
-        lines.push(`    port: ${Number(service.port || 0)}`);
+        item.domain = service.domain;
+        item.port = Number(service.port || 0);
       }
-      if (service.publishPort) lines.push(`    publishPort: ${Number(service.publishPort)}`);
-      lines.push(`    replicas: ${service.replicas}`);
-      if (service.proxy) lines.push("    proxy: true");
+      if (service.publishPort) item.publishPort = Number(service.publishPort);
+      item.replicas = service.replicas;
+      if (service.proxy) item.proxy = true;
+      services[service.name] = item;
     }
+    sidecar.services = services;
   }
-  return `${lines.join("\n")}\n`;
+  return dumpYaml(sidecar);
 }
 
 export function composeServiceNamesFromYaml(yaml: string): string[] {
-  const names: string[] = [];
-  const lines = yaml.split("\n");
-  let inServices = false;
-  for (const line of lines) {
-    if (/^services:\s*$/.test(line)) {
-      inServices = true;
-      continue;
-    }
-    if (inServices && /^[A-Za-z0-9_-]+:/.test(line)) break;
-    const match = inServices ? line.match(/^  ([A-Za-z0-9_.-]+):\s*$/) : null;
-    if (match) names.push(match[1]);
+  try {
+    const services = yamlMap(loadYamlMap(yaml).services);
+    return Object.keys(services);
+  } catch {
+    return [];
   }
-  return names;
 }
 
 export function composeVolumeNamesFromYaml(yaml: string): string[] {
-  const names: string[] = [];
-  const lines = yaml.split("\n");
-  let inVolumes = false;
-  for (const line of lines) {
-    if (/^volumes:\s*$/.test(line)) {
-      inVolumes = true;
-      continue;
-    }
-    if (inVolumes && /^[A-Za-z0-9_-]+:/.test(line)) break;
-    const match = inVolumes ? line.match(/^  ([A-Za-z0-9_.-]+):\s*(?:\{\})?\s*$/) : null;
-    if (match) names.push(match[1]);
+  try {
+    const volumes = yamlMap(loadYamlMap(yaml).volumes);
+    return Object.keys(volumes);
+  } catch {
+    return [];
   }
-  return names;
 }
 
 export function updateComposeServiceExposure(service: ComposeServiceDraft, exposure: ComposeServiceDraft["exposure"]): ComposeServiceDraft {

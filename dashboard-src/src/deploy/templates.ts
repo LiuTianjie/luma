@@ -35,7 +35,7 @@ export function serviceDraft(overrides: Partial<ServiceManifestDraft> = {}): Ser
     memoryLimit: "",
     healthcheckUrl: "",
     skipDns: false,
-    skipWebhook: false,
+    skipPortainer: false,
     ...overrides,
   };
 }
@@ -49,7 +49,7 @@ function composeDraft(overrides: Partial<ComposeDeploymentDraft> = {}): ComposeD
     volumes: [],
     dockerComposeYaml: "",
     skipDns: false,
-    skipWebhook: false,
+    skipPortainer: false,
     ...overrides,
   };
 }
@@ -326,7 +326,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-n8n",
     mode: "compose",
     name: "n8n",
-    description: "1 个服务，home relay，Webhook URL 来自域名。",
+    description: "1 个服务，home relay，n8n 回调地址来自域名。",
     tags: ["automation", "stateful"],
     compose: composeDraft({
       name: "n8n",

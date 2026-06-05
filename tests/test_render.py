@@ -42,7 +42,7 @@ class RenderStackTests(unittest.TestCase):
 name: app
 image: ghcr.io/acme/app:latest
 region: cn
-public: true
+exposure: cn-edge
 domain: app.example.com
 port: 3000
 replicas: 2
@@ -58,6 +58,31 @@ replicas: 2
             app["deploy"]["labels"],
         )
         self.assertIn("traefik.swarm.network=public", app["deploy"]["labels"])
+
+    def test_service_rejects_invalid_replicas_with_luma_error(self):
+        with self.assertRaisesRegex(LumaError, "replicas must be a positive integer"):
+            self.load(
+                """
+name: app
+image: ghcr.io/acme/app:latest
+region: cn
+exposure: none
+replicas: many
+"""
+            )
+
+    def test_service_rejects_public_field(self):
+        with self.assertRaisesRegex(LumaError, "public is no longer supported"):
+            self.load(
+                """
+name: app
+image: ghcr.io/acme/app:latest
+region: cn
+public: true
+domain: app.example.com
+port: 3000
+"""
+            )
 
     def test_compose_storage_class_renders_nfs_volume_and_traefik_labels(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -199,7 +224,7 @@ replicas: 2
         self.assertEqual(deployment.warnings, [])
         self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["device"], ":/srv/luma/postgres/pg-data")
 
-    def test_database_volume_ignores_legacy_workload_fields(self):
+    def test_database_volume_ignores_obsolete_workload_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "docker-compose.yml").write_text(
@@ -305,6 +330,28 @@ replicas: 2
                 )
                 with self.assertRaisesRegex(LumaError, message):
                     load_compose_deployment(root / "luma.compose.yml")
+
+    def test_compose_service_rejects_invalid_replicas_with_luma_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump({"services": {"web": {"image": "nginx:alpine"}}}),
+                encoding="utf-8",
+            )
+            (root / "luma.compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "services": {"web": {"replicas": "many"}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(LumaError, "services.web.replicas must be a positive integer"):
+                load_compose_deployment(root / "luma.compose.yml")
 
     def test_storage_check_enforces_storage_class_region(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -471,7 +518,7 @@ replicas: 2
 name: worker
 image: ghcr.io/acme/worker:latest
 region: global
-public: false
+exposure: none
 """
         )
         rendered = yaml.safe_load(render_stack(self.config(), service))
@@ -749,7 +796,7 @@ storage:
 name: AI Gateway
 image: ghcr.io/acme/ai-gateway:latest
 region: global
-public: false
+exposure: none
 """
         )
         self.assertEqual(stack_path(self.config(), service), Path("stacks/global/ai-gateway/stack.yml"))
@@ -760,7 +807,6 @@ public: false
 name: home panel
 image: ghcr.io/acme/panel:latest
 region: home
-public: true
 exposure: tailscale-relay
 domain: panel.example.com
 port: 8080
@@ -820,7 +866,6 @@ port: 8080
 name: home tool
 image: ghcr.io/acme/tool:latest
 region: home
-public: true
 exposure: cloudflare-tunnel
 domain: tool.example.com
 port: 8080

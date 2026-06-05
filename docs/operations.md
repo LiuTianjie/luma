@@ -8,7 +8,7 @@ The default path is:
 service.yaml -> luma deploy -> Luma Control -> render stack -> sync DNS -> Portainer API -> Docker Swarm
 ```
 
-Luma uses the Portainer API by default. Webhooks remain supported for older Git-backed stacks, but users do not need to create webhooks for the default flow.
+Luma deploys through the Portainer API.
 
 ## Add A Service
 
@@ -245,7 +245,7 @@ sudo jq -r '.portainerAdminUsername, .portainerAdminPassword' /opt/luma/control/
 ```
 
 For production, prefer accessing Portainer through a trusted network, a restricted source IP, or a private
-control-plane path. Keep the webhook URL secret because it can trigger deployments.
+control-plane path. Keep the Portainer API credentials secret because they can update deployments.
 
 ## Tailscale Relay
 

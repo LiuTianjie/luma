@@ -49,7 +49,7 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 - `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `region: home`.
 - `port` is the container's internal listening port, not a cloud firewall or host port.
 - `replicas` defaults to `1` and must be at least `1`.
-- Avoid the legacy `public` field in new files. If present, it must match `exposure != none`.
+- Do not use the removed `public` field; set `exposure` explicitly.
 - `node` is the Luma node name from `luma node join --name`. Control-plane deploy resolves it to a Swarm NodeID constraint and also keeps the region constraint.
 - Use `proxy: true` for container runtime HTTP/HTTPS egress through Luma. Do not hand-write the default `egress` network or default `HTTP_PROXY`/`HTTPS_PROXY`.
 - `proxy: true` is not for image pulls. Image pulls use Docker daemon proxy and registry credentials managed by Luma.
@@ -207,7 +207,7 @@ luma storage check luma.compose.yml --format json
 ## Operational Notes
 
 - `latest` or omitted image tags are resolved by the manager to `name@sha256:...` during deploy. Prefer pinned version tags for production rollback.
-- Private registry credentials are stored with `luma registry login` and matched by image registry host during deploy. Luma pre-pulls with auth and links the Portainer/Swarm registry credential; webhooks cannot carry registry auth, so private images use the Portainer API path.
+- Private registry credentials are stored with `luma registry login` and matched by image registry host during deploy. Luma pre-pulls with auth and links the Portainer/Swarm registry credential through the Portainer API path.
 - `luma service remove <name>` uses the manifest recorded by the control plane during the last successful single-service or Compose deploy. This also works for deployments created from the web dashboard.
 - Storage data is preserved by default. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment. It cannot be combined with `--skip-portainer`.
 - `region` controls workload scheduling; Portainer deployment itself runs through the manager.

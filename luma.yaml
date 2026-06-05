@@ -10,8 +10,7 @@ providers:
     proxied: false
     controlProxied: false
     edgeTarget: 203.0.113.10
-  portainer:
-    webhookUrlEnv: PORTAINER_WEBHOOK_URL
+  portainer: {}
 nodes:
   manager-1:
     host: manager-1
