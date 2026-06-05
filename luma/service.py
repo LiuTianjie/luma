@@ -164,11 +164,7 @@ def load_service(path: Path) -> ServiceSpec:
             raise LumaError(f"{field_name} must be a list of strings")
     if not isinstance(resources, dict):
         raise LumaError("resources must be a mapping")
-    for section_name, section in resources.items():
-        if section_name not in {"limits", "reservations"}:
-            raise LumaError("resources only supports limits and reservations")
-        if not isinstance(section, dict):
-            raise LumaError(f"resources.{section_name} must be a mapping")
+    resources = _normalize_service_resources(resources)
     if not isinstance(healthcheck, dict):
         raise LumaError("healthcheck must be a mapping")
 
@@ -211,6 +207,23 @@ def load_service(path: Path) -> ServiceSpec:
         tunnel=tunnel,
         proxy=bool(raw.get("proxy", False)),
     )
+
+
+def _normalize_service_resources(resources: Dict[str, Any]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    for section_name, section in resources.items():
+        if section_name not in {"limits", "reservations"}:
+            raise LumaError("resources only supports limits and reservations")
+        if not isinstance(section, dict):
+            raise LumaError(f"resources.{section_name} must be a mapping")
+        normalized_section = dict(section)
+        if "cpus" in normalized_section and normalized_section["cpus"] is not None:
+            cpu_value = normalized_section["cpus"]
+            if isinstance(cpu_value, bool) or not isinstance(cpu_value, (str, int, float)):
+                raise LumaError(f"resources.{section_name}.cpus must be a string or number")
+            normalized_section["cpus"] = str(cpu_value)
+        normalized[section_name] = normalized_section
+    return normalized
 
 
 def _load_service_storage(raw: Any, volumes: List[str]) -> Dict[str, ServiceVolumeStorageSpec]:

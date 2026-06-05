@@ -610,7 +610,30 @@ resources:
         resources = rendered["services"]["bounded-worker"]["deploy"]["resources"]
         self.assertEqual(resources["limits"]["cpus"], "0.50")
         self.assertEqual(resources["limits"]["memory"], "256M")
+        self.assertEqual(resources["reservations"]["cpus"], "0.10")
         self.assertEqual(resources["reservations"]["memory"], "64M")
+
+    def test_numeric_service_resource_cpus_normalizes_to_string(self):
+        service = self.load(
+            """
+name: numeric cpu worker
+image: ghcr.io/acme/numeric-cpu-worker:latest
+region: cn
+resources:
+  limits:
+    cpus: 0.50
+    memory: 256M
+  reservations:
+    cpus: 0.10
+    memory: 64M
+"""
+        )
+        rendered = yaml.safe_load(render_stack(self.config(), service))
+        resources = rendered["services"]["numeric-cpu-worker"]["deploy"]["resources"]
+        self.assertIsInstance(resources["limits"]["cpus"], str)
+        self.assertEqual(resources["limits"]["cpus"], "0.5")
+        self.assertIsInstance(resources["reservations"]["cpus"], str)
+        self.assertEqual(resources["reservations"]["cpus"], "0.1")
 
     def test_service_healthcheck_renders_to_stack(self):
         service = self.load(

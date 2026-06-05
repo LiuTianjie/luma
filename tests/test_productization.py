@@ -17,7 +17,7 @@ import yaml
 
 from luma import __version__
 from luma.agent import _agent_executable_args, _systemd_unit, execute_agent_task
-from luma.assets import asset_text
+from luma.assets import asset_path, asset_text
 from luma.config import LumaConfig
 from luma.compose import load_compose_deployment
 from luma.cloudflare import delete_dns, sync_control_dns
@@ -288,6 +288,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("luma-control", asset_text("stacks/core/luma-control/stack.yml"))
         self.assertIn("Luma · 控制台", asset_text("dashboard/index.html"))
         self.assertIn("/v1/dashboard", asset_text("dashboard/app.js"))
+        self.assertGreater(asset_path("dashboard/asset-luma-logo-mark.png").stat().st_size, 0)
         root = Path(__file__).resolve().parents[1]
         self.assertIn('"assets/dashboard/*"', (root / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -3953,6 +3954,10 @@ class ControlApiTests(unittest.TestCase):
             with urllib.request.urlopen(base + "/dashboard/app.js", timeout=5) as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn(b"/v1/dashboard", response.read())
+            with urllib.request.urlopen(base + "/dashboard/asset-luma-logo-mark.png", timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers.get_content_type(), "image/png")
+                self.assertGreater(len(response.read()), 0)
             with self.assertRaises(urllib.error.HTTPError) as raised:
                 urllib.request.urlopen(base + "/v1/dashboard", timeout=5)
             self.assertEqual(raised.exception.code, 401)

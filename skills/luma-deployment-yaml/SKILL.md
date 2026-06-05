@@ -1,55 +1,94 @@
 ---
 name: luma-deployment-yaml
-description: Generate and review Luma deployment YAML service manifests for the infra-stacks/Luma project. Use when asked to create, validate, explain, or fix luma deploy YAML files, choose region/exposure, route a domain to a workload, or prepare examples for cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, global worker, or home internal services.
+description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, region/exposure choices, routing domains to workloads, storageClass volumes, manager-managed storage, private registry credentials, service removal, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Portainer stack YAML errors.
 ---
 
 # Luma Deployment YAML
 
-Use this skill to create Luma service manifests consumed by `luma deploy`.
+Use this skill for Luma deployment artifacts:
 
-Luma manifests are not Docker Compose. They describe one service: image, region, optional node pin, exposure, domain, port, replicas, and a few runtime options. Luma renders Swarm stacks, DNS, Traefik routes, and Portainer deployment actions.
+- Single-service manifests consumed by `luma deploy`.
+- Compose deployments made from a standard `docker-compose.yml` plus a Luma sidecar consumed by `luma compose deploy`.
+
+Single-service manifests are not Docker Compose. They describe one service: image, region, optional node pin, exposure, domain, port, replicas, storage, and runtime options. Luma Control renders Swarm stack YAML, DNS, Traefik routes, and Portainer deployment actions.
+
+Compose files stay standard for local development. Put Luma-specific deployment semantics in `luma.compose.yml`: region, exposure, routing, service node pins, local storage pins, and references to manager-managed storage classes.
+
+For complete field tables and examples, read `references/manifest-reference.md`.
 
 ## Token Vocabulary
 
-- In user-facing docs and examples, say "management token" for the control-plane token. The historical CLI env var remains `LUMA_DEPLOY_TOKEN`.
-- Say "node join token" for `luma node join` and old-node `luma update --control-url ... --token ...` examples.
-- Do not ask users for internal node agent credentials. If the internal mechanism matters, explain that Luma installs them automatically.
+- Say "management token" for the trusted control-plane token used by CLI clients and the dashboard. The historical env var is still `LUMA_DEPLOY_TOKEN`.
+- Say "node join token" for `luma node join` and old node-agent update examples.
+- Do not ask users for internal node-agent credentials. Luma installs and refreshes them through the manager.
 
 ## Workflow
 
-1. Identify the service type:
-   - public China service: `region: cn`, `exposure: cn-edge`
-   - public global service: `region: global`, `exposure: external-edge`
-   - home service through Tailscale relay: `region: home`, `exposure: tailscale-relay`
-   - Cloudflare Tunnel service: usually `region: home`, `exposure: cloudflare-tunnel`
-   - worker/internal service: `exposure: none`
-   - runtime proxy service: add `proxy: true` when the container itself must access external networks through Luma egress
-2. Ask only for missing required facts: service name, image, domain, container port, region/exposure, Luma node name when pinning is required, and relay/tunnel details when needed.
-3. Emit only the manifest YAML unless the user asks for explanation.
-4. Prefer `${ENV_NAME}` references for secrets; do not put plaintext secrets in YAML.
-5. Recommend validation with `luma validate <file>` and `luma deploy <file> --dry-run`.
-6. For CI usage, recommend installing the PyPI package `luma-infra` and using stateless environment authentication instead of running the shell installer or `luma login`.
+1. Choose the deployment path:
+   - Use single-service YAML for one container or a simple service.
+   - Use Compose when the app has multiple services, existing Compose config, dependencies, shared networks, or named volumes across services.
+2. Identify the service access pattern:
+   - China public HTTPS: `region: cn`, `exposure: cn-edge`
+   - Global public HTTPS: `region: global`, `exposure: external-edge`
+   - Home service through China edge and Tailscale: `region: home`, `exposure: tailscale-relay`
+   - Home/private Cloudflare Tunnel: usually `region: home`, `exposure: cloudflare-tunnel`
+   - Worker/internal: `exposure: none`
+   - Runtime outbound proxy: add `proxy: true` and keep the chosen scheduling region.
+3. Ask only for missing required facts: service or stack name, image or compose path, domain, container port, region/exposure, storage class, and Luma node name when pinning is required.
+4. Emit only YAML unless the user asks for explanation.
+5. Use `${ENV_NAME}` for secrets and tell the user to run `luma secret set ENV_NAME`; never put secret values in YAML.
+6. For private images, do not put registry tokens in YAML or container env. Use `luma registry login <host> --username <user> --password-stdin`.
+7. Recommend targeted validation and dry runs, not live deploys, unless the user explicitly asks to deploy.
 
-## Hard Rules
+## Single-Service Rules
 
-- `name`, `image`, and `region` are required.
+- Required: `name`, `image`, `region`.
 - Valid regions: `cn`, `global`, `home`.
-- `node` is optional and pins the service to the Luma node name passed to `luma node join --name`. During deploy, Luma resolves that name to the real Swarm NodeID and renders a `node.labels.luma.node.id == <node-id>` constraint. Use it only for stateful, home, or debugging workloads that must run on one machine.
 - Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`.
 - Public exposures require `domain` and integer `port`.
-- `cn-edge` must use `region: cn`.
-- `external-edge` must use `region: global`.
-- `tailscale-relay` must use `region: home`. `relay.host`/`relay.url` are optional advanced overrides; by default Luma Control infers upstreams from the Swarm tasks' actual home nodes after deploy.
-- `replicas` defaults to `1`; when present it must be `>= 1`.
-- `port` is the container's internal listening port, not the cloud firewall/security-group port.
+- `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `region: home`.
+- `port` is the container's internal listening port, not a cloud firewall or host port.
+- `replicas` defaults to `1` and must be at least `1`.
 - Avoid the legacy `public` field in new files. If present, it must match `exposure != none`.
-- Use `proxy: true` for runtime outbound proxy needs. Do not hand-write the default `HTTP_PROXY`, `HTTPS_PROXY`, or `egress` network just to use Luma egress.
-- `proxy: true` is not for image pulls. Image pulls use the Docker daemon proxy configured by egress setup.
-- `proxy: true` can be combined with `region: home` and `exposure: tailscale-relay`: inbound traffic uses the relay path, while the container's outbound HTTP/HTTPS traffic uses Luma egress.
-- Plain env values may be written directly under `env`.
-- Secret env values must use `${NAME}` and be stored with `luma secret set NAME` before deployment.
+- `node` is the Luma node name from `luma node join --name`. Control-plane deploy resolves it to a Swarm NodeID constraint and also keeps the region constraint.
+- Use `proxy: true` for container runtime HTTP/HTTPS egress through Luma. Do not hand-write the default `egress` network or default `HTTP_PROXY`/`HTTPS_PROXY`.
+- `proxy: true` is not for image pulls. Image pulls use Docker daemon proxy and registry credentials managed by Luma.
+- `resources.limits.cpus` and `resources.reservations.cpus` should be quoted strings, for example `"0.50"`. Portainer/Compose expects `cpus` to be a string; current Luma normalizes numeric YAML for compatibility, but generated examples should still quote it.
+- `healthcheck` is copied to Swarm service healthcheck. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
+- Single-service `storage` can map named volumes from `volumes` to manager storage classes.
 
-## Minimal Templates
+## Compose And Storage Rules
+
+- Keep `docker-compose.yml` standard. Put Luma semantics in `luma.compose.yml`.
+- Create a sidecar with `luma compose init --compose docker-compose.yml --output luma.compose.yml`.
+- Do not put deployment-side `storageClasses` in production sidecars. Luma Control owns storage classes; sidecars only reference them by name.
+- Register managed NFS storage with:
+
+```bash
+luma storage set home-nfs \
+  --node home-nas \
+  --path /srv/luma \
+  --region cn \
+  --region home
+```
+
+- Register an external NFS server with:
+
+```bash
+luma storage set company-nfs \
+  --external \
+  --endpoint nfs.example.com:/srv/luma \
+  --region cn
+```
+
+- A sidecar volume can reference registered storage with `storageClass: <name>` and optional `path`, `accessMode`, `adopted`, or `initialize: empty`.
+- `local.node` is the explicit local bind storage escape hatch. Luma pins every service using that volume to the specified Luma node.
+- Bare Compose named volumes are allowed but unmanaged; Swarm rescheduling can land the task on a node with different local data.
+- Switching an already deployed volume to another backend is blocked unless `adopted: true` follows verified migration, or `initialize: empty` explicitly accepts a fresh path.
+- Managed cross-region NFS requires the storage node to have a `tailscaleIP`; otherwise validation/render/deploy should block.
+- If one top-level Compose volume is used by services in different regions and managed storage would resolve to different endpoints, split it into separate region-specific volume names.
+
+## Templates
 
 China public service:
 
@@ -62,83 +101,6 @@ domain: api.example.com
 port: 3000
 replicas: 2
 ```
-
-Global worker:
-
-```yaml
-name: fetch-worker
-image: ghcr.io/acme/fetch-worker:1.0.0
-region: global
-exposure: none
-replicas: 1
-env:
-  QUEUE_URL: redis://redis:6379/0
-  OPENAI_API_KEY: ${OPENAI_API_KEY}
-```
-
-Pinned home worker:
-
-```yaml
-name: home-db
-image: postgres:16
-region: home
-node: home-mac-mini
-exposure: none
-volumes:
-  - home_db_data:/var/lib/postgresql/data
-```
-
-Worker that needs Luma egress proxy:
-
-```yaml
-name: ai-worker
-image: ghcr.io/acme/ai-worker:1.0.0
-region: cn
-exposure: none
-proxy: true
-env:
-  OPENAI_BASE_URL: https://api.openai.com/v1
-  OPENAI_API_KEY: ${OPENAI_API_KEY}
-```
-
-Luma renders the `egress` overlay network and default `HTTP_PROXY` / `HTTPS_PROXY` automatically. Scheduling still follows `region`. Existing proxy env vars in `env` are preserved.
-
-When emitting `${NAME}` values, also tell the user to run:
-
-```bash
-luma secret set NAME
-```
-
-## CI Usage
-
-For generic shell CI, install the published Python package. The package name is `luma-infra`, but the command remains `luma`:
-
-```bash
-python -m pip install "luma-infra==0.1.20"
-```
-
-CI clients should authenticate with environment variables and avoid persistent login contexts:
-
-```bash
-export LUMA_CONTROL_URL="https://luma.example.com"
-export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
-```
-
-PR checks should validate and dry-run without changing the control plane:
-
-```bash
-luma validate deploy/app.yaml --format json
-luma deploy deploy/app.yaml --dry-run --format json
-```
-
-Main/release deployments can stream control-plane events as NDJSON:
-
-```bash
-luma status --format json
-luma deploy deploy/app.yaml --format ndjson --timeout 1800
-```
-
-Do not tell CI users to install Docker, configure SSH, store Cloudflare/Portainer credentials, or run `luma login`. CI only needs `LUMA_CONTROL_URL` and `LUMA_DEPLOY_TOKEN` containing a management token; optional advanced variables are `LUMA_INSECURE=true|false` and `LUMA_RESOLVE_IP`.
 
 Home Tailscale relay:
 
@@ -153,27 +115,102 @@ publishPort: 8080
 replicas: 1
 ```
 
-Luma Control infers the relay upstream from the actual running Swarm task after deploy. Set `node` only when the service must run on one specific machine; set `relay.url` only for advanced manual override.
-
-Cloudflare Tunnel:
+Bounded worker on a small manager:
 
 ```yaml
-name: home-tool
-image: ghcr.io/acme/home-tool:1.0.0
-region: home
-exposure: cloudflare-tunnel
-domain: tool.example.com
-port: 8080
-replicas: 1
-tunnel:
-  tokenEnv: CLOUDFLARE_TUNNEL_TOKEN
+name: bounded-worker
+image: ghcr.io/acme/bounded-worker:1.0.0
+region: cn
+exposure: none
+resources:
+  limits:
+    cpus: "0.50"
+    memory: 512M
+  reservations:
+    cpus: "0.10"
+    memory: 128M
 ```
 
-## Additional Reference
+Compose sidecar:
 
-For the full field table and more examples, read `references/manifest-reference.md`.
+```yaml
+name: app-stack
+compose: docker-compose.yml
+region: cn
+
+volumes:
+  pg-data:
+    storageClass: home-nfs
+    path: postgres/pg-data
+    accessMode: ReadWriteOnce
+
+services:
+  app:
+    exposure: cn-edge
+    domain: app.example.com
+    port: 3000
+
+  postgres:
+    region: home
+```
+
+## Validation Commands
+
+Single service:
+
+```bash
+luma validate service.yaml
+luma deploy service.yaml --dry-run
+```
+
+Compose:
+
+```bash
+luma compose validate luma.compose.yml
+luma compose render luma.compose.yml
+luma storage check luma.compose.yml
+luma storage apply luma.compose.yml --dry-run
+luma compose deploy luma.compose.yml --dry-run
+```
+
+Deploy with event streaming only when the user asks for a real deploy:
+
+```bash
+luma deploy service.yaml --format ndjson --timeout 1800
+luma compose deploy luma.compose.yml --format ndjson --timeout 1800
+```
+
+## CI Usage
+
+For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
+
+```bash
+python -m pip install "luma-infra==0.1.63"
+```
+
+CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, Cloudflare setup, or Portainer setup:
+
+```bash
+export LUMA_CONTROL_URL="https://luma.example.com"
+export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
+```
+
+PR checks should validate and dry-run:
+
+```bash
+luma validate deploy/app.yaml --format json
+luma deploy deploy/app.yaml --dry-run --format json
+luma compose validate luma.compose.yml --format json
+luma storage check luma.compose.yml --format json
+```
 
 ## Operational Notes
 
-- `region` controls service scheduling, but Portainer deployment itself is run through the Swarm manager. Current Luma Portainer stacks constrain `portainer_agent` to manager nodes so `cn` deploys are not blocked by worker-agent health.
-- When diagnosing deploy failures that mention Portainer manager agents, check node networking before changing the service manifest. Swarm nodes that run workloads need node-to-node `7946/tcp`, `7946/udp`, and `4789/udp`; workers also need `2377/tcp` to the manager.
+- `latest` or omitted image tags are resolved by the manager to `name@sha256:...` during deploy. Prefer pinned version tags for production rollback.
+- Private registry credentials are stored with `luma registry login` and matched by image registry host during deploy. Luma pre-pulls with auth and links the Portainer/Swarm registry credential; webhooks cannot carry registry auth, so private images use the Portainer API path.
+- `luma service remove <name>` uses the manifest recorded by the control plane during the last successful single-service or Compose deploy. This also works for deployments created from the web dashboard.
+- Storage data is preserved by default. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment. It cannot be combined with `--skip-portainer`.
+- `region` controls workload scheduling; Portainer deployment itself runs through the manager.
+- Current Portainer stacks constrain the agent to manager nodes while keeping endpoint compatibility, so worker agent gossip issues should not be diagnosed as manifest region errors.
+- Required platform ports are separate from manifest `port`: public `80/tcp` and `443/tcp`, trusted operator `9443/tcp`, Swarm `2377/tcp`, node gossip `7946/tcp` and `7946/udp`, and overlay `4789/udp`.
+- `luma update` on a manager refreshes Luma Control only. Use `luma bootstrap manager --domain <control-domain>` for first install or explicit ingress/egress/bootstrap repair.

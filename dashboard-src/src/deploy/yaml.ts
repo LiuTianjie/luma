@@ -7,6 +7,10 @@ function scalar(value: string | number | boolean): string {
   return JSON.stringify(value);
 }
 
+function stringScalar(value: string): string {
+  return JSON.stringify(value);
+}
+
 function linesFromList(values: string): string[] {
   return values.split("\n").map((item) => item.trim()).filter(Boolean);
 }
@@ -80,7 +84,7 @@ export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
   if (draft.cpuLimit || draft.memoryLimit) {
     lines.push("resources:");
     lines.push("  limits:");
-    if (draft.cpuLimit) lines.push(`    cpus: ${scalar(draft.cpuLimit)}`);
+    if (draft.cpuLimit) lines.push(`    cpus: ${stringScalar(draft.cpuLimit)}`);
     if (draft.memoryLimit) lines.push(`    memory: ${scalar(draft.memoryLimit)}`);
   }
   if (draft.healthcheckUrl.trim()) {

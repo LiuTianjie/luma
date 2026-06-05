@@ -3563,6 +3563,7 @@ DASHBOARD_ASSETS = {
     "/dashboard/": ("dashboard/index.html", "text/html; charset=utf-8"),
     "/dashboard/app.js": ("dashboard/app.js", "application/javascript; charset=utf-8"),
     "/dashboard/styles.css": ("dashboard/styles.css", "text/css; charset=utf-8"),
+    "/dashboard/asset-luma-logo-mark.png": ("dashboard/asset-luma-logo-mark.png", "image/png"),
 }
 
 
