@@ -15,8 +15,10 @@ import { DEPLOY_TEMPLATES } from "./deploy/templates";
 import { t } from "./i18n";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
 import { useDashboardData } from "./useDashboardData";
+import lumaLogoMark from "./assets/luma-logo-mark.png";
 
 const LANG_KEY = "luma.dashboard.lang";
+type ActivePage = "deploy" | "status" | "topology" | "storage" | "update";
 
 type DetailState =
   | { kind: "node"; title: string; items: Record<string, string | number | boolean | undefined> }
@@ -25,14 +27,11 @@ type DetailState =
 
 export function App() {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
-  const [activePage, setActivePage] = useState<"deploy" | "status" | "update">("deploy");
+  const [activePage, setActivePage] = useState<ActivePage>("deploy");
+  const [deployTemplateLanding, setDeployTemplateLanding] = useState(true);
   const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
   const [detail, setDetail] = useState<DetailState>(null);
-  const [theme, setThemeState] = useState<"light" | "dark">(() => {
-    const saved = localStorage.getItem("luma.dashboard.theme");
-    if (saved === "light" || saved === "dark") return saved;
-    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-  });
+  const theme = "dark";
   const { token, payload, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData();
 
   useEffect(() => {
@@ -40,22 +39,13 @@ export function App() {
   }, [lang]);
 
   useEffect(() => {
-    if (theme === "light") {
-      document.documentElement.classList.add("light");
-    } else {
-      document.documentElement.classList.remove("light");
-    }
-  }, [theme]);
+    document.documentElement.classList.remove("light");
+    localStorage.removeItem("luma.dashboard.theme");
+  }, []);
 
   const setLang = (nextLang: Lang) => {
     setLangState(nextLang);
     localStorage.setItem(LANG_KEY, nextLang);
-  };
-
-  const toggleTheme = () => {
-    const nextTheme = theme === "light" ? "dark" : "light";
-    setThemeState(nextTheme);
-    localStorage.setItem("luma.dashboard.theme", nextTheme);
   };
 
   const visibleStatus: SyncStatus = token ? syncStatus : "notConnected";
@@ -67,23 +57,37 @@ export function App() {
   const storageClasses = payload?.storage?.storageClasses || [];
   const storageWarnings = payload?.storage?.warnings || [];
   const activeNavPage = activePage === "update" ? "status" : activePage;
+  const healthyServices = services.filter((service) => (service.health || "").toLowerCase() === "healthy" || (service.health || "").toLowerCase() === "running").length;
+  const activeNodes = nodes.filter((node) => (node.state || "").toLowerCase() === "ready" && (node.availability || "").toLowerCase() !== "drain").length;
 
   const navItems = useMemo(
     () => [
       {
         id: "deploy" as const,
-        label: lang === "zh" ? "部署" : "Deploy",
+        label: lang === "zh" ? "创建应用" : "Create",
         value: DEPLOY_TEMPLATES.length,
-        detail: lang === "zh" ? "模板与 YAML" : "Templates and YAML",
+        detail: lang === "zh" ? "模板、表单、YAML" : "Templates, form, YAML",
       },
       {
         id: "status" as const,
-        label: lang === "zh" ? "状态查看" : "Status",
+        label: lang === "zh" ? "状态" : "Status",
         value: services.length,
+        detail: lang === "zh" ? `${healthyServices}/${services.length} 服务正常` : `${healthyServices}/${services.length} services ok`,
+      },
+      {
+        id: "topology" as const,
+        label: lang === "zh" ? "拓扑" : "Topology",
+        value: paths.length,
         detail: lang === "zh" ? `${nodes.length} 节点 · ${paths.length} 路径` : `${nodes.length} nodes · ${paths.length} paths`,
       },
+      {
+        id: "storage" as const,
+        label: lang === "zh" ? "存储" : "Storage",
+        value: storageVolumes.length + storageClasses.length,
+        detail: lang === "zh" ? `${storageClasses.length} 类 · ${storageVolumes.length} 卷` : `${storageClasses.length} classes · ${storageVolumes.length} volumes`,
+      },
     ],
-    [lang, nodes.length, paths.length, services.length],
+    [healthyServices, lang, nodes.length, paths.length, services.length, storageClasses.length, storageVolumes.length],
   );
 
   const updateContext = useMemo(() => {
@@ -168,9 +172,11 @@ export function App() {
   return (
     <div className="dashboard-shell">
       <aside className="sidebar">
-        <div className="brand-mark" aria-hidden="true">L</div>
+        <div className="brand-mark" aria-hidden="true">
+          <img src={lumaLogoMark} alt="" />
+        </div>
         <div className="sidebar-title">
-          <span>Luma Control</span>
+          <span>Luma</span>
           <strong>{t(lang, "title")}</strong>
         </div>
         <nav aria-label="Dashboard">
@@ -204,8 +210,6 @@ export function App() {
             onRefresh={() => void loadDashboard()}
             onSignOut={signOut}
             syncStatus={visibleStatus}
-            theme={theme}
-            onThemeToggle={toggleTheme}
           />
         </div>
 
@@ -219,19 +223,27 @@ export function App() {
             {payload ? (
               activePage === "deploy" ? (
                 <>
-                  <section className="hero-strip deploy-page-hero" id="section-deploy">
-                    <div>
-                      <p className="eyebrow">{lang === "zh" ? "部署工作台" : "Deploy workspace"}</p>
-                      <h1>{lang === "zh" ? "选择模板，编辑表单或 YAML，提交前先校验。" : "Select a template, edit form or YAML, validate before submit."}</h1>
-                      <p>{lang === "zh" ? "模板会生成 Luma 配置；页面不会在选择模板后自动部署。" : "Templates generate Luma config. Selecting a template does not deploy it."}</p>
-                    </div>
-                    <div className="hero-metrics" aria-label="Deploy summary">
-                      <span>{lang === "zh" ? "单服务" : "Service"} {DEPLOY_TEMPLATES.filter((item) => item.mode === "service").length}</span>
-                      <span>Compose {DEPLOY_TEMPLATES.filter((item) => item.mode === "compose").length}</span>
-                      <span>storageClass {storageClasses.length}</span>
-                    </div>
-                  </section>
-                  <DeployWorkspace lang={lang} token={token} payload={payload} onRefresh={loadDashboard} />
+                  {deployTemplateLanding ? (
+                    <section className="hero-strip deploy-page-hero" id="section-deploy">
+                      <div>
+                        <p className="eyebrow">{lang === "zh" ? "部署工作台" : "Deploy workspace"}</p>
+                        <h1>{lang === "zh" ? "从模板创建应用" : "Create from templates"}</h1>
+                        <p>{lang === "zh" ? "选择模板后进入表单或 YAML，校验通过后再部署。" : "Select a template, edit form or YAML, then validate before deploy."}</p>
+                      </div>
+                      <div className="hero-metrics" aria-label="Deploy summary">
+                        <span>{lang === "zh" ? "单服务" : "Service"} {DEPLOY_TEMPLATES.filter((item) => item.mode === "service").length}</span>
+                        <span>Compose {DEPLOY_TEMPLATES.filter((item) => item.mode === "compose").length}</span>
+                        <span>storageClass {storageClasses.length}</span>
+                      </div>
+                    </section>
+                  ) : null}
+                  <DeployWorkspace
+                    lang={lang}
+                    token={token}
+                    payload={payload}
+                    onRefresh={loadDashboard}
+                    onTemplateLandingChange={setDeployTemplateLanding}
+                  />
                 </>
               ) : activePage === "update" && updateContext ? (
                 <>
@@ -272,13 +284,53 @@ export function App() {
                     }}
                   />
                 </>
+              ) : activePage === "topology" ? (
+                <>
+                  <section className="hero-strip topology-page-hero" id="section-topology">
+                    <div>
+                      <p className="eyebrow">{lang === "zh" ? "拓扑视图" : "Topology"}</p>
+                      <h1>{lang === "zh" ? "节点拓扑与流量路径。" : "Node placement and traffic paths."}</h1>
+                      <p>{lang === "zh" ? "查看服务运行在哪些节点，以及公开入口、隧道、代理到后端服务的完整路径。" : "Inspect where services run and how domains, tunnels, proxies, and services connect."}</p>
+                    </div>
+                    <div className="hero-metrics" aria-label="Topology summary">
+                      <span>{activeNodes}/{nodes.length} {t(lang, "nodes")}</span>
+                      <span>{services.length} {t(lang, "services")}</span>
+                      <span>{paths.length} {t(lang, "trafficPaths")}</span>
+                    </div>
+                  </section>
+                  <section className="topology-split-grid">
+                    <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
+                    <TrafficPaths lang={lang} paths={paths} theme={theme} />
+                  </section>
+                  <section className="table-grid compact-status-grid">
+                    <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} />
+                    <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
+                  </section>
+                </>
+              ) : activePage === "storage" ? (
+                <>
+                  <section className="hero-strip storage-page-hero" id="section-storage">
+                    <div>
+                      <p className="eyebrow">{lang === "zh" ? "存储状态" : "Storage"}</p>
+                      <h1>{lang === "zh" ? "storageClass、卷和绑定关系。" : "Storage classes, volumes, and bindings."}</h1>
+                      <p>{lang === "zh" ? "查看控制面登记的存储类、卷来源、节点绑定以及使用这些卷的服务。" : "Review registered storage classes, volume placement, node bindings, and consuming services."}</p>
+                    </div>
+                    <div className="hero-metrics" aria-label="Storage summary">
+                      <span>{storageClasses.length} storageClass</span>
+                      <span>{storageVolumes.length} {t(lang, "volume")}</span>
+                      <span>{storageWarnings.length} warnings</span>
+                    </div>
+                  </section>
+                  <StoragePanel lang={lang} volumes={storageVolumes} storageClasses={storageClasses} warnings={storageWarnings} />
+                  <ReadinessCards lang={lang} payload={payload} />
+                </>
               ) : (
                 <>
                   <section className="hero-strip status-page-hero" id="section-status">
                     <div>
                       <p className="eyebrow">{t(lang, "controlPlane")}</p>
-                      <h1>{t(lang, "title")}</h1>
-                      <p>{lang === "zh" ? "当前控制面、节点、服务、流量路径和存储状态。" : "Current control-plane, node, service, route, and storage state."}</p>
+                      <h1>{lang === "zh" ? "集群、节点和应用状态。" : "Cluster, node, and application status."}</h1>
+                      <p>{lang === "zh" ? "当前控制面、节点健康、应用状态、流量路径和存储状态。" : "Current control-plane readiness, node health, application state, traffic routes, and storage."}</p>
                     </div>
                     <div className="hero-metrics" aria-label="Cluster summary">
                       <span>{nodes.length} {t(lang, "nodes")}</span>

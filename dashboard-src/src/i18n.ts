@@ -2,7 +2,7 @@ import type { Lang } from "./types";
 
 export const I18N = {
   zh: {
-    title: "发布控制台",
+    title: "控制台",
     subtitle: "查看控制面状态、服务器、服务和访问路径。",
     navOverview: "总览",
     navNodes: "节点",

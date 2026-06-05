@@ -33,8 +33,12 @@ function BrandIcon({ template }: { template: DeployTemplate }) {
       {brand.slug ? (
         <img
           alt=""
-          src={`https://cdn.simpleicons.org/${brand.slug}/${brand.color.replace("#", "")}`}
+          src={`https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/${brand.slug}.svg`}
+          onLoad={(event) => {
+            event.currentTarget.parentElement?.setAttribute("data-loaded", "true");
+          }}
           onError={(event) => {
+            event.currentTarget.parentElement?.removeAttribute("data-loaded");
             event.currentTarget.style.display = "none";
           }}
         />
@@ -104,24 +108,29 @@ export function DeployTemplates({
       <div className="deploy-gallery-header-row">
         <div>
           <p className="eyebrow">{lang === "zh" ? "模板库" : "Template library"}</p>
-          <h3>{lang === "zh" ? "选择模板后编辑配置" : "Select a template, then edit config"}</h3>
+          <div className="deploy-gallery-title-line">
+            <h3>{lang === "zh" ? "选择模板后编辑配置" : "Select a template, then edit config"}</h3>
+            <div className="deploy-mode-switch-block" aria-label={lang === "zh" ? "模板类型" : "Template type"}>
+              <span>{lang === "zh" ? "模板类型" : "Template type"}</span>
+              <div className="deploy-mode-switch-pill">
+                <button
+                  type="button"
+                  className={mode === "service" ? "active" : ""}
+                  onClick={() => onModeChange("service")}
+                >
+                  单服务
+                </button>
+                <button
+                  type="button"
+                  className={mode === "compose" ? "active" : ""}
+                  onClick={() => onModeChange("compose")}
+                >
+                  Compose
+                </button>
+              </div>
+            </div>
+          </div>
           <span>{lang === "zh" ? "卡片只展示会写入部署配置的字段摘要；完整内容以右侧表单和 YAML 为准。" : "Cards show fields that affect the generated deployment config. The form and YAML are the source of truth."}</span>
-        </div>
-        <div className="deploy-mode-switch-pill">
-          <button
-            type="button"
-            className={mode === "service" ? "active" : ""}
-            onClick={() => onModeChange("service")}
-          >
-            单服务
-          </button>
-          <button
-            type="button"
-            className={mode === "compose" ? "active" : ""}
-            onClick={() => onModeChange("compose")}
-          >
-            Compose
-          </button>
         </div>
       </div>
 
@@ -136,6 +145,7 @@ export function DeployTemplates({
           >
             <div className="template-card-top">
               <BrandIcon template={template} />
+              <span className="template-card-action">{lang === "zh" ? "使用" : "Use"} →</span>
             </div>
             <div className="template-card-info">
               <strong className="template-card-name">{template.name}</strong>

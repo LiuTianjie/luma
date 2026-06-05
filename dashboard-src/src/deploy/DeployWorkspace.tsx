@@ -137,6 +137,7 @@ export function DeployWorkspace({
   modalContext,
   showTemplates = true,
   onClose,
+  onTemplateLandingChange,
 }: {
   lang: Lang;
   token: string;
@@ -157,6 +158,7 @@ export function DeployWorkspace({
   modalContext?: ReactNode;
   showTemplates?: boolean;
   onClose?: () => void;
+  onTemplateLandingChange?: (isLanding: boolean) => void;
 }) {
   const initial = initialMode === "compose" ? firstTemplate("compose") : firstTemplate("service");
   const [mode, setMode] = useState<DeployMode>(initialMode || "service");
@@ -168,6 +170,7 @@ export function DeployWorkspace({
   const [composeYaml, setComposeYaml] = useState(() => initialComposeYaml || clone((initialComposeDraft || firstTemplate("compose").compose!).dockerComposeYaml));
   const [sourceName, setSourceName] = useState(initialSourceName || (initialMode === "compose" ? "luma.compose.yml" : "service.yaml"));
   const [editorMode, setEditorMode] = useState<"form" | "yaml">(initialEditorMode || "form");
+  const [templateLanding, setTemplateLanding] = useState(showTemplates && !initialMode && !initialServiceDraft && !initialComposeDraft && !initialServiceYaml && !initialSidecarYaml && !initialComposeYaml);
   const [yamlDirty, setYamlDirty] = useState(Boolean(initialYamlDirty));
   const [preview, setPreview] = useState<DeployPreviewResult | null>(null);
   const [steps, setSteps] = useState<DeployStep[]>([]);
@@ -177,6 +180,10 @@ export function DeployWorkspace({
   const storageClasses = payload?.storage?.storageClasses || [];
 
   useEffect(() => {
+    onTemplateLandingChange?.(templateLanding);
+  }, [onTemplateLandingChange, templateLanding]);
+
+  useEffect(() => {
     if (!initialMode && !initialServiceDraft && !initialComposeDraft && !initialServiceYaml && !initialSidecarYaml && !initialComposeYaml) return;
     setMode(initialMode || "service");
     setActiveTemplateId("current-application");
@@ -184,6 +191,7 @@ export function DeployWorkspace({
     setSteps([]);
     setRuntimeErrors([]);
     setYamlDirty(Boolean(initialYamlDirty));
+    setTemplateLanding(false);
     setEditorMode(initialEditorMode || "form");
     setSourceName(initialSourceName || (initialMode === "compose" ? "luma.compose.yml" : "service.yaml"));
     if (initialServiceDraft) {
@@ -215,6 +223,8 @@ export function DeployWorkspace({
   const selectTemplate = (template: DeployTemplate) => {
     setActiveTemplateId(template.id);
     setMode(template.mode);
+    setTemplateLanding(false);
+    setEditorMode("form");
     setPreview(null);
     setSteps([]);
     setRuntimeErrors([]);
@@ -233,9 +243,20 @@ export function DeployWorkspace({
     }
   };
 
+  const backToTemplates = () => {
+    setTemplateLanding(true);
+    setPreview(null);
+    setSteps([]);
+    setRuntimeErrors([]);
+  };
+
   const changeMode = (nextMode: DeployMode) => {
     const template = firstTemplate(nextMode);
-    selectTemplate(template);
+    setMode(nextMode);
+    setActiveTemplateId(template.id);
+    setPreview(null);
+    setSteps([]);
+    setRuntimeErrors([]);
   };
 
   const updateServiceDraft = (next: ServiceManifestDraft) => {
@@ -296,50 +317,73 @@ export function DeployWorkspace({
     <section className={`deploy-workspace-panel ${modalTitle ? "modal-deploy-workspace" : ""}`} id="section-6">
       <div className="panel-heading deploy-heading">
         <div>
-          <h2>{modalTitle || (lang === "zh" ? "部署工作台" : "Deploy Workspace")}</h2>
+          <p className="eyebrow">{templateLanding ? (lang === "zh" ? "模板库" : "Template gallery") : (lang === "zh" ? "配置应用" : "Configure application")}</p>
+          <h2>{modalTitle || (templateLanding ? (lang === "zh" ? "选择一个模板开始" : "Choose a template to start") : (lang === "zh" ? "配置并部署" : "Configure and deploy"))}</h2>
           {modalSubtitle || contextLabel ? <small className="deploy-context-label">{modalSubtitle || contextLabel}</small> : null}
         </div>
         <div className="deploy-heading-actions">
-          <div className="deploy-editor-tabs">
-            <button type="button" className={editorMode === "form" ? "active" : ""} onClick={() => setEditorMode("form")}>配置表单</button>
-            <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => setEditorMode("yaml")}>YAML 文件</button>
-          </div>
+          {!templateLanding && showTemplates ? <button type="button" className="ghost" onClick={backToTemplates}>{lang === "zh" ? "返回模板" : "Back to templates"}</button> : null}
+          {!templateLanding ? (
+            <div className="deploy-editor-tabs">
+              <button type="button" className={editorMode === "form" ? "active" : ""} onClick={() => setEditorMode("form")}>配置表单</button>
+              <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => setEditorMode("yaml")}>YAML 文件</button>
+            </div>
+          ) : null}
           {onClose ? <button type="button" className="icon-button" onClick={onClose}>{lang === "zh" ? "关闭" : "Close"}</button> : null}
         </div>
       </div>
       {modalContext}
-      {showTemplates ? (
+      {showTemplates && templateLanding ? (
         <DeployTemplates lang={lang} mode={mode} templates={DEPLOY_TEMPLATES} activeId={activeTemplateId} onModeChange={changeMode} onSelect={selectTemplate} />
       ) : null}
-      <div className="deploy-workspace-grid">
-        <main className="deploy-config-main">
-          {editorMode === "form" ? (
-            mode === "service"
-              ? <SingleServiceDeployForm draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateServiceDraft} />
-              : <ComposeDeployForm draft={composeDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />
-          ) : (
-            <YamlPreviewEditor
-              mode={mode}
-              serviceYaml={serviceYaml}
-              composeYaml={composeYaml}
-              sidecarYaml={sidecarYaml}
-              onServiceYamlChange={(value) => { setServiceYaml(value); setYamlDirty(true); }}
-              onComposeYamlChange={(value) => { setComposeYaml(value); setYamlDirty(true); }}
-              onSidecarYamlChange={(value) => { setSidecarYaml(value); setYamlDirty(true); }}
-            />
-          )}
-        </main>
-        <DeploySummary lang={lang} mode={mode} serviceDraft={serviceDraft} composeDraft={composeDraft} preview={preview} steps={steps} errors={allErrors} />
-      </div>
-      <div className="deploy-action-bar">
-        <div>
-          <strong>{yamlDirty ? "YAML 已手动编辑" : "表单同步 YAML"}</strong>
-          <span>Secret 使用 ${"{NAME}"} 引用，明文密钥请先存入 Luma Control。</span>
+      {templateLanding ? (
+        <div className="template-gallery-footer">
+          <div>
+            <strong>{lang === "zh" ? "模板只会填充配置，不会自动部署。" : "Templates only prefill configuration. Nothing deploys automatically."}</strong>
+            <span>{lang === "zh" ? "点击模板卡片后进入表单页面，可随时切换 YAML 视图。" : "Click a template to continue to the form page, where YAML view remains available."}</span>
+          </div>
+          <button type="button" className="ghost" onClick={() => selectTemplate(firstTemplate(mode))}>{lang === "zh" ? "使用当前推荐" : "Use recommended"}</button>
         </div>
-        <button type="button" className="ghost" onClick={() => setEditorMode("yaml")}>预览 YAML</button>
-        <button type="button" className="ghost" disabled={status !== "idle"} onClick={() => void runPreview()}>{status === "previewing" ? "校验中..." : "校验"}</button>
-        <button type="button" disabled={status !== "idle" || validationErrors.length > 0} onClick={() => void runDeploy()}>{status === "deploying" ? "部署中..." : "部署"}</button>
-      </div>
+      ) : (
+        <>
+          {showTemplates ? (
+            <div className="selected-template-strip">
+              <span>{lang === "zh" ? "当前模板" : "Selected template"}</span>
+              <strong>{DEPLOY_TEMPLATES.find((item) => item.id === activeTemplateId)?.name || activeTemplateId}</strong>
+              <small>{mode === "service" ? (lang === "zh" ? "单服务" : "Single service") : "Compose"}</small>
+            </div>
+          ) : null}
+          <div className="deploy-workspace-grid">
+            <main className="deploy-config-main">
+              {editorMode === "form" ? (
+                mode === "service"
+                  ? <SingleServiceDeployForm draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateServiceDraft} />
+                  : <ComposeDeployForm draft={composeDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />
+              ) : (
+                <YamlPreviewEditor
+                  mode={mode}
+                  serviceYaml={serviceYaml}
+                  composeYaml={composeYaml}
+                  sidecarYaml={sidecarYaml}
+                  onServiceYamlChange={(value) => { setServiceYaml(value); setYamlDirty(true); }}
+                  onComposeYamlChange={(value) => { setComposeYaml(value); setYamlDirty(true); }}
+                  onSidecarYamlChange={(value) => { setSidecarYaml(value); setYamlDirty(true); }}
+                />
+              )}
+            </main>
+            <DeploySummary lang={lang} mode={mode} serviceDraft={serviceDraft} composeDraft={composeDraft} preview={preview} steps={steps} errors={allErrors} />
+          </div>
+          <div className="deploy-action-bar">
+            <div>
+              <strong>{yamlDirty ? "YAML 已手动编辑" : "表单同步 YAML"}</strong>
+              <span>Secret 使用 ${"{NAME}"} 引用，明文密钥请先存入 Luma Control。</span>
+            </div>
+            <button type="button" className="ghost" onClick={() => setEditorMode("yaml")}>预览 YAML</button>
+            <button type="button" className="ghost" disabled={status !== "idle"} onClick={() => void runPreview()}>{status === "previewing" ? "校验中..." : "校验"}</button>
+            <button type="button" disabled={status !== "idle" || validationErrors.length > 0} onClick={() => void runDeploy()}>{status === "deploying" ? "部署中..." : "部署"}</button>
+          </div>
+        </>
+      )}
     </section>
   );
 }
