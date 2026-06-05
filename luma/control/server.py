@@ -3499,17 +3499,24 @@ def _match_luma_swarm_node(
         ]
         if str(value or "").strip()
     }
-    wanted_names = {
+    wanted_luma_names = {
         str(value).strip()
         for value in [
             node_name,
             record.get("displayName"),
-            record.get("swarmHostname"),
             labels.get("luma.node.name"),
         ]
         if str(value or "").strip()
     }
-    matches: list[Dict[str, Any]] = []
+    wanted_hostnames = {
+        str(value).strip()
+        for value in [
+            node_name,
+            record.get("swarmHostname"),
+        ]
+        if str(value or "").strip()
+    }
+    node_items: list[tuple[Dict[str, Any], str, dict[str, Any], str]] = []
     for node in nodes:
         if not isinstance(node, dict):
             continue
@@ -3517,16 +3524,42 @@ def _match_luma_swarm_node(
         spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
         node_labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
         description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
-        candidate_ids = {node_id, str(node_labels.get("luma.node.id") or "")}
-        candidate_names = {
-            str(description.get("Hostname") or ""),
-            str(node_labels.get("luma.node.name") or ""),
-        }
-        if any(_node_id_matches(candidate, wanted) for candidate in candidate_ids for wanted in wanted_ids):
-            matches.append(node)
-            continue
-        if wanted_names.intersection(candidate_names):
-            matches.append(node)
+        hostname = str(description.get("Hostname") or "")
+        node_items.append((node, node_id, node_labels, hostname))
+
+    id_match = _unique_luma_swarm_node_match(
+        [
+            node
+            for node, node_id, node_labels, _hostname in node_items
+            if any(
+                _node_id_matches(candidate, wanted)
+                for candidate in {node_id, str(node_labels.get("luma.node.id") or "")}
+                for wanted in wanted_ids
+            )
+        ],
+        node_name,
+    )
+    if id_match:
+        return id_match
+
+    name_match = _unique_luma_swarm_node_match(
+        [
+            node
+            for node, _node_id, node_labels, _hostname in node_items
+            if str(node_labels.get("luma.node.name") or "") in wanted_luma_names
+        ],
+        node_name,
+    )
+    if name_match:
+        return name_match
+
+    return _unique_luma_swarm_node_match(
+        [node for node, _node_id, _node_labels, hostname in node_items if hostname in wanted_hostnames],
+        node_name,
+    )
+
+
+def _unique_luma_swarm_node_match(matches: list[Dict[str, Any]], node_name: str) -> Dict[str, Any] | None:
     unique: dict[str, Dict[str, Any]] = {str(node.get("ID") or ""): node for node in matches if str(node.get("ID") or "")}
     if len(unique) == 1:
         return next(iter(unique.values()))

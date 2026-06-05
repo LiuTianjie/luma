@@ -196,12 +196,14 @@ export function App() {
   return (
     <div className="dashboard-shell">
       <aside className="sidebar">
-        <div className="brand-mark" aria-hidden="true">
-          <img src={lumaLogoMark} alt="" />
-        </div>
-        <div className="sidebar-title">
-          <span>Luma</span>
-          <strong>{t(lang, "title")}</strong>
+        <div className="sidebar-brand">
+          <div className="brand-mark" aria-hidden="true">
+            <img src={lumaLogoMark} alt="" />
+          </div>
+          <div className="sidebar-title">
+            <span>Luma</span>
+            <strong>{t(lang, "title")}</strong>
+          </div>
         </div>
         <nav aria-label="Dashboard">
           {navItems.map((item) => (

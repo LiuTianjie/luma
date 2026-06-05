@@ -1187,6 +1187,23 @@ class CliTests(unittest.TestCase):
         self.assertIn("[skip] Luma node agent skipped", printed_text)
         self.assertIn("[ok] Joined node update complete", printed_text)
 
+    def test_update_joined_node_skips_agent_refresh_when_node_is_unregistered(self):
+        with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
+            "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
+        ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_docker_node_id", return_value="stale-node-id"), patch(
+            "luma.cli._refresh_local_node_agent",
+            side_effect=LumaError("control API error 400: {\"error\": \"nodeName or nodeId must match a registered node\"}"),
+        ), patch("builtins.print") as printed:
+            code = main(["update"])
+
+        self.assertEqual(code, 0)
+        installer.assert_called_once_with(install_ref=None)
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("[info] Role: joined node", printed_text)
+        self.assertIn("[skip] Luma node agent skipped", printed_text)
+        self.assertIn("nodeName or nodeId must match a registered node", printed_text)
+        self.assertIn("[ok] Joined node update complete", printed_text)
+
     def test_update_after_reexec_skips_installer_and_refreshes_manager(self):
         old_reexec = _set_env("LUMA_UPDATE_REEXECED", "1")
         try:
@@ -2783,6 +2800,55 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result["swarmNodeId"], "node-id-1")
                 docker.assert_any_call("DELETE", "/nodes/node-id-1?force=1")
                 self.assertNotIn("m4mini", load_state().get("nodes", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_prefers_saved_swarm_node_id_over_duplicate_hostname(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "m4mini": {
+                        "region": "home",
+                        "status": "labeled",
+                        "displayName": "m4mini",
+                        "swarmHostname": "orbstack",
+                        "swarmNodeId": "stale-node-id",
+                        "labels": {"luma.node.name": "m4mini", "luma.node.id": "stale-node-id", "region": "home"},
+                    },
+                    "home-mac-mini": {
+                        "region": "home",
+                        "status": "labeled",
+                        "swarmHostname": "orbstack",
+                        "swarmNodeId": "active-node-id",
+                        "labels": {"luma.node.name": "home-mac-mini", "luma.node.id": "active-node-id", "region": "home"},
+                    },
+                }
+                save_state(state)
+                nodes = [
+                    {
+                        "ID": "active-node-id",
+                        "Description": {"Hostname": "orbstack"},
+                        "Spec": {"Role": "worker", "Labels": {"luma.node.name": "home-mac-mini", "luma.node.id": "active-node-id"}},
+                    },
+                    {
+                        "ID": "stale-node-id",
+                        "Description": {"Hostname": "orbstack"},
+                        "Spec": {"Role": "worker", "Labels": {"luma.node.name": "m4mini", "luma.node.id": "stale-node-id"}},
+                    },
+                ]
+                with patch("luma.control.server.docker_request", side_effect=[nodes, None]) as docker:
+                    result = handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
+
+                self.assertTrue(result["removed"])
+                self.assertTrue(result["registeredRemoved"])
+                self.assertTrue(result["swarmRemoved"])
+                self.assertEqual(result["swarmNodeId"], "stale-node-id")
+                docker.assert_any_call("DELETE", "/nodes/stale-node-id?force=1")
+                saved_nodes = load_state().get("nodes", {})
+                self.assertNotIn("m4mini", saved_nodes)
+                self.assertIn("home-mac-mini", saved_nodes)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

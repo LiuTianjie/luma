@@ -95,10 +95,14 @@ input:disabled, select:disabled { opacity: 0.55; cursor: not-allowed; }
   padding: 28px 18px; border-right: 1px solid var(--line); background: color-mix(in srgb, var(--rail) 92%, transparent); z-index: 10;
   backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
 }
+.sidebar-brand {
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 8px 26px;
+}
 .brand-mark {
   display: flex; align-items: center; justify-content: center;
   width: 38px; height: 38px; border-radius: 8px;
-  margin-left: 8px; margin-bottom: 18px; text-decoration: none; letter-spacing: 0;
+  flex: 0 0 auto; text-decoration: none; letter-spacing: 0;
   background: rgba(255, 255, 255, 0.06);
   box-shadow: 0 18px 44px rgba(0, 122, 255, 0.18);
   overflow: hidden;
@@ -111,7 +115,7 @@ input:disabled, select:disabled { opacity: 0.55; cursor: not-allowed; }
 .brand-mark::before {
   display: none;
 }
-.sidebar-title { display: flex; flex-direction: column; gap: 4px; margin: 0 8px 26px; }
+.sidebar-title { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .sidebar-title span { color: var(--muted); font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; }
 .sidebar-title strong { color: var(--ink); font-size: 1rem; letter-spacing: 0; }
 
@@ -1256,7 +1260,7 @@ dd { color: var(--ink); font-size: 0.875rem; font-weight: 500; margin: 0; word-b
     height: auto; border-right: 0; border-bottom: 1px solid var(--line);
     padding: 20px 24px; align-items: center; flex-direction: row; justify-content: space-between;
   }
-  .brand-mark { margin: 0; }
+  .sidebar-brand { margin: 0; }
   nav { flex-direction: row; gap: 8px; }
   .workspace > * { margin-left: 20px; margin-right: 20px; }
   .topbar { padding: 0 24px; }
@@ -1395,7 +1399,6 @@ textarea {
 .brand-mark {
   width: 40px;
   height: 40px;
-  margin: 0 0 14px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.045);
   box-shadow: 0 0 38px rgba(0, 117, 255, 0.2);
@@ -1407,7 +1410,7 @@ textarea {
   object-fit: contain;
 }
 
-.sidebar-title {
+.sidebar-brand {
   margin: 0 0 28px;
 }
 
@@ -1964,6 +1967,10 @@ code,
 
   .sidebar {
     height: auto;
+  }
+
+  .sidebar-brand {
+    margin: 0;
   }
 
   .topbar {

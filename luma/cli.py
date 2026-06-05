@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.65 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.66 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1180,7 +1180,7 @@ def _refresh_joined_node_agent(args: argparse.Namespace) -> None:
     try:
         _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=insecure, resolve_ip=resolve_ip, allow_skip=False)
     except LumaError as exc:
-        if _node_agent_credentials_unsupported(exc):
+        if _node_agent_credentials_unsupported(exc) or _node_agent_credentials_unregistered(exc):
             print(f"[skip] Luma node agent skipped: {exc}")
             return
         raise
@@ -1227,6 +1227,10 @@ def _node_agent_credentials_unsupported(exc: LumaError) -> bool:
     return "does not support node-agent credentials" in message or (
         "control API error 404" in message and "not found" in message
     )
+
+
+def _node_agent_credentials_unregistered(exc: LumaError) -> bool:
+    return "nodeName or nodeId must match a registered node" in str(exc)
 
 
 def _local_agent_config() -> Dict[str, Any] | None:
