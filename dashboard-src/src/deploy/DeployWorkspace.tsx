@@ -128,6 +128,7 @@ export function DeployWorkspace({
   modalTitle,
   modalSubtitle,
   modalContext,
+  showTemplates = true,
   onClose,
 }: {
   lang: Lang;
@@ -147,6 +148,7 @@ export function DeployWorkspace({
   modalTitle?: string;
   modalSubtitle?: string;
   modalContext?: ReactNode;
+  showTemplates?: boolean;
   onClose?: () => void;
 }) {
   const initial = initialMode === "compose" ? firstTemplate("compose") : firstTemplate("service");
@@ -299,7 +301,9 @@ export function DeployWorkspace({
         </div>
       </div>
       {modalContext}
-      <DeployTemplates lang={lang} mode={mode} templates={DEPLOY_TEMPLATES} activeId={activeTemplateId} onModeChange={changeMode} onSelect={selectTemplate} />
+      {showTemplates ? (
+        <DeployTemplates lang={lang} mode={mode} templates={DEPLOY_TEMPLATES} activeId={activeTemplateId} onModeChange={changeMode} onSelect={selectTemplate} />
+      ) : null}
       <div className="deploy-workspace-grid">
         <main className="deploy-config-main">
           {editorMode === "form" ? (

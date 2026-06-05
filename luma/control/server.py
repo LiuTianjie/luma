@@ -27,6 +27,7 @@ from ..assets import asset_path
 from ..cloudflare import delete_dns, sync_dns
 from ..compose import (
     ComposeDeploymentSpec,
+    DEFAULT_NFS_MOUNT_OPTIONS,
     StorageClassSpec,
     compose_public_services,
     compose_route_path,
@@ -1465,7 +1466,7 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "node": str(body.get("node") or "").strip(),
         "endpoint": str(body.get("endpoint") or "").strip(),
         "path": str(body.get("path") or "").strip(),
-        "mountOptions": str(body.get("mountOptions") or "nfsvers=4,rw").strip(),
+        "mountOptions": str(body.get("mountOptions") or DEFAULT_NFS_MOUNT_OPTIONS).strip(),
         "regions": [str(value) for value in body.get("regions") or [] if str(value)],
         "nodes": [str(value) for value in body.get("nodes") or [] if str(value)],
         "updatedAt": int(time.time()),
@@ -1506,7 +1507,7 @@ def _storage_class_spec_from_record(name: str, item: Dict[str, Any]) -> StorageC
         node=str(item.get("node") or "") or None,
         path=str(item.get("path") or "") or None,
         endpoint=str(item.get("endpoint") or "") or None,
-        mount_options=str(item.get("mountOptions") or "nfsvers=4,rw"),
+        mount_options=str(item.get("mountOptions") or DEFAULT_NFS_MOUNT_OPTIONS),
         nodes=[str(value) for value in item.get("nodes") or []],
         regions=[str(value) for value in item.get("regions") or []],
         raw=dict(item),

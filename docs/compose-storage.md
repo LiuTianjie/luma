@@ -44,6 +44,14 @@ luma storage set cn-nfs \
 - `--path /srv/luma` is the host export directory.
 - `--region cn` restricts which service regions can use this storage class.
 
+When `--mount-options` is omitted, Luma uses bounded soft NFS options:
+
+```text
+nfsvers=4,rw,soft,timeo=100,retrans=10,noresvport
+```
+
+This keeps slow mounts from waiting forever in kernel I/O. Applications will receive an I/O error after the retry window is exhausted, so database workloads may fail and recover instead of remaining stuck in `D` state. Override with `--mount-options` when you need a different NFS policy.
+
 For managed NFS on the local control node, `storage set` also prepares the host: it installs the NFS server/client packages when needed, creates the export directory, writes the NFS export, starts the host NFS service, and removes any legacy `luma-storage-*` storage stack left by older Luma versions. It does not delete data. If the target node is not local to the current Luma Control process, the command fails instead of saving a pending storage class; use an external NFS registration or run the operation from the control node that can prepare that host.
 
 For an existing external or dedicated NFS node:

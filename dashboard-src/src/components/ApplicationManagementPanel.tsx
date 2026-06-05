@@ -3,142 +3,19 @@ import { createPortal } from "react-dom";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
 import { restartApplication } from "../lifecycleApi";
-import type { DashboardPayload, DashboardService, Lang } from "../types";
-import { DeployWorkspace } from "../deploy/DeployWorkspace";
-import { serviceDraft } from "../deploy/templates";
-import type { ComposeDeploymentDraft, ComposeServiceDraft, DeployMode, ServiceManifestDraft } from "../deploy/types";
+import type { DashboardPayload, Lang } from "../types";
+import { groupApplications, type Application } from "./applicationModel";
 import { Badge, BadgeGroup, CodeCell, PrimaryCell, StatePill } from "./ui";
 
-type Application = {
-  stack: string;
-  services: DashboardService[];
-  domains: string[];
-  status: string;
-  running: number;
-  desired: number;
-  exposure: string;
-  regions: string[];
-};
-
-type DeployContext = {
-  mode: "create" | "update";
-  app: Application | null;
-  deployMode?: DeployMode;
-  serviceDraft?: ServiceManifestDraft;
-  composeDraft?: ComposeDeploymentDraft;
+export type ApplicationUpdateRequest = {
+  app: Application;
   deploymentConfig?: DeploymentConfig;
   configWarning?: string;
 };
 
 type ConfigTab = "manifest" | "compose";
 
-const SYSTEM_STACKS = new Set(["traefik", "portainer", "egress", "luma-control"]);
 const DEPLOY_ROOT = typeof document === "undefined" ? null : document.body;
-
-function isSystemService(service: DashboardService) {
-  const stack = service.stack || service.name || "";
-  return SYSTEM_STACKS.has(stack) || stack.startsWith("luma-storage") || service.name === "cloudflared";
-}
-
-function applicationStatus(services: DashboardService[]) {
-  if (services.some((service) => (service.failed || 0) > 0 || service.health === "failed")) return "failed";
-  if (services.some((service) => (service.pending || 0) > 0)) return "pending";
-  if (services.every((service) => (service.running || 0) >= (service.desired || 0))) return "running";
-  return "degraded";
-}
-
-function groupApplications(services: DashboardService[]): Application[] {
-  const groups = new Map<string, DashboardService[]>();
-  for (const service of services) {
-    if (isSystemService(service)) continue;
-    const stack = service.stack || service.name || "";
-    if (!stack) continue;
-    groups.set(stack, [...(groups.get(stack) || []), service]);
-  }
-  return [...groups.entries()].map(([stack, items]) => {
-    const domains = items.map((service) => service.domain || "").filter(Boolean);
-    const running = items.reduce((sum, service) => sum + (service.running || 0), 0);
-    const desired = items.reduce((sum, service) => sum + (service.desired || 0), 0);
-    const exposures = [...new Set(items.map((service) => service.exposure || "none"))];
-    const regions = [...new Set(items.map((service) => service.region || "-"))];
-    return {
-      stack,
-      services: items,
-      domains,
-      running,
-      desired,
-      exposure: exposures.length === 1 ? exposures[0] : "mixed",
-      regions,
-      status: applicationStatus(items),
-    };
-  }).sort((a, b) => a.stack.localeCompare(b.stack));
-}
-
-function serviceToDraft(app: Application): ServiceManifestDraft {
-  const primary = app.services[0] || {};
-  return serviceDraft({
-    name: app.stack,
-    image: primary.image || "",
-    region: (primary.region as ServiceManifestDraft["region"]) || "cn",
-    node: "",
-    exposure: (primary.exposure as ServiceManifestDraft["exposure"]) || "none",
-    domain: primary.domain || "",
-    port: primary.targetPort || "",
-    replicas: primary.desired || 1,
-    proxy: false,
-  });
-}
-
-function appToComposeDraft(app: Application): ComposeDeploymentDraft {
-  const composeServices: ComposeServiceDraft[] = app.services.map((service) => ({
-    name: service.name || "app",
-    region: (service.region as ComposeServiceDraft["region"]) || "",
-    node: "",
-    exposure: (service.exposure as ComposeServiceDraft["exposure"]) || "none",
-    domain: service.domain || "",
-    port: service.targetPort || "",
-    publishPort: "",
-    replicas: service.desired || 1,
-    proxy: false,
-    env: [],
-  }));
-  const volumeNames = new Set<string>();
-  for (const service of app.services) {
-    for (const volume of service.storage || []) {
-      if (volume.name) volumeNames.add(volume.name);
-    }
-  }
-  const volumes = [...volumeNames].map((name) => {
-    const source = app.services.flatMap((service) => service.storage || []).find((volume) => volume.name === name);
-    return {
-      name,
-      target: "",
-      storageMode: source?.storageClass ? "storageClass" as const : "local" as const,
-      storageClass: source?.storageClass || "",
-      localNode: source?.node || "",
-      localPath: source?.networkPath || "",
-    };
-  });
-  const composeYaml = [
-    "services:",
-    ...app.services.flatMap((service) => [
-      `  ${service.name || "app"}:`,
-      `    image: ${service.image || "replace-me:latest"}`,
-    ]),
-    ...(volumes.length ? ["volumes:", ...volumes.map((volume) => `  ${volume.name}: {}`)] : []),
-    "",
-  ].join("\n");
-  return {
-    name: app.stack,
-    composeFileName: "docker-compose.yml",
-    region: (app.regions[0] as ComposeDeploymentDraft["region"]) || "cn",
-    services: composeServices,
-    volumes,
-    dockerComposeYaml: composeYaml,
-    skipDns: false,
-    skipWebhook: false,
-  };
-}
 
 function accessHref(domain: string) {
   return domain.startsWith("http://") || domain.startsWith("https://") ? domain : `https://${domain}`;
@@ -155,15 +32,16 @@ export function ApplicationManagementPanel({
   payload,
   onRefresh,
   onCreateApplication,
+  onUpdateApplication,
 }: {
   lang: Lang;
   token: string;
   payload: DashboardPayload | null;
   onRefresh: () => Promise<void> | void;
   onCreateApplication?: () => void;
+  onUpdateApplication?: (request: ApplicationUpdateRequest) => void;
 }) {
   const [selected, setSelected] = useState<Application | null>(null);
-  const [deployContext, setDeployContext] = useState<DeployContext | null>(null);
   const [deploymentConfig, setDeploymentConfig] = useState<DeploymentConfig | null>(null);
   const [deploymentConfigFor, setDeploymentConfigFor] = useState("");
   const [configTab, setConfigTab] = useState<ConfigTab>("manifest");
@@ -171,23 +49,6 @@ export function ApplicationManagementPanel({
   const [actionBusy, setActionBusy] = useState("");
   const [configBusy, setConfigBusy] = useState("");
   const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
-  const updateContext = useMemo(() => {
-    if (!deployContext) return null;
-    if (deployContext.mode !== "update" || !deployContext.app) return deployContext;
-    if (deployContext.deploymentConfig?.manifest) {
-      const isCompose = deployContext.deploymentConfig.kind === "compose" || Boolean(deployContext.deploymentConfig.composeContent);
-      return {
-        ...deployContext,
-        deployMode: isCompose ? "compose" as const : "service" as const,
-        serviceDraft: isCompose ? undefined : serviceToDraft(deployContext.app),
-        composeDraft: isCompose ? appToComposeDraft(deployContext.app) : undefined,
-      };
-    }
-    if (deployContext.app.services.length <= 1) {
-      return { ...deployContext, deployMode: "service" as const, serviceDraft: serviceToDraft(deployContext.app) };
-    }
-    return { ...deployContext, deployMode: "compose" as const, composeDraft: appToComposeDraft(deployContext.app) };
-  }, [deployContext]);
 
   const restart = async (app: Application) => {
     setActionError("");
@@ -208,7 +69,7 @@ export function ApplicationManagementPanel({
       onCreateApplication();
       return;
     }
-    setDeployContext({ mode: "create", app: null });
+    setActionError("当前页面未配置创建应用入口。");
   };
   const openDetails = (app: Application) => {
     setDeploymentConfig(null);
@@ -217,15 +78,18 @@ export function ApplicationManagementPanel({
   };
   const openUpdate = async (app: Application) => {
     setActionError("");
+    if (!onUpdateApplication) {
+      setActionError("当前页面未配置更新应用入口。");
+      return;
+    }
     setConfigBusy(app.stack);
     setSelected(null);
     try {
       const config = await fetchDeploymentConfig({ token, name: app.stack });
-      setDeployContext({ mode: "update", app, deploymentConfig: config });
+      onUpdateApplication({ app, deploymentConfig: config });
     } catch (error) {
       const message = String(error instanceof Error ? error.message : error);
-      setDeployContext({
-        mode: "update",
+      onUpdateApplication({
         app,
         configWarning: `未读取到已登记部署配置，已从当前运行状态反推；提交前请重点核对 YAML。${message ? ` (${message})` : ""}`,
       });
@@ -233,7 +97,6 @@ export function ApplicationManagementPanel({
       setConfigBusy("");
     }
   };
-  const closeDeploy = () => setDeployContext(null);
   const openConfig = async (app: Application) => {
     setActionError("");
     setConfigBusy(app.stack);
@@ -351,52 +214,6 @@ export function ApplicationManagementPanel({
     DEPLOY_ROOT,
   ) : null;
 
-  const deployTitle = deployContext?.mode === "update" && deployContext.app ? `更新应用 · ${deployContext.app.stack}` : t(lang, "createApplication");
-  const deploySubtitle = deployContext?.mode === "update" ? "使用同名 stack 部署会更新当前应用，部署前仍会先预览生成结果。" : "选择模板或直接粘贴 YAML，按 Luma 配置创建应用。";
-  const updateContextNode = deployContext?.mode === "update" && deployContext.app ? (
-    <section className="application-update-context">
-      <div className="application-update-context-title">
-        <strong>当前应用</strong>
-        <span>{deployContext.deploymentConfig?.manifest ? "已读取 Luma Control 登记的部署配置，提交后会按同名应用更新。" : "下面的配置从现有 stack 带入，提交后会按同名应用更新。"}</span>
-        {deployContext.configWarning ? <span>{deployContext.configWarning}</span> : null}
-      </div>
-      <div className="application-update-context-grid">
-        <article><span>Stack</span><strong>{deployContext.app.stack}</strong></article>
-        <article><span>服务</span><strong>{deployContext.app.services.length}</strong></article>
-        <article><span>{t(lang, "accessAddress")}</span><strong>{deployContext.app.domains.join(", ") || t(lang, "internalOnly")}</strong></article>
-        <article><span>{t(lang, "replicas")}</span><strong>{deployContext.app.running}/{deployContext.app.desired}</strong></article>
-      </div>
-    </section>
-  ) : null;
-
-  const deployOverlay = deployContext && DEPLOY_ROOT ? createPortal(
-    <div className="deploy-modal-backdrop" onClick={closeDeploy}>
-      <div className="deploy-modal" onClick={(event) => event.stopPropagation()}>
-        <DeployWorkspace
-          lang={lang}
-          token={token}
-          payload={payload}
-          initialMode={updateContext?.deployMode}
-          initialServiceDraft={updateContext?.serviceDraft}
-          initialComposeDraft={updateContext?.composeDraft}
-          initialServiceYaml={updateContext?.deployMode === "service" ? updateContext.deploymentConfig?.manifest : undefined}
-          initialSidecarYaml={updateContext?.deployMode === "compose" ? updateContext.deploymentConfig?.manifest : undefined}
-          initialComposeYaml={updateContext?.deployMode === "compose" ? updateContext.deploymentConfig?.composeContent : undefined}
-          initialSourceName={updateContext?.deploymentConfig?.sourceName || undefined}
-          initialEditorMode={updateContext?.deploymentConfig?.manifest ? "yaml" : "form"}
-          initialYamlDirty={Boolean(updateContext?.deploymentConfig?.manifest)}
-          contextLabel={deployContext.mode === "update" && deployContext.app ? `更新 ${deployContext.app.stack}` : ""}
-          modalTitle={deployTitle}
-          modalSubtitle={deploySubtitle}
-          modalContext={updateContextNode}
-          onClose={closeDeploy}
-          onRefresh={async () => { await onRefresh(); closeDeploy(); }}
-        />
-      </div>
-    </div>,
-    DEPLOY_ROOT,
-  ) : null;
-
   return (
     <article className="panel app-management-panel" id="section-1">
       <div className="panel-heading">
@@ -445,7 +262,6 @@ export function ApplicationManagementPanel({
       </div>
 
       {detailOverlay}
-      {deployOverlay}
     </article>
   );
 }

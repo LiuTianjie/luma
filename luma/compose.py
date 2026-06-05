@@ -15,6 +15,7 @@ from .service import VALID_EXPOSURES, VALID_REGIONS, slugify
 VALID_STORAGE_PROVIDERS = {"nfs"}
 VALID_STORAGE_MODES = {"managed", "external"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
+DEFAULT_NFS_MOUNT_OPTIONS = "nfsvers=4,rw,soft,timeo=100,retrans=10,noresvport"
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,7 @@ class StorageClassSpec:
     node: Optional[str] = None
     path: Optional[str] = None
     endpoint: Optional[str] = None
-    mount_options: str = "nfsvers=4,rw"
+    mount_options: str = DEFAULT_NFS_MOUNT_OPTIONS
     nodes: List[str] = field(default_factory=list)
     regions: List[str] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -445,7 +446,7 @@ def _load_storage_classes(raw: Any) -> Dict[str, StorageClassSpec]:
             node=str(value["node"]).strip() if value.get("node") else None,
             path=str(value["path"]).strip() if value.get("path") else None,
             endpoint=str(value["endpoint"]).strip() if value.get("endpoint") else None,
-            mount_options=str(value.get("mountOptions") or "nfsvers=4,rw"),
+            mount_options=str(value.get("mountOptions") or DEFAULT_NFS_MOUNT_OPTIONS),
             nodes=nodes,
             regions=regions,
             raw=dict(value),

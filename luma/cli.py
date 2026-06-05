@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, TypeVar
 from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, install_docker, join_local_node, local_docker_node_id, local_docker_node_name, refresh_manager_control_local, setup_egress, setup_portainer, setup_tailscale
 from .cloudflare import find_zone, sync_dns
 from .compose import (
+    DEFAULT_NFS_MOUNT_OPTIONS,
     compose_route_path,
     compose_stack_path,
     init_compose_sidecar,
@@ -117,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.57 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.58 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -255,7 +256,11 @@ def build_parser() -> argparse.ArgumentParser:
     storage_set.add_argument("--node", default="")
     storage_set.add_argument("--path", default="")
     storage_set.add_argument("--endpoint", default="")
-    storage_set.add_argument("--mount-options", default="")
+    storage_set.add_argument(
+        "--mount-options",
+        default="",
+        help=f"NFS mount options; defaults to {DEFAULT_NFS_MOUNT_OPTIONS}",
+    )
     storage_set.add_argument("--region", action="append", dest="regions", default=[])
     storage_set.add_argument("--eligible-node", action="append", dest="nodes", default=[])
     _add_control_arguments(storage_set)

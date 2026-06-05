@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 from luma.config import LumaConfig
-from luma.compose import load_compose_deployment, render_compose_stack
+from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS, load_compose_deployment, render_compose_stack
 from luma.errors import LumaError
 from luma.render import render_stack, render_tailscale_route, route_path, stack_path
 from luma.service import load_service
@@ -115,6 +115,7 @@ replicas: 2
         self.assertIn("luma.storage.pg-data=storageClass", app["deploy"]["labels"])
         self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["type"], "nfs")
         self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["device"], ":/srv/luma/postgres/pg-data")
+        self.assertEqual(rendered["volumes"]["pg-data"]["driver_opts"]["o"], f"addr=home-nas,{DEFAULT_NFS_MOUNT_OPTIONS}")
 
     def test_database_volume_can_use_database_capable_storage_class(self):
         with tempfile.TemporaryDirectory() as tmp:

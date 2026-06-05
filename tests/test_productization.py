@@ -45,6 +45,7 @@ from luma.bootstrap import (
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
 from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
+from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
@@ -4256,6 +4257,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(persisted["storageClasses"]["home-nfs"]["provider"], "nfs")
                 self.assertEqual(persisted["storageClasses"]["home-nfs"]["mode"], "managed")
                 self.assertEqual(persisted["storageClasses"]["home-nfs"]["path"], "/srv/luma")
+                self.assertEqual(persisted["storageClasses"]["home-nfs"]["mountOptions"], DEFAULT_NFS_MOUNT_OPTIONS)
                 self.assertNotIn("workloads", persisted["storageClasses"]["home-nfs"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)

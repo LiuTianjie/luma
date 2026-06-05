@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ErrorBanner } from "./components/ErrorBanner";
-import { ApplicationManagementPanel } from "./components/ApplicationManagementPanel";
+import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
+import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
 import { LoginPanel } from "./components/LoginPanel";
 import { NodeTopology } from "./components/NodeTopology";
 import { NodesTable } from "./components/NodesTable";
@@ -24,7 +25,8 @@ type DetailState =
 
 export function App() {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
-  const [activePage, setActivePage] = useState<"deploy" | "status">("deploy");
+  const [activePage, setActivePage] = useState<"deploy" | "status" | "update">("deploy");
+  const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
   const [detail, setDetail] = useState<DetailState>(null);
   const [theme, setThemeState] = useState<"light" | "dark">(() => {
     const saved = localStorage.getItem("luma.dashboard.theme");
@@ -64,6 +66,7 @@ export function App() {
   const storageVolumes = payload?.storage?.volumes || [];
   const storageClasses = payload?.storage?.storageClasses || [];
   const storageWarnings = payload?.storage?.warnings || [];
+  const activeNavPage = activePage === "update" ? "status" : activePage;
 
   const navItems = useMemo(
     () => [
@@ -82,6 +85,50 @@ export function App() {
     ],
     [lang, nodes.length, paths.length, services.length],
   );
+
+  const updateContext = useMemo(() => {
+    if (!updateRequest) return null;
+    const { app, deploymentConfig } = updateRequest;
+    if (deploymentConfig?.manifest) {
+      const isCompose = deploymentConfig.kind === "compose" || Boolean(deploymentConfig.composeContent);
+      return {
+        ...updateRequest,
+        deployMode: isCompose ? "compose" as const : "service" as const,
+        serviceDraft: isCompose ? undefined : serviceToDraft(app),
+        composeDraft: isCompose ? appToComposeDraft(app) : undefined,
+      };
+    }
+    if (app.services.length <= 1) {
+      return { ...updateRequest, deployMode: "service" as const, serviceDraft: serviceToDraft(app), composeDraft: undefined };
+    }
+    return { ...updateRequest, deployMode: "compose" as const, serviceDraft: undefined, composeDraft: appToComposeDraft(app) };
+  }, [updateRequest]);
+
+  const openUpdatePage = (request: ApplicationUpdateRequest) => {
+    setUpdateRequest(request);
+    setActivePage("update");
+  };
+
+  const closeUpdatePage = () => {
+    setUpdateRequest(null);
+    setActivePage("status");
+  };
+
+  const updateContextNode = updateContext ? (
+    <section className="application-update-context">
+      <div className="application-update-context-title">
+        <strong>当前应用</strong>
+        <span>{updateContext.deploymentConfig?.manifest ? "已读取 Luma Control 登记的部署配置，提交后会按同名应用更新。" : "下面的配置从现有 stack 带入，提交后会按同名应用更新。"}</span>
+        {updateContext.configWarning ? <span>{updateContext.configWarning}</span> : null}
+      </div>
+      <div className="application-update-context-grid">
+        <article><span>Stack</span><strong>{updateContext.app.stack}</strong></article>
+        <article><span>服务</span><strong>{updateContext.app.services.length}</strong></article>
+        <article><span>{t(lang, "accessAddress")}</span><strong>{updateContext.app.domains.join(", ") || t(lang, "internalOnly")}</strong></article>
+        <article><span>{t(lang, "replicas")}</span><strong>{updateContext.app.running}/{updateContext.app.desired}</strong></article>
+      </div>
+    </section>
+  ) : null;
 
   const openNodeDetail = (node: DashboardNode) => {
     setDetail({
@@ -129,10 +176,13 @@ export function App() {
         <nav aria-label="Dashboard">
           {navItems.map((item) => (
             <button
-              className={activePage === item.id ? "nav-item active" : "nav-item"}
+              className={activeNavPage === item.id ? "nav-item active" : "nav-item"}
               type="button"
               key={item.id}
-              onClick={() => setActivePage(item.id)}
+              onClick={() => {
+                setUpdateRequest(null);
+                setActivePage(item.id);
+              }}
             >
               <span>
                 <b>{item.label}</b>
@@ -183,6 +233,45 @@ export function App() {
                   </section>
                   <DeployWorkspace lang={lang} token={token} payload={payload} onRefresh={loadDashboard} />
                 </>
+              ) : activePage === "update" && updateContext ? (
+                <>
+                  <section className="hero-strip application-update-hero" id="section-update">
+                    <div>
+                      <p className="eyebrow">{lang === "zh" ? "应用更新" : "Application update"}</p>
+                      <h1>{lang === "zh" ? `更新应用 · ${updateContext.app.stack}` : `Update application · ${updateContext.app.stack}`}</h1>
+                      <p>{lang === "zh" ? "使用当前应用配置作为起点，提交时按同名 stack 更新。" : "Start from the current application config and update the same stack."}</p>
+                    </div>
+                    <div className="hero-metrics" aria-label="Update summary">
+                      <span>Stack {updateContext.app.stack}</span>
+                      <span>{updateContext.app.services.length} {t(lang, "services")}</span>
+                      <span>{updateContext.app.running}/{updateContext.app.desired} {t(lang, "replicas")}</span>
+                    </div>
+                  </section>
+                  <DeployWorkspace
+                    lang={lang}
+                    token={token}
+                    payload={payload}
+                    initialMode={updateContext.deployMode}
+                    initialServiceDraft={updateContext.serviceDraft}
+                    initialComposeDraft={updateContext.composeDraft}
+                    initialServiceYaml={updateContext.deployMode === "service" ? updateContext.deploymentConfig?.manifest : undefined}
+                    initialSidecarYaml={updateContext.deployMode === "compose" ? updateContext.deploymentConfig?.manifest : undefined}
+                    initialComposeYaml={updateContext.deployMode === "compose" ? updateContext.deploymentConfig?.composeContent : undefined}
+                    initialSourceName={updateContext.deploymentConfig?.sourceName || undefined}
+                    initialEditorMode={updateContext.deploymentConfig?.manifest ? "yaml" : "form"}
+                    initialYamlDirty={Boolean(updateContext.deploymentConfig?.manifest)}
+                    contextLabel={`更新 ${updateContext.app.stack}`}
+                    modalTitle={lang === "zh" ? `更新应用 · ${updateContext.app.stack}` : `Update application · ${updateContext.app.stack}`}
+                    modalSubtitle={lang === "zh" ? "提交后按同名应用更新，部署前仍会先预览生成结果。" : "Deploying updates the same application. Preview is still available before submit."}
+                    modalContext={updateContextNode}
+                    showTemplates={false}
+                    onClose={closeUpdatePage}
+                    onRefresh={async () => {
+                      await loadDashboard();
+                      closeUpdatePage();
+                    }}
+                  />
+                </>
               ) : (
                 <>
                   <section className="hero-strip status-page-hero" id="section-status">
@@ -204,7 +293,11 @@ export function App() {
                     token={token}
                     payload={payload}
                     onRefresh={loadDashboard}
-                    onCreateApplication={() => setActivePage("deploy")}
+                    onCreateApplication={() => {
+                      setUpdateRequest(null);
+                      setActivePage("deploy");
+                    }}
+                    onUpdateApplication={openUpdatePage}
                   />
                   <section className="table-grid">
                     <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} />
