@@ -1,21 +1,24 @@
-import type { DashboardNode, DashboardStorageClass } from "../types";
+import type { DashboardNode, DashboardStorageClass, Lang } from "../types";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, KeyValueRow, Region } from "./types";
 import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, REGIONS, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { updateComposeServiceExposure } from "./yaml";
 
 export function ComposeDeployForm({
+  lang,
   draft,
   nodes,
   storageClasses,
   onChange,
   onEditYaml,
 }: {
+  lang: Lang;
   draft: ComposeDeploymentDraft;
   nodes: DashboardNode[];
   storageClasses: DashboardStorageClass[];
   onChange: (draft: ComposeDeploymentDraft) => void;
   onEditYaml: () => void;
 }) {
+  const zh = lang === "zh";
   const localReadyNodes = nodes.filter((node) => node.agentStatus === "ready" && node.state !== "down");
   const patch = (next: Partial<ComposeDeploymentDraft>) => onChange({ ...draft, ...next });
   const updateService = (name: string, next: Partial<ComposeServiceDraft>) => {
@@ -56,23 +59,23 @@ export function ComposeDeployForm({
   return (
     <div className="deploy-form-stack">
       <section className="deploy-config-section" id="compose-basic">
-        <header><span>01</span><h3>应用配置</h3></header>
+        <header><span>01</span><h3>{zh ? "应用配置" : "Application config"}</h3></header>
         <div className="deploy-field-grid">
-          <label><span>应用名</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
+          <label><span>{zh ? "应用名" : "Application name"}</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
           <label className="compose-file-field">
-            <span>Compose 文件名</span>
+            <span>{zh ? "Compose 文件名" : "Compose file name"}</span>
             <input value={draft.composeFileName} onChange={(event) => patch({ composeFileName: event.target.value })} />
-            <small>这里只改提交文件名，Compose 内容在 YAML 文件里编辑。</small>
+            <small>{zh ? "这里只改提交文件名，Compose 内容在 YAML 文件里编辑。" : "This only changes the submitted file name. Edit Compose content in the YAML view."}</small>
           </label>
           <div className="compose-yaml-shortcut">
-            <span>Compose 内容</span>
-            <button type="button" className="ghost" onClick={onEditYaml}>编辑 docker-compose.yml</button>
+            <span>{zh ? "Compose 内容" : "Compose content"}</span>
+            <button type="button" className="ghost" onClick={onEditYaml}>{zh ? "编辑 docker-compose.yml" : "Edit docker-compose.yml"}</button>
           </div>
-          <label><span>默认区域</span><select value={draft.region} onChange={(event) => updateDefaultRegion(event.target.value as Region)}>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region)}</option>)}</select></label>
+          <label><span>{zh ? "默认区域" : "Default region"}</span><select value={draft.region} onChange={(event) => updateDefaultRegion(event.target.value as Region)}>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
         </div>
       </section>
       <section className="deploy-config-section" id="compose-services">
-        <header><span>02</span><h3>服务入口</h3></header>
+        <header><span>02</span><h3>{zh ? "服务入口" : "Service ingress"}</h3></header>
         <div className="compose-service-list">
           {draft.services.map((service) => {
             const effectiveRegion = service.region || draft.region;
@@ -82,23 +85,23 @@ export function ComposeDeployForm({
               <article className="compose-service-card" key={service.name}>
                 <strong>{service.name}</strong>
               <div className="deploy-field-grid compact">
-                <label><span>入口</span><select value={service.exposure} onChange={(event) => updateServiceExposureSafe(service, event.target.value as Exposure)}>{EXPOSURES.map((exposure) => {
+                <label><span>{zh ? "入口" : "Exposure"}</span><select value={service.exposure} onChange={(event) => updateServiceExposureSafe(service, event.target.value as Exposure)}>{EXPOSURES.map((exposure) => {
                   const requiredRegion = requiredRegionForExposure(exposure);
-                  return <option key={exposure} value={exposure} disabled={Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion))}>{exposureOptionLabel(nodes, exposure)}</option>;
+                  return <option key={exposure} value={exposure} disabled={Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion))}>{exposureOptionLabel(nodes, exposure, lang)}</option>;
                 })}</select></label>
-                <label><span>区域</span><select value={service.region} onChange={(event) => updateServiceRegion(service, event.target.value as Region | "")}><option value="">默认 ({draft.region})</option>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region)}</option>)}</select></label>
+                <label><span>{zh ? "区域" : "Region"}</span><select value={service.region} onChange={(event) => updateServiceRegion(service, event.target.value as Region | "")}><option value="">{zh ? `默认 (${draft.region})` : `Default (${draft.region})`}</option>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
                 <label>
-                  <span>节点</span>
+                  <span>{zh ? "节点" : "Node"}</span>
                   <select value={service.node} onChange={(event) => updateService(service.name, { node: event.target.value })}>
-                    <option value="">自动调度到 {effectiveRegion} ready 节点</option>
-                    {selectedNodeMissing ? <option value={service.node} disabled>{service.node} (当前不可用)</option> : null}
+                    <option value="">{zh ? `自动调度到 ${effectiveRegion} ready 节点` : `Auto-schedule to a ready ${effectiveRegion} node`}</option>
+                    {selectedNodeMissing ? <option value={service.node} disabled>{service.node} ({zh ? "当前不可用" : "currently unavailable"})</option> : null}
                     {nodeOptions.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}
                   </select>
                 </label>
-                <label><span>域名</span><input value={service.domain} disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { domain: event.target.value })} /></label>
-                <label><span>容器端口</span><input value={service.port} disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { port: event.target.value })} /></label>
-                <label><span>发布端口</span><input value={service.publishPort} disabled={service.exposure !== "tailscale-relay"} onChange={(event) => updateService(service.name, { publishPort: event.target.value })} /></label>
-                <label><span>副本</span><input type="number" min={1} value={service.replicas} onChange={(event) => updateService(service.name, { replicas: Number(event.target.value || 1) })} /></label>
+                <label><span>{zh ? "域名" : "Domain"}</span><input value={service.domain} disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { domain: event.target.value })} /></label>
+                <label><span>{zh ? "容器端口" : "Container port"}</span><input value={service.port} disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { port: event.target.value })} /></label>
+                <label><span>{zh ? "发布端口" : "Published port"}</span><input value={service.publishPort} disabled={service.exposure !== "tailscale-relay"} onChange={(event) => updateService(service.name, { publishPort: event.target.value })} /></label>
+                <label><span>{zh ? "副本" : "Replicas"}</span><input type="number" min={1} value={service.replicas} onChange={(event) => updateService(service.name, { replicas: Number(event.target.value || 1) })} /></label>
                 <label className="deploy-toggle"><input type="checkbox" checked={service.proxy} onChange={(event) => updateService(service.name, { proxy: event.target.checked })} /><span>egress proxy</span></label>
               </div>
               </article>
@@ -107,75 +110,75 @@ export function ComposeDeployForm({
         </div>
       </section>
       <section className="deploy-config-section" id="compose-env">
-        <header><span>03</span><h3>环境变量与密钥</h3></header>
+        <header><span>03</span><h3>{zh ? "环境变量与密钥" : "Environment and secrets"}</h3></header>
         <div className="compose-env-list">
           {draft.services.length ? draft.services.map((service) => (
             <article className="compose-service-card" key={`${service.name}-env`}>
               <div className="compose-env-header">
                 <strong>{service.name}</strong>
                 <div>
-                  <button type="button" className="ghost" onClick={() => addEnv(service)}>添加变量</button>
-                  <button type="button" className="ghost" onClick={() => addEnv(service, "secret")}>添加密钥引用</button>
+                  <button type="button" className="ghost" onClick={() => addEnv(service)}>{zh ? "添加变量" : "Add variable"}</button>
+                  <button type="button" className="ghost" onClick={() => addEnv(service, "secret")}>{zh ? "添加密钥引用" : "Add secret reference"}</button>
                 </div>
               </div>
-              <p className="deploy-muted">普通变量会写入 docker-compose.yml；密钥只填写 ${"{NAME}"} 引用，明文请先存入 Luma Control。</p>
+              <p className="deploy-muted">{zh ? <>普通变量会写入 docker-compose.yml；密钥只填写 ${"{NAME}"} 引用，明文请先存入 Luma Control。</> : <>Plain variables are written to docker-compose.yml. Secrets must use ${"{NAME}"} references; store plaintext secrets in Luma Control first.</>}</p>
               {(service.env || []).length ? (service.env || []).map((row) => (
                 <div className="deploy-env-row compose-env-row" key={row.id}>
                   <input value={row.key} onChange={(event) => updateEnv(service.name, row.id, { key: event.target.value })} placeholder="NAME" />
                   <select value={row.kind || "plain"} onChange={(event) => updateEnv(service.name, row.id, { kind: event.target.value as KeyValueRow["kind"] })}>
-                    <option value="plain">普通变量</option>
-                    <option value="secret">密钥引用</option>
+                    <option value="plain">{zh ? "普通变量" : "Plain variable"}</option>
+                    <option value="secret">{zh ? "密钥引用" : "Secret reference"}</option>
                   </select>
                   <input
                     value={row.value}
                     onChange={(event) => updateEnv(service.name, row.id, { value: event.target.value })}
                     placeholder={row.kind === "secret" ? "${DATABASE_URL}" : "value"}
                   />
-                  <button type="button" className="ghost" onClick={() => removeEnv(service, row.id)}>删除</button>
+                  <button type="button" className="ghost" onClick={() => removeEnv(service, row.id)}>{zh ? "删除" : "Remove"}</button>
                 </div>
-              )) : <p className="deploy-muted">当前服务还没有环境变量。</p>}
+              )) : <p className="deploy-muted">{zh ? "当前服务还没有环境变量。" : "This service has no environment variables yet."}</p>}
             </article>
-          )) : <p className="deploy-muted">先在 docker-compose.yml 中声明服务，再配置服务环境变量。</p>}
+          )) : <p className="deploy-muted">{zh ? "先在 docker-compose.yml 中声明服务，再配置服务环境变量。" : "Declare services in docker-compose.yml before configuring service environment variables."}</p>}
         </div>
       </section>
       <section className="deploy-config-section" id="compose-storage">
-        <header><span>04</span><h3>存储卷</h3></header>
+        <header><span>04</span><h3>{zh ? "存储卷" : "Volumes"}</h3></header>
         <div className="compose-volume-list">
           {draft.volumes.length ? draft.volumes.map((volume) => (
             <article className="compose-service-card" key={volume.name}>
               <strong>{volume.name}<small>{volume.target}</small></strong>
               <div className="deploy-field-grid compact">
-                <label><span>存储模式</span><select value={volume.storageMode} onChange={(event) => updateVolume(volume.name, { storageMode: event.target.value as ComposeVolumeDraft["storageMode"] })}><option value="unmanaged">unmanaged volume</option><option value="storageClass">storageClass</option><option value="local">local node path</option></select></label>
+                <label><span>{zh ? "存储模式" : "Storage mode"}</span><select value={volume.storageMode} onChange={(event) => updateVolume(volume.name, { storageMode: event.target.value as ComposeVolumeDraft["storageMode"] })}><option value="unmanaged">unmanaged volume</option><option value="storageClass">storageClass</option><option value="local">local node path</option></select></label>
                 {volume.storageMode === "storageClass" ? (
-                  <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolume(volume.name, { storageClass: event.target.value })}><option value="">选择已注册存储</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
+                  <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolume(volume.name, { storageClass: event.target.value })}><option value="">{zh ? "选择已注册存储" : "Select registered storage"}</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
                 ) : volume.storageMode === "local" ? (
                   <>
-                    <label><span>节点</span><select value={volume.localNode} onChange={(event) => updateVolume(volume.name, { localNode: event.target.value })}><option value="">选择 agent ready 节点</option>{localReadyNodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>
-                    <label><span>本地路径</span><input value={volume.localPath} onChange={(event) => updateVolume(volume.name, { localPath: event.target.value })} placeholder="/opt/luma/state/app" /></label>
+                    <label><span>{zh ? "节点" : "Node"}</span><select value={volume.localNode} onChange={(event) => updateVolume(volume.name, { localNode: event.target.value })}><option value="">{zh ? "选择 agent ready 节点" : "Select a ready agent node"}</option>{localReadyNodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>
+                    <label><span>{zh ? "本地路径" : "Local path"}</span><input value={volume.localPath} onChange={(event) => updateVolume(volume.name, { localPath: event.target.value })} placeholder="/opt/luma/state/app" /></label>
                   </>
                 ) : (
-                  <label><span>说明</span><input value="保留为 Compose 命名卷，Luma 不接管存储后端" disabled /></label>
+                  <label><span>{zh ? "说明" : "Note"}</span><input value={zh ? "保留为 Compose 命名卷，Luma 不接管存储后端" : "Kept as a Compose named volume; Luma does not manage the storage backend"} disabled /></label>
                 )}
               </div>
             </article>
-          )) : <p className="deploy-muted">当前 Compose 模板没有声明命名卷。</p>}
+          )) : <p className="deploy-muted">{zh ? "当前 Compose 模板没有声明命名卷。" : "This Compose template does not declare named volumes."}</p>}
         </div>
       </section>
       <section className="deploy-config-section" id="compose-advanced">
-        <header><span>05</span><h3>部署开关</h3></header>
+        <header><span>05</span><h3>{zh ? "部署开关" : "Deploy options"}</h3></header>
         <div className="deploy-switch-grid">
           <label className="deploy-toggle">
             <input type="checkbox" checked={draft.skipDns} onChange={(event) => patch({ skipDns: event.target.checked })} />
             <div>
-              <strong>跳过 DNS</strong>
-              <span>部署时不自动在 Cloudflare 上同步更新域名解析记录</span>
+              <strong>{zh ? "跳过 DNS" : "Skip DNS"}</strong>
+              <span>{zh ? "部署时不自动在 Cloudflare 上同步更新域名解析记录" : "Do not automatically sync Cloudflare DNS records during deploy."}</span>
             </div>
           </label>
           <label className="deploy-toggle">
             <input type="checkbox" checked={draft.skipPortainer} onChange={(event) => patch({ skipPortainer: event.target.checked })} />
             <div>
-              <strong>跳过 Portainer</strong>
-              <span>部署时不通过 Portainer API 创建或更新 Swarm stack</span>
+              <strong>{zh ? "跳过 Portainer" : "Skip Portainer"}</strong>
+              <span>{zh ? "部署时不通过 Portainer API 创建或更新 Swarm stack" : "Do not create or update the Swarm stack through the Portainer API during deploy."}</span>
             </div>
           </label>
         </div>

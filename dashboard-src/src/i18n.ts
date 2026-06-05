@@ -89,7 +89,7 @@ export const I18N = {
     reserved: "预留",
   },
   en: {
-    title: "Deploy Console",
+    title: "Control Console",
     subtitle: "Inspect control readiness, servers, services, and traffic paths.",
     navOverview: "Overview",
     navNodes: "Nodes",

@@ -82,7 +82,9 @@ export type DeployTemplate = {
   id: string;
   mode: DeployMode;
   name: string;
+  nameEn?: string;
   description: string;
+  descriptionEn?: string;
   tags: string[];
   service?: ServiceManifestDraft;
   compose?: ComposeDeploymentDraft;

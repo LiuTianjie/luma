@@ -52,7 +52,7 @@ export function ApplicationManagementPanel({
 
   const restart = async (app: Application) => {
     setActionError("");
-    if (!window.confirm(`确认重启应用 ${app.stack}？`)) return;
+    if (!window.confirm(lang === "zh" ? `确认重启应用 ${app.stack}？` : `Restart application ${app.stack}?`)) return;
     setActionBusy(app.stack);
     try {
       await restartApplication({ token, stack: app.stack });
@@ -69,7 +69,7 @@ export function ApplicationManagementPanel({
       onCreateApplication();
       return;
     }
-    setActionError("当前页面未配置创建应用入口。");
+    setActionError(lang === "zh" ? "当前页面未配置创建应用入口。" : "This page does not have a create-application entry configured.");
   };
   const openDetails = (app: Application) => {
     setDeploymentConfig(null);
@@ -79,7 +79,7 @@ export function ApplicationManagementPanel({
   const openUpdate = async (app: Application) => {
     setActionError("");
     if (!onUpdateApplication) {
-      setActionError("当前页面未配置更新应用入口。");
+      setActionError(lang === "zh" ? "当前页面未配置更新应用入口。" : "This page does not have an update-application entry configured.");
       return;
     }
     setConfigBusy(app.stack);
@@ -91,7 +91,9 @@ export function ApplicationManagementPanel({
       const message = String(error instanceof Error ? error.message : error);
       onUpdateApplication({
         app,
-        configWarning: `未读取到已登记部署配置，已从当前运行状态反推；提交前请重点核对 YAML。${message ? ` (${message})` : ""}`,
+        configWarning: lang === "zh"
+          ? `未读取到已登记部署配置，已从当前运行状态反推；提交前请重点核对 YAML。${message ? ` (${message})` : ""}`
+          : `Could not load a registered deployment config, so the form was inferred from current runtime state. Review the YAML carefully before submitting.${message ? ` (${message})` : ""}`,
       });
     } finally {
       setConfigBusy("");
@@ -176,7 +178,7 @@ export function ApplicationManagementPanel({
             </section>
           ) : null}
           <section className="application-detail-section">
-            <h3>服务</h3>
+            <h3>{t(lang, "services")}</h3>
             <div className="application-service-grid">
               {selected.services.map((service) => (
                 <article className="application-service-detail" key={service.fullName || service.name}>
@@ -197,15 +199,15 @@ export function ApplicationManagementPanel({
             </div>
           </section>
           <section className="application-detail-section">
-            <h3>存储与诊断</h3>
+            <h3>{lang === "zh" ? "存储与诊断" : "Storage and diagnostics"}</h3>
             <div className="application-diagnostics-list">
               {selectedVolumes.length ? selectedVolumes.map((volume) => (
                 <div key={`${volume.name}-${volume.storageClass}-${volume.node}`}>
                   <strong>{volume.name}</strong>
                   <span>{volume.kind || "unmanaged"} / {volume.storageClass || volume.node || "-"}</span>
                 </div>
-              )) : <p>未发现应用卷</p>}
-              {selectedDiagnostics.length ? selectedDiagnostics.map((item) => <p key={item}>{item}</p>) : <p>暂无诊断告警</p>}
+              )) : <p>{lang === "zh" ? "未发现应用卷" : "No application volumes found"}</p>}
+              {selectedDiagnostics.length ? selectedDiagnostics.map((item) => <p key={item}>{item}</p>) : <p>{lang === "zh" ? "暂无诊断告警" : "No diagnostic warnings"}</p>}
             </div>
           </section>
         </div>

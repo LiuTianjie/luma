@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import type { Lang } from "../types";
 import type { DeployMode, DeployTemplate } from "./types";
+import { deployTemplateDescription, deployTemplateName } from "./templates";
 
 const TEMPLATE_BRANDS: Record<string, { slug?: string; color: string; initials: string; accent: string }> = {
   "service-custom": { color: "#f8fafc", initials: "L", accent: "#7c3aed" },
@@ -53,9 +54,9 @@ function compact(value: string, max = 34) {
   return `${value.slice(0, max - 1)}…`;
 }
 
-function volumeModeSummary(template: DeployTemplate) {
+function volumeModeSummary(template: DeployTemplate, lang: Lang) {
   const volumes = template.compose?.volumes || [];
-  if (!volumes.length) return "no named volumes";
+  if (!volumes.length) return lang === "zh" ? "无命名卷" : "no named volumes";
   const counts = volumes.reduce<Record<string, number>>((current, volume) => {
     const key = volume.storageMode || "unmanaged";
     current[key] = (current[key] || 0) + 1;
@@ -82,7 +83,7 @@ function templateFacts(template: DeployTemplate, lang: Lang) {
     `${compose.services.length} ${lang === "zh" ? "服务" : "services"}`,
     `${compose.region} / ${exposed.length ? exposed.map((service) => service.exposure).join(", ") : "none"}`,
     exposed.length ? compact(exposed.map((service) => `${service.domain}:${service.port}`).join(", ")) : (lang === "zh" ? "内部访问" : "internal only"),
-    compact(volumeModeSummary(template)),
+    compact(volumeModeSummary(template, lang)),
   ];
 }
 
@@ -118,7 +119,7 @@ export function DeployTemplates({
                   className={mode === "service" ? "active" : ""}
                   onClick={() => onModeChange("service")}
                 >
-                  单服务
+                  {lang === "zh" ? "单服务" : "Service"}
                 </button>
                 <button
                   type="button"
@@ -148,8 +149,8 @@ export function DeployTemplates({
               <span className="template-card-action">{lang === "zh" ? "使用" : "Use"} →</span>
             </div>
             <div className="template-card-info">
-              <strong className="template-card-name">{template.name}</strong>
-              <span className="template-card-desc">{template.description}</span>
+              <strong className="template-card-name">{deployTemplateName(template, lang)}</strong>
+              <span className="template-card-desc">{deployTemplateDescription(template, lang)}</span>
             </div>
             <div className="template-card-facts">
               {templateFacts(template, lang).map((fact) => <span key={fact}>{fact}</span>)}

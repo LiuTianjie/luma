@@ -4,7 +4,7 @@ import { ComposeDeployForm } from "./ComposeDeployForm";
 import { deployStream, previewCompose, previewService } from "./deployApi";
 import { DeploySummary } from "./DeploySummary";
 import { DeployTemplates } from "./DeployTemplates";
-import { DEPLOY_TEMPLATES } from "./templates";
+import { DEPLOY_TEMPLATES, deployTemplateName } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeployTemplate, ServiceManifestDraft } from "./types";
 import { findNode, hasReadyNodeInRegion, isReadyNode } from "./options";
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
@@ -25,92 +25,93 @@ function isPositiveInteger(value: string | number) {
   return Number.isInteger(numeric) && numeric > 0;
 }
 
-function exposureRegionError(exposure: ServiceManifestDraft["exposure"], region: ServiceManifestDraft["region"] | "", label: string) {
-  if (exposure === "cn-edge" && region !== "cn") return `${label} exposure=cn-edge 必须使用 region=cn`;
-  if (exposure === "external-edge" && region !== "global") return `${label} exposure=external-edge 必须使用 region=global`;
-  if (exposure === "tailscale-relay" && region !== "home") return `${label} exposure=tailscale-relay 必须使用 region=home`;
+function exposureRegionError(exposure: ServiceManifestDraft["exposure"], region: ServiceManifestDraft["region"] | "", label: string, lang: Lang) {
+  if (exposure === "cn-edge" && region !== "cn") return lang === "zh" ? `${label} exposure=cn-edge 必须使用 region=cn` : `${label} exposure=cn-edge requires region=cn`;
+  if (exposure === "external-edge" && region !== "global") return lang === "zh" ? `${label} exposure=external-edge 必须使用 region=global` : `${label} exposure=external-edge requires region=global`;
+  if (exposure === "tailscale-relay" && region !== "home") return lang === "zh" ? `${label} exposure=tailscale-relay 必须使用 region=home` : `${label} exposure=tailscale-relay requires region=home`;
   return "";
 }
 
-function regionNodeErrors(nodes: NonNullable<DashboardPayload["nodes"]>, region: ServiceManifestDraft["region"] | "", nodeName: string, label: string) {
+function regionNodeErrors(nodes: NonNullable<DashboardPayload["nodes"]>, region: ServiceManifestDraft["region"] | "", nodeName: string, label: string, lang: Lang) {
   if (!nodes.length || !region) return [];
   const errors = [];
-  if (!hasReadyNodeInRegion(nodes, region)) errors.push(`${label} region=${region} 当前没有 ready/active 节点`);
+  if (!hasReadyNodeInRegion(nodes, region)) errors.push(lang === "zh" ? `${label} region=${region} 当前没有 ready/active 节点` : `${label} region=${region} has no ready/active nodes`);
   if (nodeName) {
     const node = findNode(nodes, nodeName);
-    if (!node) errors.push(`${label} 节点 ${nodeName} 不在当前节点清单中`);
+    if (!node) errors.push(lang === "zh" ? `${label} 节点 ${nodeName} 不在当前节点清单中` : `${label} node ${nodeName} is not in the current node list`);
     else {
-      if (!isReadyNode(node)) errors.push(`${label} 节点 ${nodeName} 当前不是 ready/active`);
-      if (node.region !== region) errors.push(`${label} 节点 ${nodeName} 属于 region=${node.region || "-"}，不能用于 region=${region}`);
+      if (!isReadyNode(node)) errors.push(lang === "zh" ? `${label} 节点 ${nodeName} 当前不是 ready/active` : `${label} node ${nodeName} is not ready/active`);
+      if (node.region !== region) errors.push(lang === "zh" ? `${label} 节点 ${nodeName} 属于 region=${node.region || "-"}，不能用于 region=${region}` : `${label} node ${nodeName} belongs to region=${node.region || "-"} and cannot be used for region=${region}`);
     }
   }
   return errors;
 }
 
-function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>) {
-  if (yamlDirty) return serviceYaml.trim() ? [] : ["service.yaml 不能为空"];
+function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>, lang: Lang) {
+  const serviceLabel = lang === "zh" ? "服务" : "service";
+  if (yamlDirty) return serviceYaml.trim() ? [] : [lang === "zh" ? "service.yaml 不能为空" : "service.yaml cannot be empty"];
   const errors = [];
-  if (!draft.name.trim()) errors.push("服务名不能为空");
-  if (!draft.image.trim()) errors.push("镜像不能为空");
-  const regionError = exposureRegionError(draft.exposure, draft.region, draft.name || "服务");
+  if (!draft.name.trim()) errors.push(lang === "zh" ? "服务名不能为空" : "Service name cannot be empty");
+  if (!draft.image.trim()) errors.push(lang === "zh" ? "镜像不能为空" : "Image cannot be empty");
+  const regionError = exposureRegionError(draft.exposure, draft.region, draft.name || serviceLabel, lang);
   if (regionError) errors.push(regionError);
-  errors.push(...regionNodeErrors(nodes, draft.region, draft.node, draft.name || "服务"));
-  if (draft.exposure !== "none" && !draft.domain.trim()) errors.push("公开入口必须填写域名");
-  if (draft.exposure !== "none" && !draft.port.trim()) errors.push("公开入口必须填写容器端口");
-  if (draft.exposure !== "none" && draft.port.trim() && !isPositiveInteger(draft.port)) errors.push("容器端口必须是正整数");
-  if (draft.publishPort.trim() && !isPositiveInteger(draft.publishPort)) errors.push("发布端口必须是正整数");
-  if (!isPositiveInteger(draft.replicas)) errors.push("副本数必须是大于 0 的整数");
+  errors.push(...regionNodeErrors(nodes, draft.region, draft.node, draft.name || serviceLabel, lang));
+  if (draft.exposure !== "none" && !draft.domain.trim()) errors.push(lang === "zh" ? "公开入口必须填写域名" : "Public exposure requires a domain");
+  if (draft.exposure !== "none" && !draft.port.trim()) errors.push(lang === "zh" ? "公开入口必须填写容器端口" : "Public exposure requires a container port");
+  if (draft.exposure !== "none" && draft.port.trim() && !isPositiveInteger(draft.port)) errors.push(lang === "zh" ? "容器端口必须是正整数" : "Container port must be a positive integer");
+  if (draft.publishPort.trim() && !isPositiveInteger(draft.publishPort)) errors.push(lang === "zh" ? "发布端口必须是正整数" : "Published port must be a positive integer");
+  if (!isPositiveInteger(draft.replicas)) errors.push(lang === "zh" ? "副本数必须是大于 0 的整数" : "Replicas must be an integer greater than 0");
   for (const volume of draft.volumeMounts || []) {
-    if (!volume.name.trim() && volume.target.trim()) errors.push("卷挂载缺少 volume 名称");
-    if (volume.name.trim() && !volume.target.trim()) errors.push(`${volume.name.trim()} 缺少挂载目标`);
+    if (!volume.name.trim() && volume.target.trim()) errors.push(lang === "zh" ? "卷挂载缺少 volume 名称" : "Volume mount is missing a volume name");
+    if (volume.name.trim() && !volume.target.trim()) errors.push(lang === "zh" ? `${volume.name.trim()} 缺少挂载目标` : `${volume.name.trim()} is missing a mount target`);
     if (volume.storageMode === "storageClass" && volume.name.trim() && !volume.storageClass.trim()) {
-      errors.push(`${volume.name.trim()} 必须选择 storageClass`);
+      errors.push(lang === "zh" ? `${volume.name.trim()} 必须选择 storageClass` : `${volume.name.trim()} must select a storageClass`);
     }
   }
   for (const row of draft.env || []) {
-    if (!row.key.trim() && row.value.trim()) errors.push("环境变量缺少名称");
+    if (!row.key.trim() && row.value.trim()) errors.push(lang === "zh" ? "环境变量缺少名称" : "Environment variable is missing a name");
     if (row.kind === "secret" && row.key.trim() && !secretRefPattern.test(row.value.trim())) {
-      errors.push(`${row.key.trim()} 密钥值必须使用 \${NAME} 引用`);
+      errors.push(lang === "zh" ? `${row.key.trim()} 密钥值必须使用 \${NAME} 引用` : `${row.key.trim()} secret value must use a \${NAME} reference`);
     }
   }
   return errors;
 }
 
-function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, composeYaml: string, sidecarYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>) {
+function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, composeYaml: string, sidecarYaml: string, nodes: NonNullable<DashboardPayload["nodes"]>, lang: Lang) {
   if (yamlDirty) {
     const errors = [];
-    if (!composeYaml.trim()) errors.push("docker-compose.yml 不能为空");
-    if (!sidecarYaml.trim()) errors.push("luma.compose.yml 不能为空");
+    if (!composeYaml.trim()) errors.push(lang === "zh" ? "docker-compose.yml 不能为空" : "docker-compose.yml cannot be empty");
+    if (!sidecarYaml.trim()) errors.push(lang === "zh" ? "luma.compose.yml 不能为空" : "luma.compose.yml cannot be empty");
     return errors;
   }
   const errors = [];
-  if (!draft.name.trim()) errors.push("应用名不能为空");
-  errors.push(...regionNodeErrors(nodes, draft.region, "", draft.name || "应用"));
+  if (!draft.name.trim()) errors.push(lang === "zh" ? "应用名不能为空" : "Application name cannot be empty");
+  errors.push(...regionNodeErrors(nodes, draft.region, "", draft.name || (lang === "zh" ? "应用" : "application"), lang));
   for (const service of draft.services) {
     const region = service.region || draft.region;
-    const regionError = exposureRegionError(service.exposure, region, service.name);
+    const regionError = exposureRegionError(service.exposure, region, service.name, lang);
     if (regionError) errors.push(regionError);
-    errors.push(...regionNodeErrors(nodes, region, service.node, service.name));
-    if (service.exposure !== "none" && !service.domain.trim()) errors.push(`${service.name} 必须填写域名`);
-    if (service.exposure !== "none" && !service.port.trim()) errors.push(`${service.name} 必须填写容器端口`);
-    if (service.exposure !== "none" && service.port.trim() && !isPositiveInteger(service.port)) errors.push(`${service.name} 容器端口必须是正整数`);
-    if (service.publishPort.trim() && !isPositiveInteger(service.publishPort)) errors.push(`${service.name} 发布端口必须是正整数`);
-    if (!isPositiveInteger(service.replicas)) errors.push(`${service.name} 副本数必须是大于 0 的整数`);
+    errors.push(...regionNodeErrors(nodes, region, service.node, service.name, lang));
+    if (service.exposure !== "none" && !service.domain.trim()) errors.push(lang === "zh" ? `${service.name} 必须填写域名` : `${service.name} requires a domain`);
+    if (service.exposure !== "none" && !service.port.trim()) errors.push(lang === "zh" ? `${service.name} 必须填写容器端口` : `${service.name} requires a container port`);
+    if (service.exposure !== "none" && service.port.trim() && !isPositiveInteger(service.port)) errors.push(lang === "zh" ? `${service.name} 容器端口必须是正整数` : `${service.name} container port must be a positive integer`);
+    if (service.publishPort.trim() && !isPositiveInteger(service.publishPort)) errors.push(lang === "zh" ? `${service.name} 发布端口必须是正整数` : `${service.name} published port must be a positive integer`);
+    if (!isPositiveInteger(service.replicas)) errors.push(lang === "zh" ? `${service.name} 副本数必须是大于 0 的整数` : `${service.name} replicas must be an integer greater than 0`);
     for (const row of service.env || []) {
-      if (!row.key.trim() && row.value.trim()) errors.push(`${service.name} 环境变量缺少名称`);
+      if (!row.key.trim() && row.value.trim()) errors.push(lang === "zh" ? `${service.name} 环境变量缺少名称` : `${service.name} environment variable is missing a name`);
       if (row.kind === "secret" && row.key.trim() && !secretRefPattern.test(row.value.trim())) {
-        errors.push(`${service.name}.${row.key.trim()} 密钥值必须使用 \${NAME} 引用`);
+        errors.push(lang === "zh" ? `${service.name}.${row.key.trim()} 密钥值必须使用 \${NAME} 引用` : `${service.name}.${row.key.trim()} secret value must use a \${NAME} reference`);
       }
     }
   }
   for (const volume of draft.volumes) {
-    if (volume.storageMode === "storageClass" && !volume.storageClass) errors.push(`${volume.name} 必须选择 storageClass`);
-    if (volume.storageMode === "local" && (!volume.localNode || !volume.localPath)) errors.push(`${volume.name} 必须填写本地节点和路径`);
+    if (volume.storageMode === "storageClass" && !volume.storageClass) errors.push(lang === "zh" ? `${volume.name} 必须选择 storageClass` : `${volume.name} must select a storageClass`);
+    if (volume.storageMode === "local" && (!volume.localNode || !volume.localPath)) errors.push(lang === "zh" ? `${volume.name} 必须填写本地节点和路径` : `${volume.name} must specify a local node and path`);
     if (volume.storageMode === "local" && volume.localNode) {
       const node = findNode(nodes, volume.localNode);
-      if (!node) errors.push(`${volume.name} 本地存储节点 ${volume.localNode} 不在当前节点清单中`);
+      if (!node) errors.push(lang === "zh" ? `${volume.name} 本地存储节点 ${volume.localNode} 不在当前节点清单中` : `${volume.name} local storage node ${volume.localNode} is not in the current node list`);
       else if (!isReadyNode(node) || node.agentStatus !== "ready") {
-        errors.push(`${volume.name} 本地存储节点 ${volume.localNode} 不是 ready agent 节点`);
+        errors.push(lang === "zh" ? `${volume.name} 本地存储节点 ${volume.localNode} 不是 ready agent 节点` : `${volume.name} local storage node ${volume.localNode} is not a ready agent node`);
       }
     }
   }
@@ -214,11 +215,12 @@ export function DeployWorkspace({
 
   const validationErrors = useMemo(
     () => mode === "service"
-      ? serviceErrors(serviceDraft, yamlDirty, serviceYaml, nodes)
-      : composeErrors(composeDraft, yamlDirty, composeYaml, sidecarYaml, nodes),
-    [composeDraft, composeYaml, mode, nodes, serviceDraft, serviceYaml, sidecarYaml, yamlDirty],
+      ? serviceErrors(serviceDraft, yamlDirty, serviceYaml, nodes, lang)
+      : composeErrors(composeDraft, yamlDirty, composeYaml, sidecarYaml, nodes, lang),
+    [composeDraft, composeYaml, lang, mode, nodes, serviceDraft, serviceYaml, sidecarYaml, yamlDirty],
   );
   const allErrors = [...validationErrors, ...runtimeErrors];
+  const selectedTemplate = DEPLOY_TEMPLATES.find((item) => item.id === activeTemplateId);
 
   const selectTemplate = (template: DeployTemplate) => {
     setActiveTemplateId(template.id);
@@ -295,7 +297,10 @@ export function DeployWorkspace({
     setSteps([]);
     if (validationErrors.length) return;
     const target = mode === "service" ? serviceDraft.name : composeDraft.name;
-    if (!window.confirm(`确认部署 ${target} 到当前 Luma Control 集群？`)) return;
+    const confirmMessage = lang === "zh"
+      ? `确认部署 ${target} 到当前 Luma Control 集群？`
+      : `Deploy ${target} to the current Luma Control cluster?`;
+    if (!window.confirm(confirmMessage)) return;
     setStatus("deploying");
     try {
       await deployStream(
@@ -325,8 +330,8 @@ export function DeployWorkspace({
           {!templateLanding && showTemplates ? <button type="button" className="ghost" onClick={backToTemplates}>{lang === "zh" ? "返回模板" : "Back to templates"}</button> : null}
           {!templateLanding ? (
             <div className="deploy-editor-tabs">
-              <button type="button" className={editorMode === "form" ? "active" : ""} onClick={() => setEditorMode("form")}>配置表单</button>
-              <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => setEditorMode("yaml")}>YAML 文件</button>
+              <button type="button" className={editorMode === "form" ? "active" : ""} onClick={() => setEditorMode("form")}>{lang === "zh" ? "配置表单" : "Form"}</button>
+              <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => setEditorMode("yaml")}>{lang === "zh" ? "YAML 文件" : "YAML files"}</button>
             </div>
           ) : null}
           {onClose ? <button type="button" className="icon-button" onClick={onClose}>{lang === "zh" ? "关闭" : "Close"}</button> : null}
@@ -349,7 +354,7 @@ export function DeployWorkspace({
           {showTemplates ? (
             <div className="selected-template-strip">
               <span>{lang === "zh" ? "当前模板" : "Selected template"}</span>
-              <strong>{DEPLOY_TEMPLATES.find((item) => item.id === activeTemplateId)?.name || activeTemplateId}</strong>
+              <strong>{selectedTemplate ? deployTemplateName(selectedTemplate, lang) : activeTemplateId}</strong>
               <small>{mode === "service" ? (lang === "zh" ? "单服务" : "Single service") : "Compose"}</small>
             </div>
           ) : null}
@@ -357,8 +362,8 @@ export function DeployWorkspace({
             <main className="deploy-config-main">
               {editorMode === "form" ? (
                 mode === "service"
-                  ? <SingleServiceDeployForm draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateServiceDraft} />
-                  : <ComposeDeployForm draft={composeDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />
+                  ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateServiceDraft} />
+                  : <ComposeDeployForm lang={lang} draft={composeDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />
               ) : (
                 <YamlPreviewEditor
                   mode={mode}
@@ -375,12 +380,12 @@ export function DeployWorkspace({
           </div>
           <div className="deploy-action-bar">
             <div>
-              <strong>{yamlDirty ? "YAML 已手动编辑" : "表单同步 YAML"}</strong>
-              <span>Secret 使用 ${"{NAME}"} 引用，明文密钥请先存入 Luma Control。</span>
+              <strong>{yamlDirty ? (lang === "zh" ? "YAML 已手动编辑" : "YAML edited manually") : (lang === "zh" ? "表单同步 YAML" : "Form syncs to YAML")}</strong>
+              <span>{lang === "zh" ? <>Secret 使用 ${"{NAME}"} 引用，明文密钥请先存入 Luma Control。</> : <>Secrets must use ${"{NAME}"} references. Store plaintext secrets in Luma Control first.</>}</span>
             </div>
-            <button type="button" className="ghost" onClick={() => setEditorMode("yaml")}>预览 YAML</button>
-            <button type="button" className="ghost" disabled={status !== "idle"} onClick={() => void runPreview()}>{status === "previewing" ? "校验中..." : "校验"}</button>
-            <button type="button" disabled={status !== "idle" || validationErrors.length > 0} onClick={() => void runDeploy()}>{status === "deploying" ? "部署中..." : "部署"}</button>
+            <button type="button" className="ghost" onClick={() => setEditorMode("yaml")}>{lang === "zh" ? "预览 YAML" : "Preview YAML"}</button>
+            <button type="button" className="ghost" disabled={status !== "idle"} onClick={() => void runPreview()}>{status === "previewing" ? (lang === "zh" ? "校验中..." : "Validating...") : (lang === "zh" ? "校验" : "Validate")}</button>
+            <button type="button" disabled={status !== "idle" || validationErrors.length > 0} onClick={() => void runDeploy()}>{status === "deploying" ? (lang === "zh" ? "部署中..." : "Deploying...") : (lang === "zh" ? "部署" : "Deploy")}</button>
           </div>
         </>
       )}

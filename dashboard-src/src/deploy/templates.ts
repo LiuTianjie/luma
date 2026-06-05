@@ -1,3 +1,4 @@
+import type { Lang } from "../types";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, DeployTemplate, ServiceManifestDraft, ServiceVolumeDraft } from "./types";
 
 let rowCounter = 0;
@@ -38,6 +39,14 @@ export function serviceDraft(overrides: Partial<ServiceManifestDraft> = {}): Ser
     skipPortainer: false,
     ...overrides,
   };
+}
+
+export function deployTemplateName(template: DeployTemplate, lang: Lang) {
+  return lang === "zh" ? template.name : template.nameEn || template.name;
+}
+
+export function deployTemplateDescription(template: DeployTemplate, lang: Lang) {
+  return lang === "zh" ? template.description : template.descriptionEn || template.description;
 }
 
 function composeDraft(overrides: Partial<ComposeDeploymentDraft> = {}): ComposeDeploymentDraft {
@@ -88,7 +97,9 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "service-custom",
     mode: "service",
     name: "自定义配置",
+    nameEn: "Custom service",
     description: "内部单服务起点，默认镜像 traefik/whoami。",
+    descriptionEn: "Internal single-service starter, defaulting to traefik/whoami.",
     tags: ["custom", "service"],
     service: serviceDraft({
       name: "custom-service",
@@ -102,7 +113,9 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     id: "compose-custom",
     mode: "compose",
     name: "自定义配置",
+    nameEn: "Custom Compose",
     description: "单容器 Compose 起点，默认 app 服务不暴露入口。",
+    descriptionEn: "Single-container Compose starter with the app service kept internal.",
     tags: ["custom", "compose"],
     compose: composeDraft({
       name: "custom-compose",
@@ -121,6 +134,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "service",
     name: "whoami",
     description: "traefik/whoami，cn-edge，容器端口 80。",
+    descriptionEn: "traefik/whoami, cn-edge, container port 80.",
     tags: ["test", "cn-edge"],
     service: serviceDraft(),
   },
@@ -129,6 +143,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "service",
     name: "nginx",
     description: "nginx:alpine，cn-edge，容器端口 80。",
+    descriptionEn: "nginx:alpine, cn-edge, container port 80.",
     tags: ["web", "public"],
     service: serviceDraft({
       name: "nginx",
@@ -144,6 +159,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "service",
     name: "redis worker",
     description: "redis:7-alpine，内部访问，挂载 redis-data。",
+    descriptionEn: "redis:7-alpine, internal access, mounts redis-data.",
     tags: ["internal", "state"],
     service: serviceDraft({
       name: "redis",
@@ -161,6 +177,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "service",
     name: "Grafana",
     description: "grafana-oss，home relay，容器端口 3000。",
+    descriptionEn: "grafana-oss, home relay, container port 3000.",
     tags: ["monitoring", "dashboard"],
     service: serviceDraft({
       name: "grafana",
@@ -180,6 +197,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "service",
     name: "MinIO",
     description: "minio/minio，home relay，Console 端口 9001。",
+    descriptionEn: "minio/minio, home relay, console port 9001.",
     tags: ["storage", "s3"],
     service: serviceDraft({
       name: "minio",
@@ -203,6 +221,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "service",
     name: "Jellyfin",
     description: "jellyfin/jellyfin，home relay，容器端口 8096。",
+    descriptionEn: "jellyfin/jellyfin, home relay, container port 8096.",
     tags: ["media", "home"],
     service: serviceDraft({
       name: "jellyfin",
@@ -224,6 +243,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "service",
     name: "code-server",
     description: "linuxserver/code-server，home relay，端口 8443。",
+    descriptionEn: "linuxserver/code-server, home relay, port 8443.",
     tags: ["dev", "ide"],
     service: serviceDraft({
       name: "code-server",
@@ -253,6 +273,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "compose",
     name: "Uptime Kuma",
     description: "1 个服务，home relay，容器端口 3001。",
+    descriptionEn: "1 service, home relay, container port 3001.",
     tags: ["monitoring", "stateful"],
     compose: composeDraft({
       name: "uptime-kuma",
@@ -276,6 +297,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "compose",
     name: "Vaultwarden",
     description: "1 个服务，home relay，容器端口 80。",
+    descriptionEn: "1 service, home relay, container port 80.",
     tags: ["security", "stateful"],
     compose: composeDraft({
       name: "vaultwarden",
@@ -301,6 +323,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "compose",
     name: "Gitea",
     description: "1 个服务，home relay，Web 端口 3000。",
+    descriptionEn: "1 service, home relay, web port 3000.",
     tags: ["git", "stateful"],
     compose: composeDraft({
       name: "gitea",
@@ -327,6 +350,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "compose",
     name: "n8n",
     description: "1 个服务，home relay，n8n 回调地址来自域名。",
+    descriptionEn: "1 service, home relay, n8n webhook URL follows the domain.",
     tags: ["automation", "stateful"],
     compose: composeDraft({
       name: "n8n",
@@ -355,6 +379,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "compose",
     name: "Nextcloud",
     description: "3 个服务：nextcloud、postgres、redis。",
+    descriptionEn: "3 services: nextcloud, postgres, and redis.",
     tags: ["files", "collaboration"],
     compose: composeDraft({
       name: "nextcloud",
@@ -428,6 +453,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "compose",
     name: "Ghost",
     description: "2 个服务：ghost、mysql，端口 2368。",
+    descriptionEn: "2 services: ghost and mysql, port 2368.",
     tags: ["blog", "cms"],
     compose: composeDraft({
       name: "ghost",
@@ -497,6 +523,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "compose",
     name: "Paperless-ngx",
     description: "3 个服务：paperless、postgres、redis。",
+    descriptionEn: "3 services: paperless, postgres, and redis.",
     tags: ["documents", "ocr"],
     compose: composeDraft({
       name: "paperless",
@@ -573,6 +600,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
     mode: "compose",
     name: "Stirling PDF",
     description: "1 个服务，home relay，容器端口 8080。",
+    descriptionEn: "1 service, home relay, container port 8080.",
     tags: ["documents", "utility"],
     compose: composeDraft({
       name: "stirling-pdf",

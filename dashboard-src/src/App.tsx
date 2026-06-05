@@ -130,13 +130,15 @@ export function App() {
   const updateContextNode = updateContext ? (
     <section className="application-update-context">
       <div className="application-update-context-title">
-        <strong>当前应用</strong>
-        <span>{updateContext.deploymentConfig?.manifest ? "已读取 Luma Control 登记的部署配置，提交后会按同名应用更新。" : "下面的配置从现有 stack 带入，提交后会按同名应用更新。"}</span>
+        <strong>{lang === "zh" ? "当前应用" : "Current application"}</strong>
+        <span>{updateContext.deploymentConfig?.manifest
+          ? (lang === "zh" ? "已读取 Luma Control 登记的部署配置，提交后会按同名应用更新。" : "Loaded the deployment config registered in Luma Control. Submitting updates the application with the same name.")
+          : (lang === "zh" ? "下面的配置从现有 stack 带入，提交后会按同名应用更新。" : "The config below is inferred from the current stack. Submitting updates the application with the same name.")}</span>
         {updateContext.configWarning ? <span>{updateContext.configWarning}</span> : null}
       </div>
       <div className="application-update-context-grid">
         <article><span>Stack</span><strong>{updateContext.app.stack}</strong></article>
-        <article><span>服务</span><strong>{updateContext.app.services.length}</strong></article>
+        <article><span>{lang === "zh" ? "服务" : "Services"}</span><strong>{updateContext.app.services.length}</strong></article>
         <article><span>{t(lang, "accessAddress")}</span><strong>{updateContext.app.domains.join(", ") || t(lang, "internalOnly")}</strong></article>
         <article><span>{t(lang, "replicas")}</span><strong>{updateContext.app.running}/{updateContext.app.desired}</strong></article>
       </div>

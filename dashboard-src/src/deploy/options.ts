@@ -1,4 +1,4 @@
-import type { DashboardNode } from "../types";
+import type { DashboardNode, Lang } from "../types";
 import type { Exposure, Region } from "./types";
 
 export const REGIONS: Region[] = ["cn", "global", "home"];
@@ -37,12 +37,13 @@ export function clearNodeIfIncompatible(nodes: DashboardNode[], nodeName: string
   return !region || node.region === region ? nodeName : "";
 }
 
-export function regionOptionLabel(nodes: DashboardNode[], region: Region): string {
-  return hasReadyNodeInRegion(nodes, region) ? region : `${region} (无 ready 节点)`;
+export function regionOptionLabel(nodes: DashboardNode[], region: Region, lang: Lang = "zh"): string {
+  if (hasReadyNodeInRegion(nodes, region)) return region;
+  return lang === "zh" ? `${region} (无 ready 节点)` : `${region} (no ready nodes)`;
 }
 
-export function exposureOptionLabel(nodes: DashboardNode[], exposure: Exposure): string {
+export function exposureOptionLabel(nodes: DashboardNode[], exposure: Exposure, lang: Lang = "zh"): string {
   const requiredRegion = requiredRegionForExposure(exposure);
   if (!requiredRegion || hasReadyNodeInRegion(nodes, requiredRegion)) return exposure;
-  return `${exposure} (缺少 ${requiredRegion} ready 节点)`;
+  return lang === "zh" ? `${exposure} (缺少 ${requiredRegion} ready 节点)` : `${exposure} (missing ready ${requiredRegion} node)`;
 }
