@@ -1,18 +1,21 @@
-import type { DashboardNode } from "../types";
-import type { Exposure, KeyValueRow, Region, ServiceManifestDraft } from "./types";
+import type { DashboardNode, DashboardStorageClass } from "../types";
+import type { Exposure, KeyValueRow, Region, ServiceManifestDraft, ServiceVolumeDraft } from "./types";
 import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, REGIONS, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { serviceExposureRegion } from "./yaml";
 
 export function SingleServiceDeployForm({
   draft,
   nodes,
+  storageClasses,
   onChange,
 }: {
   draft: ServiceManifestDraft;
   nodes: DashboardNode[];
+  storageClasses: DashboardStorageClass[];
   onChange: (draft: ServiceManifestDraft) => void;
 }) {
   const patch = (next: Partial<ServiceManifestDraft>) => onChange({ ...draft, ...next });
+  const volumeMounts = draft.volumeMounts || [];
   const nodeOptions = nodesForRegion(nodes, draft.region);
   const selectedNodeMissing = draft.node && !nodeOptions.some((node) => node.name === draft.node);
   const patchRegion = (region: Region) => {
@@ -24,6 +27,24 @@ export function SingleServiceDeployForm({
   };
   const updateEnv = (id: string, next: Partial<KeyValueRow>) => {
     patch({ env: draft.env.map((row) => row.id === id ? { ...row, ...next } : row) });
+  };
+  const updateVolumeMount = (id: string, next: Partial<ServiceVolumeDraft>) => {
+    patch({ volumeMounts: volumeMounts.map((volume) => volume.id === id ? { ...volume, ...next } : volume) });
+  };
+  const addVolumeMount = () => {
+    patch({
+      volumeMounts: [
+        ...volumeMounts,
+        {
+          id: `service-volume-${Date.now()}`,
+          name: "",
+          target: "",
+          storageMode: "unmanaged",
+          storageClass: "",
+          path: "",
+        },
+      ],
+    });
   };
   return (
     <div className="deploy-form-stack">
@@ -64,11 +85,35 @@ export function SingleServiceDeployForm({
         <header><span>03</span><h3>运行参数</h3></header>
         <div className="deploy-field-grid">
           <label><span>命令</span><input value={draft.command} onChange={(event) => patch({ command: event.target.value })} /></label>
-          <label><span>卷挂载</span><textarea value={draft.volumes} onChange={(event) => patch({ volumes: event.target.value })} placeholder="data:/data" /></label>
-          <label><span>托管存储 YAML</span><textarea value={draft.storage} onChange={(event) => patch({ storage: event.target.value })} placeholder={"data:\n  storageClass: cn-nfs\n  path: app/data"} /></label>
           <label><span>CPU limit</span><input value={draft.cpuLimit} onChange={(event) => patch({ cpuLimit: event.target.value })} placeholder="0.50" /></label>
           <label><span>Memory limit</span><input value={draft.memoryLimit} onChange={(event) => patch({ memoryLimit: event.target.value })} placeholder="512M" /></label>
           <label><span>健康检查 URL</span><input value={draft.healthcheckUrl} onChange={(event) => patch({ healthcheckUrl: event.target.value })} placeholder="http://127.0.0.1:80/healthz" /></label>
+          <label><span>额外挂载</span><textarea value={draft.volumes} onChange={(event) => patch({ volumes: event.target.value })} placeholder="/srv/media:/media:ro" /></label>
+          <label><span>额外 storage YAML</span><textarea value={draft.storage} onChange={(event) => patch({ storage: event.target.value })} placeholder={"data:\n  storageClass: cn-nfs\n  path: app/data"} /></label>
+        </div>
+        <div className="service-volume-editor">
+          <div className="compose-env-header">
+            <strong>存储卷</strong>
+            <button type="button" className="ghost" onClick={addVolumeMount}>添加卷</button>
+          </div>
+          {volumeMounts.length ? volumeMounts.map((volume) => (
+            <article className="service-volume-row" key={volume.id}>
+              <div className="deploy-field-grid compact service-volume-grid">
+                <label><span>volume</span><input value={volume.name} onChange={(event) => updateVolumeMount(volume.id, { name: event.target.value })} placeholder="code-server-config" /></label>
+                <label><span>挂载到</span><input value={volume.target} onChange={(event) => updateVolumeMount(volume.id, { target: event.target.value })} placeholder="/config" /></label>
+                <label><span>存储模式</span><select value={volume.storageMode} onChange={(event) => updateVolumeMount(volume.id, { storageMode: event.target.value as ServiceVolumeDraft["storageMode"] })}><option value="unmanaged">unmanaged volume</option><option value="storageClass">storageClass</option></select></label>
+                {volume.storageMode === "storageClass" ? (
+                  <>
+                    <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolumeMount(volume.id, { storageClass: event.target.value })}><option value="">选择已注册存储</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
+                    <label><span>path</span><input value={volume.path} onChange={(event) => updateVolumeMount(volume.id, { path: event.target.value })} placeholder={`${draft.name || "app"}/${volume.name || "data"}`} /></label>
+                  </>
+                ) : (
+                  <label><span>说明</span><input value="普通 Docker 命名卷，Luma 不接管存储后端" disabled /></label>
+                )}
+                <button type="button" className="ghost" onClick={() => patch({ volumeMounts: volumeMounts.filter((item) => item.id !== volume.id) })}>删除</button>
+              </div>
+            </article>
+          )) : <p className="deploy-muted">还没有声明命名卷。需要持久化配置或数据时添加一个卷。</p>}
         </div>
         <div className="deploy-env-editor">
           <div>

@@ -44,7 +44,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -5161,6 +5161,74 @@ class ControlApiTests(unittest.TestCase):
                     )
                 route = (root / "routes" / "home-panel.yml").read_text(encoding="utf-8")
                 self.assertIn("http://100.64.0.3:8080", route)
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Resolve relay=ok", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_tailscale_relay_waits_for_slow_first_start_task(self):
+        self.assertGreaterEqual(TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, 300)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "home-mac-mini": {"name": "home-mac-mini", "region": "home", "status": "labeled", "swarmNodeId": "home-1"},
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "code-server",
+                        "image": "lscr.io/linuxserver/code-server:latest",
+                        "region": "home",
+                        "node": "home-mac-mini",
+                        "exposure": "tailscale-relay",
+                        "domain": "code.example.com",
+                        "port": 8443,
+                        "publishPort": 1997,
+                    }
+                )
+                docker_nodes = [
+                    {
+                        "ID": "home-1",
+                        "Description": {"Hostname": "orbstack"},
+                        "Spec": {"Labels": {"region": "home", "luma.node.name": "home-mac-mini"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
+                    },
+                ]
+                docker_tasks = [{"NodeID": "home-1", "DesiredState": "running", "Status": {"State": "running"}}]
+                docker_responses = [docker_nodes, [], docker_nodes, [], docker_nodes, docker_tasks]
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.docker_request", side_effect=docker_responses
+                ), patch(
+                    "luma.control.server.time.monotonic",
+                    side_effect=[0, 1, 3],
+                ), patch("luma.control.server.time.sleep") as sleep, patch(
+                    "luma.control.server.resolve_service_image",
+                    side_effect=lambda _config, service, **_kwargs: (service, {"requested": service.image, "selected": service.image}),
+                ), patch(
+                    "luma.control.server.deploy_with_portainer",
+                    return_value="Portainer stack updated",
+                ):
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "code-server.yaml", "skipDns": True},
+                    )
+                route = (root / "routes" / "code-server.yml").read_text(encoding="utf-8")
+                self.assertIn("http://100.64.0.2:1997", route)
+                self.assertEqual(sleep.call_count, 2)
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Resolve relay=ok", steps)
             finally:

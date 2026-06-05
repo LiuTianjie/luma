@@ -56,6 +56,7 @@ from .state import init_state, load_state, require_token, save_state, state_path
 
 AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
 AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SECONDS", "300"))
+TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS", "300"))
 EGRESS_PROXY_URL = os.environ.get("LUMA_EGRESS_PROXY_URL", "http://127.0.0.1:7890")
 EGRESS_NO_PROXY = os.environ.get(
     "LUMA_EGRESS_NO_PROXY",
@@ -3312,7 +3313,7 @@ def _swarm_task_upstream_urls(service: ServiceSpec) -> list[str]:
     port = int(service.publish_port or service.port or 0)
     if port < 1:
         raise LumaError("tailscale-relay requires a valid port")
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS
     last_count = 0
     while True:
         urls, running_count = _running_task_upstream_urls(service, port)

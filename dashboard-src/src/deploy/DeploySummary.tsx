@@ -27,7 +27,7 @@ export function DeploySummary({
     : composeDraft.services.filter((service) => service.exposure !== "none").map((service) => `${service.name} -> ${service.domain}:${service.port}`);
   const storage = mode === "compose"
     ? composeDraft.volumes.map((volume) => volume.storageMode === "storageClass" ? `${volume.name}:${volume.storageClass || "未选择"}` : `${volume.name}:${volume.localNode || "local"}`)
-    : [];
+    : (serviceDraft.volumeMounts || []).map((volume) => volume.storageMode === "storageClass" ? `${volume.name}:${volume.storageClass || "未选择"}` : `${volume.name}:unmanaged`);
   const previewWarnings = preview ? [...(preview.warnings || []), ...(preview.storage?.warnings || [])] : [];
   return (
     <aside className="deploy-summary">

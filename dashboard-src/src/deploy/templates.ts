@@ -1,7 +1,16 @@
-import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, DeployTemplate, ServiceManifestDraft } from "./types";
+import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, DeployTemplate, ServiceManifestDraft, ServiceVolumeDraft } from "./types";
 
 let rowCounter = 0;
 const row = (key = "", value = "") => ({ id: `row-${rowCounter++}`, key, value });
+const serviceVolume = (name: string, target: string, overrides: Partial<ServiceVolumeDraft> = {}): ServiceVolumeDraft => ({
+  id: `service-volume-${rowCounter++}`,
+  name,
+  target,
+  storageMode: "unmanaged",
+  storageClass: "",
+  path: "",
+  ...overrides,
+});
 
 export function serviceDraft(overrides: Partial<ServiceManifestDraft> = {}): ServiceManifestDraft {
   return {
@@ -17,6 +26,7 @@ export function serviceDraft(overrides: Partial<ServiceManifestDraft> = {}): Ser
     proxy: false,
     env: [],
     command: "",
+    volumeMounts: [],
     labels: "",
     networks: "",
     volumes: "",
@@ -142,7 +152,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       domain: "",
       port: "",
       env: [row("REDIS_ARGS", "--appendonly yes")],
-      volumes: "redis-data:/data",
+      volumeMounts: [serviceVolume("redis-data", "/data")],
       memoryLimit: "256M",
     }),
   },
@@ -160,7 +170,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       domain: "grafana.example.com",
       port: "3000",
       env: [row("GF_SERVER_ROOT_URL", "https://grafana.example.com")],
-      volumes: "grafana-data:/var/lib/grafana",
+      volumeMounts: [serviceVolume("grafana-data", "/var/lib/grafana")],
       healthcheckUrl: "http://127.0.0.1:3000/api/health",
       memoryLimit: "512M",
     }),
@@ -184,7 +194,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
         { ...row("MINIO_ROOT_USER", "${MINIO_ROOT_USER}"), kind: "secret" },
         { ...row("MINIO_ROOT_PASSWORD", "${MINIO_ROOT_PASSWORD}"), kind: "secret" },
       ],
-      volumes: "minio-data:/data",
+      volumeMounts: [serviceVolume("minio-data", "/data")],
       memoryLimit: "512M",
     }),
   },
@@ -201,11 +211,11 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       exposure: "tailscale-relay",
       domain: "jellyfin.example.com",
       port: "8096",
-      volumes: [
-        "jellyfin-config:/config",
-        "jellyfin-cache:/cache",
-        "/srv/media:/media:ro",
-      ].join("\n"),
+      volumeMounts: [
+        serviceVolume("jellyfin-config", "/config"),
+        serviceVolume("jellyfin-cache", "/cache"),
+      ],
+      volumes: "/srv/media:/media:ro",
       memoryLimit: "1G",
     }),
   },
@@ -228,7 +238,13 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
         row("TZ", "Asia/Shanghai"),
         { ...row("PASSWORD", "${CODE_SERVER_PASSWORD}"), kind: "secret" },
       ],
-      volumes: "code-server-config:/config",
+      volumeMounts: [
+        serviceVolume("code-server-config", "/config", {
+          storageMode: "storageClass",
+          storageClass: "cn-nfs",
+          path: "code-server/config",
+        }),
+      ],
       memoryLimit: "1G",
     }),
   },

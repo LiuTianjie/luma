@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Luma Console Mockups V4</title>
+  <style>
+    :root {
+      --bg: #07080d;
+      --ink: #f6f2ff;
+      --muted: #b6b1c6;
+      --dim: #777285;
+      --panel: rgba(20, 22, 31, .82);
+      --panel-2: rgba(27, 29, 42, .78);
+      --stroke: rgba(255, 255, 255, .105);
+      --stroke-2: rgba(255, 255, 255, .18);
+      --purple: #8c6cff;
+      --violet: #bd8cff;
+      --cyan: #62d8ff;
+      --green: #52e19b;
+      --amber: #f7c85f;
+      --red: #ff6f8d;
+      --blue: #78a9ff;
+      --shadow: 0 28px 80px rgba(0, 0, 0, .46);
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #05060a; color: var(--ink); }
+    svg { display: block; }
+
+    .deck { display: grid; gap: 44px; padding: 44px; }
+    .screen {
+      width: 2048px;
+      height: 1152px;
+      overflow: hidden;
+      position: relative;
+      display: grid;
+      grid-template-columns: 272px 1fr;
+      border: 1px solid var(--stroke-2);
+      background:
+        radial-gradient(circle at 75% 0%, rgba(140, 108, 255, .22), transparent 34%),
+        radial-gradient(circle at 28% 105%, rgba(82, 225, 155, .12), transparent 33%),
+        linear-gradient(135deg, #080910 0%, #0b0c12 48%, #0a1112 100%);
+      box-shadow: var(--shadow);
+    }
+
+    .screen::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image: linear-gradient(rgba(255,255,255,.022) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+      background-size: 36px 36px;
+      mask-image: radial-gradient(circle at 55% 34%, black, transparent 72%);
+    }
+
+    .sidebar {
+      position: relative;
+      z-index: 1;
+      padding: 28px 20px;
+      border-right: 1px solid var(--stroke);
+      background: rgba(7, 8, 13, .78);
+      backdrop-filter: blur(20px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 34px;
+      font-size: 23px;
+      font-weight: 760;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: linear-gradient(145deg, var(--purple), var(--green));
+      box-shadow: 0 0 38px rgba(140, 108, 255, .42);
+    }
+
+    .brand-mark svg { width: 18px; height: 18px; color: white; }
+    .nav-label { margin: 24px 12px 10px; color: #726d80; font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .nav-item {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      margin: 4px 0;
+      color: var(--muted);
+      border-radius: 8px;
+      font-size: 15px;
+    }
+    .nav-item svg { width: 18px; height: 18px; color: #9c96ae; }
+    .nav-item.active {
+      color: #fff;
+      background: linear-gradient(180deg, rgba(255,255,255,.105), rgba(255,255,255,.055));
+      box-shadow: inset 0 0 0 1px var(--stroke);
+    }
+
+    .main { position: relative; z-index: 1; padding: 28px 32px 34px; min-width: 0; }
+    .topbar { height: 52px; display: grid; grid-template-columns: 640px 1fr auto; align-items: center; gap: 20px; margin-bottom: 26px; }
+    .search {
+      height: 44px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 14px;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      background: rgba(255,255,255,.055);
+      color: #c8c2d7;
+      font-size: 15px;
+    }
+    .search svg { width: 17px; height: 17px; color: var(--dim); }
+    .top-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; }
+    .icon-button {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,.055);
+      color: var(--muted);
+    }
+    .icon-button svg { width: 17px; height: 17px; }
+    .avatar { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #323647, #4d4175); border: 1px solid var(--stroke-2); }
+
+    .heading { display: flex; justify-content: space-between; align-items: end; gap: 18px; margin-bottom: 22px; }
+    h1 { margin: 0; font-size: 45px; line-height: 1.04; letter-spacing: 0; }
+    .sub { margin-top: 9px; color: var(--muted); font-size: 16px; }
+
+    .tabs, .segmented { display: flex; gap: 5px; padding: 4px; border: 1px solid var(--stroke); border-radius: 8px; background: rgba(255,255,255,.055); }
+    .tab, .segment {
+      height: 34px;
+      min-width: 112px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--muted);
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .tab svg, .segment svg { width: 15px; height: 15px; }
+    .tab.active, .segment.active { color: white; background: rgba(255,255,255,.12); box-shadow: inset 0 0 0 1px rgba(255,255,255,.095); }
+
+    .card, .panel {
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.035));
+      box-shadow: 0 1px 0 rgba(255,255,255,.04) inset;
+    }
+
+    .button {
+      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 14px;
+      border-radius: 7px;
+      background: #f4efff;
+      color: #11121a;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .button svg { width: 15px; height: 15px; }
+    .button.dark { color: var(--ink); background: rgba(255,255,255,.08); border: 1px solid var(--stroke); }
+
+    .badge, .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding: 0 9px;
+      border: 1px solid rgba(255,255,255,.09);
+      border-radius: 999px;
+      background: rgba(255,255,255,.07);
+      color: #ded9ed;
+      font-size: 12px;
+      font-weight: 720;
+    }
+    .badge svg, .tag svg { width: 13px; height: 13px; }
+    .good { color: #beffd9; background: rgba(82,225,155,.12); border-color: rgba(82,225,155,.27); }
+    .warn { color: #ffe6a3; background: rgba(247,200,95,.12); border-color: rgba(247,200,95,.28); }
+    .bad { color: #ffc7d1; background: rgba(255,111,141,.13); border-color: rgba(255,111,141,.3); }
+
+    .templates-layout { display: grid; grid-template-columns: minmax(0, 1fr) 392px; gap: 18px; }
+    .catalog-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .chips { display: flex; gap: 8px; }
+    .chip {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 11px;
+      border: 1px solid var(--stroke);
+      border-radius: 999px;
+      color: #c9c3d6;
+      background: rgba(255,255,255,.045);
+      font-size: 13px;
+      font-weight: 690;
+    }
+    .chip.active { color: white; background: rgba(140,108,255,.18); border-color: rgba(140,108,255,.36); }
+    .chip svg { width: 14px; height: 14px; }
+
+    .template-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .template-card {
+      min-height: 228px;
+      padding: 18px;
+      position: relative;
+      overflow: hidden;
+    }
+    .template-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: .7;
+      background: radial-gradient(circle at 92% 0%, var(--accent), transparent 38%);
+      pointer-events: none;
+    }
+    .template-card.featured {
+      border-color: color-mix(in srgb, var(--accent) 65%, white 8%);
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent), 0 22px 54px rgba(0,0,0,.28);
+    }
+    .template-card > * { position: relative; z-index: 1; }
+    .template-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 16px; }
+    .template-icon {
+      width: 52px;
+      height: 52px;
+      display: grid;
+      place-items: center;
+      border-radius: 13px;
+      color: white;
+      background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 95%, white 10%), rgba(255,255,255,.1));
+      box-shadow: 0 16px 44px color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+    .template-icon svg { width: 27px; height: 27px; }
+    .product-logo {
+      width: 28px;
+      height: 28px;
+      display: block;
+      background-color: transparent;
+      background-image: var(--logo-url);
+      background-position: center;
+      background-repeat: no-repeat;
+      background-size: contain;
+      filter: drop-shadow(0 8px 16px rgba(0, 0, 0, .28));
+    }
+    .product-logo.nodejs { --logo-url: url("assets/nodejs.svg"); --logo-color: #5FA04E; }
+    .product-logo.postgresql { --logo-url: url("assets/postgresql.svg"); --logo-color: #4169E1; }
+    .product-logo.vite { --logo-url: url("assets/vite.svg"); --logo-color: #BD34FE; }
+    .product-logo.redis { --logo-url: url("assets/redis.svg"); --logo-color: #FF4438; }
+    .product-logo.fastapi { --logo-url: url("assets/fastapi.svg"); --logo-color: #009688; }
+    .product-logo.docker { --logo-url: url("assets/docker.svg"); --logo-color: #2496ED; }
+    .template-icon .product-logo {
+      width: 31px;
+      height: 31px;
+    }
+    .product-wordmark {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #fff;
+      font-weight: 800;
+    }
+    .product-wordmark .product-logo {
+      width: 16px;
+      height: 16px;
+    }
+    .template-title h3 { margin: 0; font-size: 20px; letter-spacing: 0; }
+    .template-title p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.35; }
+    .template-mini {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 7px;
+      margin: 16px 0 14px;
+    }
+    .mini-stat {
+      min-height: 48px;
+      padding: 8px;
+      border: 1px solid rgba(255,255,255,.075);
+      border-radius: 7px;
+      background: rgba(0,0,0,.18);
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .mini-stat strong { display: block; color: #fff; font-size: 13px; margin-bottom: 3px; }
+    .template-bottom { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+    .stack-panel { padding: 20px; min-height: 692px; }
+    .stack-preview {
+      position: relative;
+      height: 310px;
+      margin: 18px 0;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      overflow: hidden;
+      background:
+        linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px),
+        rgba(0,0,0,.25);
+      background-size: 32px 32px;
+    }
+    .stack-node {
+      position: absolute;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-width: 118px;
+      height: 46px;
+      padding: 0 12px;
+      border: 1px solid var(--stroke-2);
+      border-radius: 8px;
+      background: rgba(18, 21, 31, .94);
+      font-size: 12px;
+      font-weight: 780;
+    }
+    .stack-node svg { width: 17px; height: 17px; color: var(--cyan); }
+    .stack-node .product-logo { width: 17px; height: 17px; }
+    .stack-line { position: absolute; height: 2px; background: linear-gradient(90deg, var(--cyan), var(--purple)); opacity: .76; transform-origin: left center; }
+    .summary-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 15px 0; border-bottom: 1px solid var(--stroke); color: var(--muted); font-size: 14px; }
+    .summary-row strong { color: #fff; }
+    .terminal {
+      height: 152px;
+      padding: 14px;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      background: rgba(0,0,0,.5);
+      color: #bdfed6;
+      font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .form-layout { display: grid; grid-template-columns: minmax(0, 1fr) 392px; gap: 18px; }
+    .form-stack { display: grid; gap: 14px; }
+    .form-section { padding: 18px; }
+    .section-title { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .section-title svg { width: 21px; height: 21px; color: var(--cyan); }
+    .section-title h3, .panel h3 { margin: 0; font-size: 20px; }
+    .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .field { display: grid; gap: 8px; color: var(--muted); font-size: 13px; }
+    .input {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 12px;
+      border: 1px solid var(--stroke);
+      border-radius: 7px;
+      background: rgba(0,0,0,.22);
+      color: #f1ecff;
+      font-size: 14px;
+    }
+    .input svg { width: 16px; height: 16px; color: var(--dim); }
+    .toggle { width: 42px; height: 24px; border-radius: 999px; border: 1px solid rgba(82,225,155,.34); background: rgba(82,225,155,.2); position: relative; }
+    .toggle::after { content: ""; position: absolute; right: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--green); }
+
+    .preview-panel { padding: 20px; }
+    .service-card { margin-top: 16px; padding: 18px; border: 1px solid var(--stroke); border-radius: 8px; background: rgba(0,0,0,.24); }
+    .service-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+    .service-name { display: flex; align-items: center; gap: 12px; }
+    .service-name .template-icon { width: 42px; height: 42px; border-radius: 10px; }
+    .spark {
+      height: 64px;
+      margin: 15px 0;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, transparent 0 25%, rgba(255,255,255,.05) 25% 26%, transparent 26% 58%, rgba(255,255,255,.05) 58% 59%, transparent 59%),
+        linear-gradient(105deg, transparent 0 12%, rgba(82,225,155,.42) 12% 14%, transparent 14% 25%, rgba(98,216,255,.48) 25% 28%, transparent 28% 42%, rgba(140,108,255,.52) 42% 46%, transparent 46% 63%, rgba(82,225,155,.48) 63% 66%, transparent 66%);
+      background-color: rgba(0,0,0,.2);
+    }
+
+    .metrics-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 18px; }
+    .metric { min-height: 132px; padding: 18px; }
+    .metric .icon-row { display: flex; justify-content: space-between; align-items: center; }
+    .metric-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: rgba(255,255,255,.07); border: 1px solid var(--stroke); color: var(--cyan); }
+    .metric-icon svg { width: 18px; height: 18px; }
+    .metric-value { margin-top: 18px; font-size: 34px; font-weight: 820; }
+    .status-layout { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 18px; }
+    .timeline-panel, .table-panel, .alerts-panel { padding: 20px; }
+    .timeline { display: grid; grid-template-columns: repeat(30, 1fr); gap: 4px; margin: 18px 0 9px; }
+    .tick { height: 58px; border-radius: 5px; background: linear-gradient(180deg, #5af0a4, #38a978); }
+    .tick.warn { background: linear-gradient(180deg, #ffd76c, #bb8e31); }
+    .tick.bad { background: linear-gradient(180deg, #ff7893, #c34a64); }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+    th, td { text-align: left; padding: 13px 10px; border-bottom: 1px solid var(--stroke); color: var(--muted); white-space: nowrap; }
+    th { color: #d1cce0; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; }
+    td strong { color: #fff; }
+    .node-name { display: flex; align-items: center; gap: 9px; }
+    .node-name svg { width: 16px; height: 16px; color: var(--cyan); }
+
+    .topology-layout { display: grid; grid-template-columns: 220px 1fr 360px; gap: 16px; height: 960px; }
+    .filter-rail, .inspector { padding: 18px; }
+    .filter-row { height: 44px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--stroke); color: var(--muted); font-size: 14px; }
+    .filter-name { display: flex; align-items: center; gap: 9px; }
+    .filter-name svg { width: 16px; height: 16px; color: var(--cyan); }
+    .canvas {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      background:
+        linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px),
+        rgba(0,0,0,.19);
+      background-size: 44px 44px;
+    }
+    .canvas svg.flow { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .topo-node {
+      position: absolute;
+      min-width: 140px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 12px;
+      border: 1px solid var(--stroke-2);
+      border-radius: 8px;
+      background: rgba(19, 22, 32, .94);
+      box-shadow: 0 18px 42px rgba(0,0,0,.32);
+    }
+    .topo-node .template-icon { width: 36px; height: 36px; border-radius: 9px; }
+    .topo-node .template-icon .product-logo { width: 21px; height: 21px; }
+    .topo-node strong { display: block; font-size: 14px; }
+    .topo-node span { color: var(--muted); font-size: 12px; }
+    .topo-node.hot { border-color: rgba(255,111,141,.58); box-shadow: 0 0 0 1px rgba(255,111,141,.16), 0 24px 54px rgba(255,111,141,.11); }
+    .legend { position: absolute; left: 18px; bottom: 18px; display: flex; gap: 10px; }
+
+
+    .steps {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .step {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      border: 1px solid var(--stroke);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255,255,255,.045);
+      font-size: 13px;
+      font-weight: 740;
+    }
+    .step.active { color: white; border-color: rgba(95,160,78,.42); background: rgba(95,160,78,.14); }
+    .step.done { color: #beffd9; }
+    .step svg { width: 14px; height: 14px; }
+    .template-form-layout { display: grid; grid-template-columns: minmax(0, 1fr) 404px; gap: 18px; }
+    .option-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+    .option-card {
+      min-height: 92px;
+      padding: 13px;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      background: rgba(0,0,0,.2);
+    }
+    .option-card.selected { border-color: rgba(95,160,78,.46); background: rgba(95,160,78,.1); }
+    .option-card strong { display: flex; align-items: center; gap: 8px; color: white; font-size: 14px; }
+    .option-card p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .option-card svg { width: 16px; height: 16px; color: var(--cyan); }
+    .addons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+    .addon {
+      height: 76px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 13px;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      background: rgba(255,255,255,.04);
+    }
+    .addon .product-logo, .addon svg { width: 24px; height: 24px; }
+    .addon strong { display: block; color: #fff; font-size: 14px; }
+    .addon span { color: var(--muted); font-size: 12px; }
+    .env-table { margin-top: 12px; border: 1px solid var(--stroke); border-radius: 8px; overflow: hidden; }
+    .env-row { display: grid; grid-template-columns: 1fr 1fr 42px; align-items: center; min-height: 44px; border-bottom: 1px solid var(--stroke); }
+    .env-row:last-child { border-bottom: 0; }
+    .env-row div { padding: 0 12px; color: var(--muted); font-size: 13px; }
+    .env-row strong { color: white; }
+    .plan-card { padding: 20px; }
+    .plan-hero {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      padding: 15px;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      background: rgba(0,0,0,.22);
+      margin: 14px 0;
+    }
+    .plan-hero .template-icon { width: 46px; height: 46px; border-radius: 11px; }
+    .deploy-preview-stack { height: 190px; position: relative; border: 1px solid var(--stroke); border-radius: 8px; background: rgba(0,0,0,.22); overflow: hidden; margin: 15px 0; }
+    .deploy-preview-stack::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px); background-size: 28px 28px; }
+    .mini-node { position: absolute; height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--stroke-2); border-radius: 8px; background: rgba(18,21,31,.96); color: white; font-size: 12px; font-weight: 760; }
+    .mini-node .product-logo, .mini-node svg { width: 16px; height: 16px; }
+    .form-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
+    .ghost-button { color: var(--muted); background: rgba(255,255,255,.06); border: 1px solid var(--stroke); }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true" focusable="false">
+    <symbol id="rocket" viewBox="0 0 24 24"><path d="M4.5 16.5c-1.1 1.1-1.5 3-1.5 3s1.9-.4 3-1.5l1.2-1.2-2-2-1.2 1.2Z" fill="currentColor"/><path d="M8 15 5 12l3.7-3.7c3.6-3.6 7.2-4.5 11.3-4.3.2 4.1-.7 7.7-4.3 11.3L12 19l-3-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M15 9h.01" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24"><path d="m21 21-4.3-4.3M10.7 18a7.3 7.3 0 1 1 0-14.6 7.3 7.3 0 0 1 0 14.6Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="grid" viewBox="0 0 24 24"><path d="M4 4h7v7H4V4Zm9 0h7v7h-7V4ZM4 13h7v7H4v-7Zm9 0h7v7h-7v-7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="box" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m4.5 7.8 7.5 4.3 7.5-4.3M12 21v-8.8" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="server" viewBox="0 0 24 24"><path d="M4 5h16v6H4V5Zm0 10h16v4H4v-4Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7 8h.01M7 17h.01" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="database" viewBox="0 0 24 24"><path d="M12 4c4.4 0 8 1.3 8 3s-3.6 3-8 3-8-1.3-8-3 3.6-3 8-3Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="globe" viewBox="0 0 24 24"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 12h18M12 3c2.2 2.5 3.2 5.4 3.2 9S14.2 18.5 12 21c-2.2-2.5-3.2-5.4-3.2-9S9.8 5.5 12 3Z" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="cpu" viewBox="0 0 24 24"><path d="M8 8h8v8H8V8Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 9h3M4 15h3M17 9h3M17 15h3M9 4v3M15 4v3M9 17v3M15 17v3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="git" viewBox="0 0 24 24"><path d="M7 6a3 3 0 1 0 0 .1V15a3 3 0 1 0 2 0V9.5l6 6V18a3 3 0 1 0 2 0v-3.3L9.7 7.4A3 3 0 0 0 7 3Z" fill="currentColor"/></symbol>
+    <symbol id="terminal" viewBox="0 0 24 24"><path d="M4 5h16v14H4V5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m7 9 3 3-3 3M12 15h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="network" viewBox="0 0 24 24"><path d="M12 5v5M6 19v-4c0-2.8 2-5 6-5s6 2.2 6 5v4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9 5h6M4 19h4M10 19h4M16 19h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3 19 6v5c0 4.8-2.7 7.8-7 10-4.3-2.2-7-5.2-7-10V6l7-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m8.8 12 2.2 2.2 4.4-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="activity" viewBox="0 0 24 24"><path d="M3 12h4l2.2-7 4.6 14 2.2-7h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="bell" viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 6-3 8h18c0-2-3-1-3-8ZM10 21h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="node" viewBox="0 0 24 24"><path d="M12 3 20 8v8l-8 5-8-5V8l8-5Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 8v8M8 10.5l4 2.5 4-2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  </svg>
+
+  <div class="deck">
+    <section class="screen" id="templates">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark"><svg><use href="#rocket"/></svg></span>Luma</div>
+        <div class="nav-label">Workspace</div>
+        <div class="nav-item"><svg><use href="#grid"/></svg>Projects</div>
+        <div class="nav-item active"><svg><use href="#box"/></svg>Apps</div>
+        <div class="nav-item"><svg><use href="#server"/></svg>Clusters</div>
+        <div class="nav-item"><svg><use href="#node"/></svg>Nodes</div>
+        <div class="nav-item"><svg><use href="#network"/></svg>Traffic</div>
+        <div class="nav-label">System</div>
+        <div class="nav-item"><svg><use href="#shield"/></svg>Secrets</div>
+        <div class="nav-item"><svg><use href="#activity"/></svg>Audit Log</div>
+        <div class="nav-item"><svg><use href="#cpu"/></svg>Settings</div>
+      </aside>
+      <main class="main">
+        <div class="topbar">
+          <div class="search"><svg><use href="#search"/></svg><span>Cmd K</span><span>Search templates, runtimes, stacks...</span></div>
+          <div></div>
+          <div class="top-actions"><div class="icon-button"><svg><use href="#bell"/></svg></div><div class="avatar"></div></div>
+        </div>
+        <div class="heading">
+          <div><h1>Create Application</h1><div class="sub">Choose a curated starter with runtime, networking, health checks, and observability wired in.</div></div>
+          <div class="tabs"><div class="tab active"><svg><use href="#grid"/></svg>Templates</div><div class="tab"><svg><use href="#terminal"/></svg>Custom</div></div>
+        </div>
+        <div class="templates-layout">
+          <div>
+            <div class="catalog-toolbar">
+              <div class="chips"><div class="chip active"><svg><use href="#rocket"/></svg>Featured</div><div class="chip"><svg><use href="#globe"/></svg>Web</div><div class="chip"><svg><use href="#database"/></svg>Data</div><div class="chip"><svg><use href="#cpu"/></svg>Workers</div></div>
+              <div class="chip"><svg><use href="#search"/></svg>Filter catalog</div>
+            </div>
+            <div class="template-grid">
+              <article class="card template-card featured" style="--accent:#5FA04E"><div class="template-top"><div class="template-title"><h3><span class="product-wordmark"><span class="product-logo nodejs"></span>Node.js API</span></h3><p>Express service, health route, logs, deploy pipeline.</p></div><div class="template-icon"><span class="product-logo nodejs"></span></div></div><div class="template-mini"><div class="mini-stat"><strong>Node 22</strong>runtime</div><div class="mini-stat"><strong>HTTP</strong>edge route</div><div class="mini-stat"><strong>256 MB</strong>memory</div></div><div class="template-bottom"><span class="badge good"><svg><use href="#shield"/></svg>Popular</span><div class="button"><svg><use href="#arrow-right"/></svg>Use</div></div></article>
+              <article class="card template-card" style="--accent:#4169E1"><div class="template-top"><div class="template-title"><h3><span class="product-wordmark"><span class="product-logo postgresql"></span>PostgreSQL + API</span></h3><p>Database, migrations, private network, API service.</p></div><div class="template-icon"><span class="product-logo postgresql"></span></div></div><div class="template-mini"><div class="mini-stat"><strong>PG 16</strong>primary</div><div class="mini-stat"><strong>API</strong>service</div><div class="mini-stat"><strong>1 GB</strong>volume</div></div><div class="template-bottom"><span class="badge good"><svg><use href="#network"/></svg>Full stack</span><div class="button dark"><svg><use href="#arrow-right"/></svg>Use</div></div></article>
+              <article class="card template-card" style="--accent:#BD34FE"><div class="template-top"><div class="template-title"><h3><span class="product-wordmark"><span class="product-logo vite"></span>Vite Static Site</span></h3><p>Frontend build with CDN cache and managed TLS.</p></div><div class="template-icon"><span class="product-logo vite"></span></div></div><div class="template-mini"><div class="mini-stat"><strong>Vite</strong>build</div><div class="mini-stat"><strong>Edge</strong>cache</div><div class="mini-stat"><strong>128 MB</strong>limit</div></div><div class="template-bottom"><span class="badge"><svg><use href="#shield"/></svg>TLS</span><div class="button dark"><svg><use href="#arrow-right"/></svg>Use</div></div></article>
+              <article class="card template-card" style="--accent:#FF4438"><div class="template-top"><div class="template-title"><h3><span class="product-wordmark"><span class="product-logo redis"></span>Redis Worker</span></h3><p>Queue consumer, retry policy, autoscale thresholds.</p></div><div class="template-icon"><span class="product-logo redis"></span></div></div><div class="template-mini"><div class="mini-stat"><strong>Redis</strong>queue</div><div class="mini-stat"><strong>Jobs</strong>retry</div><div class="mini-stat"><strong>512 MB</strong>memory</div></div><div class="template-bottom"><span class="badge warn"><svg><use href="#activity"/></svg>Async</span><div class="button dark"><svg><use href="#arrow-right"/></svg>Use</div></div></article>
+              <article class="card template-card" style="--accent:#009688"><div class="template-top"><div class="template-title"><h3><span class="product-wordmark"><span class="product-logo fastapi"></span>FastAPI Service</span></h3><p>ASGI app, uvicorn, metrics endpoint, probes.</p></div><div class="template-icon"><span class="product-logo fastapi"></span></div></div><div class="template-mini"><div class="mini-stat"><strong>3.12</strong>python</div><div class="mini-stat"><strong>ASGI</strong>server</div><div class="mini-stat"><strong>512 MB</strong>limit</div></div><div class="template-bottom"><span class="badge"><svg><use href="#activity"/></svg>Metrics</span><div class="button dark"><svg><use href="#arrow-right"/></svg>Use</div></div></article>
+              <article class="card template-card" style="--accent:#2496ED"><div class="template-top"><div class="template-title"><h3><span class="product-wordmark"><span class="product-logo docker"></span>Docker Compose</span></h3><p>Import multi-service YAML with volumes and routes.</p></div><div class="template-icon"><span class="product-logo docker"></span></div></div><div class="template-mini"><div class="mini-stat"><strong>Multi</strong>services</div><div class="mini-stat"><strong>Volumes</strong>storage</div><div class="mini-stat"><strong>Routes</strong>edge</div></div><div class="template-bottom"><span class="badge"><svg><use href="#network"/></svg>Advanced</span><div class="button dark"><svg><use href="#arrow-right"/></svg>Use</div></div></article>
+            </div>
+          </div>
+          <aside class="panel stack-panel">
+            <h3>Selected Template</h3>
+            <div class="sub">Node.js API deploy plan</div>
+            <div class="stack-preview">
+              <div class="stack-line" style="left:82px;top:88px;width:150px;transform:rotate(18deg)"></div>
+              <div class="stack-line" style="left:190px;top:162px;width:138px;transform:rotate(23deg)"></div>
+              <div class="stack-line" style="left:175px;top:168px;width:128px;transform:rotate(-31deg)"></div>
+              <div class="stack-node" style="left:38px;top:58px"><svg><use href="#git"/></svg>Git source</div>
+              <div class="stack-node" style="left:198px;top:118px"><span class="product-logo docker"></span>Build image</div>
+              <div class="stack-node" style="left:93px;top:220px"><svg><use href="#server"/></svg>2 replicas</div>
+              <div class="stack-node" style="right:28px;top:214px"><svg><use href="#globe"/></svg>Edge route</div>
+            </div>
+            <div class="summary-row"><span>Region</span><strong>Singapore</strong></div>
+            <div class="summary-row"><span>Environment</span><strong>Production</strong></div>
+            <div class="summary-row"><span>Health check</span><strong>/healthz</strong></div>
+            <div class="summary-row"><span>Estimated cost</span><strong>$18.40/mo</strong></div>
+            <div class="terminal">$ luma init node-api<br>OK package.json detected<br>OK generated deploy manifest<br>OK configured port 3000<br>READY create production app</div>
+          </aside>
+        </div>
+      </main>
+    </section>
+
+    <section class="screen" id="template-form">
+      <aside class="sidebar"><div class="brand"><span class="brand-mark"><svg><use href="#rocket"/></svg></span>Luma</div><div class="nav-label">Workspace</div><div class="nav-item"><svg><use href="#grid"/></svg>Projects</div><div class="nav-item active"><svg><use href="#box"/></svg>Apps</div><div class="nav-item"><svg><use href="#server"/></svg>Clusters</div><div class="nav-item"><svg><use href="#node"/></svg>Nodes</div><div class="nav-item"><svg><use href="#network"/></svg>Traffic</div><div class="nav-label">System</div><div class="nav-item"><svg><use href="#shield"/></svg>Secrets</div><div class="nav-item"><svg><use href="#activity"/></svg>Audit Log</div><div class="nav-item"><svg><use href="#cpu"/></svg>Settings</div></aside>
+      <main class="main">
+        <div class="topbar"><div class="search"><svg><use href="#search"/></svg><span>Cmd K</span><span>Search templates, repos, deploy targets...</span></div><div></div><div class="top-actions"><div class="icon-button"><svg><use href="#bell"/></svg></div><div class="avatar"></div></div></div>
+        <div class="heading"><div><h1>Configure Template</h1><div class="sub">Finalize the Node.js starter before creating the first production deployment.</div></div><div class="tabs"><div class="tab active"><span class="product-logo nodejs"></span>Node.js API</div><div class="tab"><svg><use href="#grid"/></svg>Change</div></div></div>
+        <div class="steps"><div class="step done"><svg><use href="#grid"/></svg>Template</div><div class="step active"><svg><use href="#terminal"/></svg>Configure</div><div class="step"><svg><use href="#rocket"/></svg>Deploy</div></div>
+        <div class="template-form-layout">
+          <div class="form-stack">
+            <section class="panel form-section"><div class="section-title"><span class="product-logo nodejs"></span><h3>Application</h3></div><div class="field-grid"><label class="field">Application name<div class="input">merchant-api</div></label><label class="field">Project<div class="input">merchant-core <svg><use href="#grid"/></svg></div></label><label class="field">Environment<div class="input">Production <svg><use href="#shield"/></svg></div></label><label class="field">Region<div class="input">Singapore <svg><use href="#globe"/></svg></div></label></div></section>
+            <section class="panel form-section"><div class="section-title"><svg><use href="#git"/></svg><h3>Source Repository</h3></div><div class="field-grid"><label class="field">Git provider<div class="input">GitHub connected <svg><use href="#shield"/></svg></div></label><label class="field">Repository<div class="input">acme/merchant-api <svg><use href="#arrow-right"/></svg></div></label><label class="field">Branch<div class="input">main</div></label><label class="field">Auto deploy<div class="input">On push <span class="toggle"></span></div></label></div></section>
+            <section class="panel form-section"><div class="section-title"><svg><use href="#cpu"/></svg><h3>Runtime Plan</h3></div><div class="option-grid"><div class="option-card"><strong><svg><use href="#cpu"/></svg>Starter</strong><p>1 vCPU, 512 MB, single replica for previews.</p></div><div class="option-card selected"><strong><svg><use href="#server"/></svg>Production</strong><p>2 vCPU, 1 GB, two replicas with rolling deploy.</p></div><div class="option-card"><strong><svg><use href="#activity"/></svg>Scale</strong><p>4 vCPU, 2 GB, autoscale up to 12 replicas.</p></div></div></section>
+            <section class="panel form-section"><div class="section-title"><svg><use href="#network"/></svg><h3>Networking</h3></div><div class="field-grid"><label class="field">Public domain<div class="input">merchant-api.luma.app <span class="toggle"></span></div></label><label class="field">Service port<div class="input">3000</div></label><label class="field">TLS mode<div class="input">Auto-managed <span class="toggle"></span></div></label><label class="field">Health check<div class="input">/healthz</div></label></div></section>
+            <section class="panel form-section"><div class="section-title"><svg><use href="#database"/></svg><h3>Add-ons</h3></div><div class="addons"><div class="addon"><span class="product-logo postgresql"></span><div><strong>PostgreSQL</strong><span>Managed database</span></div></div><div class="addon"><span class="product-logo redis"></span><div><strong>Redis</strong><span>Queue and cache</span></div></div><div class="addon"><svg><use href="#activity"/></svg><div><strong>Metrics</strong><span>Logs and traces</span></div></div></div></section>
+            <section class="panel form-section"><div class="section-title"><svg><use href="#shield"/></svg><h3>Environment Variables</h3></div><div class="env-table"><div class="env-row"><div><strong>DATABASE_URL</strong></div><div>from PostgreSQL</div><div><svg><use href="#database"/></svg></div></div><div class="env-row"><div><strong>REDIS_URL</strong></div><div>from Redis</div><div><span class="product-logo redis"></span></div></div><div class="env-row"><div><strong>NODE_ENV</strong></div><div>production</div><div><span class="product-logo nodejs"></span></div></div></div></section>
+          </div>
+          <aside class="panel plan-card"><h3>Deployment Plan</h3><div class="plan-hero"><div class="template-icon" style="--accent:#5FA04E"><span class="product-logo nodejs"></span></div><div><h3>merchant-api</h3><div class="sub">Node.js API · production</div></div></div><div class="deploy-preview-stack"><div class="mini-node" style="left:28px;top:32px"><svg><use href="#git"/></svg>GitHub</div><div class="mini-node" style="left:172px;top:78px"><span class="product-logo nodejs"></span>Build</div><div class="mini-node" style="left:62px;top:132px"><svg><use href="#server"/></svg>2 replicas</div><div class="mini-node" style="right:28px;top:132px"><svg><use href="#globe"/></svg>TLS route</div></div><div class="summary-row"><span>CPU / memory</span><strong>2 vCPU · 1 GB</strong></div><div class="summary-row"><span>Autoscaling</span><strong>2 - 6 replicas</strong></div><div class="summary-row"><span>Add-ons</span><strong>Postgres, Redis</strong></div><div class="summary-row"><span>Monthly estimate</span><strong>$58.20/mo</strong></div><div class="terminal">READY manifest generated<br>READY secrets linked<br>READY route reserved<br>NEXT create and deploy</div><div class="form-footer"><div class="button ghost-button">Back</div><div class="button"><svg><use href="#rocket"/></svg>Create & Deploy</div></div></aside>
+        </div>
+      </main>
+    </section>
+
+
+    <section class="screen" id="custom">
+      <aside class="sidebar"><div class="brand"><span class="brand-mark"><svg><use href="#rocket"/></svg></span>Luma</div><div class="nav-label">Workspace</div><div class="nav-item"><svg><use href="#grid"/></svg>Projects</div><div class="nav-item active"><svg><use href="#box"/></svg>Apps</div><div class="nav-item"><svg><use href="#server"/></svg>Clusters</div><div class="nav-item"><svg><use href="#node"/></svg>Nodes</div><div class="nav-item"><svg><use href="#network"/></svg>Traffic</div><div class="nav-label">System</div><div class="nav-item"><svg><use href="#shield"/></svg>Secrets</div><div class="nav-item"><svg><use href="#activity"/></svg>Audit Log</div><div class="nav-item"><svg><use href="#cpu"/></svg>Settings</div></aside>
+      <main class="main">
+        <div class="topbar"><div class="search"><svg><use href="#search"/></svg><span>Cmd K</span><span>Search deploys, images, env vars...</span></div><div></div><div class="top-actions"><div class="icon-button"><svg><use href="#bell"/></svg></div><div class="avatar"></div></div></div>
+        <div class="heading"><div><h1>Create Application</h1><div class="sub">Bring your own repository, image, command, ports, secrets, and scaling policy.</div></div><div class="tabs"><div class="tab"><svg><use href="#grid"/></svg>Templates</div><div class="tab active"><svg><use href="#terminal"/></svg>Custom</div></div></div>
+        <div class="form-layout">
+          <div class="form-stack">
+            <section class="panel form-section"><div class="section-title"><svg><use href="#git"/></svg><h3>Source</h3></div><div class="field-grid"><label class="field">Git repository<div class="input">github.com/acme/billing-api <svg><use href="#arrow-right"/></svg></div></label><label class="field">Docker image<div class="input">ghcr.io/acme/billing:latest <span class="product-logo docker"></span></div></label></div></section>
+            <section class="panel form-section"><div class="section-title"><svg><use href="#terminal"/></svg><h3>Build</h3></div><div class="field-grid"><label class="field">Build command<div class="input">pnpm build <svg><use href="#terminal"/></svg></div></label><label class="field">Dockerfile path<div class="input">deploy/Dockerfile <svg><use href="#box"/></svg></div></label></div></section>
+            <section class="panel form-section"><div class="section-title"><svg><use href="#cpu"/></svg><h3>Runtime</h3></div><div class="field-grid"><label class="field">CPU<div class="input">2 vCPU <svg><use href="#cpu"/></svg></div></label><label class="field">Memory<div class="input">1024 MB <svg><use href="#server"/></svg></div></label><label class="field">Replicas<div class="input">3 instances <svg><use href="#node"/></svg></div></label><label class="field">Region<div class="input">Singapore + Tokyo <svg><use href="#globe"/></svg></div></label></div></section>
+            <section class="panel form-section"><div class="section-title"><svg><use href="#network"/></svg><h3>Networking</h3></div><div class="field-grid"><label class="field">Public domain<div class="input">api.acme.dev <span class="toggle"></span></div></label><label class="field">Port<div class="input">8080 <svg><use href="#network"/></svg></div></label><label class="field">TLS<div class="input">Auto-managed <span class="toggle"></span></div></label><label class="field">Private network<div class="input">merchant-core.internal <svg><use href="#shield"/></svg></div></label></div></section>
+            <section class="panel form-section"><div class="section-title"><svg><use href="#shield"/></svg><h3>Secrets</h3></div><div class="field-grid"><label class="field">DATABASE_URL<div class="input">**************** <svg><use href="#database"/></svg></div></label><label class="field">REDIS_URL<div class="input">**************** <svg><use href="#shield"/></svg></div></label></div></section>
+          </div>
+          <aside class="panel preview-panel"><h3>Deployment Preview</h3><div class="service-card"><div class="service-head"><div class="service-name"><div class="template-icon" style="--accent:#5FA04E"><span class="product-logo nodejs"></span></div><div><h3>billing-api</h3><div class="sub">3 replicas · Singapore + Tokyo</div></div></div><span class="badge good">Ready</span></div><div class="summary-row"><span>Runtime</span><strong><span class="product-wordmark"><span class="product-logo docker"></span>Docker</span></strong></div><div class="summary-row"><span>Ingress</span><strong>api.acme.dev</strong></div><div class="summary-row"><span>Health check</span><strong>/healthz</strong></div><div class="summary-row"><span>Cost estimate</span><strong>$42.80/mo</strong></div><div class="spark"></div><div class="button" style="width:100%"><svg><use href="#rocket"/></svg>Create & Deploy</div></div></aside>
+        </div>
+      </main>
+    </section>
+
+    <section class="screen" id="status">
+      <aside class="sidebar"><div class="brand"><span class="brand-mark"><svg><use href="#rocket"/></svg></span>Luma</div><div class="nav-label">Workspace</div><div class="nav-item"><svg><use href="#grid"/></svg>Projects</div><div class="nav-item"><svg><use href="#box"/></svg>Apps</div><div class="nav-item active"><svg><use href="#server"/></svg>Clusters</div><div class="nav-item"><svg><use href="#node"/></svg>Nodes</div><div class="nav-item"><svg><use href="#network"/></svg>Traffic</div><div class="nav-label">System</div><div class="nav-item"><svg><use href="#bell"/></svg>Incidents</div><div class="nav-item"><svg><use href="#activity"/></svg>Audit Log</div><div class="nav-item"><svg><use href="#cpu"/></svg>Settings</div></aside>
+      <main class="main">
+        <div class="topbar"><div class="search"><svg><use href="#search"/></svg><span>Cmd K</span><span>Search clusters, nodes, incidents...</span></div><div></div><div class="top-actions"><div class="icon-button"><svg><use href="#bell"/></svg></div><div class="avatar"></div></div></div>
+        <div class="heading"><div><h1>Status</h1><div class="sub">Cluster health, node saturation, incidents, and deployment velocity.</div></div><div class="segmented"><div class="segment active"><svg><use href="#server"/></svg>prod-sg</div><div class="segment">prod-us</div><div class="segment">staging</div></div></div>
+        <div class="metrics-grid">
+          <div class="card metric"><div class="icon-row"><span class="badge good">Healthy</span><span class="metric-icon"><svg><use href="#shield"/></svg></span></div><div class="metric-value">99.98%</div><div class="sub">Cluster health</div></div>
+          <div class="card metric"><div class="icon-row"><span class="badge good">Online</span><span class="metric-icon"><svg><use href="#server"/></svg></span></div><div class="metric-value">18</div><div class="sub">Active nodes</div></div>
+          <div class="card metric"><div class="icon-row"><span class="badge warn">2 rolling</span><span class="metric-icon"><svg><use href="#rocket"/></svg></span></div><div class="metric-value">74</div><div class="sub">Deployments</div></div>
+          <div class="card metric"><div class="icon-row"><span class="badge good">Stable</span><span class="metric-icon"><svg><use href="#activity"/></svg></span></div><div class="metric-value">21.4k</div><div class="sub">Requests / min</div></div>
+          <div class="card metric"><div class="icon-row"><span class="badge bad">Watch</span><span class="metric-icon"><svg><use href="#bell"/></svg></span></div><div class="metric-value">0.18%</div><div class="sub">Error rate</div></div>
+        </div>
+        <div class="status-layout">
+          <div class="form-stack">
+            <section class="panel timeline-panel"><h3>Cluster Status Timeline</h3><div class="timeline"><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick warn"></span><span class="tick warn"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick bad"></span><span class="tick warn"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick warn"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span><span class="tick"></span></div><div class="sub">Two degraded image-pull windows and one transient gateway spike.</div></section>
+            <section class="panel table-panel"><h3>Node Status</h3><table><thead><tr><th>Node</th><th>Region</th><th>CPU</th><th>Memory</th><th>Disk</th><th>Workloads</th><th>Uptime</th><th>Health</th></tr></thead><tbody><tr><td><strong class="node-name"><svg><use href="#server"/></svg>sg-node-01</strong></td><td>Singapore</td><td>42%</td><td>61%</td><td>54%</td><td>18</td><td>32d</td><td><span class="badge good">Ready</span></td></tr><tr><td><strong class="node-name"><svg><use href="#server"/></svg>sg-node-02</strong></td><td>Singapore</td><td>79%</td><td>68%</td><td>71%</td><td>24</td><td>29d</td><td><span class="badge warn">Hot</span></td></tr><tr><td><strong class="node-name"><svg><use href="#server"/></svg>tok-node-04</strong></td><td>Tokyo</td><td>34%</td><td>48%</td><td>39%</td><td>11</td><td>18d</td><td><span class="badge good">Ready</span></td></tr><tr><td><strong class="node-name"><svg><use href="#globe"/></svg>edge-gw-02</strong></td><td>Singapore</td><td>64%</td><td>52%</td><td>22%</td><td>7</td><td>44d</td><td><span class="badge good">Ready</span></td></tr><tr><td><strong class="node-name"><svg><use href="#server"/></svg>hk-node-03</strong></td><td>Hong Kong</td><td>91%</td><td>83%</td><td>76%</td><td>31</td><td>12d</td><td><span class="badge bad">Pressure</span></td></tr></tbody></table></section>
+          </div>
+          <aside class="panel alerts-panel"><h3>Resource Saturation</h3><div class="spark"></div><div class="spark"></div><div class="spark"></div><div class="summary-row"><span>Open alerts</span><strong>3</strong></div><div class="summary-row"><span>Failed probes</span><strong>11</strong></div><div class="summary-row"><span>Pending deploys</span><strong>2</strong></div><div class="summary-row"><span>Node drains</span><strong>1</strong></div></aside>
+        </div>
+      </main>
+    </section>
+
+    <section class="screen" id="topology">
+      <aside class="sidebar"><div class="brand"><span class="brand-mark"><svg><use href="#rocket"/></svg></span>Luma</div><div class="nav-label">Workspace</div><div class="nav-item"><svg><use href="#grid"/></svg>Projects</div><div class="nav-item"><svg><use href="#box"/></svg>Apps</div><div class="nav-item"><svg><use href="#server"/></svg>Clusters</div><div class="nav-item"><svg><use href="#node"/></svg>Nodes</div><div class="nav-item active"><svg><use href="#network"/></svg>Traffic</div><div class="nav-label">System</div><div class="nav-item"><svg><use href="#globe"/></svg>Routes</div><div class="nav-item"><svg><use href="#shield"/></svg>Firewall</div><div class="nav-item"><svg><use href="#cpu"/></svg>Settings</div></aside>
+      <main class="main">
+        <div class="topbar"><div class="search"><svg><use href="#search"/></svg><span>Cmd K</span><span>Search services, edges, dependencies...</span></div><div></div><div class="top-actions"><div class="icon-button"><svg><use href="#bell"/></svg></div><div class="avatar"></div></div></div>
+        <div class="heading"><div><h1>Topology</h1><div class="sub">Node placement and request paths across clusters, services, and gateways.</div></div><div class="segmented"><div class="segment active"><svg><use href="#activity"/></svg>Traffic</div><div class="segment"><svg><use href="#node"/></svg>Nodes</div><div class="segment"><svg><use href="#bell"/></svg>Errors</div></div></div>
+        <div class="topology-layout">
+          <aside class="panel filter-rail"><h3>Layers</h3><div class="filter-row"><span class="filter-name"><svg><use href="#node"/></svg>Nodes</span><span class="toggle"></span></div><div class="filter-row"><span class="filter-name"><svg><use href="#box"/></svg>Services</span><span class="toggle"></span></div><div class="filter-row"><span class="filter-name"><svg><use href="#activity"/></svg>Traffic</span><span class="toggle"></span></div><div class="filter-row"><span class="filter-name"><svg><use href="#bell"/></svg>Errors</span><span class="toggle"></span></div><div class="filter-row"><span class="filter-name"><svg><use href="#globe"/></svg>Regions</span><span class="toggle"></span></div></aside>
+          <section class="canvas">
+            <svg class="flow" viewBox="0 0 1000 960" preserveAspectRatio="none"><defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#62d8ff"/></marker></defs><path d="M90 155 C240 130, 330 170, 455 222" fill="none" stroke="#62d8ff" stroke-width="2.8" marker-end="url(#arrow)" opacity=".88"/><path d="M455 252 C560 300, 610 350, 720 420" fill="none" stroke="#8c6cff" stroke-width="3.2" marker-end="url(#arrow)" opacity=".9"/><path d="M455 252 C395 360, 390 475, 306 595" fill="none" stroke="#52e19b" stroke-width="2.6" marker-end="url(#arrow)" opacity=".8"/><path d="M720 452 C760 560, 655 660, 560 730" fill="none" stroke="#ff6f8d" stroke-width="4" marker-end="url(#arrow)" opacity=".92"/><path d="M720 452 C815 515, 850 640, 860 770" fill="none" stroke="#62d8ff" stroke-width="2.5" marker-end="url(#arrow)" opacity=".75"/><path d="M306 626 C395 705, 470 735, 560 752" fill="none" stroke="#52e19b" stroke-width="2.4" marker-end="url(#arrow)" opacity=".75"/></svg>
+            <div class="topo-node" style="left:70px;top:120px"><div class="template-icon" style="--accent:#62d8ff"><svg><use href="#globe"/></svg></div><div><strong>edge-gw-02</strong><span>21.4k rpm · 24 ms</span></div></div>
+            <div class="topo-node" style="left:430px;top:196px"><div class="template-icon" style="--accent:#8c6cff"><svg><use href="#network"/></svg></div><div><strong>api-router</strong><span>8 replicas · sg</span></div></div>
+            <div class="topo-node hot" style="left:730px;top:404px"><div class="template-icon" style="--accent:#5FA04E"><span class="product-logo nodejs"></span></div><div><strong>billing-api</strong><span>p95 812 ms · 0.9%</span></div></div>
+            <div class="topo-node" style="left:278px;top:590px"><div class="template-icon" style="--accent:#4169E1"><span class="product-logo postgresql"></span></div><div><strong>postgres-main</strong><span>primary · 2.1k qps</span></div></div>
+            <div class="topo-node" style="left:545px;top:726px"><div class="template-icon" style="--accent:#FF4438"><span class="product-logo redis"></span></div><div><strong>redis-queue</strong><span>depth 14,230</span></div></div>
+            <div class="topo-node" style="left:858px;top:770px"><div class="template-icon" style="--accent:#78a9ff"><svg><use href="#cpu"/></svg></div><div><strong>worker-pool</strong><span>32 jobs/min</span></div></div>
+            <div class="legend"><span class="tag" style="color:var(--cyan)"><svg><use href="#activity"/></svg>Inbound</span><span class="tag" style="color:var(--green)"><svg><use href="#database"/></svg>Data</span><span class="tag" style="color:var(--red)"><svg><use href="#bell"/></svg>Hot path</span></div>
+          </section>
+          <aside class="panel inspector"><h3>billing-api</h3><div class="sub">Selected service</div><div class="summary-row"><span>Inbound</span><strong>8.2k rpm</strong></div><div class="summary-row"><span>Outbound deps</span><strong>5</strong></div><div class="summary-row"><span>Placement</span><strong>sg-node-02</strong></div><div class="summary-row"><span>Replicas</span><strong>8 / 8</strong></div><div class="summary-row"><span>Last deploy</span><strong>14 min ago</strong></div><div class="spark"></div><span class="badge bad"><svg><use href="#bell"/></svg>Hot path latency +43%</span></aside>
+        </div>
+      </main>
+    </section>
+  </div>
+</body>
+</html>

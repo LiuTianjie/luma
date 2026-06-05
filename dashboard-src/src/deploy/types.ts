@@ -11,6 +11,15 @@ export type KeyValueRow = {
   kind?: "plain" | "secret";
 };
 
+export type ServiceVolumeDraft = {
+  id: string;
+  name: string;
+  target: string;
+  storageMode: "unmanaged" | "storageClass";
+  storageClass: string;
+  path: string;
+};
+
 export type ServiceManifestDraft = {
   name: string;
   image: string;
@@ -24,6 +33,7 @@ export type ServiceManifestDraft = {
   proxy: boolean;
   env: KeyValueRow[];
   command: string;
+  volumeMounts: ServiceVolumeDraft[];
   labels: string;
   networks: string;
   volumes: string;

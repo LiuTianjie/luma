@@ -844,17 +844,23 @@ code {
 .deploy-switch-grid .deploy-toggle div span {
   color: var(--muted); font-size: 0.68rem; font-weight: 500; line-height: 1.35;
 }
-.deploy-env-editor { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.deploy-env-editor, .service-volume-editor { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 .deploy-env-editor > div:first-child {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
 }
 .deploy-switch-row {
   display: flex; align-items: center; justify-content: flex-start; gap: 10px;
 }
-.deploy-env-editor strong { color: var(--ink); font-size: 0.8125rem; }
-.deploy-env-editor button { height: 30px; padding: 0 12px; border-radius: 6px; font-size: 0.78rem; }
+.deploy-env-editor strong, .service-volume-editor strong { color: var(--ink); font-size: 0.8125rem; }
+.deploy-env-editor button, .service-volume-editor button { height: 30px; padding: 0 12px; border-radius: 6px; font-size: 0.78rem; }
 .deploy-env-row { display: grid; grid-template-columns: minmax(120px, 0.7fr) minmax(180px, 1fr) auto; gap: 8px; }
 .deploy-env-row button { height: 36px; }
+.service-volume-editor { padding-top: 2px; }
+.service-volume-row {
+  padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-alt);
+}
+.service-volume-grid { grid-template-columns: minmax(140px, 0.8fr) minmax(140px, 0.9fr) minmax(130px, 0.8fr) minmax(140px, 0.8fr) minmax(150px, 1fr) auto; }
+.service-volume-grid button { align-self: end; height: 36px; }
 .compose-service-list, .compose-volume-list, .compose-env-list { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .compose-service-card {
   padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-alt);
@@ -1013,6 +1019,7 @@ dd { color: var(--ink); font-size: 0.875rem; font-weight: 500; margin: 0; word-b
   .application-update-context { grid-template-columns: 1fr; }
   .application-update-context-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .deploy-field-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .service-volume-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topology-layout { grid-template-columns: 1fr; grid-template-rows: 450px auto; }
   .topology-canvas { border-right: 0; border-bottom: 1px solid var(--line); }
   .route-index { max-height: 350px; }
@@ -1026,7 +1033,7 @@ dd { color: var(--ink); font-size: 0.875rem; font-weight: 500; margin: 0; word-b
   .deploy-heading { position: static; flex-direction: column; align-items: stretch; padding: 18px; }
   .deploy-editor-tabs, .deploy-mode-switch { width: 100%; }
   .deploy-editor-tabs button, .deploy-mode-switch button { flex: 1; }
-  .deploy-template-list, .deploy-field-grid, .deploy-field-grid.compact, .deploy-yaml-grid { grid-template-columns: 1fr; }
+  .deploy-template-list, .deploy-field-grid, .deploy-field-grid.compact, .service-volume-grid, .deploy-yaml-grid { grid-template-columns: 1fr; }
   .application-update-context-grid { grid-template-columns: 1fr; }
   .deploy-env-row { grid-template-columns: 1fr; }
   .deploy-action-bar { position: static; flex-wrap: wrap; }

@@ -60,6 +60,13 @@ function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceY
   if (draft.exposure !== "none" && draft.port.trim() && !isPositiveInteger(draft.port)) errors.push("容器端口必须是正整数");
   if (draft.publishPort.trim() && !isPositiveInteger(draft.publishPort)) errors.push("发布端口必须是正整数");
   if (!isPositiveInteger(draft.replicas)) errors.push("副本数必须是大于 0 的整数");
+  for (const volume of draft.volumeMounts || []) {
+    if (!volume.name.trim() && volume.target.trim()) errors.push("卷挂载缺少 volume 名称");
+    if (volume.name.trim() && !volume.target.trim()) errors.push(`${volume.name.trim()} 缺少挂载目标`);
+    if (volume.storageMode === "storageClass" && volume.name.trim() && !volume.storageClass.trim()) {
+      errors.push(`${volume.name.trim()} 必须选择 storageClass`);
+    }
+  }
   for (const row of draft.env || []) {
     if (!row.key.trim() && row.value.trim()) errors.push("环境变量缺少名称");
     if (row.kind === "secret" && row.key.trim() && !secretRefPattern.test(row.value.trim())) {
@@ -308,7 +315,7 @@ export function DeployWorkspace({
         <main className="deploy-config-main">
           {editorMode === "form" ? (
             mode === "service"
-              ? <SingleServiceDeployForm draft={serviceDraft} nodes={nodes} onChange={updateServiceDraft} />
+              ? <SingleServiceDeployForm draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateServiceDraft} />
               : <ComposeDeployForm draft={composeDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />
           ) : (
             <YamlPreviewEditor

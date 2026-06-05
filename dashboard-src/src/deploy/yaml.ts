@@ -52,13 +52,26 @@ export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
     lines.push("networks:");
     for (const network of networks) lines.push(`  - ${scalar(network)}`);
   }
-  const volumes = linesFromList(draft.volumes);
+  const structuredVolumes = (draft.volumeMounts || [])
+    .filter((volume) => volume.name.trim() && volume.target.trim())
+    .map((volume) => `${volume.name.trim()}:${volume.target.trim()}`);
+  const volumes = [...structuredVolumes, ...linesFromList(draft.volumes)];
   if (volumes.length) {
     lines.push("volumes:");
     for (const volume of volumes) lines.push(`  - ${scalar(volume)}`);
   }
-  if (draft.storage.trim()) {
+  const storageVolumes = (draft.volumeMounts || [])
+    .filter((volume) => volume.storageMode === "storageClass" && volume.name.trim() && volume.storageClass.trim());
+  if (storageVolumes.length) {
     lines.push("storage:");
+    for (const volume of storageVolumes) {
+      lines.push(`  ${volume.name.trim()}:`);
+      lines.push(`    storageClass: ${scalar(volume.storageClass.trim())}`);
+      lines.push(`    path: ${scalar(volume.path.trim() || `${draft.name}/${volume.name.trim()}`)}`);
+    }
+  }
+  if (draft.storage.trim()) {
+    if (!storageVolumes.length) lines.push("storage:");
     for (const line of draft.storage.split("\n")) {
       if (!line.trim()) continue;
       lines.push(`  ${line}`);
