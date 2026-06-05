@@ -186,6 +186,8 @@ def _require_node_agent_token(state: Dict[str, Any], token: str, node_name: str,
 def _update_agent_heartbeat(record: Dict[str, Any], body: Dict[str, Any]) -> None:
     agent = _node_agent_record(record)
     capabilities = body.get("capabilities")
+    metrics = body.get("metrics")
+    container_stats = body.get("containerStats")
     agent.update(
         {
             "status": "online",
@@ -195,6 +197,67 @@ def _update_agent_heartbeat(record: Dict[str, Any], body: Dict[str, Any]) -> Non
             "version": str(body.get("version") or agent.get("version") or __version__),
         }
     )
+    if isinstance(metrics, dict):
+        agent["metrics"] = _agent_metrics(metrics)
+    if isinstance(container_stats, list):
+        agent["containerStats"] = _container_stats(container_stats)
+
+
+def _agent_metrics(raw: Dict[str, Any]) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {}
+    numeric_keys = {
+        "cpuPercent",
+        "cpuCount",
+        "load1",
+        "loadPercent",
+        "memoryTotalBytes",
+        "memoryAvailableBytes",
+        "memoryUsedPercent",
+    }
+    for key in numeric_keys:
+        value = raw.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            metrics[key] = round(float(value), 1) if "Percent" in key or key == "load1" else int(value)
+        elif isinstance(value, str):
+            try:
+                parsed = float(value)
+            except ValueError:
+                continue
+            metrics[key] = round(parsed, 1) if "Percent" in key or key == "load1" else int(parsed)
+    return metrics
+
+
+def _container_stats(raw_items: list[Any]) -> list[Dict[str, Any]]:
+    result: list[Dict[str, Any]] = []
+    for raw in raw_items[:250]:
+        if not isinstance(raw, dict):
+            continue
+        service = str(raw.get("service") or "").strip()
+        container_id = str(raw.get("containerId") or "").strip()
+        if not service or not container_id:
+            continue
+        item: Dict[str, Any] = {
+            "service": service,
+            "containerId": container_id[:12],
+            "name": str(raw.get("name") or ""),
+            "taskId": str(raw.get("taskId") or ""),
+        }
+        for key in ("cpuPercent", "memoryPercent", "memoryUsageBytes", "memoryLimitBytes"):
+            value = raw.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                item[key] = round(float(value), 2) if "Percent" in key else int(value)
+            elif isinstance(value, str):
+                try:
+                    parsed = float(value)
+                except ValueError:
+                    continue
+                item[key] = round(parsed, 2) if "Percent" in key else int(parsed)
+        result.append(item)
+    return result
 
 
 def _node_agent_status(record: Dict[str, Any]) -> str:
@@ -473,8 +536,13 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     raw_tasks = _dashboard_docker_list("/tasks", "tasks", errors)
     route_files = _dashboard_route_files(config, config_path, errors)
     services = _dashboard_services(raw_services, raw_tasks, node_by_id, route_files)
+    service_stats = _service_stats_by_name(registered_nodes)
+    for service in services:
+        _attach_service_actual_resources(service, service_stats.get(str(service.get("fullName") or ""), []))
     traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target)
     storage = _dashboard_storage(services, _storage_classes_summary(state))
+    public_services = [_public_dashboard_service(item) for item in services]
+    issues = _dashboard_issues(nodes, public_services)
 
     return {
         "cluster": {
@@ -500,10 +568,33 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
             },
         },
         "nodes": nodes,
-        "services": [_public_dashboard_service(item) for item in services],
+        "services": public_services,
         "trafficPaths": traffic_paths,
         "storage": storage,
+        "issues": issues,
         "errors": errors,
+    }
+
+
+def handle_dashboard_logs(token: str, service_name: str, *, tail: int = 120, since: str = "") -> Dict[str, Any]:
+    require_token(load_state(), token, token_type="deploy")
+    service = service_name.strip()
+    if not service:
+        raise LumaError("service is required")
+    tail = min(max(int(tail or 120), 1), 500)
+    query_values: Dict[str, Any] = {"stdout": 1, "stderr": 1, "timestamps": 1, "tail": tail}
+    if since:
+        query_values["since"] = since
+    query = urllib.parse.urlencode(query_values)
+    status, raw = docker_request_bytes("GET", f"/services/{urllib.parse.quote(service, safe='')}/logs?{query}")
+    if status >= 400:
+        raise LumaError(f"Docker service logs unavailable for {service}: {raw.decode('utf-8', errors='replace')}")
+    return {
+        "service": service,
+        "logs": _decode_docker_log_lines(raw)[-tail:],
+        "tail": tail,
+        "since": since,
+        "updatedAt": int(time.time()),
     }
 
 
@@ -2805,6 +2896,8 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
             raw = {}
         labels = raw.get("labels") if isinstance(raw.get("labels"), dict) else {}
         agent = raw.get("agent") if isinstance(raw.get("agent"), dict) else {}
+        metrics = agent.get("metrics") if isinstance(agent.get("metrics"), dict) else {}
+        container_stats = agent.get("containerStats") if isinstance(agent.get("containerStats"), list) else []
         items.append(
             {
                 "name": name,
@@ -2820,9 +2913,95 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
                 "agentOs": str(agent.get("os") or ""),
                 "agentLastSeen": int(agent.get("lastSeen") or 0),
                 "storageCapabilities": [str(value) for value in agent.get("capabilities") or []],
+                "metrics": _agent_metrics(metrics),
+                "containerStats": _container_stats(container_stats),
             }
         )
     return items
+
+
+def _service_stats_by_name(registered_nodes: list[Dict[str, Any]]) -> dict[str, list[Dict[str, Any]]]:
+    result: dict[str, list[Dict[str, Any]]] = {}
+    for node in registered_nodes:
+        node_name = str(node.get("name") or "")
+        for raw in node.get("containerStats") or []:
+            if not isinstance(raw, dict):
+                continue
+            service = str(raw.get("service") or "").strip()
+            if not service:
+                continue
+            item = dict(raw)
+            item["node"] = node_name
+            result.setdefault(service, []).append(item)
+    return result
+
+
+def _attach_service_actual_resources(service: Dict[str, Any], stats: list[Dict[str, Any]]) -> None:
+    tasks = service.get("tasks") if isinstance(service.get("tasks"), list) else []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        container_id = str(task.get("containerId") or "")
+        match = next((item for item in stats if _node_id_matches(str(item.get("containerId") or ""), container_id)), None)
+        if match:
+            task["cpuPercent"] = float(match.get("cpuPercent") or 0)
+            task["memoryUsageBytes"] = int(match.get("memoryUsageBytes") or 0)
+            task["memoryPercent"] = float(match.get("memoryPercent") or 0)
+    resources = service.get("resources") if isinstance(service.get("resources"), dict) else {}
+    total_cpu = round(sum(float(item.get("cpuPercent") or 0) for item in stats), 2)
+    total_memory = sum(int(item.get("memoryUsageBytes") or 0) for item in stats)
+    total_limit = sum(int(item.get("memoryLimitBytes") or 0) for item in stats)
+    actual: Dict[str, Any] = {
+        "containers": len(stats),
+        "cpuPercent": total_cpu,
+        "memoryUsageBytes": total_memory,
+        "nodes": sorted({str(item.get("node") or "") for item in stats if item.get("node")}),
+    }
+    if total_limit:
+        actual["memoryLimitBytes"] = total_limit
+        actual["memoryPercent"] = round(total_memory / total_limit * 100, 2)
+    elif stats:
+        actual["memoryPercent"] = round(sum(float(item.get("memoryPercent") or 0) for item in stats), 2)
+    resources["actual"] = actual
+    service["resources"] = resources
+
+
+def _dashboard_issues(nodes: list[Dict[str, Any]], services: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    issues: list[Dict[str, Any]] = []
+    for node in nodes:
+        name = str(node.get("name") or "-")
+        state = str(node.get("state") or "").lower()
+        availability = str(node.get("availability") or "").lower()
+        agent_status = str(node.get("agentStatus") or "").lower()
+        metrics = node.get("metrics") if isinstance(node.get("metrics"), dict) else {}
+        if state and state not in {"ready"}:
+            issues.append({"severity": "critical", "kind": "node-state", "target": name, "message": f"Node {name} is {state}"})
+        if availability in {"drain", "pause"}:
+            issues.append({"severity": "warning", "kind": "node-availability", "target": name, "message": f"Node {name} availability is {availability}"})
+        if agent_status in {"offline", "missing", "provisioned"}:
+            issues.append({"severity": "warning", "kind": "agent", "target": name, "message": f"Node agent on {name} is {agent_status}"})
+        memory_used = float(metrics.get("memoryUsedPercent") or 0)
+        if memory_used >= 85:
+            issues.append({"severity": "warning", "kind": "node-memory", "target": name, "message": f"Node {name} memory is {memory_used:.1f}%"})
+    for service in services:
+        full_name = str(service.get("fullName") or service.get("name") or "-")
+        running = int(service.get("running") or 0)
+        desired = int(service.get("desired") or 0)
+        pending = int(service.get("pending") or 0)
+        failed = int(service.get("failed") or 0)
+        resources = service.get("resources") if isinstance(service.get("resources"), dict) else {}
+        actual = resources.get("actual") if isinstance(resources.get("actual"), dict) else {}
+        if desired > 0 and running == 0:
+            issues.append({"severity": "critical", "kind": "service-running", "target": full_name, "message": f"Service {full_name} has no running tasks"})
+        if failed > 0:
+            issues.append({"severity": "critical", "kind": "service-failed", "target": full_name, "message": f"Service {full_name} has {failed} failed task(s)"})
+        if pending > 0:
+            issues.append({"severity": "warning", "kind": "service-pending", "target": full_name, "message": f"Service {full_name} has {pending} pending task(s)"})
+        memory_percent = float(actual.get("memoryPercent") or 0)
+        if memory_percent >= 85:
+            issues.append({"severity": "warning", "kind": "service-memory", "target": full_name, "message": f"Service {full_name} memory is {memory_percent:.1f}%"})
+    issues.sort(key=lambda item: (0 if item.get("severity") == "critical" else 1, str(item.get("target") or "")))
+    return issues
 
 
 def _dashboard_docker_list(path: str, label: str, errors: list[str]) -> list[Dict[str, Any]]:
@@ -2881,6 +3060,8 @@ def _dashboard_nodes(registered_nodes: list[Dict[str, Any]], raw_nodes: list[Dic
                 "agentOs": str(registered.get("agentOs") or ""),
                 "agentLastSeen": int(registered.get("agentLastSeen") or 0),
                 "storageCapabilities": [str(value) for value in registered.get("storageCapabilities") or []],
+                "metrics": registered.get("metrics") if isinstance(registered.get("metrics"), dict) else {},
+                "capacity": swarm.get("capacity") if isinstance(swarm.get("capacity"), dict) else {},
             }
         )
     return rows
@@ -2979,7 +3160,7 @@ def _dashboard_service(
     compose_service = str(labels.get("luma.compose.service") or "").strip()
     route_id = f"{compose_stack}-{slugify(compose_service)}" if compose_stack and compose_service else stack or name
     route_file = route_files.get(route_id) or route_files.get(stack or name) or route_files.get(name)
-    counts, task_nodes = _dashboard_task_counts(tasks, node_by_id)
+    counts, task_nodes, task_rows = _dashboard_task_counts(tasks, node_by_id)
     desired = _service_desired_replicas(spec, counts)
     region = _constraint_value(constraints, "node.labels.region")
     exposure = "none"
@@ -3006,6 +3187,8 @@ def _dashboard_service(
         "network": str(route.get("network") or ""),
         "health": _service_health(desired, counts),
         "storage": _storage_from_labels(labels),
+        "resources": _service_resources(template),
+        "tasks": task_rows,
         "diagnostics": _service_diagnostics(desired, counts, labels),
         "_routeFile": route_file or {},
     }
@@ -3100,12 +3283,13 @@ def _service_desired_replicas(spec: Dict[str, Any], counts: Dict[str, int]) -> i
     return total or 1
 
 
-def _dashboard_task_counts(tasks: list[Dict[str, Any]], node_by_id: dict[str, Dict[str, Any]]) -> tuple[Dict[str, int], list[str]]:
+def _dashboard_task_counts(tasks: list[Dict[str, Any]], node_by_id: dict[str, Dict[str, Any]]) -> tuple[Dict[str, int], list[str], list[Dict[str, Any]]]:
     current_tasks = [task for task in tasks if str(task.get("DesiredState") or "") == "running"]
     if not current_tasks:
         current_tasks = tasks
     counts = {"running": 0, "failed": 0, "pending": 0}
     nodes: list[str] = []
+    task_rows: list[Dict[str, Any]] = []
     for task in current_tasks:
         status = task.get("Status") if isinstance(task.get("Status"), dict) else {}
         state = str(status.get("State") or "").lower()
@@ -3120,7 +3304,36 @@ def _dashboard_task_counts(tasks: list[Dict[str, Any]], node_by_id: dict[str, Di
         hostname = str((node or {}).get("hostname") or "")
         if hostname and state not in {"failed", "rejected", "shutdown", "complete", "remove"} and hostname not in nodes:
             nodes.append(hostname)
-    return counts, nodes
+        container_status = status.get("ContainerStatus") if isinstance(status.get("ContainerStatus"), dict) else {}
+        task_rows.append(
+            {
+                "id": str(task.get("ID") or "")[:12],
+                "node": hostname or node_id[:12],
+                "state": state or "unknown",
+                "desiredState": str(task.get("DesiredState") or ""),
+                "containerId": str(container_status.get("ContainerID") or "")[:12],
+                "message": str(status.get("Message") or ""),
+                "error": str(status.get("Err") or ""),
+            }
+        )
+    return counts, nodes, task_rows
+
+
+def _service_resources(template: Dict[str, Any]) -> Dict[str, Any]:
+    resources = template.get("Resources") if isinstance(template.get("Resources"), dict) else {}
+    result: Dict[str, Any] = {}
+    for section_name, output_name in (("Limits", "limits"), ("Reservations", "reservations")):
+        section = resources.get(section_name) if isinstance(resources.get(section_name), dict) else {}
+        values: Dict[str, Any] = {}
+        nano_cpus = int(section.get("NanoCPUs") or 0)
+        memory = int(section.get("MemoryBytes") or 0)
+        if nano_cpus:
+            values["cpus"] = round(nano_cpus / 1_000_000_000, 3)
+        if memory:
+            values["memoryBytes"] = memory
+        if values:
+            result[output_name] = values
+    return result
 
 
 def _service_health(desired: int, counts: Dict[str, int]) -> str:
@@ -3209,6 +3422,7 @@ def _dashboard_traffic_paths(
 def _swarm_node_summary_item(node: Dict[str, Any]) -> Dict[str, Any]:
     spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
     description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
+    resources = description.get("Resources") if isinstance(description.get("Resources"), dict) else {}
     status = node.get("Status") if isinstance(node.get("Status"), dict) else {}
     manager_status = node.get("ManagerStatus") if isinstance(node.get("ManagerStatus"), dict) else {}
     labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
@@ -3225,6 +3439,10 @@ def _swarm_node_summary_item(node: Dict[str, Any]) -> Dict[str, Any]:
         "ingress": str(labels.get("ingress") or ""),
         "leader": bool(manager_status.get("Leader")),
         "reachability": str(manager_status.get("Reachability") or ""),
+        "capacity": {
+            "cpus": round(int(resources.get("NanoCPUs") or 0) / 1_000_000_000, 3) if resources.get("NanoCPUs") else 0,
+            "memoryBytes": int(resources.get("MemoryBytes") or 0),
+        },
         "labels": {str(key): str(value) for key, value in labels.items()},
     }
 
@@ -3355,17 +3573,40 @@ def docker_request(method: str, path: str, body: Dict[str, Any] | None = None) -
 
 
 def docker_request_raw(method: str, path: str, *, headers: Dict[str, str] | None = None) -> tuple[int, str]:
+    status, raw = docker_request_bytes(method, path, headers=headers)
+    return status, raw.decode("utf-8", errors="replace")
+
+
+def docker_request_bytes(method: str, path: str, *, headers: Dict[str, str] | None = None) -> tuple[int, bytes]:
     conn = DockerSocketConnection()
     try:
         api_version = os.environ.get("DOCKER_API_VERSION", "1.44")
         conn.request(method, f"/v{api_version}" + path, headers=headers or {})
         response = conn.getresponse()
-        raw = response.read().decode("utf-8", errors="replace")
+        raw = response.read()
         return response.status, raw
     except OSError as exc:
         raise LumaError("Docker socket unavailable to Luma Control") from exc
     finally:
         conn.close()
+
+
+def _decode_docker_log_lines(raw: bytes) -> list[str]:
+    chunks: list[bytes] = []
+    index = 0
+    while index + 8 <= len(raw):
+        stream_type = raw[index]
+        size = int.from_bytes(raw[index + 4:index + 8], "big")
+        if stream_type not in {0, 1, 2} or size < 0 or index + 8 + size > len(raw):
+            break
+        chunks.append(raw[index + 8:index + 8 + size])
+        index += 8 + size
+    if not chunks:
+        chunks = [raw]
+    elif index < len(raw):
+        chunks.append(raw[index:])
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    return [line.rstrip("\r") for line in text.splitlines() if line.strip()]
 
 
 def resolve_tailscale_relay(service: ServiceSpec) -> ServiceSpec:
@@ -3708,6 +3949,22 @@ class ControlHandler(BaseHTTPRequestHandler):
             if parsed_path == "/v1/dashboard":
                 self._json(200, handle_dashboard(token))
                 return
+            if parsed_path == "/v1/dashboard/logs":
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                service = str((query.get("service") or [""])[0])
+                since = str((query.get("since") or [""])[0])
+                download = str((query.get("download") or [""])[0]).lower() in {"1", "true", "yes"}
+                try:
+                    tail = int(str((query.get("tail") or ["120"])[0]) or "120")
+                except ValueError as exc:
+                    raise LumaError("tail must be a number") from exc
+                logs = handle_dashboard_logs(token, service, tail=tail, since=since)
+                if download:
+                    filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", service).strip("-") or "service"
+                    self._download_text(f"{filename}.log", "\n".join(str(line) for line in logs.get("logs") or []) + "\n")
+                else:
+                    self._json(200, logs)
+                return
             config_match = re.fullmatch(r"/v1/deployments/([^/]+)/config", parsed_path)
             if config_match:
                 name = urllib.parse.unquote(config_match.group(1))
@@ -3861,6 +4118,16 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", cache_control)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _download_text(self, filename: str, text: str) -> None:
+        body = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Disposition", f"attachment; filename={filename}")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

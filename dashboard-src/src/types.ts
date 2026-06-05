@@ -17,6 +17,50 @@ export type Readiness = {
   };
 };
 
+export type NodeMetrics = {
+  cpuPercent?: number;
+  cpuCount?: number;
+  load1?: number;
+  loadPercent?: number;
+  memoryTotalBytes?: number;
+  memoryAvailableBytes?: number;
+  memoryUsedPercent?: number;
+};
+
+export type ResourceValues = {
+  cpus?: number;
+  memoryBytes?: number;
+};
+
+export type ActualResourceValues = {
+  containers?: number;
+  cpuPercent?: number;
+  memoryUsageBytes?: number;
+  memoryLimitBytes?: number;
+  memoryPercent?: number;
+  nodes?: string[];
+};
+
+export type DashboardTask = {
+  id?: string;
+  node?: string;
+  state?: string;
+  desiredState?: string;
+  containerId?: string;
+  message?: string;
+  error?: string;
+  cpuPercent?: number;
+  memoryUsageBytes?: number;
+  memoryPercent?: number;
+};
+
+export type DashboardIssue = {
+  severity?: "critical" | "warning" | "info" | string;
+  kind?: string;
+  target?: string;
+  message?: string;
+};
+
 export type DashboardNode = {
   name?: string;
   displayName?: string;
@@ -29,6 +73,8 @@ export type DashboardNode = {
   agentOs?: string;
   agentLastSeen?: number;
   storageCapabilities?: string[];
+  metrics?: NodeMetrics;
+  capacity?: ResourceValues;
 };
 
 export type DashboardService = {
@@ -50,6 +96,12 @@ export type DashboardService = {
   health?: string;
   nodes?: string[];
   storage?: DashboardVolume[];
+  resources?: {
+    limits?: ResourceValues;
+    reservations?: ResourceValues;
+    actual?: ActualResourceValues;
+  };
+  tasks?: DashboardTask[];
   diagnostics?: string[];
 };
 
@@ -95,6 +147,7 @@ export type DashboardPayload = {
     volumes?: DashboardVolume[];
     warnings?: string[];
   };
+  issues?: DashboardIssue[];
   errors?: string[];
 };
 

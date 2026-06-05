@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
+import { IssuesPanel } from "./components/IssuesPanel";
 import { LoginPanel } from "./components/LoginPanel";
 import { NodeTopology } from "./components/NodeTopology";
 import { NodesTable } from "./components/NodesTable";
+import { ObservabilityPanel } from "./components/ObservabilityPanel";
 import { ReadinessCards } from "./components/ReadinessCards";
 import { ServicesTable } from "./components/ServicesTable";
 import { StoragePanel } from "./components/StoragePanel";
@@ -18,7 +20,7 @@ import { useDashboardData } from "./useDashboardData";
 import lumaLogoMark from "./assets/luma-logo-mark.png";
 
 const LANG_KEY = "luma.dashboard.lang";
-type ActivePage = "deploy" | "status" | "topology" | "storage" | "update";
+type ActivePage = "deploy" | "status" | "topology" | "storage" | "observability" | "update";
 
 type DetailState =
   | { kind: "node"; title: string; items: Record<string, string | number | boolean | undefined> }
@@ -53,6 +55,7 @@ export function App() {
   const nodes = payload?.nodes || [];
   const services = payload?.services || [];
   const paths = payload?.trafficPaths || [];
+  const issues = payload?.issues || [];
   const storageVolumes = payload?.storage?.volumes || [];
   const storageClasses = payload?.storage?.storageClasses || [];
   const storageWarnings = payload?.storage?.warnings || [];
@@ -81,13 +84,19 @@ export function App() {
         detail: lang === "zh" ? `${nodes.length} 节点 · ${paths.length} 路径` : `${nodes.length} nodes · ${paths.length} paths`,
       },
       {
+        id: "observability" as const,
+        label: lang === "zh" ? "观察" : "Observe",
+        value: nodes.filter((node) => node.metrics?.cpuPercent || node.metrics?.memoryUsedPercent).length,
+        detail: lang === "zh" ? "节点资源 · 日志" : "Resources · logs",
+      },
+      {
         id: "storage" as const,
         label: lang === "zh" ? "存储" : "Storage",
         value: storageVolumes.length + storageClasses.length,
         detail: lang === "zh" ? `${storageClasses.length} 类 · ${storageVolumes.length} 卷` : `${storageClasses.length} classes · ${storageVolumes.length} volumes`,
       },
     ],
-    [healthyServices, lang, nodes.length, paths.length, services.length, storageClasses.length, storageVolumes.length],
+    [healthyServices, lang, nodes, nodes.length, paths.length, services.length, storageClasses.length, storageVolumes.length],
   );
 
   const updateContext = useMemo(() => {
@@ -145,6 +154,12 @@ export function App() {
         state: node.state,
         availability: node.availability,
         leader: node.leader,
+        cpu: node.metrics?.cpuPercent ?? node.metrics?.loadPercent,
+        load1: node.metrics?.load1,
+        memory: node.metrics?.memoryUsedPercent,
+        memoryTotal: node.metrics?.memoryTotalBytes,
+        cpuCapacity: node.capacity?.cpus,
+        memoryCapacity: node.capacity?.memoryBytes,
       },
     });
   };
@@ -163,6 +178,15 @@ export function App() {
         failed: service.failed,
         health: service.health,
         nodes: (service.nodes || []).join(", "),
+        limits: [
+          service.resources?.limits?.cpus ? `${service.resources.limits.cpus} CPU` : "",
+          service.resources?.limits?.memoryBytes ? `${service.resources.limits.memoryBytes} bytes` : "",
+        ].filter(Boolean).join(" / "),
+        reservations: [
+          service.resources?.reservations?.cpus ? `${service.resources.reservations.cpus} CPU` : "",
+          service.resources?.reservations?.memoryBytes ? `${service.resources.reservations.memoryBytes} bytes` : "",
+        ].filter(Boolean).join(" / "),
+        tasks: (service.tasks || []).map((task) => `${task.node || "-"}:${task.state || "-"}`).join(", "),
         storage: (service.storage || []).map((item) => `${item.name || "-"}:${item.kind || "unmanaged"}`).join(", "),
         diagnostics: (service.diagnostics || []).join("; "),
       },
@@ -324,6 +348,23 @@ export function App() {
                   <StoragePanel lang={lang} volumes={storageVolumes} storageClasses={storageClasses} warnings={storageWarnings} />
                   <ReadinessCards lang={lang} payload={payload} />
                 </>
+              ) : activePage === "observability" ? (
+                <>
+                  <section className="hero-strip observability-page-hero" id="section-observability">
+                    <div>
+                      <p className="eyebrow">{lang === "zh" ? "可观测性" : "Observability"}</p>
+                      <h1>{lang === "zh" ? "节点资源与实时日志。" : "Node resources and live logs."}</h1>
+                      <p>{lang === "zh" ? "查看节点 CPU、内存、服务任务和最近日志。" : "Review node CPU, memory, service tasks, and recent logs."}</p>
+                    </div>
+                    <div className="hero-metrics" aria-label="Observability summary">
+                      <span>{nodes.length} {t(lang, "nodes")}</span>
+                      <span>{services.length} {t(lang, "services")}</span>
+                      <span>logs</span>
+                    </div>
+                  </section>
+                  <IssuesPanel lang={lang} issues={issues} />
+                  <ObservabilityPanel lang={lang} token={token} nodes={nodes} services={services} />
+                </>
               ) : (
                 <>
                   <section className="hero-strip status-page-hero" id="section-status">
@@ -340,6 +381,7 @@ export function App() {
                   </section>
 
                   <ReadinessCards lang={lang} payload={payload} />
+                  <IssuesPanel lang={lang} issues={issues} />
                   <ApplicationManagementPanel
                     lang={lang}
                     token={token}

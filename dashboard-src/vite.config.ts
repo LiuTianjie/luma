@@ -17,10 +17,10 @@ const devDashboardPayload = {
     swarm: { available: true },
   },
   nodes: [
-    { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true },
-    { name: "home-mac-mini", displayName: "home-mac-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false },
-    { name: "tailscale-relay", displayName: "tailscale-relay", region: "home", role: "worker", state: "ready", availability: "active", leader: false },
-    { name: "m4mini", displayName: "m4mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false },
+    { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true, metrics: { cpuPercent: 21.4, load1: 0.82, memoryUsedPercent: 58.2, memoryTotalBytes: 17179869184 }, capacity: { cpus: 4, memoryBytes: 17179869184 } },
+    { name: "home-mac-mini", displayName: "home-mac-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, metrics: { cpuPercent: 13.8, load1: 1.1, memoryUsedPercent: 61.5, memoryTotalBytes: 34359738368 }, capacity: { cpus: 10, memoryBytes: 34359738368 } },
+    { name: "tailscale-relay", displayName: "tailscale-relay", region: "home", role: "worker", state: "ready", availability: "active", leader: false, metrics: { cpuPercent: 8.1, load1: 0.2, memoryUsedPercent: 44.0, memoryTotalBytes: 8589934592 }, capacity: { cpus: 4, memoryBytes: 8589934592 } },
+    { name: "m4mini", displayName: "m4mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, metrics: { cpuPercent: 29.7, load1: 2.4, memoryUsedPercent: 67.9, memoryTotalBytes: 17179869184 }, capacity: { cpus: 8, memoryBytes: 17179869184 } },
   ],
   services: [
     {
@@ -155,8 +155,37 @@ const devDashboardPayload = {
     ],
     warnings: [],
   },
+  issues: [
+    { severity: "warning", kind: "service-pending", target: "egress_mihomo", message: "Service egress_mihomo has 1 pending task" },
+    { severity: "warning", kind: "node-memory", target: "m4mini", message: "Node m4mini memory is 67.9%" },
+  ],
   errors: [],
 };
+
+(devDashboardPayload.services as any[]).forEach((service) => {
+  service.resources = {
+    reservations: { cpus: 0.25, memoryBytes: 134217728 },
+    limits: { cpus: 1, memoryBytes: 536870912 },
+    actual: {
+      containers: 1,
+      cpuPercent: service.name === "mihomo" ? 12.7 : 3.4,
+      memoryUsageBytes: service.name === "mihomo" ? 241172480 : 89391104,
+      memoryLimitBytes: 536870912,
+      memoryPercent: service.name === "mihomo" ? 44.9 : 16.7,
+      nodes: service.nodes || [],
+    },
+  };
+  service.tasks = (service.nodes || []).map((node: string, index: number) => ({
+    id: `${service.fullName}-${index}`,
+    node,
+    state: "running",
+    desiredState: "running",
+    containerId: `${service.fullName}-${index}`.slice(0, 12),
+    cpuPercent: service.name === "mihomo" ? 12.7 : 3.4,
+    memoryUsageBytes: service.name === "mihomo" ? 241172480 : 89391104,
+    memoryPercent: service.name === "mihomo" ? 44.9 : 16.7,
+  }));
+});
 
 export default defineConfig({
   base: "/dashboard/",
@@ -191,6 +220,35 @@ export default defineConfig({
               resolve({});
             }
           });
+        });
+        server.middlewares.use("/v1/dashboard/logs", (request, response) => {
+          if (request.method !== "GET") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          const parsed = new URL(request.url || "/v1/dashboard/logs", "http://localhost");
+          const service = parsed.searchParams.get("service") || "luma-control_luma-control";
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({
+            service,
+            tail: 160,
+            updatedAt: Math.floor(Date.now() / 1000),
+            logs: [
+              `${new Date().toISOString()} ${service} received health probe`,
+              `${new Date().toISOString()} ${service} task heartbeat ok`,
+              `${new Date().toISOString()} ${service} route check passed`,
+            ],
+          }));
         });
         server.middlewares.use("/v1/dashboard", (request, response) => {
           if (request.method !== "GET") {

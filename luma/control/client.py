@@ -142,18 +142,25 @@ class ControlClient:
         node_id: str = "",
         os_name: str = "",
         capabilities: list[str] | None = None,
+        metrics: Dict[str, Any] | None = None,
+        container_stats: list[Dict[str, Any]] | None = None,
         timeout: int = 30,
     ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "nodeName": node_name,
+            "nodeId": node_id,
+            "os": os_name,
+            "capabilities": capabilities or [],
+            "waitSeconds": max(timeout - 5, 1),
+        }
+        if metrics:
+            body["metrics"] = metrics
+        if container_stats is not None:
+            body["containerStats"] = container_stats
         return self.request(
             "POST",
             "/v1/node-agent/lease",
-            {
-                "nodeName": node_name,
-                "nodeId": node_id,
-                "os": os_name,
-                "capabilities": capabilities or [],
-                "waitSeconds": max(timeout - 5, 1),
-            },
+            body,
             timeout=timeout,
         )
 

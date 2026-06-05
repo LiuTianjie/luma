@@ -16,7 +16,13 @@ from unittest.mock import MagicMock, Mock, patch
 import yaml
 
 from luma import __version__
-from luma.agent import _agent_executable_args, _systemd_unit, execute_agent_task
+from luma.agent import (
+    _ContainerStatsSampler,
+    _agent_executable_args,
+    _systemd_unit,
+    execute_agent_task,
+    node_agent_container_stats,
+)
 from luma.assets import asset_path, asset_text
 from luma.config import LumaConfig
 from luma.compose import load_compose_deployment
@@ -44,7 +50,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -126,6 +132,50 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("luma.cli", args)
         self.assertNotIn("ExecStart=- ", unit)
         self.assertIn("node-agent run --config /opt/luma/node-agent/agent.json", unit)
+
+    def test_node_agent_container_stats_parse_swarm_service_stats(self):
+        ps = Mock(returncode=0, stdout="abc123\tapi.1\tapi_api\ttask-1\n")
+        stats = Mock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "ID": "abc123",
+                    "Name": "api.1",
+                    "CPUPerc": "8.50%",
+                    "MemUsage": "128MiB / 512MiB",
+                    "MemPerc": "25.00%",
+                }
+            )
+            + "\n",
+        )
+        with patch("shutil.which", return_value="/usr/bin/docker"), patch("subprocess.run", side_effect=[ps, stats]):
+            result = node_agent_container_stats()
+
+        self.assertEqual(result[0]["service"], "api_api")
+        self.assertEqual(result[0]["containerId"], "abc123")
+        self.assertEqual(result[0]["cpuPercent"], 8.5)
+        self.assertEqual(result[0]["memoryUsageBytes"], 134217728)
+        self.assertEqual(result[0]["memoryLimitBytes"], 536870912)
+
+    def test_node_agent_container_stats_sampler_snapshot_does_not_block_on_slow_docker(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_stats():
+            entered.set()
+            release.wait(timeout=2)
+            return [{"service": "api_api", "containerId": "abc123", "cpuPercent": 8.5}]
+
+        sampler = _ContainerStatsSampler(60, stats_func=slow_stats)
+        try:
+            sampler.start()
+            self.assertTrue(entered.wait(timeout=1))
+            started = time.monotonic()
+            self.assertEqual(sampler.snapshot(), [])
+            self.assertLess(time.monotonic() - started, 0.2)
+        finally:
+            release.set()
+            sampler.stop()
 
     def test_node_agent_can_remove_managed_volume_path(self):
         with patch("luma.agent._run_fixed_host_task") as run:
@@ -3782,8 +3832,46 @@ class ControlApiTests(unittest.TestCase):
                 state["portainerEndpointId"] = 2
                 state["swarmId"] = "swarm"
                 state["nodes"] = {
-                    "manager": {"region": "cn", "status": "labeled", "labels": {"region": "cn"}},
-                    "home-node": {"displayName": "mini", "region": "home", "status": "labeled"},
+                    "manager": {
+                        "region": "cn",
+                        "status": "labeled",
+                        "labels": {"region": "cn"},
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "os": "linux",
+                            "capabilities": ["nfs-host"],
+                            "containerStats": [
+                                {
+                                    "service": "api_api",
+                                    "containerId": "api-container-1",
+                                    "name": "api.1",
+                                    "cpuPercent": 8.5,
+                                    "memoryUsageBytes": 134217728,
+                                    "memoryLimitBytes": 536870912,
+                                    "memoryPercent": 25.0,
+                                }
+                            ],
+                        },
+                    },
+                    "home-node": {
+                        "displayName": "mini",
+                        "region": "home",
+                        "status": "labeled",
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "os": "linux",
+                            "capabilities": ["nfs-host"],
+                            "metrics": {
+                                "cpuPercent": 18.4,
+                                "load1": 0.42,
+                                "memoryTotalBytes": 8589934592,
+                                "memoryAvailableBytes": 4294967296,
+                                "memoryUsedPercent": 50.0,
+                            },
+                        },
+                    },
                 }
                 from luma.control.state import save_state
 
@@ -3838,14 +3926,20 @@ class ControlApiTests(unittest.TestCase):
                 docker_nodes = [
                     {
                         "ID": "node-manager",
-                        "Description": {"Hostname": "manager"},
+                        "Description": {
+                            "Hostname": "manager",
+                            "Resources": {"NanoCPUs": 4000000000, "MemoryBytes": 17179869184},
+                        },
                         "Spec": {"Role": "manager", "Availability": "active", "Labels": {"region": "cn", "ingress": "true"}},
                         "Status": {"State": "ready", "Addr": "100.64.0.1"},
                         "ManagerStatus": {"Leader": True},
                     },
                     {
                         "ID": "node-home",
-                        "Description": {"Hostname": "home-node"},
+                        "Description": {
+                            "Hostname": "home-node",
+                            "Resources": {"NanoCPUs": 8000000000, "MemoryBytes": 8589934592},
+                        },
                         "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home"}},
                         "Status": {"State": "ready", "Addr": "100.64.0.2"},
                     },
@@ -3881,8 +3975,12 @@ class ControlApiTests(unittest.TestCase):
                         {"luma.compose.stack": "nextcloud", "luma.compose.service": "nextcloud"},
                     ),
                 ]
+                docker_services[0]["Spec"]["TaskTemplate"]["Resources"] = {
+                    "Limits": {"NanoCPUs": 1000000000, "MemoryBytes": 536870912},
+                    "Reservations": {"NanoCPUs": 500000000, "MemoryBytes": 268435456},
+                }
                 docker_tasks = [
-                    _docker_task("svc-api", "node-manager", "running"),
+                    _docker_task("svc-api", "node-manager", "running", container_id="api-container-1"),
                     _docker_task("svc-api", "node-home", "accepted"),
                     _docker_task("svc-api", "node-home", "failed"),
                     _docker_task("svc-worker", "node-manager", "running"),
@@ -3908,6 +4006,9 @@ class ControlApiTests(unittest.TestCase):
                 self.assertTrue(result["readiness"]["portainer"]["ready"])
                 self.assertEqual(result["readiness"]["dns"]["target"], "203.0.113.10")
                 self.assertEqual(result["nodes"][0]["name"], "home-node")
+                self.assertEqual(result["nodes"][0]["metrics"]["cpuPercent"], 18.4)
+                self.assertEqual(result["nodes"][0]["metrics"]["memoryUsedPercent"], 50.0)
+                self.assertEqual(result["nodes"][0]["capacity"]["cpus"], 8.0)
                 api = next(item for item in result["services"] if item["routeId"] == "api")
                 self.assertEqual(api["domain"], "api.example.com")
                 self.assertEqual(api["targetPort"], "3000")
@@ -3916,6 +4017,13 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(api["failed"], 1)
                 self.assertEqual(api["exposure"], "cn-edge")
                 self.assertEqual(api["health"], "degraded")
+                self.assertEqual(api["resources"]["limits"]["cpus"], 1.0)
+                self.assertEqual(api["resources"]["reservations"]["memoryBytes"], 268435456)
+                self.assertEqual(api["resources"]["actual"]["cpuPercent"], 8.5)
+                self.assertEqual(api["resources"]["actual"]["memoryUsageBytes"], 134217728)
+                self.assertTrue(any(item["node"] == "manager" and item["state"] == "running" for item in api["tasks"]))
+                self.assertTrue(any(item["kind"] == "service-failed" and item["target"] == "api_api" for item in result["issues"]))
+                self.assertTrue(any(item["kind"] == "service-pending" and item["target"] == "api_api" for item in result["issues"]))
                 worker = next(item for item in result["services"] if item["routeId"] == "worker")
                 self.assertEqual(worker["exposure"], "none")
                 self.assertEqual(worker["health"], "running")
@@ -3958,6 +4066,30 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_dashboard_logs_tails_swarm_service_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                save_state(state)
+                first = b"2026-06-05T10:00:00Z api booted\n"
+                second = b"2026-06-05T10:00:01Z api ready\n"
+                raw = b"\x01\x00\x00\x00" + len(first).to_bytes(4, "big") + first
+                raw += b"\x02\x00\x00\x00" + len(second).to_bytes(4, "big") + second
+
+                with patch("luma.control.server.docker_request_bytes", return_value=(200, raw)) as logs:
+                    result = handle_dashboard_logs(state["deployToken"], "nextcloud_nextcloud", tail=20, since="1780650000")
+
+                path = logs.call_args.args[1]
+                self.assertIn("/services/nextcloud_nextcloud/logs?", path)
+                self.assertIn("since=1780650000", path)
+                self.assertEqual(result["service"], "nextcloud_nextcloud")
+                self.assertEqual(result["since"], "1780650000")
+                self.assertEqual(result["logs"], [first.decode().strip(), second.decode().strip()])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
     def test_dashboard_handler_serves_static_assets_and_rejects_missing_token(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), ControlHandler)
@@ -6000,12 +6132,16 @@ def _docker_service(service_id, name, image, replicas, constraints, labels):
     }
 
 
-def _docker_task(service_id, node_id, state):
+def _docker_task(service_id, node_id, state, container_id=""):
+    status = {"State": state}
+    if container_id:
+        status["ContainerStatus"] = {"ContainerID": container_id}
     return {
+        "ID": f"{service_id}-{node_id}-{state}",
         "ServiceID": service_id,
         "NodeID": node_id,
         "DesiredState": "running",
-        "Status": {"State": state},
+        "Status": status,
     }
 
 

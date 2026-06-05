@@ -6,10 +6,12 @@ import platform
 import re
 import shutil
 import shlex
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from .errors import LumaError
 from .local import LocalExecutor
@@ -17,6 +19,7 @@ from .service import slugify
 
 DEFAULT_AGENT_CONFIG = Path("/opt/luma/node-agent/agent.json")
 DEFAULT_AGENT_SERVICE = "luma-node-agent"
+DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS = 30
 
 
 def node_agent_os() -> str:
@@ -37,6 +40,269 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
     return []
 
 
+def node_agent_metrics() -> Dict[str, Any]:
+    cpu_count = os.cpu_count() or 1
+    metrics: Dict[str, Any] = {"cpuCount": cpu_count}
+    try:
+        load1, _load5, _load15 = os.getloadavg()
+        metrics["load1"] = round(float(load1), 2)
+        metrics["loadPercent"] = round(min(max(load1 / cpu_count, 0), 1) * 100, 1)
+    except (AttributeError, OSError):
+        pass
+    os_value = node_agent_os()
+    if os_value == "linux":
+        metrics.update(_linux_host_metrics())
+    elif os_value == "darwin":
+        metrics.update(_darwin_host_metrics(metrics.get("loadPercent")))
+    return {key: value for key, value in metrics.items() if value not in ("", None)}
+
+
+def node_agent_container_stats() -> list[Dict[str, Any]]:
+    docker = shutil.which("docker")
+    if not docker:
+        return []
+    try:
+        ps = subprocess.run(
+            [
+                docker,
+                "ps",
+                "--format",
+                "{{.ID}}\t{{.Names}}\t{{.Label \"com.docker.swarm.service.name\"}}\t{{.Label \"com.docker.swarm.task.id\"}}",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if ps.returncode != 0:
+        return []
+    containers: dict[str, Dict[str, Any]] = {}
+    for line in ps.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        container_id, name, service, task_id = (part.strip() for part in parts[:4])
+        if not container_id or not service or service == "<no value>":
+            continue
+        containers[container_id] = {
+            "containerId": container_id,
+            "name": name,
+            "service": service,
+            "taskId": "" if task_id == "<no value>" else task_id,
+        }
+    if not containers:
+        return []
+    ids = list(containers)[:200]
+    try:
+        stats = subprocess.run(
+            [docker, "stats", "--no-stream", "--format", "{{json .}}", *ids],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return list(containers.values())
+    if stats.returncode != 0:
+        return list(containers.values())
+    for line in stats.stdout.splitlines():
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        container_id = str(raw.get("ID") or raw.get("Container") or "").strip()
+        matched_id = _match_container_id(container_id, containers)
+        if not matched_id:
+            name = str(raw.get("Name") or "").strip()
+            matched_id = next((key for key, value in containers.items() if value.get("name") == name), "")
+        if not matched_id:
+            continue
+        item = containers[matched_id]
+        item.update(_parse_docker_stats(raw))
+    return list(containers.values())
+
+
+class _ContainerStatsSampler:
+    def __init__(
+        self,
+        interval_seconds: int,
+        stats_func: Callable[[], list[Dict[str, Any]]] = node_agent_container_stats,
+    ):
+        self._interval = max(int(interval_seconds or DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS), 1)
+        self._stats_func = stats_func
+        self._items: list[Dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread:
+            return
+        self._thread = threading.Thread(
+            target=self._run,
+            name="luma-node-agent-container-stats",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def snapshot(self) -> list[Dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self._items]
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._sample_once()
+            self._stop.wait(self._interval)
+
+    def _sample_once(self) -> None:
+        try:
+            items = self._stats_func()
+        except Exception:
+            return
+        with self._lock:
+            self._items = [dict(item) for item in items if isinstance(item, dict)]
+
+
+def _match_container_id(container_id: str, containers: dict[str, Dict[str, Any]]) -> str:
+    if not container_id:
+        return ""
+    for candidate in containers:
+        if candidate.startswith(container_id) or container_id.startswith(candidate):
+            return candidate
+    return ""
+
+
+def _parse_docker_stats(raw: Dict[str, Any]) -> Dict[str, Any]:
+    parsed: Dict[str, Any] = {}
+    cpu_percent = _parse_percent(str(raw.get("CPUPerc") or ""))
+    memory_percent = _parse_percent(str(raw.get("MemPerc") or ""))
+    if cpu_percent is not None:
+        parsed["cpuPercent"] = cpu_percent
+    if memory_percent is not None:
+        parsed["memoryPercent"] = memory_percent
+    memory_usage = str(raw.get("MemUsage") or "")
+    used, _, limit = memory_usage.partition("/")
+    used_bytes = _parse_size_bytes(used.strip())
+    limit_bytes = _parse_size_bytes(limit.strip())
+    if used_bytes:
+        parsed["memoryUsageBytes"] = used_bytes
+    if limit_bytes:
+        parsed["memoryLimitBytes"] = limit_bytes
+    return parsed
+
+
+def _parse_percent(value: str) -> float | None:
+    text = value.strip().rstrip("%")
+    if not text:
+        return None
+    try:
+        return round(float(text), 2)
+    except ValueError:
+        return None
+
+
+def _parse_size_bytes(value: str) -> int:
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]+)", value.strip())
+    if not match:
+        return 0
+    amount = float(match.group(1))
+    unit = match.group(2).lower()
+    scale = {
+        "b": 1,
+        "kb": 1000,
+        "kib": 1024,
+        "mb": 1000 ** 2,
+        "mib": 1024 ** 2,
+        "gb": 1000 ** 3,
+        "gib": 1024 ** 3,
+        "tb": 1000 ** 4,
+        "tib": 1024 ** 4,
+    }.get(unit)
+    if not scale:
+        return 0
+    return int(amount * scale)
+
+
+def _linux_host_metrics() -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {}
+    first_cpu = _read_linux_cpu_times()
+    if first_cpu:
+        time.sleep(0.05)
+        second_cpu = _read_linux_cpu_times()
+        if second_cpu:
+            total_delta = second_cpu[0] - first_cpu[0]
+            idle_delta = second_cpu[1] - first_cpu[1]
+            if total_delta > 0:
+                metrics["cpuPercent"] = round(max(0, total_delta - idle_delta) / total_delta * 100, 1)
+    try:
+        values: Dict[str, int] = {}
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                values[parts[0].rstrip(":")] = int(parts[1]) * 1024
+        total = values.get("MemTotal", 0)
+        available = values.get("MemAvailable", 0)
+        if total > 0:
+            metrics["memoryTotalBytes"] = total
+            metrics["memoryAvailableBytes"] = available
+            metrics["memoryUsedPercent"] = round(max(0, total - available) / total * 100, 1)
+    except (OSError, ValueError):
+        pass
+    return metrics
+
+
+def _read_linux_cpu_times() -> tuple[int, int] | None:
+    try:
+        first_line = Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0]
+        values = [int(value) for value in first_line.split()[1:]]
+    except (OSError, ValueError, IndexError):
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    return sum(values), idle
+
+
+def _darwin_host_metrics(load_percent: object = None) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {}
+    if isinstance(load_percent, (int, float)):
+        metrics["cpuPercent"] = round(float(load_percent), 1)
+    try:
+        total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip())
+        vm_stat = subprocess.check_output(["vm_stat"], text=True)
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return metrics
+    page_size = 4096
+    match = re.search(r"page size of (\d+) bytes", vm_stat)
+    if match:
+        page_size = int(match.group(1))
+    pages: Dict[str, int] = {}
+    for line in vm_stat.splitlines():
+        key, _, raw_value = line.partition(":")
+        if not raw_value:
+            continue
+        try:
+            pages[key.strip()] = int(raw_value.strip().rstrip("."))
+        except ValueError:
+            continue
+    available_pages = pages.get("Pages free", 0) + pages.get("Pages inactive", 0) + pages.get("Pages speculative", 0)
+    available = available_pages * page_size
+    if total > 0:
+        metrics["memoryTotalBytes"] = total
+        metrics["memoryAvailableBytes"] = available
+        metrics["memoryUsedPercent"] = round(max(0, total - available) / total * 100, 1)
+    return metrics
+
+
 def install_node_agent(
     *,
     endpoint: str,
@@ -55,6 +321,7 @@ def install_node_agent(
         "insecure": insecure,
         "resolveIp": resolve_ip or "",
         "pollIntervalSeconds": 5,
+        "statsIntervalSeconds": DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS,
     }
     executor = LocalExecutor()
     escaped_config = shlex.quote(json.dumps(config, separators=(",", ":")))
@@ -175,19 +442,37 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
         resolve_ip=str(config.get("resolveIp") or "") or None,
     )
     interval = int(poll_interval or config.get("pollIntervalSeconds") or 5)
-    while True:
-        task = client.lease_agent_task(
-            node_name=node_name,
-            node_id=node_id,
-            os_name=node_agent_os(),
-            capabilities=node_agent_capabilities(),
-            timeout=max(interval + 5, 15),
-        ).get("task")
-        if isinstance(task, dict) and task.get("id"):
-            _complete_agent_task(client, node_name=node_name, node_id=node_id, task=task)
-        if once:
-            return 0
-        time.sleep(max(interval, 1))
+    stats_interval = int(
+        os.environ.get("LUMA_NODE_AGENT_STATS_INTERVAL_SECONDS")
+        or config.get("statsIntervalSeconds")
+        or DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS
+    )
+    stats_sampler = None if once else _ContainerStatsSampler(stats_interval)
+    if stats_sampler:
+        stats_sampler.start()
+    try:
+        while True:
+            if once:
+                container_stats = node_agent_container_stats()
+            else:
+                container_stats = stats_sampler.snapshot() if stats_sampler else []
+            task = client.lease_agent_task(
+                node_name=node_name,
+                node_id=node_id,
+                os_name=node_agent_os(),
+                capabilities=node_agent_capabilities(),
+                metrics=node_agent_metrics(),
+                container_stats=container_stats,
+                timeout=max(interval + 5, 15),
+            ).get("task")
+            if isinstance(task, dict) and task.get("id"):
+                _complete_agent_task(client, node_name=node_name, node_id=node_id, task=task)
+            if once:
+                return 0
+            time.sleep(max(interval, 1))
+    finally:
+        if stats_sampler:
+            stats_sampler.stop()
 
 
 def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dict[str, Any]) -> None:
