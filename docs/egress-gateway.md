@@ -25,6 +25,7 @@ Luma will:
 - temporarily disable Docker daemon proxy for the first egress bootstrap;
 - deploy `stacks/core/egress-gateway/stack.yml` using Luma's built-in egress image;
 - label the gateway host as `egress=true` for the internal `egress_mihomo` service;
+- install Docker-aware public port guards for the egress proxy;
 - configure Docker daemon proxy to `127.0.0.1:7890`;
 - restart Docker.
 
@@ -52,7 +53,7 @@ The gateway listens on:
 127.0.0.1:7890
 ```
 
-The stack attaches to the `egress` overlay network. The firewall should block public inbound access to `7890`.
+The stack attaches to the `egress` overlay network. Luma installs host firewall, raw `PREROUTING`, and Docker `DOCKER-USER` guards so Docker-published `7890/tcp` and `7890/udp` are blocked on the public default interface while local Docker and internal egress-network traffic can still use the proxy.
 
 Docker daemon proxy:
 
@@ -85,5 +86,5 @@ Luma renders the egress network, `HTTP_PROXY=http://egress_mihomo:7890`, and `HT
 
 - Do not commit `EGRESS_SUBSCRIPTION_URL`.
 - Rotate subscription URLs that appear in chat, logs, or screenshots.
-- Keep inbound `7890` blocked on public interfaces. Luma's built-in egress service also ships with conservative Swarm resource limits so a 2c2g manager keeps headroom for control-plane and app workloads.
+- Keep inbound `7890` blocked on public interfaces. Luma installs this guard during bootstrap and egress setup; re-run `luma egress setup` if host firewall rules were reset manually. Luma's built-in egress service also ships with conservative Swarm resource limits so a 2c2g manager keeps headroom for control-plane and app workloads.
 - Prefer one egress gateway first. Add more only when scheduling or throughput requires it.

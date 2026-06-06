@@ -168,7 +168,9 @@ Luma configures UFW on Linux nodes during bootstrap/join. If you use a cloud sec
 | `7946/tcp` and `7946/udp` | node to node | Docker Swarm node discovery and overlay-network gossip. |
 | `4789/udp` | node to node | Docker overlay/VXLAN data path. |
 
-`7890/tcp` and `7890/udp` are intentionally denied for public inbound access; the egress proxy is for local Docker/service outbound traffic only.
+`7890/tcp` and `7890/udp` are intentionally denied for public inbound access; the egress proxy is for local Docker/service outbound traffic only. Luma installs host firewall, raw `PREROUTING`, and Docker `DOCKER-USER` guards for this because Docker-published ports and Docker's userland proxy can bypass plain UFW deny rules.
+
+When the manager has a Tailscale address, Luma also installs public-interface guards for `2377/tcp`, `7946/tcp`, `7946/udp`, and `4789/udp`; Swarm traffic should use Tailscale in that topology. If you intentionally run Swarm over public IPs without Tailscale, restrict these ports with a cloud security group or trusted source ACL.
 
 If a node needs to leave a broken or rebuilt manager before joining again, run this on that node:
 

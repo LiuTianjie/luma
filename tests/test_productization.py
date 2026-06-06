@@ -40,6 +40,8 @@ from luma.bootstrap import (
     _traefik_ports,
     bootstrap_node,
     bootstrap_manager_local,
+    configure_firewall,
+    configure_public_port_guards,
     deploy_control_stack,
     initialize_portainer,
     install_control_config,
@@ -212,6 +214,50 @@ class ProductConfigTests(unittest.TestCase):
         installer = (root / "scripts" / "install-luma.sh").read_text(encoding="utf-8")
         self.assertNotIn("resolvectl dns", installer)
         self.assertNotIn("/etc/systemd/resolved.conf.d/luma.conf", installer)
+
+    def test_public_port_guards_install_docker_user_proxy_guard(self):
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Linux\n")
+        remote.sudo.return_value = ""
+
+        result = configure_public_port_guards(remote)
+
+        self.assertEqual(result, "Public port guards installed")
+        command = remote.sudo.call_args.args[0]
+        self.assertIn("luma-public-port-guards.service", command)
+        self.assertIn("restrict_swarm_public=no", command)
+        self.assertIn("add_input_drop tcp 7890", command)
+        self.assertIn("add_prerouting_drop tcp 7890", command)
+        self.assertIn("add_docker_drop tcp 7890", command)
+        self.assertIn("-t raw -I PREROUTING", command)
+        self.assertIn("DOCKER-USER", command)
+        self.assertIn("systemctl enable luma-public-port-guards.service", command)
+        self.assertIn("systemctl restart luma-public-port-guards.service", command)
+
+    def test_configure_firewall_restricts_swarm_public_when_tailscale_is_present(self):
+        remote = Mock()
+
+        def run_result(command):
+            if command == "uname -s":
+                return Mock(code=0, output="Linux\n")
+            if "tailscale ip -4" in command:
+                return Mock(code=0, output="100.64.0.10\n")
+            return Mock(code=1, output="")
+
+        remote.run_result.side_effect = run_result
+        remote.sudo.return_value = ""
+
+        result = configure_firewall(remote)
+
+        self.assertEqual(result, "Firewall configured")
+        ufw_command = remote.sudo.call_args_list[0].args[0]
+        guard_command = remote.sudo.call_args_list[1].args[0]
+        self.assertIn("ufw deny 7890/tcp", ufw_command)
+        self.assertIn("ufw allow 2377/tcp", ufw_command)
+        self.assertIn("restrict_swarm_public=yes", guard_command)
+        self.assertIn("add_input_drop tcp 2377", guard_command)
+        self.assertIn("add_input_drop udp 4789", guard_command)
+        self.assertIn("DOCKER-USER", guard_command)
 
     def test_new_config_model_reads_nodes_and_provider_dns(self):
         config = LumaConfig(

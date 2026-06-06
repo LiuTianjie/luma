@@ -761,6 +761,7 @@ def _redact_tailscale_authkey(output: str, authkey: str) -> str:
 def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int = 443, allow_portainer: bool = True) -> str:
     if _is_darwin(remote):
         return "Firewall configuration skipped on macOS"
+    restrict_swarm_public = _tailscale_ip(remote) is not None
     commands = [
         "ufw --force enable",
         "ufw allow OpenSSH",
@@ -776,7 +777,94 @@ def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int
     if allow_portainer:
         commands.append("ufw allow 9443/tcp")
     remote.sudo("set -euo pipefail; " + "; ".join(commands))
+    configure_public_port_guards(remote, restrict_swarm_public=restrict_swarm_public)
     return "Firewall configured"
+
+
+def configure_public_port_guards(remote: Executor, *, restrict_swarm_public: bool = False) -> str:
+    if _is_darwin(remote):
+        return "Public port guards skipped on macOS"
+    swarm_guard = "yes" if restrict_swarm_public else "no"
+    remote.sudo(
+        "set -euo pipefail; "
+        f"install -d -m 755 {ROOT}/firewall; "
+        f"cat > {ROOT}/firewall/public-port-guards.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "set -eu\n"
+        f"restrict_swarm_public={swarm_guard}\n"
+        "iface=$(ip route show default 2>/dev/null | awk '{print $5; exit}')\n"
+        "[ -n \"${iface:-}\" ] || exit 0\n"
+        "add_rule() {\n"
+        "  table_cmd=\"$1\"\n"
+        "  chain=\"$2\"\n"
+        "  shift 2\n"
+        "  if command -v \"$table_cmd\" >/dev/null 2>&1; then\n"
+        "    \"$table_cmd\" -C \"$chain\" \"$@\" 2>/dev/null || \"$table_cmd\" -I \"$chain\" 1 \"$@\"\n"
+        "  fi\n"
+        "}\n"
+        "add_input_drop() {\n"
+        "  proto=\"$1\"\n"
+        "  port=\"$2\"\n"
+        "  add_rule iptables INPUT -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
+        "  add_rule ip6tables INPUT -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
+        "}\n"
+        "add_prerouting_drop() {\n"
+        "  proto=\"$1\"\n"
+        "  port=\"$2\"\n"
+        "  if command -v iptables >/dev/null 2>&1; then\n"
+        "    iptables -t raw -C PREROUTING -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP 2>/dev/null || "
+        "iptables -t raw -I PREROUTING 1 -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
+        "  fi\n"
+        "  if command -v ip6tables >/dev/null 2>&1; then\n"
+        "    ip6tables -t raw -C PREROUTING -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP 2>/dev/null || "
+        "ip6tables -t raw -I PREROUTING 1 -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
+        "  fi\n"
+        "}\n"
+        "add_docker_drop() {\n"
+        "  proto=\"$1\"\n"
+        "  port=\"$2\"\n"
+        "  if command -v iptables >/dev/null 2>&1; then\n"
+        "    iptables -N DOCKER-USER 2>/dev/null || true\n"
+        "  fi\n"
+        "  if command -v ip6tables >/dev/null 2>&1; then\n"
+        "    ip6tables -N DOCKER-USER 2>/dev/null || true\n"
+        "  fi\n"
+        "  add_rule iptables DOCKER-USER -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
+        "  add_rule ip6tables DOCKER-USER -i \"$iface\" -p \"$proto\" --dport \"$port\" -j DROP\n"
+        "}\n"
+        "add_input_drop tcp 7890\n"
+        "add_input_drop udp 7890\n"
+        "add_prerouting_drop tcp 7890\n"
+        "add_prerouting_drop udp 7890\n"
+        "add_docker_drop tcp 7890\n"
+        "add_docker_drop udp 7890\n"
+        "if [ \"$restrict_swarm_public\" = \"yes\" ]; then\n"
+        "  add_input_drop tcp 2377\n"
+        "  add_input_drop tcp 7946\n"
+        "  add_input_drop udp 7946\n"
+        "  add_input_drop udp 4789\n"
+        "fi\n"
+        "EOF\n"
+        f"chmod 755 {ROOT}/firewall/public-port-guards.sh; "
+        "cat > /etc/systemd/system/luma-public-port-guards.service <<'EOF'\n"
+        "[Unit]\n"
+        "Description=Luma public port guards\n"
+        "After=network-online.target docker.service ufw.service\n"
+        "Wants=network-online.target docker.service\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart={ROOT}/firewall/public-port-guards.sh\n"
+        "RemainAfterExit=yes\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+        "EOF\n"
+        "systemctl daemon-reload; "
+        "systemctl enable luma-public-port-guards.service >/dev/null; "
+        "systemctl restart luma-public-port-guards.service"
+    )
+    return "Public port guards installed"
 
 
 def ensure_swarm(remote: Executor, node: NodeConfig) -> str:
@@ -1212,6 +1300,12 @@ def setup_egress(config: LumaConfig, node: NodeConfig, subscription_url: str, *,
         "Deploy egress gateway",
         lambda: [_deploy_egress_stack(remote, config), _wait_service_ready(remote, "egress_mihomo")],
         fix=f"Run: luma egress setup {node.name}",
+    )
+    _step(
+        results,
+        emit,
+        "Install public port guards",
+        lambda: configure_public_port_guards(remote, restrict_swarm_public=(_tailscale_ip(remote) is not None)),
     )
     _step(
         results,
