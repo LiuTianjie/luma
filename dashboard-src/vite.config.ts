@@ -221,6 +221,35 @@ export default defineConfig({
             }
           });
         });
+        server.middlewares.use("/v1/dashboard/logs/stream", (request, response) => {
+          if (request.method !== "GET") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          const parsed = new URL(request.url || "/v1/dashboard/logs/stream", "http://localhost");
+          const service = parsed.searchParams.get("service") || "luma-control_luma-control";
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/x-ndjson");
+          response.setHeader("Cache-Control", "no-cache");
+          response.write(JSON.stringify({ status: "start", service }) + "\n");
+          const samples = ["received health probe", "task heartbeat ok", "route check passed", "GET /healthz 200 1ms", "reconciler tick"];
+          let i = 0;
+          response.write(JSON.stringify({ line: `${new Date().toISOString()} ${service} stream attached`, ts: Math.floor(Date.now() / 1000) }) + "\n");
+          const timer = setInterval(() => {
+            const line = `${new Date().toISOString()} ${service} ${samples[i % samples.length]}`;
+            i += 1;
+            response.write(JSON.stringify({ line, ts: Math.floor(Date.now() / 1000) }) + "\n");
+          }, 1200);
+          request.on("close", () => clearInterval(timer));
+        });
         server.middlewares.use("/v1/dashboard/logs", (request, response) => {
           if (request.method !== "GET") {
             response.statusCode = 405;
@@ -249,6 +278,50 @@ export default defineConfig({
               `${new Date().toISOString()} ${service} route check passed`,
             ],
           }));
+        });
+        server.middlewares.use("/v1/dashboard/metrics/history", (request, response) => {
+          if (request.method !== "GET") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          const parsed = new URL(request.url || "/v1/dashboard/metrics/history", "http://localhost");
+          const kind = parsed.searchParams.get("kind") === "service" ? "service" : "node";
+          const name = parsed.searchParams.get("name") || "";
+          const windowSeconds = Math.max(60, Number(parsed.searchParams.get("window")) || 3600);
+          const step = 30;
+          const count = Math.min(720, Math.floor(windowSeconds / step));
+          const nowSec = Math.floor(Date.now() / 1000);
+          // Stable per-name phase so charts don't reshuffle every poll.
+          let seed = 0;
+          for (let i = 0; i < name.length; i += 1) seed = (seed * 31 + name.charCodeAt(i)) % 997;
+          const wave = (base: number, amp: number, phase: number) =>
+            Array.from({ length: count }, (_, i) => {
+              const ts = nowSec - (count - 1 - i) * step;
+              const v = base + amp * Math.sin((i + phase) / 7) + amp * 0.4 * Math.sin((i + phase) / 2.3);
+              return [ts, Math.max(0, Number(v.toFixed(2)))] as [number, number];
+            });
+          const series =
+            kind === "service"
+              ? {
+                  cpuPercent: wave(18 + (seed % 20), 12, seed),
+                  memoryUsageBytes: wave(180_000_000 + (seed % 7) * 20_000_000, 30_000_000, seed + 3),
+                }
+              : {
+                  cpuPercent: wave(24 + (seed % 30), 16, seed),
+                  memoryUsedPercent: wave(55 + (seed % 25), 10, seed + 5),
+                };
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({ kind, name, window: windowSeconds, series, updatedAt: nowSec }));
         });
         server.middlewares.use("/v1/dashboard", (request, response) => {
           if (request.method !== "GET") {

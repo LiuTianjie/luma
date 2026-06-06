@@ -366,7 +366,7 @@ export function App() {
                       <span>logs</span>
                     </div>
                   </section>
-                  <IssuesPanel lang={lang} issues={issues} />
+                  <IssuesPanel lang={lang} issues={issues} token={token} />
                   <ObservabilityPanel lang={lang} token={token} nodes={nodes} services={services} />
                 </>
               ) : (
@@ -385,7 +385,7 @@ export function App() {
                   </section>
 
                   <ReadinessCards lang={lang} payload={payload} />
-                  <IssuesPanel lang={lang} issues={issues} />
+                  <IssuesPanel lang={lang} issues={issues} token={token} />
                   <ApplicationManagementPanel
                     lang={lang}
                     token={token}

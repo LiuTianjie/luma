@@ -52,10 +52,16 @@ from ..registry import (
 from ..render import named_volume_sources, render_stack, render_tailscale_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service, slugify
 from .. import __version__
+from .metrics import load_history, record_samples, sustained_breach
 from .state import init_state, load_state, mutate_state, require_token
 
 AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
 AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SECONDS", "300"))
+# Sustained-breach alerting: a metric must stay above the threshold for the
+# whole window before it becomes an issue, so a momentary spike does not page.
+ALERT_SUSTAINED_SECONDS = int(os.environ.get("LUMA_ALERT_SUSTAINED_SECONDS", "300"))
+ALERT_NODE_MEMORY_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_MEMORY_PERCENT", "85"))
+ALERT_NODE_CPU_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_CPU_PERCENT", "90"))
 TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS", "300"))
 EGRESS_PROXY_URL = os.environ.get("LUMA_EGRESS_PROXY_URL", "http://127.0.0.1:7890")
 EGRESS_NO_PROXY = os.environ.get(
@@ -201,6 +207,20 @@ def _update_agent_heartbeat(record: Dict[str, Any], body: Dict[str, Any]) -> Non
         agent["metrics"] = _agent_metrics(metrics)
     if isinstance(container_stats, list):
         agent["containerStats"] = _container_stats(container_stats)
+
+
+def _record_metrics_history(node_name: str, body: Dict[str, Any]) -> None:
+    """Append one time-series sample for this heartbeat, outside the global
+    state lock. Metrics retention must never break a heartbeat, so any failure
+    is logged and swallowed."""
+    try:
+        metrics = body.get("metrics") if isinstance(body.get("metrics"), dict) else {}
+        container_stats = body.get("containerStats") if isinstance(body.get("containerStats"), list) else []
+        if not metrics and not container_stats:
+            return
+        record_samples(node_name, metrics, container_stats)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"metrics history record failed for {node_name or '-'}: {exc}", file=sys.stderr, flush=True)
 
 
 def _agent_metrics(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -363,6 +383,7 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if leased or time.time() >= deadline:
             break
         time.sleep(1)
+    _record_metrics_history(node_name, body)
     return {"task": leased}
 
 
@@ -395,6 +416,7 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
         )
 
     _mutate_control_state(mutate)
+    _record_metrics_history(node_name, body)
     return {"taskId": task_id, "status": status}
 
 
@@ -594,6 +616,23 @@ def handle_dashboard_logs(token: str, service_name: str, *, tail: int = 120, sin
         "logs": _decode_docker_log_lines(raw)[-tail:],
         "tail": tail,
         "since": since,
+        "updatedAt": int(time.time()),
+    }
+
+
+def handle_metrics_history(token: str, kind: str, name: str, *, window: int = 3600) -> Dict[str, Any]:
+    require_token(load_state(), token, token_type="deploy")
+    if kind not in {"node", "service"}:
+        raise LumaError("kind must be node or service")
+    if not str(name or "").strip():
+        raise LumaError("name is required")
+    window = min(max(int(window or 3600), 60), 7 * 24 * 3600)
+    series = load_history(kind, name, window=window)
+    return {
+        "kind": kind,
+        "name": name,
+        "window": window,
+        "series": series,
         "updatedAt": int(time.time()),
     }
 
@@ -2973,16 +3012,25 @@ def _dashboard_issues(nodes: list[Dict[str, Any]], services: list[Dict[str, Any]
         state = str(node.get("state") or "").lower()
         availability = str(node.get("availability") or "").lower()
         agent_status = str(node.get("agentStatus") or "").lower()
-        metrics = node.get("metrics") if isinstance(node.get("metrics"), dict) else {}
         if state and state not in {"ready"}:
             issues.append({"severity": "critical", "kind": "node-state", "target": name, "message": f"Node {name} is {state}"})
         if availability in {"drain", "pause"}:
             issues.append({"severity": "warning", "kind": "node-availability", "target": name, "message": f"Node {name} availability is {availability}"})
         if agent_status in {"offline", "missing", "provisioned"}:
             issues.append({"severity": "warning", "kind": "agent", "target": name, "message": f"Node agent on {name} is {agent_status}"})
-        memory_used = float(metrics.get("memoryUsedPercent") or 0)
-        if memory_used >= 85:
-            issues.append({"severity": "warning", "kind": "node-memory", "target": name, "message": f"Node {name} memory is {memory_used:.1f}%"})
+        sustained_mins = max(1, ALERT_SUSTAINED_SECONDS // 60)
+        mem_peak = sustained_breach(
+            "node", name, "memoryUsedPercent",
+            threshold=ALERT_NODE_MEMORY_PERCENT, duration_seconds=ALERT_SUSTAINED_SECONDS,
+        )
+        if mem_peak is not None:
+            issues.append({"severity": "warning", "kind": "node-memory", "target": name, "message": f"Node {name} memory stayed above {ALERT_NODE_MEMORY_PERCENT:.0f}% for {sustained_mins}m (peak {mem_peak:.1f}%)"})
+        cpu_peak = sustained_breach(
+            "node", name, "cpuPercent",
+            threshold=ALERT_NODE_CPU_PERCENT, duration_seconds=ALERT_SUSTAINED_SECONDS,
+        )
+        if cpu_peak is not None:
+            issues.append({"severity": "warning", "kind": "node-cpu", "target": name, "message": f"Node {name} CPU stayed above {ALERT_NODE_CPU_PERCENT:.0f}% for {sustained_mins}m (peak {cpu_peak:.1f}%)"})
     for service in services:
         full_name = str(service.get("fullName") or service.get("name") or "-")
         running = int(service.get("running") or 0)
@@ -3642,6 +3690,56 @@ def _decode_docker_log_lines(raw: bytes) -> list[str]:
     return [line.rstrip("\r") for line in text.splitlines() if line.strip()]
 
 
+def _iter_docker_log_stream(response: Any):
+    """Yield decoded log lines from a streaming (follow) Docker logs response.
+
+    Non-TTY containers multiplex stdout/stderr with an 8-byte frame header
+    (stream_type, 3 reserved, 4-byte big-endian size); TTY containers send raw
+    bytes. We keep a persistent buffer and only consume complete frames, so a
+    read that splits a frame mid-way never loses bytes. Framing is decided from
+    the first 8 bytes, mirroring _decode_docker_log_lines."""
+    buffer = bytearray()
+    framed: bool | None = None
+    text_pending = ""
+
+    def take_lines(text: str, *, final: bool = False):
+        nonlocal text_pending
+        text_pending += text
+        parts = text_pending.split("\n")
+        text_pending = "" if final else parts.pop()
+        out = [line.rstrip("\r") for line in parts if line.strip()]
+        if final and text_pending.strip():
+            out.append(text_pending.rstrip("\r"))
+            text_pending = ""
+        return out
+
+    while True:
+        chunk = response.read(4096)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        if framed is None:
+            if len(buffer) < 8:
+                continue
+            framed = buffer[0] in (0, 1, 2) and int.from_bytes(buffer[4:8], "big") < (1 << 30)
+        if framed:
+            while len(buffer) >= 8:
+                size = int.from_bytes(buffer[4:8], "big")
+                if len(buffer) < 8 + size:
+                    break
+                payload = bytes(buffer[8:8 + size])
+                del buffer[: 8 + size]
+                for line in take_lines(payload.decode("utf-8", errors="replace")):
+                    yield line
+        else:
+            text = bytes(buffer).decode("utf-8", errors="replace")
+            buffer.clear()
+            for line in take_lines(text):
+                yield line
+    for line in take_lines("", final=True):
+        yield line
+
+
 def resolve_tailscale_relay(service: ServiceSpec) -> ServiceSpec:
     if service.exposure != "tailscale-relay":
         return service
@@ -3998,6 +4096,26 @@ class ControlHandler(BaseHTTPRequestHandler):
                 else:
                     self._json(200, logs)
                 return
+            if parsed_path == "/v1/dashboard/metrics/history":
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                kind = str((query.get("kind") or ["node"])[0])
+                name = str((query.get("name") or [""])[0])
+                try:
+                    window = int(str((query.get("window") or ["3600"])[0]) or "3600")
+                except ValueError as exc:
+                    raise LumaError("window must be a number") from exc
+                self._json(200, handle_metrics_history(token, kind, name, window=window))
+                return
+            if parsed_path == "/v1/dashboard/logs/stream":
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                service = str((query.get("service") or [""])[0])
+                since = str((query.get("since") or [""])[0])
+                try:
+                    tail = int(str((query.get("tail") or ["120"])[0]) or "120")
+                except ValueError as exc:
+                    raise LumaError("tail must be a number") from exc
+                self._stream_service_logs(token, service, since, tail)
+                return
             config_match = re.fullmatch(r"/v1/deployments/([^/]+)/config", parsed_path)
             if config_match:
                 name = urllib.parse.unquote(config_match.group(1))
@@ -4125,6 +4243,50 @@ class ControlHandler(BaseHTTPRequestHandler):
             request_id = _request_id()
             print(f"requestId={request_id} stream compose deployment internal error: {exc}", file=sys.stderr, flush=True)
             emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+
+    def _stream_service_logs(self, token: str, service: str, since: str, tail: int) -> None:
+        # Authenticate and open the Docker stream BEFORE sending headers, so a
+        # failure can still return a proper error status instead of a 200 with
+        # an error body.
+        require_token(load_state(), token, token_type="deploy")
+        service = service.strip()
+        if not service:
+            raise LumaError("service is required")
+        tail = min(max(int(tail or 120), 1), 1000)
+        query_values: Dict[str, Any] = {"stdout": 1, "stderr": 1, "timestamps": 1, "follow": 1, "tail": tail}
+        if since:
+            query_values["since"] = since
+        query = urllib.parse.urlencode(query_values)
+        api_version = os.environ.get("DOCKER_API_VERSION", "1.44")
+        conn = DockerSocketConnection()
+        try:
+            conn.request("GET", f"/v{api_version}/services/{urllib.parse.quote(service, safe='')}/logs?{query}")
+            response = conn.getresponse()
+        except OSError as exc:
+            conn.close()
+            raise LumaError("Docker socket unavailable to Luma Control") from exc
+        if response.status >= 400:
+            detail = response.read().decode("utf-8", errors="replace")
+            conn.close()
+            raise LumaError(f"Docker service logs unavailable for {service}: {detail}")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        try:
+            self.wfile.write(json.dumps({"status": "start", "service": service}, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+            for line in _iter_docker_log_stream(response):
+                event = {"line": line, "ts": int(time.time())}
+                self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            # Client navigated away / closed the tab; normal for a live tail.
+            pass
+        finally:
+            conn.close()
 
     def _read_json(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length") or "0")

@@ -410,12 +410,17 @@ code {
   min-width: 0;
   padding: 12px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-alt);
+}
+
+.issue-row .sparkline {
+  align-self: center;
+  opacity: 0.9;
 }
 
 .issue-row span:last-child {
@@ -632,6 +637,87 @@ code {
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* TREND CHARTS */
+.sparkline {
+  display: block;
+  align-self: center;
+  overflow: visible;
+}
+
+.sparkline-empty {
+  display: inline-block;
+  border-bottom: 1px dashed var(--line);
+  opacity: 0.5;
+}
+
+.service-trends {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  padding: 18px 24px 22px;
+  border-top: 1px solid var(--line);
+}
+
+.service-trend {
+  min-width: 0;
+  padding: 14px 16px 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-alt);
+}
+
+.service-trend-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.service-trend-head span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.service-trend-head span:last-child {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-chart {
+  display: block;
+  width: 100%;
+}
+
+.trend-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-2);
+  font-size: 0.78rem;
+}
+
+.trend-axis-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.runtime-table tbody tr { cursor: pointer; }
+
+.runtime-table tbody tr.is-selected {
+  background: linear-gradient(90deg, rgba(0, 194, 168, 0.12), transparent);
+  box-shadow: inset 2px 0 0 var(--blue);
 }
 
 .badge.good { color: #10b981; border-color: rgba(16, 185, 129, 0.25); background: rgba(16, 185, 129, 0.08); }

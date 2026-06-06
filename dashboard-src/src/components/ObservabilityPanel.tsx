@@ -1,7 +1,64 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { localizeState, t } from "../i18n";
-import type { ActualResourceValues, DashboardNode, DashboardService, Lang, ResourceValues } from "../types";
+import { fetchMetricsHistory } from "../metricsApi";
+import type { ActualResourceValues, DashboardNode, DashboardService, Lang, MetricSeries, ResourceValues } from "../types";
 import { Badge, BadgeGroup, CodeCell, StatePill } from "./ui";
+import { Sparkline, TrendChart } from "./charts";
+
+const HISTORY_WINDOW_SECONDS = 3600;
+const HISTORY_REFRESH_MS = 30000;
+
+type HistoryTarget = { kind: "node" | "service"; name: string };
+
+function historyKey(kind: "node" | "service", name: string) {
+  return `${kind}:${name}`;
+}
+
+/** Fetch trend history for a set of node/service targets, refreshed on the
+ *  agent sample cadence. One in-flight batch at a time; aborts on unmount. */
+function useMetricsHistories(token: string, targets: HistoryTarget[]) {
+  const [histories, setHistories] = useState<Record<string, MetricSeries>>({});
+  const signature = targets.map((item) => historyKey(item.kind, item.name)).sort().join(",");
+
+  useEffect(() => {
+    if (!token || !targets.length) {
+      setHistories({});
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    const load = async () => {
+      const entries = await Promise.all(
+        targets.map(async (target) => {
+          try {
+            const payload = await fetchMetricsHistory({
+              token,
+              kind: target.kind,
+              name: target.name,
+              window: HISTORY_WINDOW_SECONDS,
+              signal: controller.signal,
+            });
+            return [historyKey(target.kind, target.name), payload.series || {}] as const;
+          } catch {
+            return [historyKey(target.kind, target.name), {} as MetricSeries] as const;
+          }
+        }),
+      );
+      if (!cancelled) setHistories(Object.fromEntries(entries));
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), HISTORY_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, signature]);
+
+  return histories;
+}
+
 
 type LogsState = {
   service: string;
@@ -125,34 +182,101 @@ export function ObservabilityPanel({
     }
   }, [appServices, selectedService]);
 
-  const loadLogs = useCallback(async () => {
+  const historyTargets = useMemo<HistoryTarget[]>(() => {
+    const items: HistoryTarget[] = nodes
+      .map((node) => node.name)
+      .filter((name): name is string => Boolean(name))
+      .map((name) => ({ kind: "node" as const, name }));
+    if (selectedService) items.push({ kind: "service", name: selectedService });
+    return items;
+  }, [nodes, selectedService]);
+  const histories = useMetricsHistories(token, historyTargets);
+
+  const loadLogs = useCallback(async (signal?: AbortSignal) => {
     if (!selectedService) return;
     setLogsLoading(true);
     try {
       const params = logParams(selectedService, sinceLabel, "200");
       const response = await fetch(`/v1/dashboard/logs?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
+        signal,
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
       setLogsState(payload as LogsState);
       setLogsError("");
     } catch (error) {
+      if ((error as Error)?.name === "AbortError") return;
       setLogsError(String(error instanceof Error ? error.message : error));
     } finally {
       setLogsLoading(false);
     }
   }, [selectedService, sinceLabel, token]);
 
-  useEffect(() => {
-    void loadLogs();
-  }, [loadLogs]);
-
+  // Live tail: one long-lived NDJSON stream per service, appended incrementally.
+  // Falls back to a one-shot fetch if streaming is unavailable. Aborts on
+  // service switch, pause, or unmount.
   useEffect(() => {
     if (!selectedService || paused) return;
-    const timer = window.setInterval(() => void loadLogs(), 5000);
-    return () => window.clearInterval(timer);
-  }, [loadLogs, paused, selectedService]);
+    const controller = new AbortController();
+    let cancelled = false;
+    const MAX_LINES = 2000;
+
+    const run = async () => {
+      setLogsLoading(true);
+      setLogsState({ service: selectedService, logs: [], updatedAt: Math.floor(Date.now() / 1000) });
+      try {
+        const params = logParams(selectedService, sinceLabel, "200");
+        const response = await fetch(`/v1/dashboard/logs/stream?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(response.ok ? "stream unavailable" : `HTTP ${response.status}`);
+        }
+        setLogsError("");
+        setLogsLoading(false);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        const append = (lines: string[]) => {
+          if (!lines.length) return;
+          setLogsState((prev) => {
+            const merged = [...(prev?.logs || []), ...lines];
+            const trimmed = merged.length > MAX_LINES ? merged.slice(merged.length - MAX_LINES) : merged;
+            return { service: selectedService, logs: trimmed, updatedAt: Math.floor(Date.now() / 1000) };
+          });
+        };
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || cancelled) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n");
+          buffer = parts.pop() || "";
+          const newLines: string[] = [];
+          for (const part of parts) {
+            if (!part.trim()) continue;
+            try {
+              const event = JSON.parse(part);
+              if (typeof event.line === "string") newLines.push(event.line);
+            } catch {
+              // skip malformed NDJSON line
+            }
+          }
+          append(newLines);
+        }
+      } catch (error) {
+        if ((error as Error)?.name === "AbortError" || cancelled) return;
+        // Streaming unavailable: degrade to a one-shot fetch so logs still show.
+        void loadLogs(controller.signal);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [selectedService, sinceLabel, paused, token, loadLogs]);
 
   const selected = services.find((service) => service.fullName === selectedService);
   const filteredLogs = useMemo(() => {
@@ -220,6 +344,7 @@ export function ObservabilityPanel({
           {nodes.map((node, index) => {
             const metrics = node.metrics || {};
             const capacity = node.capacity || {};
+            const nodeCpuHistory = node.name ? histories[historyKey("node", node.name)]?.cpuPercent || [] : [];
             return (
               <button className="node-metric-row" type="button" key={`${node.name || "node"}-${index}`}>
                 <span>
@@ -229,7 +354,7 @@ export function ObservabilityPanel({
                 <span className="metric-pair">
                   <b>CPU</b>
                   <strong>{formatPercent(metrics.cpuPercent ?? metrics.loadPercent)}</strong>
-                  <small>{metrics.load1 ? `load ${metrics.load1}` : resourceText({ cpus: capacity.cpus || metrics.cpuCount })}</small>
+                  <Sparkline points={nodeCpuHistory} range={{ min: 0, max: 100 }} />
                 </span>
                 <span className="metric-pair">
                   <b>Memory</b>
@@ -263,10 +388,14 @@ export function ObservabilityPanel({
             </thead>
             <tbody>
               {services.map((service, index) => (
-                <tr key={`${service.fullName || "service"}-${index}`} onClick={() => {
-                  setSelectedApp(appKey(service));
-                  setSelectedService(service.fullName || "");
-                }}>
+                <tr
+                  className={service.fullName && service.fullName === selectedService ? "is-selected" : undefined}
+                  key={`${service.fullName || "service"}-${index}`}
+                  onClick={() => {
+                    setSelectedApp(appKey(service));
+                    setSelectedService(service.fullName || "");
+                  }}
+                >
                   <td><CodeCell value={serviceTitle(service)} /></td>
                   <td><Badge value={actualText(service.resources?.actual)} /></td>
                   <td>
@@ -292,6 +421,34 @@ export function ObservabilityPanel({
             </tbody>
           </table>
         </div>
+        {selected ? (
+          <div className="service-trends">
+            <div className="service-trend">
+              <div className="service-trend-head">
+                <span>{serviceTitle(selected)} · CPU</span>
+                <span>{formatPercent(selected.resources?.actual?.cpuPercent)}</span>
+              </div>
+              <TrendChart
+                points={histories[historyKey("service", selectedService)]?.cpuPercent || []}
+                color="var(--blue)"
+                format={(v) => `${v.toFixed(0)}%`}
+                emptyLabel={lang === "zh" ? "暂无趋势数据" : "no trend data"}
+              />
+            </div>
+            <div className="service-trend">
+              <div className="service-trend-head">
+                <span>{serviceTitle(selected)} · {lang === "zh" ? "内存" : "Memory"}</span>
+                <span>{formatBytes(selected.resources?.actual?.memoryUsageBytes)}</span>
+              </div>
+              <TrendChart
+                points={histories[historyKey("service", selectedService)]?.memoryUsageBytes || []}
+                color="var(--orange)"
+                format={(v) => formatBytes(v)}
+                emptyLabel={lang === "zh" ? "暂无趋势数据" : "no trend data"}
+              />
+            </div>
+          </div>
+        ) : null}
       </article>
 
       <article className="panel live-logs-panel">

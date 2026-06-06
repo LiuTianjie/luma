@@ -152,3 +152,15 @@ export type DashboardPayload = {
 };
 
 export type SyncStatus = "notConnected" | "refreshing" | "updated" | "unavailable" | "tokenRejected";
+
+export type MetricPoint = [number, number];
+
+export type MetricSeries = Record<string, MetricPoint[]>;
+
+export type MetricsHistoryPayload = {
+  kind?: "node" | "service";
+  name?: string;
+  window?: number;
+  series?: MetricSeries;
+  updatedAt?: number;
+};
