@@ -33,6 +33,7 @@ DEFAULT_PORTAINER_AGENT_IMAGE = "docker.1panel.live/portainer/agent:2.21.5"
 DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
 DEFAULT_PORTAINER_API_URL = "https://127.0.0.1:9443/api"
+DEFAULT_SWARM_DISPATCHER_HEARTBEAT = "30s"
 EGRESS_PROXY_URL = "http://127.0.0.1:7890"
 EGRESS_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
 DEFAULT_EGRESS_PULL_REGISTRIES = {
@@ -868,12 +869,13 @@ def configure_public_port_guards(remote: Executor, *, restrict_swarm_public: boo
 
 
 def ensure_swarm(remote: Executor, node: NodeConfig) -> str:
+    heartbeat = _swarm_dispatcher_heartbeat()
     advertise = node.raw.get("swarmAdvertiseAddr") or _tailscale_ip(remote) or node.raw.get("advertiseAddr") or node.public_ip
-    init = "docker swarm init"
+    init = f"docker swarm init --dispatcher-heartbeat {shlex.quote(heartbeat)}"
     if advertise:
         init += f" --advertise-addr {shlex.quote(str(advertise))}"
         init += f" --listen-addr {shlex.quote(_listen_addr(str(advertise)))}"
-    force_new_cluster = "docker swarm init --force-new-cluster"
+    force_new_cluster = f"docker swarm init --force-new-cluster --dispatcher-heartbeat {shlex.quote(heartbeat)}"
     if advertise:
         force_new_cluster += f" --advertise-addr {shlex.quote(str(advertise))}"
         force_new_cluster += f" --listen-addr {shlex.quote(_listen_addr(str(advertise)))}"
@@ -887,9 +889,15 @@ def ensure_swarm(remote: Executor, node: NodeConfig) -> str:
         f'if [ "$state" = "inactive" ]; then {init}; '
         f"elif [ \"$control\" = \"true\" ] && [ -n {shlex.quote(str(advertise or ''))} ] && "
         f"{{ [ \"$node_addr\" != {shlex.quote(str(advertise or ''))} ] || [ \"$manager_addr\" != {shlex.quote(_listen_addr(str(advertise)) if advertise else '')} ]; }}; then {force_new_cluster}; "
-        "fi"
+        "fi; "
+        'control_after="$(docker info --format \'{{.Swarm.ControlAvailable}}\' 2>/dev/null || true)"; '
+        f'if [ "$control_after" = "true" ]; then docker swarm update --dispatcher-heartbeat {shlex.quote(heartbeat)} >/dev/null; fi'
     )
     return "Swarm ready"
+
+
+def _swarm_dispatcher_heartbeat() -> str:
+    return os.environ.get("LUMA_SWARM_DISPATCHER_HEARTBEAT", DEFAULT_SWARM_DISPATCHER_HEARTBEAT)
 
 
 def _listen_addr(advertise: str) -> str:

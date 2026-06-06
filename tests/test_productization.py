@@ -43,6 +43,7 @@ from luma.bootstrap import (
     configure_firewall,
     configure_public_port_guards,
     deploy_control_stack,
+    ensure_swarm,
     initialize_portainer,
     install_control_config,
     install_docker,
@@ -258,6 +259,53 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("add_input_drop tcp 2377", guard_command)
         self.assertIn("add_input_drop udp 4789", guard_command)
         self.assertIn("DOCKER-USER", guard_command)
+
+    def test_ensure_swarm_uses_tolerant_dispatcher_heartbeat(self):
+        remote = Mock()
+
+        def run_result(command):
+            if command == "uname -s":
+                return Mock(code=0, output="Linux\n")
+            if "tailscale ip -4" in command:
+                return Mock(code=0, output="100.64.0.10\n")
+            return Mock(code=1, output="")
+
+        remote.run_result.side_effect = run_result
+        remote.sudo.return_value = ""
+        node = LumaConfig(
+            {
+                "nodes": {
+                    "manager": {
+                        "host": "manager",
+                        "publicIp": "203.0.113.10",
+                    }
+                }
+            },
+            None,
+        ).get_node("manager")
+
+        result = ensure_swarm(remote, node)
+
+        self.assertEqual(result, "Swarm ready")
+        command = remote.sudo.call_args.args[0]
+        self.assertIn("docker swarm init --dispatcher-heartbeat 30s", command)
+        self.assertIn("docker swarm init --force-new-cluster --dispatcher-heartbeat 30s", command)
+        self.assertIn("docker swarm update --dispatcher-heartbeat 30s", command)
+
+    def test_ensure_swarm_dispatcher_heartbeat_can_be_overridden(self):
+        old_heartbeat = _set_env("LUMA_SWARM_DISPATCHER_HEARTBEAT", "45s")
+        try:
+            remote = Mock()
+            remote.run_result.side_effect = lambda command: Mock(code=0, output="Linux\n") if command == "uname -s" else Mock(code=1, output="")
+            remote.sudo.return_value = ""
+            node = LumaConfig({"nodes": {"manager": {"host": "manager", "publicIp": "203.0.113.10"}}}, None).get_node("manager")
+
+            ensure_swarm(remote, node)
+
+            command = remote.sudo.call_args.args[0]
+            self.assertIn("--dispatcher-heartbeat 45s", command)
+        finally:
+            _restore_env("LUMA_SWARM_DISPATCHER_HEARTBEAT", old_heartbeat)
 
     def test_new_config_model_reads_nodes_and_provider_dns(self):
         config = LumaConfig(

@@ -155,6 +155,8 @@ luma node join https://luma.example.com --token <node-join-token> --region home 
 The node asks the manager for the Docker Swarm join token and manager address, then joins the cluster locally.
 After the local join succeeds, it calls back to Luma Control so the manager applies the region and Luma node labels automatically. `--name` is the Luma node name used in status output and service manifests; Luma stores the real Swarm NodeID separately and uses that NodeID for pinned scheduling. `--region` is the scheduling boundary.
 
+Luma configures Docker Swarm's dispatcher heartbeat to `30s` during manager bootstrap/repair. This is more tolerant of home workers that reach the manager through Tailscale relay paths. Override it with `LUMA_SWARM_DISPATCHER_HEARTBEAT` only when you deliberately want faster or slower worker-down detection.
+
 ### Required node ports
 
 Luma configures UFW on Linux nodes during bootstrap/join. If you use a cloud security group, host firewall, or Tailscale ACL, allow these paths too:
