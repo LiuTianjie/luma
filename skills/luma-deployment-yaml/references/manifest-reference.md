@@ -12,7 +12,6 @@
 | `domain` | public only | string | Public hostname for exposed services. |
 | `port` | public only | integer | Container internal port, not the cloud firewall or host port. |
 | `publishPort` | relay only | integer | Host-mode published port for `tailscale-relay` or `tcp-relay`; defaults to `port` when omitted. |
-| `tcp.entryPoint` | tcp-relay only | string | TCP entrypoint name from `defaults.tcpEntryPoints`. |
 | `replicas` | no | integer | Defaults to `1`; must be at least `1`. |
 | `env` / `environment` | no | map | Service environment. Use direct values for non-sensitive settings and `${SECRET_NAME}` for values stored with `luma secret set`. |
 | `command` | no | string/list | Overrides container command. |
@@ -45,7 +44,7 @@
 | Domestic public HTTPS | `region: cn`, `exposure: cn-edge`, `domain`, `port` |
 | Overseas/global public HTTPS | `region: global`, `exposure: external-edge`, `domain`, `port` |
 | Home service through China edge and Tailscale | `region: home`, `exposure: tailscale-relay`, `domain`, `port`; optional `node` only when pinning |
-| Public TCP service | `exposure: tcp-relay`, `domain`, `port`, `tcp.entryPoint`; use one service per TCP entrypoint port |
+| Public TCP service | `exposure: tcp-relay`, `domain`, `port`; use one service per published TCP port |
 | Home/private Cloudflare Tunnel | usually `region: home`, `exposure: cloudflare-tunnel`, `domain`, `port`, optional `tunnel.tokenEnv` |
 | Queue worker or internal service | `exposure: none`, no `domain` or `port` required |
 | Runtime needs Luma egress proxy | add `proxy: true`; keep the desired scheduling `region` |
@@ -55,7 +54,7 @@ Rules:
 - `cn-edge` requires `region: cn`.
 - `external-edge` requires `region: global`.
 - `tailscale-relay` requires `region: home`.
-- `tcp-relay` requires `tcp.entryPoint`, and ordinary MySQL should use port-exclusive routing instead of SNI multiplexing.
+- `tcp-relay` derives its Traefik entrypoint from `publishPort` or `port`; ordinary MySQL should use port-exclusive routing instead of SNI multiplexing.
 - Public services require `domain` and integer `port`.
 - `public` has been removed. Use `exposure`.
 
@@ -65,7 +64,7 @@ Rules:
 - If `node` is set and the control plane knows the node, Luma renders `node.labels.luma.node.id == <node-id>`; otherwise local render may use `node.labels.luma.node.name == <node>`.
 - `cn-edge` and `external-edge` add Traefik labels, attach the public overlay network, and use `port` as the load-balancer server port.
 - `tailscale-relay` deploys the stack first, inspects running tasks, then routes through host-mode published ports on the actual home nodes unless `relay.host`/`relay.url` overrides are set.
-- `tcp-relay` writes a Traefik TCP route on the configured entrypoint and forwards to task host ports; the entrypoint port is exclusive to that TCP service.
+- `tcp-relay` updates Traefik with the derived TCP entrypoint, writes a TCP route, and forwards to task host ports; the published port is exclusive to that TCP service.
 - `cloudflare-tunnel` adds a `cloudflared` sidecar using `${<tokenEnv>}`.
 - `proxy: true` adds the configured egress overlay network and default `HTTP_PROXY=http://egress_mihomo:7890` / `HTTPS_PROXY=http://egress_mihomo:7890` values unless those env vars are already present.
 - Named `volumes` are rendered as stack volumes. If a named volume is also declared in `storage`, Luma renders Docker local driver options for the resolved storage class endpoint.
@@ -155,7 +154,6 @@ storage:
 | `services.<name>.domain` | public only | Public hostname. |
 | `services.<name>.port` | public only | Container internal port. |
 | `services.<name>.publishPort` | relay only | Host-mode published port for `tailscale-relay` or `tcp-relay`. |
-| `services.<name>.tcp.entryPoint` | tcp-relay only | TCP entrypoint name from `defaults.tcpEntryPoints`. |
 | `services.<name>.replicas` | no | Swarm replicas; must be at least `1`. |
 | `services.<name>.proxy` | no | Adds Luma egress env/network for runtime outbound traffic. |
 | `services.<name>.relay` | relay only | Optional relay override. Usually omit. |

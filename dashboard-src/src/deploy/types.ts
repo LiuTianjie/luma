@@ -29,7 +29,6 @@ export type ServiceManifestDraft = {
   domain: string;
   port: string;
   publishPort: string;
-  tcpEntryPoint?: string;
   replicas: number;
   proxy: boolean;
   env: KeyValueRow[];
@@ -54,7 +53,6 @@ export type ComposeServiceDraft = {
   domain: string;
   port: string;
   publishPort: string;
-  tcpEntryPoint?: string;
   replicas: number;
   proxy: boolean;
   env: KeyValueRow[];

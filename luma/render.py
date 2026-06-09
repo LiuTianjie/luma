@@ -13,7 +13,7 @@ from .compose import (
 from .config import LumaConfig
 from .errors import LumaError
 from .io import dump_yaml
-from .service import ServiceSpec
+from .service import ServiceSpec, tcp_entrypoint_name, tcp_relay_publish_port
 
 
 def stack_path(config: LumaConfig, service: ServiceSpec) -> Path:
@@ -80,8 +80,8 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
 
 def render_tcp_route(config: LumaConfig, service: ServiceSpec) -> str:
     service_name = service.slug
-    tcp_entrypoint = str(service.tcp.get("entryPoint") or "").strip()
-    config.tcp_entrypoint(tcp_entrypoint)
+    publish_port = tcp_relay_publish_port(service)
+    tcp_entrypoint = tcp_entrypoint_name(publish_port)
     addresses = service.tcp.get("addresses")
     if isinstance(addresses, list) and addresses:
         servers = [{"address": str(address)} for address in addresses]
@@ -121,8 +121,6 @@ def render_stack(
     node_records: Dict[str, Any] | None = None,
 ) -> str:
     service_name = service.slug
-    if service.exposure == "tcp-relay":
-        config.tcp_entrypoint(str(service.tcp.get("entryPoint") or "").strip())
     storage_context = _service_storage_context(service, storage_classes, node_records)
     constraints = [f"node.labels.region == {service.region}"]
     if service.node_id:

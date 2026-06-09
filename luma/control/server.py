@@ -50,7 +50,7 @@ from ..registry import (
     registry_auth_matches_image,
 )
 from ..render import named_volume_sources, render_stack, render_tailscale_route, render_tcp_route, route_path, stack_path
-from ..service import VALID_REGIONS, ServiceSpec, load_service, slugify
+from ..service import TCP_RELAY_RESERVED_PORTS, VALID_REGIONS, ServiceSpec, load_service, slugify, tcp_entrypoint_name
 from .. import __version__
 from .metrics import load_history, record_samples, sustained_breach
 from .state import init_state, load_state, mutate_state, require_token
@@ -802,6 +802,91 @@ def _ensure_deployment_slug_available(state: Dict[str, Any], kind: str, slug: st
             raise LumaError(f"deployment name already exists: {existing_name}")
 
 
+def _service_tcp_relay_ports(service: ServiceSpec) -> list[int]:
+    if service.exposure != "tcp-relay":
+        return []
+    port = int(service.publish_port or service.port or 0)
+    return [port] if port > 0 else []
+
+
+def _compose_tcp_relay_ports(deployment: ComposeDeploymentSpec) -> list[int]:
+    return [
+        int(service.publish_port or service.port or 0)
+        for service in deployment.services.values()
+        if service.exposure == "tcp-relay" and int(service.publish_port or service.port or 0) > 0
+    ]
+
+
+def _ensure_tcp_relay_ports_available(state: Dict[str, Any], *, kind: str, slug: str, ports: list[int]) -> None:
+    wanted = [int(port) for port in ports if int(port) > 0]
+    duplicates = sorted({port for port in wanted if wanted.count(port) > 1})
+    if duplicates:
+        raise LumaError(f"tcp-relay publishPort must be unique in one deployment: {duplicates}")
+    reserved = sorted(set(wanted) & TCP_RELAY_RESERVED_PORTS)
+    if reserved:
+        raise LumaError(f"tcp-relay cannot use reserved Traefik ports: {reserved}")
+    deployments = _deployments_state(state)
+    conflicts: list[str] = []
+    for bucket_kind, records in (("service", deployments["services"]), ("compose", deployments["compose"])):
+        for record_slug, record in records.items():
+            if bucket_kind == kind and str(record_slug) == slug:
+                continue
+            if not isinstance(record, dict):
+                continue
+            status = str(record.get("status") or "")
+            if status and status not in {"active", "pending"}:
+                continue
+            used_ports = set(_record_tcp_relay_ports(record))
+            overlap = sorted(set(wanted) & used_ports)
+            if overlap:
+                conflicts.append(f"{record.get('name') or record_slug}: {overlap}")
+    if conflicts:
+        raise LumaError("tcp-relay publishPort conflicts with existing deployment: " + "; ".join(conflicts))
+
+
+def _record_tcp_relay_ports(record: Dict[str, Any]) -> list[int]:
+    ports: set[int] = set()
+    for value in record.get("tcpRelayPorts") or []:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            ports.add(parsed)
+    if ports:
+        return sorted(ports)
+    manifest = str(record.get("manifest") or "")
+    if not manifest.strip():
+        return []
+    try:
+        data = yaml.safe_load(manifest) or {}
+    except yaml.YAMLError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    if str(record.get("kind") or "") == "service":
+        if str(data.get("exposure") or "") != "tcp-relay":
+            return []
+        port = data.get("publishPort") or data.get("port")
+        try:
+            parsed = int(port)
+        except (TypeError, ValueError):
+            return []
+        return [parsed] if parsed > 0 else []
+    services = data.get("services") if isinstance(data.get("services"), dict) else {}
+    for service in services.values():
+        if not isinstance(service, dict) or str(service.get("exposure") or "") != "tcp-relay":
+            continue
+        port = service.get("publishPort") or service.get("port")
+        try:
+            parsed = int(port)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            ports.add(parsed)
+    return sorted(ports)
+
+
 def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, manifest: str, source_name: str) -> None:
     deployments = _deployments_state(state)
     deployments["services"][service.slug] = {
@@ -810,6 +895,7 @@ def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, ma
         "slug": service.slug,
         "manifest": manifest,
         "sourceName": source_name,
+        "tcpRelayPorts": _service_tcp_relay_ports(service),
         "updatedAt": int(time.time()),
     }
 
@@ -842,6 +928,7 @@ def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeplo
         "slug": deployment.slug,
         "manifest": str(body.get("manifest") or ""),
         "sourceName": source_name,
+        "tcpRelayPorts": _compose_tcp_relay_ports(deployment),
         "updatedAt": int(time.time()),
     }
     compose_content = body.get("composeContent")
@@ -1045,6 +1132,12 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             progress=progress,
         )
         service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state), progress=progress)
+        _deploy_step(
+            steps,
+            "Check TCP relay ports",
+            lambda: _ensure_tcp_relay_ports_available(state, kind="service", slug=service.slug, ports=_service_tcp_relay_ports(service)) or "TCP relay ports available",
+            progress=progress,
+        )
         _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
         storage_preparation = _deploy_step(
             steps,
@@ -1068,6 +1161,13 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
         _deploy_step(steps, "Write stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
+        if service.exposure == "tcp-relay":
+            _deploy_step(
+                steps,
+                "Ensure TCP ingress",
+                lambda: _ensure_tcp_relay_ingress([int(service.publish_port or service.port or 0)]) if not body.get("skipPortainer") else "TCP ingress skipped: --skip-portainer",
+                progress=progress,
+            )
         dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
         portainer_result = _deploy_step(
             steps,
@@ -1433,6 +1533,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     config = load_config(config_path)
     deployment = _load_compose_request(body, source_name)
     _ensure_deployment_slug_available(state, "compose", deployment.slug, deployment.name)
+    _ensure_tcp_relay_ports_available(state, kind="compose", slug=deployment.slug, ports=_compose_tcp_relay_ports(deployment))
     parse_step = {"name": "Parse compose deployment", "status": "ok", "message": f"{deployment.name} ({len(deployment.compose.get('services', {}))} services)"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
@@ -1463,6 +1564,18 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
         _deploy_step(steps, "Write compose stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
+        tcp_ports = [
+            int(service.publish_port or service.port or 0)
+            for service in deployment.services.values()
+            if service.exposure == "tcp-relay"
+        ]
+        if tcp_ports:
+            _deploy_step(
+                steps,
+                "Ensure TCP ingress",
+                lambda: _ensure_tcp_relay_ingress(tcp_ports) if not body.get("skipPortainer") else "TCP ingress skipped: --skip-portainer",
+                progress=progress,
+            )
 
         dns_results: list[str] = []
         for service in compose_public_services(deployment):
@@ -3821,6 +3934,70 @@ def resolve_tcp_relay(service: ServiceSpec) -> ServiceSpec:
     tcp = dict(service.tcp)
     tcp["addresses"] = upstream_addresses
     return replace(service, tcp=tcp)
+
+
+def _ensure_tcp_relay_ingress(ports: list[int]) -> str:
+    wanted_ports = sorted({int(port) for port in ports if int(port) > 0})
+    if not wanted_ports:
+        return "No TCP ingress ports required"
+    service = docker_request("GET", "/services/traefik_traefik")
+    if not isinstance(service, dict):
+        raise LumaError("Docker API returned invalid Traefik service")
+    spec = service.get("Spec")
+    version = service.get("Version", {}).get("Index") if isinstance(service.get("Version"), dict) else None
+    service_id = str(service.get("ID") or "traefik_traefik")
+    if not isinstance(spec, dict) or not version:
+        raise LumaError("Traefik service is missing update metadata")
+    task_template = spec.setdefault("TaskTemplate", {})
+    if not isinstance(task_template, dict):
+        raise LumaError("Traefik service TaskTemplate is invalid")
+    container = task_template.setdefault("ContainerSpec", {})
+    if not isinstance(container, dict):
+        raise LumaError("Traefik service ContainerSpec is invalid")
+    args = container.setdefault("Args", [])
+    if not isinstance(args, list):
+        raise LumaError("Traefik service Args is invalid")
+    endpoint = spec.setdefault("EndpointSpec", {})
+    if not isinstance(endpoint, dict):
+        raise LumaError("Traefik service EndpointSpec is invalid")
+    published_ports = endpoint.setdefault("Ports", [])
+    if not isinstance(published_ports, list):
+        raise LumaError("Traefik service EndpointSpec.Ports is invalid")
+    changed = False
+    for port in wanted_ports:
+        name = tcp_entrypoint_name(port)
+        command = f"--entrypoints.{name}.address=:{port}"
+        if command not in args:
+            args.append(command)
+            changed = True
+        existing = [
+            item
+            for item in published_ports
+            if isinstance(item, dict)
+            and int(item.get("PublishedPort") or 0) == port
+            and str(item.get("Protocol") or "tcp").lower() == "tcp"
+        ]
+        incompatible = [
+            item
+            for item in existing
+            if int(item.get("TargetPort") or 0) != port or str(item.get("PublishMode") or "").lower() != "host"
+        ]
+        if incompatible:
+            raise LumaError(f"tcp-relay port {port} conflicts with existing Traefik published port")
+        if not existing:
+            published_ports.append(
+                {
+                    "Protocol": "tcp",
+                    "TargetPort": port,
+                    "PublishedPort": port,
+                    "PublishMode": "host",
+                }
+            )
+            changed = True
+    if not changed:
+        return "TCP ingress already configured: " + ", ".join(str(port) for port in wanted_ports)
+    docker_request("POST", f"/services/{urllib.parse.quote(service_id, safe='')}/update?version={version}", spec)
+    return "TCP ingress configured: " + ", ".join(str(port) for port in wanted_ports)
 
 
 def _swarm_task_upstream_urls(service: ServiceSpec) -> list[str]:

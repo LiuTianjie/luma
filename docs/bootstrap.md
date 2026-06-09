@@ -166,7 +166,7 @@ Luma configures UFW on Linux nodes during bootstrap/join. If you use a cloud sec
 | `80/tcp` | Internet to manager/edge | HTTP entrypoint and Let's Encrypt HTTP-01 challenge. |
 | `443/tcp` | Internet to manager/edge | HTTPS entrypoint for public services and Luma Control. |
 | `9443/tcp` | trusted clients to manager | Direct Portainer UI/API access. Restrict this when possible. |
-| configured `tcpEntryPoints` | Internet to manager/edge | Optional TCP relay entrypoints, for example `3306/tcp` for MySQL. |
+| `tcp-relay` published ports | Internet to manager/edge | Public TCP relay ports, for example `3306/tcp` for MySQL. Luma restores Traefik listeners from Control state; cloud firewalls/security groups must allow the same ports. |
 | `2377/tcp` | workers to manager | Docker Swarm control-plane join and manager communication. |
 | `7946/tcp` and `7946/udp` | node to node | Docker Swarm node discovery and overlay-network gossip. |
 | `4789/udp` | node to node | Docker overlay/VXLAN data path. |

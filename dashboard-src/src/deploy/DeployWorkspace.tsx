@@ -59,7 +59,6 @@ function serviceErrors(draft: ServiceManifestDraft, yamlDirty: boolean, serviceY
   if (draft.exposure !== "none" && !draft.domain.trim()) errors.push(lang === "zh" ? "公开入口必须填写域名" : "Public exposure requires a domain");
   if (draft.exposure !== "none" && !draft.port.trim()) errors.push(lang === "zh" ? "公开入口必须填写容器端口" : "Public exposure requires a container port");
   if (draft.exposure !== "none" && draft.port.trim() && !isPositiveInteger(draft.port)) errors.push(lang === "zh" ? "容器端口必须是正整数" : "Container port must be a positive integer");
-  if (draft.exposure === "tcp-relay" && !(draft.tcpEntryPoint || "").trim()) errors.push(lang === "zh" ? "tcp-relay 必须填写 TCP entrypoint" : "tcp-relay requires a TCP entrypoint");
   if (draft.publishPort.trim() && !isPositiveInteger(draft.publishPort)) errors.push(lang === "zh" ? "发布端口必须是正整数" : "Published port must be a positive integer");
   if (!isPositiveInteger(draft.replicas)) errors.push(lang === "zh" ? "副本数必须是大于 0 的整数" : "Replicas must be an integer greater than 0");
   for (const volume of draft.volumeMounts || []) {
@@ -96,7 +95,6 @@ function composeErrors(draft: ComposeDeploymentDraft, yamlDirty: boolean, compos
     if (service.exposure !== "none" && !service.domain.trim()) errors.push(lang === "zh" ? `${service.name} 必须填写域名` : `${service.name} requires a domain`);
     if (service.exposure !== "none" && !service.port.trim()) errors.push(lang === "zh" ? `${service.name} 必须填写容器端口` : `${service.name} requires a container port`);
     if (service.exposure !== "none" && service.port.trim() && !isPositiveInteger(service.port)) errors.push(lang === "zh" ? `${service.name} 容器端口必须是正整数` : `${service.name} container port must be a positive integer`);
-    if (service.exposure === "tcp-relay" && !(service.tcpEntryPoint || "").trim()) errors.push(lang === "zh" ? `${service.name} tcp-relay 必须填写 TCP entrypoint` : `${service.name} tcp-relay requires a TCP entrypoint`);
     if (service.publishPort.trim() && !isPositiveInteger(service.publishPort)) errors.push(lang === "zh" ? `${service.name} 发布端口必须是正整数` : `${service.name} published port must be a positive integer`);
     if (!isPositiveInteger(service.replicas)) errors.push(lang === "zh" ? `${service.name} 副本数必须是大于 0 的整数` : `${service.name} replicas must be an integer greater than 0`);
     for (const row of service.env || []) {

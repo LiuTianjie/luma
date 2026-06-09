@@ -64,32 +64,6 @@ class LumaConfig:
         return str(self.defaults.get("entrypoint", "websecure"))
 
     @property
-    def tcp_entrypoints(self) -> Dict[str, Dict[str, Any]]:
-        raw = self.defaults.get("tcpEntryPoints") or {}
-        if not isinstance(raw, dict):
-            return {}
-        return {str(name): dict(value) for name, value in raw.items() if isinstance(value, dict)}
-
-    def tcp_entrypoint(self, name: str) -> Dict[str, Any]:
-        entrypoints = self.tcp_entrypoints
-        if name not in entrypoints:
-            configured = ", ".join(sorted(entrypoints)) or "none"
-            raise LumaError(f"tcp entrypoint is not configured: {name} (configured: {configured})")
-        entrypoint = dict(entrypoints[name])
-        address = str(entrypoint.get("address") or "").strip()
-        published = entrypoint.get("published")
-        if not address:
-            raise LumaError(f"tcp entrypoint {name} requires address")
-        try:
-            entrypoint["published"] = int(published)
-        except (TypeError, ValueError) as exc:
-            raise LumaError(f"tcp entrypoint {name} requires integer published port") from exc
-        if entrypoint["published"] < 1:
-            raise LumaError(f"tcp entrypoint {name} requires positive published port")
-        entrypoint["address"] = address
-        return entrypoint
-
-    @property
     def dns(self) -> Dict[str, Any]:
         providers = self.raw.get("providers") or {}
         dns = dict(providers.get("dns") or self.raw.get("dns") or {})

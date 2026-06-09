@@ -15,7 +15,7 @@ Portainer is required and installed by bootstrap. It shows stacks, services, log
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.72"
+python -m pip install "luma-infra==0.1.73"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.72 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.73 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.72"
+python -m pip install "luma-infra==0.1.73"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.72"
+python -m pip install "luma-infra==0.1.73"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -356,7 +356,7 @@ Optional fields:
 - `publishPort`
 - `relay.host`: optional tailscale-relay upstream override; usually omit it.
 - `relay.url`: optional full tailscale-relay upstream URL override; usually omit it.
-- `tcp.entryPoint`: required for `tcp-relay`; the name must exist in `defaults.tcpEntryPoints`.
+- `tcp-relay` uses `publishPort` or `port` to derive the Traefik TCP entrypoint automatically.
 - `tunnel.tokenEnv`
 
 Example worker that needs the Luma egress proxy:

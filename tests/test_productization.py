@@ -278,26 +278,12 @@ class ProductConfigTests(unittest.TestCase):
         ufw_command = remote.sudo.call_args_list[0].args[0]
         self.assertIn("ufw allow 3306/tcp", ufw_command)
 
-    def test_render_traefik_stack_adds_tcp_entrypoints(self):
-        config = LumaConfig(
-            {
-                "defaults": {
-                    "tcpEntryPoints": {
-                        "mysql": {
-                            "address": ":3306",
-                            "published": 3306,
-                        }
-                    }
-                }
-            },
-            None,
-        )
-
-        stack = yaml.safe_load(_render_traefik_stack(config))
+    def test_render_traefik_stack_does_not_require_configured_tcp_entrypoints(self):
+        stack = yaml.safe_load(_render_traefik_stack(LumaConfig({}, None)))
         traefik = stack["services"]["traefik"]
 
-        self.assertIn("--entrypoints.mysql.address=:3306", traefik["command"])
-        self.assertIn({"target": 3306, "published": 3306, "protocol": "tcp", "mode": "host"}, traefik["ports"])
+        self.assertNotIn("--entrypoints.tcp-3306.address=:3306", traefik["command"])
+        self.assertNotIn({"target": 3306, "published": 3306, "protocol": "tcp", "mode": "host"}, traefik["ports"])
 
     def test_ensure_swarm_uses_tolerant_dispatcher_heartbeat(self):
         remote = Mock()

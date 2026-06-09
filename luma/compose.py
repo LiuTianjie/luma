@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .config import LumaConfig
 from .errors import LumaError
 from .io import dump_yaml, load_yaml
-from .service import VALID_EXPOSURES, VALID_REGIONS, slugify
+from .service import VALID_EXPOSURES, VALID_REGIONS, slugify, tcp_entrypoint_name
 
 
 VALID_STORAGE_PROVIDERS = {"nfs"}
@@ -275,8 +275,7 @@ def render_compose_routes(config: LumaConfig, deployment: ComposeDeploymentSpec)
             continue
         service_id = f"{deployment.slug}-{slugify(service_name)}"
         if override.exposure == "tcp-relay":
-            tcp_entrypoint = str(override.tcp.get("entryPoint") or "").strip()
-            config.tcp_entrypoint(tcp_entrypoint)
+            tcp_entrypoint = tcp_entrypoint_name(int(override.publish_port or override.port or 0))
             addresses = override.tcp.get("addresses")
             if isinstance(addresses, list) and addresses:
                 servers = [{"address": str(address)} for address in addresses]
@@ -436,10 +435,16 @@ def validate_compose_deployment_data(
             raise LumaError(f"compose service {service_name} exposure=external-edge requires region=global")
         if override.exposure == "tailscale-relay" and region != "home":
             raise LumaError(f"compose service {service_name} exposure=tailscale-relay requires region=home")
-        if override.exposure == "tcp-relay":
-            entrypoint = str(override.tcp.get("entryPoint") or "").strip()
-            if not entrypoint:
-                raise LumaError(f"compose service {service_name} exposure=tcp-relay requires tcp.entryPoint")
+    tcp_ports: dict[int, str] = {}
+    for service_name, override in services.items():
+        if override.exposure != "tcp-relay":
+            continue
+        port = int(override.publish_port or override.port or 0)
+        if port in {80, 443}:
+            raise LumaError(f"compose service {service_name} tcp-relay cannot use reserved Traefik port: {port}")
+        if port in tcp_ports:
+            raise LumaError(f"compose tcp-relay publishPort {port} is already used by service {tcp_ports[port]}")
+        tcp_ports[port] = service_name
     return warnings
 
 
@@ -605,8 +610,6 @@ def _apply_service_exposure(
     service_id = f"{deployment.slug}-{slugify(service_name)}"
     deploy = service_body.setdefault("deploy", {})
     labels: List[str] = _labels_as_list(deploy)
-    if override.exposure == "tcp-relay":
-        config.tcp_entrypoint(str(override.tcp.get("entryPoint") or "").strip())
     if override.exposure in {"cn-edge", "external-edge"}:
         labels.extend(
             [

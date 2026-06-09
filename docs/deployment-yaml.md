@@ -51,7 +51,7 @@ luma deploy status.yaml
 | `healthcheck` | 否 | map | 透传到 Swarm service `healthcheck`。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
 | `publishPort` | tailscale-relay / tcp-relay 可用 | integer | host mode 暴露端口，默认等于 `port`。 |
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随 Swarm 实际运行 task 所在的 home 节点自动推导。 |
-| `tcp` | tcp-relay 必填 | map | TCP relay 设置，必须包含 `entryPoint`，对应 `defaults.tcpEntryPoints` 中的入口名。 |
+| `tcp` | tcp-relay 可选 | map | TCP relay 高级上游覆盖。正常情况不需要填写；入口由 `publishPort` / `port` 自动派生。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
 | `dns` | 否 | map | 保留给 DNS 相关扩展。 |
 | `portainer` | 否 | map | 保留给 Portainer API 相关扩展。 |
@@ -74,7 +74,7 @@ luma deploy status.yaml
 - `exposure: cn-edge` 必须配 `region: cn`。
 - `exposure: external-edge` 必须配 `region: global`。
 - `exposure: tailscale-relay` 必须配 `region: home`。若未提供 `relay.host`/`relay.url`，控制面会在部署后根据实际 running task 所在节点自动推导上游。
-- `exposure: tcp-relay` 必须配 `tcp.entryPoint`，且该入口必须存在于 `defaults.tcpEntryPoints`。普通 MySQL 不能可靠使用 SNI 分流，因此当前实现按端口独占转发。
+- `exposure: tcp-relay` 的 Traefik TCP entrypoint 由 `publishPort` 或 `port` 自动生成。普通 MySQL 不能可靠使用 SNI 分流，因此当前实现按端口独占转发。
 - 公开服务必须提供 `domain` 和整数 `port`。
 - `public` 已移除；请使用 `exposure`。
 
@@ -310,16 +310,6 @@ relay:
 
 ### 公开 TCP 服务
 
-先在 Luma 配置里声明 TCP 入口，并在 manager 上重跑 bootstrap/ingress 修复使 Traefik 监听该端口：
-
-```yaml
-defaults:
-  tcpEntryPoints:
-    mysql:
-      address: :3306
-      published: 3306
-```
-
 服务 manifest：
 
 ```yaml
@@ -332,11 +322,9 @@ domain: granary-db.itool.tech
 port: 3306
 publishPort: 3306
 replicas: 1
-tcp:
-  entryPoint: mysql
 ```
 
-Luma 会把 DNS 指到公网 edge，并写入 Traefik TCP route。`domain` 用于 DNS；普通 MySQL 连接无法提供 HTTP Host 或可靠起始 SNI，所以同一个 `tcp.entryPoint` 端口一次只应给一个 TCP 服务使用。
+Luma 会把 DNS 指到公网 edge，自动确保 Traefik 监听 `tcp-3306` entrypoint，并写入 Traefik TCP route。`domain` 用于 DNS；普通 MySQL 连接无法提供 HTTP Host 或可靠起始 SNI，所以同一个发布端口一次只应给一个 TCP 服务使用。
 
 ### Cloudflare Tunnel 服务
 

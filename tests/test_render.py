@@ -27,25 +27,6 @@ class RenderStackTests(unittest.TestCase):
             None,
         )
 
-    def tcp_config(self):
-        return LumaConfig(
-            {
-                "defaults": {
-                    "stackRoot": "stacks",
-                    "publicNetwork": "public",
-                    "entrypoint": "websecure",
-                    "certResolver": "letsencrypt",
-                    "tcpEntryPoints": {
-                        "mysql": {
-                            "address": ":3306",
-                            "published": 3306,
-                        }
-                    },
-                }
-            },
-            None,
-        )
-
     def load(self, content: str):
         tmp = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
         try:
@@ -889,37 +870,39 @@ node: lab
 exposure: tcp-relay
 domain: granary-db.itool.tech
 port: 3306
-tcp:
-  entryPoint: mysql
 """
         )
-        rendered = yaml.safe_load(render_stack(self.tcp_config(), service))
+        rendered = yaml.safe_load(render_stack(self.config(), service))
         app = rendered["services"]["granary-db"]
         self.assertEqual(app["ports"][0]["published"], 3306)
         self.assertEqual(app["ports"][0]["mode"], "host")
-        route = yaml.safe_load(render_tcp_route(self.tcp_config(), service))
+        route = yaml.safe_load(render_tcp_route(self.config(), service))
         self.assertEqual(route["tcp"]["routers"]["granary-db"]["rule"], "HostSNI(`*`)")
-        self.assertEqual(route["tcp"]["routers"]["granary-db"]["entryPoints"], ["mysql"])
+        self.assertEqual(route["tcp"]["routers"]["granary-db"]["entryPoints"], ["tcp-3306"])
         self.assertEqual(
             route["tcp"]["services"]["granary-db"]["loadBalancer"]["servers"][0]["address"],
             "lab:3306",
         )
 
-    def test_tcp_relay_requires_configured_entrypoint(self):
+    def test_tcp_relay_entrypoint_uses_publish_port(self):
         service = self.load(
             """
 name: granary db
 image: mysql:8.4.9
 region: home
+node: lab
 exposure: tcp-relay
 domain: granary-db.itool.tech
 port: 3306
-tcp:
-  entryPoint: mysql
+publishPort: 13306
 """
         )
-        with self.assertRaisesRegex(LumaError, "tcp entrypoint is not configured: mysql"):
-            render_stack(self.config(), service)
+        route = yaml.safe_load(render_tcp_route(self.config(), service))
+        self.assertEqual(route["tcp"]["routers"]["granary-db"]["entryPoints"], ["tcp-13306"])
+        self.assertEqual(
+            route["tcp"]["services"]["granary-db"]["loadBalancer"]["servers"][0]["address"],
+            "lab:13306",
+        )
 
     def test_compose_tcp_relay_writes_host_port_and_tcp_route(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -943,18 +926,16 @@ services:
     exposure: tcp-relay
     domain: granary-db.itool.tech
     port: 3306
-    tcp:
-      entryPoint: mysql
 """,
                 encoding="utf-8",
             )
             deployment = load_compose_deployment(root / "luma.compose.yml")
-            rendered = yaml.safe_load(render_compose_stack(self.tcp_config(), deployment))
+            rendered = yaml.safe_load(render_compose_stack(self.config(), deployment))
             mysql = rendered["services"]["mysql"]
             self.assertEqual(mysql["ports"][0]["published"], 3306)
-            routes = render_compose_routes(self.tcp_config(), deployment)
+            routes = render_compose_routes(self.config(), deployment)
             route = yaml.safe_load(routes["mysql"])
-            self.assertEqual(route["tcp"]["routers"]["granary-mysql"]["entryPoints"], ["mysql"])
+            self.assertEqual(route["tcp"]["routers"]["granary-mysql"]["entryPoints"], ["tcp-3306"])
             self.assertEqual(
                 route["tcp"]["services"]["granary-mysql"]["loadBalancer"]["servers"][0]["address"],
                 "lab:3306",

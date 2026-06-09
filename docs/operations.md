@@ -221,7 +221,7 @@ For Linux nodes, Luma configures UFW during bootstrap/join. Mirror the same acce
 | `80/tcp` | public clients -> edge manager | HTTP redirect and Let's Encrypt challenge. |
 | `443/tcp` | public clients -> edge manager | HTTPS ingress for Luma Control and public services. |
 | `9443/tcp` | trusted operators -> manager | Direct Portainer UI/API. Prefer a restricted source range. |
-| configured `tcpEntryPoints` | public clients -> edge manager | Optional TCP relay entrypoints, for example `3306/tcp` for MySQL. |
+| `tcp-relay` published ports | public clients -> edge manager | Public TCP relay ports, for example `3306/tcp` for MySQL. Luma restores Traefik listeners from Control state; cloud firewalls/security groups must allow the same ports. |
 | `2377/tcp` | worker nodes -> manager | Swarm control plane. |
 | `7946/tcp`, `7946/udp` | all Swarm nodes | Swarm discovery and overlay-network gossip. |
 | `4789/udp` | all Swarm nodes | Overlay/VXLAN service traffic. |

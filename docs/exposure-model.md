@@ -5,7 +5,7 @@ Luma separates the control plane from the data plane.
 ## Roles
 
 - Cloudflare: DNS automation, optional proxy, optional Tunnel public hostname.
-- Traefik: main public HTTP/HTTPS ingress for the `cn` edge, plus configured TCP entrypoints.
+- Traefik: main public HTTP/HTTPS ingress for the `cn` edge, plus `tcp-relay` published ports.
 - Tailscale: management network and explicit relay path for selected `home` services.
 - Portainer: deployment control plane.
 - Docker Swarm / Docker: runtime execution layer.
@@ -114,16 +114,6 @@ Do not use for:
 - multiplexing multiple ordinary MySQL services on the same port by hostname;
 - public exposure without database credentials, IP allowlists, or firewall controls.
 
-Configure the entrypoint in Luma manager config, then refresh Traefik with bootstrap/ingress repair:
-
-```yaml
-defaults:
-  tcpEntryPoints:
-    mysql:
-      address: :3306
-      published: 3306
-```
-
 Manifest:
 
 ```yaml
@@ -135,17 +125,16 @@ exposure: tcp-relay
 domain: granary-db.itool.tech
 port: 3306
 publishPort: 3306
-tcp:
-  entryPoint: mysql
 ```
 
 Luma generates:
 
 - `stacks/home/granary-db/stack.yml`, which publishes the service port in host mode;
+- Traefik service update for the derived `tcp-3306` entrypoint and host-mode published port;
 - `routes/granary-db.yml`, which uses Traefik `tcp.routers` with `HostSNI("*")` / `HostSNI(\`*\`)`;
 - Cloudflare DNS record pointing to the configured edge target.
 
-Ordinary MySQL clients do not start with an HTTP Host header, and should not be assumed to provide reliable TLS SNI before the server handshake. Treat `tcp-relay` as port-exclusive: one configured entrypoint port routes to one TCP service.
+Ordinary MySQL clients do not start with an HTTP Host header, and should not be assumed to provide reliable TLS SNI before the server handshake. Treat `tcp-relay` as port-exclusive: one published port routes to one TCP service.
 
 ### `cloudflare-tunnel`
 

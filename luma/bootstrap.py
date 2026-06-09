@@ -172,21 +172,7 @@ def _traefik_ports(config: LumaConfig) -> tuple[int, int]:
     return http_port, https_port
 
 
-def _tcp_entrypoint_target_port(address: str, name: str) -> int:
-    raw = str(address).strip()
-    if ":" not in raw:
-        raise LumaError(f"tcp entrypoint {name} address must include a port")
-    port_text = raw.rsplit(":", 1)[1]
-    try:
-        port = int(port_text)
-    except ValueError as exc:
-        raise LumaError(f"tcp entrypoint {name} address must end with an integer port") from exc
-    if port < 1:
-        raise LumaError(f"tcp entrypoint {name} address must use a positive port")
-    return port
-
-
-def _render_traefik_stack(config: LumaConfig) -> str:
+def _render_traefik_stack(config: LumaConfig, *, tcp_ports: list[int] | None = None) -> str:
     image = _traefik_image(config)
     http_port, https_port = _traefik_ports(config)
     stack_text = asset_text("stacks/core/traefik/stack.yml")
@@ -194,21 +180,21 @@ def _render_traefik_stack(config: LumaConfig) -> str:
     stack_text = stack_text.replace("admin@example.com", _acme_email(config))
     stack_text = stack_text.replace("published: 80", f"published: {http_port}")
     stack_text = stack_text.replace("published: 443", f"published: {https_port}")
+    ports = sorted({int(port) for port in (tcp_ports or []) if int(port) > 0})
+    if not ports:
+        return stack_text
     stack = yaml.safe_load(stack_text) or {}
     traefik = stack["services"]["traefik"]
     commands = traefik.setdefault("command", [])
-    ports = traefik.setdefault("ports", [])
-    for name in sorted(config.tcp_entrypoints):
-        entrypoint = config.tcp_entrypoint(name)
-        address = str(entrypoint["address"])
-        published = int(entrypoint["published"])
-        target = _tcp_entrypoint_target_port(address, name)
-        command = f"--entrypoints.{name}.address={address}"
+    published = traefik.setdefault("ports", [])
+    for port in ports:
+        name = f"tcp-{port}"
+        command = f"--entrypoints.{name}.address=:{port}"
         if command not in commands:
             commands.append(command)
-        port_spec = {"target": target, "published": published, "protocol": "tcp", "mode": "host"}
-        if port_spec not in ports:
-            ports.append(port_spec)
+        port_spec = {"target": port, "published": port, "protocol": "tcp", "mode": "host"}
+        if port_spec not in published:
+            published.append(port_spec)
     return dump_yaml(stack)
 
 
@@ -272,9 +258,9 @@ def _pull_first_available(remote: Executor, images: list[str]) -> tuple[str, str
     raise LumaError("failed to pull any candidate image:\n" + "\n".join(errors))
 
 
-def _deploy_traefik(remote: Executor, config: LumaConfig) -> list[str]:
+def _deploy_traefik(remote: Executor, config: LumaConfig, *, tcp_ports: list[int] | None = None) -> list[str]:
     image = _traefik_image(config)
-    stack_text = _render_traefik_stack(config)
+    stack_text = _render_traefik_stack(config, tcp_ports=tcp_ports)
     return [
         _pull_image(remote, image),
         _deploy_stack_text(remote, stack_text, "traefik"),
@@ -990,6 +976,7 @@ def bootstrap_node(
     *,
     run_egress: bool = True,
     reset_portainer_state: bool = False,
+    tcp_ports: list[int] | None = None,
     emit: Progress | None = None,
     executor: Executor | None = None,
 ) -> list[str]:
@@ -1008,10 +995,9 @@ def bootstrap_node(
     _step(results, emit, "Apply node labels", lambda: apply_labels(remote, profile, node))
     _step(results, emit, "Create runtime paths", lambda: prepare_paths(remote))
     http_port, https_port = _traefik_ports(config)
-    tcp_ports = [int(config.tcp_entrypoint(name)["published"]) for name in config.tcp_entrypoints]
     _step(results, emit, "Configure firewall", lambda: configure_firewall(remote, http_port=http_port, https_port=https_port, tcp_ports=tcp_ports, allow_portainer=True))
     if "edge" in profile.roles or profile.name == "single-node":
-        _step(results, emit, "Deploy Traefik", lambda: _deploy_traefik(remote, config), fix=bootstrap_fix)
+        _step(results, emit, "Deploy Traefik", lambda: _deploy_traefik(remote, config, tcp_ports=tcp_ports), fix=bootstrap_fix)
     if "swarm-manager" in profile.roles or profile.name == "single-node":
         if reset_portainer_state:
             _step(results, emit, "Reset Portainer state", lambda: _reset_portainer_state(remote), fix=portainer_fix)
@@ -1038,12 +1024,14 @@ def bootstrap_node(
 
 def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profile, domain: str, state: dict[str, object], *, run_egress: bool = True, emit: Progress | None = None) -> list[str]:
     remote = LocalExecutor()
+    tcp_ports = _state_tcp_relay_ports(state)
     results = bootstrap_node(
         config,
         node,
         profile,
         run_egress=run_egress,
         reset_portainer_state=False,
+        tcp_ports=tcp_ports,
         emit=emit,
         executor=remote,
     )
@@ -1077,6 +1065,26 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
         ),
     )
     return results
+
+
+def _state_tcp_relay_ports(state: dict[str, object]) -> list[int]:
+    deployments = state.get("deployments") if isinstance(state.get("deployments"), dict) else {}
+    ports: set[int] = set()
+    for bucket_name in ("services", "compose"):
+        bucket = deployments.get(bucket_name) if isinstance(deployments.get(bucket_name), dict) else {}
+        for record in bucket.values():
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("status") or "") != "active":
+                continue
+            for port in record.get("tcpRelayPorts") or []:
+                try:
+                    parsed = int(port)
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    ports.add(parsed)
+    return sorted(ports)
 
 
 def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: str, state: dict[str, object], *, emit: Progress | None = None) -> list[str]:

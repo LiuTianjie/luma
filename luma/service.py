@@ -12,6 +12,7 @@ from .io import load_yaml
 VALID_REGIONS = {"cn", "global", "home"}
 VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge", "tcp-relay"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
+TCP_RELAY_RESERVED_PORTS = {80, 443}
 
 
 def slugify(value: str) -> str:
@@ -88,6 +89,19 @@ class ServiceSpec:
         return "internal-cn-service"
 
 
+def tcp_relay_publish_port(service: ServiceSpec) -> int:
+    port = int(service.publish_port or service.port or 0)
+    if port < 1:
+        raise LumaError("tcp-relay requires a valid port")
+    return port
+
+
+def tcp_entrypoint_name(port: int) -> str:
+    if int(port) < 1:
+        raise LumaError("tcp-relay requires a valid port")
+    return f"tcp-{int(port)}"
+
+
 def load_service(path: Path) -> ServiceSpec:
     raw = load_yaml(path)
     name = raw.get("name")
@@ -138,10 +152,11 @@ def load_service(path: Path) -> ServiceSpec:
     tcp = raw.get("tcp") or {}
     if not isinstance(tcp, dict):
         raise LumaError("tcp must be a mapping")
+    publish_port = _positive_int(raw["publishPort"], "publishPort") if "publishPort" in raw else None
     if exposure == "tcp-relay":
-        entrypoint = str(tcp.get("entryPoint") or "").strip()
-        if not entrypoint:
-            raise LumaError("tcp-relay requires tcp.entryPoint")
+        relay_port = int(publish_port or port or 0)
+        if relay_port in TCP_RELAY_RESERVED_PORTS:
+            raise LumaError(f"tcp-relay cannot use reserved Traefik port: {relay_port}")
 
     replicas = _positive_int(raw.get("replicas", 1), "replicas")
     if replicas < 1:
@@ -192,7 +207,7 @@ def load_service(path: Path) -> ServiceSpec:
         exposure=exposure,
         domain=domain.strip() if isinstance(domain, str) else None,
         port=port,
-        publish_port=_positive_int(raw["publishPort"], "publishPort") if "publishPort" in raw else None,
+        publish_port=publish_port,
         replicas=replicas,
         command=raw.get("command"),
         environment=environment,
