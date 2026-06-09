@@ -34,7 +34,7 @@ function normalizePathSegments(path: TrafficPath) {
   const publicPrefix = domain ? [domain] : [];
   if (kind === "cn-edge" || kind === "external-edge") return [...publicPrefix, ...segments.slice(0, 4)];
   if (kind === "cloudflare-tunnel") return [...publicPrefix, ...segments.slice(0, 3)];
-  if (kind === "tailscale-relay") return [...publicPrefix, ...segments];
+  if (kind === "tailscale-relay" || kind === "tcp-relay") return [...publicPrefix, ...segments];
   return segments.slice(0, 2);
 }
 
@@ -218,7 +218,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       },
     },
     { selector: "edge.cn-edge, edge.external-edge", style: { "line-color": isDark ? "#8b5cf6" : "#6366f1", "target-arrow-color": isDark ? "#8b5cf6" : "#6366f1" } },
-    { selector: "edge.tailscale-relay, edge.cloudflare-tunnel", style: { "line-color": "#10b981", "target-arrow-color": "#10b981" } },
+    { selector: "edge.tailscale-relay, edge.tcp-relay, edge.cloudflare-tunnel", style: { "line-color": "#10b981", "target-arrow-color": "#10b981" } },
     {
       selector: ".dimmed",
       style: {

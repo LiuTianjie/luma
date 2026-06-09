@@ -66,6 +66,7 @@ class ComposeServiceSpec:
     proxy: bool = False
     relay: Dict[str, Any] = field(default_factory=dict)
     tunnel: Dict[str, Any] = field(default_factory=dict)
+    tcp: Dict[str, Any] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -268,11 +269,38 @@ def render_compose_stack(
 def render_compose_routes(config: LumaConfig, deployment: ComposeDeploymentSpec) -> Dict[str, str]:
     routes: Dict[str, str] = {}
     for service_name, override in deployment.services.items():
-        if override.exposure != "tailscale-relay":
+        if override.exposure not in {"tailscale-relay", "tcp-relay"}:
             continue
         if not override.domain or not override.port:
             continue
         service_id = f"{deployment.slug}-{slugify(service_name)}"
+        if override.exposure == "tcp-relay":
+            tcp_entrypoint = str(override.tcp.get("entryPoint") or "").strip()
+            config.tcp_entrypoint(tcp_entrypoint)
+            addresses = override.tcp.get("addresses")
+            if isinstance(addresses, list) and addresses:
+                servers = [{"address": str(address)} for address in addresses]
+            else:
+                address = override.tcp.get("address")
+                if not address:
+                    host = override.tcp.get("host") or override.node or f"{deployment.slug}_{service_name}"
+                    port = override.tcp.get("port", override.publish_port or override.port)
+                    address = f"{host}:{port}"
+                servers = [{"address": str(address)}]
+            route = {
+                "tcp": {
+                    "routers": {
+                        service_id: {
+                            "rule": "HostSNI(`*`)",
+                            "entryPoints": [tcp_entrypoint],
+                            "service": service_id,
+                        }
+                    },
+                    "services": {service_id: {"loadBalancer": {"servers": servers}}},
+                }
+            }
+            routes[service_name] = dump_yaml(route)
+            continue
         upstream_url = override.relay.get("url")
         if not upstream_url:
             scheme = override.relay.get("scheme", "http")
@@ -408,6 +436,10 @@ def validate_compose_deployment_data(
             raise LumaError(f"compose service {service_name} exposure=external-edge requires region=global")
         if override.exposure == "tailscale-relay" and region != "home":
             raise LumaError(f"compose service {service_name} exposure=tailscale-relay requires region=home")
+        if override.exposure == "tcp-relay":
+            entrypoint = str(override.tcp.get("entryPoint") or "").strip()
+            if not entrypoint:
+                raise LumaError(f"compose service {service_name} exposure=tcp-relay requires tcp.entryPoint")
     return warnings
 
 
@@ -503,6 +535,15 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             value = {}
         if not isinstance(value, dict):
             raise LumaError(f"services.{name} must be a mapping")
+        relay = value.get("relay") or {}
+        tunnel = value.get("tunnel") or {}
+        tcp = value.get("tcp") or {}
+        if not isinstance(relay, dict):
+            raise LumaError(f"services.{name}.relay must be a mapping")
+        if not isinstance(tunnel, dict):
+            raise LumaError(f"services.{name}.tunnel must be a mapping")
+        if not isinstance(tcp, dict):
+            raise LumaError(f"services.{name}.tcp must be a mapping")
         result[str(name)] = ComposeServiceSpec(
             name=str(name),
             region=str(value["region"]) if value.get("region") else None,
@@ -513,8 +554,9 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             publish_port=_positive_int(value["publishPort"], f"services.{name}.publishPort") if value.get("publishPort") is not None else None,
             replicas=_positive_int(value["replicas"], f"services.{name}.replicas") if value.get("replicas") is not None else None,
             proxy=bool(value.get("proxy", False)),
-            relay=dict(value.get("relay") or {}),
-            tunnel=dict(value.get("tunnel") or {}),
+            relay=dict(relay),
+            tunnel=dict(tunnel),
+            tcp=dict(tcp),
             raw=dict(value),
         )
     return result
@@ -563,6 +605,8 @@ def _apply_service_exposure(
     service_id = f"{deployment.slug}-{slugify(service_name)}"
     deploy = service_body.setdefault("deploy", {})
     labels: List[str] = _labels_as_list(deploy)
+    if override.exposure == "tcp-relay":
+        config.tcp_entrypoint(str(override.tcp.get("entryPoint") or "").strip())
     if override.exposure in {"cn-edge", "external-edge"}:
         labels.extend(
             [
@@ -580,7 +624,7 @@ def _apply_service_exposure(
         networks = service_body.get("networks") if isinstance(service_body.get("networks"), list) else []
         if config.public_network not in networks:
             service_body["networks"] = [config.public_network, *networks]
-    elif override.exposure == "tailscale-relay":
+    elif override.exposure in {"tailscale-relay", "tcp-relay"}:
         service_body["ports"] = [
             {
                 "target": override.port,

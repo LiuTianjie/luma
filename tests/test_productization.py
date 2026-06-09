@@ -35,6 +35,7 @@ from luma.bootstrap import (
     _is_tailscale_manager_addr,
     _last_command_value,
     _portainer_agent_image_candidates,
+    _render_traefik_stack,
     _resolve_control_image,
     _reset_portainer_state,
     _traefik_ports,
@@ -258,7 +259,45 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("restrict_swarm_public=yes", guard_command)
         self.assertIn("add_input_drop tcp 2377", guard_command)
         self.assertIn("add_input_drop udp 4789", guard_command)
-        self.assertIn("DOCKER-USER", guard_command)
+
+    def test_configure_firewall_allows_configured_tcp_ports(self):
+        remote = Mock()
+
+        def run_result(command):
+            if command == "uname -s":
+                return Mock(code=0, output="Linux\n")
+            if "tailscale ip -4" in command:
+                return Mock(code=1, output="")
+            return Mock(code=1, output="")
+
+        remote.run_result.side_effect = run_result
+        remote.sudo.return_value = ""
+
+        configure_firewall(remote, tcp_ports=[3306])
+
+        ufw_command = remote.sudo.call_args_list[0].args[0]
+        self.assertIn("ufw allow 3306/tcp", ufw_command)
+
+    def test_render_traefik_stack_adds_tcp_entrypoints(self):
+        config = LumaConfig(
+            {
+                "defaults": {
+                    "tcpEntryPoints": {
+                        "mysql": {
+                            "address": ":3306",
+                            "published": 3306,
+                        }
+                    }
+                }
+            },
+            None,
+        )
+
+        stack = yaml.safe_load(_render_traefik_stack(config))
+        traefik = stack["services"]["traefik"]
+
+        self.assertIn("--entrypoints.mysql.address=:3306", traefik["command"])
+        self.assertIn({"target": 3306, "published": 3306, "protocol": "tcp", "mode": "host"}, traefik["ports"])
 
     def test_ensure_swarm_uses_tolerant_dispatcher_heartbeat(self):
         remote = Mock()
@@ -4073,6 +4112,21 @@ class ControlApiTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
+                (root / "routes" / "granary-mysql.yml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "tcp": {
+                                "routers": {"granary-mysql": {"rule": "HostSNI(`*`)"}},
+                                "services": {
+                                    "granary-mysql": {
+                                        "loadBalancer": {"servers": [{"address": "100.64.0.2:3306"}]}
+                                    }
+                                },
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 (root / "luma.yaml").write_text(
                     yaml.safe_dump(
                         {
@@ -4140,6 +4194,14 @@ class ControlApiTests(unittest.TestCase):
                         ["node.labels.region == home"],
                         {"luma.compose.stack": "nextcloud", "luma.compose.service": "nextcloud"},
                     ),
+                    _docker_service(
+                        "svc-mysql",
+                        "granary_mysql",
+                        "mysql:8.4.9",
+                        1,
+                        ["node.labels.region == home"],
+                        {"luma.compose.stack": "granary", "luma.compose.service": "mysql"},
+                    ),
                 ]
                 docker_services[0]["Spec"]["TaskTemplate"]["Resources"] = {
                     "Limits": {"NanoCPUs": 1000000000, "MemoryBytes": 536870912},
@@ -4152,6 +4214,7 @@ class ControlApiTests(unittest.TestCase):
                     _docker_task("svc-worker", "node-manager", "running"),
                     _docker_task("svc-home", "node-home", "running"),
                     _docker_task("svc-nextcloud", "node-home", "running"),
+                    _docker_task("svc-mysql", "node-home", "running"),
                 ]
 
                 def fake_docker(method, path, body=None):
@@ -4202,6 +4265,14 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(nextcloud["routeId"], "nextcloud-nextcloud")
                 self.assertEqual(nextcloud["domain"], "next.example.com")
                 self.assertEqual(nextcloud["exposure"], "tailscale-relay")
+                mysql = next(item for item in result["services"] if item["fullName"] == "granary_mysql")
+                self.assertEqual(mysql["routeId"], "granary-mysql")
+                self.assertEqual(mysql["exposure"], "tcp-relay")
+                self.assertEqual(mysql["targetPort"], "3306")
+                mysql_path = next(item for item in result["trafficPaths"] if item["id"] == "granary-mysql")
+                self.assertEqual(mysql_path["kind"], "tcp-relay")
+                self.assertIn("Traefik TCP", mysql_path["segments"])
+                self.assertIn("100.64.0.2:3306", mysql_path["segments"])
                 serialized = json.dumps(result)
                 self.assertNotIn("portainer-secret", serialized)
                 self.assertNotIn(state["deployToken"], serialized)

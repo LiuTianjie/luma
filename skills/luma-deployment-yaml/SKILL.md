@@ -31,6 +31,7 @@ For complete field tables and examples, read `references/manifest-reference.md`.
    - China public HTTPS: `region: cn`, `exposure: cn-edge`
    - Global public HTTPS: `region: global`, `exposure: external-edge`
    - Home service through China edge and Tailscale: `region: home`, `exposure: tailscale-relay`
+   - Public TCP service: `exposure: tcp-relay` with a configured `tcp.entryPoint`
    - Home/private Cloudflare Tunnel: usually `region: home`, `exposure: cloudflare-tunnel`
    - Worker/internal: `exposure: none`
    - Runtime outbound proxy: add `proxy: true` and keep the chosen scheduling region.
@@ -44,10 +45,11 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 
 - Required: `name`, `image`, `region`.
 - Valid regions: `cn`, `global`, `home`.
-- Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`.
+- Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
 - Public exposures require `domain` and integer `port`.
 - `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `region: home`.
-- `port` is the container's internal listening port, not a cloud firewall or host port.
+- `tcp-relay` requires `tcp.entryPoint`, and that name must exist in `defaults.tcpEntryPoints`. It is port-exclusive; ordinary MySQL should not be modeled as same-port SNI multiplexing.
+- `port` is the container's internal listening port, not a cloud firewall or host port. For `tcp-relay`, `publishPort` is the task node host port that Traefik forwards to.
 - `replicas` defaults to `1` and must be at least `1`.
 - Do not use the removed `public` field; set `exposure` explicitly.
 - `node` is the Luma node name from `luma node join --name`. Control-plane deploy resolves it to a Swarm NodeID constraint and also keeps the region constraint.
@@ -212,5 +214,5 @@ luma storage check luma.compose.yml --format json
 - Storage data is preserved by default. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment. It cannot be combined with `--skip-portainer`.
 - `region` controls workload scheduling; Portainer deployment itself runs through the manager.
 - Current Portainer stacks constrain the agent to manager nodes while keeping endpoint compatibility, so worker agent gossip issues should not be diagnosed as manifest region errors.
-- Required platform ports are separate from manifest `port`: public `80/tcp` and `443/tcp`, trusted operator `9443/tcp`, Swarm `2377/tcp`, node gossip `7946/tcp` and `7946/udp`, and overlay `4789/udp`.
+- Required platform ports are separate from manifest `port`: public `80/tcp` and `443/tcp`, configured TCP entrypoints such as `3306/tcp`, trusted operator `9443/tcp`, Swarm `2377/tcp`, node gossip `7946/tcp` and `7946/udp`, and overlay `4789/udp`.
 - `luma update` on a manager refreshes Luma Control only. Use `luma bootstrap manager --domain <control-domain>` for first install or explicit ingress/egress/bootstrap repair.

@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Union
 
+import yaml
+
 from .assets import asset_text
 from .config import LumaConfig, NodeConfig
 from .cloudflare import sync_control_dns
@@ -170,6 +172,46 @@ def _traefik_ports(config: LumaConfig) -> tuple[int, int]:
     return http_port, https_port
 
 
+def _tcp_entrypoint_target_port(address: str, name: str) -> int:
+    raw = str(address).strip()
+    if ":" not in raw:
+        raise LumaError(f"tcp entrypoint {name} address must include a port")
+    port_text = raw.rsplit(":", 1)[1]
+    try:
+        port = int(port_text)
+    except ValueError as exc:
+        raise LumaError(f"tcp entrypoint {name} address must end with an integer port") from exc
+    if port < 1:
+        raise LumaError(f"tcp entrypoint {name} address must use a positive port")
+    return port
+
+
+def _render_traefik_stack(config: LumaConfig) -> str:
+    image = _traefik_image(config)
+    http_port, https_port = _traefik_ports(config)
+    stack_text = asset_text("stacks/core/traefik/stack.yml")
+    stack_text = stack_text.replace("traefik:v3.6", image)
+    stack_text = stack_text.replace("admin@example.com", _acme_email(config))
+    stack_text = stack_text.replace("published: 80", f"published: {http_port}")
+    stack_text = stack_text.replace("published: 443", f"published: {https_port}")
+    stack = yaml.safe_load(stack_text) or {}
+    traefik = stack["services"]["traefik"]
+    commands = traefik.setdefault("command", [])
+    ports = traefik.setdefault("ports", [])
+    for name in sorted(config.tcp_entrypoints):
+        entrypoint = config.tcp_entrypoint(name)
+        address = str(entrypoint["address"])
+        published = int(entrypoint["published"])
+        target = _tcp_entrypoint_target_port(address, name)
+        command = f"--entrypoints.{name}.address={address}"
+        if command not in commands:
+            commands.append(command)
+        port_spec = {"target": target, "published": published, "protocol": "tcp", "mode": "host"}
+        if port_spec not in ports:
+            ports.append(port_spec)
+    return dump_yaml(stack)
+
+
 def _acme_email(config: LumaConfig) -> str:
     dns = config.dns
     zone = str(dns.get("zone") or "").strip()
@@ -232,12 +274,7 @@ def _pull_first_available(remote: Executor, images: list[str]) -> tuple[str, str
 
 def _deploy_traefik(remote: Executor, config: LumaConfig) -> list[str]:
     image = _traefik_image(config)
-    http_port, https_port = _traefik_ports(config)
-    stack_text = asset_text("stacks/core/traefik/stack.yml")
-    stack_text = stack_text.replace("traefik:v3.6", image)
-    stack_text = stack_text.replace("admin@example.com", _acme_email(config))
-    stack_text = stack_text.replace("published: 80", f"published: {http_port}")
-    stack_text = stack_text.replace("published: 443", f"published: {https_port}")
+    stack_text = _render_traefik_stack(config)
     return [
         _pull_image(remote, image),
         _deploy_stack_text(remote, stack_text, "traefik"),
@@ -759,7 +796,7 @@ def _redact_tailscale_authkey(output: str, authkey: str) -> str:
     return output.replace(authkey, "<redacted>")
 
 
-def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int = 443, allow_portainer: bool = True) -> str:
+def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int = 443, tcp_ports: list[int] | None = None, allow_portainer: bool = True) -> str:
     if _is_darwin(remote):
         return "Firewall configuration skipped on macOS"
     restrict_swarm_public = _tailscale_ip(remote) is not None
@@ -775,6 +812,8 @@ def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int
         "ufw deny 7890/tcp",
         "ufw deny 7890/udp",
     ]
+    for port in sorted({int(port) for port in (tcp_ports or [])}):
+        commands.append(f"ufw allow {port}/tcp")
     if allow_portainer:
         commands.append("ufw allow 9443/tcp")
     remote.sudo("set -euo pipefail; " + "; ".join(commands))
@@ -969,7 +1008,8 @@ def bootstrap_node(
     _step(results, emit, "Apply node labels", lambda: apply_labels(remote, profile, node))
     _step(results, emit, "Create runtime paths", lambda: prepare_paths(remote))
     http_port, https_port = _traefik_ports(config)
-    _step(results, emit, "Configure firewall", lambda: configure_firewall(remote, http_port=http_port, https_port=https_port, allow_portainer=True))
+    tcp_ports = [int(config.tcp_entrypoint(name)["published"]) for name in config.tcp_entrypoints]
+    _step(results, emit, "Configure firewall", lambda: configure_firewall(remote, http_port=http_port, https_port=https_port, tcp_ports=tcp_ports, allow_portainer=True))
     if "edge" in profile.roles or profile.name == "single-node":
         _step(results, emit, "Deploy Traefik", lambda: _deploy_traefik(remote, config), fix=bootstrap_fix)
     if "swarm-manager" in profile.roles or profile.name == "single-node":

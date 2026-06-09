@@ -10,7 +10,7 @@ from .io import load_yaml
 
 
 VALID_REGIONS = {"cn", "global", "home"}
-VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge"}
+VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge", "tcp-relay"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
 
 
@@ -61,6 +61,7 @@ class ServiceSpec:
     portainer: Dict[str, Any] = field(default_factory=dict)
     relay: Dict[str, Any] = field(default_factory=dict)
     tunnel: Dict[str, Any] = field(default_factory=dict)
+    tcp: Dict[str, Any] = field(default_factory=dict)
     proxy: bool = False
     swarm_service_name: Optional[str] = None
 
@@ -78,6 +79,8 @@ class ServiceSpec:
             return "home-tailscale-relay"
         if self.exposure == "cloudflare-tunnel":
             return "cloudflare-tunnel-service"
+        if self.exposure == "tcp-relay":
+            return "tcp-relay-service"
         if self.region == "global":
             return "global-internal-service"
         if self.region == "home":
@@ -132,6 +135,13 @@ def load_service(path: Path) -> ServiceSpec:
     tunnel = raw.get("tunnel") or {}
     if not isinstance(tunnel, dict):
         raise LumaError("tunnel must be a mapping")
+    tcp = raw.get("tcp") or {}
+    if not isinstance(tcp, dict):
+        raise LumaError("tcp must be a mapping")
+    if exposure == "tcp-relay":
+        entrypoint = str(tcp.get("entryPoint") or "").strip()
+        if not entrypoint:
+            raise LumaError("tcp-relay requires tcp.entryPoint")
 
     replicas = _positive_int(raw.get("replicas", 1), "replicas")
     if replicas < 1:
@@ -199,6 +209,7 @@ def load_service(path: Path) -> ServiceSpec:
         portainer=portainer,
         relay=relay,
         tunnel=tunnel,
+        tcp=tcp,
         proxy=bool(raw.get("proxy", False)),
     )
 

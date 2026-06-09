@@ -35,6 +35,10 @@ defaults:
   egressNetwork: egress
   entrypoint: websecure
   certResolver: letsencrypt
+  tcpEntryPoints:
+    mysql:
+      address: :3306
+      published: 3306
   images:
     traefik: docker.1panel.live/library/traefik:v3.6
     portainer: docker.1panel.live/portainer/portainer-ce:2.21.5

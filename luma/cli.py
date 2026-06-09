@@ -36,7 +36,7 @@ from .errors import LumaError
 from .io import dump_yaml, write_yaml
 from .local import LocalExecutor
 from .profiles import PROFILES
-from .render import render_stack, render_tailscale_route, route_path, stack_path
+from .render import render_stack, render_tailscale_route, render_tcp_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
 from .storage import storage_check_plan, storage_migration_plan
 from .userconfig import configured_keys, ensure_interactive_config, interactive_configure, load_user_config, masked_config_lines, user_config_path
@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.71 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.72 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1789,7 +1789,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
     storage_classes, node_records = _service_storage_context_for_local(args, service)
     rendered = render_stack(config, service, storage_classes=storage_classes, node_records=node_records)
     target = stack_path(config, service)
-    rendered_route = render_tailscale_route(config, service) if service.exposure == "tailscale-relay" else None
+    rendered_route = None
+    if service.exposure == "tailscale-relay":
+        rendered_route = render_tailscale_route(config, service)
+    elif service.exposure == "tcp-relay":
+        rendered_route = render_tcp_route(config, service)
     route_target = route_path(config, service) if rendered_route else None
     if _output_format(args) != "text":
         _print_success(args, _render_result(service, target, rendered, route_target, rendered_route))
@@ -1861,7 +1865,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     storage_classes, node_records = _service_storage_context_for_local(args, service)
     rendered = render_stack(config, service, storage_classes=storage_classes, node_records=node_records)
     target = stack_path(config, service)
-    rendered_route = render_tailscale_route(config, service) if service.exposure == "tailscale-relay" else None
+    rendered_route = None
+    if service.exposure == "tailscale-relay":
+        rendered_route = render_tailscale_route(config, service)
+    elif service.exposure == "tcp-relay":
+        rendered_route = render_tcp_route(config, service)
     route_target = route_path(config, service) if rendered_route else None
     output_format = _output_format(args)
     quiet = _quiet(args) or output_format != "text"

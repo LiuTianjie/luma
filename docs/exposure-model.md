@@ -5,7 +5,7 @@ Luma separates the control plane from the data plane.
 ## Roles
 
 - Cloudflare: DNS automation, optional proxy, optional Tunnel public hostname.
-- Traefik: main public HTTP/HTTPS ingress for the `cn` edge.
+- Traefik: main public HTTP/HTTPS ingress for the `cn` edge, plus configured TCP entrypoints.
 - Tailscale: management network and explicit relay path for selected `home` services.
 - Portainer: deployment control plane.
 - Docker Swarm / Docker: runtime execution layer.
@@ -95,6 +95,57 @@ Operational requirement:
 
 - the home host firewall should only allow the published service port from the Tailscale interface or from the CN edge Tailscale IP;
 - `routes/` must be available on the CN Traefik node at `/opt/luma/routes`.
+
+### `tcp-relay`
+
+Public native TCP services through a dedicated Traefik TCP entrypoint.
+
+```text
+Client -> Cloudflare DNS -> edge Traefik TCP entrypoint -> task host port
+```
+
+Use for:
+
+- MySQL or another non-HTTP protocol that must be reachable from the public internet;
+- a service where one public port maps to one backend service.
+
+Do not use for:
+
+- multiplexing multiple ordinary MySQL services on the same port by hostname;
+- public exposure without database credentials, IP allowlists, or firewall controls.
+
+Configure the entrypoint in Luma manager config, then refresh Traefik with bootstrap/ingress repair:
+
+```yaml
+defaults:
+  tcpEntryPoints:
+    mysql:
+      address: :3306
+      published: 3306
+```
+
+Manifest:
+
+```yaml
+name: granary-db
+image: mysql:8.4.9
+region: home
+node: lab
+exposure: tcp-relay
+domain: granary-db.itool.tech
+port: 3306
+publishPort: 3306
+tcp:
+  entryPoint: mysql
+```
+
+Luma generates:
+
+- `stacks/home/granary-db/stack.yml`, which publishes the service port in host mode;
+- `routes/granary-db.yml`, which uses Traefik `tcp.routers` with `HostSNI("*")` / `HostSNI(\`*\`)`;
+- Cloudflare DNS record pointing to the configured edge target.
+
+Ordinary MySQL clients do not start with an HTTP Host header, and should not be assumed to provide reliable TLS SNI before the server handshake. Treat `tcp-relay` as port-exclusive: one configured entrypoint port routes to one TCP service.
 
 ### `cloudflare-tunnel`
 
@@ -205,6 +256,7 @@ Luma generates:
 
 - Default public product traffic: `cn-edge`.
 - Home service through the domestic edge: `tailscale-relay`.
+- Public native TCP service: `tcp-relay`.
 - Home/private service through Cloudflare: `cloudflare-tunnel`.
 - Overseas public execution: `external-edge`.
 - Workers and internal services: `none`.

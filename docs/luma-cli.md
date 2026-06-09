@@ -15,7 +15,7 @@ Portainer is required and installed by bootstrap. It shows stacks, services, log
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.71"
+python -m pip install "luma-infra==0.1.72"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.71 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.72 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.71"
+python -m pip install "luma-infra==0.1.72"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.71"
+python -m pip install "luma-infra==0.1.72"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -331,7 +331,7 @@ Required fields:
 - `name`
 - `image`
 - `region`: `cn`, `global`, or `home`
-- `exposure`: `cn-edge`, `tailscale-relay`, `cloudflare-tunnel`, `external-edge`, or `none`
+- `exposure`: `cn-edge`, `tailscale-relay`, `tcp-relay`, `cloudflare-tunnel`, `external-edge`, or `none`
 
 Public services also require:
 
@@ -356,6 +356,7 @@ Optional fields:
 - `publishPort`
 - `relay.host`: optional tailscale-relay upstream override; usually omit it.
 - `relay.url`: optional full tailscale-relay upstream URL override; usually omit it.
+- `tcp.entryPoint`: required for `tcp-relay`; the name must exist in `defaults.tcpEntryPoints`.
 - `tunnel.tokenEnv`
 
 Example worker that needs the Luma egress proxy:
@@ -392,7 +393,7 @@ For `luma deploy service.yaml`, Luma does:
 2. read the current login context from `~/.config/luma`;
 3. submit the manifest to the manager's Luma Control API;
 4. render `stacks/<region>/<service>/stack.yml` on the manager;
-5. render `routes/<service>.yml` on the manager for `tailscale-relay`;
+5. render `routes/<service>.yml` on the manager for `tailscale-relay` or `tcp-relay`;
 6. upsert Cloudflare DNS unless skipped;
 7. create or update the service's Portainer stack through the Portainer API;
 8. probe the public route for `cn-edge` and `external-edge` services.
@@ -405,4 +406,4 @@ Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service
 
 Luma records deployment state before running external operations. A successful deploy is marked `active`; if DNS, Portainer, route rendering, or probing fails after earlier steps have changed the manager, the recorded deployment is kept with `status: failed_partial` so the dashboard and `luma service remove <name>` can still find the partially applied stack.
 
-For `luma service remove <name>`, Luma looks up the manifest recorded by the control plane during the last successful deploy and removes the matching single-service or Compose deployment slug. This recorded manifest is the source of truth, so remove and storage cleanup also work for deployments created from the web UI when the client running the command has no YAML file. By default Luma deletes Luma-managed Cloudflare DNS, removes the Portainer stack, and deletes generated stack files. `tailscale-relay` route files are removed too. Use `--dry-run` to preview, `--skip-dns` to keep the DNS record, and `--skip-portainer` only when you intentionally want to remove generated Luma files without stopping the stack. Storage data is preserved by default; add `--delete-storage` to delete removable storage declared by the recorded deployment. For single-service deployments this removes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects such as `data:/data`; bind mounts are skipped. For Compose deployments this removes managed storage paths referenced by the sidecar. `--delete-storage` cannot be combined with `--skip-portainer`. `cloudflare-tunnel` public hostnames are still managed in Cloudflare Zero Trust, so Luma reports that cleanup as skipped.
+For `luma service remove <name>`, Luma looks up the manifest recorded by the control plane during the last successful deploy and removes the matching single-service or Compose deployment slug. This recorded manifest is the source of truth, so remove and storage cleanup also work for deployments created from the web UI when the client running the command has no YAML file. By default Luma deletes Luma-managed Cloudflare DNS, removes the Portainer stack, and deletes generated stack files. `tailscale-relay` and `tcp-relay` route files are removed too. Use `--dry-run` to preview, `--skip-dns` to keep the DNS record, and `--skip-portainer` only when you intentionally want to remove generated Luma files without stopping the stack. Storage data is preserved by default; add `--delete-storage` to delete removable storage declared by the recorded deployment. For single-service deployments this removes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects such as `data:/data`; bind mounts are skipped. For Compose deployments this removes managed storage paths referenced by the sidecar. `--delete-storage` cannot be combined with `--skip-portainer`. `cloudflare-tunnel` public hostnames are still managed in Cloudflare Zero Trust, so Luma reports that cleanup as skipped.

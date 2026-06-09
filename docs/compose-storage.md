@@ -158,10 +158,11 @@ Sidecar fields:
 | `volumes.<name>.local.path` | no | Host path used when `local.node` is set. |
 | `services.<name>.region` | no | Per-service region override. Must match exposure and storage restrictions. |
 | `services.<name>.node` | no | Explicit Luma node pin for that service. |
-| `services.<name>.exposure` | no | `none`, `cn-edge`, `external-edge`, `tailscale-relay`, or `cloudflare-tunnel`. |
+| `services.<name>.exposure` | no | `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, or `tcp-relay`. |
 | `services.<name>.domain` | public only | Public hostname. |
 | `services.<name>.port` | public only | Container internal port. |
-| `services.<name>.publishPort` | relay only | Host-mode published port for `tailscale-relay`. |
+| `services.<name>.publishPort` | relay only | Host-mode published port for `tailscale-relay` or `tcp-relay`. |
+| `services.<name>.tcp.entryPoint` | tcp-relay only | TCP entrypoint name from `defaults.tcpEntryPoints`. |
 | `services.<name>.replicas` | no | Swarm replicas, must be at least `1`. |
 | `services.<name>.proxy` | no | Adds Luma egress proxy env/network for runtime outbound HTTP/HTTPS traffic. |
 

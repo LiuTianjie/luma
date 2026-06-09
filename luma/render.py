@@ -77,6 +77,42 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
     }
     return dump_yaml(route)
 
+
+def render_tcp_route(config: LumaConfig, service: ServiceSpec) -> str:
+    service_name = service.slug
+    tcp_entrypoint = str(service.tcp.get("entryPoint") or "").strip()
+    config.tcp_entrypoint(tcp_entrypoint)
+    addresses = service.tcp.get("addresses")
+    if isinstance(addresses, list) and addresses:
+        servers = [{"address": str(address)} for address in addresses]
+    else:
+        address = service.tcp.get("address")
+        if not address:
+            host = service.tcp.get("host") or service.node or f"auto-{service.region}-node"
+            port = service.tcp.get("port", service.publish_port or service.port)
+            address = f"{host}:{port}"
+        servers = [{"address": str(address)}]
+
+    route: Dict[str, Any] = {
+        "tcp": {
+            "routers": {
+                service_name: {
+                    "rule": "HostSNI(`*`)",
+                    "entryPoints": [tcp_entrypoint],
+                    "service": service_name,
+                }
+            },
+            "services": {
+                service_name: {
+                    "loadBalancer": {
+                        "servers": servers,
+                    }
+                }
+            },
+        }
+    }
+    return dump_yaml(route)
+
 def render_stack(
     config: LumaConfig,
     service: ServiceSpec,
@@ -85,6 +121,8 @@ def render_stack(
     node_records: Dict[str, Any] | None = None,
 ) -> str:
     service_name = service.slug
+    if service.exposure == "tcp-relay":
+        config.tcp_entrypoint(str(service.tcp.get("entryPoint") or "").strip())
     storage_context = _service_storage_context(service, storage_classes, node_records)
     constraints = [f"node.labels.region == {service.region}"]
     if service.node_id:
@@ -136,7 +174,7 @@ def render_stack(
         environment.setdefault("HTTPS_PROXY", "http://egress_mihomo:7890")
     if environment:
         service_body["environment"] = environment
-    if service.exposure == "tailscale-relay":
+    if service.exposure in {"tailscale-relay", "tcp-relay"}:
         service_body["ports"] = [
             {
                 "target": service.port,

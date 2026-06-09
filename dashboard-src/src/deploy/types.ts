@@ -2,7 +2,7 @@ import type { DashboardNode, DashboardStorageClass } from "../types";
 
 export type DeployMode = "service" | "compose";
 export type Region = "cn" | "global" | "home";
-export type Exposure = "none" | "cn-edge" | "external-edge" | "tailscale-relay" | "cloudflare-tunnel";
+export type Exposure = "none" | "cn-edge" | "external-edge" | "tailscale-relay" | "cloudflare-tunnel" | "tcp-relay";
 
 export type KeyValueRow = {
   id: string;
@@ -29,6 +29,7 @@ export type ServiceManifestDraft = {
   domain: string;
   port: string;
   publishPort: string;
+  tcpEntryPoint?: string;
   replicas: number;
   proxy: boolean;
   env: KeyValueRow[];
@@ -53,6 +54,7 @@ export type ComposeServiceDraft = {
   domain: string;
   port: string;
   publishPort: string;
+  tcpEntryPoint?: string;
   replicas: number;
   proxy: boolean;
   env: KeyValueRow[];

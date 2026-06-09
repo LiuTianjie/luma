@@ -79,7 +79,8 @@ export function SingleServiceDeployForm({
           })}</select></label>
           <label><span>{zh ? "域名" : "Domain"}</span><input value={draft.domain} disabled={draft.exposure === "none"} onChange={(event) => patch({ domain: event.target.value })} /></label>
           <label><span>{zh ? "容器端口" : "Container port"}</span><input value={draft.port} disabled={draft.exposure === "none"} onChange={(event) => patch({ port: event.target.value })} /></label>
-          <label><span>{zh ? "发布端口" : "Published port"}</span><input value={draft.publishPort} disabled={draft.exposure !== "tailscale-relay"} onChange={(event) => patch({ publishPort: event.target.value })} /></label>
+          <label><span>{zh ? "发布端口" : "Published port"}</span><input value={draft.publishPort} disabled={!["tailscale-relay", "tcp-relay"].includes(draft.exposure)} onChange={(event) => patch({ publishPort: event.target.value })} /></label>
+          <label><span>TCP entrypoint</span><input value={draft.tcpEntryPoint || ""} disabled={draft.exposure !== "tcp-relay"} onChange={(event) => patch({ tcpEntryPoint: event.target.value })} placeholder="mysql" /></label>
           <label><span>{zh ? "额外网络" : "Extra networks"}</span><textarea value={draft.networks} onChange={(event) => patch({ networks: event.target.value })} placeholder="one network per line" /></label>
           <label><span>Labels</span><textarea value={draft.labels} onChange={(event) => patch({ labels: event.target.value })} placeholder="one label per line" /></label>
         </div>

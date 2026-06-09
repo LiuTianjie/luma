@@ -2,7 +2,7 @@ import type { DashboardNode, Lang } from "../types";
 import type { Exposure, Region } from "./types";
 
 export const REGIONS: Region[] = ["cn", "global", "home"];
-export const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"];
+export const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"];
 
 const EXPOSURE_REGION: Partial<Record<Exposure, Region>> = {
   "cn-edge": "cn",

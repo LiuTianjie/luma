@@ -100,7 +100,8 @@ export function ComposeDeployForm({
                 </label>
                 <label><span>{zh ? "域名" : "Domain"}</span><input value={service.domain} disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { domain: event.target.value })} /></label>
                 <label><span>{zh ? "容器端口" : "Container port"}</span><input value={service.port} disabled={service.exposure === "none"} onChange={(event) => updateService(service.name, { port: event.target.value })} /></label>
-                <label><span>{zh ? "发布端口" : "Published port"}</span><input value={service.publishPort} disabled={service.exposure !== "tailscale-relay"} onChange={(event) => updateService(service.name, { publishPort: event.target.value })} /></label>
+                <label><span>{zh ? "发布端口" : "Published port"}</span><input value={service.publishPort} disabled={!["tailscale-relay", "tcp-relay"].includes(service.exposure)} onChange={(event) => updateService(service.name, { publishPort: event.target.value })} /></label>
+                <label><span>TCP entrypoint</span><input value={service.tcpEntryPoint || ""} disabled={service.exposure !== "tcp-relay"} onChange={(event) => updateService(service.name, { tcpEntryPoint: event.target.value })} placeholder="mysql" /></label>
                 <label><span>{zh ? "副本" : "Replicas"}</span><input type="number" min={1} value={service.replicas} onChange={(event) => updateService(service.name, { replicas: Number(event.target.value || 1) })} /></label>
                 <label className="deploy-toggle"><input type="checkbox" checked={service.proxy} onChange={(event) => updateService(service.name, { proxy: event.target.checked })} /><span>egress proxy</span></label>
               </div>

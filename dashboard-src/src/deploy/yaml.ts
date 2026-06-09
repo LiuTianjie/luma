@@ -56,6 +56,7 @@ export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
     manifest.domain = draft.domain;
     manifest.port = Number(draft.port || 0);
   }
+  if (draft.exposure === "tcp-relay") manifest.tcp = { entryPoint: draft.tcpEntryPoint || "" };
   if (draft.publishPort) manifest.publishPort = Number(draft.publishPort);
   manifest.replicas = draft.replicas;
   if (draft.proxy) manifest.proxy = true;
@@ -158,6 +159,7 @@ export function composeDraftToSidecarYaml(draft: ComposeDeploymentDraft): string
         item.domain = service.domain;
         item.port = Number(service.port || 0);
       }
+      if (service.exposure === "tcp-relay") item.tcp = { entryPoint: service.tcpEntryPoint || "" };
       if (service.publishPort) item.publishPort = Number(service.publishPort);
       item.replicas = service.replicas;
       if (service.proxy) item.proxy = true;

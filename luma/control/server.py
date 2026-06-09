@@ -49,7 +49,7 @@ from ..registry import (
     registry_auth_for_image,
     registry_auth_matches_image,
 )
-from ..render import named_volume_sources, render_stack, render_tailscale_route, route_path, stack_path
+from ..render import named_volume_sources, render_stack, render_tailscale_route, render_tcp_route, route_path, stack_path
 from ..service import VALID_REGIONS, ServiceSpec, load_service, slugify
 from .. import __version__
 from .metrics import load_history, record_samples, sustained_breach
@@ -1077,17 +1077,23 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env, registry_auth=registry_auth),
             progress=progress,
         )
-        if service.exposure == "tailscale-relay":
+        if service.exposure in {"tailscale-relay", "tcp-relay"}:
             route_target = _resolve_control_path(route_path(config, service), config_path)
             route_target.parent.mkdir(parents=True, exist_ok=True)
             route_service = service
-            relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host"))
+            relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host")) if service.exposure == "tailscale-relay" else bool(service.tcp.get("address") or service.tcp.get("host"))
             if body.get("skipPortainer") and not relay_is_explicit:
-                _deploy_step(steps, "Write route", lambda: "Route skipped: --skip-portainer requires deploy to infer tailscale relay", progress=progress)
+                _deploy_step(steps, "Write route", lambda: f"Route skipped: --skip-portainer requires deploy to infer {service.exposure}", progress=progress)
             else:
                 if not body.get("skipPortainer"):
-                    route_service = _deploy_step(steps, "Resolve relay", lambda: resolve_tailscale_relay(service), progress=progress)
-                _deploy_step(steps, "Write route", lambda: route_target.write_text(render_tailscale_route(config, route_service), encoding="utf-8"), progress=progress)
+                    route_service = _deploy_step(
+                        steps,
+                        "Resolve relay",
+                        lambda: resolve_tailscale_relay(service) if service.exposure == "tailscale-relay" else resolve_tcp_relay(service),
+                        progress=progress,
+                    )
+                route_text = render_tailscale_route(config, route_service) if service.exposure == "tailscale-relay" else render_tcp_route(config, route_service)
+                _deploy_step(steps, "Write route", lambda: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
                 written.append(str(route_target))
         probe_result = _deploy_step(
             steps,
@@ -1145,12 +1151,12 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
             "content": stack_text,
         }
     ]
-    if service.exposure == "tailscale-relay":
+    if service.exposure in {"tailscale-relay", "tcp-relay"}:
         artifacts.append(
             {
                 "kind": "route",
                 "path": str(route_path(config, service)),
-                "content": render_tailscale_route(config, service),
+                "content": render_tailscale_route(config, service) if service.exposure == "tailscale-relay" else render_tcp_route(config, service),
             }
         )
     return {
@@ -1215,7 +1221,7 @@ def _remove_service_deployment(
 
     dry_run = bool(body.get("dryRun"))
     stack_target = _generated_stack_remove_target(config, service, config_path)
-    route_target = _resolve_control_path(route_path(config, service), config_path) if service.exposure == "tailscale-relay" else None
+    route_target = _resolve_control_path(route_path(config, service), config_path) if service.exposure in {"tailscale-relay", "tcp-relay"} else None
     files = [str(stack_target)]
     if route_target:
         files.append(str(route_target))
@@ -1291,7 +1297,7 @@ def _remove_compose_deployment(
     route_targets = [
         _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
         for service_name, service in deployment.services.items()
-        if service.exposure == "tailscale-relay"
+        if service.exposure in {"tailscale-relay", "tcp-relay"}
     ]
     files = [str(stack_target), *[str(path) for path in route_targets]]
     dns_results = []
@@ -1487,17 +1493,17 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         )
 
         for service_name, service in deployment.services.items():
-            if service.exposure != "tailscale-relay" or not service.domain or not service.port:
+            if service.exposure not in {"tailscale-relay", "tcp-relay"} or not service.domain or not service.port:
                 continue
             route_target = _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
             route_target.parent.mkdir(parents=True, exist_ok=True)
             service_spec = _compose_service_as_service_spec(deployment, service)
-            relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host"))
+            relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host")) if service.exposure == "tailscale-relay" else bool(service.tcp.get("address") or service.tcp.get("host"))
             if body.get("skipPortainer") and not relay_is_explicit:
                 _deploy_step(
                     steps,
                     f"Write route {service_name}",
-                    lambda: "Route skipped: --skip-portainer requires deploy to infer tailscale relay",
+                    lambda service=service: f"Route skipped: --skip-portainer requires deploy to infer {service.exposure}",
                     progress=progress,
                 )
                 continue
@@ -1505,10 +1511,10 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 service_spec = _deploy_step(
                     steps,
                     f"Resolve relay {service.name}",
-                    lambda service_spec=service_spec: resolve_tailscale_relay(service_spec),
+                    lambda service_spec=service_spec, service=service: resolve_tailscale_relay(service_spec) if service.exposure == "tailscale-relay" else resolve_tcp_relay(service_spec),
                     progress=progress,
                 )
-            route_text = render_tailscale_route(config, service_spec)
+            route_text = render_tailscale_route(config, service_spec) if service.exposure == "tailscale-relay" else render_tcp_route(config, service_spec)
             _deploy_step(steps, f"Write route {service_name}", lambda route_target=route_target, route_text=route_text: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
             written.append(str(route_target))
 
@@ -2335,6 +2341,7 @@ def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service:
         replicas=service.replicas or 1,
         relay=service.relay,
         tunnel=service.tunnel,
+        tcp=service.tcp,
         proxy=service.proxy,
         swarm_service_name=f"{deployment.slug}_{service.name}",
     )
@@ -3138,6 +3145,31 @@ def _dashboard_route_files(config: Any, config_path: Path, errors: list[str]) ->
 
 def _dashboard_route_file(route_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     http = data.get("http") if isinstance(data.get("http"), dict) else {}
+    tcp = data.get("tcp") if isinstance(data.get("tcp"), dict) else {}
+    if tcp:
+        routers = tcp.get("routers") if isinstance(tcp.get("routers"), dict) else {}
+        services = tcp.get("services") if isinstance(tcp.get("services"), dict) else {}
+        domain = ""
+        for router in routers.values():
+            if not isinstance(router, dict):
+                continue
+            domain = _host_from_rule(str(router.get("rule") or ""))
+            if domain and domain != "*":
+                break
+        if domain == "*":
+            domain = ""
+        upstreams: list[str] = []
+        for service in services.values():
+            if not isinstance(service, dict):
+                continue
+            load_balancer = service.get("loadBalancer") if isinstance(service.get("loadBalancer"), dict) else {}
+            servers = load_balancer.get("servers") if isinstance(load_balancer.get("servers"), list) else []
+            for server in servers:
+                if isinstance(server, dict) and server.get("address"):
+                    upstreams.append(str(server["address"]))
+        if not domain and not upstreams:
+            return {}
+        return {"id": route_id, "kind": "tcp", "domain": domain, "upstreams": upstreams}
     routers = http.get("routers") if isinstance(http.get("routers"), dict) else {}
     services = http.get("services") if isinstance(http.get("services"), dict) else {}
     domain = ""
@@ -3158,7 +3190,7 @@ def _dashboard_route_file(route_id: str, data: Dict[str, Any]) -> Dict[str, Any]
                 upstreams.append(str(server["url"]))
     if not domain and not upstreams:
         return {}
-    return {"id": route_id, "domain": domain, "upstreams": upstreams}
+    return {"id": route_id, "kind": "http", "domain": domain, "upstreams": upstreams}
 
 
 def _dashboard_services(
@@ -3215,7 +3247,10 @@ def _dashboard_service(
     if route.get("domain"):
         exposure = "external-edge" if region == "global" else "cn-edge"
     elif route_file:
-        exposure = "tailscale-relay"
+        if route_file.get("kind") == "tcp":
+            exposure = "tcp-relay"
+        else:
+            exposure = "tailscale-relay"
     return {
         "stack": stack,
         "name": name,
@@ -3231,7 +3266,7 @@ def _dashboard_service(
         "exposure": exposure,
         "routeId": route_id,
         "domain": str(route.get("domain") or (route_file or {}).get("domain") or ""),
-        "targetPort": str(route.get("port") or ""),
+        "targetPort": str(route.get("port") or _route_file_target_port(route_file) or ""),
         "network": str(route.get("network") or ""),
         "health": _service_health(desired, counts),
         "storage": _storage_from_labels(labels),
@@ -3244,6 +3279,18 @@ def _dashboard_service(
 
 def _public_dashboard_service(item: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in item.items() if not key.startswith("_")}
+
+
+def _route_file_target_port(route_file: Any) -> str:
+    if not isinstance(route_file, dict):
+        return ""
+    upstreams = route_file.get("upstreams") if isinstance(route_file.get("upstreams"), list) else []
+    if not upstreams:
+        return ""
+    first = str(upstreams[0])
+    if ":" not in first:
+        return ""
+    return first.rsplit(":", 1)[1]
 
 
 def _storage_from_labels(labels: Dict[str, Any]) -> list[Dict[str, str]]:
@@ -3422,7 +3469,16 @@ def _traefik_route_from_labels(labels: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _host_from_rule(rule: str) -> str:
-    for pattern in (r"Host\(`([^`]+)`\)", r'Host\("([^"]+)"\)', r"Host\('([^']+)'\)", r"Host\(([^),]+)\)"):
+    for pattern in (
+        r"Host\(`([^`]+)`\)",
+        r'Host\("([^"]+)"\)',
+        r"Host\('([^']+)'\)",
+        r"Host\(([^),]+)\)",
+        r"HostSNI\(`([^`]+)`\)",
+        r'HostSNI\("([^"]+)"\)',
+        r"HostSNI\('([^']+)'\)",
+        r"HostSNI\(([^),]+)\)",
+    ):
         match = re.search(pattern, rule)
         if match:
             return match.group(1).strip(" `\"'")
@@ -3449,6 +3505,11 @@ def _dashboard_traffic_paths(
             route_file = service.get("_routeFile") if isinstance(service.get("_routeFile"), dict) else route_files.get(route_id, {})
             upstreams = [str(item) for item in route_file.get("upstreams", [])] if isinstance(route_file, dict) else []
             segments = ["Cloudflare DNS", dns_target or "DNS target missing", "Traefik", "Tailscale"]
+            segments.extend(upstreams or nodes or ["upstream unresolved"])
+        elif exposure == "tcp-relay":
+            route_file = service.get("_routeFile") if isinstance(service.get("_routeFile"), dict) else route_files.get(route_id, {})
+            upstreams = [str(item) for item in route_file.get("upstreams", [])] if isinstance(route_file, dict) else []
+            segments = ["Cloudflare DNS", dns_target or "DNS target missing", "Traefik TCP"]
             segments.extend(upstreams or nodes or ["upstream unresolved"])
         elif exposure == "cloudflare-tunnel":
             segments = ["Cloudflare", "cloudflared", service_target]
@@ -3751,6 +3812,17 @@ def resolve_tailscale_relay(service: ServiceSpec) -> ServiceSpec:
     return replace(service, relay=relay)
 
 
+def resolve_tcp_relay(service: ServiceSpec) -> ServiceSpec:
+    if service.exposure != "tcp-relay":
+        return service
+    if service.tcp.get("address") or service.tcp.get("host"):
+        return service
+    upstream_addresses = _swarm_task_upstream_addresses(service)
+    tcp = dict(service.tcp)
+    tcp["addresses"] = upstream_addresses
+    return replace(service, tcp=tcp)
+
+
 def _swarm_task_upstream_urls(service: ServiceSpec) -> list[str]:
     port = int(service.publish_port or service.port or 0)
     if port < 1:
@@ -3771,7 +3843,32 @@ def _swarm_task_upstream_urls(service: ServiceSpec) -> list[str]:
     )
 
 
+def _swarm_task_upstream_addresses(service: ServiceSpec) -> list[str]:
+    port = int(service.publish_port or service.port or 0)
+    if port < 1:
+        raise LumaError("tcp-relay requires a valid port")
+    deadline = time.monotonic() + TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS
+    last_count = 0
+    while True:
+        addresses, running_count = _running_task_upstream_addresses(service, port)
+        if running_count >= service.replicas and addresses:
+            return addresses
+        last_count = running_count
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(2)
+    raise LumaError(
+        f"tcp-relay service {service.slug} has {last_count}/{service.replicas} running tasks; "
+        "wait for the service to become ready or check luma status"
+    )
+
+
 def _running_task_upstream_urls(service: ServiceSpec, port: int) -> tuple[list[str], int]:
+    addresses, running_count = _running_task_upstream_addresses(service, port)
+    return [f"http://{address}" for address in addresses], running_count
+
+
+def _running_task_upstream_addresses(service: ServiceSpec, port: int) -> tuple[list[str], int]:
     node_by_id = _swarm_node_map()
     service_name = service.swarm_service_name or f"{service.slug}_{service.slug}"
     filters = urllib.parse.quote(json.dumps({"service": {service_name: True}, "desired-state": {"running": True}}), safe="")
@@ -3802,9 +3899,9 @@ def _running_task_upstream_urls(service: ServiceSpec, port: int) -> tuple[list[s
         if not addr:
             raise LumaError(f"node {hostname or node_id} has no reachable Docker node address")
         running_count += 1
-        url = f"http://{addr}:{port}"
-        if url not in urls:
-            urls.append(url)
+        address = f"{addr}:{port}"
+        if address not in urls:
+            urls.append(address)
     return urls, running_count
 
 
