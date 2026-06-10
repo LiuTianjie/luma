@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import yaml
 import ssl
 import base64
 import urllib.error
@@ -64,11 +65,44 @@ def upsert_stack(
             break
     endpoint = int(endpoint_id)
     if stack_id:
+        # Try to skip the registry pull when every service's image digest
+        # in the new stack matches the digest Portainer already has on
+        # the target nodes from the previous deploy. Portainer's
+        # PullImage is a stack-level flag, so we only flip it off when
+        # all services in the new stack are digest-pinned AND every
+        # digest is identical to what the live stack file shows.
+        # Otherwise we fall back to the original
+        # "always pull for digest/private/latest" behavior.
+        current_stack_file = ""
+        try:
+            stack_details = client.request("GET", f"/stacks/{int(stack_id)}", token=token)
+            if isinstance(stack_details, dict):
+                current_stack_file = str(stack_details.get("StackFileContent") or "")
+        except LumaError:
+            pass
+        pull_image = (
+            bool(registry_id)
+            or image_uses_mutable_latest_tag(service.image)
+            or "@" in service.image
+        )
+        if current_stack_file:
+            current_images = _parse_stack_images(current_stack_file)
+            new_images = _parse_stack_images(stack_content)
+            if new_images:
+                all_cached = True
+                for name, new_image in new_images.items():
+                    new_digest = _image_digest(new_image)
+                    current_digest = _image_digest(current_images.get(name, ""))
+                    if not new_digest or new_digest != current_digest:
+                        all_cached = False
+                        break
+                if all_cached:
+                    pull_image = False
         update_body: Dict[str, Any] = {
             "StackFileContent": stack_content,
             "Env": stack_env or [],
             "Prune": True,
-            "PullImage": bool(registry_id) or image_uses_mutable_latest_tag(service.image) or "@" in service.image,
+            "PullImage": pull_image,
         }
         stack_headers = _portainer_registry_auth_header(registry_id)
         request_kwargs: Dict[str, Any] = {"token": token}
@@ -200,6 +234,32 @@ def _portainer_registry_auth_header(registry_id: int | None) -> dict[str, str] |
 
 def _luma_registry_name(host: str) -> str:
     return f"luma-{host.replace(':', '-').replace('.', '-')}"
+
+
+def _parse_stack_images(stack_file: str) -> Dict[str, str]:
+    """Return service_name -> image for every service in a compose stack file."""
+    try:
+        data = yaml.safe_load(stack_file)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    services = data.get("services")
+    if not isinstance(services, dict):
+        return {}
+    return {
+        str(name): str(spec.get("image", ""))
+        for name, spec in services.items()
+        if isinstance(spec, dict) and spec.get("image")
+    }
+
+
+def _image_digest(image: str) -> str:
+    """Return the sha256 digest of an image ref, or '' if it has no digest pin."""
+    image = str(image or "").strip()
+    if "@sha256:" in image:
+        return image.split("@sha256:", 1)[1]
+    return ""
 
 
 def _luma_registry_id(registries: list[Any], host: str) -> int | None:
