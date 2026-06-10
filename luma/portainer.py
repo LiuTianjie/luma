@@ -256,7 +256,14 @@ class PortainerApi:
             request_headers.update(headers)
         req = urllib.request.Request(self.api_url + path, data=data, method=method, headers=request_headers)
         try:
-            with urllib.request.urlopen(req, timeout=60, context=self.context) as resp:
+            # Portainer stack create/update is synchronous and includes the
+            # image pull on the target node. 60s was tight for a fresh
+            # mysql:8.4 image (~500MB) pulled from a registry that lives
+            # on the home network, so the deploy reports "read operation
+            # timed out" even though the stack actually deploys. 10 min
+            # gives cold pulls and slow home-registry links enough headroom
+            # while still failing fast on a real Portainer hang.
+            with urllib.request.urlopen(req, timeout=600, context=self.context) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
