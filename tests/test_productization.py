@@ -6204,6 +6204,11 @@ class ControlApiTests(unittest.TestCase):
                 None,
                 None,
                 [{"Id": 7, "Name": "private-api"}],
+                # upsert_stack now asks Portainer for the live stack file
+                # to compare image digests. Return a different tag (no
+                # digest) so the comparison falls through to the
+                # original "PullImage=True for private registries" path.
+                {"StackFileContent": "services:\n  private-api:\n    image: ghcr.io/acme/private-api:0.9\n"},
                 None,
             ]
             registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
@@ -6256,6 +6261,11 @@ class ControlApiTests(unittest.TestCase):
             client.authenticate.return_value = "jwt"
             client.request.side_effect = [
                 [{"Id": 7, "Name": "api"}],
+                # New digest-aware PullImage path asks Portainer for
+                # the live stack file. The current image has no
+                # matching digest, so the code falls through to the
+                # original "PullImage=True for :latest" path.
+                {"StackFileContent": "services:\n  api:\n    image: nginx:1.25\n"},
                 None,
             ]
             with patch("luma.portainer.PortainerApi", return_value=client):
@@ -6298,8 +6308,15 @@ class ControlApiTests(unittest.TestCase):
             }
             client = Mock()
             client.authenticate.return_value = "jwt"
+            # The new digest-aware PullImage logic asks Portainer for the
+            # live stack file so it can compare sha256 digests. We return
+            # a stack with a *different* image (no digest on the current
+            # stack), which forces the code back into the original
+            # "always pull for digest/private/latest" path and keeps the
+            # final PUT body asserting PullImage=True.
             client.request.side_effect = [
                 [{"Id": 7, "Name": "api"}],
+                {"StackFileContent": "services:\n  api:\n    image: nginx:1.25\n"},
                 None,
             ]
             with patch("luma.portainer.PortainerApi", return_value=client):
@@ -6313,6 +6330,64 @@ class ControlApiTests(unittest.TestCase):
                     "Env": [],
                     "Prune": True,
                     "PullImage": True,
+                },
+                token="jwt",
+            )
+
+    def test_portainer_stack_update_skips_pull_when_digests_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx@sha256:abc123",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({}, None)
+            state = {
+                "portainerApiUrl": "https://portainer.example.com/api",
+                "portainerAdminUsername": "admin",
+                "portainerAdminPassword": "secret",
+                "portainerEndpointId": 1,
+                "swarmId": "swarm-test",
+            }
+            client = Mock()
+            client.authenticate.return_value = "jwt"
+            # The live stack already pins the same sha256 digest, so the
+            # digest-aware logic should flip PullImage off and reuse the
+            # image already on the target node.
+            client.request.side_effect = [
+                [{"Id": 7, "Name": "api"}],
+                {
+                    "StackFileContent": (
+                        "services:\n  api:\n    image: nginx@sha256:abc123\n"
+                    )
+                },
+                None,
+            ]
+            # The stack_content we hand to upsert_stack must declare the
+            # api service so the new _parse_stack_images step has a
+            # non-empty mapping to compare against the live stack file.
+            new_stack_content = (
+                "services:\n  api:\n    image: nginx@sha256:abc123\n"
+            )
+            with patch("luma.portainer.PortainerApi", return_value=client):
+                result = upsert_stack(config, service, new_stack_content, state)
+            self.assertIn("Portainer stack updated", result)
+            client.request.assert_any_call(
+                "PUT",
+                "/stacks/7?endpointId=1",
+                {
+                    "StackFileContent": new_stack_content,
+                    "Env": [],
+                    "Prune": True,
+                    "PullImage": False,
                 },
                 token="jwt",
             )
