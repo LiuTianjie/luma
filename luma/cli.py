@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.79 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.80 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1211,6 +1211,21 @@ def _try_refresh_manager_agent(args: argparse.Namespace) -> None:
 
 
 def _refresh_joined_node_agent(args: argparse.Namespace) -> None:
+    if getattr(args, "control_url", None) or getattr(args, "token", None):
+        try:
+            endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        except LumaError as exc:
+            print(f"[skip] Luma node agent skipped: joined node control context is unavailable ({exc})")
+            return
+        try:
+            _refresh_local_node_agent(endpoint=endpoint, token=token, insecure=insecure, resolve_ip=resolve_ip, allow_skip=False)
+        except LumaError as exc:
+            if _node_agent_credentials_unsupported(exc) or _node_agent_credentials_unregistered(exc):
+                print(f"[skip] Luma node agent skipped: {exc}")
+                return
+            raise
+        return
+
     config = _local_agent_config()
     if config:
         endpoint = str(config.get("endpoint") or "")

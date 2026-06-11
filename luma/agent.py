@@ -34,9 +34,9 @@ def node_agent_os() -> str:
 def node_agent_capabilities(os_name: str | None = None) -> list[str]:
     os_value = os_name or node_agent_os()
     if os_value == "linux":
-        return ["nfs-host", "nfs-client", "managed-volume-path", "docker-volume", "docker-egress-proxy"]
+        return ["nfs-host", "nfs-client", "managed-volume-path", "docker-volume", "docker-egress-proxy", "luma-update"]
     if os_value == "darwin":
-        return ["nfs-host", "managed-volume-path", "docker-volume"]
+        return ["nfs-host", "managed-volume-path", "docker-volume", "luma-update"]
     return []
 
 

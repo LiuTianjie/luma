@@ -215,6 +215,12 @@ class ProductConfigTests(unittest.TestCase):
         self.assertEqual(result["installRef"], "main")
         self.assertEqual(result["message"], "Luma installer finished")
 
+    def test_node_agent_capabilities_include_fleet_update(self):
+        from luma.agent import node_agent_capabilities
+
+        self.assertIn("luma-update", node_agent_capabilities("linux"))
+        self.assertIn("luma-update", node_agent_capabilities("darwin"))
+
     def test_local_executor_timeout_returns_text_output(self):
         result = LocalExecutor().run_result("printf before-timeout; sleep 2", timeout=1)
         self.assertEqual(result.code, 124)
@@ -1338,6 +1344,35 @@ class CliTests(unittest.TestCase):
         self.assertIn("[skip] Luma node agent skipped", printed_text)
         self.assertIn("nodeName or nodeId must match a registered node", printed_text)
         self.assertIn("[ok] Joined node update complete", printed_text)
+
+    def test_update_joined_node_prefers_explicit_control_token_over_local_agent_config(self):
+        with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch(
+            "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
+        ), patch(
+            "luma.cli._local_agent_config",
+            return_value={
+                "endpoint": "https://luma.example.com",
+                "token": "stale-agent-token",
+                "nodeName": "home-mac-mini",
+                "nodeId": "old-node-id",
+            },
+        ), patch("luma.cli._safe_local_docker_node_id", return_value="new-node-id"), patch(
+            "luma.cli._control_context",
+            return_value=("https://luma.example.com", "join-token", False, None),
+        ) as context, patch(
+            "luma.cli._refresh_local_node_agent"
+        ) as refresh:
+            code = main(["update", "--control-url", "https://luma.example.com", "--token", "join-token"])
+
+        self.assertEqual(code, 0)
+        context.assert_called_once()
+        refresh.assert_called_once_with(
+            endpoint="https://luma.example.com",
+            token="join-token",
+            insecure=False,
+            resolve_ip=None,
+            allow_skip=False,
+        )
 
     def test_update_after_reexec_skips_installer_and_refreshes_manager(self):
         old_reexec = _set_env("LUMA_UPDATE_REEXECED", "1")
@@ -2853,7 +2888,7 @@ class ControlApiTests(unittest.TestCase):
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 with patch("luma.control.server.label_swarm_node") as label:
-                    result = handle_node_label(state["joinToken"], {"nodeName": "b", "region": "global"})
+                    result = handle_node_label(state["joinToken"], {"nodeName": "b", "nodeId": "node-id-b", "region": "global"})
                 label.assert_called_once()
                 labels = label.call_args.args[1]
                 self.assertEqual(labels["region"], "global")
@@ -2862,7 +2897,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertNotIn("role.global-worker", labels)
                 self.assertEqual(result["nodeName"], "b")
                 with self.assertRaises(Exception):
-                    handle_node_label(state["deployToken"], {"nodeName": "b", "region": "global"})
+                    handle_node_label(state["deployToken"], {"nodeName": "b", "nodeId": "node-id-b", "region": "global"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -2898,6 +2933,21 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(saved["nodes"]["global-sg-1"]["status"], "labeled")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_label_node_with_node_id_does_not_fall_back_to_duplicate_hostname(self):
+        from luma.control.server import label_swarm_node
+
+        nodes = [
+            {
+                "ID": "m4mini-node-id",
+                "Description": {"Hostname": "orbstack"},
+                "Spec": {"Labels": {"luma.node.name": "m4mini", "luma.node.id": "m4mini-node-id"}},
+            }
+        ]
+        with patch("luma.control.server.docker_request", return_value=nodes) as docker, patch("luma.control.server.time.monotonic", side_effect=[0, 61]):
+            with self.assertRaisesRegex(LumaError, "swarm node not found: home-node-id"):
+                label_swarm_node("orbstack", {"luma.node.name": "home-mac-mini", "luma.node.id": "home-node-id"}, node_id="home-node-id")
+        docker.assert_called_once_with("GET", "/nodes")
 
     def test_node_rejoin_refreshes_live_service_node_id_constraints(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2994,7 +3044,7 @@ class ControlApiTests(unittest.TestCase):
                 state["nodes"] = {
                     "home-mac-mini": {
                         "region": "home",
-                        "agent": {"status": "online", "lastSeen": now, "os": "darwin", "capabilities": ["docker-volume"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "darwin", "capabilities": ["docker-volume", "luma-update"]},
                     },
                     "lab": {
                         "region": "home",
@@ -3006,7 +3056,7 @@ class ControlApiTests(unittest.TestCase):
                 def run_task(_state, node_name, action, payload, **kwargs):
                     self.assertEqual(action, "update-luma")
                     self.assertEqual(payload["installRef"], "main")
-                    self.assertIsNone(kwargs["required_capability"])
+                    self.assertEqual(kwargs["required_capability"], "luma-update")
                     return {"taskId": "task-1", "message": "Luma installer finished", "installRef": payload["installRef"]}
 
                 with patch("luma.control.server._run_node_agent_task", side_effect=run_task) as run:
@@ -3018,6 +3068,33 @@ class ControlApiTests(unittest.TestCase):
                 by_name = {item["nodeName"]: item for item in result["results"]}
                 self.assertEqual(by_name["home-mac-mini"]["status"], "succeeded")
                 self.assertEqual(by_name["lab"]["status"], "skipped")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_fleet_update_bootstraps_ready_agents_without_update_capability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "old-agent": {
+                        "region": "home",
+                        "agent": {"status": "online", "lastSeen": int(time.time()), "os": "linux", "capabilities": ["docker-volume"]},
+                    }
+                }
+                save_state(state)
+
+                def run_task(_state, _node_name, action, _payload, **kwargs):
+                    self.assertEqual(action, "update-luma")
+                    self.assertIsNone(kwargs["required_capability"])
+                    return {"taskId": "task-1", "message": "Luma installer finished"}
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=run_task) as run:
+                    result = handle_fleet_update(state["deployToken"], {"includeAll": True})
+                run.assert_called_once()
+                self.assertEqual(result["succeeded"], 1)
+                self.assertEqual(result["skipped"], 0)
+                self.assertEqual(result["results"][0]["status"], "succeeded")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -3277,6 +3354,35 @@ class ControlApiTests(unittest.TestCase):
                     resolve_service_node_pin(service, state)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_deployment_refuses_pinned_node_label_attached_to_different_swarm_node(self):
+        state = {
+            "nodes": {
+                "home-mac-mini": {
+                    "region": "home",
+                    "swarmNodeId": "home-node-id",
+                    "labels": {"luma.node.name": "home-mac-mini", "luma.node.id": "home-node-id"},
+                }
+            }
+        }
+        service = ServiceSpec(
+            source=Path("home-panel.yaml"),
+            name="home-panel",
+            image="ghcr.io/me/home-panel:1",
+            region="home",
+            node="home-mac-mini",
+            exposure="none",
+        )
+        docker_nodes = [
+            {
+                "ID": "m4mini-node-id",
+                "Description": {"Hostname": "orbstack"},
+                "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "home-node-id"}},
+                "Status": {"State": "ready", "Addr": "100.64.0.2"},
+            }
+        ]
+        with patch("luma.control.server.docker_request", return_value=docker_nodes), self.assertRaisesRegex(LumaError, "label is attached to Swarm node m4mini-node-id"):
+            resolve_service_node_pin(service, state)
 
     def test_deployment_uses_control_state_and_portainer_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4223,7 +4329,8 @@ class ControlApiTests(unittest.TestCase):
                     "manager": {
                         "region": "cn",
                         "status": "labeled",
-                        "labels": {"region": "cn"},
+                        "swarmNodeId": "node-manager",
+                        "labels": {"region": "cn", "luma.node.name": "manager", "luma.node.id": "node-manager"},
                         "agent": {
                             "status": "online",
                             "lastSeen": int(time.time()),
@@ -4246,6 +4353,8 @@ class ControlApiTests(unittest.TestCase):
                         "displayName": "mini",
                         "region": "home",
                         "status": "labeled",
+                        "swarmNodeId": "node-home",
+                        "labels": {"region": "home", "luma.node.name": "home-node", "luma.node.id": "node-home"},
                         "agent": {
                             "status": "online",
                             "lastSeen": int(time.time()),
@@ -4333,7 +4442,7 @@ class ControlApiTests(unittest.TestCase):
                             "Hostname": "manager",
                             "Resources": {"NanoCPUs": 4000000000, "MemoryBytes": 17179869184},
                         },
-                        "Spec": {"Role": "manager", "Availability": "active", "Labels": {"region": "cn", "ingress": "true"}},
+                        "Spec": {"Role": "manager", "Availability": "active", "Labels": {"region": "cn", "ingress": "true", "luma.node.name": "manager", "luma.node.id": "node-manager"}},
                         "Status": {"State": "ready", "Addr": "100.64.0.1"},
                         "ManagerStatus": {"Leader": True},
                     },
@@ -4343,7 +4452,7 @@ class ControlApiTests(unittest.TestCase):
                             "Hostname": "home-node",
                             "Resources": {"NanoCPUs": 8000000000, "MemoryBytes": 8589934592},
                         },
-                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home"}},
+                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "home-node", "luma.node.id": "node-home"}},
                         "Status": {"State": "ready", "Addr": "100.64.0.2"},
                     },
                 ]
@@ -4902,7 +5011,11 @@ class ControlApiTests(unittest.TestCase):
                         "ID": "manager-node-id-1234567890",
                         "Spec": {
                             "Role": "manager",
-                            "Labels": {"region": "cn", "ingress": "true"},
+                            "Labels": {
+                                "region": "cn",
+                                "ingress": "true",
+                                "luma.node.name": "iZ0jl8auywzycory05d9cuZ",
+                            },
                         },
                         "Description": {"Hostname": "iZ0jl8auywzycory05d9cuZ"},
                         "Status": {"State": "ready"},
@@ -4922,7 +5035,11 @@ class ControlApiTests(unittest.TestCase):
                             "Version": {"Index": 12},
                             "Spec": {
                                 "Role": "manager",
-                                "Labels": {"region": "cn", "ingress": "true"},
+                                "Labels": {
+                                    "region": "cn",
+                                    "ingress": "true",
+                                    "luma.node.name": "iZ0jl8auywzycory05d9cuZ",
+                                },
                             },
                         }
                     if method == "POST" and path.startswith("/nodes/manager-node-id-1234567890/update"):
@@ -5506,7 +5623,7 @@ class ControlApiTests(unittest.TestCase):
                 state["portainerEndpointId"] = 1
                 state["swarmId"] = "swarm"
                 state["nodes"] = {
-                    "home-nas": {"name": "home-nas", "region": "cn", "status": "labeled"},
+                    "home-nas": {"name": "home-nas", "region": "cn", "status": "labeled", "swarmNodeId": "home-node-id", "labels": {"luma.node.name": "home-nas", "luma.node.id": "home-node-id"}},
                     "archive-nas": {"name": "archive-nas", "region": "cn", "status": "labeled"},
                 }
                 state["storageClasses"] = {
@@ -6222,6 +6339,19 @@ class ControlApiTests(unittest.TestCase):
             "Docker daemon could not reach the registry",
         ):
             ensure_image_present("ghcr.io/acme/api:latest", force_pull=True)
+
+    def test_private_service_image_pull_error_points_to_proxy_bypass_not_egress(self):
+        def fake_raw(method, path, *, headers=None):
+            if method == "GET":
+                return 404, ""
+            return 500, '{"message":"failed to do request: Head \\"https://registry.example.com/v2/acme/api/manifests/latest\\": EOF"}'
+
+        registry_auth = {"username": "octo", "password": "secret", "serveraddress": "registry.example.com"}
+        with patch("luma.control.server.docker_request_raw", side_effect=fake_raw), self.assertRaisesRegex(
+            LumaError,
+            "private registry.*proxy bypass",
+        ):
+            ensure_image_present("registry.example.com/acme/api:latest", registry_auth=registry_auth, force_pull=True)
 
     def test_portainer_api_binding_creates_missing_stack(self):
         with tempfile.TemporaryDirectory() as tmp:

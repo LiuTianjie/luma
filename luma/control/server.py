@@ -161,7 +161,6 @@ def _node_record_entry_for_name_or_id(nodes: Dict[str, Any], node_name: str, nod
         values = {
             str(value.get("swarmNodeId") or ""),
             str(labels.get("luma.node.id") or ""),
-            str(value.get("swarmHostname") or ""),
             str(value.get("displayName") or ""),
         }
         if node_id and node_id in values:
@@ -684,6 +683,8 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     region = str(body.get("region") or "").strip()
     if not node_name or not region:
         raise LumaError("nodeName and region are required")
+    if not node_id:
+        raise LumaError("nodeId is required; update the Luma CLI on this node and rerun luma node join")
     if region not in VALID_REGIONS:
         raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
     luma_name = registered_name or node_name
@@ -1543,11 +1544,14 @@ def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             "os": str(agent.get("os") or ""),
             "status": "pending",
         }
-        if not _node_agent_is_ready(record):
+        agent_status = _node_agent_status(record)
+        capabilities = {str(value) for value in agent.get("capabilities") or []}
+        if agent_status != "ready":
             item["status"] = "skipped"
-            item["message"] = f"node agent is not ready; status={_node_agent_status(record)}"
+            item["message"] = f"node agent is not ready; status={agent_status}"
             results.append(item)
             continue
+        required_capability = "luma-update" if "luma-update" in capabilities else None
         try:
             result = _run_node_agent_task(
                 state,
@@ -1555,7 +1559,7 @@ def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 "update-luma",
                 {"installRef": install_ref},
                 timeout=per_node_timeout,
-                required_capability=None,
+                required_capability=required_capability,
             )
             item["status"] = "succeeded"
             item["message"] = str(result.get("message") or "Luma installer finished")
@@ -2113,11 +2117,7 @@ def _storage_node_is_local(record: Dict[str, Any], node_name: str) -> bool:
     }
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
     record_values = {
-        str(node_name or ""),
-        str(record.get("displayName") or ""),
-        str(record.get("swarmHostname") or ""),
         str(record.get("swarmNodeId") or ""),
-        str(labels.get("luma.node.name") or ""),
         str(labels.get("luma.node.id") or ""),
     }
     return bool((local_values - {""}) & (record_values - {""}))
@@ -2396,7 +2396,7 @@ def _service_task_nodes(service: ServiceSpec) -> list[dict[str, str]]:
         nodes.append(node)
     if not nodes and service.node:
         for node in node_by_id.values():
-            if service.node in {str(node.get("lumaNode") or ""), str(node.get("hostname") or "")}:
+            if service.node == str(node.get("lumaNode") or ""):
                 nodes.append(node)
                 break
     return nodes
@@ -2408,7 +2408,7 @@ def _remove_docker_volume_across_nodes(volume_name: str, task_nodes: list[dict[s
     statuses: list[str] = []
     seen: set[str] = set()
     for node in task_nodes:
-        key = str(node.get("id") or node.get("hostname") or node.get("lumaNode") or "")
+        key = str(node.get("id") or node.get("lumaNode") or "")
         if key in seen:
             continue
         seen.add(key)
@@ -2416,7 +2416,7 @@ def _remove_docker_volume_across_nodes(volume_name: str, task_nodes: list[dict[s
             result = _remove_local_docker_volume(volume_name)
             statuses.append(result["status"])
             continue
-        node_name = str(node.get("lumaNode") or node.get("hostname") or "").strip()
+        node_name = str(node.get("lumaNode") or "").strip()
         if not node_name:
             statuses.append("skipped: task node has no Luma node name")
             continue
@@ -3030,7 +3030,6 @@ def _local_control_node_name(state: Dict[str, Any], info: Dict[str, Any]) -> str
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     swarm = info.get("Swarm") if isinstance(info.get("Swarm"), dict) else {}
     local_ids = {str(info.get("ID") or ""), str(swarm.get("NodeID") or "")} - {""}
-    local_names = {str(info.get("Name") or "")} - {""}
     for name, record in nodes.items():
         if not isinstance(record, dict):
             continue
@@ -3039,13 +3038,7 @@ def _local_control_node_name(state: Dict[str, Any], info: Dict[str, Any]) -> str
             str(record.get("swarmNodeId") or ""),
             str(labels.get("luma.node.id") or ""),
         } - {""}
-        record_names = {
-            str(name or ""),
-            str(record.get("displayName") or ""),
-            str(record.get("swarmHostname") or ""),
-            str(labels.get("luma.node.name") or ""),
-        } - {""}
-        if local_ids & record_ids or local_names & record_names:
+        if local_ids & record_ids:
             return str(name)
     return ""
 
@@ -3183,11 +3176,14 @@ def _ensure_luma_node_schedulable(node_name: str, node_id: str) -> None:
         labels = labels if isinstance(labels, dict) else {}
         raw_id = str(item.get("ID") or "")
         label_id = str(labels.get("luma.node.id") or "")
-        label_name = str(labels.get("luma.node.name") or "")
-        if node_id in {raw_id, label_id} or raw_id.startswith(node_id) or node_id.startswith(raw_id) or (label_name == node_name and not match):
+        if label_id == node_id and not (raw_id == node_id or raw_id.startswith(node_id) or node_id.startswith(raw_id)):
+            raise LumaError(
+                f"Luma node {node_name} label is attached to Swarm node {raw_id}, expected {node_id}; "
+                "rerun luma node join on the intended host to repair node labels"
+            )
+        if raw_id == node_id or raw_id.startswith(node_id) or node_id.startswith(raw_id):
             match = item
-            if node_id in {raw_id, label_id} or raw_id.startswith(node_id) or node_id.startswith(raw_id):
-                break
+            break
     if not match:
         raise LumaError(f"Luma node {node_name} Swarm node {node_id} is missing; rerun luma node join on that node before deploying pinned services")
     summary = _swarm_node_summary_item(match)
@@ -3228,7 +3224,7 @@ def _adopt_swarm_node_for_storage(state: Dict[str, Any], node_name: str) -> None
     manager_status = match.get("ManagerStatus") if isinstance(match.get("ManagerStatus"), dict) else {}
     hostname = str(description.get("Hostname") or "")
     swarm_node_id = str(match.get("ID") or "").strip()
-    luma_name = str(node_name or labels.get("luma.node.name") or hostname or swarm_node_id[:12]).strip()
+    luma_name = str(node_name or labels.get("luma.node.name") or swarm_node_id[:12]).strip()
     region = str(labels.get("region") or "").strip()
     values: Dict[str, Any] = {
         "status": "adopted",
@@ -3251,18 +3247,17 @@ def _adopt_swarm_node_for_storage(state: Dict[str, Any], node_name: str) -> None
 
 def _ensure_storage_node_swarm_label(node_name: str, record: Dict[str, Any]) -> None:
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-    if labels.get("luma.node.name") == node_name:
-        return
     node_id = str(record.get("swarmNodeId") or labels.get("luma.node.id") or "").strip()
-    hostname = str(record.get("swarmHostname") or "").strip()
-    if not node_id and not hostname:
+    if labels.get("luma.node.name") == node_name and labels.get("luma.node.id") == node_id:
+        return
+    if not node_id:
         return
     region = str(record.get("region") or labels.get("region") or "").strip()
     if not region:
         raise LumaError(f"managed storage node {node_name} has no region; rerun luma update manager or luma node join")
     applied = labels_for_node(region, luma_name=node_name, node_id=node_id)
     try:
-        label_swarm_node(hostname or node_name, applied, node_id=node_id)
+        label_swarm_node(node_name, applied, node_id=node_id)
     except LumaError as exc:
         raise LumaError(f"managed storage node {node_name} could not be labeled for storage placement: {exc}") from exc
     merged = {str(key): str(value) for key, value in labels.items()}
@@ -3321,28 +3316,27 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
 
 
 def _attach_swarm_status_to_registered_nodes(registered_nodes: list[Dict[str, Any]], swarm_nodes: list[Any]) -> None:
+    by_raw_id: dict[str, Dict[str, Any]] = {}
     by_luma_name: dict[str, Dict[str, Any]] = {}
     by_luma_id: dict[str, Dict[str, Any]] = {}
-    by_hostname: dict[str, Dict[str, Any]] = {}
     for raw in swarm_nodes:
         if not isinstance(raw, dict):
             continue
         node = raw
+        raw_id = str(node.get("rawId") or node.get("id") or "").strip()
         luma_name = str(node.get("lumaNode") or "").strip()
-        luma_id = str(node.get("lumaNodeId") or node.get("id") or "").strip()
-        hostname = str(node.get("hostname") or "").strip()
+        luma_id = str(node.get("lumaNodeId") or "").strip()
+        if raw_id:
+            by_raw_id[raw_id] = node
         if luma_name:
             by_luma_name[luma_name] = node
         if luma_id:
             by_luma_id[luma_id] = node
-        if hostname:
-            by_hostname[hostname] = node
     for item in registered_nodes:
-        match = (
-            by_luma_name.get(str(item.get("name") or ""))
-            or by_luma_id.get(str(item.get("swarmNodeId") or ""))
-            or by_hostname.get(str(item.get("swarmHostname") or ""))
-        )
+        registered_id = str(item.get("swarmNodeId") or "")
+        match = by_raw_id.get(registered_id) if registered_id else None
+        if not match and not registered_id:
+            match = by_luma_name.get(str(item.get("name") or "")) or by_luma_id.get(registered_id)
         if not match:
             item["swarmState"] = "missing"
             continue
@@ -3477,7 +3471,7 @@ def _dashboard_nodes(registered_nodes: list[Dict[str, Any]], raw_nodes: list[Dic
         merged.setdefault(name, {})["registered"] = node
     for raw_node in raw_nodes:
         node = _swarm_node_summary_item(raw_node)
-        name = str(node.get("lumaNode") or node.get("hostname") or node.get("id") or "")
+        name = str(node.get("lumaNode") or node.get("rawId") or node.get("id") or "")
         if not name:
             continue
         merged.setdefault(name, {})["swarm"] = node
@@ -3492,7 +3486,7 @@ def _dashboard_nodes(registered_nodes: list[Dict[str, Any]], raw_nodes: list[Dic
                 "name": name,
                 "displayName": display,
                 "swarmHostname": str(registered.get("swarmHostname") or swarm.get("hostname") or ""),
-                "swarmNodeId": str(registered.get("swarmNodeId") or swarm.get("lumaNodeId") or swarm.get("id") or ""),
+                "swarmNodeId": str(registered.get("swarmNodeId") or swarm.get("rawId") or swarm.get("lumaNodeId") or swarm.get("id") or ""),
                 "region": str(registered.get("region") or swarm.get("region") or ""),
                 "role": str(swarm.get("role") or ""),
                 "state": str(swarm.get("state") or "missing"),
@@ -3649,7 +3643,7 @@ def _dashboard_service(
         "pending": counts["pending"],
         "nodes": task_nodes,
         "region": region,
-        "node": _constraint_value(constraints, "node.labels.luma.node.name") or _constraint_value(constraints, "node.labels.luma.node.id") or _constraint_value(constraints, "node.hostname"),
+        "node": _constraint_value(constraints, "node.labels.luma.node.name") or _constraint_value(constraints, "node.labels.luma.node.id"),
         "exposure": exposure,
         "routeId": route_id,
         "domain": str(route.get("domain") or (route_file or {}).get("domain") or ""),
@@ -3783,14 +3777,14 @@ def _dashboard_task_counts(tasks: list[Dict[str, Any]], node_by_id: dict[str, Di
             counts["pending"] += 1
         node_id = str(task.get("NodeID") or "")
         node = node_by_id.get(node_id)
-        hostname = str((node or {}).get("hostname") or "")
-        if hostname and state not in {"failed", "rejected", "shutdown", "complete", "remove"} and hostname not in nodes:
-            nodes.append(hostname)
+        node_label = str((node or {}).get("lumaNode") or node_id[:12])
+        if node_label and state not in {"failed", "rejected", "shutdown", "complete", "remove"} and node_label not in nodes:
+            nodes.append(node_label)
         container_status = status.get("ContainerStatus") if isinstance(status.get("ContainerStatus"), dict) else {}
         task_rows.append(
             {
                 "id": str(task.get("ID") or "")[:12],
-                "node": hostname or node_id[:12],
+                "node": node_label,
                 "state": state or "unknown",
                 "desiredState": str(task.get("DesiredState") or ""),
                 "containerId": str(container_status.get("ContainerID") or "")[:12],
@@ -3924,6 +3918,7 @@ def _swarm_node_summary_item(node: Dict[str, Any]) -> Dict[str, Any]:
     labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
     return {
         "id": str(node.get("ID") or "")[:12],
+        "rawId": str(node.get("ID") or ""),
         "hostname": str(description.get("Hostname") or ""),
         "role": str(spec.get("Role") or ""),
         "availability": str(spec.get("Availability") or ""),
@@ -4004,29 +3999,19 @@ def _match_luma_swarm_node(
         ]
         if str(value or "").strip()
     }
-    wanted_hostnames = {
-        str(value).strip()
-        for value in [
-            node_name,
-            record.get("swarmHostname"),
-        ]
-        if str(value or "").strip()
-    }
-    node_items: list[tuple[Dict[str, Any], str, dict[str, Any], str]] = []
+    node_items: list[tuple[Dict[str, Any], str, dict[str, Any]]] = []
     for node in nodes:
         if not isinstance(node, dict):
             continue
         node_id = str(node.get("ID") or "")
         spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
         node_labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
-        description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
-        hostname = str(description.get("Hostname") or "")
-        node_items.append((node, node_id, node_labels, hostname))
+        node_items.append((node, node_id, node_labels))
 
     id_match = _unique_luma_swarm_node_match(
         [
             node
-            for node, node_id, node_labels, _hostname in node_items
+            for node, node_id, node_labels in node_items
             if any(
                 _node_id_matches(candidate, wanted)
                 for candidate in {node_id, str(node_labels.get("luma.node.id") or "")}
@@ -4041,18 +4026,12 @@ def _match_luma_swarm_node(
     name_match = _unique_luma_swarm_node_match(
         [
             node
-            for node, _node_id, node_labels, _hostname in node_items
+            for node, _node_id, node_labels in node_items
             if str(node_labels.get("luma.node.name") or "") in wanted_luma_names
         ],
         node_name,
     )
-    if name_match:
-        return name_match
-
-    return _unique_luma_swarm_node_match(
-        [node for node, _node_id, _node_labels, hostname in node_items if hostname in wanted_hostnames],
-        node_name,
-    )
+    return name_match
 
 
 def _unique_luma_swarm_node_match(matches: list[Dict[str, Any]], node_name: str) -> Dict[str, Any] | None:
@@ -4338,17 +4317,16 @@ def _running_task_upstream_addresses(service: ServiceSpec, port: int) -> tuple[l
         node = node_by_id.get(node_id)
         if not node:
             continue
-        hostname = str(node.get("hostname") or "")
         if service.node_id and node_id != service.node_id:
             continue
-        if service.node and not service.node_id and str(node.get("lumaNode") or hostname) != service.node:
+        if service.node and not service.node_id and str(node.get("lumaNode") or "") != service.node:
             continue
         region = str(node.get("region") or "")
         if region != service.region:
-            raise LumaError(f"service task is on node {hostname or node_id} in region {region or '-'}, not {service.region}")
+            raise LumaError(f"service task is on node {node_id} in region {region or '-'}, not {service.region}")
         addr = str(node.get("addr") or "")
         if not addr:
-            raise LumaError(f"node {hostname or node_id} has no reachable Docker node address")
+            raise LumaError(f"node {node_id} has no reachable Docker node address")
         running_count += 1
         address = f"{addr}:{port}"
         if address not in urls:
@@ -4428,7 +4406,7 @@ def ensure_image_present(
         headers["X-Registry-Auth"] = auth_header
     status, raw = docker_request_raw("POST", f"/images/create?fromImage={from_image}", headers=headers)
     if status >= 400:
-        raise LumaError(_docker_pull_error_message(status, raw))
+        raise LumaError(_docker_pull_error_message(status, raw, registry_auth=registry_auth))
     if '"error"' in raw:
         raise LumaError(f"Docker pull failed: {raw.strip()}")
     if force_pull:
@@ -4436,15 +4414,21 @@ def ensure_image_present(
     return None
 
 
-def _docker_pull_error_message(status: int, raw: str) -> str:
+def _docker_pull_error_message(status: int, raw: str, *, registry_auth: Dict[str, str] | None = None) -> str:
     detail = raw.strip()
     message = f"Docker pull failed with HTTP {status}: {detail}"
     lowered = detail.lower()
     if status >= 500 and any(marker in lowered for marker in ("failed to do request", "eof", "timeout", "connection reset")):
-        message += (
-            "; Docker daemon could not reach the registry. Verify the Luma manager egress gateway and Docker daemon proxy "
-            "with `luma egress setup` and `docker info` HTTPProxy/HTTPSProxy."
-        )
+        if registry_auth:
+            message += (
+                "; Docker daemon could not reach the private registry. Luma does not route private registry pulls through egress; "
+                "verify the manager Docker daemon proxy bypass with `docker info` HTTPProxy/HTTPSProxy/NoProxy."
+            )
+        else:
+            message += (
+                "; Docker daemon could not reach the registry. Verify the Luma manager egress gateway and Docker daemon proxy "
+                "with `luma egress setup` and `docker info` HTTPProxy/HTTPSProxy."
+            )
     return message
 
 
@@ -4501,6 +4485,8 @@ def _has_registry(image: str) -> bool:
 
 
 def label_swarm_node(node_name: str, labels: Dict[str, str], *, node_id: str = "") -> None:
+    if not node_id:
+        raise LumaError("nodeId is required for Swarm node labeling")
     deadline = time.monotonic() + 60
     match = None
     while True:
@@ -4528,24 +4514,12 @@ def label_swarm_node(node_name: str, labels: Dict[str, str], *, node_id: str = "
 
 
 def _match_swarm_node(nodes: list[Any], *, node_name: str, node_id: str = "") -> Dict[str, Any] | None:
-    if node_id:
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            candidate = str(node.get("ID") or "")
-            if candidate == node_id or candidate.startswith(node_id) or node_id.startswith(candidate):
-                return node
-    matches: list[Dict[str, Any]] = []
     for node in nodes:
         if not isinstance(node, dict):
             continue
-        description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
-        if description.get("Hostname") == node_name:
-            matches.append(node)
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        raise LumaError(f"multiple swarm nodes have hostname {node_name}; rerun node join with a CLI that sends Swarm NodeID")
+        candidate = str(node.get("ID") or "")
+        if candidate == node_id or candidate.startswith(node_id) or node_id.startswith(candidate):
+            return node
     return None
 
 
