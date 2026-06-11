@@ -54,7 +54,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -5929,6 +5929,62 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(agent.call_args.args[2], "configure-docker-egress-proxy")
         self.assertEqual(agent.call_args.kwargs["required_capability"], "docker-egress-proxy")
         self.assertEqual(result, "Docker daemon egress proxy configured")
+
+    def test_private_direct_registry_bypasses_existing_daemon_egress_proxy(self):
+        state = {
+            "registries": {
+                "gcode.gaojiua.com:3000": {
+                    "serverAddress": "gcode.gaojiua.com:3000",
+                    "username": "Nickname4th",
+                    "password": "secret",
+                }
+            },
+            "nodes": {
+                "manager-1": {
+                    "swarmNodeId": "node-1",
+                    "swarmHostname": "manager-host",
+                    "agent": {
+                        "status": "online",
+                        "lastSeen": int(time.time()),
+                        "capabilities": ["docker-egress-proxy"],
+                    },
+                }
+            },
+        }
+        docker_calls = []
+
+        def fake_docker(method, path, body=None):
+            docker_calls.append((method, path))
+            if path == "/info":
+                if len([call for call in docker_calls if call[1] == "/info"]) == 1:
+                    return {
+                        "Name": "manager-host",
+                        "Swarm": {"NodeID": "node-1"},
+                        "HTTPProxy": "http://127.0.0.1:7890",
+                        "NoProxy": "localhost,127.0.0.1",
+                    }
+                return {
+                    "Name": "manager-host",
+                    "Swarm": {"NodeID": "node-1"},
+                    "HTTPProxy": "http://127.0.0.1:7890",
+                    "NoProxy": "localhost,127.0.0.1,gcode.gaojiua.com:3000,gcode.gaojiua.com",
+                }
+            raise AssertionError(path)
+
+        with patch("luma.control.server.docker_request", side_effect=fake_docker), patch(
+            "luma.control.server._run_node_agent_task",
+            return_value={"message": "Docker daemon proxy bypass configured"},
+        ) as agent:
+            result = ensure_image_pull_network(
+                state,
+                "gcode.gaojiua.com:3000/gaojiuatech/tifenxia-journey-preview:latest",
+            )
+        agent.assert_called_once()
+        self.assertEqual(agent.call_args.args[2], "configure-docker-egress-proxy")
+        payload = agent.call_args.args[3]
+        self.assertIn("gcode.gaojiua.com:3000", payload["noProxy"])
+        self.assertIn("gcode.gaojiua.com", payload["noProxy"])
+        self.assertEqual(result, "Docker daemon proxy bypass configured")
 
     def test_latest_service_image_is_pulled_even_when_present_locally(self):
         calls = []

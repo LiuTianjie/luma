@@ -44,6 +44,7 @@ from ..local import LocalExecutor
 from ..portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack, upsert_stack
 from ..registry import (
     docker_registry_auth_header,
+    public_registry_url,
     image_uses_mutable_latest_tag,
     normalize_registry_host,
     registry_auth_for_image,
@@ -1116,11 +1117,11 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
 
     try:
-        if image_pull_requires_egress(service.image):
+        if image_pull_requires_egress(service.image) or _registry_auth_for_service(state, service):
             _deploy_step(
                 steps,
-                "Ensure image pull egress",
-                lambda: ensure_image_pull_egress_proxy(state, service.image),
+                "Prepare image pull network",
+                lambda: ensure_image_pull_network(state, service.image),
                 progress=progress,
             )
 
@@ -2729,6 +2730,42 @@ def image_pull_requires_egress(image: str) -> bool:
     return registry in _egress_pull_registries()
 
 
+def ensure_image_pull_network(state: Dict[str, Any], image: str) -> str:
+    registry = _image_registry_host(image)
+    if registry in _egress_pull_registries():
+        return ensure_image_pull_egress_proxy(state, image)
+
+    registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    if not registry_auth_for_image(registries, image):
+        return f"Image pull network unchanged: no private registry credential for {registry}"
+
+    info = _docker_info_with_retry()
+    if not _docker_info_uses_egress_proxy(info):
+        return f"Image pull network ready for {registry}: Docker daemon proxy disabled"
+
+    required_no_proxy = _no_proxy_entries_for_registry(registry)
+    if _docker_info_no_proxy_contains(info, required_no_proxy):
+        return f"Image pull network ready for {registry}: Docker daemon proxy bypass configured"
+
+    node_name = _local_control_node_name(state, info)
+    if not node_name:
+        raise LumaError(f"image pull proxy bypass requires Docker daemon access for {registry}, but the control manager node is not registered")
+
+    no_proxy = _merge_no_proxy(_docker_info_no_proxy(info), EGRESS_NO_PROXY, *required_no_proxy)
+    result = _run_node_agent_task(
+        state,
+        node_name,
+        "configure-docker-egress-proxy",
+        {"proxy": EGRESS_PROXY_URL, "noProxy": no_proxy},
+        timeout=180,
+        required_capability="docker-egress-proxy",
+    )
+    info = _docker_info_with_retry()
+    if not _docker_info_no_proxy_contains(info, required_no_proxy):
+        raise LumaError(f"image pull proxy bypass was configured on {node_name}, but Docker daemon did not report NO_PROXY for {registry}")
+    return str(result.get("message") or f"Image pull proxy bypass configured for {registry}")
+
+
 def ensure_image_pull_egress_proxy(state: Dict[str, Any], image: str) -> str:
     registry = _image_registry_host(image)
     if registry not in _egress_pull_registries():
@@ -2770,8 +2807,45 @@ def _image_registry_host(image: str) -> str:
         return "docker.io"
     first = image_ref.split("/", 1)[0].lower()
     if "." in first or ":" in first or first == "localhost":
-        return first
+        return normalize_registry_host(first)
     return "docker.io"
+
+
+def _no_proxy_entries_for_registry(registry: str) -> tuple[str, ...]:
+    host = normalize_registry_host(public_registry_url(registry))
+    entries = [host]
+    if ":" in host:
+        entries.append(host.rsplit(":", 1)[0])
+    return tuple(entries)
+
+
+def _docker_info_no_proxy(info: Dict[str, Any]) -> str:
+    for key in ("NoProxy", "NOProxy", "NO_PROXY", "No_proxy", "no_proxy"):
+        value = info.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _docker_info_no_proxy_contains(info: Dict[str, Any], required: tuple[str, ...]) -> bool:
+    entries = {item.strip().lower() for item in _docker_info_no_proxy(info).split(",") if item.strip()}
+    return all(item.lower() in entries for item in required)
+
+
+def _merge_no_proxy(*values: str) -> str:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in str(value or "").split(","):
+            entry = item.strip()
+            if not entry:
+                continue
+            key = entry.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(entry)
+    return ",".join(merged)
 
 
 def _require_egress_gateway_running() -> None:
