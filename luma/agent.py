@@ -531,6 +531,8 @@ def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
             or "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
         )
         return configure_docker_egress_proxy(proxy=proxy, no_proxy=no_proxy)
+    if action == "update-luma":
+        return update_luma_install(install_ref=str(payload.get("installRef") or ""))
     raise LumaError(f"unsupported node agent task action: {action}")
 
 
@@ -577,6 +579,42 @@ def configure_docker_egress_proxy(*, proxy: str, no_proxy: str) -> Dict[str, Any
     )
     LocalExecutor().sudo(command)
     return {"proxy": proxy, "noProxy": no_proxy, "message": "Docker daemon egress proxy configured"}
+
+
+def update_luma_install(*, install_ref: str = "") -> Dict[str, Any]:
+    env = os.environ.copy()
+    if install_ref:
+        env["LUMA_INSTALL_REF"] = install_ref
+    command = "curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
+    try:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = str(exc.stdout or "")
+        raise LumaError("Luma installer timed out" + (f": {_tail_text(output)}" if output else "")) from exc
+    output = completed.stdout or ""
+    if completed.returncode != 0:
+        raise LumaError(f"Luma installer failed with exit code {completed.returncode}: {_tail_text(output)}")
+    return {
+        "installRef": install_ref,
+        "message": "Luma installer finished",
+        "output": _tail_text(output),
+    }
+
+
+def _tail_text(text: str, *, limit: int = 1200) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[-limit:]
 
 
 def _run_fixed_host_task(

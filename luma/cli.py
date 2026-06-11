@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.78 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.79 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -125,6 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
     update_manager = update_sub.add_parser("manager", help="force a manager control-plane refresh")
     _add_update_manager_arguments(update_manager)
     _add_control_arguments(update_manager)
+    update_fleet = update_sub.add_parser("fleet", help="update Luma on all registered nodes with ready agents")
+    update_fleet.add_argument("--install-ref", dest="fleet_install_ref", help="Git ref passed to the installer on every node")
+    update_fleet.add_argument("--all", action="store_true", help="Include offline nodes in the report as skipped")
+    update_fleet.add_argument("--timeout", type=int, default=900, help="Per-node update timeout in seconds")
+    _add_control_arguments(update_fleet)
+    _add_output_arguments(update_fleet)
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks")
 
@@ -1094,15 +1100,17 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    if args.update_command not in {None, "manager"}:
+    if args.update_command not in {None, "manager", "fleet"}:
         raise LumaError(f"unknown update command: {args.update_command}")
     if os.environ.get(UPDATE_REEXEC_ENV) == "1":
         print("[skip] Luma CLI already updated in this run")
     else:
         print("[start] Update Luma CLI")
-        _run_luma_installer(install_ref=args.install_ref)
+        _run_luma_installer(install_ref=_effective_update_install_ref(args))
         print("[ok] Luma CLI updated")
         _reexec_after_luma_update()
+    if args.update_command == "fleet":
+        return _cmd_update_fleet(args)
     if args.update_command == "manager":
         print("[info] Role: manager")
         print("[info] Manager control-plane refresh forced")
@@ -1134,6 +1142,55 @@ def cmd_update(args: argparse.Namespace) -> int:
     print(f"[skip] Manager control-plane refresh skipped: {reason}")
     print("[skip] Node agent refresh skipped: no local joined-node metadata found")
     return 0
+
+
+def _effective_update_install_ref(args: argparse.Namespace) -> str | None:
+    return getattr(args, "fleet_install_ref", None) or getattr(args, "install_ref", None)
+
+
+def _cmd_update_fleet(args: argparse.Namespace) -> int:
+    should_refresh, reason = _manager_refresh_decision(args)
+    if should_refresh:
+        print("[info] Role: manager")
+        print(f"[info] Manager control-plane refresh required: {reason}")
+        print("[start] Refresh manager control plane")
+        _refresh_manager_control(args)
+        print("[ok] Manager control plane refreshed")
+        _try_refresh_manager_agent(args)
+    else:
+        print(f"[skip] Local manager control-plane refresh skipped: {reason}")
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    print("[start] Update Luma on registered nodes")
+    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).update_fleet(
+        install_ref=str(_effective_update_install_ref(args) or ""),
+        include_all=bool(getattr(args, "all", False)),
+        timeout=int(getattr(args, "timeout", 900) or 900),
+    )
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 1 if int(result.get("failed") or 0) else 0
+    rows = []
+    for item in result.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            [
+                str(item.get("nodeName") or ""),
+                str(item.get("region") or "-"),
+                str(item.get("os") or "-"),
+                str(item.get("status") or "-"),
+                str(item.get("message") or "-"),
+            ]
+        )
+    if rows:
+        _print_table(["node", "region", "os", "status", "message"], rows)
+    else:
+        print("No ready node agents found")
+    print(
+        f"[ok] Fleet update finished: {int(result.get('succeeded') or 0)} succeeded, "
+        f"{int(result.get('failed') or 0)} failed, {int(result.get('skipped') or 0)} skipped"
+    )
+    return 1 if int(result.get("failed") or 0) else 0
 
 
 def _try_refresh_manager_agent(args: argparse.Namespace) -> None:

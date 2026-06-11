@@ -187,6 +187,18 @@ class ControlClient:
             },
         )
 
+    def update_fleet(self, *, install_ref: str = "", include_all: bool = False, timeout: int = 900) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/fleet/update",
+            {
+                "installRef": install_ref,
+                "includeAll": include_all,
+                "timeout": timeout,
+            },
+            timeout=max(int(timeout), 60) * 20,
+        )
+
     def deploy(
         self,
         *,
