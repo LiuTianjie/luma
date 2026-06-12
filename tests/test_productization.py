@@ -163,6 +163,57 @@ class ProductConfigTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             _terminal_supervisor_shutdown_signal(signal.SIGTERM, None)
 
+    def test_terminal_supervisor_lock_is_singleton_per_node(self):
+        from luma.agent import _acquire_terminal_supervisor_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "agent.json"
+            config.write_text(json.dumps({"nodeName": "home-mac-mini"}), encoding="utf-8")
+            with patch("luma.agent.tempfile.gettempdir", return_value=tmp):
+                first = _acquire_terminal_supervisor_lock(config)
+                self.assertIsNotNone(first)
+                try:
+                    self.assertIsNone(_acquire_terminal_supervisor_lock(config))
+                finally:
+                    first.close()
+                second = _acquire_terminal_supervisor_lock(config)
+                self.assertIsNotNone(second)
+                second.close()
+
+    def test_node_agent_continues_after_transient_lease_failure(self):
+        from luma.agent import run_node_agent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "agent.json"
+            config.write_text(
+                json.dumps({"endpoint": "https://luma.example.com", "token": "agent-token", "nodeName": "home-mac-mini"}),
+                encoding="utf-8",
+            )
+            client = Mock()
+            client.lease_agent_task.side_effect = [LumaError("temporary control failure"), {"task": {}}]
+            stats_sampler = Mock()
+            stats_sampler.snapshot.return_value = []
+            terminal_supervisor = Mock()
+            with patch("luma.control.client.ControlClient", return_value=client), patch(
+                "luma.agent._ContainerStatsSampler", return_value=stats_sampler
+            ), patch("luma.agent._TerminalSupervisorProcess", return_value=terminal_supervisor), patch(
+                "luma.agent.node_agent_metrics", return_value={}
+            ), patch("luma.agent.time.sleep", side_effect=[None, KeyboardInterrupt]), patch("sys.stderr"):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_node_agent(config, poll_interval=1)
+
+            self.assertEqual(client.lease_agent_task.call_count, 2)
+            terminal_supervisor.stop.assert_called_once()
+            stats_sampler.stop.assert_called_once()
+
+    def test_terminal_shell_prefers_zsh_on_macos(self):
+        from luma.agent import _terminal_shell
+
+        with patch.dict(os.environ, {"SHELL": ""}, clear=False), patch("luma.agent.node_agent_os", return_value="darwin"), patch(
+            "luma.agent.Path.exists", return_value=True
+        ):
+            self.assertEqual(_terminal_shell(), "/bin/zsh")
+
     def test_doctor_checks_control_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "config"))

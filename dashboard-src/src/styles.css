@@ -2370,6 +2370,7 @@ code,
 }
 
 .detail-backdrop,
+.terminal-modal-backdrop,
 .deploy-modal-backdrop,
 .application-detail-backdrop {
   background: rgba(2, 3, 7, 0.72);
@@ -2393,12 +2394,52 @@ code,
   box-shadow: none;
 }
 
-.terminal-drawer {
-  width: min(1080px, calc(100vw - 56px));
+.terminal-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: fadeIn 0.2s ease-out;
 }
 
-.terminal-drawer header {
+.terminal-modal {
+  width: min(1180px, calc(100vw - 56px));
+  height: min(780px, calc(100vh - 56px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(125, 137, 151, 0.24);
+  border-radius: 8px;
+  background: #05070b;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(0, 194, 168, 0.08);
+  animation: terminalModalIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes terminalModalIn {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.terminal-modal header {
+  padding: 22px 28px 18px;
+  display: flex;
   align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(18, 23, 31, 0.98), rgba(9, 12, 17, 0.98));
+}
+
+.terminal-modal h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.35rem;
+  font-weight: 760;
+  letter-spacing: 0;
 }
 
 .terminal-node-meta {
@@ -2409,11 +2450,10 @@ code,
 }
 
 .terminal-surface {
-  height: min(680px, calc(100vh - 190px));
-  min-height: 360px;
+  flex: 1;
+  min-height: 0;
   padding: 12px;
   overflow: hidden;
-  border-top: 1px solid var(--line);
   background: #05070b;
 }
 
@@ -2518,7 +2558,15 @@ code,
     grid-template-columns: 1fr;
   }
 
-  .terminal-drawer {
+  .terminal-modal-backdrop {
+    padding: 0;
+  }
+
+  .terminal-modal {
     width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
   }
 }

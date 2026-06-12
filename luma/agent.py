@@ -16,6 +16,7 @@ import ssl
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import threading
 import time
@@ -703,15 +704,22 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                 container_stats = node_agent_container_stats()
             else:
                 container_stats = stats_sampler.snapshot() if stats_sampler else []
-            task = client.lease_agent_task(
-                node_name=node_name,
-                node_id=node_id,
-                os_name=node_agent_os(),
-                capabilities=node_agent_capabilities(),
-                metrics=node_agent_metrics(),
-                container_stats=container_stats,
-                timeout=max(interval + 5, 15),
-            ).get("task")
+            try:
+                task = client.lease_agent_task(
+                    node_name=node_name,
+                    node_id=node_id,
+                    os_name=node_agent_os(),
+                    capabilities=node_agent_capabilities(),
+                    metrics=node_agent_metrics(),
+                    container_stats=container_stats,
+                    timeout=max(interval + 5, 15),
+                ).get("task")
+            except Exception as exc:
+                if once:
+                    raise
+                print(f"luma: node agent lease failed: {exc}", file=sys.stderr, flush=True)
+                time.sleep(max(interval, 1))
+                continue
             if isinstance(task, dict) and task.get("id"):
                 _complete_agent_task(client, node_name=node_name, node_id=node_id, task=task)
             if once:
@@ -749,6 +757,7 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
 
 def run_terminal_supervisor(config_path: Path = DEFAULT_AGENT_CONFIG) -> int:
     previous_handlers: dict[int, Any] = {}
+    lock_file = None
     if threading.current_thread() is threading.main_thread():
         for item in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
             if item is None:
@@ -756,16 +765,53 @@ def run_terminal_supervisor(config_path: Path = DEFAULT_AGENT_CONFIG) -> int:
             previous_handlers[int(item)] = signal.getsignal(item)
             signal.signal(item, _terminal_supervisor_shutdown_signal)
     try:
+        lock_file = _acquire_terminal_supervisor_lock(config_path)
+        if lock_file is None:
+            return 0
         asyncio.run(_run_terminal_supervisor(config_path))
     except KeyboardInterrupt:
         return 0
     finally:
+        if lock_file is not None:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                lock_file.close()
+            except Exception:
+                pass
         for signum, handler in previous_handlers.items():
             try:
                 signal.signal(signum, handler)
             except Exception:
                 pass
     return 0
+
+
+def _terminal_supervisor_lock_path(config_path: Path) -> Path:
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        config = {}
+    node_name = slugify(str(config.get("nodeName") or config_path))
+    return Path(tempfile.gettempdir()) / f"luma-terminal-supervisor-{node_name}.lock"
+
+
+def _acquire_terminal_supervisor_lock(config_path: Path) -> Any | None:
+    lock_path = _terminal_supervisor_lock_path(config_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("a+")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        return None
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
 
 
 def _terminal_supervisor_shutdown_signal(_signum: int, _frame: Any) -> None:
@@ -999,7 +1045,10 @@ class _PtySession:
 
 
 def _terminal_shell() -> str:
-    candidates = [os.environ.get("SHELL") or "", "/bin/bash", "/bin/zsh", "/bin/sh"]
+    if node_agent_os() == "darwin":
+        candidates = [os.environ.get("SHELL") or "", "/bin/zsh", "/bin/bash", "/bin/sh"]
+    else:
+        candidates = [os.environ.get("SHELL") or "", "/bin/bash", "/bin/zsh", "/bin/sh"]
     for candidate in candidates:
         if candidate and Path(candidate).exists():
             return candidate

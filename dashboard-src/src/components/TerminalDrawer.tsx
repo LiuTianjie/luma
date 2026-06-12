@@ -26,6 +26,14 @@ export function TerminalDrawer({
   const [status, setStatus] = useState<TerminalStatus>("connecting");
 
   useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     const term = new Terminal({
@@ -124,12 +132,18 @@ export function TerminalDrawer({
   }[status];
 
   return (
-    <div className="detail-backdrop terminal-backdrop" onClick={onClose}>
-      <aside className="detail-drawer terminal-drawer" onClick={(event) => event.stopPropagation()}>
+    <div className="terminal-modal-backdrop" onClick={onClose}>
+      <section
+        className="terminal-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="terminal-modal-title"
+        onClick={(event) => event.stopPropagation()}
+      >
         <header>
           <div>
             <p className="eyebrow">Terminal</p>
-            <h2>{node.name || "-"}</h2>
+            <h2 id="terminal-modal-title">{node.name || "-"}</h2>
             <span className="terminal-node-meta">{node.region || "-"} · {node.agentOs || "agent"} · {statusLabel}</span>
           </div>
           <button type="button" className="icon-button" onClick={onClose}>
@@ -137,7 +151,7 @@ export function TerminalDrawer({
           </button>
         </header>
         <div className="terminal-surface" ref={containerRef} />
-      </aside>
+      </section>
     </div>
   );
 }
