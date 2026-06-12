@@ -17,10 +17,10 @@ const devDashboardPayload = {
     swarm: { available: true },
   },
   nodes: [
-    { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true, metrics: { cpuPercent: 21.4, load1: 0.82, memoryUsedPercent: 58.2, memoryTotalBytes: 17179869184 }, capacity: { cpus: 4, memoryBytes: 17179869184 } },
-    { name: "home-mac-mini", displayName: "home-mac-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, metrics: { cpuPercent: 13.8, load1: 1.1, memoryUsedPercent: 61.5, memoryTotalBytes: 34359738368 }, capacity: { cpus: 10, memoryBytes: 34359738368 } },
-    { name: "tailscale-relay", displayName: "tailscale-relay", region: "home", role: "worker", state: "ready", availability: "active", leader: false, metrics: { cpuPercent: 8.1, load1: 0.2, memoryUsedPercent: 44.0, memoryTotalBytes: 8589934592 }, capacity: { cpus: 4, memoryBytes: 8589934592 } },
-    { name: "m4mini", displayName: "m4mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, metrics: { cpuPercent: 29.7, load1: 2.4, memoryUsedPercent: 67.9, memoryTotalBytes: 17179869184 }, capacity: { cpus: 8, memoryBytes: 17179869184 } },
+    { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 21.4, load1: 0.82, memoryUsedPercent: 58.2, memoryTotalBytes: 17179869184 }, capacity: { cpus: 4, memoryBytes: 17179869184 } },
+    { name: "home-mac-mini", displayName: "home-mac-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 13.8, load1: 1.1, memoryUsedPercent: 61.5, memoryTotalBytes: 34359738368 }, capacity: { cpus: 10, memoryBytes: 34359738368 } },
+    { name: "tailscale-relay", displayName: "tailscale-relay", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 8.1, load1: 0.2, memoryUsedPercent: 44.0, memoryTotalBytes: 8589934592 }, capacity: { cpus: 4, memoryBytes: 8589934592 } },
+    { name: "m4mini", displayName: "m4mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 29.7, load1: 2.4, memoryUsedPercent: 67.9, memoryTotalBytes: 17179869184 }, capacity: { cpus: 8, memoryBytes: 17179869184 } },
   ],
   services: [
     {
@@ -162,6 +162,13 @@ const devDashboardPayload = {
   errors: [],
 };
 
+const devNodeAddresses: Record<string, string> = {
+  "cn-edge": "100.64.0.1",
+  "home-mac-mini": "100.64.0.2",
+  "tailscale-relay": "100.115.5.84",
+  m4mini: "100.64.0.4",
+};
+
 (devDashboardPayload.services as any[]).forEach((service) => {
   service.resources = {
     reservations: { cpus: 0.25, memoryBytes: 134217728 },
@@ -178,12 +185,27 @@ const devDashboardPayload = {
   service.tasks = (service.nodes || []).map((node: string, index: number) => ({
     id: `${service.fullName}-${index}`,
     node,
+    region: devDashboardPayload.nodes.find((item) => item.name === node)?.region || service.region || "",
+    nodeAddress: devNodeAddresses[node] || "",
     state: "running",
     desiredState: "running",
     containerId: `${service.fullName}-${index}`.slice(0, 12),
     cpuPercent: service.name === "mihomo" ? 12.7 : 3.4,
     memoryUsageBytes: service.name === "mihomo" ? 241172480 : 89391104,
     memoryPercent: service.name === "mihomo" ? 44.9 : 16.7,
+  }));
+});
+
+(devDashboardPayload.trafficPaths as any[]).forEach((path) => {
+  const service = (devDashboardPayload.services as any[]).find((item) => item.name === path.id || item.stack === path.id);
+  const upstream = [...(path.segments || [])].reverse().find((item: string) => /^https?:\/\//.test(item) || /^\d{1,3}(\.\d{1,3}){3}:/.test(item));
+  path.destinations = (service?.tasks || []).map((task: any) => ({
+    service: service.fullName || service.name || "",
+    region: task.region || service.region || "",
+    node: task.node || "",
+    nodeAddress: task.nodeAddress || "",
+    address: upstream && upstream.includes(task.nodeAddress) ? upstream : "",
+    state: task.state || "",
   }));
 });
 

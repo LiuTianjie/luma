@@ -200,7 +200,7 @@ export EGRESS_SUBSCRIPTION_URL='...'
 luma egress refresh
 ```
 
-Verify image pulls:
+Verify image pulls on the target node:
 
 ```bash
 sudo docker pull hello-world:latest

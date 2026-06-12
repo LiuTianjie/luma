@@ -564,7 +564,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     raw_nodes = _dashboard_docker_list("/nodes", "nodes", errors)
     node_by_id = _dashboard_node_map(raw_nodes)
     registered_nodes = _registered_nodes_summary(state.get("nodes") if isinstance(state.get("nodes"), dict) else {})
-    nodes = _dashboard_nodes(registered_nodes, raw_nodes)
+    nodes = _dashboard_nodes(registered_nodes, raw_nodes, terminal_nodes=TERMINAL_BROKER.connected_nodes())
 
     raw_services = _dashboard_docker_list("/services", "services", errors)
     raw_tasks = _dashboard_docker_list("/tasks", "tasks", errors)
@@ -1149,20 +1149,12 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
 
     try:
-        if image_pull_requires_egress(service.image) or _registry_auth_for_service(state, service):
-            _deploy_step(
-                steps,
-                "Prepare image pull network",
-                lambda: ensure_image_pull_network(state, service.image),
-                progress=progress,
-            )
-
         service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state), progress=progress)
         registry_auth = _registry_auth_for_service(state, service)
         service, image_result = _deploy_step(
             steps,
             "Resolve image",
-            lambda: resolve_service_image(config, service, registry_auth=registry_auth),
+            lambda: resolve_service_image(config, service, registry_auth=registry_auth, state=state),
             progress=progress,
         )
         _deploy_step(
@@ -3518,8 +3510,14 @@ def _dashboard_node_map(raw_nodes: list[Dict[str, Any]]) -> dict[str, Dict[str, 
     return result
 
 
-def _dashboard_nodes(registered_nodes: list[Dict[str, Any]], raw_nodes: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+def _dashboard_nodes(
+    registered_nodes: list[Dict[str, Any]],
+    raw_nodes: list[Dict[str, Any]],
+    *,
+    terminal_nodes: set[str] | None = None,
+) -> list[Dict[str, Any]]:
     merged: dict[str, Dict[str, Any]] = {}
+    connected_terminals = terminal_nodes or set()
     for node in registered_nodes:
         name = str(node.get("name") or "")
         if not name:
@@ -3537,6 +3535,11 @@ def _dashboard_nodes(registered_nodes: list[Dict[str, Any]], raw_nodes: list[Dic
         registered = merged[name].get("registered") if isinstance(merged[name].get("registered"), dict) else {}
         swarm = merged[name].get("swarm") if isinstance(merged[name].get("swarm"), dict) else {}
         display = str(registered.get("displayName") or swarm.get("hostname") or name)
+        capabilities = [str(value) for value in registered.get("storageCapabilities") or []]
+        agent_status = str(registered.get("agentStatus") or "missing")
+        terminal_capable = "terminal" in capabilities
+        terminal_connected = name in connected_terminals
+        terminal_status = "connected" if terminal_connected else "waiting" if agent_status == "ready" and terminal_capable else "unsupported"
         rows.append(
             {
                 "name": name,
@@ -3548,10 +3551,12 @@ def _dashboard_nodes(registered_nodes: list[Dict[str, Any]], raw_nodes: list[Dic
                 "state": str(swarm.get("state") or "missing"),
                 "availability": str(swarm.get("availability") or ""),
                 "leader": bool(swarm.get("leader")),
-                "agentStatus": str(registered.get("agentStatus") or "missing"),
+                "agentStatus": agent_status,
                 "agentOs": str(registered.get("agentOs") or ""),
                 "agentLastSeen": int(registered.get("agentLastSeen") or 0),
-                "storageCapabilities": [str(value) for value in registered.get("storageCapabilities") or []],
+                "storageCapabilities": capabilities,
+                "terminalConnected": terminal_connected,
+                "terminalStatus": terminal_status,
                 "metrics": registered.get("metrics") if isinstance(registered.get("metrics"), dict) else {},
                 "capacity": swarm.get("capacity") if isinstance(swarm.get("capacity"), dict) else {},
             }
@@ -3841,6 +3846,8 @@ def _dashboard_task_counts(tasks: list[Dict[str, Any]], node_by_id: dict[str, Di
             {
                 "id": str(task.get("ID") or "")[:12],
                 "node": node_label,
+                "region": str((node or {}).get("region") or ""),
+                "nodeAddress": str((node or {}).get("addr") or ""),
                 "state": state or "unknown",
                 "desiredState": str(task.get("DesiredState") or ""),
                 "containerId": str(container_status.get("ContainerID") or "")[:12],
@@ -3960,9 +3967,56 @@ def _dashboard_traffic_paths(
                 "kind": exposure,
                 "domain": str(service.get("domain") or ""),
                 "segments": segments,
+                "destinations": _traffic_path_destinations(
+                    service,
+                    service.get("_routeFile") if isinstance(service.get("_routeFile"), dict) else route_files.get(route_id, {}),
+                ),
             }
         )
     return paths
+
+
+def _traffic_path_destinations(service: Dict[str, Any], route_file: Dict[str, Any]) -> list[Dict[str, str]]:
+    tasks = service.get("tasks") if isinstance(service.get("tasks"), list) else []
+    running_tasks = [task for task in tasks if isinstance(task, dict) and str(task.get("state") or "") == "running"]
+    upstreams = route_file.get("upstreams") if isinstance(route_file, dict) and isinstance(route_file.get("upstreams"), list) else []
+    destinations: list[Dict[str, str]] = []
+    for index, task in enumerate(running_tasks):
+        node = str(task.get("node") or "")
+        node_address = str(task.get("nodeAddress") or "")
+        address = _upstream_for_node(node_address, upstreams)
+        destinations.append(
+            {
+                "service": str(service.get("fullName") or service.get("name") or ""),
+                "region": str(task.get("region") or service.get("region") or ""),
+                "node": node,
+                "nodeAddress": node_address,
+                "address": address or (str(upstreams[index]) if index < len(upstreams) else ""),
+                "state": str(task.get("state") or ""),
+            }
+        )
+    if destinations:
+        return destinations
+    return [
+        {
+            "service": str(service.get("fullName") or service.get("name") or ""),
+            "region": str(service.get("region") or ""),
+            "node": "",
+            "nodeAddress": "",
+            "address": "",
+            "state": "unresolved",
+        }
+    ]
+
+
+def _upstream_for_node(node_address: str, upstreams: list[Any]) -> str:
+    if not node_address:
+        return ""
+    for upstream in upstreams:
+        value = str(upstream)
+        if node_address in value:
+            return value
+    return ""
 
 
 def _swarm_node_summary_item(node: Dict[str, Any]) -> Dict[str, Any]:
@@ -4426,7 +4480,11 @@ def resolve_service_image(
     service: ServiceSpec,
     *,
     registry_auth: Dict[str, str] | None = None,
+    state: Dict[str, Any] | None = None,
 ) -> tuple[ServiceSpec, Dict[str, Any]]:
+    if state is not None:
+        return _resolve_service_image_for_deployment(config, service, state, registry_auth=registry_auth)
+
     images = [service.image, *_fallback_images(config, service.image)]
     errors: list[str] = []
     platform = str(service.node_platform or "").strip()
@@ -4449,6 +4507,89 @@ def resolve_service_image(
         except LumaError as exc:
             errors.append(f"{image}: {exc}")
     raise LumaError("unable to pull service image; tried " + "; ".join(errors))
+
+
+def _resolve_service_image_for_deployment(
+    config: Any,
+    service: ServiceSpec,
+    state: Dict[str, Any],
+    *,
+    registry_auth: Dict[str, str] | None = None,
+) -> tuple[ServiceSpec, Dict[str, Any]]:
+    if not service.node:
+        return service, _deferred_image_result(service, registry_auth=registry_auth, reason="Swarm will pull on the scheduled node")
+
+    if not _node_agent_has_capability(state, service.node, "docker-image"):
+        return service, _deferred_image_result(
+            service,
+            registry_auth=registry_auth,
+            reason=f"Target node agent on {service.node} does not advertise docker-image",
+        )
+
+    images = [service.image, *_fallback_images(config, service.image)]
+    errors: list[str] = []
+    platform = str(service.node_platform or "").strip()
+    for image in images:
+        image_registry_auth = registry_auth if registry_auth_matches_image(registry_auth, image) else None
+        force_pull = image_uses_mutable_latest_tag(image)
+        payload: Dict[str, Any] = {
+            "image": image,
+            "forcePull": force_pull,
+            "platform": platform,
+        }
+        if image_registry_auth:
+            payload["registryAuth"] = image_registry_auth
+        try:
+            result = _run_node_agent_task(
+                state,
+                service.node,
+                "resolve-docker-image",
+                payload,
+                timeout=600,
+                required_capability="docker-image",
+            )
+            deploy_image = str(result.get("deployed") or result.get("digest") or image)
+            image_result = {
+                "requested": service.image,
+                "selected": image,
+                "deployed": deploy_image,
+                "fallback": image != service.image,
+                "registryAuth": bool(image_registry_auth),
+                "forcePull": force_pull,
+                "platform": platform,
+                "node": service.node,
+                "resolvedBy": "target-node",
+            }
+            return replace(service, image=deploy_image), image_result
+        except LumaError as exc:
+            errors.append(f"{image}: {exc}")
+    raise LumaError(f"unable to pull service image on target node {service.node}; tried " + "; ".join(errors))
+
+
+def _deferred_image_result(service: ServiceSpec, *, registry_auth: Dict[str, str] | None, reason: str) -> Dict[str, Any]:
+    return {
+        "requested": service.image,
+        "selected": service.image,
+        "deployed": service.image,
+        "fallback": False,
+        "registryAuth": bool(registry_auth and registry_auth_matches_image(registry_auth, service.image)),
+        "forcePull": False,
+        "platform": str(service.node_platform or "").strip(),
+        "node": service.node or "",
+        "resolvedBy": "scheduled-node",
+        "deferred": True,
+        "reason": reason,
+    }
+
+
+def _node_agent_has_capability(state: Dict[str, Any], node_name: str, capability: str) -> bool:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    if not isinstance(record, dict):
+        return False
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    capabilities = {str(value) for value in agent.get("capabilities") or []}
+    return capability in capabilities and _node_agent_is_ready(record, required_capability=capability)
 
 
 def ensure_image_present(
@@ -4495,11 +4636,11 @@ def _docker_pull_error_message(status: int, raw: str, *, registry_auth: Dict[str
         if registry_auth:
             message += (
                 "; Docker daemon could not reach the private registry. Luma does not route private registry pulls through egress; "
-                "verify the manager Docker daemon proxy bypass with `docker info` HTTPProxy/HTTPSProxy/NoProxy."
+                "verify the local Docker daemon proxy bypass with `docker info` HTTPProxy/HTTPSProxy/NoProxy."
             )
         else:
             message += (
-                "; Docker daemon could not reach the registry. Verify the Luma manager egress gateway and Docker daemon proxy "
+                "; Docker daemon could not reach the registry. Verify the local Luma egress gateway and Docker daemon proxy "
                 "with `luma egress setup` and `docker info` HTTPProxy/HTTPSProxy."
             )
     return message
@@ -4665,6 +4806,9 @@ class TerminalBroker:
         self._sessions: dict[str, _TerminalSession] = {}
         self._lock = asyncio.Lock()
         self._pending_auth = asyncio.Semaphore(max(self.per_node_limit * 4, 8))
+
+    def connected_nodes(self) -> set[str]:
+        return set(self._agents)
 
     async def connect_browser(self, websocket: WebSocket) -> None:
         node_name = str(websocket.query_params.get("node") or "").strip()

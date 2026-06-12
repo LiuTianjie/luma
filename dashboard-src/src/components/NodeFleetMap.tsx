@@ -49,7 +49,14 @@ function pressureLabel(value: number, lang: Lang) {
 }
 
 function terminalReady(node: DashboardNode) {
-  return (node.agentStatus || "").toLowerCase() === "ready" && (node.storageCapabilities || []).includes("terminal");
+  return Boolean(node.terminalConnected);
+}
+
+function terminalUnavailableLabel(node: DashboardNode, lang: Lang) {
+  const status = node.terminalStatus || "unsupported";
+  if (status === "waiting") return lang === "zh" ? "Terminal supervisor 未连接" : "Terminal supervisor not connected";
+  if (status === "unsupported") return lang === "zh" ? "节点 agent 不支持 Terminal" : "Node agent does not support Terminal";
+  return lang === "zh" ? "Terminal 不可用" : "Terminal unavailable";
 }
 
 function nodeStateLabel(node: DashboardNode, lang: Lang) {
@@ -199,8 +206,8 @@ export function NodeFleetMap({
                           type="button"
                           className="node-terminal-button"
                           disabled={!hasTerminal || !onTerminal}
-                          title={hasTerminal ? "Terminal" : lang === "zh" ? "Terminal 不可用" : "Terminal unavailable"}
-                          aria-label={hasTerminal ? `Terminal ${node.name || ""}` : lang === "zh" ? "Terminal 不可用" : "Terminal unavailable"}
+                          title={hasTerminal ? "Terminal" : terminalUnavailableLabel(node, lang)}
+                          aria-label={hasTerminal ? `Terminal ${node.name || ""}` : terminalUnavailableLabel(node, lang)}
                           onClick={(event) => {
                             event.stopPropagation();
                             onTerminal?.(node);

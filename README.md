@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.85"
+python -m pip install "luma-infra==0.1.86"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.85 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.86 sh
 ```
 
 Develop from source:
@@ -253,7 +253,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.85"
+python -m pip install "luma-infra==0.1.86"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -295,8 +295,8 @@ For private images, keep registry credentials out of the manifest. Save them onc
 printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --password-stdin
 ```
 
-After that, manifests still only contain the image name, for example `image: ghcr.io/acme/private-api:1.0.0`. During deploy, Luma matches the registry host, pre-pulls with Docker registry auth, and sends Portainer/Swarm the registry auth needed by the node that receives the task. This is useful for private GHCR images produced by GitHub Actions, including images built from repositories that also publish docs or marketing pages through GitHub Pages.
-Private registry image pulls are separate from runtime `proxy: true`. If the Docker daemon has a global proxy and a private registry fails before auth, check `docker info` proxy settings and make sure that registry host is in Docker daemon `NO_PROXY`; `curl https://<registry>/v2/` returning `401` usually means the registry is reachable and Docker proxy routing is the next thing to inspect.
+After that, manifests still only contain the image name, for example `image: ghcr.io/acme/private-api:1.0.0`. During deploy, Luma matches the registry host and sends Portainer/Swarm the registry auth needed by the node that receives the task. Fixed-node deployments may ask that target node to resolve the image first; unpinned services are pulled by the node where Swarm schedules the task, not by the manager as a deploy prerequisite. This is useful for private GHCR images produced by GitHub Actions, including images built from repositories that also publish docs or marketing pages through GitHub Pages.
+Private registry image pulls are separate from runtime `proxy: true`. If a scheduled node has a global Docker proxy and a private registry fails before auth, check `docker info` proxy settings on that node and make sure that registry host is in Docker daemon `NO_PROXY`; `curl https://<registry>/v2/` returning `401` usually means the registry is reachable and Docker proxy routing is the next thing to inspect.
 
 Do not put sensitive values directly in manifests. Store them in the control plane:
 

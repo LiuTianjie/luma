@@ -3,7 +3,7 @@ import dagre from "dagre";
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
 import { t } from "../i18n";
-import type { Lang, TrafficPath } from "../types";
+import type { Lang, TrafficDestination, TrafficPath } from "../types";
 import { Badge, PrimaryCell } from "./ui";
 
 type TopologyNode = {
@@ -26,16 +26,32 @@ type TopologyEdge = {
 
 const NODE_WIDTH = 190;
 const NODE_HEIGHT = 68;
+const DESTINATION_WIDTH = 220;
 
 function normalizePathSegments(path: TrafficPath) {
   const segments = (path.segments || []).filter(Boolean);
   const kind = path.kind || "";
   const domain = (path.domain || "").trim();
   const publicPrefix = domain ? [domain] : [];
+  if (path.destinations?.length) return filterDestinationSegments([...publicPrefix, ...segments], path.destinations);
   if (kind === "cn-edge" || kind === "external-edge") return [...publicPrefix, ...segments.slice(0, 4)];
   if (kind === "cloudflare-tunnel") return [...publicPrefix, ...segments.slice(0, 3)];
   if (kind === "tailscale-relay" || kind === "tcp-relay") return [...publicPrefix, ...segments];
   return segments.slice(0, 2);
+}
+
+function filterDestinationSegments(segments: string[], destinations: TrafficDestination[]) {
+  const destinationValues = new Set<string>();
+  destinations.forEach((destination) => {
+    [destination.address, destination.node, destination.nodeAddress].forEach((value) => {
+      if (value) destinationValues.add(value);
+    });
+  });
+  const filtered = segments.filter((segment) => {
+    if (destinationValues.has(segment)) return false;
+    return !Array.from(destinationValues).some((value) => value && segment.includes(value));
+  });
+  return filtered.length ? filtered : segments;
 }
 
 function classifySegment(segment: string) {
@@ -48,6 +64,19 @@ function classifySegment(segment: string) {
   if (value.includes("missing") || value.includes("unresolved") || value.includes("no running")) return { kind: "issue", meta: "Needs attention" };
   if (/^https?:\/\//.test(value) || /^\d{1,3}(\.\d{1,3}){3}/.test(value)) return { kind: "target", meta: "Network target" };
   return { kind: "service", meta: "Swarm service" };
+}
+
+function destinationLabel(destination: TrafficDestination) {
+  const region = destination.region || "unknown";
+  const node = destination.node || "unresolved";
+  const address = destination.address || destination.nodeAddress || "";
+  return ["Destination", `${region} / ${node}`, address].filter(Boolean).join("\n");
+}
+
+function destinationMeta(destination: TrafficDestination) {
+  const state = destination.state || "unknown";
+  const service = destination.service || "";
+  return [state, service].filter(Boolean).join(" · ");
 }
 
 function buildTopology(paths: TrafficPath[]): {
@@ -73,6 +102,12 @@ function buildTopology(paths: TrafficPath[]): {
     const nextId = `n-${segmentIds.size + 1}`;
     segmentIds.set(key, nextId);
     return nextId;
+  };
+
+  const getDestinationId = (pathIndex: number, destinationIndex: number, destination: TrafficDestination) => {
+    const routeKey = destination.service || destination.address || destination.node || "destination";
+    const nodeKey = destination.node || destination.nodeAddress || destination.address || destinationIndex;
+    return `d-${pathIndex}-${destinationIndex}-${routeKey}-${nodeKey}`;
   };
 
   const addSegmentNode = (segment: string, routeLabel: string) => {
@@ -104,9 +139,11 @@ function buildTopology(paths: TrafficPath[]): {
   paths.forEach((path, pathIndex) => {
     const routeLabel = path.domain || path.id || `route-${pathIndex + 1}`;
     const segments = normalizePathSegments(path);
+    let lastSegmentId = "";
 
     segments.forEach((segment, segmentIndex) => {
       const id = addSegmentNode(segment, routeLabel);
+      lastSegmentId = id;
       const nextSegment = segments[segmentIndex + 1];
       if (!nextSegment) return;
       edges.push({
@@ -117,13 +154,35 @@ function buildTopology(paths: TrafficPath[]): {
         kind: path.kind || "unknown",
       });
     });
+
+    (path.destinations || []).forEach((destination, destinationIndex) => {
+      const id = getDestinationId(pathIndex, destinationIndex, destination);
+      addRouteCount(id, routeLabel);
+      if (!nodeData.has(id)) {
+        nodeData.set(id, {
+          id,
+          label: destinationLabel(destination),
+          meta: destinationMeta(destination),
+          kind: destination.state === "unresolved" ? "issue" : "destination",
+        });
+      }
+      if (lastSegmentId) {
+        edges.push({
+          id: `e-${pathIndex}-destination-${destinationIndex}`,
+          source: lastSegmentId,
+          target: id,
+          label: "",
+          kind: path.kind || "unknown",
+        });
+      }
+    });
   });
 
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
   graph.setGraph({ rankdir: "LR", nodesep: 48, ranksep: 120, marginx: 40, marginy: 40 });
 
-  nodeData.forEach((node) => graph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT }));
+  nodeData.forEach((node) => graph.setNode(node.id, { width: node.kind === "destination" ? DESTINATION_WIDTH : NODE_WIDTH, height: NODE_HEIGHT }));
   edges.forEach((edge) => graph.setEdge(edge.source, edge.target));
   dagre.layout(graph);
 
@@ -176,6 +235,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
   const proxyBorder = "#8b5cf6"; // Violet
   const issueBorder = "#f43f5e"; // Rose
   const targetBorder = isDark ? "#475569" : "#cbd5e1";
+  const destinationBorder = "#f6bd4f";
 
   return [
     {
@@ -204,6 +264,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     { selector: "node.proxy", style: { "border-width": 2.5, "border-color": proxyBorder, "background-color": isDark ? "#1e1b4b" : "#eef2ff" } },
     { selector: "node.tunnel", style: { "border-color": nodeBorder } },
     { selector: "node.target", style: { "border-color": targetBorder, "color": isDark ? "#94a3b8" : "#475569" } },
+    { selector: "node.destination", style: { "border-width": 2.5, "border-color": destinationBorder, "background-color": isDark ? "#29200d" : "#fffbeb", "width": `${DESTINATION_WIDTH}px` } },
     { selector: "node.issue", style: { "border-width": 2.5, "border-color": issueBorder, "background-color": isDark ? "#4c0519" : "#fff1f2" } },
     {
       selector: "edge",
@@ -343,12 +404,19 @@ export function TrafficPaths({
             </div>
           </div>
           <aside className="route-index" aria-label={t(lang, "trafficPaths")}>
-            {paths.map((path, index) => (
-              <article key={`${path.id || "path"}-${index}`}>
-                <PrimaryCell meta={path.domain || t(lang, "noPublicDomain")} title={path.id || "-"} />
-                <Badge value={path.kind || "unknown"} />
-              </article>
-            ))}
+            {paths.map((path, index) => {
+              const destinations = path.destinations || [];
+              const destinationSummary = destinations
+                .map((destination) => [destination.region, destination.node].filter(Boolean).join(" / "))
+                .filter(Boolean)
+                .join(", ");
+              return (
+                <article key={`${path.id || "path"}-${index}`}>
+                  <PrimaryCell meta={destinationSummary || path.domain || t(lang, "noPublicDomain")} title={path.id || "-"} />
+                  <Badge value={path.kind || "unknown"} />
+                </article>
+              );
+            })}
           </aside>
         </div>
       ) : (

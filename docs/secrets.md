@@ -80,7 +80,7 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 luma registry list
 ```
 
-Luma uses these credentials only for image pulls and Portainer/Swarm registry association during deploy. They are not rendered into stack YAML and are not passed to service containers as environment variables. `luma registry list` returns only the registry host and username.
+Luma uses these credentials only for target-node image pulls and Portainer/Swarm registry association during deploy. They are not rendered into stack YAML and are not passed to service containers as environment variables. `luma registry list` returns only the registry host and username.
 
 `luma registry remove <host>` removes the credential from Luma Control and attempts to delete only the matching Luma-managed Portainer registry entry. It does not revoke provider-issued tokens and cannot remove auth snapshots already attached to existing Swarm services; rotate or revoke the token at the registry provider when access must be invalidated.
 

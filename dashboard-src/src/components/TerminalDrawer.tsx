@@ -23,6 +23,7 @@ export function TerminalDrawer({
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const sessionRef = useRef("");
+  const reportedCloseRef = useRef(false);
   const [status, setStatus] = useState<TerminalStatus>("connecting");
 
   useEffect(() => {
@@ -85,6 +86,7 @@ export function TerminalDrawer({
         setStatus("connected");
         sessionRef.current = String(message.sessionId || "");
         sendResize();
+        socket.send(JSON.stringify({ type: "input", sessionId: sessionRef.current, data: "\r" }));
       } else if (kind === "output") {
         term.write(String(message.data || ""));
       } else if (kind === "exit") {
@@ -92,16 +94,30 @@ export function TerminalDrawer({
         term.writeln("");
         term.writeln(`Session ended (${message.exitCode ?? "-"})`);
       } else if (kind === "error") {
+        reportedCloseRef.current = true;
         setStatus("error");
         term.writeln("");
         term.writeln(String(message.message || "Terminal error"));
       }
     });
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
+      if (!sessionRef.current && !reportedCloseRef.current) {
+        setStatus("error");
+        term.writeln("");
+        term.writeln(
+          lang === "zh"
+            ? `Terminal 连接已关闭（${event.code || "-"}）。请确认该节点的 terminal supervisor 已连接到 Luma Control。`
+            : `Terminal connection closed (${event.code || "-"}). Confirm the node terminal supervisor is connected to Luma Control.`,
+        );
+        return;
+      }
       setStatus((current) => current === "ended" ? current : "ended");
     });
     socket.addEventListener("error", () => {
+      reportedCloseRef.current = true;
       setStatus("error");
+      term.writeln("");
+      term.writeln(lang === "zh" ? "Terminal WebSocket 连接失败。" : "Terminal WebSocket connection failed.");
     });
 
     const disposable = term.onData((data) => {

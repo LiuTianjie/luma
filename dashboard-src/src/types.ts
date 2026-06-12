@@ -44,6 +44,8 @@ export type ActualResourceValues = {
 export type DashboardTask = {
   id?: string;
   node?: string;
+  region?: string;
+  nodeAddress?: string;
   state?: string;
   desiredState?: string;
   containerId?: string;
@@ -73,6 +75,8 @@ export type DashboardNode = {
   agentOs?: string;
   agentLastSeen?: number;
   storageCapabilities?: string[];
+  terminalConnected?: boolean;
+  terminalStatus?: string;
   metrics?: NodeMetrics;
   capacity?: ResourceValues;
 };
@@ -131,6 +135,16 @@ export type TrafficPath = {
   domain?: string;
   kind?: string;
   segments?: string[];
+  destinations?: TrafficDestination[];
+};
+
+export type TrafficDestination = {
+  service?: string;
+  region?: string;
+  node?: string;
+  nodeAddress?: string;
+  address?: string;
+  state?: string;
 };
 
 export type DashboardPayload = {

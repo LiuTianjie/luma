@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import fcntl
 import json
 import os
@@ -45,9 +46,9 @@ def node_agent_os() -> str:
 def node_agent_capabilities(os_name: str | None = None) -> list[str]:
     os_value = os_name or node_agent_os()
     if os_value == "linux":
-        return ["nfs-host", "nfs-client", "managed-volume-path", "docker-volume", "docker-egress-proxy", "luma-update", "terminal"]
+        return ["nfs-host", "nfs-client", "managed-volume-path", "docker-volume", "docker-image", "docker-egress-proxy", "luma-update", "terminal"]
     if os_value == "darwin":
-        return ["nfs-host", "managed-volume-path", "docker-volume", "luma-update", "terminal"]
+        return ["nfs-host", "managed-volume-path", "docker-volume", "docker-image", "luma-update", "terminal"]
     return []
 
 
@@ -1094,6 +1095,15 @@ def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
             or "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
         )
         return configure_docker_egress_proxy(proxy=proxy, no_proxy=no_proxy)
+    if action == "resolve-docker-image":
+        image = _safe_docker_image_ref(_required(payload, "image"))
+        registry_auth = payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None
+        return resolve_docker_image(
+            image=image,
+            registry_auth=registry_auth,
+            force_pull=bool(payload.get("forcePull")),
+            platform=str(payload.get("platform") or ""),
+        )
     if action == "update-luma":
         return update_luma_install(install_ref=str(payload.get("installRef") or ""))
     raise LumaError(f"unsupported node agent task action: {action}")
@@ -1142,6 +1152,122 @@ def configure_docker_egress_proxy(*, proxy: str, no_proxy: str) -> Dict[str, Any
     )
     LocalExecutor().sudo(command)
     return {"proxy": proxy, "noProxy": no_proxy, "message": "Docker daemon egress proxy configured"}
+
+
+def resolve_docker_image(
+    *,
+    image: str,
+    registry_auth: Dict[str, Any] | None = None,
+    force_pull: bool = False,
+    platform: str = "",
+) -> Dict[str, Any]:
+    image = _safe_docker_image_ref(image)
+    platform = str(platform or "").strip()
+    executor = LocalExecutor()
+    with tempfile.TemporaryDirectory(prefix="luma-docker-config-") as docker_config:
+        _write_docker_auth_config(Path(docker_config), registry_auth)
+        if not force_pull and not platform:
+            inspect = executor.run_result(_docker_image_inspect_command(image, docker_config=docker_config), timeout=60)
+            if inspect.code == 0:
+                digest = _first_repo_digest(image, inspect.output)
+                return {
+                    "image": image,
+                    "deployed": digest or image,
+                    "digest": digest,
+                    "pulled": False,
+                    "platform": platform,
+                    "message": "Target node image already present",
+                }
+        env_prefix = f"DOCKER_CONFIG={shlex.quote(docker_config)}"
+        pull_command = f"set -euo pipefail; {_docker_cli_prelude()}; {env_prefix} \"$docker_cli\" pull"
+        if platform:
+            pull_command += f" --platform {shlex.quote(platform)}"
+        pull_command += f" {shlex.quote(image)}"
+        pull = executor.run_result(pull_command, timeout=600)
+        if pull.code != 0:
+            raise LumaError(_docker_image_pull_error(image=image, output=pull.output, platform=platform))
+        inspect = executor.run_result(_docker_image_inspect_command(image, docker_config=docker_config), timeout=60)
+        digest = _first_repo_digest(image, inspect.output) if inspect.code == 0 else ""
+        return {
+            "image": image,
+            "deployed": digest or image,
+            "digest": digest,
+            "pulled": True,
+            "platform": platform,
+            "message": "Target node image pull ready",
+        }
+
+
+def _docker_image_inspect_command(image: str, *, docker_config: str) -> str:
+    return (
+        f"set -euo pipefail; {_docker_cli_prelude()}; "
+        f"DOCKER_CONFIG={shlex.quote(docker_config)} \"$docker_cli\" image inspect "
+        f"{shlex.quote(image)} --format '{{{{json .RepoDigests}}}}'"
+    )
+
+
+def _write_docker_auth_config(config_dir: Path, registry_auth: Dict[str, Any] | None) -> None:
+    if not registry_auth:
+        return
+    username = str(registry_auth.get("username") or "")
+    password = str(registry_auth.get("password") or "")
+    server = str(registry_auth.get("serveraddress") or registry_auth.get("serverAddress") or "")
+    if not username or not password or not server:
+        return
+    auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.json"
+    config_file.write_text(json.dumps({"auths": {server: {"auth": auth}}}), encoding="utf-8")
+    try:
+        os.chmod(config_file, 0o600)
+    except OSError:
+        pass
+
+
+def _first_repo_digest(image: str, inspect_output: str) -> str:
+    try:
+        digests = json.loads((inspect_output or "").strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        return ""
+    if not isinstance(digests, list):
+        return ""
+    repository = _docker_image_repository(image)
+    for value in digests:
+        digest = str(value or "")
+        if repository and digest.startswith(f"{repository}@"):
+            return digest
+    for value in digests:
+        digest = str(value or "")
+        if "@sha256:" in digest:
+            return digest
+    return ""
+
+
+def _docker_image_repository(image: str) -> str:
+    image = image.split("@", 1)[0]
+    if ":" in image.rsplit("/", 1)[-1]:
+        return image.rsplit(":", 1)[0]
+    return image
+
+
+def _safe_docker_image_ref(value: str) -> str:
+    image = str(value or "").strip()
+    if not image:
+        raise LumaError("docker image is required")
+    if any(ch.isspace() for ch in image) or any(ch in image for ch in ("'", '"', "`", "$", ";", "|", "&", "<", ">")):
+        raise LumaError(f"invalid docker image reference: {value}")
+    return image
+
+
+def _docker_image_pull_error(*, image: str, output: str, platform: str = "") -> str:
+    detail = (output or "").strip()
+    message = f"target node Docker pull failed for {image}: {detail}"
+    lowered = detail.lower()
+    if platform and any(marker in lowered for marker in ("no matching manifest", "no match for platform", "not found")):
+        message += f"; image does not provide a manifest for target platform {platform}"
+    if any(marker in lowered for marker in ("failed to do request", "eof", "timeout", "connection reset")):
+        message += "; target node cannot reach the registry, configure registry egress/proxy for that node or use a reachable mirror"
+    return message
 
 
 def update_luma_install(*, install_ref: str = "") -> Dict[str, Any]:

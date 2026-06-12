@@ -2,6 +2,24 @@ import { localizeState, t } from "../i18n";
 import type { DashboardNode, Lang } from "../types";
 import { Badge, PrimaryCell, StatePill } from "./ui";
 
+function terminalReady(node: DashboardNode) {
+  return Boolean(node.terminalConnected);
+}
+
+function terminalLabel(node: DashboardNode, lang: Lang) {
+  if (node.terminalConnected) return "Terminal";
+  if (node.terminalStatus === "waiting") return lang === "zh" ? "Terminal 等待" : "Terminal waiting";
+  return lang === "zh" ? "Terminal 不支持" : "Terminal unsupported";
+}
+
+function agentSummary(node: DashboardNode) {
+  return [
+    node.agentStatus || "missing",
+    node.agentOs || "",
+    node.terminalStatus ? `terminal: ${node.terminalStatus}` : "",
+  ].filter(Boolean).join(" / ");
+}
+
 export function NodesTable({
   lang,
   nodes,
@@ -48,27 +66,28 @@ export function NodesTable({
           </thead>
           <tbody>
             {nodes.map((node, index) => {
-              const terminalReady = (node.agentStatus || "").toLowerCase() === "ready" && (node.storageCapabilities || []).includes("terminal");
+              const hasTerminal = terminalReady(node);
               return (
                 <tr key={`${node.name || "node"}-${index}`} onClick={() => onSelect(node)}>
                   <td><PrimaryCell meta={node.displayName} title={node.name || "-"} /></td>
                   <td><Badge value={node.region || "-"} /></td>
                   <td><Badge value={node.role || "-"} /></td>
                   <td><StatePill label={localizeState(lang, node.state)} value={node.state} /></td>
-                  <td><Badge value={`${node.agentStatus || "missing"}${node.agentOs ? ` / ${node.agentOs}` : ""}`} /></td>
+                  <td><Badge value={agentSummary(node)} /></td>
                   <td><Badge value={node.availability || "-"} /></td>
                   <td>{node.leader ? <Badge value={t(lang, "yes")} /> : "-"}</td>
                   <td>
                     <button
                       type="button"
                       className="table-action-button"
-                      disabled={!terminalReady || !onTerminal}
+                      disabled={!hasTerminal || !onTerminal}
+                      title={terminalLabel(node, lang)}
                       onClick={(event) => {
                         event.stopPropagation();
                         onTerminal?.(node);
                       }}
                     >
-                      Terminal
+                      {hasTerminal ? "Terminal" : lang === "zh" ? "不可用" : "Unavailable"}
                     </button>
                   </td>
                 </tr>

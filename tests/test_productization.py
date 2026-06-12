@@ -361,6 +361,33 @@ class ProductConfigTests(unittest.TestCase):
         self.assertFalse(run.call_args.kwargs.get("prefer_container", True))
         self.assertEqual(result["name"], "nextcloud_nextcloud-db")
 
+    def test_node_agent_can_resolve_docker_image_with_registry_auth(self):
+        pull_result = Mock(code=0, output="pulled\n")
+        inspect_result = Mock(code=0, output='["ghcr.io/acme/api@sha256:abc123"]\n')
+        with patch("luma.agent.LocalExecutor") as executor:
+            executor.return_value.run_result.side_effect = [pull_result, inspect_result]
+            result = execute_agent_task(
+                {
+                    "action": "resolve-docker-image",
+                    "payload": {
+                        "image": "ghcr.io/acme/api:latest",
+                        "platform": "linux/arm64",
+                        "forcePull": True,
+                        "registryAuth": {
+                            "serveraddress": "ghcr.io",
+                            "username": "octo",
+                            "password": "secret",
+                        },
+                    },
+                }
+            )
+        commands = "\n".join(call.args[0] for call in executor.return_value.run_result.call_args_list)
+        self.assertIn("\"$docker_cli\" pull --platform linux/arm64 ghcr.io/acme/api:latest", commands)
+        self.assertIn("DOCKER_CONFIG=", commands)
+        self.assertNotIn("secret", commands)
+        self.assertEqual(result["deployed"], "ghcr.io/acme/api@sha256:abc123")
+        self.assertTrue(result["pulled"])
+
     def test_node_agent_can_update_luma_install(self):
         completed = Mock(returncode=0, stdout="installed\n")
         with patch("luma.agent.subprocess.run", return_value=completed) as run, patch("luma.agent.LocalExecutor") as executor:
@@ -378,6 +405,8 @@ class ProductConfigTests(unittest.TestCase):
 
         self.assertIn("luma-update", node_agent_capabilities("linux"))
         self.assertIn("luma-update", node_agent_capabilities("darwin"))
+        self.assertIn("docker-image", node_agent_capabilities("linux"))
+        self.assertIn("docker-image", node_agent_capabilities("darwin"))
         self.assertIn("terminal", node_agent_capabilities("linux"))
         self.assertIn("terminal", node_agent_capabilities("darwin"))
 
@@ -3593,6 +3622,11 @@ class ControlApiTests(unittest.TestCase):
                         "region": "home",
                         "status": "labeled",
                         "swarmNodeId": "node-id-home",
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["docker-image"],
+                        },
                         "labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"},
                     }
                 }
@@ -3620,23 +3654,21 @@ class ControlApiTests(unittest.TestCase):
                         "Status": {"State": "ready", "Addr": "100.64.0.2"},
                     }
                 ]
-                calls = []
-
-                def fake_raw(method, path, *, headers=None):
-                    calls.append((method, path))
-                    self.assertEqual(method, "POST")
-                    self.assertIn("platform=linux/arm64", path)
-                    return 500, '{"message":"no matching manifest for linux/arm64/v8 in the manifest list entries"}'
-
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.docker_request", return_value=docker_nodes
-                ), patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
+                ), patch(
+                    "luma.control.server._run_node_agent_task",
+                    side_effect=LumaError("target node Docker pull failed; image does not provide a manifest for target platform linux/arm64"),
+                ) as agent:
                     with self.assertRaisesRegex(LumaError, "target platform linux/arm64"):
                         handle_deployment(
                             state["deployToken"],
                             {"manifest": manifest, "sourceName": "pura.yaml", "skipDns": True, "skipPortainer": True},
                         )
-                self.assertTrue(calls)
+                agent.assert_called_once()
+                self.assertEqual(agent.call_args.args[1], "home-mac-mini")
+                self.assertEqual(agent.call_args.args[2], "resolve-docker-image")
+                self.assertEqual(agent.call_args.args[3]["platform"], "linux/arm64")
                 self.assertFalse((root / "stacks" / "home" / "pura" / "stack.yml").exists())
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -3654,6 +3686,11 @@ class ControlApiTests(unittest.TestCase):
                         "region": "home",
                         "status": "labeled",
                         "swarmNodeId": "node-id-home",
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["docker-image"],
+                        },
                         "labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"},
                     }
                 }
@@ -3683,21 +3720,24 @@ class ControlApiTests(unittest.TestCase):
                 ]
                 digest = "ghcr.io/acme/pura@sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"
 
-                def fake_raw(method, path, *, headers=None):
-                    self.assertEqual(method, "POST")
-                    self.assertIn("platform=linux/arm64", path)
-                    return 200, '{"status":"Digest: sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"}'
-
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.docker_request", return_value=docker_nodes
-                ), patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
+                ), patch(
+                    "luma.control.server._run_node_agent_task",
+                    return_value={"deployed": digest, "digest": digest, "message": "Target node image pull ready"},
+                ) as agent:
                     result = handle_deployment(
                         state["deployToken"],
                         {"manifest": manifest, "sourceName": "pura.yaml", "skipDns": True, "skipPortainer": True},
                     )
+                agent.assert_called_once()
+                self.assertEqual(agent.call_args.args[1], "home-mac-mini")
+                self.assertEqual(agent.call_args.args[2], "resolve-docker-image")
+                self.assertEqual(agent.call_args.args[3]["platform"], "linux/arm64")
                 stack = (root / "stacks" / "home" / "pura" / "stack.yml").read_text(encoding="utf-8")
                 self.assertEqual(result["image"]["deployed"], digest)
                 self.assertEqual(result["image"]["platform"], "linux/arm64")
+                self.assertEqual(result["image"]["resolvedBy"], "target-node")
                 self.assertIn(f"image: {digest}", stack)
                 self.assertNotIn("ghcr.io/acme/pura:main", stack)
             finally:
@@ -4473,7 +4513,7 @@ class ControlApiTests(unittest.TestCase):
                     }
                 )
                 with patch("luma.control.server.image_pull_requires_egress", return_value=False), patch(
-                    "luma.control.server.resolve_service_image", side_effect=lambda _config, service, registry_auth=None: (service, {"selected": service.image})
+                    "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {"selected": service.image})
                 ), patch("luma.control.server._storage_node_is_local", return_value=True), patch(
                     "luma.control.server._run_host_prep_command", return_value="ok"
                 ) as host_prep, patch("luma.control.server.deploy_with_portainer", return_value="Portainer deploy skipped"):
@@ -4698,11 +4738,14 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
     def test_dashboard_payload_reports_nodes_services_and_traffic_paths(self):
+        from luma.control import server as control_server
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
             old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
+            original_broker = control_server.TERMINAL_BROKER
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 state["portainerApiUrl"] = "https://100.64.0.1:9443/api?token=secret"
@@ -4743,7 +4786,7 @@ class ControlApiTests(unittest.TestCase):
                             "status": "online",
                             "lastSeen": int(time.time()),
                             "os": "linux",
-                            "capabilities": ["nfs-host"],
+                            "capabilities": ["nfs-host", "terminal"],
                             "metrics": {
                                 "cpuPercent": 18.4,
                                 "load1": 0.42,
@@ -4904,6 +4947,13 @@ class ControlApiTests(unittest.TestCase):
                     raise AssertionError(path)
 
                 with patch("luma.control.server.docker_request", side_effect=fake_docker):
+                    control_server.TERMINAL_BROKER = control_server.TerminalBroker(per_node_limit=2, idle_timeout_seconds=60)
+                    waiting_result = handle_dashboard(state["deployToken"])
+                    waiting_home = next(item for item in waiting_result["nodes"] if item["name"] == "home-node")
+                    self.assertFalse(waiting_home["terminalConnected"])
+                    self.assertEqual(waiting_home["terminalStatus"], "waiting")
+
+                    control_server.TERMINAL_BROKER._agents["home-node"] = control_server._TerminalAgentConnection("home-node", Mock())
                     result = handle_dashboard(state["deployToken"])
 
                 self.assertEqual(result["cluster"]["id"], "luma-test")
@@ -4914,6 +4964,11 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result["nodes"][0]["metrics"]["cpuPercent"], 18.4)
                 self.assertEqual(result["nodes"][0]["metrics"]["memoryUsedPercent"], 50.0)
                 self.assertEqual(result["nodes"][0]["capacity"]["cpus"], 8.0)
+                self.assertTrue(result["nodes"][0]["terminalConnected"])
+                self.assertEqual(result["nodes"][0]["terminalStatus"], "connected")
+                manager_node = next(item for item in result["nodes"] if item["name"] == "manager")
+                self.assertFalse(manager_node["terminalConnected"])
+                self.assertEqual(manager_node["terminalStatus"], "unsupported")
                 api = next(item for item in result["services"] if item["routeId"] == "api")
                 self.assertEqual(api["domain"], "api.example.com")
                 self.assertEqual(api["targetPort"], "3000")
@@ -4927,6 +4982,11 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(api["resources"]["actual"]["cpuPercent"], 8.5)
                 self.assertEqual(api["resources"]["actual"]["memoryUsageBytes"], 134217728)
                 self.assertTrue(any(item["node"] == "manager" and item["state"] == "running" for item in api["tasks"]))
+                api_path = next(item for item in result["trafficPaths"] if item["id"] == "api")
+                self.assertEqual(api_path["destinations"][0]["region"], "cn")
+                self.assertEqual(api_path["destinations"][0]["node"], "manager")
+                self.assertEqual(api_path["destinations"][0]["state"], "running")
+                self.assertEqual(api_path["destinations"][0]["nodeAddress"], "100.64.0.1")
                 self.assertTrue(any(item["kind"] == "service-failed" and item["target"] == "api_api" for item in result["issues"]))
                 self.assertTrue(any(item["kind"] == "service-pending" and item["target"] == "api_api" for item in result["issues"]))
                 worker = next(item for item in result["services"] if item["routeId"] == "worker")
@@ -4937,6 +4997,9 @@ class ControlApiTests(unittest.TestCase):
                 home_path = next(item for item in result["trafficPaths"] if item["id"] == "home-panel")
                 self.assertEqual(home_path["kind"], "tailscale-relay")
                 self.assertIn("http://100.64.0.2:8080", home_path["segments"])
+                self.assertEqual(home_path["destinations"][0]["region"], "home")
+                self.assertEqual(home_path["destinations"][0]["node"], "home-node")
+                self.assertEqual(home_path["destinations"][0]["address"], "http://100.64.0.2:8080")
                 nextcloud = next(item for item in result["services"] if item["fullName"] == "nextcloud_nextcloud")
                 self.assertEqual(nextcloud["routeId"], "nextcloud-nextcloud")
                 self.assertEqual(nextcloud["domain"], "next.example.com")
@@ -4949,11 +5012,15 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(mysql_path["kind"], "tcp-relay")
                 self.assertIn("Traefik TCP", mysql_path["segments"])
                 self.assertIn("100.64.0.2:3306", mysql_path["segments"])
+                self.assertEqual(mysql_path["destinations"][0]["region"], "home")
+                self.assertEqual(mysql_path["destinations"][0]["node"], "home-node")
+                self.assertEqual(mysql_path["destinations"][0]["address"], "100.64.0.2:3306")
                 serialized = json.dumps(result)
                 self.assertNotIn("portainer-secret", serialized)
                 self.assertNotIn(state["deployToken"], serialized)
                 self.assertNotIn("token=secret", serialized)
             finally:
+                control_server.TERMINAL_BROKER = original_broker
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
@@ -6365,6 +6432,42 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_unpinned_deployment_defers_image_pull_to_scheduled_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "ghcr.io/acme/api:latest",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                )
+
+                def fail_manager_pull(*_args, **_kwargs):
+                    raise AssertionError("manager Docker image pull should not be used for unpinned deployments")
+
+                with patch("luma.control.server.docker_request_raw", side_effect=fail_manager_pull):
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
+                    )
+                self.assertTrue(result["image"]["deferred"])
+                self.assertEqual(result["image"]["resolvedBy"], "scheduled-node")
+                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                self.assertIn("image: ghcr.io/acme/api:latest", stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_tailscale_relay_follows_actual_home_task_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -6654,7 +6757,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_deployment_renders_latest_as_resolved_digest(self):
+    def test_unpinned_deployment_keeps_latest_tag_for_scheduled_node_pull(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -6678,15 +6781,12 @@ class ControlApiTests(unittest.TestCase):
                         "exposure": "none",
                     }
                 )
-                digest = "ghcr.io/acme/api@sha256:abc123"
 
-                def fake_raw(method, path, *, headers=None):
-                    if method == "GET":
-                        return 200, json.dumps({"RepoDigests": [digest]})
-                    return 200, "{}"
+                def fail_manager_pull(*_args, **_kwargs):
+                    raise AssertionError("manager Docker image pull should not resolve latest tags for unpinned deployments")
 
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
-                    "luma.control.server.docker_request_raw", side_effect=fake_raw
+                    "luma.control.server.docker_request_raw", side_effect=fail_manager_pull
                 ):
                     result = handle_deployment(
                         state["deployToken"],
@@ -6694,9 +6794,10 @@ class ControlApiTests(unittest.TestCase):
                     )
                 stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
                 self.assertEqual(result["image"]["requested"], "ghcr.io/acme/api:latest")
-                self.assertEqual(result["image"]["deployed"], digest)
-                self.assertIn(f"image: {digest}", stack)
-                self.assertNotIn("ghcr.io/acme/api:latest", stack)
+                self.assertEqual(result["image"]["deployed"], "ghcr.io/acme/api:latest")
+                self.assertTrue(result["image"]["deferred"])
+                self.assertEqual(result["image"]["resolvedBy"], "scheduled-node")
+                self.assertIn("image: ghcr.io/acme/api:latest", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

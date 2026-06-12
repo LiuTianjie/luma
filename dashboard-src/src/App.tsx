@@ -31,7 +31,7 @@ type DetailState =
 
 export function App() {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
-  const [activePage, setActivePage] = useState<ActivePage>("deploy");
+  const [activePage, setActivePage] = useState<ActivePage>("status");
   const [deployTemplateLanding, setDeployTemplateLanding] = useState(true);
   const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
   const [detail, setDetail] = useState<DetailState>(null);
@@ -69,16 +69,16 @@ export function App() {
   const navItems = useMemo(
     () => [
       {
-        id: "deploy" as const,
-        label: lang === "zh" ? "创建应用" : "Create",
-        value: DEPLOY_TEMPLATES.length,
-        detail: lang === "zh" ? "模板、表单、YAML" : "Templates, form, YAML",
-      },
-      {
         id: "status" as const,
-        label: lang === "zh" ? "状态" : "Status",
+        label: lang === "zh" ? "总览" : "Overview",
         value: services.length,
         detail: lang === "zh" ? `${healthyServices}/${services.length} 服务正常` : `${healthyServices}/${services.length} services ok`,
+      },
+      {
+        id: "deploy" as const,
+        label: lang === "zh" ? "创建" : "Create",
+        value: DEPLOY_TEMPLATES.length,
+        detail: lang === "zh" ? "模板、表单、YAML" : "Templates, form, YAML",
       },
       {
         id: "topology" as const,
@@ -321,7 +321,7 @@ export function App() {
                     <div>
                       <p className="eyebrow">{lang === "zh" ? "拓扑视图" : "Topology"}</p>
                       <h1>{lang === "zh" ? "节点拓扑与流量路径。" : "Node placement and traffic paths."}</h1>
-                      <p>{lang === "zh" ? "查看服务运行在哪些节点，以及公开入口、隧道、代理到后端服务的完整路径。" : "Inspect where services run and how domains, tunnels, proxies, and services connect."}</p>
+                      <p>{lang === "zh" ? "先看入口流量最终落到哪个 region 和节点，再看服务与节点的运行关系。" : "Start with where traffic lands by region and node, then inspect service placement across the fleet."}</p>
                     </div>
                     <div className="hero-metrics" aria-label="Topology summary">
                       <span>{activeNodes}/{nodes.length} {t(lang, "nodes")}</span>
@@ -329,15 +329,8 @@ export function App() {
                       <span>{paths.length} {t(lang, "trafficPaths")}</span>
                     </div>
                   </section>
-                  <NodeFleetMap lang={lang} nodes={nodes} services={services} onSelect={openNodeDetail} onTerminal={setTerminalNode} />
-                  <section className="topology-split-grid">
-                    <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
-                    <TrafficPaths lang={lang} paths={paths} theme={theme} />
-                  </section>
-                  <section className="table-grid compact-status-grid">
-                    <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} onTerminal={setTerminalNode} />
-                    <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
-                  </section>
+                  <TrafficPaths lang={lang} paths={paths} theme={theme} />
+                  <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
                 </>
               ) : activePage === "storage" ? (
                 <>
@@ -354,7 +347,6 @@ export function App() {
                     </div>
                   </section>
                   <StoragePanel lang={lang} volumes={storageVolumes} storageClasses={storageClasses} warnings={storageWarnings} />
-                  <ReadinessCards lang={lang} payload={payload} />
                 </>
               ) : activePage === "observability" ? (
                 <>
@@ -370,7 +362,6 @@ export function App() {
                       <span>logs</span>
                     </div>
                   </section>
-                  <IssuesPanel lang={lang} issues={issues} token={token} />
                   <ObservabilityPanel lang={lang} token={token} nodes={nodes} services={services} />
                 </>
               ) : (
@@ -379,7 +370,7 @@ export function App() {
                     <div>
                       <p className="eyebrow">{t(lang, "controlPlane")}</p>
                       <h1>{lang === "zh" ? "集群、节点和应用状态。" : "Cluster, node, and application status."}</h1>
-                      <p>{lang === "zh" ? "当前控制面、节点健康、应用状态、流量路径和存储状态。" : "Current control-plane readiness, node health, application state, traffic routes, and storage."}</p>
+                      <p>{lang === "zh" ? "总览只保留健康、问题、应用和基础表格；拓扑、观察和存储放到各自页面。" : "Overview keeps readiness, issues, applications, and core tables; topology, observability, and storage live on their own pages."}</p>
                     </div>
                     <div className="hero-metrics" aria-label="Cluster summary">
                       <span>{nodes.length} {t(lang, "nodes")}</span>
@@ -406,9 +397,6 @@ export function App() {
                     <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} onTerminal={setTerminalNode} />
                     <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
                   </section>
-                  <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
-                  <TrafficPaths lang={lang} paths={paths} theme={theme} />
-                  <StoragePanel lang={lang} volumes={storageVolumes} storageClasses={storageClasses} warnings={storageWarnings} />
                 </>
               )
             ) : (

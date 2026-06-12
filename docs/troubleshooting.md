@@ -76,12 +76,13 @@ luma doctor --deep
 For private registries, separate reachability, Docker daemon proxying, and auth:
 
 ```bash
+# run these on the node that receives the service task
 docker info | grep -i proxy -A3
 curl -vk https://<registry-host>/v2/
 docker pull <registry-host>/<org>/<image>:<tag>
 ```
 
-If `curl /v2/` returns `401` with `docker-distribution-api-version`, the registry is reachable. If `docker pull` still fails with EOF/timeout before auth, check Docker daemon `HTTPProxy`/`HTTPSProxy` and ensure the private registry host is in daemon `NO_PROXY`. This is separate from manifest `proxy: true`, which only affects runtime outbound traffic from the container.
+If `curl /v2/` returns `401` with `docker-distribution-api-version`, the registry is reachable from that node. If `docker pull` still fails with EOF/timeout before auth, check Docker daemon `HTTPProxy`/`HTTPSProxy` and ensure the private registry host is in daemon `NO_PROXY` on the same node. This is separate from manifest `proxy: true`, which only affects runtime outbound traffic from the container.
 
 For services pinned to `home` or ARM nodes, make sure the image has the target platform:
 
