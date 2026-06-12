@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "luma-infra"
-version = "0.1.80"
+version = "0.1.82"
 description = "Declarative deployment CLI for region-aware Docker Swarm infrastructure."
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
   "PyYAML>=6.0.1",
+  "starlette>=0.49.0",
+  "uvicorn[standard]>=0.38.0",
+  "websockets>=15.0.1",
 ]
 
 [project.scripts]

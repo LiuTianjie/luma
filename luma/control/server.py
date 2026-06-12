@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import http.client
 import json
@@ -13,14 +14,21 @@ import socket
 import ssl
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, AsyncIterator
 
+from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket
 import yaml
 
 from ..assets import asset_path
@@ -58,6 +66,8 @@ from .state import init_state, load_state, mutate_state, require_token
 
 AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
 AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SECONDS", "300"))
+TERMINAL_SESSION_LIMIT_PER_NODE = int(os.environ.get("LUMA_TERMINAL_SESSION_LIMIT_PER_NODE", "2"))
+TERMINAL_IDLE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TERMINAL_IDLE_TIMEOUT_SECONDS", "1800"))
 # Sustained-breach alerting: a metric must stay above the threshold for the
 # whole window before it becomes an issue, so a momentary spike does not page.
 ALERT_SUSTAINED_SECONDS = int(os.environ.get("LUMA_ALERT_SUSTAINED_SECONDS", "300"))
@@ -1147,6 +1157,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
                 progress=progress,
             )
 
+        service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state), progress=progress)
         registry_auth = _registry_auth_for_service(state, service)
         service, image_result = _deploy_step(
             steps,
@@ -1154,7 +1165,6 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             lambda: resolve_service_image(config, service, registry_auth=registry_auth),
             progress=progress,
         )
-        service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state), progress=progress)
         _deploy_step(
             steps,
             "Check TCP relay ports",
@@ -3157,17 +3167,17 @@ def resolve_service_node_pin(service: ServiceSpec, state: Dict[str, Any]) -> Ser
     node_id = str(record.get("swarmNodeId") or labels.get("luma.node.id") or "").strip()
     if not node_id:
         raise LumaError(f"Luma node {service.node} has no Swarm NodeID; rerun luma node join on that node")
-    _ensure_luma_node_schedulable(service.node, node_id)
-    return replace(service, node_id=node_id)
+    node_platform = _ensure_luma_node_schedulable(service.node, node_id)
+    return replace(service, node_id=node_id, node_platform=node_platform or None)
 
 
-def _ensure_luma_node_schedulable(node_name: str, node_id: str) -> None:
+def _ensure_luma_node_schedulable(node_name: str, node_id: str) -> str:
     try:
         nodes = docker_request("GET", "/nodes")
     except LumaError:
-        return
+        return ""
     if not isinstance(nodes, list):
-        return
+        return ""
     match = None
     for item in nodes:
         if not isinstance(item, dict):
@@ -3193,6 +3203,34 @@ def _ensure_luma_node_schedulable(node_name: str, node_id: str) -> None:
         raise LumaError(f"Luma node {node_name} Swarm node {node_id} is {state}; restore the node before deploying pinned services")
     if availability in {"drain", "pause"}:
         raise LumaError(f"Luma node {node_name} Swarm node {node_id} availability is {availability}; set it active before deploying pinned services")
+    return _docker_node_platform(match)
+
+
+def _docker_node_platform(node: Dict[str, Any]) -> str:
+    description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
+    platform = description.get("Platform") if isinstance(description.get("Platform"), dict) else {}
+    os_name = _normalize_docker_platform_os(str(platform.get("OS") or ""))
+    architecture = _normalize_docker_platform_arch(str(platform.get("Architecture") or ""))
+    if not os_name or not architecture:
+        return ""
+    return f"{os_name}/{architecture}"
+
+
+def _normalize_docker_platform_os(value: str) -> str:
+    value = value.strip().lower()
+    if value in {"linux", "windows"}:
+        return value
+    return value
+
+
+def _normalize_docker_platform_arch(value: str) -> str:
+    value = value.strip().lower()
+    aliases = {
+        "x86_64": "amd64",
+        "aarch64": "arm64",
+        "arm64/v8": "arm64",
+    }
+    return aliases.get(value, value)
 
 
 def _node_record_for_name(nodes: Dict[str, Any], name: str) -> Dict[str, Any] | None:
@@ -4302,7 +4340,12 @@ def _running_task_upstream_addresses(service: ServiceSpec, port: int) -> tuple[l
     node_by_id = _swarm_node_map()
     service_name = service.swarm_service_name or f"{service.slug}_{service.slug}"
     filters = urllib.parse.quote(json.dumps({"service": {service_name: True}, "desired-state": {"running": True}}), safe="")
-    tasks = docker_request("GET", f"/tasks?filters={filters}")
+    try:
+        tasks = docker_request("GET", f"/tasks?filters={filters}")
+    except LumaError as exc:
+        if "service" in str(exc).lower() and "not found" in str(exc).lower():
+            return [], 0
+        raise
     if not isinstance(tasks, list):
         raise LumaError("Docker API returned invalid task list")
     urls: list[str] = []
@@ -4368,11 +4411,12 @@ def resolve_service_image(
 ) -> tuple[ServiceSpec, Dict[str, Any]]:
     images = [service.image, *_fallback_images(config, service.image)]
     errors: list[str] = []
+    platform = str(service.node_platform or "").strip()
     for image in images:
         image_registry_auth = registry_auth if registry_auth_matches_image(registry_auth, image) else None
         try:
             force_pull = image_uses_mutable_latest_tag(image)
-            resolved_image = ensure_image_present(image, registry_auth=image_registry_auth, force_pull=force_pull)
+            resolved_image = ensure_image_present(image, registry_auth=image_registry_auth, force_pull=force_pull, platform=platform)
             deploy_image = resolved_image or image
             result = {
                 "requested": service.image,
@@ -4381,6 +4425,7 @@ def resolve_service_image(
                 "fallback": image != service.image,
                 "registryAuth": bool(image_registry_auth),
                 "forcePull": force_pull,
+                "platform": platform,
             }
             return replace(service, image=deploy_image), result
         except LumaError as exc:
@@ -4393,31 +4438,41 @@ def ensure_image_present(
     *,
     registry_auth: Dict[str, str] | None = None,
     force_pull: bool = False,
+    platform: str = "",
 ) -> str | None:
     encoded = urllib.parse.quote(image, safe="")
-    if not force_pull:
+    platform = str(platform or "").strip()
+    if not force_pull and not platform:
         status, _ = docker_request_raw("GET", f"/images/{encoded}/json")
         if status == 200:
             return None
     from_image = urllib.parse.quote(image, safe="")
+    query = f"fromImage={from_image}"
+    if platform:
+        query += f"&platform={urllib.parse.quote(platform, safe='/')}"
     headers = {}
     auth_header = docker_registry_auth_header(registry_auth)
     if auth_header:
         headers["X-Registry-Auth"] = auth_header
-    status, raw = docker_request_raw("POST", f"/images/create?fromImage={from_image}", headers=headers)
+    status, raw = docker_request_raw("POST", f"/images/create?{query}", headers=headers)
     if status >= 400:
-        raise LumaError(_docker_pull_error_message(status, raw, registry_auth=registry_auth))
+        raise LumaError(_docker_pull_error_message(status, raw, registry_auth=registry_auth, platform=platform))
     if '"error"' in raw:
-        raise LumaError(f"Docker pull failed: {raw.strip()}")
-    if force_pull:
-        return _image_repo_digest(image)
+        raise LumaError(_docker_pull_error_message(status, raw, registry_auth=registry_auth, platform=platform))
+    if force_pull or platform:
+        return _image_pull_repo_digest(image, raw) or _image_repo_digest(image)
     return None
 
 
-def _docker_pull_error_message(status: int, raw: str, *, registry_auth: Dict[str, str] | None = None) -> str:
+def _docker_pull_error_message(status: int, raw: str, *, registry_auth: Dict[str, str] | None = None, platform: str = "") -> str:
     detail = raw.strip()
-    message = f"Docker pull failed with HTTP {status}: {detail}"
+    if status >= 400:
+        message = f"Docker pull failed with HTTP {status}: {detail}"
+    else:
+        message = f"Docker pull failed: {detail}"
     lowered = detail.lower()
+    if platform and any(marker in lowered for marker in ("no matching manifest", "no match for platform", "not found")):
+        message += f"; image does not provide a manifest for target platform {platform}. Build and push a multi-arch image before deploying to this node."
     if status >= 500 and any(marker in lowered for marker in ("failed to do request", "eof", "timeout", "connection reset")):
         if registry_auth:
             message += (
@@ -4430,6 +4485,13 @@ def _docker_pull_error_message(status: int, raw: str, *, registry_auth: Dict[str
                 "with `luma egress setup` and `docker info` HTTPProxy/HTTPSProxy."
             )
     return message
+
+
+def _image_pull_repo_digest(image: str, raw: str) -> str:
+    match = re.search(r"Digest:\s*(sha256:[0-9a-fA-F]+)", raw or "")
+    if not match:
+        return ""
+    return f"{_image_repository(image)}@{match.group(1).lower()}"
 
 
 def _image_repo_digest(image: str) -> str:
@@ -4556,6 +4618,255 @@ def _error_payload(code: str, message: str, *, request_id: str, include_error: b
     return payload
 
 
+class _TerminalSession:
+    def __init__(self, session_id: str, node_name: str, browser: WebSocket, agent: "_TerminalAgentConnection"):
+        self.id = session_id
+        self.node_name = node_name
+        self.browser = browser
+        self.agent = agent
+        self.last_activity = time.time()
+        self.browser_lock = asyncio.Lock()
+        self.closed = False
+
+    def touch(self) -> None:
+        self.last_activity = time.time()
+
+
+class _TerminalAgentConnection:
+    def __init__(self, node_name: str, websocket: WebSocket):
+        self.node_name = node_name
+        self.websocket = websocket
+        self.send_lock = asyncio.Lock()
+
+
+class TerminalBroker:
+    def __init__(self, *, per_node_limit: int, idle_timeout_seconds: int):
+        self.per_node_limit = max(int(per_node_limit or 2), 1)
+        self.idle_timeout_seconds = max(int(idle_timeout_seconds or 1800), 60)
+        self._agents: dict[str, _TerminalAgentConnection] = {}
+        self._sessions: dict[str, _TerminalSession] = {}
+        self._lock = asyncio.Lock()
+        self._pending_auth = asyncio.Semaphore(max(self.per_node_limit * 4, 8))
+
+    async def connect_browser(self, websocket: WebSocket) -> None:
+        node_name = str(websocket.query_params.get("node") or "").strip()
+        if not node_name:
+            await websocket.close(code=1008)
+            return
+        if not await self._acquire_pending_auth(websocket):
+            return
+        try:
+            await websocket.accept()
+            try:
+                auth = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+                if not isinstance(auth, dict) or str(auth.get("type") or "") != "auth":
+                    raise LumaError("terminal auth required")
+                token = str(auth.get("token") or "").strip()
+                if not token:
+                    raise LumaError("terminal auth token required")
+            except Exception:
+                await websocket.close(code=1008)
+                return
+        finally:
+            self._pending_auth.release()
+        try:
+            state = load_state()
+            require_token(state, token, token_type="deploy")
+            record = _node_record_for_name(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name)
+            if record is None:
+                raise LumaError(f"node is not registered: {node_name}")
+        except LumaError:
+            await websocket.close(code=1008)
+            return
+        session: _TerminalSession | None = None
+        idle_task: asyncio.Task[Any] | None = None
+        try:
+            async with self._lock:
+                agent = self._agents.get(node_name)
+                active = [item for item in self._sessions.values() if item.node_name == node_name and not item.closed]
+                if not agent:
+                    await websocket.send_json({"type": "error", "message": f"terminal agent is not connected on {node_name}"})
+                    await websocket.close(code=1013)
+                    return
+                if len(active) >= self.per_node_limit:
+                    await websocket.send_json({"type": "error", "message": f"terminal session limit reached on {node_name}"})
+                    await websocket.close(code=1013)
+                    return
+                session_id = f"term-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+                session = _TerminalSession(session_id, node_name, websocket, agent)
+                self._sessions[session_id] = session
+            await websocket.send_json({"type": "open", "sessionId": session.id, "node": node_name})
+            await self._send_agent(agent, {"type": "open", "sessionId": session.id, "node": node_name, "cols": 120, "rows": 32})
+            idle_task = asyncio.create_task(self._watch_idle(session))
+            while True:
+                message = await websocket.receive_json()
+                if not isinstance(message, dict):
+                    continue
+                kind = str(message.get("type") or "")
+                if kind not in {"input", "resize", "close", "ping"}:
+                    continue
+                session.touch()
+                payload = dict(message)
+                payload["sessionId"] = session.id
+                await self._send_agent(session.agent, payload)
+                if kind == "close":
+                    break
+        except Exception:
+            pass
+        finally:
+            if idle_task:
+                idle_task.cancel()
+            if session:
+                await self.close_session(session.id, notify_agent=True)
+
+    async def connect_agent(self, websocket: WebSocket) -> None:
+        node_name = str(websocket.query_params.get("node") or "").strip()
+        node_id = str(websocket.query_params.get("nodeId") or "").strip()
+        if not node_name:
+            await websocket.close(code=1008)
+            return
+        if not await self._acquire_pending_auth(websocket):
+            return
+        try:
+            await websocket.accept()
+            try:
+                auth = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+                if not isinstance(auth, dict) or str(auth.get("type") or "") != "auth":
+                    raise LumaError("terminal auth required")
+                token = str(auth.get("token") or "").strip()
+                if not token:
+                    raise LumaError("terminal auth token required")
+            except Exception:
+                await websocket.close(code=1008)
+                return
+        finally:
+            self._pending_auth.release()
+        try:
+            state = load_state()
+            _require_node_agent_token(state, token, node_name, node_id=node_id)
+        except LumaError:
+            await websocket.close(code=1008)
+            return
+        connection = _TerminalAgentConnection(node_name, websocket)
+        async with self._lock:
+            previous = self._agents.get(node_name)
+            self._agents[node_name] = connection
+        if previous:
+            try:
+                await previous.websocket.close(code=1012)
+            except Exception:
+                pass
+        try:
+            await websocket.send_json({"type": "ready", "node": node_name})
+            while True:
+                message = await websocket.receive_json()
+                if not isinstance(message, dict):
+                    continue
+                session_id = str(message.get("sessionId") or "")
+                if not session_id:
+                    continue
+                await self.forward_to_browser(session_id, message)
+        except Exception:
+            pass
+        finally:
+            async with self._lock:
+                if self._agents.get(node_name) is connection:
+                    self._agents.pop(node_name, None)
+            session_ids = await self._session_ids_for_agent(node_name, connection)
+            for session_id in session_ids:
+                await self.close_session(session_id, notify_agent=False, browser_message="terminal agent disconnected")
+
+    async def forward_to_browser(self, session_id: str, message: Dict[str, Any]) -> None:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+        if not session or session.closed:
+            return
+        session.touch()
+        kind = str(message.get("type") or "")
+        try:
+            async with session.browser_lock:
+                await session.browser.send_json(dict(message))
+        except Exception:
+            await self.close_session(session_id, notify_agent=True)
+            return
+        if kind in {"exit", "error", "close"}:
+            await self.close_session(session_id, notify_agent=kind in {"exit", "error"})
+
+    async def close_session(self, session_id: str, *, notify_agent: bool, browser_message: str = "") -> None:
+        async with self._lock:
+            session = self._sessions.pop(session_id, None)
+            if session:
+                session.closed = True
+        if not session:
+            return
+        if browser_message:
+            try:
+                async with session.browser_lock:
+                    await session.browser.send_json({"type": "error", "sessionId": session_id, "message": browser_message})
+            except Exception:
+                pass
+        try:
+            async with session.browser_lock:
+                await session.browser.close(code=1000)
+        except Exception:
+            pass
+        if notify_agent:
+            await self._send_agent(session.agent, {"type": "close", "sessionId": session_id})
+
+    async def close_agent(self, node_name: str) -> None:
+        async with self._lock:
+            agent = self._agents.pop(node_name, None)
+        if agent:
+            try:
+                await agent.websocket.close(code=1012)
+            except Exception:
+                pass
+
+    async def _session_ids_for_agent(self, node_name: str, agent: _TerminalAgentConnection) -> list[str]:
+        async with self._lock:
+            return [sid for sid, item in self._sessions.items() if item.node_name == node_name and item.agent is agent]
+
+    async def _acquire_pending_auth(self, websocket: WebSocket) -> bool:
+        try:
+            await asyncio.wait_for(self._pending_auth.acquire(), timeout=0.1)
+            return True
+        except Exception:
+            try:
+                await websocket.close(code=1013)
+            except Exception:
+                pass
+            return False
+
+    async def _watch_idle(self, session: _TerminalSession) -> None:
+        try:
+            while not session.closed:
+                await asyncio.sleep(10)
+                if time.time() - session.last_activity < self.idle_timeout_seconds:
+                    continue
+                try:
+                    async with session.browser_lock:
+                        await session.browser.send_json({"type": "error", "sessionId": session.id, "message": "terminal session idle timeout"})
+                except Exception:
+                    pass
+                await self.close_session(session.id, notify_agent=True)
+                return
+        except asyncio.CancelledError:
+            return
+
+    async def _send_agent(self, agent: _TerminalAgentConnection, message: Dict[str, Any]) -> None:
+        try:
+            async with agent.send_lock:
+                await agent.websocket.send_json(message)
+        except Exception:
+            await self.close_agent(agent.node_name)
+
+
+TERMINAL_BROKER = TerminalBroker(
+    per_node_limit=TERMINAL_SESSION_LIMIT_PER_NODE,
+    idle_timeout_seconds=TERMINAL_IDLE_TIMEOUT_SECONDS,
+)
+
+
 class ControlHandler(BaseHTTPRequestHandler):
     server_version = "LumaControl/0.1"
 
@@ -4581,7 +4892,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "version": __version__,
                     "nodeJoinModel": "region-first",
-                    "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove", "node-agent-storage"],
+                    "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove", "node-agent-storage", "terminal"],
                 },
             )
             return
@@ -4723,6 +5034,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         except LumaError as exc:
             code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
             self._error(code, exc)
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except Exception as exc:
             self._error(500, exc, code="internal_error")
 
@@ -4742,6 +5055,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         try:
             result = handle_deployment(token, body, progress=emit)
             emit({"status": "done", "result": result})
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except LumaError as exc:
             emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
         except Exception as exc:
@@ -4762,6 +5077,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         try:
             result = handle_compose_deployment(token, body, progress=emit)
             emit({"status": "done", "result": result})
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except LumaError as exc:
             emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
         except Exception as exc:
@@ -4852,9 +5169,263 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def _json_response(status: int, payload: Dict[str, Any]) -> JSONResponse:
+    return JSONResponse(payload, status_code=status)
+
+
+def _asgi_error(status: int, exc: Exception, *, code: str = "luma_error") -> JSONResponse:
+    request_id = _request_id()
+    if status >= 500:
+        print(f"requestId={request_id} control API error: {exc}", file=sys.stderr, flush=True)
+    return _json_response(status, _error_payload(code, str(exc), request_id=request_id))
+
+
+async def _asgi_dashboard_asset(request: Request) -> Response:
+    parsed_path = request.url.path
+    if parsed_path == "/dashboard":
+        return RedirectResponse("/dashboard/", status_code=308)
+    try:
+        body, content_type = await run_in_threadpool(_dashboard_asset, parsed_path)
+        cache_control = "no-store" if parsed_path == "/dashboard/" else "public, max-age=60"
+        return Response(body, media_type=content_type, headers={"Cache-Control": cache_control})
+    except (LumaError, OSError):
+        return _json_response(404, {"error": "not found"})
+
+
+async def _asgi_health(_: Request) -> JSONResponse:
+    return _json_response(
+        200,
+        {
+            "ok": True,
+            "version": __version__,
+            "nodeJoinModel": "region-first",
+            "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove", "node-agent-storage", "terminal"],
+        },
+    )
+
+
+async def _asgi_authenticated_get(request: Request) -> Response:
+    parsed_path = request.url.path
+    try:
+        token = bearer_token(request.headers)
+        if parsed_path == "/v1/registries":
+            return _json_response(200, await run_in_threadpool(handle_registry_list, token))
+        if parsed_path == "/v1/secrets":
+            return _json_response(200, await run_in_threadpool(handle_secret_list, token))
+        if parsed_path == "/v1/storage":
+            return _json_response(200, await run_in_threadpool(handle_storage_list, token))
+        if parsed_path == "/v1/status":
+            return _json_response(200, await run_in_threadpool(handle_control_status, token))
+        if parsed_path == "/v1/dashboard":
+            return _json_response(200, await run_in_threadpool(handle_dashboard, token))
+        if parsed_path == "/v1/dashboard/logs":
+            service = str(request.query_params.get("service") or "")
+            since = str(request.query_params.get("since") or "")
+            download = str(request.query_params.get("download") or "").lower() in {"1", "true", "yes"}
+            try:
+                tail = int(str(request.query_params.get("tail") or "120") or "120")
+            except ValueError as exc:
+                raise LumaError("tail must be a number") from exc
+            logs = await run_in_threadpool(handle_dashboard_logs, token, service, tail=tail, since=since)
+            if download:
+                filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", service).strip("-") or "service"
+                return PlainTextResponse(
+                    "\n".join(str(line) for line in logs.get("logs") or []) + "\n",
+                    headers={"Content-Disposition": f"attachment; filename={filename}.log", "Cache-Control": "no-store"},
+                )
+            return _json_response(200, logs)
+        if parsed_path == "/v1/dashboard/metrics/history":
+            kind = str(request.query_params.get("kind") or "node")
+            name = str(request.query_params.get("name") or "")
+            try:
+                window = int(str(request.query_params.get("window") or "3600") or "3600")
+            except ValueError as exc:
+                raise LumaError("window must be a number") from exc
+            return _json_response(200, await run_in_threadpool(handle_metrics_history, token, kind, name, window=window))
+        if parsed_path == "/v1/dashboard/logs/stream":
+            service = str(request.query_params.get("service") or "")
+            since = str(request.query_params.get("since") or "")
+            try:
+                tail = int(str(request.query_params.get("tail") or "120") or "120")
+            except ValueError as exc:
+                raise LumaError("tail must be a number") from exc
+            return await _asgi_stream_service_logs(token, service, since, tail)
+        config_match = re.fullmatch(r"/v1/deployments/([^/]+)/config", parsed_path)
+        if config_match:
+            name = urllib.parse.unquote(config_match.group(1))
+            return _json_response(200, await run_in_threadpool(handle_deployment_config, token, name))
+    except LumaError as exc:
+        code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+        return _asgi_error(code, exc)
+    return _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
+
+
+async def _asgi_authenticated_post(request: Request) -> Response:
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise LumaError("request body must be a JSON object")
+        token = bearer_token(request.headers)
+        path = request.url.path
+        routes: dict[str, Callable[..., Dict[str, Any]]] = {
+            "/v1/auth/login/verify": handle_login_verify,
+            "/v1/nodes/register": handle_node_register,
+            "/v1/nodes/label": handle_node_label,
+            "/v1/nodes/agent-token": handle_node_agent_token,
+            "/v1/node-agent/lease": handle_node_agent_lease,
+            "/v1/node-agent/tasks/complete": handle_node_agent_complete,
+            "/v1/nodes/unregister": handle_node_unregister,
+            "/v1/deployments": handle_deployment,
+            "/v1/deployments/preview": handle_deployment_preview,
+            "/v1/compose-deployments": handle_compose_deployment,
+            "/v1/compose-deployments/preview": handle_compose_deployment_preview,
+            "/v1/storage/apply": handle_storage_apply,
+            "/v1/storage": handle_storage_set,
+            "/v1/storage/remove": handle_storage_remove,
+            "/v1/services/remove": handle_service_remove,
+            "/v1/applications/restart": handle_application_restart,
+            "/v1/fleet/update": handle_fleet_update,
+            "/v1/secrets": handle_secret_set,
+            "/v1/registries": handle_registry_set,
+            "/v1/registries/remove": handle_registry_remove,
+        }
+        if path == "/v1/deployments/stream":
+            return _asgi_stream_deployment(token, body, compose=False)
+        if path == "/v1/compose-deployments/stream":
+            return _asgi_stream_deployment(token, body, compose=True)
+        if path == "/v1/auth/login/verify":
+            return _json_response(200, await run_in_threadpool(handle_login_verify, token))
+        handler = routes.get(path)
+        if handler:
+            return _json_response(200, await run_in_threadpool(handler, token, body))
+        return _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
+    except LumaError as exc:
+        code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+        return _asgi_error(code, exc)
+    except Exception as exc:
+        return _asgi_error(500, exc, code="internal_error")
+
+
+def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) -> StreamingResponse:
+    async def generate() -> AsyncIterator[bytes]:
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def emit(event: Dict[str, Any]) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+
+        def run() -> None:
+            try:
+                handler = handle_compose_deployment if compose else handle_deployment
+                result = handler(token, body, progress=emit)
+                emit({"status": "done", "result": result})
+            except LumaError as exc:
+                emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+            except Exception as exc:
+                request_id = _request_id()
+                print(f"requestId={request_id} stream deployment internal error: {exc}", file=sys.stderr, flush=True)
+                emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        threading.Thread(target=run, daemon=True).start()
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+async def _asgi_stream_service_logs(token: str, service: str, since: str, tail: int) -> StreamingResponse:
+    require_token(load_state(), token, token_type="deploy")
+    service = service.strip()
+    if not service:
+        raise LumaError("service is required")
+    tail = min(max(int(tail or 120), 1), 1000)
+    query_values: Dict[str, Any] = {"stdout": 1, "stderr": 1, "timestamps": 1, "follow": 1, "tail": tail}
+    if since:
+        query_values["since"] = since
+    query = urllib.parse.urlencode(query_values)
+    api_version = os.environ.get("DOCKER_API_VERSION", "1.44")
+
+    async def generate() -> AsyncIterator[bytes]:
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        stop_event = threading.Event()
+        connection_holder: dict[str, DockerSocketConnection] = {}
+
+        def emit(event: Dict[str, Any] | None) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+        def read_logs() -> None:
+            conn = DockerSocketConnection()
+            connection_holder["conn"] = conn
+            try:
+                conn.request("GET", f"/v{api_version}/services/{urllib.parse.quote(service, safe='')}/logs?{query}")
+                response = conn.getresponse()
+                if response.status >= 400:
+                    detail = response.read().decode("utf-8", errors="replace")
+                    emit({"status": "fail", "message": f"Docker service logs unavailable for {service}: {detail}"})
+                    return
+                emit({"status": "start", "service": service})
+                for line in _iter_docker_log_stream(response):
+                    if stop_event.is_set():
+                        break
+                    emit({"line": line, "ts": int(time.time())})
+            except OSError:
+                if not stop_event.is_set():
+                    emit({"status": "fail", "message": "Docker socket unavailable to Luma Control"})
+            except Exception as exc:
+                if not stop_event.is_set():
+                    emit({"status": "fail", "message": str(exc)})
+            finally:
+                conn.close()
+                emit(None)
+
+        threading.Thread(target=read_logs, daemon=True).start()
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
+        finally:
+            stop_event.set()
+            conn = connection_holder.get("conn")
+            if conn:
+                conn.close()
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+async def _browser_terminal_ws(websocket: WebSocket) -> None:
+    await TERMINAL_BROKER.connect_browser(websocket)
+
+
+async def _agent_terminal_ws(websocket: WebSocket) -> None:
+    await TERMINAL_BROKER.connect_agent(websocket)
+
+
+def create_app() -> Starlette:
+    return Starlette(
+        routes=[
+            Route("/dashboard", _asgi_dashboard_asset, methods=["GET"]),
+            Route("/dashboard/{path:path}", _asgi_dashboard_asset, methods=["GET"]),
+            Route("/v1/health", _asgi_health, methods=["GET"]),
+            Route("/v1/{path:path}", _asgi_authenticated_get, methods=["GET"]),
+            Route("/v1/{path:path}", _asgi_authenticated_post, methods=["POST"]),
+            WebSocketRoute("/v1/terminal/browser", _browser_terminal_ws),
+            WebSocketRoute("/v1/terminal/agent", _agent_terminal_ws),
+        ]
+    )
+
+
 def serve(host: str, port: int) -> None:
-    server = ThreadingHTTPServer((host, port), ControlHandler)
-    server.serve_forever()
+    import uvicorn
+
+    uvicorn.run(create_app(), host=host, port=port, log_level=os.environ.get("LUMA_CONTROL_LOG_LEVEL", "info"))
 
 
 def main(argv: list[str] | None = None) -> int:

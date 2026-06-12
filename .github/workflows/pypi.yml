@@ -34,7 +34,7 @@ jobs:
       - name: Install build tools
         run: |
           python -m pip install --upgrade build twine
-          python -m pip install -e .
+          python -m pip install -e ".[test]"
 
       - name: Install dashboard dependencies
         run: npm ci
