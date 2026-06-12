@@ -357,14 +357,193 @@ def _agent_install_command(config_path: Path) -> str:
             f"chmod 644 {shlex.quote(plist)}; "
             f"launchctl bootout system/{label} >/dev/null 2>&1 || true; "
             f"launchctl bootstrap system {shlex.quote(plist)}; "
-            f"launchctl kickstart -k system/{label}"
+            f"launchctl kickstart -k system/{label}; "
+            f"{_node_tailscale_watchdog_install_command(os_value)}"
         )
     return (
         f"printf '%s' {shlex.quote(_systemd_unit(config_path))} > /etc/systemd/system/{DEFAULT_AGENT_SERVICE}.service; "
         "systemctl daemon-reload; "
         f"systemctl enable --now {DEFAULT_AGENT_SERVICE}.service; "
-        f"systemctl restart {DEFAULT_AGENT_SERVICE}.service"
+        f"systemctl restart {DEFAULT_AGENT_SERVICE}.service; "
+        f"{_node_tailscale_watchdog_install_command(os_value)}"
     )
+
+
+def _node_tailscale_watchdog_install_command(os_value: str | None = None) -> str:
+    os_name = os_value or node_agent_os()
+    script_path = "/opt/luma/node-agent/tailscale-watchdog.sh"
+    script = _node_tailscale_watchdog_script(os_name)
+    if os_name == "darwin":
+        plist = "/Library/LaunchDaemons/io.luma.tailscale-watchdog.plist"
+        plist_body = _node_tailscale_watchdog_launchd_plist(script_path)
+        return (
+            "if command -v tailscale >/dev/null 2>&1 && command -v docker >/dev/null 2>&1; then "
+            f"printf '%s' {shlex.quote(script)} > {shlex.quote(script_path)}; "
+            f"chmod 755 {shlex.quote(script_path)}; "
+            f"printf '%s' {shlex.quote(plist_body)} > {shlex.quote(plist)}; "
+            f"chmod 644 {shlex.quote(plist)}; "
+            "launchctl bootout system/io.luma.tailscale-watchdog >/dev/null 2>&1 || true; "
+            f"launchctl bootstrap system {shlex.quote(plist)}; "
+            "launchctl kickstart -k system/io.luma.tailscale-watchdog; "
+            "fi"
+        )
+    return (
+        "if command -v systemctl >/dev/null 2>&1 && command -v tailscale >/dev/null 2>&1 && command -v docker >/dev/null 2>&1; then "
+        f"printf '%s' {shlex.quote(script)} > {shlex.quote(script_path)}; "
+        f"chmod 755 {shlex.quote(script_path)}; "
+        "cat > /etc/systemd/system/luma-node-tailscale-watchdog.service <<'EOF'\n"
+        "[Unit]\n"
+        "Description=Luma node Tailscale watchdog\n"
+        "After=network-online.target docker.service tailscaled.service\n"
+        "Wants=network-online.target docker.service tailscaled.service\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "EnvironmentFile=-/etc/default/luma-node-tailscale-watchdog\n"
+        f"ExecStart={script_path}\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+        "EOF\n"
+        "cat > /etc/systemd/system/luma-node-tailscale-watchdog.timer <<'EOF'\n"
+        "[Unit]\n"
+        "Description=Run Luma node Tailscale watchdog\n"
+        "\n"
+        "[Timer]\n"
+        "OnBootSec=2min\n"
+        "OnUnitActiveSec=1min\n"
+        "AccuracySec=15s\n"
+        "Persistent=true\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+        "EOF\n"
+        "systemctl daemon-reload; "
+        "systemctl enable --now luma-node-tailscale-watchdog.timer >/dev/null; "
+        "systemctl reset-failed luma-node-tailscale-watchdog.service >/dev/null 2>&1 || true; "
+        "systemctl start luma-node-tailscale-watchdog.service >/dev/null || true; "
+        "fi"
+    )
+
+
+def _node_tailscale_watchdog_script(os_name: str) -> str:
+    if os_name == "darwin":
+        restart = (
+            "launchctl kickstart -k system/W5364U7YZB.io.tailscale.ipn.macsys.network-extension >/dev/null 2>&1 || "
+            "launchctl kickstart -k system/io.tailscale.ipn.macsys.network-extension >/dev/null 2>&1 || "
+            "killall Tailscale >/dev/null 2>&1 || true"
+        )
+    else:
+        restart = "systemctl restart tailscaled"
+    return f"""#!/bin/sh
+set -eu
+PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+export PATH
+threshold=${{LUMA_NODE_TAILSCALE_WATCHDOG_THRESHOLD:-3}}
+ports="${{LUMA_NODE_TAILSCALE_WATCHDOG_PORTS:-2377 7946}}"
+state_dir=/var/run/luma
+state_file=$state_dir/node-tailscale-watchdog.failures
+mkdir -p "$state_dir"
+log() {{ printf '%s %s\\n' "$(date -Is)" "$*"; }}
+tcp_probe() {{
+  host="$1"
+  port="$2"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w 3 "$host" "$port" >/dev/null 2>&1
+  elif command -v timeout >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then
+    timeout 3 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1
+  else
+    log 'skip: no TCP probe command available'
+    return 0
+  fi
+}}
+is_tailnet_addr() {{
+  case "$1" in
+    100.*) return 0 ;;
+    fd7a:115c:a1e0:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+manager_hosts() {{
+  docker info --format '{{{{range .Swarm.RemoteManagers}}}}{{{{.Addr}}}}{{{{"\\n"}}}}{{{{end}}}}' 2>/dev/null |
+  while IFS= read -r addr; do
+    [ -n "$addr" ] || continue
+    host=${{addr%:*}}
+    is_tailnet_addr "$host" && printf '%s\\n' "$host"
+  done |
+  sort -u
+}}
+if ! docker info >/dev/null 2>&1; then
+  log 'skip: Docker unavailable'
+  exit 0
+fi
+swarm_state=$(docker info --format '{{{{.Swarm.LocalNodeState}}}}' 2>/dev/null || true)
+[ "$swarm_state" = active ] || {{ log 'skip: Swarm inactive'; exit 0; }}
+managers=$(manager_hosts)
+[ -n "$managers" ] || {{ log 'skip: no Tailscale Swarm managers'; exit 0; }}
+checked=0
+bad=0
+for host in $managers; do
+  if ! tailscale ping --timeout=3s --c 2 "$host" >/dev/null 2>&1; then
+    checked=$((checked + 1))
+    bad=$((bad + 1))
+    log "manager Tailscale ping failed: $host"
+    continue
+  fi
+  for port in $ports; do
+    checked=$((checked + 1))
+    if ! tcp_probe "$host" "$port"; then
+      bad=$((bad + 1))
+      log "manager TCP probe failed: $host:$port"
+    fi
+  done
+done
+if [ "$bad" -eq 0 ]; then
+  echo 0 > "$state_file"
+  exit 0
+fi
+count=0
+[ -f "$state_file" ] && count=$(cat "$state_file" 2>/dev/null || echo 0)
+case "$count" in ''|*[!0-9]*) count=0 ;; esac
+count=$((count + 1))
+echo "$count" > "$state_file"
+log "manager tailnet unhealthy: $bad/$checked checks failed, consecutive=$count/$threshold"
+if [ "$count" -ge "$threshold" ]; then
+  log 'restarting local Tailscale after consecutive manager connectivity failures'
+  {restart}
+  echo 0 > "$state_file"
+fi
+"""
+
+
+def _node_tailscale_watchdog_launchd_plist(script_path: str) -> str:
+    escaped_script_path = _xml_escape(script_path)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.luma.tailscale-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{escaped_script_path}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/var/log/luma-tailscale-watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/luma-tailscale-watchdog.err</string>
+</dict>
+</plist>
+"""
 
 
 def _agent_executable_args(config_path: Path) -> list[str]:
@@ -938,9 +1117,15 @@ def update_luma_install(*, install_ref: str = "") -> Dict[str, Any]:
     output = completed.stdout or ""
     if completed.returncode != 0:
         raise LumaError(f"Luma installer failed with exit code {completed.returncode}: {_tail_text(output)}")
+    watchdog_message = "Tailscale watchdog skipped"
+    try:
+        LocalExecutor().sudo(_node_tailscale_watchdog_install_command(node_agent_os()), timeout=60)
+        watchdog_message = "Tailscale watchdog installed"
+    except Exception as exc:
+        watchdog_message = f"Tailscale watchdog skipped: {exc}"
     return {
         "installRef": install_ref,
-        "message": "Luma installer finished",
+        "message": f"Luma installer finished; {watchdog_message}",
         "output": _tail_text(output),
     }
 

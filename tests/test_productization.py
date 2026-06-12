@@ -19,6 +19,9 @@ from luma import __version__
 from luma.agent import (
     _ContainerStatsSampler,
     _agent_executable_args,
+    _agent_install_command,
+    _node_tailscale_watchdog_install_command,
+    _node_tailscale_watchdog_script,
     _systemd_unit,
     execute_agent_task,
     node_agent_container_stats,
@@ -43,6 +46,7 @@ from luma.bootstrap import (
     bootstrap_manager_local,
     configure_firewall,
     configure_public_port_guards,
+    configure_tailscale_watchdog,
     deploy_control_stack,
     ensure_swarm,
     initialize_portainer,
@@ -200,6 +204,44 @@ class ProductConfigTests(unittest.TestCase):
         self.assertNotIn("ExecStart=- ", unit)
         self.assertIn("node-agent run --config /opt/luma/node-agent/agent.json", unit)
 
+    def test_node_agent_install_includes_linux_tailscale_watchdog(self):
+        command = _node_tailscale_watchdog_install_command("linux")
+
+        self.assertIn("luma-node-tailscale-watchdog.service", command)
+        self.assertIn("luma-node-tailscale-watchdog.timer", command)
+        self.assertIn("systemctl restart tailscaled", command)
+        self.assertIn("LUMA_NODE_TAILSCALE_WATCHDOG_PORTS:-2377 7946", command)
+        self.assertIn("tailscale ping --timeout=3s --c 2", command)
+        self.assertIn("docker info --format", command)
+
+    def test_node_agent_install_includes_macos_tailscale_watchdog(self):
+        command = _node_tailscale_watchdog_install_command("darwin")
+
+        self.assertIn("io.luma.tailscale-watchdog.plist", command)
+        self.assertIn("StartInterval", command)
+        self.assertIn("/opt/homebrew/bin:/usr/local/bin", command)
+        self.assertIn("launchctl bootstrap system", command)
+        self.assertIn("launchctl kickstart -k system/io.luma.tailscale-watchdog", command)
+        self.assertIn("W5364U7YZB.io.tailscale.ipn.macsys.network-extension", command)
+
+    def test_node_agent_install_command_installs_watchdog_after_agent(self):
+        with patch("luma.agent.node_agent_os", return_value="linux"):
+            command = _agent_install_command(Path("/opt/luma/node-agent/agent.json"))
+
+        self.assertIn("luma-node-agent.service", command)
+        self.assertIn("systemctl restart luma-node-agent.service", command)
+        self.assertIn("luma-node-tailscale-watchdog.timer", command)
+
+    def test_node_watchdog_script_checks_manager_swarm_ports(self):
+        script = _node_tailscale_watchdog_script("linux")
+
+        self.assertIn(".Swarm.RemoteManagers", script)
+        self.assertIn('PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"', script)
+        self.assertIn("2377 7946", script)
+        self.assertIn("manager TCP probe failed", script)
+        self.assertIn("manager Tailscale ping failed", script)
+        self.assertIn("systemctl restart tailscaled", script)
+
     def test_node_agent_container_stats_parse_swarm_service_stats(self):
         ps = Mock(returncode=0, stdout="abc123\tapi.1\tapi_api\ttask-1\n")
         stats = Mock(
@@ -270,13 +312,15 @@ class ProductConfigTests(unittest.TestCase):
 
     def test_node_agent_can_update_luma_install(self):
         completed = Mock(returncode=0, stdout="installed\n")
-        with patch("luma.agent.subprocess.run", return_value=completed) as run:
+        with patch("luma.agent.subprocess.run", return_value=completed) as run, patch("luma.agent.LocalExecutor") as executor:
+            executor.return_value.sudo.return_value = ""
             result = execute_agent_task({"action": "update-luma", "payload": {"installRef": "main"}})
         run.assert_called_once()
+        executor.return_value.sudo.assert_called_once()
         self.assertIn("install-luma.sh", run.call_args.args[0])
         self.assertEqual(run.call_args.kwargs["env"]["LUMA_INSTALL_REF"], "main")
         self.assertEqual(result["installRef"], "main")
-        self.assertEqual(result["message"], "Luma installer finished")
+        self.assertEqual(result["message"], "Luma installer finished; Tailscale watchdog installed")
 
     def test_node_agent_capabilities_include_fleet_update_and_terminal(self):
         from luma.agent import node_agent_capabilities
@@ -358,6 +402,23 @@ class ProductConfigTests(unittest.TestCase):
 
         ufw_command = remote.sudo.call_args_list[0].args[0]
         self.assertIn("ufw allow 3306/tcp", ufw_command)
+
+    def test_configure_tailscale_watchdog_installs_systemd_timer(self):
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Linux\n")
+        remote.sudo.return_value = ""
+
+        result = configure_tailscale_watchdog(remote)
+
+        self.assertEqual(result, "Tailscale watchdog installed")
+        command = remote.sudo.call_args.args[0]
+        self.assertIn("luma-tailscale-watchdog.service", command)
+        self.assertIn("luma-tailscale-watchdog.timer", command)
+        self.assertIn("tailscale ping --timeout=3s --c 2", command)
+        self.assertIn("port=${LUMA_TAILSCALE_WATCHDOG_PORT:-7946}", command)
+        self.assertIn("threshold=${LUMA_TAILSCALE_WATCHDOG_THRESHOLD:-3}", command)
+        self.assertIn("systemctl restart tailscaled", command)
+        self.assertIn("systemctl enable --now luma-tailscale-watchdog.timer", command)
 
     def test_render_traefik_stack_does_not_require_configured_tcp_entrypoints(self):
         stack = yaml.safe_load(_render_traefik_stack(LumaConfig({}, None)))
@@ -2852,7 +2913,7 @@ class PortainerApiTests(unittest.TestCase):
         self.assertIn("--update-parallelism 1", command)
         self.assertIn("--force luma-control_luma-control", command)
 
-    def test_manager_control_refresh_only_updates_control_stack(self):
+    def test_manager_control_refresh_does_not_recreate_core_stacks(self):
         config = LumaConfig(
             {
                 "nodes": {
@@ -2877,9 +2938,10 @@ class PortainerApiTests(unittest.TestCase):
             "luma.bootstrap.install_docker"
         ) as docker, patch("luma.bootstrap.setup_egress") as egress, patch(
             "luma.bootstrap._refresh_core_services"
-        ) as refresh_core:
+        ) as refresh_core, patch("luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog") as watchdog:
             result = refresh_manager_control_local(config, node, "luma.example.com", state)
 
+        self.assertIn("watchdog", result)
         self.assertIn("config", result)
         self.assertIn("state", result)
         self.assertIn("control", result)
@@ -2889,6 +2951,7 @@ class PortainerApiTests(unittest.TestCase):
         install_config.assert_called_once()
         install_state.assert_called_once()
         deploy_control.assert_called_once()
+        watchdog.assert_called_once()
         traefik.assert_not_called()
         portainer.assert_not_called()
         bind.assert_not_called()
