@@ -15,7 +15,7 @@ Portainer is required and installed by bootstrap. It shows stacks, services, log
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.84"
+python -m pip install "luma-infra==0.1.85"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.84 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.85 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.84"
+python -m pip install "luma-infra==0.1.85"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.84"
+python -m pip install "luma-infra==0.1.85"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -243,6 +243,16 @@ Refresh a joined node agent after upgrading an older node:
 luma update --control-url https://luma.example.com --token <node-join-token>
 ```
 
+Update every registered node that has a ready node agent:
+
+```bash
+luma update fleet
+luma update fleet --install-ref v0.1.85 --timeout 900
+luma update fleet --include-manager
+```
+
+Fleet update runs through the node agents. It updates the CLI on each ready non-manager node and then refreshes the local node-agent service and Tailscale watchdog. Swarm manager nodes are skipped by default; update the manager separately with `luma update manager` from the manager host. `--include-manager` is available for explicit repair workflows, but normal fleet updates should leave the active control plane alone. Nodes whose agent is too old to advertise `luma-update` are reported as skipped; run `luma update` once on those nodes, then they can participate in later fleet updates.
+
 Leave Swarm and optionally unregister the node from the control plane:
 
 ```bash
@@ -281,6 +291,8 @@ Install/login Tailscale:
 ```bash
 luma tailscale connect
 ```
+
+Managers and joined nodes install a lightweight Tailscale watchdog during bootstrap/update. The manager watchdog verifies Tailscale peers plus Swarm gossip TCP reachability; node watchdogs verify manager Tailscale plus Swarm manager/gossip ports. Consecutive failures restart local Tailscale. This is intended to recover tailnet TCP stalls without restarting Docker, Traefik, Portainer, or application stacks.
 
 Generate a service manifest interactively:
 

@@ -179,6 +179,8 @@ luma node remove <node-name>
 
 The request is handled by Luma Control on the manager. It deletes the Luma node registration and removes the matching Docker Swarm worker node using the saved NodeID or Luma node labels. Use this for stale nodes that already left locally, failed joins, or decommissioned worker/home machines. Manager nodes are protected and must not be removed through this command.
 
+If a worker/home machine intentionally leaves Swarm and later rejoins with the same Luma node name, it receives a new Swarm NodeID. During join/update, Luma refreshes the saved `luma.node.id` label and updates Luma-managed services that were pinned to the old NodeID. Keep manifests pinned by Luma node name; do not replace them with Docker hostnames.
+
 ## Drain A Node
 
 ```bash

@@ -2,6 +2,14 @@
 
 Docker Swarm 使用节点标签控制服务调度。所有生产 stack 都应该显式声明 placement constraints，避免服务被调度到错误区域。
 
+当前 Luma 的正常路径是通过 `luma node join --name <luma-node-name> --region <region>` 自动维护标签。Luma 会写入：
+
+- `region=<cn|global|home>`：服务 `region` 调度使用。
+- `luma.node.name=<luma-node-name>`：人类可读的 Luma 节点名。
+- `luma.node.id=<swarm-node-id>`：固定节点调度使用的真实 Swarm NodeID。
+
+服务 manifest 的 `node` 字段应使用 Luma 节点名，不要使用 Docker hostname。控制面部署时会把它解析成 `node.labels.luma.node.id == <swarm-node-id>`。如果节点离开 Swarm 后重新 join，Swarm NodeID 会变化，Luma 会刷新该 label 并更新 Luma 管理的固定节点服务。
+
 ## 推荐标签
 
 ```bash

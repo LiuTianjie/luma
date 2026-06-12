@@ -1537,6 +1537,7 @@ def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     require_token(state, token, token_type="deploy")
     install_ref = str(body.get("installRef") or "").strip()
     include_all = bool(body.get("includeAll"))
+    include_manager = bool(body.get("includeManager"))
     per_node_timeout = int(body.get("timeout") or 900)
     per_node_timeout = min(max(per_node_timeout, 60), 3600)
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
@@ -1554,6 +1555,11 @@ def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             "os": str(agent.get("os") or ""),
             "status": "pending",
         }
+        if _node_record_is_manager(record) and not include_manager:
+            item["status"] = "skipped"
+            item["message"] = "manager node is skipped by fleet update; run luma update manager on the manager"
+            results.append(item)
+            continue
         agent_status = _node_agent_status(record)
         capabilities = {str(value) for value in agent.get("capabilities") or []}
         if agent_status != "ready":
@@ -3245,6 +3251,14 @@ def _node_record_for_name(nodes: Dict[str, Any], name: str) -> Dict[str, Any] | 
         if isinstance(value, dict) and value.get("displayName") == name:
             return value
     return None
+
+
+def _node_record_is_manager(record: Dict[str, Any]) -> bool:
+    if str(record.get("status") or "").lower() == "manager":
+        return True
+    if str(record.get("swarmRole") or "").lower() == "manager":
+        return True
+    return bool(record.get("swarmManager"))
 
 
 def _adopt_swarm_node_for_storage(state: Dict[str, Any], node_name: str) -> None:

@@ -7,11 +7,11 @@
 | `name` | yes | string | Service name. Luma slugifies it for stack, service, route, and deployment records. |
 | `image` | yes | string | Container image. `latest` or omitted tags are resolved to `name@sha256:...` during deploy. Prefer pinned version tags for production rollback. |
 | `region` | yes | `cn` / `global` / `home` | Runtime placement region. |
-| `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a Swarm NodeID constraint and keeps the region constraint. |
+| `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a Swarm NodeID constraint and keeps the region constraint. Do not use Docker hostnames for normal pins. |
 | `exposure` | recommended | `none` / `cn-edge` / `external-edge` / `tailscale-relay` / `tcp-relay` / `cloudflare-tunnel` | Access mode. Use explicit exposure in new files. |
 | `domain` | public only | string | Public hostname for exposed services. |
 | `port` | public only | integer | Container internal port, not the cloud firewall or host port. |
-| `publishPort` | relay only | integer | Host-mode published port for `tailscale-relay` or `tcp-relay`; defaults to `port` when omitted. |
+| `publishPort` | relay only | integer | Host-mode published port on the task node for `tailscale-relay` or `tcp-relay`; defaults to `port` when omitted. Choose a free host port if the node already has a local service bound to `port`. |
 | `replicas` | no | integer | Defaults to `1`; must be at least `1`. |
 | `env` / `environment` | no | map | Service environment. Use direct values for non-sensitive settings and `${SECRET_NAME}` for values stored with `luma secret set`. |
 | `command` | no | string/list | Overrides container command. |
@@ -62,6 +62,7 @@ Rules:
 
 - Every service gets `node.labels.region == <region>`.
 - If `node` is set and the control plane knows the node, Luma renders `node.labels.luma.node.id == <node-id>`; otherwise local render may use `node.labels.luma.node.name == <node>`.
+- If a node leaves Swarm and rejoins with the same Luma node name, Control refreshes the saved Swarm NodeID and updates Luma-managed pinned service constraints from the old `luma.node.id` to the new one.
 - `cn-edge` and `external-edge` add Traefik labels, attach the public overlay network, and use `port` as the load-balancer server port.
 - `tailscale-relay` deploys the stack first, inspects running tasks, then routes through host-mode published ports on the actual home nodes unless `relay.host`/`relay.url` overrides are set.
 - `tcp-relay` updates Traefik with the derived TCP entrypoint, writes a TCP route, and forwards to task host ports; the published port is exclusive to that TCP service.
@@ -82,6 +83,8 @@ luma registry remove ghcr.io
 ```
 
 During deploy, Luma matches credentials by image registry host, pre-pulls with Docker registry auth, and associates the matching Portainer/Swarm registry credential with the stack through the Portainer API path.
+
+Private registry image pulls are separate from runtime `proxy: true`. If `curl https://<registry>/v2/` reaches the registry but `docker pull` fails with EOF/timeout, inspect Docker daemon `HTTPProxy`/`HTTPSProxy` and add the private registry host to daemon `NO_PROXY`.
 
 ## Single-Service Examples
 
@@ -247,7 +250,7 @@ luma compose deploy luma.compose.yml --dry-run
 CI:
 
 ```bash
-python -m pip install "luma-infra==0.1.63"
+python -m pip install "luma-infra==0.1.84"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json
@@ -287,6 +290,7 @@ luma service remove <name> --delete-storage
 - Is `port` the container's internal port?
 - Is `region` compatible with `exposure`?
 - If `node` is set, does it match a registered Luma node name and the selected region?
+- If the target node was rejoined recently, has Control refreshed the saved Swarm NodeID?
 - Are secrets represented as `${ENV_NAME}` and backed by `luma secret set`?
 - Are private registry credentials stored with `luma registry login` instead of YAML/env?
 - Does the image include a meaningful tag? If not, remember that Luma resolves mutable tags to digests during deploy.
@@ -294,6 +298,7 @@ luma service remove <name> --delete-storage
 - Are CPU `cpus` values quoted strings?
 - On small manager nodes, are `resources` limits/reservations reasonable?
 - For stateful services, is storage declared through `storageClass` or an explicit `local.node` pin?
+- For `tailscale-relay` or `tcp-relay`, is `publishPort` free on the target node?
 - For Compose, are storage backend changes guarded with `adopted: true` or `initialize: empty`?
 - Should the service be public, or is `exposure: none` safer?
 

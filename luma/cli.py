@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.84 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.85 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -125,9 +125,10 @@ def build_parser() -> argparse.ArgumentParser:
     update_manager = update_sub.add_parser("manager", help="force a manager control-plane refresh")
     _add_update_manager_arguments(update_manager)
     _add_control_arguments(update_manager)
-    update_fleet = update_sub.add_parser("fleet", help="update Luma on all registered nodes with ready agents")
+    update_fleet = update_sub.add_parser("fleet", help="update Luma on registered non-manager nodes with ready agents")
     update_fleet.add_argument("--install-ref", dest="fleet_install_ref", help="Git ref passed to the installer on every node")
     update_fleet.add_argument("--all", action="store_true", help="Include offline nodes in the report as skipped")
+    update_fleet.add_argument("--include-manager", action="store_true", help="Also update Swarm manager nodes through fleet tasks")
     update_fleet.add_argument("--timeout", type=int, default=900, help="Per-node update timeout in seconds")
     _add_control_arguments(update_fleet)
     _add_output_arguments(update_fleet)
@@ -1162,10 +1163,11 @@ def _cmd_update_fleet(args: argparse.Namespace) -> int:
     else:
         print(f"[skip] Local manager control-plane refresh skipped: {reason}")
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    print("[start] Update Luma on registered nodes")
+    print("[start] Update Luma on registered non-manager nodes")
     result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).update_fleet(
         install_ref=str(_effective_update_install_ref(args) or ""),
         include_all=bool(getattr(args, "all", False)),
+        include_manager=bool(getattr(args, "include_manager", False)),
         timeout=int(getattr(args, "timeout", 900) or 900),
     )
     if _output_format(args) != "text":

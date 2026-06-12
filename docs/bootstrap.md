@@ -207,11 +207,23 @@ On a joined worker/home node, `luma update` updates the CLI and refreshes the lo
 luma update --control-url https://luma.example.com --token <node-join-token>
 ```
 
+From any logged-in client, update ready non-manager node agents:
+
+```bash
+luma update fleet
+```
+
+Fleet update depends on the node agent already being new enough to support the `luma-update` task. If a node is reported as skipped because it does not support fleet update, run `luma update` once on that node; future fleet updates can then refresh it remotely. Fleet update also refreshes node-side support services such as the Tailscale watchdog.
+
+Fleet update skips Swarm manager nodes by default so a client-side fleet operation cannot disrupt the active control plane. Update the manager separately from the manager host with `luma update manager`.
+
 On an ordinary client, `luma update` only updates the CLI. Use `luma update manager` on a manager to force the same control-only refresh when you need to pass `--domain`.
 
 Use `luma bootstrap manager --domain ...` for first install or explicit infrastructure repair. Full bootstrap can touch Docker, firewall, Traefik, Portainer, and egress, so treat it as a maintenance-window operation. If an old installed CLI still implements the previous update behavior, update the CLI first through the installer or package manager, then rerun the new `luma update manager` control-only refresh.
 
 If the installed CLI is too old to recognize `luma update`, run the installer once and then retry the update command.
+
+Manager bootstrap/update installs a systemd Tailscale watchdog when Tailscale and systemd are available. Joined node-agent install/update does the same on Linux with systemd and on macOS with LaunchDaemon. The watchdog only restarts local Tailscale after consecutive peer TCP failures, so application deploys should not take down Docker or Swarm services.
 
 Verify the manager is really running the new control API:
 

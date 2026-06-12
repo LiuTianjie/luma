@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.84"
+python -m pip install "luma-infra==0.1.85"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.84 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.85 sh
 ```
 
 Develop from source:
@@ -179,6 +179,7 @@ The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For p
 | --- | --- | --- |
 | manager | First control-plane install | `luma bootstrap manager --domain luma.example.com` |
 | manager | Update CLI and control plane | `luma update` |
+| logged-in client | Update ready non-manager node agents | `luma update fleet` |
 | worker/home node | Join the cluster | `luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1` |
 | client laptop | Login to control plane | `luma login https://luma.example.com --token <management-token>` |
 | client laptop | Deploy a service | `luma deploy app.yaml` |
@@ -203,6 +204,7 @@ luma node join https://luma.example.com --token <node-join-token> --region globa
 ```
 
 `--name` is the Luma node name used in status output and service manifests. Luma also records the real Swarm NodeID so pinned services target the intended machine even when Docker hostnames are not unique.
+If a node leaves Swarm and later rejoins with the same Luma node name, Luma refreshes the saved Swarm NodeID and updates Luma-managed pinned service constraints from the old `luma.node.id` to the new one. Do not depend on Docker hostnames for pinning.
 
 `--region` is the scheduling label. Service manifests match it through `region`:
 
@@ -251,7 +253,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.84"
+python -m pip install "luma-infra==0.1.85"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -294,6 +296,7 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 ```
 
 After that, manifests still only contain the image name, for example `image: ghcr.io/acme/private-api:1.0.0`. During deploy, Luma matches the registry host, pre-pulls with Docker registry auth, and sends Portainer/Swarm the registry auth needed by the node that receives the task. This is useful for private GHCR images produced by GitHub Actions, including images built from repositories that also publish docs or marketing pages through GitHub Pages.
+Private registry image pulls are separate from runtime `proxy: true`. If the Docker daemon has a global proxy and a private registry fails before auth, check `docker info` proxy settings and make sure that registry host is in Docker daemon `NO_PROXY`; `curl https://<registry>/v2/` returning `401` usually means the registry is reachable and Docker proxy routing is the next thing to inspect.
 
 Do not put sensitive values directly in manifests. Store them in the control plane:
 
@@ -315,12 +318,14 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | Question | What to do |
 | --- | --- |
 | Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI, hot-refreshes Luma Control, and refreshes the manager node agent when possible, without restarting Traefik, Portainer, Docker, or app stacks. |
+| Update worker/home nodes | Run `luma update fleet` from a logged-in client after the manager has the current Control API. Fleet update skips Swarm manager nodes by default; update the manager separately with `luma update manager` on the manager. Nodes whose agent is too old to support fleet update are reported as skipped; run `luma update` once on those nodes. |
 | View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, Portainer, registered nodes, and actual Swarm nodes. |
 | View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the management token on a trusted device. |
 | What happens if I run `luma update` on a joined node or client? | On a joined node it updates the CLI and refreshes the local node agent; on a client it updates only the CLI and skips manager control-plane refresh. |
 | When does `luma update` need `--domain`? | Only when you intentionally changed the control domain. If manager state is missing, run `luma bootstrap manager --domain ...` for first install or repair. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
 | Pin service A to one node | Set manifest `node` to the Luma node name passed to `luma node join --name`, keep the matching `region`, then deploy again. Control resolves it to the Swarm NodeID before scheduling. |
+| Rejoined node got a new Swarm ID | Keep the same Luma node name and rerun `luma node join` / `luma update` on that node. Control refreshes `luma.node.id` and updates Luma-managed pinned services. |
 | Remove service A | Run `luma service remove app` after it has been deployed through Luma Control. It removes the matching single-service or Compose deployment, including DNS, the Portainer stack, and generated stack/route files; use `--dry-run` to preview or `--skip-dns` to keep DNS. |
 | Make a public service internal | Change `exposure` to `none`, remove public-only domain/ingress config if no longer needed, then deploy again. |
 | Make an internal service public | Set a matching `region` + `exposure`, add `domain` and `port`, then deploy again. |

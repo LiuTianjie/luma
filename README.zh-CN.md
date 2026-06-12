@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.46 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.84 sh
 ```
 
 从源码开发：
@@ -174,6 +174,7 @@ luma tailscale connect
 | --- | --- | --- |
 | manager | 首次安装控制面 | `luma bootstrap manager --domain luma.example.com` |
 | manager | 更新 CLI 和控制面 | `luma update` |
+| 已登录 client | 更新 ready 的非 manager 节点 Luma | `luma update fleet` |
 | worker/home 节点 | 加入集群 | `luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1` |
 | client laptop | 登录控制面 | `luma login https://luma.example.com --token <management-token>` |
 | client laptop | 部署服务 | `luma deploy app.yaml` |
@@ -197,6 +198,7 @@ luma node join https://luma.example.com --token <node-join-token> --region globa
 ```
 
 `--name` 是 Luma 节点名，会出现在 `luma status` 中，也用于服务 manifest 的 `node` 字段。Luma 还会记录真实 Swarm NodeID，固定节点调度时使用 NodeID，避免 Docker hostname 重名导致串机器。
+如果某台机器执行过 `docker swarm leave` 后用同一个 Luma 节点名重新 join，Luma 会刷新保存的 Swarm NodeID，并把 Luma 管理的固定节点服务约束从旧 `luma.node.id` 更新到新 ID。不要依赖 Docker hostname 做固定节点调度。
 
 `--region` 是调度标签。服务 manifest 中的 `region` 匹配它：
 
@@ -272,6 +274,8 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 
 之后 manifest 仍然只写镜像名，例如 `image: ghcr.io/acme/private-api:1.0.0`。部署时 Luma 会按 image 推断 registry host，带 Docker registry auth 预拉镜像，并把 Portainer/Swarm 需要的 registry auth 传给实际被调度到的节点。这适合 GitHub Actions 构建出来的私有 GHCR 镜像；同一个仓库即使还用 GitHub Pages 发布文档或营销页，也不需要把 GHCR token 写到 Luma manifest 里。
 
+私有镜像拉取和运行时 `proxy: true` 是两条路径。如果 Docker daemon 配了全局代理，而私有 registry 在认证前就 EOF/timeout，先看 `docker info` 的 HTTPProxy/HTTPSProxy/NO_PROXY，并确保私有 registry host 在 Docker daemon 的 `NO_PROXY` 里；`curl https://<registry>/v2/` 返回 `401` 通常说明 registry 本身可达，下一步应查 Docker daemon 的代理绕过。
+
 敏感值不要直接写进 manifest。先存到控制面：
 
 ```bash
@@ -292,11 +296,13 @@ env:
 | 问题 | 做法 |
 | --- | --- |
 | 更新 manager | 在 manager 上运行 `luma update`。如果 control API 已经和更新后的 CLI 同版本，会跳过 manager bootstrap；需要强制刷新时运行 `luma update manager`。 |
+| 更新 worker/home 节点 | manager 更新后，在已登录 client 上运行 `luma update fleet`。fleet 默认跳过 Swarm manager 节点；manager 请在 manager 本机单独执行 `luma update manager`。如果某个老 agent 还不支持 fleet update，会被标记为 skipped；在该节点本机跑一次 `luma update` 即可刷新。 |
 | 查看整个集群状态 | 任意已登录 client 运行 `luma status`，会输出控制面、DNS、Portainer、注册节点和 Swarm 实际节点。 |
 | 在 client 或 worker 上运行 `luma update` 会怎样 | 只更新本地 CLI，不刷新 manager 控制面。 |
 | `luma update` 什么时候需要 `--domain` | 只有 `/opt/luma/control/control.json` 缺失，或你确实要切换控制面域名时。 |
 | 服务 A 从一个 region 迁到另一个 region | 改 manifest 的 `region`，必要时同步修改 `exposure`，然后重新 `luma deploy app.yaml`。 |
 | 服务 A 固定到某个节点 | 把 manifest 的 `node` 设为 `luma node join --name` 使用的 Luma 节点名，保留匹配的 `region`，然后重新 deploy。控制面会解析成 Swarm NodeID 调度。 |
+| 节点重新 join 后 Swarm ID 变了 | 保持同一个 Luma 节点名，在该节点重新 `luma node join` / `luma update`。Control 会刷新 `luma.node.id` 并更新 Luma 管理的固定节点服务。 |
 | 下掉服务 A | 运行 `luma service remove app`。它会删除 DNS、Portainer stack 和生成的 stack/route 文件；用 `--dry-run` 预览，或用 `--skip-dns` 保留 DNS。 |
 | 服务从公开变内部 | 把 `exposure` 改为 `none`，移除不再需要的 `domain`/公开入口配置，重新 deploy。 |
 | 服务从内部变公开 | 设置匹配的 `region` + `exposure`，补 `domain` 和 `port`，重新 deploy。 |

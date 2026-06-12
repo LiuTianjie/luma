@@ -1611,7 +1611,22 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         installer.assert_called_once_with(install_ref="main")
-        client.update_fleet.assert_called_once_with(install_ref="main", include_all=False, timeout=120)
+        client.update_fleet.assert_called_once_with(install_ref="main", include_all=False, include_manager=False, timeout=120)
+
+    def test_update_fleet_include_manager_flag_is_explicit(self):
+        client = Mock()
+        client.update_fleet.return_value = {"succeeded": 0, "failed": 0, "skipped": 0, "results": []}
+        with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch(
+            "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
+        ), patch(
+            "luma.cli._control_context", return_value=("https://luma.example.com", "management-token", False, None)
+        ), patch(
+            "luma.cli.ControlClient", return_value=client
+        ), patch("builtins.print"):
+            code = main(["update", "fleet", "--include-manager"])
+
+        self.assertEqual(code, 0)
+        client.update_fleet.assert_called_once_with(install_ref="", include_all=False, include_manager=True, timeout=900)
 
     def test_update_manager_rejects_bootstrap_only_options(self):
         with patch("luma.cli._run_luma_installer"), patch("luma.cli._reexec_after_luma_update"), patch(
@@ -3258,6 +3273,66 @@ class ControlApiTests(unittest.TestCase):
                 by_name = {item["nodeName"]: item for item in result["results"]}
                 self.assertEqual(by_name["home-mac-mini"]["status"], "succeeded")
                 self.assertEqual(by_name["lab"]["status"], "skipped")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_fleet_update_skips_manager_nodes_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                now = int(time.time())
+                state["nodes"] = {
+                    "manager": {
+                        "region": "cn",
+                        "status": "manager",
+                        "swarmRole": "manager",
+                        "swarmManager": True,
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["luma-update"]},
+                    },
+                    "home-mac-mini": {
+                        "region": "home",
+                        "agent": {"status": "online", "lastSeen": now, "os": "darwin", "capabilities": ["luma-update"]},
+                    },
+                }
+                save_state(state)
+
+                def run_task(_state, node_name, action, payload, **_kwargs):
+                    self.assertEqual(node_name, "home-mac-mini")
+                    self.assertEqual(action, "update-luma")
+                    return {"message": f"updated {node_name}", "installRef": payload.get("installRef") or ""}
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=run_task) as run:
+                    result = handle_fleet_update(state["deployToken"], {"includeAll": True})
+
+                run.assert_called_once()
+                by_name = {item["nodeName"]: item for item in result["results"]}
+                self.assertEqual(by_name["manager"]["status"], "skipped")
+                self.assertIn("manager node is skipped", by_name["manager"]["message"])
+                self.assertEqual(by_name["home-mac-mini"]["status"], "succeeded")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_fleet_update_can_include_manager_when_explicit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "manager": {
+                        "region": "cn",
+                        "status": "manager",
+                        "agent": {"status": "online", "lastSeen": int(time.time()), "os": "linux", "capabilities": ["luma-update"]},
+                    },
+                }
+                save_state(state)
+
+                with patch("luma.control.server._run_node_agent_task", return_value={"message": "updated manager"}) as run:
+                    result = handle_fleet_update(state["deployToken"], {"includeManager": True})
+
+                run.assert_called_once()
+                self.assertEqual(result["succeeded"], 1)
+                self.assertEqual(result["results"][0]["nodeName"], "manager")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

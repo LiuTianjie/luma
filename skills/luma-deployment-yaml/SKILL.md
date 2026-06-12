@@ -52,9 +52,10 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 - `port` is the container's internal listening port, not a cloud firewall or host port. For `tcp-relay`, `publishPort` is the task node host port that Traefik forwards to.
 - `replicas` defaults to `1` and must be at least `1`.
 - Do not use the removed `public` field; set `exposure` explicitly.
-- `node` is the Luma node name from `luma node join --name`. Control-plane deploy resolves it to a Swarm NodeID constraint and also keeps the region constraint.
+- `node` is the Luma node name from `luma node join --name`. Control-plane deploy resolves it to a Swarm NodeID constraint and also keeps the region constraint. Do not use Docker hostnames for normal pins; hosts such as OrbStack may share generic names.
+- If a node leaves Swarm and rejoins with the same Luma node name, Luma refreshes `luma.node.id` and updates Luma-managed pinned service constraints to the new Swarm NodeID.
 - Use `proxy: true` for container runtime HTTP/HTTPS egress through Luma. Do not hand-write the default `egress` network or default `HTTP_PROXY`/`HTTPS_PROXY`.
-- `proxy: true` is not for image pulls. Image pulls use Docker daemon proxy and registry credentials managed by Luma.
+- `proxy: true` is not for image pulls. Image pulls use Docker daemon proxy and registry credentials managed by Luma. For private registries, Docker daemon `NO_PROXY` may need the registry host even when `curl https://<registry>/v2/` is reachable.
 - `resources.limits.cpus` and `resources.reservations.cpus` should be quoted strings, for example `"0.50"`. Portainer/Compose expects `cpus` to be a string; current Luma normalizes numeric YAML for compatibility, but generated examples should still quote it.
 - `healthcheck` is copied to Swarm service healthcheck. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
 - Single-service `storage` can map named volumes from `volumes` to manager storage classes.
@@ -116,6 +117,8 @@ port: 8080
 publishPort: 8080
 replicas: 1
 ```
+
+If the target home node already has something bound to host `8080`, keep container `port: 8080` but choose a free `publishPort`, for example `publishPort: 18080`. `publishPort` is the task node host port, not the container port.
 
 Bounded worker on a small manager:
 
@@ -187,7 +190,7 @@ luma compose deploy luma.compose.yml --format ndjson --timeout 1800
 For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.1.63"
+python -m pip install "luma-infra==0.1.84"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, Cloudflare setup, or Portainer setup:
@@ -209,10 +212,12 @@ luma storage check luma.compose.yml --format json
 ## Operational Notes
 
 - `latest` or omitted image tags are resolved by the manager to `name@sha256:...` during deploy. Prefer pinned version tags for production rollback.
-- Private registry credentials are stored with `luma registry login` and matched by image registry host during deploy. Luma pre-pulls with auth and links the Portainer/Swarm registry credential through the Portainer API path.
+- Private registry credentials are stored with `luma registry login` and matched by image registry host during deploy. Luma pre-pulls with auth and links the Portainer/Swarm registry credential through the Portainer API path. If Docker daemon proxying causes EOF/timeout against a private registry, check daemon `NO_PROXY`; do not try to fix it with manifest `proxy: true`.
 - `luma service remove <name>` uses the manifest recorded by the control plane during the last successful single-service or Compose deploy. This also works for deployments created from the web dashboard.
 - Storage data is preserved by default. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment. It cannot be combined with `--skip-portainer`.
 - `region` controls workload scheduling; Portainer deployment itself runs through the manager.
 - Current Portainer stacks constrain the agent to manager nodes while keeping endpoint compatibility, so worker agent gossip issues should not be diagnosed as manifest region errors.
 - Required platform ports are separate from manifest `port`: public `80/tcp` and `443/tcp`, `tcp-relay` published ports such as `3306/tcp`, trusted operator `9443/tcp`, Swarm `2377/tcp`, node gossip `7946/tcp` and `7946/udp`, and overlay `4789/udp`.
 - `luma update` on a manager refreshes Luma Control only. Use `luma bootstrap manager --domain <control-domain>` for first install or explicit ingress/egress/bootstrap repair.
+- `luma update fleet` updates ready non-manager node agents from a logged-in client. It skips Swarm manager nodes by default so the active control plane is not updated through a remote fleet task. Update the manager separately with `luma update manager` from the manager host.
+- Bootstrap/update installs Tailscale watchdogs on supported manager and node hosts. When diagnosing `down heartbeat failure`, first separate Docker/container health from Tailscale peer TCP reachability on `2377`/`7946`.

@@ -73,6 +73,90 @@ luma egress setup
 luma doctor --deep
 ```
 
+For private registries, separate reachability, Docker daemon proxying, and auth:
+
+```bash
+docker info | grep -i proxy -A3
+curl -vk https://<registry-host>/v2/
+docker pull <registry-host>/<org>/<image>:<tag>
+```
+
+If `curl /v2/` returns `401` with `docker-distribution-api-version`, the registry is reachable. If `docker pull` still fails with EOF/timeout before auth, check Docker daemon `HTTPProxy`/`HTTPSProxy` and ensure the private registry host is in daemon `NO_PROXY`. This is separate from manifest `proxy: true`, which only affects runtime outbound traffic from the container.
+
+For services pinned to `home` or ARM nodes, make sure the image has the target platform:
+
+```bash
+docker buildx imagetools inspect <image>
+```
+
+Luma validates pulls for the target node platform and deploys the digest returned by that target-platform pull.
+
+## Fleet update fails
+
+If `luma update fleet` reports `HOME: parameter not set` or `HOME: unbound variable`, the node is running an older installer path from a service environment without `HOME`. Update the manager/CLI to a version with the installer HOME fallback, then rerun fleet update.
+
+If a node reports `unsupported node agent task action: update-luma` or `node agent does not support fleet update`, that node's agent is too old to update itself through fleet tasks. Run once on that node:
+
+```bash
+luma update
+```
+
+If the node has no saved local agent metadata:
+
+```bash
+luma update --control-url https://luma.example.com --token <node-join-token>
+```
+
+After that, future `luma update fleet` runs can update it remotely.
+
+## Dashboard terminal disconnects
+
+`terminal agent disconnected` means the browser session was connected, but the node-side terminal agent WebSocket disappeared. Common causes:
+
+- the node agent process restarted because it lost the control API lease;
+- multiple `node-agent terminal-supervisor` processes are running for the same node and replacing each other at the control plane;
+- the node's agent token is stale, causing repeated `401 unauthorized` in `/var/log/luma-node-agent.err`.
+
+Check on the node:
+
+```bash
+pgrep -af 'luma.*node-agent|terminal-supervisor'
+tail -n 120 /var/log/luma-node-agent.err
+```
+
+A healthy node should have one `node-agent run` process and one `node-agent terminal-supervisor` child. If old orphan supervisors remain, clear them and restart the node agent:
+
+```bash
+sudo pkill -f 'node-agent terminal-supervisor'
+sudo systemctl restart luma-node-agent.service
+# macOS:
+sudo launchctl kickstart -k system/io.luma.node-agent
+```
+
+Current Luma keeps the node agent alive across transient lease failures and uses a per-node lock so only one terminal supervisor runs.
+
+## Swarm node is down but containers still run
+
+If a home node such as a Mac mini shows `down` in Swarm but local containers are still running, check the manager-to-node tailnet TCP path before blaming the application:
+
+```bash
+docker node ls
+docker node inspect <node-id> --format '{{.Status.State}} {{.Status.Message}} {{.Status.Addr}}'
+tailscale ping <node-tailscale-ip>
+nc -vz <node-tailscale-ip> 2377
+nc -vz <node-tailscale-ip> 7946
+```
+
+If `tailscale ping` works but `2377` or `7946` times out, the tailnet data path can be wedged while Tailscale still appears online. Restart Tailscale on the side that cannot reach peer TCP:
+
+```bash
+sudo systemctl restart tailscaled
+# macOS:
+sudo launchctl kickstart -k system/W5364U7YZB.io.tailscale.ipn.macsys.network-extension
+```
+
+Manager and node updates install Tailscale watchdogs that perform these checks and restart local Tailscale only after consecutive failures.
+
 ## Not logged in
 
 If deploy prints `not logged in`, authenticate against the manager's control API:

@@ -49,7 +49,7 @@ luma deploy status.yaml
 | `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动加入 egress 网络和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
 | `resources` | 否 | map | 透传到 Swarm `deploy.resources`，用于限制 CPU/内存。支持 `limits` 和 `reservations`。 |
 | `healthcheck` | 否 | map | 透传到 Swarm service `healthcheck`。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
-| `publishPort` | tailscale-relay / tcp-relay 可用 | integer | host mode 暴露端口，默认等于 `port`。 |
+| `publishPort` | tailscale-relay / tcp-relay 可用 | integer | task 节点上的 host mode 暴露端口，默认等于 `port`。如果目标节点已有本机服务占用该端口，必须显式换一个不冲突的 `publishPort`。 |
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随 Swarm 实际运行 task 所在的 home 节点自动推导。 |
 | `tcp` | tcp-relay 可选 | map | TCP relay 高级上游覆盖。正常情况不需要填写；入口由 `publishPort` / `port` 自动派生。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
@@ -148,6 +148,8 @@ image: ghcr.io/acme/private-api:1.0.0
 
 常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。Luma 只需要 GHCR 的 registry credential 来拉运行时镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
 
+私有 registry 的镜像拉取和服务运行时 `proxy: true` 是两条路径。`proxy: true` 只给容器里的出站 HTTP/HTTPS 请求注入代理；镜像拉取走 Docker daemon。如果 `curl https://<registry>/v2/` 能返回 registry 的 `401`，但 `docker pull` 报 EOF/timeout，优先检查 `docker info` 里的 HTTPProxy/HTTPSProxy/NO_PROXY，并确保私有 registry host 在 Docker daemon 的 `NO_PROXY` 中。
+
 ### 海外 worker
 
 ```yaml
@@ -193,6 +195,8 @@ placement:
 ```
 
 `node` 使用的是 Luma 节点名，不是 Docker hostname。这个区别对 OrbStack 很重要：多台 Mac 的 Docker hostname 可能都叫 `orbstack`，但 Luma 会用 `luma.node.id` 指向唯一的 Swarm NodeID，避免服务跑到错误机器。
+
+如果节点离开 Swarm 后用同一个 Luma 节点名重新 join，它会获得新的 Swarm NodeID。控制面会刷新该节点的 `luma.node.id` 标签，并更新 Luma 管理的固定节点服务约束；不用手工把 Docker hostname 写进 manifest。
 
 ### 普通服务使用 storageClass
 
@@ -325,6 +329,7 @@ replicas: 1
 ```
 
 Luma 会把 DNS 指到公网 edge，自动确保 Traefik 监听 `tcp-3306` entrypoint，并写入 Traefik TCP route。`domain` 用于 DNS；普通 MySQL 连接无法提供 HTTP Host 或可靠起始 SNI，所以同一个发布端口一次只应给一个 TCP 服务使用。
+`publishPort` 是目标 task 节点上的宿主机端口。如果同一台机器已有本机容器或非 Luma 服务占用 `3306`，请选择其它端口并同步调整客户端连接端口或入口配置。
 
 ### Cloudflare Tunnel 服务
 
