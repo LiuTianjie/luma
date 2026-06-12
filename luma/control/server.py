@@ -385,7 +385,7 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 return {
                     "id": task_id,
                     "action": task.get("action"),
-                    "payload": task.get("payload") if isinstance(task.get("payload"), dict) else {},
+                    "payload": _agent_task_lease_payload(state, task),
                 }
             return None
 
@@ -395,6 +395,17 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         time.sleep(1)
     _record_metrics_history(node_name, body)
     return {"task": leased}
+
+
+def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(task.get("payload") if isinstance(task.get("payload"), dict) else {})
+    if task.get("action") == "resolve-docker-image" and not payload.get("registryAuth"):
+        image = str(payload.get("image") or "")
+        registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+        registry_auth = registry_auth_for_image(registries, image)
+        if registry_auth:
+            payload["registryAuth"] = registry_auth
+    return payload
 
 
 def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -4517,10 +4528,11 @@ def _resolve_service_image_for_deployment(
     registry_auth: Dict[str, str] | None = None,
 ) -> tuple[ServiceSpec, Dict[str, Any]]:
     if not service.node:
-        return service, _deferred_image_result(service, registry_auth=registry_auth, reason="Swarm will pull on the scheduled node")
+        return _deferred_service_image(config, service, registry_auth=registry_auth, reason="Swarm will pull on the scheduled node")
 
     if not _node_agent_has_capability(state, service.node, "docker-image"):
-        return service, _deferred_image_result(
+        return _deferred_service_image(
+            config,
             service,
             registry_auth=registry_auth,
             reason=f"Target node agent on {service.node} does not advertise docker-image",
@@ -4537,17 +4549,8 @@ def _resolve_service_image_for_deployment(
             "forcePull": force_pull,
             "platform": platform,
         }
-        if image_registry_auth:
-            payload["registryAuth"] = image_registry_auth
         try:
-            result = _run_node_agent_task(
-                state,
-                service.node,
-                "resolve-docker-image",
-                payload,
-                timeout=600,
-                required_capability="docker-image",
-            )
+            result = _resolve_image_on_target_node(state, service.node, image, payload)
             deploy_image = str(result.get("deployed") or result.get("digest") or image)
             image_result = {
                 "requested": service.image,
@@ -4566,13 +4569,71 @@ def _resolve_service_image_for_deployment(
     raise LumaError(f"unable to pull service image on target node {service.node}; tried " + "; ".join(errors))
 
 
-def _deferred_image_result(service: ServiceSpec, *, registry_auth: Dict[str, str] | None, reason: str) -> Dict[str, Any]:
-    return {
+def _resolve_image_on_target_node(state: Dict[str, Any], node_name: str, image: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return _run_node_agent_task(
+            state,
+            node_name,
+            "resolve-docker-image",
+            payload,
+            timeout=600,
+            required_capability="docker-image",
+        )
+    except LumaError as exc:
+        if not _target_image_pull_proxy_applicable(state, node_name, image, exc):
+            raise
+        _configure_target_image_pull_proxy(state, node_name, image)
+        try:
+            return _run_node_agent_task(
+                state,
+                node_name,
+                "resolve-docker-image",
+                payload,
+                timeout=600,
+                required_capability="docker-image",
+            )
+        except LumaError as retry_exc:
+            raise LumaError(f"{exc}; retry after target node proxy setup failed: {retry_exc}") from retry_exc
+
+
+def _target_image_pull_proxy_applicable(state: Dict[str, Any], node_name: str, image: str, error: Exception) -> bool:
+    if not image_pull_requires_egress(image):
+        return False
+    if not _node_agent_has_capability(state, node_name, "docker-egress-proxy"):
+        return False
+    lowered = str(error).lower()
+    markers = ("failed to do request", "eof", "timeout", "connection reset", "cannot reach the registry")
+    return any(marker in lowered for marker in markers)
+
+
+def _configure_target_image_pull_proxy(state: Dict[str, Any], node_name: str, image: str) -> None:
+    _require_egress_gateway_running()
+    _run_node_agent_task(
+        state,
+        node_name,
+        "configure-docker-egress-proxy",
+        {"proxy": EGRESS_PROXY_URL, "noProxy": EGRESS_NO_PROXY},
+        timeout=180,
+        required_capability="docker-egress-proxy",
+    )
+
+
+def _deferred_service_image(
+    config: Any,
+    service: ServiceSpec,
+    *,
+    registry_auth: Dict[str, str] | None,
+    reason: str,
+) -> tuple[ServiceSpec, Dict[str, Any]]:
+    images = [service.image, *_fallback_images(config, service.image)]
+    deploy_image = images[1] if len(images) > 1 else service.image
+    deploy_service = replace(service, image=deploy_image) if deploy_image != service.image else service
+    return deploy_service, {
         "requested": service.image,
-        "selected": service.image,
-        "deployed": service.image,
-        "fallback": False,
-        "registryAuth": bool(registry_auth and registry_auth_matches_image(registry_auth, service.image)),
+        "selected": deploy_image,
+        "deployed": deploy_image,
+        "fallback": deploy_image != service.image,
+        "registryAuth": bool(registry_auth and registry_auth_matches_image(registry_auth, deploy_image)),
         "forcePull": False,
         "platform": str(service.node_platform or "").strip(),
         "node": service.node or "",
@@ -4701,6 +4762,8 @@ def _fallback_images(config: Any, image: str) -> list[str]:
 
 
 def _has_registry(image: str) -> bool:
+    if "/" not in image:
+        return False
     first = image.split("/", 1)[0]
     return "." in first or ":" in first or first == "localhost"
 

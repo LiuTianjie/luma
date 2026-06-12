@@ -6468,6 +6468,154 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_node_agent_image_resolve_lease_injects_registry_auth_without_persisting_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-1": {
+                        "region": "cn",
+                        "swarmHostname": "worker-1",
+                        "swarmNodeId": "worker-node-id",
+                        "labels": {"luma.node.name": "worker-1", "luma.node.id": "worker-node-id", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                handle_registry_set(
+                    state["deployToken"],
+                    {"host": "ghcr.io", "username": "octo", "password": "ghp_secret"},
+                )
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "worker-1", "nodeId": "worker-node-id"})
+                current = load_state()
+                current.setdefault("agentTasks", {})["task-image"] = {
+                    "id": "task-image",
+                    "nodeName": "worker-1",
+                    "action": "resolve-docker-image",
+                    "payload": {"image": "ghcr.io/acme/private-api:1", "forcePull": False, "platform": ""},
+                    "status": "queued",
+                }
+                save_state(current)
+
+                leased = handle_node_agent_lease(
+                    issued["agentToken"],
+                    {
+                        "nodeName": "worker-1",
+                        "nodeId": "worker-node-id",
+                        "os": "linux",
+                        "capabilities": ["docker-image"],
+                        "waitSeconds": 0,
+                    },
+                )["task"]
+                self.assertEqual(leased["payload"]["registryAuth"]["password"], "ghp_secret")
+                persisted_payload = load_state()["agentTasks"]["task-image"]["payload"]
+                self.assertNotIn("registryAuth", persisted_payload)
+                self.assertNotIn("ghp_secret", json.dumps(load_state().get("agentTasks", {})))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_unpinned_docker_hub_deployment_rewrites_to_mirror_without_manager_pull(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks"), "imageMirrors": ["mirror.local"]}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                )
+
+                def fail_manager_pull(*_args, **_kwargs):
+                    raise AssertionError("manager Docker image pull should not be used for unpinned deployments")
+
+                with patch("luma.control.server.docker_request_raw", side_effect=fail_manager_pull):
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
+                    )
+                self.assertTrue(result["image"]["deferred"])
+                self.assertTrue(result["image"]["fallback"])
+                self.assertEqual(result["image"]["deployed"], "mirror.local/nginx:alpine")
+                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                self.assertIn("image: mirror.local/nginx:alpine", stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_pinned_target_pull_network_failure_configures_target_proxy_and_retries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-1": {
+                        "region": "cn",
+                        "status": "labeled",
+                        "swarmNodeId": "worker-node-id",
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["docker-image", "docker-egress-proxy"],
+                        },
+                        "labels": {"region": "cn", "luma.node.name": "worker-1", "luma.node.id": "worker-node-id"},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "ghcr.io/acme/api:latest",
+                        "region": "cn",
+                        "node": "worker-1",
+                        "exposure": "none",
+                    }
+                )
+                docker_nodes = [
+                    {
+                        "ID": "worker-node-id",
+                        "Description": {"Hostname": "worker-1", "Platform": {"OS": "linux", "Architecture": "x86_64"}},
+                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "cn", "luma.node.name": "worker-1", "luma.node.id": "worker-node-id"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.10"},
+                    }
+                ]
+                digest = "ghcr.io/acme/api@sha256:abc123"
+                with patch("luma.control.server.docker_request", return_value=docker_nodes), patch(
+                    "luma.control.server._require_egress_gateway_running"
+                ), patch(
+                    "luma.control.server._run_node_agent_task",
+                    side_effect=[
+                        LumaError("target node Docker pull failed for ghcr.io/acme/api:latest: failed to do request: EOF"),
+                        {"message": "Docker daemon egress proxy configured"},
+                        {"deployed": digest, "digest": digest},
+                    ],
+                ) as agent:
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
+                    )
+                self.assertEqual([call.args[2] for call in agent.call_args_list], ["resolve-docker-image", "configure-docker-egress-proxy", "resolve-docker-image"])
+                self.assertEqual(result["image"]["deployed"], digest)
+                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                self.assertIn(f"image: {digest}", stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_tailscale_relay_follows_actual_home_task_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
