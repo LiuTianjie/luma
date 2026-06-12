@@ -96,6 +96,69 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn('license = "MIT"', pyproject)
         self.assertIn('license-files = ["LICENSE"]', pyproject)
 
+    def test_asset_pyproject_keeps_control_runtime_dependencies(self):
+        root = Path(__file__).resolve().parents[1]
+        asset_pyproject = (root / "luma" / "assets" / "pyproject.toml").read_text(encoding="utf-8")
+
+        self.assertIn('"starlette>=0.49.0"', asset_pyproject)
+        self.assertIn('"uvicorn[standard]>=0.38.0"', asset_pyproject)
+        self.assertIn('"websockets>=15.0.1"', asset_pyproject)
+
+    def test_pty_session_emits_from_reader_thread_through_event_loop(self):
+        from luma.agent import _PtySession
+
+        session = _PtySession.__new__(_PtySession)
+        session.loop = Mock()
+        session.outbound = Mock()
+        event = {"type": "output", "sessionId": "term-1", "data": "ok"}
+        session._emit(event)
+        session.loop.call_soon_threadsafe.assert_called_once_with(session.outbound.put_nowait, event)
+
+    def test_pty_session_close_kills_process_group_after_timeout(self):
+        import signal
+        import subprocess
+        from luma.agent import _PtySession
+
+        session = _PtySession.__new__(_PtySession)
+        session.closed = threading.Event()
+        session.master_fd = 99
+        session.process = Mock()
+        session.process.pid = 1234
+        session.process.poll.return_value = None
+        session.process.wait.side_effect = [subprocess.TimeoutExpired("shell", 2), None]
+
+        with patch("luma.agent.os.getpgid", return_value=9876), patch("luma.agent.os.killpg") as killpg, patch("luma.agent.os.close") as close:
+            session.close()
+
+        self.assertEqual(killpg.call_args_list[0].args, (9876, signal.SIGTERM))
+        self.assertEqual(killpg.call_args_list[1].args, (9876, signal.SIGKILL))
+        close.assert_called_once_with(99)
+
+    def test_terminal_supervisor_stop_kills_process_group_after_timeout(self):
+        import signal
+        import subprocess
+        from luma.agent import _TerminalSupervisorProcess
+
+        supervisor = _TerminalSupervisorProcess(Path("/tmp/luma-agent.json"))
+        supervisor.process = Mock()
+        supervisor.process.pid = 4321
+        supervisor.process.poll.return_value = None
+        supervisor.process.wait.side_effect = subprocess.TimeoutExpired("terminal-supervisor", 3)
+
+        with patch("luma.agent.os.getpgid", return_value=8765), patch("luma.agent.os.killpg") as killpg:
+            supervisor.stop()
+
+        self.assertEqual(killpg.call_args_list[0].args, (8765, signal.SIGTERM))
+        self.assertEqual(killpg.call_args_list[1].args, (8765, signal.SIGKILL))
+        supervisor.process.kill.assert_not_called()
+
+    def test_terminal_supervisor_signal_requests_graceful_shutdown(self):
+        import signal
+        from luma.agent import _terminal_supervisor_shutdown_signal
+
+        with self.assertRaises(KeyboardInterrupt):
+            _terminal_supervisor_shutdown_signal(signal.SIGTERM, None)
+
     def test_doctor_checks_control_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "config"))
@@ -215,11 +278,13 @@ class ProductConfigTests(unittest.TestCase):
         self.assertEqual(result["installRef"], "main")
         self.assertEqual(result["message"], "Luma installer finished")
 
-    def test_node_agent_capabilities_include_fleet_update(self):
+    def test_node_agent_capabilities_include_fleet_update_and_terminal(self):
         from luma.agent import node_agent_capabilities
 
         self.assertIn("luma-update", node_agent_capabilities("linux"))
         self.assertIn("luma-update", node_agent_capabilities("darwin"))
+        self.assertIn("terminal", node_agent_capabilities("linux"))
+        self.assertIn("terminal", node_agent_capabilities("darwin"))
 
     def test_local_executor_timeout_returns_text_output(self):
         result = LocalExecutor().run_result("printf before-timeout; sleep 2", timeout=1)
@@ -3320,6 +3385,129 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_pinned_deployment_validates_image_for_target_node_platform_before_stack_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "home-mac-mini": {
+                        "region": "home",
+                        "status": "labeled",
+                        "swarmNodeId": "node-id-home",
+                        "labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"},
+                    }
+                }
+                from luma.control.state import save_state
+
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "pura",
+                        "image": "ghcr.io/acme/pura:main",
+                        "region": "home",
+                        "node": "home-mac-mini",
+                        "exposure": "none",
+                    }
+                )
+                docker_nodes = [
+                    {
+                        "ID": "node-id-home",
+                        "Description": {"Hostname": "orbstack", "Platform": {"OS": "linux", "Architecture": "aarch64"}},
+                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
+                    }
+                ]
+                calls = []
+
+                def fake_raw(method, path, *, headers=None):
+                    calls.append((method, path))
+                    self.assertEqual(method, "POST")
+                    self.assertIn("platform=linux/arm64", path)
+                    return 500, '{"message":"no matching manifest for linux/arm64/v8 in the manifest list entries"}'
+
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.docker_request", return_value=docker_nodes
+                ), patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
+                    with self.assertRaisesRegex(LumaError, "target platform linux/arm64"):
+                        handle_deployment(
+                            state["deployToken"],
+                            {"manifest": manifest, "sourceName": "pura.yaml", "skipDns": True, "skipPortainer": True},
+                        )
+                self.assertTrue(calls)
+                self.assertFalse((root / "stacks" / "home" / "pura" / "stack.yml").exists())
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_pinned_deployment_renders_target_platform_manifest_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "home-mac-mini": {
+                        "region": "home",
+                        "status": "labeled",
+                        "swarmNodeId": "node-id-home",
+                        "labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"},
+                    }
+                }
+                from luma.control.state import save_state
+
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "pura",
+                        "image": "ghcr.io/acme/pura:main",
+                        "region": "home",
+                        "node": "home-mac-mini",
+                        "exposure": "none",
+                    }
+                )
+                docker_nodes = [
+                    {
+                        "ID": "node-id-home",
+                        "Description": {"Hostname": "orbstack", "Platform": {"OS": "linux", "Architecture": "aarch64"}},
+                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
+                    }
+                ]
+                digest = "ghcr.io/acme/pura@sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"
+
+                def fake_raw(method, path, *, headers=None):
+                    self.assertEqual(method, "POST")
+                    self.assertIn("platform=linux/arm64", path)
+                    return 200, '{"status":"Digest: sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"}'
+
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server.docker_request", return_value=docker_nodes
+                ), patch("luma.control.server.docker_request_raw", side_effect=fake_raw):
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "pura.yaml", "skipDns": True, "skipPortainer": True},
+                    )
+                stack = (root / "stacks" / "home" / "pura" / "stack.yml").read_text(encoding="utf-8")
+                self.assertEqual(result["image"]["deployed"], digest)
+                self.assertEqual(result["image"]["platform"], "linux/arm64")
+                self.assertIn(f"image: {digest}", stack)
+                self.assertNotIn("ghcr.io/acme/pura:main", stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_deployment_refuses_pinned_down_swarm_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
@@ -4661,6 +4849,187 @@ class ControlApiTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
+    def test_asgi_app_serves_dashboard_health_and_rejects_missing_token(self):
+        from starlette.testclient import TestClient
+        from luma.control.server import create_app
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                with TestClient(create_app()) as client:
+                    response = client.get("/dashboard/")
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn("Luma · 控制台", response.text)
+                    health = client.get("/v1/health")
+                    self.assertEqual(health.status_code, 200)
+                    self.assertIn("terminal", health.json()["capabilities"])
+                    login = client.post("/v1/auth/login/verify", json={}, headers={"Authorization": f"Bearer {state['deployToken']}"})
+                    self.assertEqual(login.status_code, 200)
+                    self.assertEqual(login.json()["clusterId"], "luma-test")
+                    rejected = client.get("/v1/dashboard")
+                    self.assertEqual(rejected.status_code, 401)
+                    self.assertEqual(rejected.json()["error"], "missing bearer token")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_terminal_websocket_relays_between_browser_and_agent(self):
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+        from luma.control import server as control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            original_broker = control_server.TERMINAL_BROKER
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                        "labels": {"luma.node.name": "worker-storage", "luma.node.id": "worker-node-id", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "worker-storage", "nodeId": "worker-node-id"})
+                agent_token = issued["agentToken"]
+                control_server.TERMINAL_BROKER = control_server.TerminalBroker(per_node_limit=2, idle_timeout_seconds=60)
+                with TestClient(control_server.create_app()) as client:
+                    with client.websocket_connect(
+                        "/v1/terminal/agent?node=worker-storage&nodeId=worker-node-id"
+                    ) as agent:
+                        agent.send_json({"type": "auth", "token": agent_token})
+                        self.assertEqual(agent.receive_json()["type"], "ready")
+                        with client.websocket_connect(
+                            "/v1/terminal/browser?node=worker-storage"
+                        ) as browser:
+                            browser.send_json({"type": "auth", "token": state["deployToken"]})
+                            opened = browser.receive_json()
+                            self.assertEqual(opened["type"], "open")
+                            session_id = opened["sessionId"]
+                            agent_open = agent.receive_json()
+                            self.assertEqual(agent_open["type"], "open")
+                            self.assertEqual(agent_open["sessionId"], session_id)
+                            browser.send_json({"type": "input", "data": "pwd\n"})
+                            agent_input = agent.receive_json()
+                            self.assertEqual(agent_input["type"], "input")
+                            self.assertEqual(agent_input["sessionId"], session_id)
+                            self.assertEqual(agent_input["data"], "pwd\n")
+                            agent.send_json({"type": "output", "sessionId": session_id, "data": "/root\r\n"})
+                            self.assertEqual(browser.receive_json()["data"], "/root\r\n")
+                            agent.send_json({"type": "exit", "sessionId": session_id, "exitCode": 0})
+                            exit_event = browser.receive_json()
+                            self.assertEqual(exit_event["type"], "exit")
+                            self.assertEqual(exit_event["exitCode"], 0)
+                            with self.assertRaises(WebSocketDisconnect):
+                                browser.receive_json()
+            finally:
+                control_server.TERMINAL_BROKER = original_broker
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_terminal_broker_closes_browser_and_only_cleans_old_agent_sessions(self):
+        import asyncio
+        from luma.control.server import TerminalBroker, _TerminalAgentConnection, _TerminalSession
+
+        class FakeBrowser:
+            def __init__(self):
+                self.sent = []
+                self.closed = False
+
+            async def send_json(self, payload):
+                self.sent.append(payload)
+
+            async def close(self, code=1000):
+                self.closed = code
+
+        class FakeAgentSocket:
+            def __init__(self):
+                self.sent = []
+
+            async def send_json(self, payload):
+                self.sent.append(payload)
+
+        async def scenario():
+            broker = TerminalBroker(per_node_limit=2, idle_timeout_seconds=60)
+            old_agent = _TerminalAgentConnection("worker-storage", FakeAgentSocket())
+            new_agent = _TerminalAgentConnection("worker-storage", FakeAgentSocket())
+            old_browser = FakeBrowser()
+            new_browser = FakeBrowser()
+            broker._sessions["old"] = _TerminalSession("old", "worker-storage", old_browser, old_agent)
+            broker._sessions["new"] = _TerminalSession("new", "worker-storage", new_browser, new_agent)
+
+            self.assertEqual(await broker._session_ids_for_agent("worker-storage", old_agent), ["old"])
+            await broker.close_session("old", notify_agent=True, browser_message="terminal agent disconnected")
+
+            self.assertTrue(old_browser.closed)
+            self.assertEqual(old_browser.sent[0]["message"], "terminal agent disconnected")
+            self.assertEqual(old_agent.websocket.sent[0], {"type": "close", "sessionId": "old"})
+            self.assertIn("new", broker._sessions)
+            self.assertFalse(new_browser.closed)
+
+        asyncio.run(scenario())
+
+    def test_terminal_broker_rejects_pending_auth_overflow(self):
+        import asyncio
+        from luma.control.server import TerminalBroker
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.closed = None
+
+            async def close(self, code=1000):
+                self.closed = code
+
+        async def scenario():
+            broker = TerminalBroker(per_node_limit=1, idle_timeout_seconds=60)
+            broker._pending_auth = asyncio.Semaphore(0)
+            websocket = FakeWebSocket()
+
+            self.assertFalse(await broker._acquire_pending_auth(websocket))
+            self.assertEqual(websocket.closed, 1013)
+
+        asyncio.run(scenario())
+
+    def test_terminal_websocket_rejects_wrong_agent_token(self):
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+        from luma.control.server import create_app
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                    }
+                }
+                save_state(state)
+                with TestClient(create_app()) as client, self.assertRaises(WebSocketDisconnect):
+                    with client.websocket_connect("/v1/terminal/agent?node=worker-storage&nodeId=worker-node-id") as agent:
+                        agent.send_json({"type": "auth", "token": "wrong"})
+                        agent.receive_json()
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_asgi_log_stream_defers_docker_socket_to_background_reader(self):
+        import asyncio
+        from luma.control.server import _asgi_stream_service_logs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                with patch("luma.control.server.DockerSocketConnection") as docker_socket:
+                    response = asyncio.run(_asgi_stream_service_logs(state["deployToken"], "api_api", "", 20))
+                self.assertEqual(response.media_type, "application/x-ndjson")
+                docker_socket.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_deployment_passes_referenced_secrets_as_portainer_stack_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5910,7 +6279,8 @@ class ControlApiTests(unittest.TestCase):
                     },
                 ]
                 docker_tasks = [{"NodeID": "home-1", "DesiredState": "running", "Status": {"State": "running"}}]
-                docker_responses = [docker_nodes, docker_nodes, [], docker_nodes, [], docker_nodes, docker_tasks]
+                missing_service = LumaError('Docker API error 404: {"message":"service code-server_code-server not found"}')
+                docker_responses = [docker_nodes, docker_nodes, missing_service, docker_nodes, missing_service, docker_nodes, docker_tasks]
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.docker_request", side_effect=docker_responses
                 ), patch(
@@ -6352,6 +6722,18 @@ class ControlApiTests(unittest.TestCase):
             "private registry.*proxy bypass",
         ):
             ensure_image_present("registry.example.com/acme/api:latest", registry_auth=registry_auth, force_pull=True)
+
+    def test_service_image_stream_error_points_to_target_platform_manifest(self):
+        def fake_raw(method, path, *, headers=None):
+            self.assertEqual(method, "POST")
+            self.assertIn("platform=linux/arm64", path)
+            return 200, '{"error":"no matching manifest for linux/arm64/v8 in the manifest list entries"}'
+
+        with patch("luma.control.server.docker_request_raw", side_effect=fake_raw), self.assertRaisesRegex(
+            LumaError,
+            "target platform linux/arm64",
+        ):
+            ensure_image_present("ghcr.io/acme/api:1.0.0", platform="linux/arm64")
 
     def test_portainer_api_binding_creates_missing_stack(self):
         with tempfile.TemporaryDirectory() as tmp:

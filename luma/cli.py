@@ -30,7 +30,7 @@ from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
 from .control.context import list_contexts, load_current_context, save_context, use_context
 from .control.state import load_state, new_state, state_path
-from .agent import DEFAULT_AGENT_CONFIG, install_node_agent, run_node_agent
+from .agent import DEFAULT_AGENT_CONFIG, install_node_agent, run_node_agent, run_terminal_supervisor
 from .envfile import load_env_file
 from .errors import LumaError
 from .io import dump_yaml, write_yaml
@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.80 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.81 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -172,6 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
     node_agent_run.add_argument("--config", type=Path, default=DEFAULT_AGENT_CONFIG)
     node_agent_run.add_argument("--once", action="store_true")
     node_agent_run.add_argument("--poll-interval", type=int)
+    node_agent_terminal = node_agent_sub.add_parser("terminal-supervisor", help=argparse.SUPPRESS)
+    node_agent_terminal.add_argument("--config", type=Path, default=DEFAULT_AGENT_CONFIG)
 
     cf = sub.add_parser("cloudflare")
     cf_sub = cf.add_subparsers(dest="cloudflare_command", required=True)
@@ -2517,6 +2519,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "node-agent":
             if args.node_agent_command == "run":
                 return run_node_agent(args.config, once=args.once, poll_interval=args.poll_interval)
+            if args.node_agent_command == "terminal-supervisor":
+                return run_terminal_supervisor(args.config)
             raise LumaError(f"unknown node-agent command: {args.node_agent_command}")
         if args.command == "cloudflare":
             return cmd_cloudflare(args)

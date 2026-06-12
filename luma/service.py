@@ -41,6 +41,7 @@ class ServiceSpec:
     region: str
     node: Optional[str] = None
     node_id: Optional[str] = None
+    node_platform: Optional[str] = None
     public: bool = False
     exposure: str = "none"
     domain: Optional[str] = None
@@ -203,6 +204,7 @@ def load_service(path: Path) -> ServiceSpec:
         region=region,
         node=node.strip() if isinstance(node, str) else None,
         node_id=None,
+        node_platform=None,
         public=public,
         exposure=exposure,
         domain=domain.strip() if isinstance(domain, str) else None,

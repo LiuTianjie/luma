@@ -4,12 +4,14 @@ import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "./com
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
 import { IssuesPanel } from "./components/IssuesPanel";
 import { LoginPanel } from "./components/LoginPanel";
+import { NodeFleetMap } from "./components/NodeFleetMap";
 import { NodeTopology } from "./components/NodeTopology";
 import { NodesTable } from "./components/NodesTable";
 import { ObservabilityPanel } from "./components/ObservabilityPanel";
 import { ReadinessCards } from "./components/ReadinessCards";
 import { ServicesTable } from "./components/ServicesTable";
 import { StoragePanel } from "./components/StoragePanel";
+import { TerminalDrawer } from "./components/TerminalDrawer";
 import { Topbar } from "./components/Topbar";
 import { TrafficPaths } from "./components/TrafficPaths";
 import { DeployWorkspace } from "./deploy/DeployWorkspace";
@@ -33,6 +35,7 @@ export function App() {
   const [deployTemplateLanding, setDeployTemplateLanding] = useState(true);
   const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
   const [detail, setDetail] = useState<DetailState>(null);
+  const [terminalNode, setTerminalNode] = useState<DashboardNode | null>(null);
   const theme = "dark";
   const { token, payload, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData();
 
@@ -326,12 +329,13 @@ export function App() {
                       <span>{paths.length} {t(lang, "trafficPaths")}</span>
                     </div>
                   </section>
+                  <NodeFleetMap lang={lang} nodes={nodes} services={services} onSelect={openNodeDetail} onTerminal={setTerminalNode} />
                   <section className="topology-split-grid">
                     <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
                     <TrafficPaths lang={lang} paths={paths} theme={theme} />
                   </section>
                   <section className="table-grid compact-status-grid">
-                    <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} />
+                    <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} onTerminal={setTerminalNode} />
                     <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
                   </section>
                 </>
@@ -385,6 +389,7 @@ export function App() {
                   </section>
 
                   <ReadinessCards lang={lang} payload={payload} />
+                  <NodeFleetMap lang={lang} nodes={nodes} services={services} onSelect={openNodeDetail} onTerminal={setTerminalNode} />
                   <IssuesPanel lang={lang} issues={issues} token={token} />
                   <ApplicationManagementPanel
                     lang={lang}
@@ -398,7 +403,7 @@ export function App() {
                     onUpdateApplication={openUpdatePage}
                   />
                   <section className="table-grid">
-                    <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} />
+                    <NodesTable lang={lang} nodes={nodes} onSelect={openNodeDetail} onTerminal={setTerminalNode} />
                     <ServicesTable lang={lang} services={services} onSelect={openServiceDetail} />
                   </section>
                   <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
@@ -437,6 +442,9 @@ export function App() {
             </dl>
           </aside>
         </div>
+      ) : null}
+      {terminalNode ? (
+        <TerminalDrawer lang={lang} node={terminalNode} token={token} onClose={() => setTerminalNode(null)} />
       ) : null}
     </div>
   );
