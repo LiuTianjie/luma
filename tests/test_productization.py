@@ -342,6 +342,17 @@ class ProductConfigTests(unittest.TestCase):
         self.assertNotIn("resolvectl dns", installer)
         self.assertNotIn("/etc/systemd/resolved.conf.d/luma.conf", installer)
 
+    def test_installer_resolves_home_before_install_paths(self):
+        root = Path(__file__).resolve().parents[1]
+        installer = (root / "scripts" / "install-luma.sh").read_text(encoding="utf-8")
+
+        self.assertIn('LUMA_USER_HOME="${HOME:-}"', installer)
+        self.assertIn('HOME="$LUMA_USER_HOME"', installer)
+        self.assertIn('export HOME', installer)
+        self.assertIn('INSTALL_HOME="${LUMA_INSTALL_HOME:-$LUMA_USER_HOME/.local/share/luma}"', installer)
+        self.assertIn('BIN_DIR="${LUMA_BIN_DIR:-$LUMA_USER_HOME/.local/bin}"', installer)
+        self.assertLess(installer.index('LUMA_USER_HOME="${HOME:-}"'), installer.index("INSTALL_HOME="))
+
     def test_public_port_guards_install_docker_user_proxy_guard(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Linux\n")
@@ -3199,7 +3210,7 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_fleet_update_bootstraps_ready_agents_without_update_capability(self):
+    def test_fleet_update_skips_ready_agents_without_update_capability(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
@@ -3212,17 +3223,13 @@ class ControlApiTests(unittest.TestCase):
                 }
                 save_state(state)
 
-                def run_task(_state, _node_name, action, _payload, **kwargs):
-                    self.assertEqual(action, "update-luma")
-                    self.assertIsNone(kwargs["required_capability"])
-                    return {"taskId": "task-1", "message": "Luma installer finished"}
-
-                with patch("luma.control.server._run_node_agent_task", side_effect=run_task) as run:
+                with patch("luma.control.server._run_node_agent_task") as run:
                     result = handle_fleet_update(state["deployToken"], {"includeAll": True})
-                run.assert_called_once()
-                self.assertEqual(result["succeeded"], 1)
-                self.assertEqual(result["skipped"], 0)
-                self.assertEqual(result["results"][0]["status"], "succeeded")
+                run.assert_not_called()
+                self.assertEqual(result["succeeded"], 0)
+                self.assertEqual(result["skipped"], 1)
+                self.assertEqual(result["results"][0]["status"], "skipped")
+                self.assertIn("does not support fleet update", result["results"][0]["message"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

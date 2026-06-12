@@ -13,8 +13,26 @@ fi
 
 REPO_URL="${LUMA_REPO_URL:-https://github.com/LiuTianjie/luma}"
 INSTALL_REF="${LUMA_INSTALL_REF:-main}"
-INSTALL_HOME="${LUMA_INSTALL_HOME:-$HOME/.local/share/luma}"
-BIN_DIR="${LUMA_BIN_DIR:-$HOME/.local/bin}"
+LUMA_USER_HOME="${HOME:-}"
+if [ -z "$LUMA_USER_HOME" ]; then
+  if command -v getent >/dev/null 2>&1; then
+    LUMA_USER_HOME="$(getent passwd "$(id -u)" | awk -F: '{print $6}' || true)"
+  fi
+  if [ -z "$LUMA_USER_HOME" ] && command -v dscl >/dev/null 2>&1; then
+    LUMA_USER_NAME="$(id -un 2>/dev/null || true)"
+    if [ -n "$LUMA_USER_NAME" ]; then
+      LUMA_USER_HOME="$(dscl . -read "/Users/$LUMA_USER_NAME" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+    fi
+  fi
+fi
+if [ -z "$LUMA_USER_HOME" ]; then
+  echo "HOME is not set and the current user's home directory could not be resolved." >&2
+  exit 1
+fi
+HOME="$LUMA_USER_HOME"
+export HOME
+INSTALL_HOME="${LUMA_INSTALL_HOME:-$LUMA_USER_HOME/.local/share/luma}"
+BIN_DIR="${LUMA_BIN_DIR:-$LUMA_USER_HOME/.local/bin}"
 
 ensure_path() {
   case ":$PATH:" in

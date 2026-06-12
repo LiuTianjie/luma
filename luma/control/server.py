@@ -1561,7 +1561,11 @@ def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             item["message"] = f"node agent is not ready; status={agent_status}"
             results.append(item)
             continue
-        required_capability = "luma-update" if "luma-update" in capabilities else None
+        if "luma-update" not in capabilities:
+            item["status"] = "skipped"
+            item["message"] = "node agent does not support fleet update; run luma update on this node once to refresh the agent"
+            results.append(item)
+            continue
         try:
             result = _run_node_agent_task(
                 state,
@@ -1569,7 +1573,7 @@ def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 "update-luma",
                 {"installRef": install_ref},
                 timeout=per_node_timeout,
-                required_capability=required_capability,
+                required_capability="luma-update",
             )
             item["status"] = "succeeded"
             item["message"] = str(result.get("message") or "Luma installer finished")
