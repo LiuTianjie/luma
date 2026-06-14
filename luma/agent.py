@@ -669,10 +669,46 @@ def _current_executable() -> str:
     return shutil.which(candidate) or ""
 
 
+def _install_layout_from_executable(executable: str) -> tuple[Path, Path, Path] | None:
+    value = str(executable or "").strip()
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    if path.name != "luma":
+        return None
+    parents = path.parents
+    if (
+        len(parents) >= 6
+        and parents[0].name == "bin"
+        and parents[1].name == "venv"
+        and parents[2].name == "luma"
+        and parents[3].name == "share"
+        and parents[4].name == ".local"
+    ):
+        user_home = parents[5]
+        return user_home, parents[2], user_home / ".local" / "bin"
+    if len(parents) >= 3 and parents[0].name == "bin" and parents[1].name == ".local":
+        user_home = parents[2]
+        return user_home, user_home / ".local" / "share" / "luma", parents[0]
+    return None
+
+
+def _current_install_layout() -> tuple[Path, Path, Path] | None:
+    for executable in (_current_executable(), shutil.which("luma") or ""):
+        layout = _install_layout_from_executable(executable)
+        if layout:
+            return layout
+    return None
+
+
 def _installed_luma_executable() -> str:
     explicit = str(os.environ.get("LUMA_AGENT_EXECUTABLE") or "").strip()
     if explicit:
         return explicit
+    layout = _current_install_layout()
+    if layout:
+        _user_home, _install_home, bin_dir = layout
+        return str(bin_dir / "luma")
     candidates: list[Path] = []
     try:
         candidates.append(Path.home() / ".local" / "bin" / "luma")
@@ -1406,6 +1442,12 @@ def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AG
     env = os.environ.copy()
     if install_ref:
         env["LUMA_INSTALL_REF"] = install_ref
+    layout = _current_install_layout()
+    if layout:
+        user_home, install_home, bin_dir = layout
+        env.setdefault("LUMA_USER_HOME", str(user_home))
+        env.setdefault("LUMA_INSTALL_HOME", str(install_home))
+        env.setdefault("LUMA_BIN_DIR", str(bin_dir))
     command = "curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
     try:
         completed = subprocess.run(

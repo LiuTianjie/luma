@@ -13,7 +13,7 @@ fi
 
 REPO_URL="${LUMA_REPO_URL:-https://github.com/LiuTianjie/luma}"
 INSTALL_REF="${LUMA_INSTALL_REF:-main}"
-LUMA_USER_HOME="${HOME:-}"
+LUMA_USER_HOME="${LUMA_USER_HOME:-${HOME:-}}"
 if [ -z "$LUMA_USER_HOME" ]; then
   if command -v getent >/dev/null 2>&1; then
     LUMA_USER_HOME="$(getent passwd "$(id -u)" | awk -F: '{print $6}' || true)"
@@ -245,6 +245,7 @@ if ! python3 -m venv "$VENV_DIR"; then
 fi
 . "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip || echo "[warn] pip upgrade failed; continuing with existing pip"
+python -m pip install --upgrade "setuptools>=77" wheel || echo "[warn] build backend install failed; continuing with existing build backend"
 
 pip_install_luma() {
   set +e

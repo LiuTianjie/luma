@@ -21,6 +21,7 @@ from luma.agent import (
     _agent_executable_args,
     _agent_install_command,
     _complete_agent_task,
+    _install_layout_from_executable,
     _node_tailscale_watchdog_install_command,
     _node_tailscale_watchdog_script,
     _systemd_unit,
@@ -311,6 +312,33 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("/Users/tao/.local/bin/luma", service_command)
         self.assertIn("launchctl bootout system/io.luma.node-agent", service_command)
 
+    def test_node_agent_update_reuses_current_user_install_layout_for_root_launchd(self):
+        executor = Mock()
+        completed = Mock(returncode=0, stdout="installer ok")
+        run = Mock(return_value=completed)
+        with patch("luma.agent.subprocess.run", run), patch("luma.agent.LocalExecutor", return_value=executor), patch(
+            "luma.agent.node_agent_os", return_value="darwin"
+        ), patch("sys.argv", ["/Users/gaojiu/.local/share/luma/venv/bin/luma"]), patch.dict(
+            os.environ, {"HOME": "/var/root", "LUMA_AGENT_EXECUTABLE": ""}, clear=False
+        ):
+            result = update_luma_install(install_ref="main", config_path=Path("/opt/luma/node-agent/agent.json"))
+
+        self.assertFalse(result["restartAgent"])
+        install_env = run.call_args.kwargs["env"]
+        self.assertEqual(install_env["LUMA_USER_HOME"], "/Users/gaojiu")
+        self.assertEqual(install_env["LUMA_INSTALL_HOME"], "/Users/gaojiu/.local/share/luma")
+        self.assertEqual(install_env["LUMA_BIN_DIR"], "/Users/gaojiu/.local/bin")
+        service_command = executor.sudo.call_args_list[0].args[0]
+        self.assertIn("/Users/gaojiu/.local/bin/luma", service_command)
+        self.assertNotIn("/var/root/.local/bin/luma", service_command)
+
+    def test_install_layout_from_executable_supports_venv_and_shim_paths(self):
+        venv_layout = _install_layout_from_executable("/Users/tao/.local/share/luma/venv/bin/luma")
+        shim_layout = _install_layout_from_executable("/Users/tao/.local/bin/luma")
+
+        self.assertEqual(tuple(str(part) for part in venv_layout or ()), ("/Users/tao", "/Users/tao/.local/share/luma", "/Users/tao/.local/bin"))
+        self.assertEqual(tuple(str(part) for part in shim_layout or ()), ("/Users/tao", "/Users/tao/.local/share/luma", "/Users/tao/.local/bin"))
+
     def test_node_watchdog_script_checks_nomad_server_rpc(self):
         script = _node_tailscale_watchdog_script("linux")
 
@@ -576,12 +604,15 @@ class ProductConfigTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         installer = (root / "scripts" / "install-luma.sh").read_text(encoding="utf-8")
 
-        self.assertIn('LUMA_USER_HOME="${HOME:-}"', installer)
+        self.assertIn('LUMA_USER_HOME="${LUMA_USER_HOME:-${HOME:-}}"', installer)
         self.assertIn('HOME="$LUMA_USER_HOME"', installer)
         self.assertIn('export HOME', installer)
         self.assertIn('INSTALL_HOME="${LUMA_INSTALL_HOME:-$LUMA_USER_HOME/.local/share/luma}"', installer)
         self.assertIn('BIN_DIR="${LUMA_BIN_DIR:-$LUMA_USER_HOME/.local/bin}"', installer)
-        self.assertLess(installer.index('LUMA_USER_HOME="${HOME:-}"'), installer.index("INSTALL_HOME="))
+        self.assertLess(
+            installer.index('LUMA_USER_HOME="${LUMA_USER_HOME:-${HOME:-}}"'),
+            installer.index("INSTALL_HOME="),
+        )
 
     def test_installer_update_path_does_not_require_build_isolation_download(self):
         root = Path(__file__).resolve().parents[1]
@@ -590,6 +621,8 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("pip install --no-build-isolation", installer)
         self.assertIn("LUMA_PIP_BUILD_ISOLATION", installer)
         self.assertIn("pip upgrade failed; continuing with existing pip", installer)
+        self.assertIn("build backend install failed; continuing with existing build backend", installer)
+        self.assertIn('setuptools>=77', installer)
         self.assertIn("set +e", installer)
         self.assertIn('return "$code"', installer)
         self.assertIn("package install failed; using source checkout with existing venv dependencies", installer)
@@ -601,6 +634,7 @@ class ProductConfigTests(unittest.TestCase):
         installer = (root / "scripts" / "install-luma.sh").read_text(encoding="utf-8")
 
         self.assertIn("refresh_node_agent_service()", installer)
+        self.assertIn('LUMA_USER_HOME="${LUMA_USER_HOME:-${HOME:-}}"', installer)
         self.assertIn('agent_config="/opt/luma/node-agent/agent.json"', installer)
         self.assertIn("ExecStart=$BIN_DIR/luma node-agent run --config $agent_config", installer)
         self.assertIn("systemctl daemon-reload", installer)
