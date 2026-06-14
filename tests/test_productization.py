@@ -26,6 +26,7 @@ from luma.agent import (
     _systemd_unit,
     execute_agent_task,
     node_agent_container_stats,
+    update_luma_install,
 )
 from luma.assets import asset_path, asset_text
 from luma.config import LumaConfig
@@ -279,6 +280,37 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("systemctl restart luma-node-agent.service", command)
         self.assertIn("luma-node-tailscale-watchdog.timer", command)
 
+    def test_node_agent_update_refreshes_linux_service_before_restart(self):
+        executor = Mock()
+        completed = Mock(returncode=0, stdout="installer ok")
+        with patch("luma.agent.subprocess.run", return_value=completed), patch("luma.agent.LocalExecutor", return_value=executor), patch(
+            "luma.agent.node_agent_os", return_value="linux"
+        ), patch("luma.agent._installed_luma_executable", return_value="/root/.local/bin/luma"):
+            result = update_luma_install(install_ref="main", config_path=Path("/custom/agent.json"))
+
+        self.assertTrue(result["restartAgent"])
+        self.assertIn("node agent service refreshed", result["message"])
+        service_command = executor.sudo.call_args_list[0].args[0]
+        self.assertIn("/root/.local/bin/luma node-agent run --config /custom/agent.json", service_command)
+        self.assertIn("systemctl daemon-reload", service_command)
+        self.assertNotIn("systemctl restart luma-node-agent.service", service_command)
+
+    def test_node_agent_update_schedules_macos_launchd_reload(self):
+        executor = Mock()
+        completed = Mock(returncode=0, stdout="installer ok")
+        with patch("luma.agent.subprocess.run", return_value=completed), patch("luma.agent.LocalExecutor", return_value=executor), patch(
+            "luma.agent.node_agent_os", return_value="darwin"
+        ), patch("luma.agent._installed_luma_executable", return_value="/Users/tao/.local/bin/luma"):
+            result = update_luma_install(install_ref="main", config_path=Path("/opt/luma/node-agent/agent.json"))
+
+        self.assertFalse(result["restartAgent"])
+        self.assertIn("node agent launchd reload scheduled", result["message"])
+        service_command = executor.sudo.call_args_list[0].args[0]
+        self.assertIn("nohup sh -c", service_command)
+        self.assertIn("sleep 2", service_command)
+        self.assertIn("/Users/tao/.local/bin/luma", service_command)
+        self.assertIn("launchctl bootout system/io.luma.node-agent", service_command)
+
     def test_node_watchdog_script_checks_nomad_server_rpc(self):
         script = _node_tailscale_watchdog_script("linux")
 
@@ -460,15 +492,17 @@ class ProductConfigTests(unittest.TestCase):
 
     def test_node_agent_can_update_luma_install(self):
         completed = Mock(returncode=0, stdout="installed\n")
-        with patch("luma.agent.subprocess.run", return_value=completed) as run, patch("luma.agent.LocalExecutor") as executor:
+        with patch("luma.agent.subprocess.run", return_value=completed) as run, patch("luma.agent.LocalExecutor") as executor, patch(
+            "luma.agent.node_agent_os", return_value="linux"
+        ), patch("luma.agent._installed_luma_executable", return_value="/root/.local/bin/luma"):
             executor.return_value.sudo.return_value = ""
             result = execute_agent_task({"action": "update-luma", "payload": {"installRef": "main"}})
         run.assert_called_once()
-        executor.return_value.sudo.assert_called_once()
+        self.assertEqual(executor.return_value.sudo.call_count, 2)
         self.assertIn("install-luma.sh", run.call_args.args[0])
         self.assertEqual(run.call_args.kwargs["env"]["LUMA_INSTALL_REF"], "main")
         self.assertEqual(result["installRef"], "main")
-        self.assertEqual(result["message"], "Luma installer finished; Tailscale watchdog installed")
+        self.assertEqual(result["message"], "Luma installer finished; node agent service refreshed; Tailscale watchdog installed")
         self.assertTrue(result["restartAgent"])
 
     def test_node_agent_can_join_nomad_node(self):

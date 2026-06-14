@@ -380,24 +380,40 @@ def install_node_agent(
     executor.sudo(command)
 
 
-def _agent_install_command(config_path: Path) -> str:
+def _agent_install_command(config_path: Path, *, executable: str | None = None) -> str:
+    return _agent_service_command(config_path, executable=executable, restart=True)
+
+
+def _agent_service_command(config_path: Path, *, executable: str | None = None, restart: bool) -> str:
     os_value = node_agent_os()
     if os_value == "darwin":
         label = "io.luma.node-agent"
         plist = "/Library/LaunchDaemons/io.luma.node-agent.plist"
-        plist_body = _launchd_plist(config_path)
-        return (
+        plist_body = _launchd_plist(config_path, executable=executable)
+        command = (
             f"printf '%s' {shlex.quote(plist_body)} > {shlex.quote(plist)}; "
-            f"chmod 644 {shlex.quote(plist)}; "
+            f"chmod 644 {shlex.quote(plist)}"
+        )
+        if not restart:
+            return command
+        return (
+            f"{command}; "
             f"launchctl bootout system/{label} >/dev/null 2>&1 || true; "
             f"launchctl bootstrap system {shlex.quote(plist)}; "
             f"launchctl kickstart -k system/{label}; "
             f"{_node_tailscale_watchdog_install_command(os_value)}"
         )
-    return (
-        f"printf '%s' {shlex.quote(_systemd_unit(config_path))} > /etc/systemd/system/{DEFAULT_AGENT_SERVICE}.service; "
+    unit = f"/etc/systemd/system/{DEFAULT_AGENT_SERVICE}.service"
+    command = (
+        f"printf '%s' {shlex.quote(_systemd_unit(config_path, executable=executable))} > {unit}; "
         "systemctl daemon-reload; "
-        f"systemctl enable --now {DEFAULT_AGENT_SERVICE}.service; "
+        f"systemctl enable {DEFAULT_AGENT_SERVICE}.service >/dev/null"
+    )
+    if not restart:
+        return command
+    return (
+        f"{command}; "
+        f"systemctl start {DEFAULT_AGENT_SERVICE}.service; "
         f"systemctl restart {DEFAULT_AGENT_SERVICE}.service; "
         f"{_node_tailscale_watchdog_install_command(os_value)}"
     )
@@ -584,15 +600,15 @@ def _node_tailscale_watchdog_launchd_plist(script_path: str) -> str:
 """
 
 
-def _agent_executable_args(config_path: Path) -> list[str]:
-    executable = os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or _current_executable() or sys.executable
+def _agent_executable_args(config_path: Path, *, executable: str | None = None) -> list[str]:
+    executable = executable or os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or _current_executable() or sys.executable
     if Path(executable).name.startswith("python"):
         return [executable, "-m", "luma.cli", "node-agent", "run", "--config", str(config_path)]
     return [executable, "node-agent", "run", "--config", str(config_path)]
 
 
-def _terminal_supervisor_args(config_path: Path) -> list[str]:
-    executable = os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or _current_executable() or sys.executable
+def _terminal_supervisor_args(config_path: Path, *, executable: str | None = None) -> list[str]:
+    executable = executable or os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or _current_executable() or sys.executable
     if Path(executable).name.startswith("python"):
         return [executable, "-m", "luma.cli", "node-agent", "terminal-supervisor", "--config", str(config_path)]
     return [executable, "node-agent", "terminal-supervisor", "--config", str(config_path)]
@@ -653,8 +669,26 @@ def _current_executable() -> str:
     return shutil.which(candidate) or ""
 
 
-def _systemd_unit(config_path: Path) -> str:
-    args = " ".join(shlex.quote(part) for part in _agent_executable_args(config_path))
+def _installed_luma_executable() -> str:
+    explicit = str(os.environ.get("LUMA_AGENT_EXECUTABLE") or "").strip()
+    if explicit:
+        return explicit
+    candidates: list[Path] = []
+    try:
+        candidates.append(Path.home() / ".local" / "bin" / "luma")
+    except Exception:
+        pass
+    home = str(os.environ.get("HOME") or "").strip()
+    if home:
+        candidates.append(Path(home) / ".local" / "bin" / "luma")
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("luma") or _current_executable() or sys.executable
+
+
+def _systemd_unit(config_path: Path, *, executable: str | None = None) -> str:
+    args = " ".join(shlex.quote(part) for part in _agent_executable_args(config_path, executable=executable))
     return "\n".join(
         [
             "[Unit]",
@@ -675,8 +709,8 @@ def _systemd_unit(config_path: Path) -> str:
     )
 
 
-def _launchd_plist(config_path: Path) -> str:
-    args = _agent_executable_args(config_path)
+def _launchd_plist(config_path: Path, *, executable: str | None = None) -> str:
+    args = _agent_executable_args(config_path, executable=executable)
     program_arguments = "\n".join(f"    <string>{_xml_escape(arg)}</string>" for arg in args)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -758,7 +792,7 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                 time.sleep(max(interval, 1))
                 continue
             if isinstance(task, dict) and task.get("id"):
-                if _complete_agent_task(client, node_name=node_name, node_id=node_id, task=task):
+                if _complete_agent_task(client, node_name=node_name, node_id=node_id, task=task, config_path=config_path):
                     return 0
             if once:
                 return 0
@@ -770,10 +804,10 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
             stats_sampler.stop()
 
 
-def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dict[str, Any]) -> bool:
+def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dict[str, Any], config_path: Path = DEFAULT_AGENT_CONFIG) -> bool:
     task_id = str(task.get("id") or "")
     try:
-        result = execute_agent_task(task)
+        result = execute_agent_task(task, config_path=config_path)
         client.complete_agent_task(
             task_id=task_id,
             node_name=node_name,
@@ -1101,7 +1135,7 @@ def _set_pty_size(fd: int, *, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", safe_rows, safe_cols, 0, 0))
 
 
-def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
+def execute_agent_task(task: Dict[str, Any], *, config_path: Path = DEFAULT_AGENT_CONFIG) -> Dict[str, Any]:
     action = str(task.get("action") or "")
     payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
     if action == "prepare-managed-nfs-host":
@@ -1144,7 +1178,7 @@ def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
             platform=str(payload.get("platform") or ""),
         )
     if action == "update-luma":
-        return update_luma_install(install_ref=str(payload.get("installRef") or ""))
+        return update_luma_install(install_ref=str(payload.get("installRef") or ""), config_path=config_path)
     if action == "join-nomad":
         return join_nomad_node(
             node_name=_required(payload, "nodeName"),
@@ -1368,7 +1402,7 @@ def _docker_image_pull_error(*, image: str, output: str, platform: str = "") -> 
     return message
 
 
-def update_luma_install(*, install_ref: str = "") -> Dict[str, Any]:
+def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AGENT_CONFIG) -> Dict[str, Any]:
     env = os.environ.copy()
     if install_ref:
         env["LUMA_INSTALL_REF"] = install_ref
@@ -1390,6 +1424,22 @@ def update_luma_install(*, install_ref: str = "") -> Dict[str, Any]:
     output = completed.stdout or ""
     if completed.returncode != 0:
         raise LumaError(f"Luma installer failed with exit code {completed.returncode}: {_tail_text(output)}")
+    os_value = node_agent_os()
+    executable = _installed_luma_executable()
+    restart_agent = True
+    service_message = "node agent service refreshed"
+    try:
+        executor = LocalExecutor()
+        if os_value == "darwin":
+            refresh_command = _agent_install_command(config_path, executable=executable)
+            delayed_command = f"nohup sh -c {shlex.quote('sleep 2; ' + refresh_command)} >/tmp/luma-node-agent-reload.log 2>&1 &"
+            executor.sudo(delayed_command, timeout=10)
+            restart_agent = False
+            service_message = "node agent launchd reload scheduled"
+        else:
+            executor.sudo(_agent_service_command(config_path, executable=executable, restart=False), timeout=60)
+    except Exception as exc:
+        raise LumaError(f"Luma installer finished but node agent service refresh failed: {exc}") from exc
     watchdog_message = "Tailscale watchdog skipped"
     try:
         LocalExecutor().sudo(_node_tailscale_watchdog_install_command(node_agent_os()), timeout=60)
@@ -1398,9 +1448,9 @@ def update_luma_install(*, install_ref: str = "") -> Dict[str, Any]:
         watchdog_message = f"Tailscale watchdog skipped: {exc}"
     return {
         "installRef": install_ref,
-        "message": f"Luma installer finished; {watchdog_message}",
+        "message": f"Luma installer finished; {service_message}; {watchdog_message}",
         "output": _tail_text(output),
-        "restartAgent": True,
+        "restartAgent": restart_agent,
     }
 
 
