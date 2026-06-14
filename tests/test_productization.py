@@ -641,6 +641,21 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("Luma node agent systemd restart scheduled", installer)
         self.assertIn("Luma node agent launchd reload scheduled", installer)
 
+    def test_installer_restores_user_install_ownership_after_root_update(self):
+        root = Path(__file__).resolve().parents[1]
+        installer = (root / "scripts" / "install-luma.sh").read_text(encoding="utf-8")
+
+        self.assertIn("resolve_install_owner()", installer)
+        self.assertIn("chown_install_paths()", installer)
+        self.assertIn("OWNER_SPEC=\"$(stat -c '%u:%g' \"$LUMA_USER_HOME\" 2>/dev/null)\"", installer)
+        self.assertIn("OWNER_SPEC=\"$(stat -f '%u:%g' \"$LUMA_USER_HOME\" 2>/dev/null)\"", installer)
+        self.assertIn('chown -R "$OWNER_SPEC" "$INSTALL_HOME"', installer)
+        self.assertIn('chown "$OWNER_SPEC" "$BIN_DIR/luma"', installer)
+        self.assertLess(
+            installer.index("refresh_node_agent_service"),
+            installer.rindex("chown_install_paths"),
+        )
+
     def test_public_port_guards_install_docker_user_proxy_guard(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Linux\n")

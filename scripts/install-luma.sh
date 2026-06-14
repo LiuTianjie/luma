@@ -33,6 +33,41 @@ HOME="$LUMA_USER_HOME"
 export HOME
 INSTALL_HOME="${LUMA_INSTALL_HOME:-$LUMA_USER_HOME/.local/share/luma}"
 BIN_DIR="${LUMA_BIN_DIR:-$LUMA_USER_HOME/.local/bin}"
+OWNER_SPEC=""
+
+resolve_install_owner() {
+  [ "$(id -u)" -eq 0 ] || return 0
+  if [ -n "${LUMA_INSTALL_OWNER:-}" ]; then
+    OWNER_SPEC="$LUMA_INSTALL_OWNER"
+  elif [ -d "$LUMA_USER_HOME" ]; then
+    if OWNER_SPEC="$(stat -c '%u:%g' "$LUMA_USER_HOME" 2>/dev/null)"; then
+      :
+    elif OWNER_SPEC="$(stat -f '%u:%g' "$LUMA_USER_HOME" 2>/dev/null)"; then
+      :
+    else
+      OWNER_SPEC=""
+    fi
+  fi
+  case "$OWNER_SPEC" in
+    ""|0:0) OWNER_SPEC="" ;;
+  esac
+}
+
+chown_install_paths() {
+  [ -n "$OWNER_SPEC" ] || return 0
+  for path in "$LUMA_USER_HOME/.local" "$LUMA_USER_HOME/.local/share" "$BIN_DIR"; do
+    [ -e "$path" ] || continue
+    chown "$OWNER_SPEC" "$path" 2>/dev/null || true
+  done
+  [ -e "$INSTALL_HOME" ] && chown -R "$OWNER_SPEC" "$INSTALL_HOME" 2>/dev/null || true
+  [ -e "$BIN_DIR/luma" ] && chown "$OWNER_SPEC" "$BIN_DIR/luma" 2>/dev/null || true
+  for profile in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zprofile" "$HOME/.zshrc"; do
+    [ -e "$profile" ] || continue
+    chown "$OWNER_SPEC" "$profile" 2>/dev/null || true
+  done
+}
+
+resolve_install_owner
 
 ensure_path() {
   case ":$PATH:" in
@@ -287,6 +322,7 @@ EOF
   chmod +x "$BIN_DIR/luma"
   ensure_path
   refresh_node_agent_service
+  chown_install_paths
 fi
 
 echo "Luma installed in $VENV_DIR"
