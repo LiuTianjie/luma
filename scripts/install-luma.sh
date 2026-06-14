@@ -184,17 +184,30 @@ pip_install_luma() {
   fi
 }
 
+INSTALL_SUCCEEDED=0
 if [ -n "$INSTALL_MODE" ]; then
-  pip_install_luma "$INSTALL_MODE" "$SOURCE_DIR"
+  if pip_install_luma "$INSTALL_MODE" "$SOURCE_DIR"; then
+    INSTALL_SUCCEEDED=1
+  fi
 else
-  pip_install_luma "$SOURCE_DIR"
+  if pip_install_luma "$SOURCE_DIR"; then
+    INSTALL_SUCCEEDED=1
+  fi
+fi
+if [ "$INSTALL_SUCCEEDED" -eq 0 ]; then
+  echo "[warn] package install failed; using source checkout with existing venv dependencies"
 fi
 
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
   mkdir -p "$BIN_DIR"
   cat > "$BIN_DIR/luma" <<EOF
 #!/usr/bin/env sh
-exec "$VENV_DIR/bin/luma" "\$@"
+PYTHONPATH="$SOURCE_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
+export PYTHONPATH
+if [ -x "$VENV_DIR/bin/luma" ]; then
+  exec "$VENV_DIR/bin/luma" "\$@"
+fi
+exec "$VENV_DIR/bin/python" -m luma.cli "\$@"
 EOF
   chmod +x "$BIN_DIR/luma"
   ensure_path

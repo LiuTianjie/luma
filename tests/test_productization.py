@@ -526,6 +526,9 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("pip install --no-build-isolation", installer)
         self.assertIn("LUMA_PIP_BUILD_ISOLATION", installer)
         self.assertIn("pip upgrade failed; continuing with existing pip", installer)
+        self.assertIn("package install failed; using source checkout with existing venv dependencies", installer)
+        self.assertIn('PYTHONPATH="$SOURCE_DIR\\${PYTHONPATH:+:\\$PYTHONPATH}"', installer)
+        self.assertIn('exec "$VENV_DIR/bin/python" -m luma.cli', installer)
 
     def test_public_port_guards_install_docker_user_proxy_guard(self):
         remote = Mock()
