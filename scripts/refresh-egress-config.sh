@@ -81,8 +81,8 @@ PY
 
 chmod 600 "$CONFIG_DIR/config.yaml" "$CONFIG_DIR/config.download"
 
-if command -v docker >/dev/null 2>&1 && docker service inspect egress_mihomo >/dev/null 2>&1; then
-  docker service update --force egress_mihomo >/dev/null
+if command -v nomad >/dev/null 2>&1 && nomad job status egress >/dev/null 2>&1; then
+  nomad job restart -yes egress >/dev/null
 fi
 
 echo "egress config refreshed: $CONFIG_DIR/config.yaml"
