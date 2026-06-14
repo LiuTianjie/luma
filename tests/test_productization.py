@@ -604,7 +604,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn('agent_config="/opt/luma/node-agent/agent.json"', installer)
         self.assertIn("ExecStart=$BIN_DIR/luma node-agent run --config $agent_config", installer)
         self.assertIn("systemctl daemon-reload", installer)
-        self.assertIn("Luma node agent systemd service refreshed", installer)
+        self.assertIn("Luma node agent systemd restart scheduled", installer)
         self.assertIn("Luma node agent launchd reload scheduled", installer)
 
     def test_public_port_guards_install_docker_user_proxy_guard(self):

@@ -190,7 +190,8 @@ EOF
         rm -f "$tmp_unit"
         run_sudo systemctl daemon-reload
         run_sudo systemctl enable luma-node-agent.service >/dev/null
-        echo "Luma node agent systemd service refreshed"
+        run_sudo sh -c "nohup sh -c 'sleep 2; systemctl restart luma-node-agent.service' >/tmp/luma-node-agent-reload.log 2>&1 &"
+        echo "Luma node agent systemd restart scheduled"
       fi
       ;;
   esac
