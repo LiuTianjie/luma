@@ -174,11 +174,20 @@ if ! python3 -m venv "$VENV_DIR"; then
   fi
 fi
 . "$VENV_DIR/bin/activate"
-python -m pip install --upgrade pip
+python -m pip install --upgrade pip || echo "[warn] pip upgrade failed; continuing with existing pip"
+
+pip_install_luma() {
+  if [ "${LUMA_PIP_BUILD_ISOLATION:-0}" = "1" ]; then
+    pip install "$@"
+  else
+    pip install --no-build-isolation "$@"
+  fi
+}
+
 if [ -n "$INSTALL_MODE" ]; then
-  pip install "$INSTALL_MODE" "$SOURCE_DIR"
+  pip_install_luma "$INSTALL_MODE" "$SOURCE_DIR"
 else
-  pip install "$SOURCE_DIR"
+  pip_install_luma "$SOURCE_DIR"
 fi
 
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then

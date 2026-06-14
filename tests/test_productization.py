@@ -519,6 +519,14 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn('BIN_DIR="${LUMA_BIN_DIR:-$LUMA_USER_HOME/.local/bin}"', installer)
         self.assertLess(installer.index('LUMA_USER_HOME="${HOME:-}"'), installer.index("INSTALL_HOME="))
 
+    def test_installer_update_path_does_not_require_build_isolation_download(self):
+        root = Path(__file__).resolve().parents[1]
+        installer = (root / "scripts" / "install-luma.sh").read_text(encoding="utf-8")
+
+        self.assertIn("pip install --no-build-isolation", installer)
+        self.assertIn("LUMA_PIP_BUILD_ISOLATION", installer)
+        self.assertIn("pip upgrade failed; continuing with existing pip", installer)
+
     def test_public_port_guards_install_docker_user_proxy_guard(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Linux\n")
