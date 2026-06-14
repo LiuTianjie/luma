@@ -4098,6 +4098,32 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_deployment_preview_keeps_secret_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                        "env": {"API_PASSWORD": "${API_PASSWORD}"},
+                    }
+                )
+                result = handle_deployment_preview(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+
+                self.assertEqual(result["service"], "api")
+                self.assertIn('"API_PASSWORD": "${API_PASSWORD}"', result["artifacts"][0]["content"])
+                self.assertFalse((root / "stacks").exists())
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_service_deployment_rejects_existing_compose_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5443,6 +5469,29 @@ class ControlApiTests(unittest.TestCase):
                         state["deployToken"],
                         {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
                     )
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_compose_deployment_preview_keeps_secret_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                compose = yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "environment": {"APP_PASSWORD": "${APP_PASSWORD}"}}}})
+                sidecar = yaml.safe_dump({"name": "app-stack", "compose": "docker-compose.yml", "region": "cn"})
+
+                result = handle_compose_deployment_preview(
+                    state["deployToken"],
+                    {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
+                )
+
+                self.assertEqual(result["deployment"], "app-stack")
+                self.assertIn('"APP_PASSWORD": "${APP_PASSWORD}"', result["artifacts"][0]["content"])
+                self.assertFalse((root / "stacks").exists())
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

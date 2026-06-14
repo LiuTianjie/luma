@@ -1519,6 +1519,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
         config,
         service,
         registry_auth=_registry_auth_for_service(state, service),
+        resolve_secrets=False,
     )
     artifacts = [
         {
@@ -2038,6 +2039,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
         config,
         deployment,
         registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
+        resolve_secrets=False,
     )
     storage_guard = "skipped: nomad job preview"
     route_texts: Dict[str, str] = {}
