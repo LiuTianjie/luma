@@ -129,6 +129,21 @@ class ControlClient:
     def unregister_node(self, *, node_name: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/nodes/unregister", {"nodeName": node_name})
 
+    def join_nomad_node(
+        self,
+        *,
+        node_name: str,
+        region: str | None = None,
+        server_addr: str | None = None,
+        timeout: int = 1200,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"nodeName": node_name, "timeout": timeout}
+        if region:
+            body["region"] = region
+        if server_addr:
+            body["serverAddr"] = server_addr
+        return self.request("POST", "/v1/nodes/nomad-join", body, timeout=max(int(timeout), 60) + 30)
+
     def issue_agent_token(self, *, node_name: str, node_id: str | None = None) -> Dict[str, Any]:
         body: Dict[str, Any] = {"nodeName": node_name}
         if node_id:

@@ -46,9 +46,19 @@ def node_agent_os() -> str:
 def node_agent_capabilities(os_name: str | None = None) -> list[str]:
     os_value = os_name or node_agent_os()
     if os_value == "linux":
-        return ["nfs-host", "nfs-client", "managed-volume-path", "docker-volume", "docker-image", "docker-egress-proxy", "luma-update", "terminal"]
+        return [
+            "nfs-host",
+            "nfs-client",
+            "managed-volume-path",
+            "docker-volume",
+            "docker-image",
+            "docker-egress-proxy",
+            "luma-update",
+            "nomad-join",
+            "terminal",
+        ]
     if os_value == "darwin":
-        return ["nfs-host", "managed-volume-path", "docker-volume", "docker-image", "luma-update", "terminal"]
+        return ["nfs-host", "managed-volume-path", "docker-volume", "docker-image", "luma-update", "nomad-join", "terminal"]
     return []
 
 
@@ -1135,7 +1145,66 @@ def execute_agent_task(task: Dict[str, Any]) -> Dict[str, Any]:
         )
     if action == "update-luma":
         return update_luma_install(install_ref=str(payload.get("installRef") or ""))
+    if action == "join-nomad":
+        return join_nomad_node(
+            node_name=_required(payload, "nodeName"),
+            region=_required(payload, "region"),
+            server_addr=_required(payload, "serverAddr"),
+            tailscale_authkey=str(payload.get("tailscaleAuthKey") or ""),
+            egress_proxy=str(payload.get("egressProxy") or ""),
+        )
     raise LumaError(f"unsupported node agent task action: {action}")
+
+
+def join_nomad_node(
+    *,
+    node_name: str,
+    region: str,
+    server_addr: str,
+    tailscale_authkey: str = "",
+    egress_proxy: str = "",
+) -> Dict[str, Any]:
+    from .bootstrap import _tailscale_ip, install_nomad_node, local_nomad_node_info
+    from .config import NodeConfig
+
+    safe_node_name = str(node_name or "").strip()
+    safe_region = str(region or "").strip()
+    safe_server_addr = str(server_addr or "").strip()
+    if not safe_node_name:
+        raise LumaError("nodeName is required")
+    if safe_region not in {"cn", "global", "home"}:
+        raise LumaError("region must be one of cn, global, home")
+    if not safe_server_addr:
+        raise LumaError("serverAddr is required")
+    node = NodeConfig(
+        name=safe_node_name,
+        host=safe_node_name,
+        region=safe_region,
+        roles=[safe_region],
+        raw={"tailscaleHostname": f"luma-{safe_node_name}"},
+    )
+    install_messages = install_nomad_node(
+        node,
+        role="client",
+        region=safe_region,
+        node_name=safe_node_name,
+        server_addrs=[safe_server_addr],
+        install_docker_first=True,
+        egress_proxy=egress_proxy or None,
+        tailscale_authkey=tailscale_authkey or None,
+    )
+    actual_node_name, nomad_node_id = local_nomad_node_info()
+    tailscale_ip = _tailscale_ip(LocalExecutor()) or ""
+    return {
+        "message": f"Nomad node joined: {safe_node_name}",
+        "registeredName": safe_node_name,
+        "nodeName": actual_node_name or safe_node_name,
+        "nodeId": nomad_node_id,
+        "nomadNodeId": nomad_node_id,
+        "region": safe_region,
+        "tailscaleIP": tailscale_ip,
+        "install": install_messages,
+    }
 
 
 def prepare_managed_nfs_host(*, name: str, path: str) -> Dict[str, Any]:

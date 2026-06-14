@@ -172,6 +172,13 @@ def build_parser() -> argparse.ArgumentParser:
     node_status = node_sub.add_parser("status")
     _add_control_arguments(node_status)
     _add_output_arguments(node_status)
+    node_nomad_join = node_sub.add_parser("nomad-join", help="ask a ready node agent to install and join Nomad on that node")
+    node_nomad_join.add_argument("name")
+    node_nomad_join.add_argument("--region", choices=sorted(VALID_REGIONS), help="Override the node's registered region")
+    node_nomad_join.add_argument("--server-addr", help="Nomad RPC address to join; defaults to the control-plane join address")
+    node_nomad_join.add_argument("--timeout", type=int, default=1200, help="Join timeout in seconds")
+    _add_control_arguments(node_nomad_join)
+    _add_output_arguments(node_nomad_join)
 
     node_agent = sub.add_parser("node-agent", help=argparse.SUPPRESS)
     node_agent_sub = node_agent.add_subparsers(dest="node_agent_command", required=True)
@@ -883,6 +890,23 @@ def cmd_node(args: argparse.Namespace) -> int:
         profile = PROFILES[args.profile]
         bootstrap_node(config, node, profile, run_egress=not args.skip_egress, emit=log)
         print("Bootstrap complete")
+        return 0
+    if args.node_command == "nomad-join":
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).join_nomad_node(
+            node_name=args.name,
+            region=args.region,
+            server_addr=args.server_addr,
+            timeout=int(args.timeout or 1200),
+        )
+        if _output_format(args) != "text":
+            _print_success(args, result)
+            return 0
+        print(result.get("message") or f"Nomad node joined through node agent: {args.name}")
+        print(f"Node: {result.get('nodeName') or args.name}")
+        print(f"Nomad node ID: {result.get('nomadNodeId') or result.get('nodeId') or '-'}")
+        if result.get("tailscaleIP"):
+            print(f"Tailscale IP: {result['tailscaleIP']}")
         return 0
     if args.node_command == "join":
         if not args.region:

@@ -1059,6 +1059,7 @@ def install_nomad_node(
     emit: Progress | None = None,
     install_docker_first: bool = True,
     egress_proxy: str | None = None,
+    tailscale_authkey: str | None = None,
 ) -> list[str]:
     """Install and start a Nomad agent on the local node.
 
@@ -1081,7 +1082,7 @@ def install_nomad_node(
         results,
         emit,
         "Install and connect Tailscale",
-        lambda: setup_tailscale(node, executor=remote),
+        lambda: setup_tailscale(node, authkey=tailscale_authkey, executor=remote),
         fix="Run: luma tailscale connect",
     )
 

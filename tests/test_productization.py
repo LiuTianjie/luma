@@ -53,7 +53,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -470,6 +470,33 @@ class ProductConfigTests(unittest.TestCase):
         self.assertEqual(result["message"], "Luma installer finished; Tailscale watchdog installed")
         self.assertTrue(result["restartAgent"])
 
+    def test_node_agent_can_join_nomad_node(self):
+        with patch("luma.bootstrap.install_nomad_node", return_value=["Nomad agent ready"]) as install_nomad, patch(
+            "luma.bootstrap.local_nomad_node_info", return_value=("bot-host", "nomad-node-id")
+        ), patch("luma.bootstrap._tailscale_ip", return_value="100.80.0.20"):
+            result = execute_agent_task(
+                {
+                    "action": "join-nomad",
+                    "payload": {
+                        "nodeName": "bot",
+                        "region": "global",
+                        "serverAddr": "100.113.204.125:4647",
+                        "tailscaleAuthKey": "ts-key",
+                    },
+                }
+            )
+
+        install_nomad.assert_called_once()
+        install_kwargs = install_nomad.call_args.kwargs
+        self.assertEqual(install_kwargs["role"], "client")
+        self.assertEqual(install_kwargs["region"], "global")
+        self.assertEqual(install_kwargs["node_name"], "bot")
+        self.assertEqual(install_kwargs["server_addrs"], ["100.113.204.125:4647"])
+        self.assertEqual(install_kwargs["tailscale_authkey"], "ts-key")
+        self.assertEqual(result["nodeName"], "bot-host")
+        self.assertEqual(result["nomadNodeId"], "nomad-node-id")
+        self.assertEqual(result["tailscaleIP"], "100.80.0.20")
+
     def test_node_agent_update_task_requests_restart_after_completion(self):
         client = Mock()
         task = {"id": "task-1", "action": "update-luma", "payload": {}}
@@ -493,6 +520,8 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("luma-update", node_agent_capabilities("darwin"))
         self.assertIn("docker-image", node_agent_capabilities("linux"))
         self.assertIn("docker-image", node_agent_capabilities("darwin"))
+        self.assertIn("nomad-join", node_agent_capabilities("linux"))
+        self.assertIn("nomad-join", node_agent_capabilities("darwin"))
         self.assertIn("terminal", node_agent_capabilities("linux"))
         self.assertIn("terminal", node_agent_capabilities("darwin"))
 
@@ -3170,6 +3199,118 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(saved["nodes"]["m4"]["nodeId"], "new-node-id")
                 self.assertEqual(result["previousNodeId"], "old-node-id")
                 self.assertNotIn("pinnedServicesUpdated", result)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_nomad_agent_join_updates_node_identity_and_keeps_agent_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nomadRpcAddr"] = "100.113.204.125:4647"
+                state["nodes"] = {
+                    "bot": {
+                        "region": "global",
+                        "status": "labeled",
+                        "nodeId": "agent-node-id",
+                        "labels": {"region": "global", "luma.node.name": "bot", "luma.node.id": "agent-node-id"},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad"}}), encoding="utf-8")
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "bot", "nodeId": "agent-node-id"})
+                agent_token = issued["agentToken"]
+                handle_node_agent_lease(
+                    agent_token,
+                    {
+                        "nodeName": "bot",
+                        "nodeId": "agent-node-id",
+                        "os": "linux",
+                        "capabilities": ["nomad-join"],
+                        "waitSeconds": 0,
+                    },
+                )
+
+                def run_task(_state, node_name, action, payload, **kwargs):
+                    self.assertEqual(node_name, "bot")
+                    self.assertEqual(action, "join-nomad")
+                    self.assertEqual(payload["serverAddr"], "100.113.204.125:4647")
+                    self.assertNotIn("egressProxy", payload)
+                    self.assertEqual(kwargs["required_capability"], "nomad-join")
+                    return {
+                        "taskId": "task-join",
+                        "nodeName": "bot-host",
+                        "nodeId": "nomad-node-id",
+                        "tailscaleIP": "100.80.0.20",
+                    }
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=run_task):
+                    result = handle_node_nomad_join(state["deployToken"], {"nodeName": "bot"})
+
+                saved = load_state()["nodes"]["bot"]
+                self.assertEqual(result["nomadNodeId"], "nomad-node-id")
+                self.assertEqual(saved["nodeId"], "nomad-node-id")
+                self.assertEqual(saved["nomadNodeId"], "nomad-node-id")
+                self.assertEqual(saved["nomadHostname"], "bot-host")
+                self.assertEqual(saved["tailscaleIP"], "100.80.0.20")
+                self.assertIn("agent-node-id", saved["agent"]["knownNodeIds"])
+                self.assertEqual(saved["agent"]["nodeId"], "agent-node-id")
+                lease = handle_node_agent_lease(
+                    agent_token,
+                    {
+                        "nodeName": "bot",
+                        "nodeId": "agent-node-id",
+                        "os": "linux",
+                        "capabilities": ["nomad-join"],
+                        "waitSeconds": 0,
+                    },
+                )
+                self.assertIsNone(lease["task"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_nomad_join_task_lease_injects_tailscale_key_without_persisting_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["secrets"] = {"TAILSCALE_AUTHKEY": "ts-secret"}
+                state["nodes"] = {
+                    "bot": {
+                        "region": "global",
+                        "nodeId": "agent-node-id",
+                        "labels": {"region": "global", "luma.node.name": "bot", "luma.node.id": "agent-node-id"},
+                    }
+                }
+                save_state(state)
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "bot", "nodeId": "agent-node-id"})
+                current = load_state()
+                current.setdefault("agentTasks", {})["task-join"] = {
+                    "id": "task-join",
+                    "nodeName": "bot",
+                    "action": "join-nomad",
+                    "payload": {"nodeName": "bot", "region": "global", "serverAddr": "100.113.204.125:4647"},
+                    "status": "queued",
+                }
+                save_state(current)
+
+                leased = handle_node_agent_lease(
+                    issued["agentToken"],
+                    {
+                        "nodeName": "bot",
+                        "nodeId": "agent-node-id",
+                        "os": "linux",
+                        "capabilities": ["nomad-join"],
+                        "waitSeconds": 0,
+                    },
+                )["task"]
+
+                self.assertEqual(leased["payload"]["tailscaleAuthKey"], "ts-secret")
+                saved_payload = load_state()["agentTasks"]["task-join"]["payload"]
+                self.assertNotIn("tailscaleAuthKey", saved_payload)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

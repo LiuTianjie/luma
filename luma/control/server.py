@@ -142,6 +142,40 @@ def _node_agent_record(record: Dict[str, Any]) -> Dict[str, Any]:
     return agent
 
 
+def _node_agent_identity_ids(record: Dict[str, Any]) -> set[str]:
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    values = {str(agent.get("nodeId") or ""), str(agent.get("currentNodeId") or "")}
+    for key in ("knownNodeIds", "legacyNodeIds"):
+        raw = agent.get(key)
+        if isinstance(raw, list):
+            values.update(str(value) for value in raw)
+        elif isinstance(raw, str):
+            values.add(raw)
+    return {value.strip() for value in values if value and value.strip()}
+
+
+def _node_record_identity_ids(record: Dict[str, Any]) -> set[str]:
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    values = {
+        str(record.get("nodeId") or ""),
+        str(record.get("nomadNodeId") or ""),
+        str(labels.get("luma.node.id") or ""),
+    }
+    values.update(_node_agent_identity_ids(record))
+    return {value.strip() for value in values if value and value.strip()}
+
+
+def _remember_node_agent_identity(record: Dict[str, Any], node_id: str) -> None:
+    value = str(node_id or "").strip()
+    if not value:
+        return
+    agent = _node_agent_record(record)
+    known = _node_agent_identity_ids(record)
+    known.add(value)
+    agent.setdefault("nodeId", value)
+    agent["knownNodeIds"] = sorted(known)
+
+
 def _issue_node_agent_token(state: Dict[str, Any], node_name: str, *, node_id: str = "") -> str:
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, node_name)
@@ -157,6 +191,7 @@ def _issue_node_agent_token(state: Dict[str, Any], node_name: str, *, node_id: s
         }
     )
     if node_id:
+        _remember_node_agent_identity(record, node_id)
         record["nodeId"] = node_id
     return token
 
@@ -172,13 +207,8 @@ def _node_record_entry_for_name_or_id(nodes: Dict[str, Any], node_name: str, nod
     for key, value in nodes.items():
         if not isinstance(value, dict):
             continue
-        labels = value.get("labels") if isinstance(value.get("labels"), dict) else {}
-        values = {
-            str(value.get("nodeId") or ""),
-            str(value.get("nomadNodeId") or ""),
-            str(labels.get("luma.node.id") or ""),
-            str(value.get("displayName") or ""),
-        }
+        values = {str(value.get("displayName") or "")}
+        values.update(_node_record_identity_ids(value))
         values.update(_node_record_names(str(key), value))
         if node_id and node_id in values:
             return str(key), value
@@ -193,10 +223,7 @@ def _require_node_agent_token(state: Dict[str, Any], token: str, node_name: str,
     if record is None:
         raise LumaError("unauthorized")
     if node_id:
-        known_id = str(record.get("nodeId") or record.get("nomadNodeId") or "")
-        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-        known_label_id = str(labels.get("luma.node.id") or "")
-        known_ids = {value for value in {known_id, known_label_id} if value}
+        known_ids = _node_record_identity_ids(record)
         if known_ids and node_id not in known_ids:
             raise LumaError("unauthorized")
     agent = _node_agent_record(record)
@@ -541,6 +568,11 @@ def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Di
         registry_auth = registry_auth_for_image(registries, image)
         if registry_auth:
             payload["registryAuth"] = registry_auth
+    if task.get("action") == "join-nomad" and not payload.get("tailscaleAuthKey"):
+        secrets_state = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+        tailscale_authkey = str(secrets_state.get("TAILSCALE_AUTHKEY") or "") or os.environ.get("TAILSCALE_AUTHKEY") or ""
+        if tailscale_authkey:
+            payload["tailscaleAuthKey"] = tailscale_authkey
     return payload
 
 
@@ -883,6 +915,26 @@ def _with_default_port(host: str, port: int) -> str:
     return f"[{value}]:{port}"
 
 
+def _host_from_hostport(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("[") and "]" in text:
+        return text[1:text.index("]")]
+    if text.count(":") == 1:
+        return text.rsplit(":", 1)[0]
+    if text.count(":") > 1:
+        return text
+    return text
+
+
+def _nomad_join_egress_proxy(region: str, server_addr: str) -> str:
+    if region not in {"cn", "home"}:
+        return ""
+    host = _host_from_hostport(server_addr)
+    return f"http://{host}:7890" if host else ""
+
+
 def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     node_name = str(body.get("nodeName") or "").strip()
     registered_name = str(body.get("registeredName") or "").strip()
@@ -941,6 +993,96 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "nomadNodeId": node_id,
     }
     return result
+
+
+def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    config = load_config(_control_config_path())
+    node_name = str(body.get("nodeName") or "").strip()
+    if not node_name:
+        raise LumaError("nodeName is required")
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    if record is None:
+        raise LumaError(f"Luma node is not registered: {node_name}")
+    region = str(body.get("region") or record.get("region") or "").strip()
+    if region not in VALID_REGIONS:
+        raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
+    timeout = int(body.get("timeout") or 1200)
+    timeout = min(max(timeout, 60), 3600)
+    server_addr = str(body.get("serverAddr") or _nomad_rpc_addr_for_join(config, state)).strip()
+    egress_proxy = str(body.get("egressProxy") if body.get("egressProxy") is not None else _nomad_join_egress_proxy(region, server_addr)).strip()
+    payload: Dict[str, Any] = {
+        "nodeName": node_name,
+        "region": region,
+        "serverAddr": server_addr,
+    }
+    if egress_proxy:
+        payload["egressProxy"] = egress_proxy
+
+    result = _run_node_agent_task(
+        state,
+        node_name,
+        "join-nomad",
+        payload,
+        timeout=timeout,
+        required_capability="nomad-join",
+    )
+    actual_node_name = str(result.get("nodeName") or node_name).strip()
+    nomad_node_id = str(result.get("nodeId") or result.get("nomadNodeId") or "").strip()
+    tailscale_ip = str(result.get("tailscaleIP") or "").strip()
+    if not nomad_node_id:
+        raise LumaError(f"Nomad join on {node_name} did not return a Nomad node ID")
+
+    def mutate(current: Dict[str, Any]) -> Dict[str, Any]:
+        require_token(current, token, token_type="deploy")
+        current_nodes = current.get("nodes") if isinstance(current.get("nodes"), dict) else {}
+        current_record = _node_record_for_name(current_nodes, node_name)
+        if current_record is None:
+            raise LumaError(f"Luma node is not registered: {node_name}")
+        previous_ids = _node_record_identity_ids(current_record) - {nomad_node_id}
+        for previous_id in previous_ids:
+            _remember_node_agent_identity(current_record, previous_id)
+        labels = labels_for_node(region, luma_name=node_name, node_id=nomad_node_id)
+        values: Dict[str, Any] = {
+            "region": region,
+            "status": "labeled",
+            "labels": labels,
+            "displayName": node_name,
+            "hostname": actual_node_name,
+            "nodeId": nomad_node_id,
+            "nomadNodeId": nomad_node_id,
+            "nomadHostname": actual_node_name,
+        }
+        if tailscale_ip:
+            values["tailscaleIP"] = tailscale_ip
+        _remember_node(current, node_name, **values)
+        saved = _node_record_for_name(current.get("nodes") if isinstance(current.get("nodes"), dict) else {}, node_name) or {}
+        agent = saved.get("agent") if isinstance(saved.get("agent"), dict) else {}
+        return {
+            "agentNodeIds": sorted(_node_agent_identity_ids(saved)),
+            "agentStatus": _node_agent_status(saved),
+            "agentVersion": str(agent.get("version") or ""),
+        }
+
+    mutation_result = mutate_state(mutate)
+    state = load_state()
+    saved = _node_record_for_name(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name) or {}
+    return {
+        "clusterId": state["clusterId"],
+        "nodeName": node_name,
+        "hostname": actual_node_name,
+        "region": region,
+        "nodeId": nomad_node_id,
+        "nomadNodeId": nomad_node_id,
+        "tailscaleIP": tailscale_ip,
+        "agentStatus": mutation_result.get("agentStatus") or _node_agent_status(saved),
+        "agentNodeIds": mutation_result.get("agentNodeIds") or sorted(_node_agent_identity_ids(saved)),
+        "taskId": str(result.get("taskId") or ""),
+        "message": f"Nomad node joined through node agent: {node_name}",
+    }
 
 
 def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -5108,6 +5250,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/nodes/label":
                 self._json(200, handle_node_label(token, body))
                 return
+            if self.path == "/v1/nodes/nomad-join":
+                self._json(200, handle_node_nomad_join(token, body))
+                return
             if self.path == "/v1/nodes/agent-token":
                 self._json(200, handle_node_agent_token(token, body))
                 return
@@ -5392,6 +5537,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/auth/login/verify": handle_login_verify,
             "/v1/nodes/register": handle_node_register,
             "/v1/nodes/label": handle_node_label,
+            "/v1/nodes/nomad-join": handle_node_nomad_join,
             "/v1/nodes/agent-token": handle_node_agent_token,
             "/v1/node-agent/lease": handle_node_agent_lease,
             "/v1/node-agent/tasks/complete": handle_node_agent_complete,
