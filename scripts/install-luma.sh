@@ -177,11 +177,15 @@ fi
 python -m pip install --upgrade pip || echo "[warn] pip upgrade failed; continuing with existing pip"
 
 pip_install_luma() {
+  set +e
   if [ "${LUMA_PIP_BUILD_ISOLATION:-0}" = "1" ]; then
     pip install "$@"
   else
     pip install --no-build-isolation "$@"
   fi
+  code=$?
+  set -e
+  return "$code"
 }
 
 INSTALL_SUCCEEDED=0
