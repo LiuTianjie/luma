@@ -1,12 +1,10 @@
-version: "3.8"
-
-services:
-  worker:
-    image: ghcr.io/your-org/your-worker:latest
-    environment:
-      QUEUE_URL: redis://redis:6379/0
-    deploy:
-      replicas: 1
-      placement:
-        constraints:
-          - node.labels.region == global
+# Luma manifest template — internal worker (no public ingress).
+# Deploy with: luma deploy global-worker.yml
+name: fetch-worker
+image: ghcr.io/your-org/fetch-worker:latest
+region: global
+exposure: none
+replicas: 1
+env:
+  QUEUE_URL: redis://redis:6379/0
+# proxy: true   # uncomment for runtime HTTP/HTTPS egress through Luma

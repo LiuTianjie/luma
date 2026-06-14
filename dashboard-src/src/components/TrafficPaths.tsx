@@ -63,7 +63,7 @@ function classifySegment(segment: string) {
   if (value.includes("client/internal")) return { kind: "internal", meta: "Internal client" };
   if (value.includes("missing") || value.includes("unresolved") || value.includes("no running")) return { kind: "issue", meta: "Needs attention" };
   if (/^https?:\/\//.test(value) || /^\d{1,3}(\.\d{1,3}){3}/.test(value)) return { kind: "target", meta: "Network target" };
-  return { kind: "service", meta: "Swarm service" };
+  return { kind: "service", meta: "Nomad job" };
 }
 
 function destinationLabel(destination: TrafficDestination) {
@@ -115,20 +115,20 @@ function buildTopology(paths: TrafficPath[]): {
     const classification = classifySegment(segment);
     addRouteCount(id, routeLabel);
 
-    let emojiLabel = segment;
-    if (classification.kind === "domain") emojiLabel = `🌐 Domain\n${segment}`;
-    else if (classification.kind === "edge") emojiLabel = `☁️ Edge\n${segment}`;
-    else if (classification.kind === "proxy") emojiLabel = `🚦 Proxy\n${segment}`;
-    else if (classification.kind === "tunnel") emojiLabel = `🔒 Tunnel\n${segment}`;
-    else if (classification.kind === "internal") emojiLabel = `💻 Client\n${segment}`;
-    else if (classification.kind === "issue") emojiLabel = `⚠️ Issue\n${segment}`;
-    else if (classification.kind === "target") emojiLabel = `🎯 Target\n${segment}`;
-    else emojiLabel = `📦 Swarm\n${segment}`;
+    let nodeLabel = segment;
+    if (classification.kind === "domain") nodeLabel = `Domain\n${segment}`;
+    else if (classification.kind === "edge") nodeLabel = `Edge\n${segment}`;
+    else if (classification.kind === "proxy") nodeLabel = `Proxy\n${segment}`;
+    else if (classification.kind === "tunnel") nodeLabel = `Tunnel\n${segment}`;
+    else if (classification.kind === "internal") nodeLabel = `Client\n${segment}`;
+    else if (classification.kind === "issue") nodeLabel = `Issue\n${segment}`;
+    else if (classification.kind === "target") nodeLabel = `Target\n${segment}`;
+    else nodeLabel = `Nomad\n${segment}`;
 
     if (!nodeData.has(id)) {
       nodeData.set(id, {
         id,
-        label: emojiLabel,
+        label: nodeLabel,
         meta: classification.meta,
         kind: classification.kind,
       });
@@ -228,12 +228,12 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
   const isDark = theme === "dark";
   const textColor = isDark ? "#f8fafc" : "#0f172a";
   const nodeBg = isDark ? "#0f172a" : "#ffffff";
-  const nodeBorder = isDark ? "rgba(99, 102, 241, 0.35)" : "rgba(99, 102, 241, 0.15)";
-  const edgeColor = isDark ? "rgba(148, 163, 184, 0.3)" : "rgba(148, 163, 184, 0.6)";
+  const nodeBorder = isDark ? "rgba(125, 211, 252, 0.28)" : "rgba(14, 116, 144, 0.18)";
+  const edgeColor = isDark ? "rgba(148, 163, 184, 0.32)" : "rgba(100, 116, 139, 0.5)";
 
-  const domainBorder = "#10b981"; // Emerald
-  const proxyBorder = "#8b5cf6"; // Violet
-  const issueBorder = "#f43f5e"; // Rose
+  const domainBorder = "#22c55e";
+  const proxyBorder = "#38bdf8";
+  const issueBorder = "#fb7185";
   const targetBorder = isDark ? "#475569" : "#cbd5e1";
   const destinationBorder = "#f6bd4f";
 
@@ -244,7 +244,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "background-color": nodeBg,
         "border-color": nodeBorder,
         "border-width": 1.5,
-        "font-family": '"Outfit", "Inter", sans-serif',
+        "font-family": '"IBM Plex Sans", "Aptos", "Segoe UI", sans-serif',
         "font-size": 12,
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
@@ -261,7 +261,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     },
     { selector: "node.edge", style: { "border-color": nodeBorder } },
     { selector: "node.domain", style: { "border-width": 2.5, "border-color": domainBorder, "background-color": isDark ? "#064e3b" : "#ecfdf5" } },
-    { selector: "node.proxy", style: { "border-width": 2.5, "border-color": proxyBorder, "background-color": isDark ? "#1e1b4b" : "#eef2ff" } },
+    { selector: "node.proxy", style: { "border-width": 2.5, "border-color": proxyBorder, "background-color": isDark ? "#082f49" : "#ecfeff" } },
     { selector: "node.tunnel", style: { "border-color": nodeBorder } },
     { selector: "node.target", style: { "border-color": targetBorder, "color": isDark ? "#94a3b8" : "#475569" } },
     { selector: "node.destination", style: { "border-width": 2.5, "border-color": destinationBorder, "background-color": isDark ? "#29200d" : "#fffbeb", "width": `${DESTINATION_WIDTH}px` } },
@@ -278,8 +278,8 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "width": "1.8px",
       },
     },
-    { selector: "edge.cn-edge, edge.external-edge", style: { "line-color": isDark ? "#8b5cf6" : "#6366f1", "target-arrow-color": isDark ? "#8b5cf6" : "#6366f1" } },
-    { selector: "edge.tailscale-relay, edge.tcp-relay, edge.cloudflare-tunnel", style: { "line-color": "#10b981", "target-arrow-color": "#10b981" } },
+    { selector: "edge.cn-edge, edge.external-edge", style: { "line-color": "#38bdf8", "target-arrow-color": "#38bdf8" } },
+    { selector: "edge.tailscale-relay, edge.tcp-relay, edge.cloudflare-tunnel", style: { "line-color": "#22c55e", "target-arrow-color": "#22c55e" } },
     {
       selector: ".dimmed",
       style: {
@@ -289,16 +289,16 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     {
       selector: "node.highlighted",
       style: {
-        "border-color": "#8b5cf6",
+        "border-color": "#38bdf8",
         "border-width": 3,
-        "background-color": isDark ? "#2e1065" : "#f5f3ff",
+        "background-color": isDark ? "#0c4a6e" : "#e0f2fe",
       },
     },
     {
       selector: "edge.highlighted",
       style: {
-        "line-color": "#6366f1",
-        "target-arrow-color": "#6366f1",
+        "line-color": "#38bdf8",
+        "target-arrow-color": "#38bdf8",
         "width": "3px",
       },
     },
@@ -393,14 +393,13 @@ export function TrafficPaths({
               maxZoom={1.6}
               minZoom={0.35}
               stylesheet={stylesheet}
-              wheelSensitivity={0.16}
               cy={(cy) => setCyRef(cy)}
             />
             
             <div className="cy-controls" aria-label="Topology controls">
-              <button className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</button>
-              <button className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</button>
-              <button className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">⟲</button>
+              <button aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</button>
+              <button aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</button>
+              <button aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</button>
             </div>
           </div>
           <aside className="route-index" aria-label={t(lang, "trafficPaths")}>

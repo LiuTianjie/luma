@@ -48,7 +48,7 @@ rm -rf /tmp/luma-repo
 
 Skill 内部包含了对以下核心规则的验证，AI 助手在为您编写清单时会自动遵循：
 1. **域与端口约束**：如果 `exposure` 设置为公开入口（如 `cn-edge`、`external-edge` 等），则必须包含 `domain` 和 `port`。
-2. **节点固定语义**：`node` 必须使用 `luma node join --name` 的 Luma 节点名；控制面会解析成 Swarm NodeID，不依赖 Docker hostname。
+2. **节点固定语义**：`node` 必须使用 `luma node join --name` 的 Luma 节点名；控制面会渲染成 Nomad 的 `meta.luma_node_name` 约束，不依赖 Docker hostname。
 3. **端口语义**：`port` 是容器内部端口；`tailscale-relay` / `tcp-relay` 的 `publishPort` 是目标节点 host 端口，需避免与本机已有服务冲突。
 4. **存储类防呆设计**：防止在 sidecar 中直接定义非空的 `storageClasses`（该配置需在控制面侧通过 `luma storage set` 声明），以防止意外修改全局存储基础设施。
 5. **Region 调度匹配**：确保服务所声明的调度 `region` 与其引用的 `storageClass` 所拥有的网络可达 `regions` 匹配。

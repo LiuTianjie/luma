@@ -72,8 +72,8 @@ def new_state(*, domain: str, cluster_id: str | None = None) -> Dict[str, Any]:
         "domain": domain,
         "deployToken": secrets.token_urlsafe(32),
         "joinToken": secrets.token_urlsafe(32),
-        "managerAddr": "",
-        "swarmJoinToken": "",
+        "nomadAddr": "http://127.0.0.1:4646",
+        "nomadRpcAddr": "",
         "createdBy": "luma",
     }
 

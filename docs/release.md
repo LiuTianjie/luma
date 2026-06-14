@@ -41,7 +41,7 @@ The package distribution name is `luma-infra`; the installed console command rem
 5. Create a tag to publish a versioned image, GitHub archive, and PyPI package:
 
 ```bash
-git tag v0.1.87
+git tag v0.1.88
 git push origin main --tags
 ```
 
@@ -50,13 +50,13 @@ The `Publish Python Package` workflow builds wheel and sdist, runs `twine check`
 6. CI users install with:
 
 ```bash
-python -m pip install "luma-infra==0.1.87"
+python -m pip install "luma-infra==0.1.88"
 ```
 
 Interactive users can still install with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.87 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.88 sh
 ```
 
 The installer downloads the GitHub archive for that tag, creates `~/.local/share/luma/venv`, installs the Python package, writes `~/.local/bin/luma`, and adds `~/.local/bin` to the user's shell profile when needed.
@@ -73,14 +73,14 @@ Use `--purge` to also remove local config and login contexts:
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh -s -- --purge
 ```
 
-The uninstall script is intentionally local-only. It does not remove server runtime components such as Docker, Swarm, Portainer, Traefik, Luma Control, deployed services, or `/opt/luma`.
+The uninstall script is intentionally local-only. It does not remove server runtime components such as Docker, Nomad, Traefik, Luma Control, deployed services, or `/opt/luma`.
 
 The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you want a fully pinned bootstrap, set this in `luma.yaml` before running manager bootstrap:
 
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.87
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.88
 ```
 
 ## Latest Channel
@@ -96,7 +96,7 @@ This is convenient but less reproducible than a tag. For real users, prefer a ve
 For CI, prefer the pinned PyPI package:
 
 ```bash
-python -m pip install "luma-infra==0.1.87"
+python -m pip install "luma-infra==0.1.88"
 ```
 
 ## Custom Host Or Fork
@@ -106,7 +106,7 @@ Use these environment variables when the code is hosted somewhere else:
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.1.87 \
+  LUMA_INSTALL_REF=v0.1.88 \
   sh
 ```
 

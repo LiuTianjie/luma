@@ -20,15 +20,20 @@ export function Topbar({
   onRefresh,
   onSignOut,
 }: Props) {
+  const timeFormatter = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
   const statusText = syncStatus === "updated" && lastUpdated
-    ? `${t(lang, "updated")} ${lastUpdated.toLocaleTimeString()}`
+    ? `${t(lang, "updated")} ${timeFormatter.format(lastUpdated)}`
     : t(lang, syncStatus);
 
   return (
     <header className="topbar">
       <div className="cluster-chip">
         <span>{t(lang, "cluster")}</span>
-        <strong>{clusterId}</strong>
+        <strong translate="no">{clusterId}</strong>
       </div>
       <div className="top-actions">
         <span className={`sync-state ${syncStatus}`}>{statusText}</span>

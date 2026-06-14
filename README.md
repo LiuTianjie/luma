@@ -2,12 +2,12 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-Luma is a small self-hosted deployment control plane for Docker Swarm. It uses Portainer to execute deployments, Traefik for HTTP/HTTPS ingress, Cloudflare for DNS, and a `luma` CLI that can run from any authenticated client machine.
+Luma is a small self-hosted deployment control plane built on HashiCorp Nomad. It drives the Nomad HTTP API to execute deployments, uses Traefik for HTTP/HTTPS ingress, Cloudflare for DNS, and a `luma` CLI that can run from any authenticated client machine.
 
 It is meant for turning a few scattered servers into region-aware deployment targets:
 
 ```text
-client laptop -> Luma Control -> Portainer -> Docker Swarm -> service tasks
+client laptop -> Luma Control -> Nomad API -> Nomad client -> docker driver -> container
 ```
 
 ## Who It Is For
@@ -15,9 +15,9 @@ client laptop -> Luma Control -> Portainer -> Docker Swarm -> service tasks
 | Good fit | Poor fit |
 | --- | --- |
 | You have one or a few VPS machines and want to deploy your own Web/API/worker services. | You already need Kubernetes-level multi-tenancy, network policy, and orchestration. |
-| You want client machines to hold only a management token, not SSH, Docker, Cloudflare, or Portainer credentials. | You do not want to use a public domain or Cloudflare DNS. |
+| You want client machines to hold only a management token, not SSH, Docker, Cloudflare, or Nomad credentials. | You do not want to use a public domain or Cloudflare DNS. |
 | You want to place services by regions such as `cn`, `global`, and `home`. | You only run a few local compose services on one host and do not need scheduling. |
-| You want to expose some home/private services through Tailscale or Cloudflare Tunnel. | You cannot install Docker/Swarm/Traefik/Portainer on the manager. |
+| You want to expose some home/private services through Tailscale or Cloudflare Tunnel. | You cannot install Docker/Nomad/Traefik on the manager. |
 
 ## Prerequisites
 
@@ -25,12 +25,12 @@ client laptop -> Luma Control -> Portainer -> Docker Swarm -> service tasks
 | --- | --- | --- |
 | A domain you control | Yes | Control API and public service domains, such as `luma.example.com` and `api.example.com`. |
 | Cloudflare DNS API token | Yes | Luma creates and updates control and service DNS records. The token needs zone read + DNS edit permissions. |
-| One Linux manager | Yes | Runs Docker Swarm manager, Traefik, Portainer, and Luma Control. A 2c2g host is enough for evaluation. |
+| One Linux manager | Yes | Runs the Nomad server, Traefik, and Luma Control. A 2c2g host is enough for evaluation. |
 | Public inbound 80/443 | For public services | Traefik needs to receive HTTP/HTTPS traffic. |
 | Tailscale | As needed | Required for private multi-node joins, `home` nodes, and `exposure: tailscale-relay`. Not required for a single public manager. |
 | Egress subscription | As needed | Used for image-pull proxying and runtime proxying for `proxy: true` services. For mainland managers using the default GHCR control image, configure it before bootstrap. |
 
-Client machines only need the CLI and network access to the control domain. They do not need Docker, SSH keys, Cloudflare tokens, or Portainer passwords.
+Client machines only need the CLI and network access to the control domain. They do not need Docker, SSH keys, Cloudflare tokens, or Nomad credentials.
 
 ## Token Model
 
@@ -49,31 +49,31 @@ Luma's user-facing model is five words:
 
 | Concept | Meaning |
 | --- | --- |
-| `node` | A machine joined to Swarm. It may be a manager, worker, or home node. |
-| `region` | Scheduling boundary. A service with `region: cn` only runs on nodes labeled `region=cn`. |
+| `node` | A machine joined to the cluster. The manager runs the Nomad server; other machines run as Nomad clients (worker or home). |
+| `region` | Scheduling boundary. A service with `region: cn` only runs on nodes whose Nomad client `meta.region=cn`. |
 | `exposure` | How the service is reached, such as `cn-edge`, `external-edge`, `tailscale-relay`, `tcp-relay`, `cloudflare-tunnel`, or `none`. |
 | `egress` | Outbound proxy capability for image pulls and runtime HTTP/HTTPS proxying for `proxy: true` services. |
 | `service` | One deployment unit described by a Luma YAML manifest. |
 
 `region` decides where a service runs. `exposure` decides how traffic enters. They are related, but not the same thing.
-Set manifest `node` only when a service must be pinned to one Luma node name; Luma still keeps the `region` placement constraint and resolves the node name to the real Swarm NodeID before scheduling.
+Set manifest `node` only when a service must be pinned to one Luma node name; Luma still keeps the `region` placement constraint and renders the node name into a Nomad constraint on `${node.unique.name}` (or `meta.luma_node_name`). The Nomad node identity is a stable UUID, so a pinned service keeps targeting the right machine across rejoins.
 
 | Manifest | Scheduled on | Ingress path |
 | --- | --- | --- |
-| `region: cn` + `exposure: cn-edge` | `region=cn` nodes | Cloudflare DNS -> CN edge Traefik -> Swarm task |
-| `region: global` + `exposure: external-edge` | `region=global` nodes | Cloudflare DNS -> global edge Traefik -> Swarm task |
+| `region: cn` + `exposure: cn-edge` | `region=cn` nodes | Cloudflare DNS -> CN edge Traefik -> Nomad allocation |
+| `region: global` + `exposure: external-edge` | `region=global` nodes | Cloudflare DNS -> global edge Traefik -> Nomad allocation |
 | `region: home` + `exposure: tailscale-relay` | `region=home` nodes | Public Traefik -> Tailscale -> home service |
 | `region: home` + `exposure: tcp-relay` | `region=home` nodes | Cloudflare DNS -> edge Traefik TCP entrypoint -> task host port |
 | `region: cn` + `exposure: none` | `region=cn` nodes | No public ingress; useful for workers/jobs |
 
-A public `cn-edge` domain does not bypass the server and jump directly to a container. DNS points to the configured CN edge target, traffic enters Traefik on that node, and Swarm overlay forwards the request to the selected task. If you add several CN nodes, service replicas may run on them, but public traffic still enters through the selected edge Traefik.
+A public `cn-edge` domain does not bypass the server and jump directly to a container. DNS points to the configured CN edge target, traffic enters Traefik on that node, and Traefik routes to the Nomad allocation it discovered through the Nomad provider. If you add several CN nodes, service allocations may run on them, but public traffic still enters through the selected edge Traefik.
 
 ## Install The CLI
 
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.87"
+python -m pip install "luma-infra==0.1.88"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.87 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.88 sh
 ```
 
 Develop from source:
@@ -100,7 +100,7 @@ cd luma
 . .venv/bin/activate
 ```
 
-The installer only installs the local CLI. It does not modify system DNS, Docker, Swarm, Tailscale, or firewall state; host-level changes happen during `luma bootstrap manager` or `luma node join`.
+The installer only installs the local CLI. It does not modify system DNS, Docker, Nomad, Tailscale, or firewall state; host-level changes happen during `luma bootstrap manager` or `luma node join`.
 
 If `luma` reports `permission denied: luma` from inside the repository, your shell is resolving the `luma/` Python package directory instead of the venv command. Use:
 
@@ -121,7 +121,7 @@ Also remove local login contexts and config:
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh -s -- --purge
 ```
 
-The uninstall script does not remove Docker, Swarm, Portainer, Traefik, Luma Control, deployed services, or server-side `/opt/luma` state.
+The uninstall script does not remove Docker, Nomad, Traefik, Luma Control, deployed services, or server-side `/opt/luma` state.
 
 ## First Manager
 
@@ -161,12 +161,11 @@ Use `--skip-egress` only when the control image registry is directly reachable, 
 luma bootstrap manager --domain luma.example.com --skip-egress
 ```
 
-Bootstrap installs/checks Docker, initializes Swarm, creates overlay networks, deploys Traefik, Portainer, and Luma Control, configures the firewall, and sets up egress when requested. It prints a management token and a node join token.
+Bootstrap installs/checks Docker, installs and starts the Nomad server, deploys Traefik and Luma Control as Nomad jobs, configures the firewall, and sets up egress when requested. It prints a management token and a node join token.
 
 If one layer fails, re-run bootstrap or repair only that layer:
 
 ```bash
-luma portainer setup
 luma egress setup
 luma tailscale connect
 ```
@@ -203,10 +202,10 @@ Bootstrap prints a node join token. Run this on each new server itself:
 luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
-`--name` is the Luma node name used in status output and service manifests. Luma also records the real Swarm NodeID so pinned services target the intended machine even when Docker hostnames are not unique.
-If a node leaves Swarm and later rejoins with the same Luma node name, Luma refreshes the saved Swarm NodeID and updates Luma-managed pinned service constraints from the old `luma.node.id` to the new one. Do not depend on Docker hostnames for pinning.
+`--name` is the Luma node name used in status output and service manifests. It is written to the Nomad client's `meta.luma_node_name`, so pinned services target the intended machine even when Docker hostnames are not unique.
+Because the Nomad node identity is a stable UUID, a node that leaves and later rejoins with the same Luma node name keeps the same `meta.luma_node_name`, so pinned service constraints stay valid. Do not depend on Docker hostnames for pinning.
 
-`--region` is the scheduling label. Service manifests match it through `region`:
+`--region` is the scheduling boundary, written to `meta.region`. Service manifests match it through `region`:
 
 ```bash
 luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1
@@ -214,9 +213,9 @@ luma node join https://luma.example.com --token <node-join-token> --region globa
 luma node join https://luma.example.com --token <node-join-token> --region home --name home-mac-mini
 ```
 
-For macOS home nodes, install and start Docker Desktop and Tailscale first. When `luma node join --region home ...` runs and the node is not connected to Tailscale yet, the CLI requires `TAILSCALE_AUTHKEY` before registering the node and joining Swarm. For non-apt Linux distributions, install Docker manually before joining.
+For macOS home nodes, install and start Docker Desktop (or OrbStack) and Tailscale first. When `luma node join --region home ...` runs and the node is not connected to Tailscale yet, the CLI requires `TAILSCALE_AUTHKEY` before registering the node and enrolling the Nomad client. For non-apt Linux distributions, install Docker manually before joining. Add `--engine nomad` to force the Nomad client path explicitly; it is the default.
 
-`--name` is the Luma node name. Luma stores it on the Swarm node as `luma.node.name` and stores the real Swarm NodeID as `luma.node.id`, so hosts with generic Docker names such as OrbStack's `orbstack` can still be targeted safely.
+`--name` is the Luma node name. Luma writes it to the Nomad client `meta.luma_node_name`, so hosts with generic Docker names such as OrbStack's `orbstack` can still be targeted safely.
 
 Before removing or rebuilding a node, run this on that node:
 
@@ -224,9 +223,9 @@ Before removing or rebuilding a node, run this on that node:
 luma node exit
 ```
 
-By default it leaves Swarm and removes local Luma runtime state under `/opt/luma`, while keeping Tailscale and Docker image/volume cache. Add `--endpoint <control-url> --token <management-token-or-node-join-token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` to also log out of Tailscale. Add `--prune-docker` only when you intentionally want to remove unused Docker cache and volumes.
+By default it drains the local Nomad client and removes local Luma runtime state under `/opt/luma`, while keeping Tailscale and Docker image/volume cache. Add `--endpoint <control-url> --token <management-token-or-node-join-token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` to also log out of Tailscale. Add `--prune-docker` only when you intentionally want to remove unused Docker cache and volumes.
 
-To remove a node from the control plane and Swarm, run `luma node remove <name>` from any logged-in client. The manager deletes the Luma registration and the matching Swarm worker node; manager nodes are protected.
+To remove a node from the control plane and the cluster, run `luma node remove <name>` from any logged-in client. The manager deletes the Luma registration and drains the matching Nomad client; manager nodes (Nomad servers) are protected.
 
 ## Deploy Services
 
@@ -253,7 +252,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.87"
+python -m pip install "luma-infra==0.1.88"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -263,7 +262,7 @@ luma deploy status.yaml --dry-run --format json
 luma deploy status.yaml --format ndjson --timeout 1800
 ```
 
-CI clients do not need SSH, Docker, Cloudflare, Portainer, or persistent files under `~/.config/luma`.
+CI clients do not need SSH, Docker, Cloudflare, Nomad, or persistent files under `~/.config/luma`.
 
 When application services share a small manager, set explicit resource limits:
 
@@ -287,7 +286,7 @@ exposure: none
 proxy: true
 ```
 
-Luma automatically joins the service to the `egress` overlay network and injects `HTTP_PROXY` / `HTTPS_PROXY`. This affects runtime outbound requests from the container; it is not the same as image-pull proxying.
+Luma automatically attaches the egress proxy to the service and injects `HTTP_PROXY` / `HTTPS_PROXY`. This affects runtime outbound requests from the container; it is not the same as image-pull proxying.
 
 For private images, keep registry credentials out of the manifest. Save them once from any logged-in client:
 
@@ -295,7 +294,7 @@ For private images, keep registry credentials out of the manifest. Save them onc
 printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --password-stdin
 ```
 
-After that, manifests still only contain the image name, for example `image: ghcr.io/acme/private-api:1.0.0`. During deploy, Luma matches the registry host and sends Portainer/Swarm the registry auth needed by the node that receives the task. Fixed-node deployments may ask that target node to resolve the image first; unpinned services are pulled by the node where Swarm schedules the task, not by the manager as a deploy prerequisite. Docker Hub-style images may still be rewritten to a configured mirror before scheduling. This is useful for private GHCR images produced by GitHub Actions, including images built from repositories that also publish docs or marketing pages through GitHub Pages.
+After that, manifests still only contain the image name, for example `image: ghcr.io/acme/private-api:1.0.0`. During deploy, Luma matches the registry host and injects the registry auth into the Nomad jobspec's docker `config.auth` block, so the node that receives the allocation can pull. Fixed-node deployments may ask that target node to resolve the image first; unpinned services are pulled by the node where Nomad places the allocation, not by the manager as a deploy prerequisite. Docker Hub-style images may still be rewritten to a configured mirror before scheduling. This is useful for private GHCR images produced by GitHub Actions, including images built from repositories that also publish docs or marketing pages through GitHub Pages.
 Private registry image pulls are separate from runtime `proxy: true`. If a scheduled node has a global Docker proxy and a private registry fails before auth, check `docker info` proxy settings on that node and make sure that registry host is in Docker daemon `NO_PROXY`; `curl https://<registry>/v2/` returning `401` usually means the registry is reachable and Docker proxy routing is the next thing to inspect.
 
 Do not put sensitive values directly in manifests. Store them in the control plane:
@@ -317,16 +316,17 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 
 | Question | What to do |
 | --- | --- |
-| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI, hot-refreshes Luma Control, and refreshes the manager node agent when possible, without restarting Traefik, Portainer, Docker, or app stacks. |
-| Update worker/home nodes | Run `luma update fleet` from a logged-in client after the manager has the current Control API. Fleet update skips Swarm manager nodes by default; update the manager separately with `luma update manager` on the manager. Nodes whose agent is too old to support fleet update are reported as skipped; run `luma update` once on those nodes. |
-| View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, Portainer, registered nodes, and actual Swarm nodes. |
+| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI, hot-refreshes Luma Control, and refreshes the manager node agent when possible, without restarting Traefik, the Nomad agent, Docker, or app jobs. |
+| Update worker/home nodes | Run `luma update fleet` from a logged-in client after the manager has the current Control API. Fleet update skips the Nomad server (manager) node by default; update the manager separately with `luma update manager` on the manager. Nodes whose agent is too old to support fleet update are reported as skipped; run `luma update` once on those nodes. |
+| View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, the orchestrator (Nomad) with its leader, and registered nodes with `role=client`. |
 | View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the management token on a trusted device. |
 | What happens if I run `luma update` on a joined node or client? | On a joined node it updates the CLI and refreshes the local node agent; on a client it updates only the CLI and skips manager control-plane refresh. |
 | When does `luma update` need `--domain`? | Only when you intentionally changed the control domain. If manager state is missing, run `luma bootstrap manager --domain ...` for first install or repair. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
-| Pin service A to one node | Set manifest `node` to the Luma node name passed to `luma node join --name`, keep the matching `region`, then deploy again. Control resolves it to the Swarm NodeID before scheduling. |
-| Rejoined node got a new Swarm ID | Keep the same Luma node name and rerun `luma node join` / `luma update` on that node. Control refreshes `luma.node.id` and updates Luma-managed pinned services. |
-| Remove service A | Run `luma service remove app` after it has been deployed through Luma Control. It removes the matching single-service or Compose deployment, including DNS, the Portainer stack, and generated stack/route files; use `--dry-run` to preview or `--skip-dns` to keep DNS. |
+| Pin service A to one node | Set manifest `node` to the Luma node name passed to `luma node join --name`, keep the matching `region`, then deploy again. Control renders it as a Nomad constraint on the node identity. |
+| Roll back service A | Run `luma rollback app` to revert to the previous version, or `luma rollback app --to-version <N>` for a specific one. Use `luma history app` to list versions. |
+| Rejoined node | Keep the same Luma node name and rerun `luma node join` / `luma update` on that node. The Nomad node UUID is stable, so pinned services stay valid. |
+| Remove service A | Run `luma service remove app` after it has been deployed through Luma Control. It removes the matching single-service or Compose deployment, including DNS, the Nomad job, and generated route files; use `--dry-run` to preview or `--skip-dns` to keep DNS. |
 | Make a public service internal | Change `exposure` to `none`, remove public-only domain/ingress config if no longer needed, then deploy again. |
 | Make an internal service public | Set a matching `region` + `exposure`, add `domain` and `port`, then deploy again. |
 | Deploy a private GHCR image | Save the credential with `luma registry login ghcr.io --username <user> --password-stdin`, then deploy the normal manifest. |
@@ -382,7 +382,7 @@ Restart Codex after installing so the skill is loaded.
 
 - Do not commit API tokens, management tokens, node join tokens, or proxy subscription URLs.
 - Do not write registry tokens into manifests or container environment variables. Use `luma registry login` and rotate/revoke the provider token if it is exposed.
-- Client machines should not need SSH/Docker/Cloudflare/Portainer credentials; distribute management tokens instead.
+- Client machines should not need SSH/Docker/Cloudflare/Nomad credentials; distribute management tokens instead.
 - The Web status panel uses the management token and stores it in browser local storage. Use it on trusted devices only.
 - Do not expose node agent credentials; they are internal per-node credentials managed automatically by Luma.
 - Node join tokens should only be used on servers that are joining the cluster or refreshing an existing joined node agent.

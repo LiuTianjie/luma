@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import copy
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .config import LumaConfig
 from .errors import LumaError
@@ -149,121 +148,6 @@ def compose_stack_path(config: LumaConfig, deployment: ComposeDeploymentSpec) ->
 
 def compose_route_path(config: LumaConfig, deployment: ComposeDeploymentSpec, service_name: str) -> Path:
     return config.routes_root / f"{deployment.slug}-{slugify(service_name)}.yml"
-
-
-def render_compose_stack(
-    config: LumaConfig,
-    deployment: ComposeDeploymentSpec,
-    *,
-    node_id_resolver: Callable[[str], str | None] | None = None,
-    node_records: Dict[str, Any] | None = None,
-) -> str:
-    rendered = copy.deepcopy(deployment.compose)
-    rendered.pop("version", None)
-    services = rendered.get("services")
-    if not isinstance(services, dict):
-        raise LumaError("compose file requires services mapping")
-    top_volumes: Dict[str, Any] = dict(rendered.get("volumes") or {})
-    rendered["services"] = services
-
-    service_volume_usage = _compose_service_volume_usage(deployment.compose)
-    volume_nodes = _local_volume_nodes(deployment.volumes)
-    resolved_mounts = resolve_storage_mounts(deployment, node_records=node_records)
-    mount_lookup = {
-        (str(item["service"]), str(item["volume"])): item
-        for item in resolved_mounts
-    }
-    volume_endpoints: Dict[str, str] = {}
-    for item in resolved_mounts:
-        volume_name = str(item["volume"])
-        endpoint = str(item["endpoint"])
-        previous = volume_endpoints.get(volume_name)
-        if previous and previous != endpoint:
-            raise LumaError(
-                f"compose volume {volume_name} is used from multiple regions with different storage endpoints; split it into region-specific volumes"
-            )
-        volume_endpoints[volume_name] = endpoint
-    extra_services: Dict[str, Any] = {}
-
-    for service_name, service_body in list(services.items()):
-        if not isinstance(service_body, dict):
-            raise LumaError(f"compose service {service_name} must be a mapping")
-        override = deployment.services.get(str(service_name))
-        region = (override.region if override and override.region else deployment.region)
-        constraints = [f"node.labels.region == {region}"]
-        explicit_node = override.node if override else None
-        local_nodes = {
-            node
-            for volume_name in service_volume_usage.get(str(service_name), [])
-            for node in [volume_nodes.get(volume_name)]
-            if node
-        }
-        storage_classes = {
-            volume.storage_class
-            for volume_name in service_volume_usage.get(str(service_name), [])
-            for volume in [deployment.volumes.get(volume_name)]
-            if volume and volume.storage_class
-        }
-        for storage_class_name in sorted(storage_classes):
-            storage_class = deployment.storage_classes[str(storage_class_name)]
-            if storage_class.regions and region not in storage_class.regions:
-                raise LumaError(
-                    f"compose service {service_name} region {region} is not allowed by storageClass {storage_class.name}"
-                )
-            if storage_class.nodes:
-                if explicit_node and explicit_node not in storage_class.nodes:
-                    raise LumaError(
-                        f"compose service {service_name} node {explicit_node} is not allowed by storageClass {storage_class.name}"
-                    )
-                if len(storage_class.nodes) == 1:
-                    local_nodes.add(storage_class.nodes[0])
-                elif not explicit_node:
-                    raise LumaError(
-                        f"compose service {service_name} must set node because storageClass {storage_class.name} allows multiple nodes"
-                    )
-        if explicit_node:
-            local_nodes.add(explicit_node)
-        if len(local_nodes) > 1:
-            raise LumaError(f"compose service {service_name} has conflicting node pins: {sorted(local_nodes)}")
-        if local_nodes:
-            node_name = next(iter(local_nodes))
-            node_id = node_id_resolver(node_name) if node_id_resolver else None
-            if node_id:
-                constraints.append(f"node.labels.luma.node.id == {node_id}")
-            else:
-                constraints.append(f"node.labels.luma.node.name == {node_name}")
-
-        _merge_deploy(service_body, constraints=constraints, replicas=override.replicas if override else None)
-        _apply_luma_labels(
-            deployment,
-            str(service_name),
-            service_body,
-            service_volume_usage.get(str(service_name), []),
-            mount_lookup=mount_lookup,
-        )
-        extra_services.update(_apply_service_exposure(config, deployment, str(service_name), service_body, override))
-        _apply_proxy(config, service_body, bool(override and override.proxy))
-        service_body["volumes"] = [
-            _render_service_volume(volume, deployment.volumes)
-            for volume in service_body.get("volumes", [])
-        ]
-    services.update(extra_services)
-
-    for volume_name, volume in deployment.volumes.items():
-        if volume.storage_class:
-            storage_class = deployment.storage_classes[volume.storage_class]
-            endpoint = volume_endpoints.get(volume_name) or _storage_endpoint_for_region(
-                storage_class,
-                deployment.region,
-                node_records,
-            )[0]
-            top_volumes[volume_name] = _render_storage_class_volume(storage_class, volume, endpoint)
-
-    if top_volumes:
-        rendered["volumes"] = top_volumes
-    _ensure_external_networks(rendered, config)
-    rendered = _drop_empty_top_level(rendered)
-    return dump_yaml(rendered)
 
 
 def render_compose_routes(config: LumaConfig, deployment: ComposeDeploymentSpec) -> Dict[str, str]:
@@ -579,139 +463,6 @@ def _positive_int(value: Any, field_name: str) -> int:
     return parsed
 
 
-def _merge_deploy(service_body: Dict[str, Any], *, constraints: List[str], replicas: Optional[int]) -> None:
-    deploy = service_body.setdefault("deploy", {})
-    if not isinstance(deploy, dict):
-        raise LumaError("compose service deploy must be a mapping")
-    placement = deploy.setdefault("placement", {})
-    if not isinstance(placement, dict):
-        raise LumaError("compose service deploy.placement must be a mapping")
-    current_constraints = placement.get("constraints") if isinstance(placement.get("constraints"), list) else []
-    merged = list(current_constraints)
-    for constraint in constraints:
-        if constraint not in merged:
-            merged.append(constraint)
-    placement["constraints"] = merged
-    if replicas is not None:
-        if replicas < 1:
-            raise LumaError("service replicas must be >= 1")
-        deploy.setdefault("replicas", replicas)
-
-
-def _apply_service_exposure(
-    config: LumaConfig,
-    deployment: ComposeDeploymentSpec,
-    service_name: str,
-    service_body: Dict[str, Any],
-    override: ComposeServiceSpec | None,
-) -> Dict[str, Any]:
-    if not override:
-        return {}
-    service_id = f"{deployment.slug}-{slugify(service_name)}"
-    deploy = service_body.setdefault("deploy", {})
-    labels: List[str] = _labels_as_list(deploy)
-    if override.exposure in {"cn-edge", "external-edge"}:
-        labels.extend(
-            [
-                "traefik.enable=true",
-                f"traefik.http.routers.{service_id}.rule=Host(`{override.domain}`)",
-                f"traefik.http.routers.{service_id}.entrypoints={config.entrypoint}",
-                f"traefik.http.routers.{service_id}.tls.certresolver={config.cert_resolver}",
-                f"traefik.http.services.{service_id}.loadbalancer.server.port={override.port}",
-                f"traefik.swarm.network={config.public_network}",
-                f"luma.compose.stack={deployment.slug}",
-                f"luma.compose.service={service_name}",
-            ]
-        )
-        deploy["labels"] = _dedupe(labels)
-        networks = service_body.get("networks") if isinstance(service_body.get("networks"), list) else []
-        if config.public_network not in networks:
-            service_body["networks"] = [config.public_network, *networks]
-    elif override.exposure in {"tailscale-relay", "tcp-relay"}:
-        service_body["ports"] = [
-            {
-                "target": override.port,
-                "published": override.publish_port or override.port,
-                "protocol": "tcp",
-                "mode": "host",
-            }
-        ]
-    elif override.exposure == "cloudflare-tunnel":
-        token_env = override.tunnel.get("tokenEnv", "CLOUDFLARE_TUNNEL_TOKEN")
-        tunnel_name = f"{service_name}-cloudflared"
-        return {
-            tunnel_name: {
-            "image": "cloudflare/cloudflared:latest",
-            "command": "tunnel --no-autoupdate run",
-            "environment": {"TUNNEL_TOKEN": f"${{{token_env}}}"},
-            "deploy": copy.deepcopy(service_body.get("deploy") or {}),
-            }
-        }
-    return {}
-
-
-def _apply_luma_labels(
-    deployment: ComposeDeploymentSpec,
-    service_name: str,
-    service_body: Dict[str, Any],
-    used_volumes: List[str],
-    *,
-    mount_lookup: Dict[tuple[str, str], Dict[str, Any]] | None = None,
-) -> None:
-    deploy = service_body.setdefault("deploy", {})
-    labels = _labels_as_list(deploy)
-    labels.extend(
-        [
-            f"luma.compose.stack={deployment.slug}",
-            f"luma.compose.service={service_name}",
-        ]
-    )
-    for volume_name in used_volumes:
-        spec = deployment.volumes.get(volume_name)
-        kind = spec.kind if spec else "unmanaged"
-        labels.append(f"luma.storage.{volume_name}={kind}")
-        if spec and spec.storage_class:
-            labels.append(f"luma.storageClass.{volume_name}={spec.storage_class}")
-        mount = (mount_lookup or {}).get((service_name, volume_name))
-        if mount:
-            labels.append(f"luma.storageEndpoint.{volume_name}={mount.get('endpoint', '')}")
-            labels.append(f"luma.storagePath.{volume_name}={mount.get('networkPath', '')}")
-        if spec and spec.local_node:
-            labels.append(f"luma.storageNode.{volume_name}={spec.local_node}")
-    deploy["labels"] = _dedupe(labels)
-
-
-def _apply_proxy(config: LumaConfig, service_body: Dict[str, Any], enabled: bool) -> None:
-    if not enabled:
-        return
-    environment = service_body.get("environment") or {}
-    if isinstance(environment, list):
-        env_map: Dict[str, str] = {}
-        for item in environment:
-            key, _, value = str(item).partition("=")
-            env_map[key] = value
-        environment = env_map
-    if not isinstance(environment, dict):
-        raise LumaError("compose service environment must be a mapping or list")
-    environment.setdefault("HTTP_PROXY", "http://egress_mihomo:7890")
-    environment.setdefault("HTTPS_PROXY", "http://egress_mihomo:7890")
-    service_body["environment"] = environment
-    networks = service_body.get("networks") if isinstance(service_body.get("networks"), list) else []
-    if config.egress_network not in networks:
-        service_body["networks"] = [*networks, config.egress_network]
-
-
-def _render_service_volume(volume: Any, volumes: Dict[str, ComposeVolumeSpec]) -> Any:
-    source = _volume_source(volume)
-    if not source or source not in volumes:
-        return volume
-    spec = volumes[source]
-    if spec.kind == "local":
-        target, suffix = _volume_target_and_suffix(volume)
-        return f"{spec.local_path}:{target}{suffix}"
-    return volume
-
-
 def _render_storage_class_volume(storage_class: StorageClassSpec, volume: ComposeVolumeSpec, endpoint: str) -> Dict[str, Any]:
     if storage_class.provider != "nfs":
         return {"driver": "local"}
@@ -826,7 +577,6 @@ def _storage_endpoint_for_region(
 def _same_region_storage_host(storage_class: StorageClassSpec, record: Dict[str, Any]) -> str:
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
     for value in (
-        record.get("swarmHostname"),
         record.get("hostname"),
         labels.get("luma.node.hostname"),
         storage_class.node,
@@ -922,51 +672,6 @@ def _is_named_volume(source: str) -> bool:
 
 def _local_volume_nodes(volumes: Dict[str, ComposeVolumeSpec]) -> Dict[str, str]:
     return {name: spec.local_node or "" for name, spec in volumes.items() if spec.kind == "local" and spec.local_node}
-
-
-def _labels_as_list(service_body: Dict[str, Any]) -> List[str]:
-    labels = service_body.get("labels") or []
-    if isinstance(labels, list):
-        return [str(item) for item in labels]
-    if isinstance(labels, dict):
-        return [f"{key}={value}" for key, value in labels.items()]
-    raise LumaError("compose service labels must be a list or mapping")
-
-
-def _ensure_external_networks(rendered: Dict[str, Any], config: LumaConfig) -> None:
-    used_networks: set[str] = set()
-    services = rendered.get("services") if isinstance(rendered.get("services"), dict) else {}
-    for service in services.values():
-        if not isinstance(service, dict):
-            continue
-        networks = service.get("networks")
-        if isinstance(networks, list):
-            used_networks.update(str(item) for item in networks)
-        elif isinstance(networks, dict):
-            used_networks.update(str(item) for item in networks.keys())
-    external = {config.public_network, config.egress_network}.intersection(used_networks)
-    if not external:
-        return
-    networks_raw = rendered.get("networks") if isinstance(rendered.get("networks"), dict) else {}
-    networks = dict(networks_raw)
-    for name in external:
-        networks.setdefault(name, {"external": True})
-    rendered["networks"] = networks
-
-
-def _dedupe(items: List[str]) -> List[str]:
-    seen = set()
-    result = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
-
-
-def _drop_empty_top_level(data: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: value for key, value in data.items() if value not in ({}, [], None)}
 
 
 def _string_list(value: Any) -> List[str]:

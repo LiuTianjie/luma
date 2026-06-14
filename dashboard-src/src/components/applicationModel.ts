@@ -13,17 +13,29 @@ export type Application = {
   regions: string[];
 };
 
-const SYSTEM_STACKS = new Set(["traefik", "portainer", "egress", "luma-control"]);
+const SYSTEM_STACKS = new Set(["traefik", "egress", "luma-control"]);
 
 function isSystemService(service: DashboardService) {
   const stack = service.stack || service.name || "";
   return SYSTEM_STACKS.has(stack) || stack.startsWith("luma-storage") || service.name === "cloudflared";
 }
 
+export function serviceRuntimeStatus(service: DashboardService) {
+  return (service.status || service.health || "").toLowerCase();
+}
+
+export function isServiceHealthy(service: DashboardService) {
+  const status = serviceRuntimeStatus(service);
+  if ((service.failed || 0) > 0 || ["failed", "dead", "lost", "error"].includes(status)) return false;
+  if ((service.pending || 0) > 0) return false;
+  if ((service.desired || 0) > 0) return (service.running || 0) >= (service.desired || 0);
+  return status === "running" || status === "healthy" || status === "complete";
+}
+
 function applicationStatus(services: DashboardService[]) {
-  if (services.some((service) => (service.failed || 0) > 0 || service.health === "failed")) return "failed";
+  if (services.some((service) => (service.failed || 0) > 0 || ["failed", "dead", "lost", "error"].includes(serviceRuntimeStatus(service)))) return "failed";
   if (services.some((service) => (service.pending || 0) > 0)) return "pending";
-  if (services.every((service) => (service.running || 0) >= (service.desired || 0))) return "running";
+  if (services.every(isServiceHealthy)) return "running";
   return "degraded";
 }
 
@@ -36,7 +48,7 @@ export function groupApplications(services: DashboardService[]): Application[] {
     groups.set(stack, [...(groups.get(stack) || []), service]);
   }
   return [...groups.entries()].map(([stack, items]) => {
-    const domains = items.map((service) => service.domain || "").filter(Boolean);
+    const domains = [...new Set(items.map((service) => service.domain || "").filter(Boolean))];
     const running = items.reduce((sum, service) => sum + (service.running || 0), 0);
     const desired = items.reduce((sum, service) => sum + (service.desired || 0), 0);
     const exposures = [...new Set(items.map((service) => service.exposure || "none"))];
@@ -116,6 +128,6 @@ export function appToComposeDraft(app: Application): ComposeDeploymentDraft {
     volumes,
     dockerComposeYaml: composeYaml,
     skipDns: false,
-    skipPortainer: false,
+    skipOrchestrator: false,
   };
 }

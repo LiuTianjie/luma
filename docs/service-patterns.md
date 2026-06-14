@@ -1,6 +1,6 @@
 # Service Patterns
 
-本仓库固定五种 exposure 模式。新增服务时优先复制 `examples/` 中的 service manifest，再修改镜像、域名、端口、region、exposure 和 replicas。只有当服务必须固定在某台机器上时才加 `node`，它填写的是 `luma node join --name` 的 Luma 节点名；控制面会解析成 Swarm NodeID 约束，但不会替代 `region`。
+本仓库固定五种 exposure 模式。新增服务时优先复制 `examples/` 中的 service manifest，再修改镜像、域名、端口、region、exposure 和 replicas。只有当服务必须固定在某台机器上时才加 `node`，它填写的是 `luma node join --name` 的 Luma 节点名；控制面会渲染成 Nomad 的节点约束，但不会替代 `region`。
 
 ## 1. cn-edge
 
@@ -14,13 +14,14 @@
 
 典型约束：
 
-```yaml
-placement:
-  constraints:
-    - node.labels.region == cn
+```hcl
+constraint {
+  attribute = "${meta.region}"
+  value     = "cn"
+}
 ```
 
-公开域名通过 Traefik labels 声明。
+公开域名通过 Traefik 的 Nomad provider service tags 声明。
 
 ## 2. tailscale-relay
 
@@ -46,7 +47,7 @@ Luma 会生成 `routes/<service>.yml`，由 Traefik file provider 加载。
 - 适合家里无公网 IP 或希望 Cloudflare 直接接入的工具服务。
 - 对应 `exposure: cloudflare-tunnel`。
 
-第一版 Luma 会生成 app + `cloudflared` stack。Cloudflare Tunnel public hostname 仍需要在 Cloudflare 侧配置。
+第一版 Luma 会生成 app + `cloudflared` 同组 task。Cloudflare Tunnel public hostname 仍需要在 Cloudflare 侧配置。
 
 ## 4. external-edge
 
@@ -103,4 +104,4 @@ node: home-mac-mini
 exposure: none
 ```
 
-这里使用的是 `luma node join --name` 的节点名。控制面会解析成 Swarm NodeID 约束，避免 Docker hostname 重名时调度到错误机器。
+这里使用的是 `luma node join --name` 的节点名。控制面会渲染成 Nomad 的 `meta.luma_node_name` 约束，避免 Docker hostname 重名时调度到错误机器。

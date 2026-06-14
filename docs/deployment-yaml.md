@@ -1,6 +1,6 @@
 # Luma Deployment YAML
 
-Luma 的部署文件不是 Docker Compose。它是一个更小的 service manifest，用户只描述服务入口、镜像、区域和少量运行参数。`luma deploy` 会把它提交给控制面，控制面再生成 Swarm stack、同步 DNS、配置 Traefik 路由、触发 Portainer。
+Luma 的部署文件不是 Docker Compose。它是一个更小的 service manifest，用户只描述服务入口、镜像、区域和少量运行参数。`luma deploy` 会把它提交给控制面，控制面再渲染成 Nomad jobspec、同步 DNS、配置 Traefik 路由，并通过 Nomad HTTP API 部署。
 
 ## 最小公开服务
 
@@ -26,36 +26,36 @@ luma deploy status.yaml
 
 - Cloudflare 写入 `status.example.com` 记录；
 - Traefik 为 `Host(status.example.com)` 创建 HTTPS 路由；
-- Swarm 部署 `status` 服务；
+- Nomad 部署 `status` job；
 - 请求转发到容器内 `port: 80`。
 
 ## 字段参考
 
 | 字段 | 必填 | 类型 | 说明 |
 | --- | --- | --- | --- |
-| `name` | 是 | string | 服务名。Luma 会转成 slug，用于 stack/service/router 名称。 |
+| `name` | 是 | string | 服务名。Luma 会转成 slug，用作 Nomad job/group/task 名称。 |
 | `image` | 是 | string | 容器镜像，例如 `ghcr.io/acme/api:1.0.0`。`latest` 或未带 tag 会在部署时解析成 `name@sha256:...` 再部署。 |
 | `region` | 是 | `cn` / `global` / `home` | 服务运行区域。 |
-| `node` | 否 | string | 指定 Luma 节点名，也就是 `luma node join --name` 的值。用于把服务钉到某台机器；控制面会解析成 Swarm NodeID 后调度，仍会同时加 region 约束。 |
+| `engine` | 否 | `nomad` | 该服务的编排后端。当前集群默认是 Nomad，通常不需要填。 |
+| `node` | 否 | string | 指定 Luma 节点名，也就是 `luma node join --name` 的值。用于把服务钉到某台机器；控制面会渲染成 Nomad 的 `${node.unique.name}`（或 `meta.luma_node_name`）约束，仍会同时加 region 约束。 |
 | `exposure` | 否 | 见下方 | 访问方式。新文件必须显式表达公开、隧道或内部访问语义。 |
 | `domain` | 公开服务必填 | string | 用户访问的域名。 |
 | `port` | 公开服务必填 | integer | 容器内部监听端口，不是云服务器安全组端口。 |
-| `replicas` | 否 | integer | 副本数，默认 `1`，必须大于等于 `1`。 |
-| `env` / `environment` | 否 | map | 环境变量，会写进 Swarm service。 |
+| `replicas` | 否 | integer | 副本数，渲染成 Nomad group `count`，默认 `1`，必须大于等于 `1`。 |
+| `env` / `environment` | 否 | map | 环境变量，会写进 Nomad task 的 `env`。 |
 | `command` | 否 | string/list | 覆盖容器启动命令。 |
-| `constraints` | 否 | string[] | 追加 Swarm placement 约束。Luma 会自动加 region 约束。 |
-| `labels` | 否 | string[] | 追加 service labels。公开 Traefik labels 会自动生成。 |
-| `networks` | 否 | string[] | 追加 external overlay networks。公开 Traefik 服务会自动加入 public network。 |
-| `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动加入 egress 网络和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
-| `resources` | 否 | map | 透传到 Swarm `deploy.resources`，用于限制 CPU/内存。支持 `limits` 和 `reservations`。 |
-| `healthcheck` | 否 | map | 透传到 Swarm service `healthcheck`。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
-| `publishPort` | tailscale-relay / tcp-relay 可用 | integer | task 节点上的 host mode 暴露端口，默认等于 `port`。如果目标节点已有本机服务占用该端口，必须显式换一个不冲突的 `publishPort`。 |
-| `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随 Swarm 实际运行 task 所在的 home 节点自动推导。 |
+| `constraints` | 否 | string[] | 追加 Nomad placement 约束。Luma 会自动加 region 约束。 |
+| `labels` | 否 | string[] | 追加服务标签。公开 Traefik 路由所需的 service tags 会自动生成。 |
+| `networks` | 否 | string[] | 追加网络声明。公开服务的入口由 Traefik Nomad provider 自动发现。 |
+| `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动挂上 egress 代理和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
+| `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，用于限制 CPU/内存。支持 `limits` 和 `reservations`。Luma 把 `cpus` 换算成 Nomad CPU MHz，把内存后缀串换算成 Nomad memory MB。 |
+| `healthcheck` | 否 | map | 渲染成 Nomad `check`（脚本/http）。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
+| `publishPort` | 公开服务可用 | integer | 显式启用 Nomad bridge 端口映射，把宿主机 `publishPort` 转到容器 `port`。Linux 节点可用；Mac/OrbStack 节点不要设置，保持 host mode 并让 route 指向真实 `port`。 |
+| `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随实际运行 allocation 所在的 home 节点自动推导。 |
 | `tcp` | tcp-relay 可选 | map | TCP relay 高级上游覆盖。正常情况不需要填写；入口由 `publishPort` / `port` 自动派生。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
 | `dns` | 否 | map | 保留给 DNS 相关扩展。 |
-| `portainer` | 否 | map | 保留给 Portainer API 相关扩展。 |
-| `stackPath` | 否 | string | 覆盖生成 stack 路径。通常不用。 |
+| `stackPath` | 否 | string | 覆盖生成 jobspec 路径。通常不用。 |
 | `routePath` | 否 | string | 覆盖 tailscale route 文件路径。通常不用。 |
 
 ## exposure 选择
@@ -73,6 +73,7 @@ luma deploy status.yaml
 
 - `exposure: cn-edge` 必须配 `region: cn`。
 - `exposure: external-edge` 必须配 `region: global`。
+- `cn-edge` / `external-edge` 默认使用 Nomad 动态端口；如果要保留固定宿主端口，可显式设置 `publishPort`。
 - `exposure: tailscale-relay` 必须配 `region: home`。若未提供 `relay.host`/`relay.url`，控制面会在部署后根据实际 running task 所在节点自动推导上游。
 - `exposure: tcp-relay` 的 Traefik TCP entrypoint 由 `publishPort` 或 `port` 自动生成。普通 MySQL 不能可靠使用 SNI 分流，因此当前实现按端口独占转发。
 - 公开服务必须提供 `domain` 和整数 `port`。
@@ -121,7 +122,7 @@ env:
   OPENAI_API_KEY: ${OPENAI_API_KEY}
 ```
 
-部署时，客户端只提交 manifest。Luma Control 会从控制面 secret store 读取这些变量，并作为 Portainer stack environment 传入。`luma secret list` 只显示 key，不显示 value。
+部署时，客户端只提交 manifest。Luma Control 会从控制面 secret store 读取这些变量，并写入 Nomad task 的 `env`。`luma secret list` 只显示 key，不显示 value。
 
 如果缺少引用的变量，部署会失败并提示：
 
@@ -144,7 +145,7 @@ luma registry list
 image: ghcr.io/acme/private-api:1.0.0
 ```
 
-部署时 Luma 会从 image 推断 registry host，使用匹配的凭证预拉取镜像，并把 registry 关联到 Portainer/Swarm stack，让被调度的节点可以拉取私有镜像。`luma registry list` 只显示 registry host 和 username，不显示 password/token。
+部署时 Luma 会从 image 推断 registry host，使用匹配的凭证，并把 registry auth 注入 Nomad jobspec 的 docker `config.auth` 块，让被调度的节点可以拉取私有镜像。`luma registry list` 只显示 registry host 和 username，不显示 password/token。
 
 常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。Luma 只需要 GHCR 的 registry credential 来拉运行时镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
 
@@ -163,12 +164,13 @@ env:
   OPENAI_BASE_URL: https://api.openai.com/v1
 ```
 
-渲染后会自动带上：
+渲染后会自动带上 region 约束：
 
-```yaml
-placement:
-  constraints:
-    - node.labels.region == global
+```hcl
+constraint {
+  attribute = "${meta.region}"
+  value     = "global"
+}
 ```
 
 ### 指定部署到某个节点
@@ -185,18 +187,22 @@ volumes:
   - home_db_data:/var/lib/postgresql/data
 ```
 
-控制面部署时会同时保留 region 约束，并把 Luma 节点名解析成真实 Swarm NodeID 约束：
+控制面部署时会同时保留 region 约束，并把 Luma 节点名渲染成 Nomad 的节点约束：
 
-```yaml
-placement:
-  constraints:
-    - node.labels.region == home
-    - node.labels.luma.node.id == 3ve5sy2mn3n16a7yhu9tavhrm
+```hcl
+constraint {
+  attribute = "${meta.region}"
+  value     = "home"
+}
+constraint {
+  attribute = "${meta.luma_node_name}"
+  value     = "mac-mini-gaojiu"
+}
 ```
 
-`node` 使用的是 Luma 节点名，不是 Docker hostname。这个区别对 OrbStack 很重要：多台 Mac 的 Docker hostname 可能都叫 `orbstack`，但 Luma 会用 `luma.node.id` 指向唯一的 Swarm NodeID，避免服务跑到错误机器。
+`node` 使用的是 Luma 节点名，不是 Docker hostname。这个区别对 OrbStack 很重要：多台 Mac 的 Docker hostname 可能都叫 `orbstack`，但 Luma 用 `meta.luma_node_name` 指向唯一节点，避免服务跑到错误机器。
 
-如果节点离开 Swarm 后用同一个 Luma 节点名重新 join，它会获得新的 Swarm NodeID。控制面会刷新该节点的 `luma.node.id` 标签，并更新 Luma 管理的固定节点服务约束；不用手工把 Docker hostname 写进 manifest。
+Nomad 节点身份是稳定的 UUID。节点离开集群后用同一个 Luma 节点名重新 join，`meta.luma_node_name` 不变，固定节点服务约束仍然有效；不用手工把 Docker hostname 写进 manifest。
 
 ### 普通服务使用 storageClass
 
@@ -245,20 +251,20 @@ env:
 
 渲染后会自动带上：
 
-```yaml
-environment:
-  HTTP_PROXY: http://egress_mihomo:7890
-  HTTPS_PROXY: http://egress_mihomo:7890
-networks:
-  - egress
-placement:
-  constraints:
-    - node.labels.region == cn
+```hcl
+env {
+  HTTP_PROXY  = "http://egress_mihomo:7890"
+  HTTPS_PROXY = "http://egress_mihomo:7890"
+}
+constraint {
+  attribute = "${meta.region}"
+  value     = "cn"
+}
 ```
 
 ### 小机器资源限制
 
-如果 manager 只有 2c2g，并且业务服务也部署在 manager 上，建议给每个非核心服务显式设置资源边界。`limits` 是硬上限，`reservations` 用于 Swarm 调度时预留资源：
+如果 manager 只有 2c2g，并且业务服务也部署在 manager 上，建议给每个非核心服务显式设置资源边界。`limits` 是硬上限，`reservations` 用于 Nomad 调度时预留资源（Luma 把 `cpus` 换算成 CPU MHz、把内存后缀串换算成 MB）：
 
 ```yaml
 name: api
@@ -299,7 +305,7 @@ publishPort: 8080
 replicas: 1
 ```
 
-默认情况下，Luma Control 会在服务部署后查看 Swarm task 实际运行在哪些 home 节点，并把 route 上游指向这些节点的 host port。若服务必须固定到某台机器，再显式指定 `node`：
+默认情况下，Luma Control 会在服务部署后查看 Nomad allocation 实际运行在哪些 home 节点，并把 route 上游指向这些节点的 host port。若服务必须固定到某台机器，再显式指定 `node`：
 
 ```yaml
 node: home-mac-mini
@@ -329,7 +335,7 @@ replicas: 1
 ```
 
 Luma 会把 DNS 指到公网 edge，自动确保 Traefik 监听 `tcp-3306` entrypoint，并写入 Traefik TCP route。`domain` 用于 DNS；普通 MySQL 连接无法提供 HTTP Host 或可靠起始 SNI，所以同一个发布端口一次只应给一个 TCP 服务使用。
-`publishPort` 是目标 task 节点上的宿主机端口。如果同一台机器已有本机容器或非 Luma 服务占用 `3306`，请选择其它端口并同步调整客户端连接端口或入口配置。
+`publishPort` 是目标 task 节点上的宿主机端口，并会在 Nomad bridge 模式下映射到容器 `port`。如果同一台机器已有本机容器或非 Luma 服务占用 `3306`，请选择其它端口并同步调整客户端连接端口或入口配置。Mac/OrbStack 节点不支持这种映射，需省略 `publishPort` 并使用容器真实监听端口。
 
 ### Cloudflare Tunnel 服务
 
@@ -363,4 +369,4 @@ luma validate service.yaml
 luma deploy service.yaml --dry-run
 ```
 
-`validate` 会校验 manifest 并输出渲染后的 stack。`deploy --dry-run` 不会提交控制面，只展示会生成什么。若本地校验无法读取控制面的节点或 storageClass 信息，JSON 输出会带 `validationMode: "degraded"` 和 `warnings`，文本输出会打印 `[warn]`，表示这次校验没有覆盖真实集群放置/存储可达性。
+`validate` 会校验 manifest 并输出渲染后的 Nomad jobspec。`deploy --dry-run` 不会提交控制面，只展示会生成什么。若本地校验无法读取控制面的节点或 storageClass 信息，JSON 输出会带 `validationMode: "degraded"` 和 `warnings`，文本输出会打印 `[warn]`，表示这次校验没有覆盖真实集群放置/存储可达性。

@@ -7,8 +7,8 @@ Luma separates the control plane from the data plane.
 - Cloudflare: DNS automation, optional proxy, optional Tunnel public hostname.
 - Traefik: main public HTTP/HTTPS ingress for the `cn` edge, plus `tcp-relay` published ports.
 - Tailscale: management network and explicit relay path for selected `home` services.
-- Portainer: deployment control plane.
-- Docker Swarm / Docker: runtime execution layer.
+- Luma Control: deployment control plane, driving the Nomad HTTP API.
+- Nomad / Docker: runtime execution layer.
 
 Tailscale is not the default business data plane. It only carries data traffic when a service explicitly chooses `exposure: tailscale-relay`.
 
@@ -42,11 +42,11 @@ replicas: 2
 
 Luma generates:
 
-- `stacks/cn/app/stack.yml`;
-- Traefik Swarm labels;
+- `stacks/cn/app/app.nomad.json`;
+- Traefik service tags for the Nomad provider;
 - Cloudflare DNS record pointing to the configured CN edge target.
 
-By default, public traffic enters through one Traefik replica constrained to `node.labels.region == cn` and `node.labels.ingress == true`. If you have multiple CN nodes, DNS still points to the configured edge target; Traefik receives the request there and forwards to matching service tasks over the Swarm overlay network.
+By default, public traffic enters through one Traefik instance constrained to `${meta.region}=cn` and `${meta.ingress}=true`. If you have multiple CN nodes, DNS still points to the configured edge target; Traefik receives the request there and forwards to matching service allocations discovered through the Nomad provider.
 
 ### `tailscale-relay`
 
@@ -87,7 +87,7 @@ relay:
 
 Luma generates:
 
-- `stacks/home/home-panel/stack.yml`, which publishes the service port on the home node;
+- `stacks/home/home-panel/home-panel.nomad.json`, which publishes the service port on the home node;
 - `routes/home-panel.yml`, which Traefik loads through the file provider;
 - Cloudflare DNS record pointing to the configured CN edge target.
 
@@ -129,7 +129,7 @@ publishPort: 3306
 
 Luma generates:
 
-- `stacks/home/granary-db/stack.yml`, which publishes the service port in host mode;
+- `stacks/home/granary-db/granary-db.nomad.json`, which publishes the service port in host mode;
 - Traefik service update for the derived `tcp-3306` entrypoint and host-mode published port;
 - `routes/granary-db.yml`, which uses Traefik `tcp.routers` with `HostSNI("*")` / `HostSNI(\`*\`)`;
 - Cloudflare DNS record pointing to the configured edge target.
@@ -202,8 +202,8 @@ dns:
 
 Luma generates:
 
-- `stacks/global/ai-gateway/stack.yml`;
-- Traefik Swarm labels for the global edge environment;
+- `stacks/global/ai-gateway/ai-gateway.nomad.json`;
+- Traefik service tags for the global edge environment;
 - Cloudflare DNS record pointing to `dns.target`.
 
 Use `dns.target` to choose the public/global edge IP for this service. Without a separate global edge target, a global workload can still be scheduled in `region: global`, but public HTTP traffic will not magically enter through every global node.

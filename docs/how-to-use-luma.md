@@ -8,7 +8,7 @@ Luma keeps five concepts visible:
 node / region / exposure / egress / service
 ```
 
-Portainer is a required operations console and deployment runner. Luma Control runs on the manager node and owns login tokens, node registration, DNS sync, stack rendering, and Portainer deployment calls. After `luma login`, `luma deploy` can be run from a client that does not have Docker, SSH access, Cloudflare credentials, or Portainer credentials. Tailscale is a control-plane network and a relay option for home services. Cloudflare is the DNS provider and optional tunnel provider. Egress Gateway is only for outbound traffic such as pulling images, installing dependencies, or running services that need external network access.
+Luma Control runs on the manager node and owns login tokens, node registration, DNS sync, jobspec rendering, and Nomad deployment calls. The orchestrator underneath is HashiCorp Nomad. After `luma login`, `luma deploy` can be run from a client that does not have Docker, SSH access, Cloudflare credentials, or Nomad credentials. Tailscale is a control-plane network and a relay option for home services. Cloudflare is the DNS provider and optional tunnel provider. Egress Gateway is only for outbound traffic such as pulling images, installing dependencies, or running services that need external network access.
 
 ## 1. Install The CLI
 
@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.87 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.88 sh
 ```
 
 For local development from a checkout:
@@ -44,9 +44,9 @@ The default uninstall keeps `~/.luma.config.json` and `~/.config/luma`. To remov
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh -s -- --purge
 ```
 
-This does not remove Docker, Swarm, Portainer, Traefik, Luma Control, deployed services, or `/opt/luma` from a server.
+This does not remove Docker, Nomad, Traefik, Luma Control, deployed services, or `/opt/luma` from a server.
 
-If `python3` is missing, the installer prints the package command for macOS or Ubuntu/Debian. Local Docker is optional; it is only used to validate rendered stack files before deployment.
+If `python3` is missing, the installer prints the package command for macOS or Ubuntu/Debian. Local Docker is optional; it is only used to validate rendered jobspec files before deployment.
 
 Create `.env`:
 
@@ -74,7 +74,6 @@ providers:
     recordType: A
     ttl: 1
     proxied: false
-  portainer: {}
 
 nodes:
   manager-1:
@@ -82,7 +81,7 @@ nodes:
     publicIp: 203.0.113.10
     region: cn
     roles:
-      - swarm-manager
+      - nomad-server
       - edge
       - egress
 
@@ -91,10 +90,10 @@ defaults:
   registry: ghcr.io/liutianjie
   stackRoot: stacks
   routesRoot: routes
-  publicNetwork: public
   egressNetwork: egress
   entrypoint: websecure
   certResolver: letsencrypt
+  engine: nomad
   images:
     egressGateway: docker.1panel.live/metacubex/mihomo:latest
 ```
@@ -123,7 +122,7 @@ Do not commit secrets.
 
 ## 3. Bootstrap The First Node
 
-For a single public server that runs Swarm manager, Traefik, Portainer, and egress:
+For a single public server that runs the Nomad server, Traefik, and egress:
 
 ```bash
 luma bootstrap manager --domain luma.example.com
@@ -133,23 +132,15 @@ This does:
 
 - installs Docker and Compose;
 - installs Tailscale and logs in when `TAILSCALE_AUTHKEY` is set;
-- initializes Docker Swarm if needed;
-- creates `public` and `egress` overlay networks;
-- applies node labels;
+- installs and starts the Nomad server agent if needed;
+- applies node `meta` (region / luma_node_name / ingress / egress);
 - creates `/opt/luma/stacks`, `/opt/luma/routes`, `/opt/luma/control`, and `/opt/luma/egress-gateway`;
 - deploys Traefik;
-- deploys Portainer;
 - deploys Luma Control;
 - deploys egress when the profile has the `egress` role;
-- configures UFW for SSH, 80, 443, 9443, and blocks inbound 7890.
+- configures UFW for SSH, 80, 443, the Nomad ports (4646/4647/4648) on the tailnet, and blocks inbound 7890.
 
 Set `EGRESS_SUBSCRIPTION_URL` before running an egress profile when the manager needs a proxy to pull the configured control image. Mainland managers using the default GHCR control image should not use `--skip-egress`. Bootstrap prints live step logs with `[start]`, `[ok]`, and `[fail]` markers. If one step fails, either re-run bootstrap after fixing the issue or run the focused repair command for that layer.
-
-If only Portainer needs repair:
-
-```bash
-luma portainer setup
-```
 
 If Tailscale login was skipped during bootstrap:
 
@@ -182,9 +173,9 @@ Use the node join token on additional servers:
 luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
-The manager applies scheduling labels automatically after the node joins Swarm. `--name` is the Luma node name used in service manifests. Luma also stores the real Swarm NodeID in `luma.node.id` and uses that NodeID for pinned scheduling, so generic Docker hostnames such as OrbStack's `orbstack` do not collide.
+The manager records the node's region and Luma node `meta` automatically after the node joins. `--name` is the Luma node name used in service manifests. Luma writes it to the Nomad client `meta.luma_node_name` and uses it for pinned scheduling, so generic Docker hostnames such as OrbStack's `orbstack` do not collide. The Nomad node identity is a stable UUID, so a rejoin under the same name keeps pinned services valid.
 
-For `--region home`, the node must be connected to Tailscale before it can join a manager address on the tailnet. If the node is not connected yet, `luma node join` treats `TAILSCALE_AUTHKEY` as required and asks for it before registering the node. You can also run `luma tailscale connect` first to fill the key and connect Tailscale without attempting a Swarm join.
+For `--region home`, the node must be connected to Tailscale before it can reach a manager address on the tailnet. If the node is not connected yet, `luma node join` treats `TAILSCALE_AUTHKEY` as required and asks for it before registering the node. You can also run `luma tailscale connect` first to fill the key and connect Tailscale without attempting a Nomad enroll.
 
 ## 4. Connect Cloudflare
 
@@ -227,7 +218,7 @@ env:
   OPENAI_BASE_URL: https://api.openai.com/v1
 ```
 
-Luma attaches the service to the `egress` overlay network and injects `HTTP_PROXY=http://egress_mihomo:7890` plus `HTTPS_PROXY=http://egress_mihomo:7890` when those env vars are not already set. Scheduling still follows the service `region`.
+Luma attaches the egress proxy to the service and injects `HTTP_PROXY=http://egress_mihomo:7890` plus `HTTPS_PROXY=http://egress_mihomo:7890` when those env vars are not already set. Scheduling still follows the service `region`.
 
 Refresh subscription output later:
 
@@ -270,15 +261,15 @@ Default deploy path:
 luma deploy app.yaml
 ```
 
-This submits the manifest to the logged-in Luma Control endpoint. The manager renders generated files under `/opt/luma`, syncs DNS, creates or updates the stack through the Portainer API, and probes the public route for `cn-edge` and `external-edge` services.
+This submits the manifest to the logged-in Luma Control endpoint. The manager renders generated files under `/opt/luma`, syncs DNS, creates or updates the Nomad job through the Nomad HTTP API, and probes the public route for `cn-edge` and `external-edge` services.
 
-`luma deploy` prints client-side progress and each control-plane step. A public route probe reports the HTTP status from `/`; `404` means the route reached the application but the app may not serve a root page. The client waits up to 1800 seconds by default because first deploys may pull large images through the manager. Override it when needed:
+`luma deploy` prints client-side progress and each control-plane step. A public route probe reports the HTTP status from `/`; `404` means the route reached the application but the app may not serve a root page. The client waits up to 1800 seconds by default because first deploys may pull large images on the target node. Override it when needed:
 
 ```bash
 luma deploy app.yaml --timeout 3600
 ```
 
-Repeated deploys are updates. The same service `name` maps to the same Portainer stack; running deploy again rewrites the generated stack file and updates that stack. Changing `name` creates a different stack.
+Repeated deploys are updates. The same service `name` maps to the same Nomad job (the job id is the service slug); running deploy again rewrites the generated jobspec and updates that job. Nomad keeps the previous version, so `luma rollback app` can return to it. Changing `name` creates a different job.
 
 Preview without side effects:
 
@@ -286,10 +277,10 @@ Preview without side effects:
 luma deploy app.yaml --dry-run
 ```
 
-Submit to the control plane, render/write files on the manager, but skip DNS sync and Portainer deployment:
+Submit to the control plane, render/write files on the manager, but skip DNS sync and the Nomad deploy step:
 
 ```bash
-luma deploy app.yaml --skip-dns --skip-portainer
+luma deploy app.yaml --skip-dns --skip-orchestrator
 ```
 
 Remove a service or Compose application by its deployed name:
@@ -298,7 +289,7 @@ Remove a service or Compose application by its deployed name:
 luma service remove app
 ```
 
-Luma Control uses the manifest recorded during the last successful deploy. This deletes the Cloudflare DNS record for public services, removes the Portainer stack, and deletes generated manager files such as `/opt/luma/stacks/<region>/<service>` and `routes/<service>.yml` for `tailscale-relay`. The same command removes single-service and Compose deployments. Preview first or keep DNS when needed:
+Luma Control uses the manifest recorded during the last successful deploy. This deletes the Cloudflare DNS record for public services, deregisters and purges the Nomad job, and deletes generated manager files such as `/opt/luma/stacks/<region>/<service>` and `routes/<service>.yml` for `tailscale-relay`. The same command removes single-service and Compose deployments. Preview first or keep DNS when needed:
 
 ```bash
 luma service remove app --dry-run
@@ -365,7 +356,7 @@ luma deploy examples/public-cn-service.yaml
 Then check:
 
 ```bash
-docker service ls
+nomad job status
 curl -I https://whoami.example.com
 ```
 

@@ -136,19 +136,21 @@ sudo launchctl kickstart -k system/io.luma.node-agent
 
 Current Luma keeps the node agent alive across transient lease failures and uses a per-node lock so only one terminal supervisor runs.
 
-## Swarm node is down but containers still run
+## Nomad client is disconnected but containers still run
 
-If a home node such as a Mac mini shows `down` in Swarm but local containers are still running, check the manager-to-node tailnet TCP path before blaming the application:
+This is expected behavior, not a failure. Each Luma job renders `max_client_disconnect = 1h`, so when a home node such as a Mac mini loses its tailnet path to the Nomad server, the client is marked `disconnected` but its local allocations keep running and reconnect cleanly when the link recovers. This is the whole point of running on Nomad: a transient WAN/DERP blip no longer kills and reschedules tasks.
+
+Check the node and the server RPC path before blaming the application:
 
 ```bash
-docker node ls
-docker node inspect <node-id> --format '{{.Status.State}} {{.Status.Message}} {{.Status.Addr}}'
+nomad node status
+nomad node status -self
 tailscale ping <node-tailscale-ip>
-nc -vz <node-tailscale-ip> 2377
-nc -vz <node-tailscale-ip> 7946
+nc -vz <server-tailscale-ip> 4647
+nc -vz <server-tailscale-ip> 4648
 ```
 
-If `tailscale ping` works but `2377` or `7946` times out, the tailnet data path can be wedged while Tailscale still appears online. Restart Tailscale on the side that cannot reach peer TCP:
+If `tailscale ping` works but `4647` (RPC) times out, the tailnet data path can be wedged while Tailscale still appears online. Restart Tailscale on the side that cannot reach peer TCP:
 
 ```bash
 sudo systemctl restart tailscaled
@@ -156,7 +158,7 @@ sudo systemctl restart tailscaled
 sudo launchctl kickstart -k system/W5364U7YZB.io.tailscale.ipn.macsys.network-extension
 ```
 
-Manager and node updates install Tailscale watchdogs that perform these checks and restart local Tailscale only after consecutive failures.
+Manager and node updates install Tailscale watchdogs that perform these checks and restart local Tailscale only after consecutive failures. If a client stays `disconnected` past its `max_client_disconnect` window, Nomad reschedules the allocations elsewhere (subject to the job's region/node constraints).
 
 ## Not logged in
 
@@ -167,48 +169,39 @@ luma login https://luma.example.com --token <management-token>
 luma context list
 ```
 
-## Portainer deploy fails
+## Nomad deploy fails
 
-Rerun manager bootstrap so Portainer is initialized and `/opt/luma/control/control.json` is refreshed:
+Rerun manager bootstrap so the Nomad server and `/opt/luma/control/control.json` are refreshed:
 
 ```bash
 luma bootstrap manager --domain luma.example.com
 ```
 
-If deploy fails with `Unable to check for name collision` or `The agent was unable to contact any other agent located on a manager node`, inspect the Portainer agent placement first:
+If deploy fails before any allocation is placed, check that the Nomad server is up and has a leader:
 
 ```bash
-docker service inspect portainer_agent --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}} {{json .Spec.TaskTemplate.Placement.Constraints}}'
-docker service ps portainer_agent --no-trunc
+nomad server members
+nomad status               # leader + jobs
+nomad node status          # clients ready, meta.region correct
 ```
 
-Current Luma installs keep `tcp://tasks.agent:9001` compatible with existing Portainer endpoints, but constrain `portainer_agent` to Swarm manager nodes. If an older install still has worker agent tasks, rerun:
+If a job stays `pending` with `Placement Failures`, the constraints did not match a ready client. Inspect the failed evaluation:
 
 ```bash
-luma portainer setup
+nomad job status <service>
+nomad eval status -verbose <eval-id>
 ```
 
-If worker nodes still need to run workloads, their Swarm networking must allow node-to-node `7946/tcp`, `7946/udp`, and `4789/udp`. A one-way `7946/tcp` timeout can make Portainer worker agents report that no manager agent exists, even when `docker node ls` shows the manager as ready.
+Common causes are a `region` constraint that no ready client satisfies, a node pinned by `meta.luma_node_name` that is `disconnected`, an image whose platform does not match the target node, or exhausted CPU/memory on the only eligible client. On Apple Silicon clients, a misread CPU fingerprint can report near-zero `cpu.totalcompute` and block placement; the client needs `cpu_total_compute` set explicitly (Luma's node config handles this).
 
-If bootstrap fails with `Portainer authentication failed: HTTP 422 Invalid credentials`, Portainer already has
-an admin password that does not match Luma's saved state. If you know the current password, bind it explicitly
-and rerun:
+If the Nomad server itself is unreachable from Luma Control, confirm the RPC path between clients and the server:
 
 ```bash
-export LUMA_PORTAINER_ADMIN_PASSWORD='...'
-luma bootstrap manager --domain luma.example.com
+nc -vz <server-tailscale-ip> 4647
+nomad server members        # all servers alive, one leader
 ```
 
-If you do not know the current Portainer admin password, reset the Portainer admin password first:
-
-```bash
-docker service scale portainer_portainer=0
-docker pull portainer/helper-reset-password
-docker run --rm -v portainer_portainer_data:/data portainer/helper-reset-password
-docker service scale portainer_portainer=1
-```
-
-Then rerun bootstrap with `LUMA_PORTAINER_ADMIN_PASSWORD` set to the new password printed by the helper.
+A wedged `4647/tcp` path makes clients drop to `disconnected` even though `docker info` on the node still works.
 
 ## macOS node join fails at Docker
 
@@ -248,19 +241,17 @@ Run bootstrap with sudo, configure passwordless sudo, or set:
 LUMA_SUDO_PASSWORD=...
 ```
 
-## Portainer is not reachable
+## Nomad server is not reachable
 
 Check:
 
 ```bash
-docker stack services portainer
+nomad server members
 ufw status
 ```
 
-The default Portainer HTTPS port is `9443`.
-
-Repair:
+The Nomad HTTP API listens on `4646`, RPC on `4647`, and Serf gossip on `4648`, all bound to `0.0.0.0` but only opened on the `tailscale0` interface by UFW. If `ufw status` does not show those ports allowed on `tailscale0`, or `nomad server members` is empty, rerun bootstrap to repair the agent config:
 
 ```bash
-luma portainer setup
+luma bootstrap manager --domain luma.example.com
 ```

@@ -1,26 +1,11 @@
-version: "3.8"
-
-services:
-  app:
-    image: ghcr.io/your-org/your-global-app:latest
-    # Luma service manifest equivalent:
-    # exposure: external-edge
-    networks:
-      - public
-    environment:
-      NODE_ENV: production
-    deploy:
-      replicas: 1
-      placement:
-        constraints:
-          - node.labels.region == global
-      labels:
-        - traefik.enable=true
-        - traefik.http.routers.global-app.rule=Host(`global-app.example.com`)
-        - traefik.http.routers.global-app.entrypoints=websecure
-        - traefik.http.routers.global-app.tls.certresolver=letsencrypt
-        - traefik.http.services.global-app.loadbalancer.server.port=3000
-
-networks:
-  public:
-    external: true
+# Luma manifest template — global (overseas) public HTTPS service.
+# Deploy with: luma deploy public-global-service.yml
+name: ai-gateway
+image: ghcr.io/your-org/ai-gateway:latest
+region: global
+exposure: external-edge     # Cloudflare DNS -> overseas/global edge -> service
+domain: ai.example.com
+port: 3000
+replicas: 1
+dns:
+  target: 198.51.100.10     # global edge IP this domain should point at

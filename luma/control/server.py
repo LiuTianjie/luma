@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import http.client
 import json
@@ -42,14 +43,14 @@ from ..compose import (
     compose_stack_path,
     load_compose_deployment,
     render_compose_routes,
-    render_compose_stack,
     storage_summary,
 )
 from ..config import load_config
 from ..errors import LumaError
 from ..io import load_yaml
 from ..local import LocalExecutor
-from ..portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack, upsert_stack
+from ..nomad_api import NomadApi, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary
+from ..nomad_render import render_nomad_job, render_compose_job
 from ..registry import (
     docker_registry_auth_header,
     public_registry_url,
@@ -58,7 +59,7 @@ from ..registry import (
     registry_auth_for_image,
     registry_auth_matches_image,
 )
-from ..render import named_volume_sources, render_stack, render_tailscale_route, render_tcp_route, route_path, stack_path
+from ..render import named_volume_sources, render_tailscale_route, render_tcp_route, route_path, stack_path
 from ..service import TCP_RELAY_RESERVED_PORTS, VALID_REGIONS, ServiceSpec, load_service, slugify, tcp_entrypoint_name
 from .. import __version__
 from .metrics import load_history, record_samples, sustained_breach
@@ -92,6 +93,10 @@ DEFAULT_EGRESS_PULL_REGISTRIES = {
     "public.ecr.aws",
     "nvcr.io",
 }
+
+
+def _control_config_path() -> Path:
+    return Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
 
 
 def bearer_token(headers: Any) -> str:
@@ -152,7 +157,7 @@ def _issue_node_agent_token(state: Dict[str, Any], node_name: str, *, node_id: s
         }
     )
     if node_id:
-        record["swarmNodeId"] = node_id
+        record["nodeId"] = node_id
     return token
 
 
@@ -162,17 +167,19 @@ def _node_record_entry_for_name_or_id(nodes: Dict[str, Any], node_name: str, nod
         if isinstance(direct, dict):
             return node_name, direct
         for key, value in nodes.items():
-            if isinstance(value, dict) and value.get("displayName") == node_name:
+            if isinstance(value, dict) and node_name in _node_record_names(str(key), value):
                 return str(key), value
     for key, value in nodes.items():
         if not isinstance(value, dict):
             continue
         labels = value.get("labels") if isinstance(value.get("labels"), dict) else {}
         values = {
-            str(value.get("swarmNodeId") or ""),
+            str(value.get("nodeId") or ""),
+            str(value.get("nomadNodeId") or ""),
             str(labels.get("luma.node.id") or ""),
             str(value.get("displayName") or ""),
         }
+        values.update(_node_record_names(str(key), value))
         if node_id and node_id in values:
             return str(key), value
         if node_name and node_name in values:
@@ -186,7 +193,7 @@ def _require_node_agent_token(state: Dict[str, Any], token: str, node_name: str,
     if record is None:
         raise LumaError("unauthorized")
     if node_id:
-        known_id = str(record.get("swarmNodeId") or "")
+        known_id = str(record.get("nodeId") or record.get("nomadNodeId") or "")
         labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
         known_label_id = str(labels.get("luma.node.id") or "")
         known_ids = {value for value in {known_id, known_label_id} if value}
@@ -199,11 +206,18 @@ def _require_node_agent_token(state: Dict[str, Any], token: str, node_name: str,
     return record
 
 
-def _update_agent_heartbeat(record: Dict[str, Any], body: Dict[str, Any]) -> None:
+def _update_agent_heartbeat(
+    record: Dict[str, Any],
+    body: Dict[str, Any],
+    *,
+    config: Any | None = None,
+    state: Dict[str, Any] | None = None,
+) -> list[Dict[str, Any]]:
     agent = _node_agent_record(record)
     capabilities = body.get("capabilities")
     metrics = body.get("metrics")
     container_stats = body.get("containerStats")
+    normalized_container_stats: list[Dict[str, Any]] = []
     agent.update(
         {
             "status": "online",
@@ -216,16 +230,27 @@ def _update_agent_heartbeat(record: Dict[str, Any], body: Dict[str, Any]) -> Non
     if isinstance(metrics, dict):
         agent["metrics"] = _agent_metrics(metrics)
     if isinstance(container_stats, list):
-        agent["containerStats"] = _container_stats(container_stats)
+        normalized_container_stats = _container_stats(container_stats)
+        agent["containerStats"] = normalized_container_stats
+    return normalized_container_stats
 
 
-def _record_metrics_history(node_name: str, body: Dict[str, Any]) -> None:
+def _record_metrics_history(
+    node_name: str,
+    body: Dict[str, Any],
+    *,
+    container_stats: list[Dict[str, Any]] | None = None,
+    config: Any | None = None,
+    state: Dict[str, Any] | None = None,
+) -> None:
     """Append one time-series sample for this heartbeat, outside the global
     state lock. Metrics retention must never break a heartbeat, so any failure
     is logged and swallowed."""
     try:
         metrics = body.get("metrics") if isinstance(body.get("metrics"), dict) else {}
-        container_stats = body.get("containerStats") if isinstance(body.get("containerStats"), list) else []
+        if container_stats is None:
+            raw_container_stats = body.get("containerStats") if isinstance(body.get("containerStats"), list) else []
+            container_stats = _normalize_container_stats_for_engine(raw_container_stats, config=config, state=state)
         if not metrics and not container_stats:
             return
         record_samples(node_name, metrics, container_stats)
@@ -259,12 +284,111 @@ def _agent_metrics(raw: Dict[str, Any]) -> Dict[str, Any]:
     return metrics
 
 
+def _normalize_container_stats_for_engine(
+    raw_items: list[Any],
+    *,
+    config: Any | None = None,
+    state: Dict[str, Any] | None = None,
+    allocation_index: dict[str, Dict[str, str]] | None = None,
+) -> list[Dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+    try:
+        cfg = config or load_config(_control_config_path())
+    except Exception:
+        cfg = None
+    current_state = state if isinstance(state, dict) else {}
+    defaults = getattr(cfg, "defaults", {}) if cfg else {}
+    engine = str(defaults.get("engine") or "nomad")
+    if engine != "nomad":
+        return _container_stats(raw_items)
+    if allocation_index is None:
+        allocation_index = _nomad_allocation_service_index(cfg, current_state) if cfg else {}
+    try:
+        _, compose_stacks = _dashboard_deployment_service_index(current_state)
+    except Exception:
+        compose_stacks = set()
+    normalized: list[Dict[str, Any]] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        item = dict(raw)
+        service = str(item.get("service") or "").strip()
+        allocation_id = str(item.get("nomadAllocId") or item.get("allocationId") or "").strip()
+        if service.startswith("nomad:") and not allocation_id:
+            allocation_id = service.split(":", 1)[1].strip()
+        if allocation_id:
+            item["nomadAllocId"] = allocation_id
+            meta = _lookup_nomad_allocation(allocation_index, allocation_id)
+            if meta:
+                base_service = str(meta.get("service") or service)
+                nomad_task = str(item.get("nomadTask") or meta.get("task") or "")
+                item["service"] = (
+                    _dashboard_task_full_name(base_service, nomad_task, compose=True)
+                    if base_service in compose_stacks and nomad_task
+                    else base_service
+                )
+                item["nomadTask"] = nomad_task
+                item["nomadGroup"] = str(meta.get("group") or item.get("nomadGroup") or "")
+                item["nomadNode"] = str(meta.get("node") or "")
+                item["nomadNodeId"] = str(meta.get("nodeId") or "")
+        normalized.append(item)
+    return _container_stats(normalized)
+
+
+def _nomad_allocation_service_index(config: Any, state: Dict[str, Any]) -> dict[str, Dict[str, str]]:
+    try:
+        allocations = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or "")).request("GET", "/v1/allocations")
+    except Exception:
+        return {}
+    if not isinstance(allocations, list):
+        return {}
+    index: dict[str, Dict[str, str]] = {}
+    for allocation in allocations:
+        if not isinstance(allocation, dict):
+            continue
+        allocation_id = str(allocation.get("ID") or "").strip()
+        job_id = str(allocation.get("JobID") or "").strip()
+        if not allocation_id or not job_id:
+            continue
+        task_states = allocation.get("TaskStates") if isinstance(allocation.get("TaskStates"), dict) else {}
+        task_names = [str(name) for name in task_states if str(name)]
+        meta = {
+            "allocationId": allocation_id,
+            "service": job_id,
+            "group": str(allocation.get("TaskGroup") or ""),
+            "task": task_names[0] if len(task_names) == 1 else "",
+            "node": str(allocation.get("NodeName") or ""),
+            "nodeId": str(allocation.get("NodeID") or ""),
+        }
+        for key in {allocation_id, allocation_id[:12], allocation_id[:8]}:
+            if key:
+                index[key] = meta
+    return index
+
+
+def _lookup_nomad_allocation(index: dict[str, Dict[str, str]], allocation_id: str) -> Dict[str, str]:
+    allocation_id = str(allocation_id or "").strip()
+    if not allocation_id:
+        return {}
+    direct = index.get(allocation_id)
+    if direct:
+        return direct
+    for key, value in index.items():
+        if key.startswith(allocation_id) or allocation_id.startswith(key):
+            return value
+    return {}
+
+
 def _container_stats(raw_items: list[Any]) -> list[Dict[str, Any]]:
     result: list[Dict[str, Any]] = []
     for raw in raw_items[:250]:
         if not isinstance(raw, dict):
             continue
         service = str(raw.get("service") or "").strip()
+        nomad_alloc_id = str(raw.get("nomadAllocId") or raw.get("allocationId") or "").strip()
+        if not service and nomad_alloc_id:
+            service = f"nomad:{nomad_alloc_id}"
         container_id = str(raw.get("containerId") or "").strip()
         if not service or not container_id:
             continue
@@ -274,6 +398,10 @@ def _container_stats(raw_items: list[Any]) -> list[Dict[str, Any]]:
             "name": str(raw.get("name") or ""),
             "taskId": str(raw.get("taskId") or ""),
         }
+        for key in ("nomadAllocId", "nomadTask", "nomadGroup", "nomadNode", "nomadNodeId"):
+            value = str(raw.get(key) or "").strip()
+            if value:
+                item[key] = value
         for key in ("cpuPercent", "memoryPercent", "memoryUsageBytes", "memoryLimitBytes"):
             value = raw.get(key)
             if isinstance(value, bool):
@@ -365,19 +493,25 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if not node_name:
         raise LumaError("nodeName is required")
     leased: Dict[str, Any] | None = None
+    normalized_container_stats: list[Dict[str, Any]] = []
+    config = load_config(_control_config_path())
     wait_seconds = min(max(int(body.get("waitSeconds") or 0), 0), 30)
     deadline = time.time() + wait_seconds
     while True:
         def mutate(state: Dict[str, Any]) -> Dict[str, Any] | None:
+            nonlocal normalized_container_stats
+            nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+            entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
+            canonical_node_name = entry[0] if entry else node_name
             record = _require_node_agent_token(state, token, node_name, node_id=node_id)
-            _update_agent_heartbeat(record, body)
+            normalized_container_stats = _update_agent_heartbeat(record, body, config=config, state=state)
             tasks = _agent_tasks(state)
             now = int(time.time())
             for task_id in sorted(tasks):
                 task = tasks.get(task_id)
                 if not isinstance(task, dict):
                     continue
-                if task.get("nodeName") != node_name or task.get("status") != "queued":
+                if task.get("nodeName") != canonical_node_name or task.get("status") != "queued":
                     continue
                 task["status"] = "running"
                 task["leasedAt"] = now
@@ -393,7 +527,9 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if leased or time.time() >= deadline:
             break
         time.sleep(1)
-    _record_metrics_history(node_name, body)
+    state = load_state()
+    entry = _node_record_entry_for_name_or_id(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name, node_id)
+    _record_metrics_history(entry[0] if entry else node_name, body, config=config, state=state)
     return {"task": leased}
 
 
@@ -418,12 +554,19 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
     if not node_name or not task_id:
         raise LumaError("nodeName and taskId are required")
 
+    normalized_container_stats: list[Dict[str, Any]] = []
+    config = load_config(_control_config_path())
+
     def mutate(state: Dict[str, Any]) -> None:
+        nonlocal normalized_container_stats
+        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
+        canonical_node_name = entry[0] if entry else node_name
         record = _require_node_agent_token(state, token, node_name, node_id=node_id)
-        _update_agent_heartbeat(record, body)
+        normalized_container_stats = _update_agent_heartbeat(record, body, config=config, state=state)
         tasks = _agent_tasks(state)
         task = tasks.get(task_id)
-        if not isinstance(task, dict) or task.get("nodeName") != node_name:
+        if not isinstance(task, dict) or task.get("nodeName") != canonical_node_name:
             raise LumaError(f"agent task not found: {task_id}")
         now = int(time.time())
         task.update(
@@ -437,7 +580,9 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
         )
 
     _mutate_control_state(mutate)
-    _record_metrics_history(node_name, body)
+    state = load_state()
+    entry = _node_record_entry_for_name_or_id(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name, node_id)
+    _record_metrics_history(entry[0] if entry else node_name, body, config=config, state=state)
     return {"taskId": task_id, "status": status}
 
 
@@ -514,14 +659,12 @@ def handle_control_status(token: str) -> Dict[str, Any]:
     secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
     dns_token_configured = bool(os.environ.get(token_env) or token_env in secrets)
     dns_missing = _dns_missing_reasons(dns_provider, zone_id=zone_id, token_configured=dns_token_configured, token_env=token_env, target=dns_target)
-    portainer_api_url = str(state.get("portainerApiUrl") or config.portainer.get("apiUrl") or "")
-    portainer_endpoint_id = state.get("portainerEndpointId") or config.portainer.get("endpointId")
-    swarm_id = str(state.get("swarmId") or config.portainer.get("swarmId") or "")
+    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     registered_nodes = _registered_nodes_summary(nodes)
-    swarm = _swarm_nodes_summary()
-    _attach_swarm_status_to_registered_nodes(registered_nodes, swarm.get("nodes") if isinstance(swarm.get("nodes"), list) else [])
-    return {
+    orchestrator = nomad_status_summary(config, state)
+    nomad_services = nomad_services_summary(config, state)
+    result = {
         "clusterId": state["clusterId"],
         "version": __version__,
         "configPath": str(config_path),
@@ -535,23 +678,22 @@ def handle_control_status(token: str) -> Dict[str, Any]:
             "ready": not dns_missing,
             "missing": dns_missing,
         },
-        "portainer": {
-            "apiUrl": _redact_url(portainer_api_url),
-            "apiConfigured": bool(portainer_api_url),
-            "endpointIdConfigured": bool(portainer_endpoint_id),
-            "swarmIdConfigured": bool(swarm_id),
-            "ready": bool(portainer_api_url and portainer_endpoint_id and swarm_id),
-        },
         "nodes": {
             "registered": len(registered_nodes),
             "names": [item["name"] for item in registered_nodes],
             "items": registered_nodes,
         },
-        "swarm": swarm,
+        "nomad": {
+            "available": bool(orchestrator.get("available")),
+            "leader": orchestrator.get("leader", ""),
+            "nodes": orchestrator.get("nodes", []),
+        },
+        "services": nomad_services,
         "storage": {
             "storageClasses": _storage_classes_summary(state),
         },
     }
+    return result
 
 
 def handle_dashboard(token: str) -> Dict[str, Any]:
@@ -568,20 +710,21 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
     dns_token_configured = bool(os.environ.get(token_env) or token_env in secrets)
     dns_missing = _dns_missing_reasons(dns_provider, zone_id=zone_id, token_configured=dns_token_configured, token_env=token_env, target=dns_target)
-    portainer_endpoint_id = state.get("portainerEndpointId") or config.portainer.get("endpointId")
-    swarm_id = str(state.get("swarmId") or config.portainer.get("swarmId") or "")
     errors: list[str] = []
 
-    raw_nodes = _dashboard_docker_list("/nodes", "nodes", errors)
-    node_by_id = _dashboard_node_map(raw_nodes)
-    registered_nodes = _registered_nodes_summary(state.get("nodes") if isinstance(state.get("nodes"), dict) else {})
+    engine = _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+    nomad_summary = nomad_status_summary(config, state)
+    raw_nodes = nomad_summary.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        raw_nodes = []
+    registered_nodes = _registered_nodes_summary(
+        state.get("nodes") if isinstance(state.get("nodes"), dict) else {},
+    )
     nodes = _dashboard_nodes(registered_nodes, raw_nodes, terminal_nodes=TERMINAL_BROKER.connected_nodes())
 
-    raw_services = _dashboard_docker_list("/services", "services", errors)
-    raw_tasks = _dashboard_docker_list("/tasks", "tasks", errors)
     route_files = _dashboard_route_files(config, config_path, errors)
-    services = _dashboard_services(raw_services, raw_tasks, node_by_id, route_files)
-    service_stats = _service_stats_by_name(registered_nodes)
+    services = _dashboard_nomad_services(nomad_services_summary(config, state), route_files, state=state)
+    service_stats = _service_stats_by_name(registered_nodes, config=config, state=state)
     for service in services:
         _attach_service_actual_resources(service, service_stats.get(str(service.get("fullName") or ""), []))
     traffic_paths = _dashboard_traffic_paths(services, route_files, dns_target)
@@ -589,29 +732,29 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     public_services = [_public_dashboard_service(item) for item in services]
     issues = _dashboard_issues(nodes, public_services)
 
+    readiness = {
+        "dns": {
+            "ready": not dns_missing,
+            "provider": dns_provider,
+            "zone": str(dns.get("zone") or ""),
+            "target": dns_target,
+            "missing": dns_missing,
+        },
+        "nomad": {
+            "available": bool(nomad_summary.get("available")),
+            "engine": engine,
+            "leader": str(nomad_summary.get("leader") or ""),
+            "error": str(nomad_summary.get("error") or ""),
+        },
+    }
+
     return {
         "cluster": {
             "id": str(state.get("clusterId") or ""),
             "version": __version__,
             "configPath": str(config_path),
         },
-        "readiness": {
-            "dns": {
-                "ready": not dns_missing,
-                "provider": dns_provider,
-                "zone": str(dns.get("zone") or ""),
-                "target": dns_target,
-                "missing": dns_missing,
-            },
-            "portainer": {
-                "ready": bool((state.get("portainerApiUrl") or config.portainer.get("apiUrl")) and portainer_endpoint_id and swarm_id),
-                "apiConfigured": bool(state.get("portainerApiUrl") or config.portainer.get("apiUrl")),
-                "endpointConfigured": bool(portainer_endpoint_id),
-            },
-            "swarm": {
-                "available": bool(raw_nodes),
-            },
-        },
+        "readiness": readiness,
         "nodes": nodes,
         "services": public_services,
         "trafficPaths": traffic_paths,
@@ -622,21 +765,18 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
 
 
 def handle_dashboard_logs(token: str, service_name: str, *, tail: int = 120, since: str = "") -> Dict[str, Any]:
-    require_token(load_state(), token, token_type="deploy")
+    state = load_state()
+    require_token(state, token, token_type="deploy")
     service = service_name.strip()
     if not service:
         raise LumaError("service is required")
     tail = min(max(int(tail or 120), 1), 500)
-    query_values: Dict[str, Any] = {"stdout": 1, "stderr": 1, "timestamps": 1, "tail": tail}
-    if since:
-        query_values["since"] = since
-    query = urllib.parse.urlencode(query_values)
-    status, raw = docker_request_bytes("GET", f"/services/{urllib.parse.quote(service, safe='')}/logs?{query}")
-    if status >= 400:
-        raise LumaError(f"Docker service logs unavailable for {service}: {raw.decode('utf-8', errors='replace')}")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     return {
         "service": service,
-        "logs": _decode_docker_log_lines(raw)[-tail:],
+        "logs": _nomad_log_lines(config, state, service, tail=tail),
         "tail": tail,
         "since": since,
         "updatedAt": int(time.time()),
@@ -681,18 +821,66 @@ def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if region not in VALID_REGIONS:
         raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
     def mutate(state: Dict[str, Any]) -> None:
-        require_token(state, token, token_type="join")
+        require_control_node_token(state, token)
         _remember_node(state, node_name, region=region, status="registered")
 
     mutate_state(mutate)
     state = load_state()
+    config = load_config(_control_config_path())
+    nomad_rpc_addr = _nomad_rpc_addr_for_join(config, state)
     return {
         "clusterId": state["clusterId"],
-        "managerAddr": state.get("managerAddr", ""),
-        "swarmJoinToken": state.get("swarmJoinToken", ""),
         "nodeName": node_name,
         "region": region,
+        "nomadRpcAddr": nomad_rpc_addr,
+        "nomadServerAddr": nomad_rpc_addr,
     }
+
+
+def _nomad_rpc_addr_for_join(config: Any, state: Dict[str, Any]) -> str:
+    configured = str(state.get("nomadRpcAddr") or state.get("nomadServerAddr") or config.defaults.get("nomadServer") or "").strip()
+    if configured:
+        return _with_default_port(configured, 4647)
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    for record in nodes.values():
+        if not isinstance(record, dict):
+            continue
+        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+        is_manager = (
+            str(record.get("status") or "") == "manager"
+            or "nomad-manager" in {str(value) for value in record.get("roles") or []}
+            or str(labels.get("role.nomad-manager") or "").lower() == "true"
+        )
+        if not is_manager:
+            continue
+        host = str(record.get("tailscaleIP") or record.get("advertiseAddr") or record.get("publicIp") or record.get("publicIP") or "").strip()
+        if host:
+            return _with_default_port(host, 4647)
+    nomad_http = str(state.get("nomadAddr") or config.defaults.get("nomadAddr") or "").strip()
+    if nomad_http:
+        parsed = urllib.parse.urlparse(nomad_http if "://" in nomad_http else f"http://{nomad_http}")
+        if parsed.hostname and parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            return _with_default_port(parsed.hostname, 4647)
+    raise LumaError("cannot resolve Nomad RPC address for node join; set defaults.nomadServer or register a nomad-manager node with tailscaleIP")
+
+
+def _with_default_port(host: str, port: int) -> str:
+    value = str(host or "").strip()
+    if not value:
+        return ""
+    if "://" in value:
+        parsed = urllib.parse.urlparse(value)
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return value
+        return f"[{hostname}]:{parsed.port or port}" if ":" in hostname and not hostname.startswith("[") else f"{hostname}:{parsed.port or port}"
+    if value.startswith("[") and "]" in value:
+        return value if value.rsplit(":", 1)[-1].isdigit() else f"{value}:{port}"
+    if value.count(":") == 0:
+        return f"{value}:{port}"
+    if value.count(":") == 1 and value.rsplit(":", 1)[-1].isdigit():
+        return value
+    return f"[{value}]:{port}"
 
 
 def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -710,57 +898,48 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
     luma_name = registered_name or node_name
     labels = labels_for_node(region, luma_name=luma_name, node_id=node_id)
-    label_swarm_node(node_name, labels, node_id=node_id)
     values: Dict[str, Any] = {
         "region": region,
         "status": "labeled",
         "labels": labels,
         "displayName": luma_name,
-        "swarmHostname": node_name,
+        "hostname": node_name,
+        "nodeId": node_id,
+        "nomadNodeId": node_id,
+        "nomadHostname": node_name,
     }
-    if node_id:
-        values["swarmNodeId"] = node_id
     if tailscale_ip:
         values["tailscaleIP"] = tailscale_ip
     if tailscale_name:
         values["tailscaleName"] = tailscale_name
     def mutate(state: Dict[str, Any]) -> Dict[str, str]:
-        require_token(state, token, token_type="join")
+        require_control_node_token(state, token)
         previous = _node_record_for_name(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, luma_name)
         previous_labels = previous.get("labels") if isinstance(previous, dict) and isinstance(previous.get("labels"), dict) else {}
-        previous_node_id = str((previous or {}).get("swarmNodeId") or previous_labels.get("luma.node.id") or "").strip() if isinstance(previous, dict) else ""
+        previous_node_id = str((previous or {}).get("nodeId") or (previous or {}).get("nomadNodeId") or previous_labels.get("luma.node.id") or "").strip() if isinstance(previous, dict) else ""
         _remember_node(state, luma_name, **values)
         agent_token = _issue_node_agent_token(state, luma_name, node_id=node_id)
-        return {"agentToken": agent_token, "previousSwarmNodeId": previous_node_id}
+        return {"agentToken": agent_token, "previousNodeId": previous_node_id}
 
     mutation_result = mutate_state(mutate)
     agent_token = mutation_result["agentToken"]
-    previous_node_id = mutation_result.get("previousSwarmNodeId") or ""
-    refreshed_services: list[Dict[str, str]] = []
-    refresh_warning = ""
-    if previous_node_id and node_id and previous_node_id != node_id:
-        try:
-            refreshed_services = _refresh_services_pinned_to_rejoined_node(previous_node_id, node_id, luma_name)
-        except LumaError as exc:
-            refresh_warning = f"Pinned service constraint refresh failed: {exc}"
+    previous_node_id = mutation_result.get("previousNodeId") or ""
     state = load_state()
     result = {
         "clusterId": state["clusterId"],
         "nodeName": luma_name,
-        "swarmHostname": node_name,
-        "swarmNodeId": node_id,
-        "previousSwarmNodeId": previous_node_id,
+        "hostname": node_name,
+        "nodeId": node_id,
+        "previousNodeId": previous_node_id,
         "displayName": luma_name,
         "tailscaleIP": tailscale_ip,
         "tailscaleName": tailscale_name,
         "agentToken": agent_token,
         "labels": labels,
         "message": f"Node labels applied: {luma_name}",
+        "nomadHostname": node_name,
+        "nomadNodeId": node_id,
     }
-    if refreshed_services:
-        result["pinnedServicesUpdated"] = refreshed_services
-    if refresh_warning:
-        result["warning"] = refresh_warning
     return result
 
 
@@ -779,7 +958,8 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 removed = value
                 removed_key = str(key)
                 break
-    swarm_result = remove_swarm_node(node_name, removed if isinstance(removed, dict) else None)
+    if isinstance(removed, dict) and _node_record_is_manager(removed):
+        raise LumaError(f"refusing to unregister Nomad manager node: {node_name}")
     def mutate(state: Dict[str, Any]) -> None:
         require_control_node_token(state, token)
         nodes = state.get("nodes")
@@ -793,22 +973,12 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     mutate_state(mutate)
     registered_removed = bool(removed)
-    swarm_removed = bool(swarm_result.get("removed"))
-    if registered_removed and swarm_removed:
-        message = f"Node removed: {node_name}; Swarm node removed: {swarm_result.get('nodeId')}"
-    elif registered_removed:
-        message = f"Node removed: {node_name}; {swarm_result.get('message')}"
-    elif swarm_removed:
-        message = f"Node not registered: {node_name}; Swarm node removed: {swarm_result.get('nodeId')}"
-    else:
-        message = f"Node not registered: {node_name}; {swarm_result.get('message')}"
+    message = f"Node removed: {node_name}" if registered_removed else f"Node not registered: {node_name}"
     return {
         "clusterId": state["clusterId"],
         "nodeName": node_name,
-        "removed": registered_removed or swarm_removed,
+        "removed": registered_removed,
         "registeredRemoved": registered_removed,
-        "swarmRemoved": swarm_removed,
-        "swarmNodeId": str(swarm_result.get("nodeId") or ""),
         "message": message,
     }
 
@@ -851,6 +1021,17 @@ def _service_tcp_relay_ports(service: ServiceSpec) -> list[int]:
         return []
     port = int(service.publish_port or service.port or 0)
     return [port] if port > 0 else []
+
+
+def _skip_orchestrator(body: Dict[str, Any]) -> bool:
+    return bool(body.get("skipOrchestrator"))
+
+
+def _require_nomad_engine(engine: str) -> str:
+    value = str(engine or "nomad").strip() or "nomad"
+    if value != "nomad":
+        raise LumaError("Nomad is the only supported deployment engine")
+    return value
 
 
 def _compose_tcp_relay_ports(deployment: ComposeDeploymentSpec) -> list[int]:
@@ -973,6 +1154,7 @@ def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeplo
         "manifest": str(body.get("manifest") or ""),
         "sourceName": source_name,
         "tcpRelayPorts": _compose_tcp_relay_ports(deployment),
+        "storageBackends": _compose_storage_backend_signatures(deployment),
         "updatedAt": int(time.time()),
     }
     compose_content = body.get("composeContent")
@@ -1033,79 +1215,6 @@ def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
     }
 
 
-def _live_service_remove_request(config: Any, config_path: Path, name: str) -> tuple[ServiceSpec, str] | None:
-    service = _live_service_for_remove(config, config_path, name)
-    if not service:
-        return None
-    return service, f"live:{service.slug}"
-
-
-def _live_service_for_remove(config: Any, config_path: Path, name: str) -> ServiceSpec | None:
-    try:
-        raw_services = docker_request("GET", "/services")
-    except LumaError as exc:
-        raise LumaError(f"deployment not found in Luma state and Docker services are unavailable: {exc}") from exc
-    if not isinstance(raw_services, list):
-        raise LumaError("Docker API returned invalid service list")
-    route_files = _dashboard_route_files(config, config_path, [])
-    items = [
-        _dashboard_service(service, [], {}, route_files)
-        for service in raw_services
-        if isinstance(service, dict)
-    ]
-    wanted = slugify(name)
-    matches = [
-        item
-        for item in items
-        if item and _live_service_matches(item, wanted)
-    ]
-    if not matches:
-        return None
-    stacks = {
-        str(item.get("stack") or item.get("name") or "").strip()
-        for item in matches
-        if str(item.get("stack") or item.get("name") or "").strip()
-    }
-    if len(stacks) > 1:
-        choices = ", ".join(sorted(stacks))
-        raise LumaError(f"multiple live deployments match {name}: {choices}; remove by exact stack name")
-    stack_name = next(iter(stacks), "")
-    if not stack_name:
-        return None
-    if _is_system_stack(stack_name):
-        raise LumaError(f"system stack cannot be removed through service remove: {stack_name}")
-    public_items = [item for item in matches if str(item.get("domain") or "").strip()]
-    if len({str(item.get("domain") or "") for item in public_items}) > 1:
-        raise LumaError(f"live deployment {stack_name} has multiple public services; remove it from Portainer or redeploy it through Luma first")
-    item = public_items[0] if public_items else matches[0]
-    exposure = str(item.get("exposure") or "none")
-    domain = str(item.get("domain") or "").strip() or None
-    port_text = str(item.get("targetPort") or "").strip()
-    port = int(port_text) if port_text.isdigit() else None
-    return ServiceSpec(
-        source=Path("live"),
-        name=stack_name,
-        image=str(item.get("image") or "live"),
-        region=str(item.get("region") or "cn"),
-        node=str(item.get("node") or "") or None,
-        public=exposure != "none",
-        exposure=exposure,
-        domain=domain,
-        port=port,
-        replicas=int(item.get("desired") or 1),
-    )
-
-
-def _live_service_matches(item: Dict[str, Any], wanted: str) -> bool:
-    values = [
-        item.get("stack"),
-        item.get("name"),
-        item.get("fullName"),
-        item.get("routeId"),
-    ]
-    return any(slugify(str(value)) == wanted for value in values if str(value or "").strip())
-
-
 def _remove_request_name(body: Dict[str, Any]) -> str:
     name = str(body.get("name") or "").strip()
     if not name:
@@ -1153,6 +1262,8 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     service = _load_service_manifest(manifest)
+    effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
+    _require_nomad_engine(effective_engine)
     _ensure_deployment_slug_available(state, "service", service.slug, service.name)
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
@@ -1160,7 +1271,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
 
     try:
-        service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state), progress=progress)
+        service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state, engine=effective_engine), progress=progress)
         registry_auth = _registry_auth_for_service(state, service)
         service, image_result = _deploy_step(
             steps,
@@ -1185,32 +1296,19 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         target.parent.mkdir(parents=True, exist_ok=True)
         stack_text = _deploy_step(
             steps,
-            "Render stack",
-            lambda: render_stack(
-                config,
-                service,
-                storage_classes=_state_storage_classes(state),
-                node_records=_state_nodes(state),
-            ),
+            "Render Nomad job",
+            lambda: render_nomad_job(config, service, registry_auth=registry_auth),
             progress=progress,
         )
-        stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
         _deploy_step(steps, "Write stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
-        if service.exposure == "tcp-relay":
-            _deploy_step(
-                steps,
-                "Ensure TCP ingress",
-                lambda: _ensure_tcp_relay_ingress([int(service.publish_port or service.port or 0)]) if not body.get("skipPortainer") else "TCP ingress skipped: --skip-portainer",
-                progress=progress,
-            )
         dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
-        portainer_result = _deploy_step(
+        orchestrator_result = _deploy_step(
             steps,
-            "Deploy Portainer stack",
-            lambda: "Portainer deploy skipped: --skip-portainer"
-            if body.get("skipPortainer")
-            else deploy_with_portainer(config, service, stack_text, state, stack_env=stack_env, registry_auth=registry_auth),
+            "Deploy Nomad job",
+            lambda: "Orchestrator deploy skipped"
+            if _skip_orchestrator(body)
+            else deploy_to_nomad(config, stack_text, state, slug=service.slug),
             progress=progress,
         )
         if service.exposure in {"tailscale-relay", "tcp-relay"}:
@@ -1218,41 +1316,41 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             route_target.parent.mkdir(parents=True, exist_ok=True)
             route_service = service
             relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host")) if service.exposure == "tailscale-relay" else bool(service.tcp.get("address") or service.tcp.get("host"))
-            if body.get("skipPortainer") and not relay_is_explicit:
-                _deploy_step(steps, "Write route", lambda: f"Route skipped: --skip-portainer requires deploy to infer {service.exposure}", progress=progress)
+            if _skip_orchestrator(body) and not relay_is_explicit:
+                _deploy_step(steps, "Write route", lambda: f"Route skipped: orchestrator deploy is required to infer {service.exposure}", progress=progress)
             else:
-                if not body.get("skipPortainer"):
-                    route_service = _deploy_step(
-                        steps,
-                        "Resolve relay",
-                        lambda: resolve_tailscale_relay(service) if service.exposure == "tailscale-relay" else resolve_tcp_relay(service),
-                        progress=progress,
-                    )
+                route_service = _deploy_step(
+                    steps,
+                    "Resolve relay",
+                    lambda: resolve_nomad_static_route_target(service, state),
+                    progress=progress,
+                )
                 route_text = render_tailscale_route(config, route_service) if service.exposure == "tailscale-relay" else render_tcp_route(config, route_service)
                 _deploy_step(steps, "Write route", lambda: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
                 written.append(str(route_target))
         probe_result = _deploy_step(
             steps,
             "Probe public route",
-            lambda: "Public route probe skipped: --skip-portainer" if body.get("skipPortainer") else _probe_public_route(service),
+            lambda: "Public route probe skipped: orchestrator deploy skipped" if _skip_orchestrator(body) else _probe_public_route(service),
             progress=progress,
         )
     except LumaError as exc:
         _mark_service_deployment(service, manifest, source_name, status="failed_partial", steps=steps, error=str(exc))
         raise
     _mark_service_deployment(service, manifest, source_name, status="active", steps=steps)
-    return {
+    result = {
         "clusterId": state["clusterId"],
         "service": service.name,
         "sourceName": source_name,
         "written": written,
         "image": image_result,
         "dns": dns_result,
-        "portainer": portainer_result,
+        "orchestrator": orchestrator_result,
         "probe": probe_result,
         "storagePreparation": storage_preparation,
         "steps": steps,
     }
+    return result
 
 
 def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1272,27 +1370,28 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
         service = load_service(service_path)
     finally:
         service_path.unlink(missing_ok=True)
-    service = resolve_service_node_pin(service, state)
-    stack_text = render_stack(
+    effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
+    _require_nomad_engine(effective_engine)
+    service = resolve_service_node_pin(service, state, engine=effective_engine)
+    stack_text = render_nomad_job(
         config,
         service,
-        storage_classes=_state_storage_classes(state),
-        node_records=_state_nodes(state),
+        registry_auth=_registry_auth_for_service(state, service),
     )
-    stack_env = _stack_env_for_text(stack_text)
     artifacts = [
         {
-            "kind": "stack",
+            "kind": "job",
             "path": str(stack_path(config, service)),
             "content": stack_text,
         }
     ]
     if service.exposure in {"tailscale-relay", "tcp-relay"}:
+        route_service = resolve_nomad_static_route_target(service, state)
         artifacts.append(
             {
                 "kind": "route",
                 "path": str(route_path(config, service)),
-                "content": render_tailscale_route(config, service) if service.exposure == "tailscale-relay" else render_tcp_route(config, service),
+                "content": render_tailscale_route(config, route_service) if service.exposure == "tailscale-relay" else render_tcp_route(config, route_service),
             }
         )
     return {
@@ -1309,7 +1408,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
             "port": service.port,
             "replicas": service.replicas,
             "proxy": service.proxy,
-            "secrets": [item["name"] for item in stack_env],
+            "secrets": [],
         },
         "artifacts": artifacts,
         "warnings": [],
@@ -1321,8 +1420,8 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
     name = _remove_request_name(body)
-    if body.get("deleteStorage") and body.get("skipPortainer"):
-        raise LumaError("--delete-storage cannot be combined with --skip-portainer")
+    if body.get("deleteStorage") and _skip_orchestrator(body):
+        raise LumaError("--delete-storage cannot be combined with skipping the orchestrator")
     service_record = _service_deployment_record(state, name)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
@@ -1333,11 +1432,43 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
     if compose_record:
         deployment, source_name = _compose_remove_request(compose_record, name)
         return _remove_compose_deployment(state, config, config_path, deployment, source_name, body, progress=progress)
-    live_request = _live_service_remove_request(config, config_path, name)
-    if live_request:
-        service, source_name = live_request
-        return _remove_service_deployment(state, config, config_path, service, source_name, body, progress=progress)
     raise LumaError(f"deployment not found: {name}")
+
+
+def handle_service_rollback(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Roll a Nomad-engine service back to a prior version (new capability)."""
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise LumaError("name is required")
+    version = body.get("version")
+    if version is not None:
+        try:
+            version = int(version)
+        except (TypeError, ValueError) as exc:
+            raise LumaError("version must be an integer") from exc
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    slug = slugify(name)
+    message = revert_job(config, state, slug=slug, version=version)
+    return {"clusterId": state["clusterId"], "service": name, "slug": slug, "message": message}
+
+
+def handle_service_history(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a Nomad-engine service's version history (for `luma history`)."""
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise LumaError("name is required")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    slug = slugify(name)
+    versions = job_versions(config, state, slug=slug)
+    return {"clusterId": state["clusterId"], "service": name, "slug": slug, "versions": versions}
 
 
 def _remove_service_deployment(
@@ -1356,12 +1487,13 @@ def _remove_service_deployment(
     _emit_progress(progress, parse_step)
 
     dry_run = bool(body.get("dryRun"))
+    _require_nomad_engine(service.engine or str(config.defaults.get("engine") or "nomad"))
     stack_target = _generated_stack_remove_target(config, service, config_path)
     route_target = _resolve_control_path(route_path(config, service), config_path) if service.exposure in {"tailscale-relay", "tcp-relay"} else None
     files = [str(stack_target)]
     if route_target:
         files.append(str(route_target))
-    storage_task_nodes = _service_task_nodes(service) if body.get("deleteStorage") and _service_docker_volume_names(service) and not dry_run else []
+    storage_task_nodes = _service_volume_cleanup_nodes(service, state) if body.get("deleteStorage") and _service_docker_volume_names(service) and not dry_run else []
 
     dns_result = _deploy_step(
         steps,
@@ -1371,12 +1503,16 @@ def _remove_service_deployment(
         else (_planned_delete_dns_message(service) if dry_run else delete_dns(config, service)),
         progress=progress,
     )
-    portainer_result = _deploy_step(
+    orchestrator_result = _deploy_step(
         steps,
-        "Remove Portainer stack",
-        lambda: "Portainer remove skipped: --skip-portainer"
-        if body.get("skipPortainer")
-        else (_planned_remove_message("Portainer stack would be removed", service.slug) if dry_run else remove_stack(config, service, state)),
+        "Remove Nomad job",
+        lambda: "Orchestrator remove skipped"
+        if _skip_orchestrator(body)
+        else (
+            _planned_remove_message("Nomad job would be removed", service.slug)
+            if dry_run
+            else remove_from_nomad(config, state, slug=service.slug)
+        ),
         progress=progress,
     )
     files_result = _deploy_step(
@@ -1395,23 +1531,24 @@ def _remove_service_deployment(
         else "Storage cleanup skipped",
         progress=progress,
     )
-    if not dry_run and not body.get("skipPortainer"):
+    if not dry_run and not _skip_orchestrator(body):
         def forget(state: Dict[str, Any]) -> None:
             _forget_service_deployment(state, service)
 
         mutate_state(forget)
-    return {
+    result = {
         "clusterId": state["clusterId"],
         "service": service.name,
         "sourceName": source_name,
         "files": files,
         "dns": dns_result,
-        "portainer": portainer_result,
+        "orchestrator": orchestrator_result,
         "generatedFiles": files_result,
         "storageCleanup": storage_cleanup,
         "dryRun": dry_run,
         "steps": steps,
     }
+    return result
 
 
 def _remove_compose_deployment(
@@ -1429,6 +1566,7 @@ def _remove_compose_deployment(
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
     dry_run = bool(body.get("dryRun"))
+    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     stack_target = _resolve_control_path(compose_stack_path(config, deployment), config_path).parent
     route_targets = [
         _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
@@ -1449,12 +1587,16 @@ def _remove_compose_deployment(
                 progress=progress,
             )
         )
-    portainer_result = _deploy_step(
+    orchestrator_result = _deploy_step(
         steps,
-        "Remove Portainer stack",
-        lambda: "Portainer remove skipped: --skip-portainer"
-        if body.get("skipPortainer")
-        else (_planned_remove_message("Portainer stack would be removed", deployment.slug) if dry_run else remove_stack(config, _stack_service_spec(deployment), state)),
+        "Remove Nomad job",
+        lambda: "Orchestrator remove skipped"
+        if _skip_orchestrator(body)
+        else (
+            _planned_remove_message("Nomad job would be removed", deployment.slug)
+            if dry_run
+            else remove_from_nomad(config, state, slug=deployment.slug)
+        ),
         progress=progress,
     )
     files_result = _deploy_step(
@@ -1473,60 +1615,63 @@ def _remove_compose_deployment(
         else "Storage cleanup skipped",
         progress=progress,
     )
-    if not dry_run and not body.get("skipPortainer"):
+    if not dry_run and not _skip_orchestrator(body):
         def forget(state: Dict[str, Any]) -> None:
             _forget_compose_deployment(state, deployment)
 
         mutate_state(forget)
-    return {
+    result = {
         "clusterId": state["clusterId"],
         "deployment": deployment.name,
         "sourceName": source_name,
         "files": files,
         "dns": dns_results,
-        "portainer": portainer_result,
+        "orchestrator": orchestrator_result,
         "generatedFiles": files_result,
         "storageCleanup": storage_cleanup,
         "dryRun": dry_run,
         "steps": steps,
     }
+    return result
 
 
-SYSTEM_STACKS = {"traefik", "portainer", "egress", "luma-control"}
+SYSTEM_STACKS = {"traefik", "egress", "luma-control"}
 
 
 def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
     stack = str(body.get("stack") or "").strip()
     service_name = str(body.get("service") or "").strip()
     if not stack:
         raise LumaError("stack is required")
     if _is_system_stack(stack):
         raise LumaError(f"system stack cannot be restarted from application management: {stack}")
-    services = docker_request("GET", "/services")
-    if not isinstance(services, list):
-        raise LumaError("Docker API returned invalid service list")
-    targets = []
-    for service in services:
-        if not isinstance(service, dict):
-            continue
-        spec = service.get("Spec") if isinstance(service.get("Spec"), dict) else {}
-        full_name = str(spec.get("Name") or service.get("ID") or "")
-        item_stack, item_service = _split_swarm_service_name(full_name)
-        if item_stack != stack:
-            continue
-        if service_name and item_service != service_name:
-            continue
-        service_id = str(service.get("ID") or "")
-        if service_id:
-            targets.append({"id": service_id, "name": full_name, "service": item_service})
-    if not targets:
-        suffix = f"/{service_name}" if service_name else ""
-        raise LumaError(f"application service not found: {stack}{suffix}")
+    config = load_config(_control_config_path())
+    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    allocations = api.request("GET", f"/v1/job/{urllib.parse.quote(stack, safe='')}/allocations")
+    if not isinstance(allocations, list):
+        raise LumaError(f"Nomad returned invalid allocations for job: {stack}")
     restarted = []
-    for target in targets:
-        restarted.append(_force_update_service(str(target["id"]), str(target["name"])))
+    for alloc in allocations:
+        if not isinstance(alloc, dict):
+            continue
+        client_status = str(alloc.get("ClientStatus") or alloc.get("client_status") or "").lower()
+        if client_status and client_status != "running":
+            continue
+        alloc_id = str(alloc.get("ID") or alloc.get("ID") or "").strip()
+        if not alloc_id:
+            continue
+        task_states = alloc.get("TaskStates") if isinstance(alloc.get("TaskStates"), dict) else {}
+        task_names = [service_name] if service_name else [str(name) for name in task_states] or [""]
+        for task_name in task_names:
+            payload = {"TaskName": task_name} if task_name else {}
+            api.request("POST", f"/v1/client/allocation/{urllib.parse.quote(alloc_id, safe='')}/restart", payload)
+            restarted.append({"allocId": alloc_id, "task": task_name or "*"})
+    if not restarted:
+        suffix = f"/{service_name}" if service_name else ""
+        raise LumaError(f"application allocation not found: {stack}{suffix}")
     return {
         "clusterId": state["clusterId"],
         "stack": stack,
@@ -1613,79 +1758,6 @@ def _is_system_stack(stack: str) -> bool:
     return stack in SYSTEM_STACKS or stack.startswith("luma-storage")
 
 
-def _force_update_service(service_id: str, display_name: str) -> Dict[str, Any]:
-    inspected = docker_request("GET", f"/services/{urllib.parse.quote(service_id, safe='')}")
-    if not isinstance(inspected, dict):
-        raise LumaError(f"Docker API returned invalid service detail: {display_name}")
-    version = inspected.get("Version", {}).get("Index")
-    spec = inspected.get("Spec")
-    if not version or not isinstance(spec, dict):
-        raise LumaError(f"Docker API returned invalid service spec: {display_name}")
-    task_template = spec.setdefault("TaskTemplate", {})
-    if not isinstance(task_template, dict):
-        raise LumaError(f"Docker API returned invalid task template: {display_name}")
-    task_template["ForceUpdate"] = int(task_template.get("ForceUpdate") or 0) + 1
-    docker_request(
-        "POST",
-        f"/services/{urllib.parse.quote(service_id, safe='')}/update?version={version}",
-        spec,
-    )
-    return {"id": service_id, "name": display_name, "forceUpdate": task_template["ForceUpdate"]}
-
-
-def _refresh_services_pinned_to_rejoined_node(old_node_id: str, new_node_id: str, node_name: str) -> list[Dict[str, str]]:
-    old_node_id = str(old_node_id or "").strip()
-    new_node_id = str(new_node_id or "").strip()
-    if not old_node_id or not new_node_id or old_node_id == new_node_id:
-        return []
-    services = docker_request("GET", "/services")
-    if not isinstance(services, list):
-        raise LumaError("Docker API returned invalid service list")
-    updated: list[Dict[str, str]] = []
-    key = "node.labels.luma.node.id"
-    for service in services:
-        if not isinstance(service, dict):
-            continue
-        summary_spec = service.get("Spec") if isinstance(service.get("Spec"), dict) else {}
-        summary_task_template = summary_spec.get("TaskTemplate") if isinstance(summary_spec.get("TaskTemplate"), dict) else {}
-        summary_placement = summary_task_template.get("Placement") if isinstance(summary_task_template.get("Placement"), dict) else {}
-        summary_constraints = summary_placement.get("Constraints")
-        if not isinstance(summary_constraints, list) or _constraint_value(summary_constraints, key) != old_node_id:
-            continue
-        service_id = str(service.get("ID") or "").strip()
-        if not service_id:
-            continue
-        display_name = str(summary_spec.get("Name") or service_id)
-        inspected = docker_request("GET", f"/services/{urllib.parse.quote(service_id, safe='')}")
-        if not isinstance(inspected, dict):
-            raise LumaError(f"Docker API returned invalid service detail: {display_name}")
-        version = inspected.get("Version", {}).get("Index") if isinstance(inspected.get("Version"), dict) else None
-        spec = inspected.get("Spec")
-        if not version or not isinstance(spec, dict):
-            raise LumaError(f"Docker API returned invalid service spec: {display_name}")
-        task_template = spec.setdefault("TaskTemplate", {})
-        if not isinstance(task_template, dict):
-            raise LumaError(f"Docker API returned invalid task template: {display_name}")
-        placement = task_template.setdefault("Placement", {})
-        if not isinstance(placement, dict):
-            raise LumaError(f"Docker API returned invalid placement constraints: {display_name}")
-        constraints = placement.setdefault("Constraints", [])
-        if not isinstance(constraints, list):
-            raise LumaError(f"Docker API returned invalid placement constraints: {display_name}")
-        if _constraint_value(constraints, key) != old_node_id:
-            continue
-        replacement = f"{key} == {new_node_id}"
-        new_constraints = [replacement if _constraint_value([constraint], key) == old_node_id else constraint for constraint in constraints]
-        placement["Constraints"] = new_constraints
-        docker_request(
-            "POST",
-            f"/services/{urllib.parse.quote(service_id, safe='')}/update?version={version}",
-            spec,
-        )
-        updated.append({"id": service_id, "name": display_name, "nodeName": node_name, "oldNodeId": old_node_id, "newNodeId": new_node_id})
-    return updated
-
-
 def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -1695,6 +1767,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     deployment = _load_compose_request(body, source_name)
+    previous_record = dict(_compose_deployment_record(state, deployment.slug) or {})
     _ensure_deployment_slug_available(state, "compose", deployment.slug, deployment.name)
     _ensure_tcp_relay_ports_available(state, kind="compose", slug=deployment.slug, ports=_compose_tcp_relay_ports(deployment))
     parse_step = {"name": "Parse compose deployment", "status": "ok", "message": f"{deployment.name} ({len(deployment.compose.get('services', {}))} services)"}
@@ -1712,33 +1785,25 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         )
         target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
         stack_text = _deploy_step(
             steps,
-            "Render compose stack",
-            lambda: render_compose_stack(
+            "Render compose Nomad job",
+            lambda: render_compose_job(
                 config,
                 deployment,
-                node_id_resolver=_compose_node_id_resolver(state),
-                node_records=_state_nodes(state),
+                registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
             ),
             progress=progress,
         )
-        _deploy_step(steps, "Check storage migration", lambda: _guard_compose_storage_switch(target, stack_text, deployment), progress=progress)
-        stack_env = _deploy_step(steps, "Resolve stack secrets", lambda: _stack_env_for_text(stack_text), progress=progress)
-        _deploy_step(steps, "Write compose stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
+        _deploy_step(
+            steps,
+            "Check storage backend",
+            lambda: _guard_compose_storage_switch(target, stack_text, deployment, previous_record=previous_record),
+            progress=progress,
+        )
+        _deploy_step(steps, "Write compose job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
-        tcp_ports = [
-            int(service.publish_port or service.port or 0)
-            for service in deployment.services.values()
-            if service.exposure == "tcp-relay"
-        ]
-        if tcp_ports:
-            _deploy_step(
-                steps,
-                "Ensure TCP ingress",
-                lambda: _ensure_tcp_relay_ingress(tcp_ports) if not body.get("skipPortainer") else "TCP ingress skipped: --skip-portainer",
-                progress=progress,
-            )
 
         dns_results: list[str] = []
         for service in compose_public_services(deployment):
@@ -1752,19 +1817,12 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 )
             )
 
-        portainer_result = _deploy_step(
+        orchestrator_result = _deploy_step(
             steps,
-            "Deploy Portainer stack",
-            lambda: "Portainer deploy skipped: --skip-portainer"
-            if body.get("skipPortainer")
-            else upsert_stack(
-                config,
-                _stack_service_spec(deployment),
-                stack_text,
-                state,
-                stack_env=stack_env,
-                registry_auth=None,
-            ),
+            "Deploy compose Nomad job",
+            lambda: "Orchestrator deploy skipped"
+            if _skip_orchestrator(body)
+            else deploy_to_nomad(config, stack_text, state, slug=deployment.slug),
             progress=progress,
         )
 
@@ -1775,19 +1833,19 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             route_target.parent.mkdir(parents=True, exist_ok=True)
             service_spec = _compose_service_as_service_spec(deployment, service)
             relay_is_explicit = bool(service.relay.get("url") or service.relay.get("host")) if service.exposure == "tailscale-relay" else bool(service.tcp.get("address") or service.tcp.get("host"))
-            if body.get("skipPortainer") and not relay_is_explicit:
+            if _skip_orchestrator(body) and not relay_is_explicit:
                 _deploy_step(
                     steps,
                     f"Write route {service_name}",
-                    lambda service=service: f"Route skipped: --skip-portainer requires deploy to infer {service.exposure}",
+                    lambda service=service: f"Route skipped: orchestrator deploy is required to infer {service.exposure}",
                     progress=progress,
                 )
                 continue
-            if not body.get("skipPortainer"):
+            if not _skip_orchestrator(body):
                 service_spec = _deploy_step(
                     steps,
                     f"Resolve relay {service.name}",
-                    lambda service_spec=service_spec, service=service: resolve_tailscale_relay(service_spec) if service.exposure == "tailscale-relay" else resolve_tcp_relay(service_spec),
+                    lambda service_spec=service_spec: resolve_nomad_static_route_target(service_spec, state, prefer_publish_port=True),
                     progress=progress,
                 )
             route_text = render_tailscale_route(config, service_spec) if service.exposure == "tailscale-relay" else render_tcp_route(config, service_spec)
@@ -1801,7 +1859,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 _deploy_step(
                     steps,
                     f"Probe public route {service.name}",
-                    lambda service_spec=service_spec: "Public route probe skipped: --skip-portainer" if body.get("skipPortainer") else _probe_public_route(service_spec),
+                    lambda service_spec=service_spec: "Public route probe skipped: orchestrator deploy skipped" if _skip_orchestrator(body) else _probe_public_route(service_spec),
                     progress=progress,
                 )
             )
@@ -1809,18 +1867,19 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         _mark_compose_deployment(deployment, body, source_name, status="failed_partial", steps=steps, error=str(exc))
         raise
     _mark_compose_deployment(deployment, body, source_name, status="active", steps=steps)
-    return {
+    result = {
         "clusterId": state["clusterId"],
         "deployment": deployment.name,
         "sourceName": source_name,
         "written": written,
         "dns": dns_results,
-        "portainer": portainer_result,
+        "orchestrator": orchestrator_result,
         "probe": probe_results,
         "storagePreparation": storage_preparation,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
         "steps": steps,
     }
+    return result
 
 
 def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1831,19 +1890,31 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     deployment = _load_compose_request(body, source_name)
-    stack_text = render_compose_stack(
+    target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
+    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+    stack_text = render_compose_job(
         config,
         deployment,
-        node_id_resolver=_compose_node_id_resolver(state),
-        node_records=_state_nodes(state),
+        registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
     )
-    target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
-    storage_guard = _guard_compose_storage_switch(target, stack_text, deployment)
-    _stack_env_for_text(stack_text)
-    route_texts = render_compose_routes(config, deployment)
+    storage_guard = "skipped: nomad job preview"
+    route_texts: Dict[str, str] = {}
+    for service_name, service in deployment.services.items():
+        if service.exposure not in {"tailscale-relay", "tcp-relay"} or not service.domain or not service.port:
+            continue
+        service_spec = resolve_nomad_static_route_target(
+            _compose_service_as_service_spec(deployment, service),
+            state,
+            prefer_publish_port=True,
+        )
+        route_texts[service_name] = (
+            render_tailscale_route(config, service_spec)
+            if service.exposure == "tailscale-relay"
+            else render_tcp_route(config, service_spec)
+        )
     artifacts = [
         {
-            "kind": "stack",
+            "kind": "job",
             "path": str(compose_stack_path(config, deployment)),
             "content": stack_text,
         }
@@ -1899,7 +1970,7 @@ def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable
     _deploy_step(
         steps,
         "Resolve storage endpoints",
-        lambda: render_compose_stack(config, deployment, node_records=_state_nodes(state)),
+        lambda: render_compose_job(config, deployment, resolve_secrets=False),
         progress=progress,
     )
     applied = _deploy_step(
@@ -2133,25 +2204,23 @@ def _storage_node_is_local(record: Dict[str, Any], node_name: str) -> bool:
         return False
     if not isinstance(info, dict):
         return False
-    swarm = info.get("Swarm") if isinstance(info.get("Swarm"), dict) else {}
     local_values = {
         str(info.get("Name") or ""),
-        str(swarm.get("NodeID") or ""),
+        str(info.get("ID") or ""),
     }
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
     record_values = {
-        str(record.get("swarmNodeId") or ""),
+        str(record.get("nodeId") or ""),
+        str(record.get("nomadNodeId") or ""),
         str(labels.get("luma.node.id") or ""),
+        str(record.get("hostname") or ""),
+        str(record.get("name") or node_name),
     }
     return bool((local_values - {""}) & (record_values - {""}))
 
 
 def _storage_apply_available(state: Dict[str, Any]) -> bool:
-    return bool(
-        state.get("portainerApiUrl")
-        and state.get("portainerEndpointId")
-        and state.get("portainerAdminPassword")
-    )
+    return bool(state.get("nomadAddr") or state.get("nomadToken") is not None)
 
 
 def handle_storage_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -2183,11 +2252,11 @@ def _remove_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[s
         return None
     export_removed = _remove_local_nfs_export(storage_class, state)
     if not _storage_apply_available(state):
-        return {"name": name, "removed": "pending: Portainer is not configured", "export": export_removed}
+        return {"name": name, "removed": "pending: storage apply is not available", "export": export_removed}
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     stack_name = f"luma-storage-{slugify(storage_class.name)}"
-    removed = remove_stack(config, _storage_stack_service_spec(stack_name), state)
+    removed = remove_from_nomad(config, state, slug=stack_name)
     return {"name": name, "removed": removed, "export": export_removed}
 
 
@@ -2396,33 +2465,21 @@ def _cleanup_service_managed_storage(service: ServiceSpec, state: Dict[str, Any]
     return f"Managed storage cleanup finished: removed={removed}, skipped={skipped}"
 
 
-def _service_task_nodes(service: ServiceSpec) -> list[dict[str, str]]:
-    node_by_id = _swarm_node_map()
-    service_name = service.swarm_service_name or f"{service.slug}_{service.slug}"
-    filters = urllib.parse.quote(json.dumps({"service": {service_name: True}, "desired-state": {"running": True}}), safe="")
-    tasks = docker_request("GET", f"/tasks?filters={filters}")
-    if not isinstance(tasks, list):
-        raise LumaError("Docker API returned invalid task list")
-    nodes: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for task in tasks:
-        if not isinstance(task, dict):
-            continue
-        node_id = str(task.get("NodeID") or "")
-        node = node_by_id.get(node_id)
-        if not node:
-            continue
-        key = str(node.get("id") or node_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        nodes.append(node)
-    if not nodes and service.node:
-        for node in node_by_id.values():
-            if service.node == str(node.get("lumaNode") or ""):
-                nodes.append(node)
-                break
-    return nodes
+def _service_volume_cleanup_nodes(service: ServiceSpec, state: Dict[str, Any]) -> list[dict[str, str]]:
+    if not service.node:
+        return []
+    record = _node_record_for_name(_state_nodes(state), service.node)
+    if not record:
+        return []
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    return [
+        {
+            "id": str(record.get("nodeId") or record.get("nomadNodeId") or labels.get("luma.node.id") or service.node),
+            "hostname": str(record.get("hostname") or record.get("tailscaleName") or record.get("displayName") or service.node),
+            "lumaNode": service.node,
+            "agentStatus": _node_agent_status(record),
+        }
+    ]
 
 
 def _remove_docker_volume_across_nodes(volume_name: str, task_nodes: list[dict[str, str]], state: Dict[str, Any]) -> dict[str, str]:
@@ -2435,7 +2492,7 @@ def _remove_docker_volume_across_nodes(volume_name: str, task_nodes: list[dict[s
         if key in seen:
             continue
         seen.add(key)
-        if _swarm_node_is_local(node):
+        if _node_cleanup_target_is_local(node):
             result = _remove_local_docker_volume(volume_name)
             statuses.append(result["status"])
             continue
@@ -2473,17 +2530,15 @@ def _remove_local_docker_volume(volume_name: str) -> dict[str, str]:
         raise LumaError(f"failed to remove Docker volume {safe_name}: Docker API error {status}: {raw}")
 
 
-def _swarm_node_is_local(node: dict[str, str]) -> bool:
+def _node_cleanup_target_is_local(node: dict[str, str]) -> bool:
     try:
         info = docker_request("GET", "/info")
     except (LumaError, AssertionError):
         return False
     if not isinstance(info, dict):
         return False
-    swarm = info.get("Swarm") if isinstance(info.get("Swarm"), dict) else {}
     local_values = {
         str(info.get("Name") or ""),
-        str(swarm.get("NodeID") or ""),
     }
     node_values = {
         str(node.get("id") or ""),
@@ -2585,9 +2640,9 @@ def _compose_node_id_resolver(state: Dict[str, Any]) -> Callable[[str], str | No
             names = ", ".join(sorted(str(name) for name in nodes)) or "none"
             raise LumaError(f"unknown Luma node: {node_name}. Registered nodes: {names}")
         labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-        node_id = str(record.get("swarmNodeId") or labels.get("luma.node.id") or "").strip()
+        node_id = str(record.get("nodeId") or record.get("nomadNodeId") or labels.get("luma.node.id") or "").strip()
         if not node_id:
-            raise LumaError(f"Luma node {node_name} has no Swarm NodeID; rerun luma node join on that node")
+            raise LumaError(f"Luma node {node_name} has no Nomad node ID; rerun luma node join on that node")
         return node_id
 
     return resolve
@@ -2595,7 +2650,16 @@ def _compose_node_id_resolver(state: Dict[str, Any]) -> Callable[[str], str | No
 
 def _state_nodes(state: Dict[str, Any]) -> Dict[str, Any]:
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    return {str(name): dict(value) for name, value in nodes.items() if isinstance(value, dict)}
+    expanded: Dict[str, Any] = {}
+    for name, value in nodes.items():
+        if not isinstance(value, dict):
+            continue
+        record = dict(value)
+        key = str(name)
+        expanded[key] = record
+        for alias in _node_record_names(key, record):
+            expanded.setdefault(alias, record)
+    return expanded
 
 
 def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service: Any) -> ServiceSpec:
@@ -2615,7 +2679,6 @@ def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service:
         tunnel=service.tunnel,
         tcp=service.tcp,
         proxy=service.proxy,
-        swarm_service_name=f"{deployment.slug}_{service.name}",
     )
 
 
@@ -2627,13 +2690,24 @@ def _storage_stack_service_spec(stack_name: str) -> ServiceSpec:
     return ServiceSpec(source=Path("storage"), name=stack_name, image="storage", region="cn")
 
 
-def _guard_compose_storage_switch(target: Path, stack_text: str, deployment: ComposeDeploymentSpec) -> str:
-    if not target.exists():
-        return "No previous compose stack"
-    previous = _safe_yaml_mapping(target.read_text(encoding="utf-8"))
-    current = _safe_yaml_mapping(stack_text)
-    previous_volumes = previous.get("volumes") if isinstance(previous.get("volumes"), dict) else {}
-    current_volumes = current.get("volumes") if isinstance(current.get("volumes"), dict) else {}
+def _guard_compose_storage_switch(
+    target: Path,
+    stack_text: str,
+    deployment: ComposeDeploymentSpec,
+    *,
+    previous_record: Dict[str, Any] | None = None,
+) -> str:
+    previous_volumes = _compose_storage_backend_signatures_from_record(previous_record)
+    source = "deployment record"
+    if previous_volumes is None:
+        if not target.exists():
+            return "No previous compose job"
+        previous_volumes = _compose_storage_backend_signatures_from_artifact(target.read_text(encoding="utf-8"))
+        source = "generated artifact"
+    if previous_volumes is None:
+        previous_volumes = {}
+        source = "unknown generated artifact"
+    current_volumes = _compose_storage_backend_signatures(deployment)
     changed = []
     for name, spec in deployment.volumes.items():
         if not spec.storage_class:
@@ -2646,11 +2720,79 @@ def _guard_compose_storage_switch(target: Path, stack_text: str, deployment: Com
             changed.append(name)
     if changed:
         raise LumaError(
-            "storage backend changed for "
-            + ", ".join(sorted(changed))
-            + "; run luma storage migrate and set adopted: true after verification, or set initialize: empty for a fresh volume"
+                "storage backend changed for "
+                + ", ".join(sorted(changed))
+                + "; run luma storage migrate and set adopted: true after verification, or set initialize: empty for a fresh volume"
+            )
+    return f"Storage backend unchanged from {source}"
+
+
+def _compose_storage_backend_signatures(deployment: ComposeDeploymentSpec) -> Dict[str, Dict[str, Any]]:
+    signatures: Dict[str, Dict[str, Any]] = {}
+    for name, spec in deployment.volumes.items():
+        if spec.storage_class:
+            signatures[name] = {
+                "kind": "storageClass",
+                "storageClass": spec.storage_class,
+                "path": spec.path or "",
+                "accessMode": spec.access_mode,
+            }
+        elif spec.local_node or spec.local_path:
+            signatures[name] = {
+                "kind": "local",
+                "node": spec.local_node or "",
+                "path": spec.local_path or "",
+            }
+        else:
+            signatures[name] = {"kind": "unmanaged"}
+    return signatures
+
+
+def _compose_storage_backend_signatures_from_record(record: Dict[str, Any] | None) -> Dict[str, Dict[str, Any]] | None:
+    if not record:
+        return None
+    stored = record.get("storageBackends")
+    if isinstance(stored, dict):
+        return {str(name): dict(value) for name, value in stored.items() if isinstance(value, dict)}
+    manifest = record.get("manifest")
+    compose_content = record.get("composeContent")
+    if not isinstance(manifest, str) or not manifest.strip() or not isinstance(compose_content, str) or not compose_content.strip():
+        return None
+    try:
+        deployment = _load_compose_request(
+            {"manifest": manifest, "composeContent": compose_content},
+            str(record.get("sourceName") or "luma.compose.yml"),
         )
-    return "Storage backend unchanged"
+    except LumaError:
+        return None
+    return _compose_storage_backend_signatures(deployment)
+
+
+def _compose_storage_backend_signatures_from_artifact(text: str) -> Dict[str, Dict[str, Any]] | None:
+    previous = _safe_yaml_mapping(text)
+    if "Job" in previous:
+        return None
+    volumes = previous.get("volumes") if isinstance(previous.get("volumes"), dict) else None
+    if volumes is None:
+        return None
+    signatures: Dict[str, Dict[str, Any]] = {}
+    for name, value in volumes.items():
+        if isinstance(value, dict) and value.get("driver_opts"):
+            signatures[str(name)] = {
+                "kind": "driver",
+                "driver": str(value.get("driver") or ""),
+                "driver_opts": value.get("driver_opts") or {},
+            }
+        elif isinstance(value, dict) and "local" in value:
+            local = value.get("local") if isinstance(value.get("local"), dict) else {}
+            signatures[str(name)] = {
+                "kind": "local",
+                "node": str(local.get("node") or ""),
+                "path": str(local.get("path") or ""),
+            }
+        else:
+            signatures[str(name)] = {"kind": "unmanaged"}
+    return signatures
 
 
 def _safe_yaml_mapping(text: str) -> Dict[str, Any]:
@@ -2704,13 +2846,11 @@ def _validate_storage_class_record(name: str, item: Dict[str, Any], state: Dict[
         node_name = str(item.get("node") or "")
         record = _node_record_for_name(nodes, node_name)
         if not record:
-            _adopt_swarm_node_for_storage(state, node_name)
-            nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-            record = _node_record_for_name(nodes, node_name)
-        if not record:
             names = ", ".join(sorted(str(key) for key in nodes)) or "none"
             raise LumaError(f"managed storage class {name} references unknown Luma node: {item.get('node')}. Registered nodes: {names}")
-        _ensure_storage_node_swarm_label(node_name, record)
+        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+        if not str(record.get("region") or labels.get("region") or "").strip():
+            raise LumaError(f"managed storage node {node_name} has no region; rerun luma node join")
     regions = item.get("regions") if isinstance(item.get("regions"), list) else []
     for region in regions:
         if region not in VALID_REGIONS:
@@ -2794,14 +2934,6 @@ def handle_registry_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     host = normalize_registry_host(str(body.get("host") or ""))
     registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
     removed = bool(registries.get(host))
-    portainer_removed = False
-    warning = None
-    try:
-        config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
-        config = load_config(config_path)
-        portainer_removed = remove_luma_portainer_registry(config, state, host)
-    except LumaError as exc:
-        warning = f"Portainer registry cleanup failed: {exc}"
     def mutate(state: Dict[str, Any]) -> None:
         require_token(state, token, token_type="deploy")
         registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
@@ -2809,10 +2941,7 @@ def handle_registry_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         state["registries"] = registries
 
     mutate_state(mutate)
-    result: Dict[str, Any] = {"host": host, "removed": removed, "portainerRegistryRemoved": portainer_removed}
-    if warning:
-        result["warning"] = warning
-    return result
+    return {"host": host, "removed": removed}
 
 
 def _planned_remove_message(prefix: str, target: str) -> str:
@@ -2879,8 +3008,12 @@ def _apply_state_secrets(state: Dict[str, Any]) -> None:
 
 
 def _registry_auth_for_service(state: Dict[str, Any], service: ServiceSpec) -> Dict[str, str] | None:
+    return _registry_auth_for_image(state, service.image)
+
+
+def _registry_auth_for_image(state: Dict[str, Any], image: str) -> Dict[str, str] | None:
     registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
-    return registry_auth_for_image(registries, service.image)
+    return registry_auth_for_image(registries, image)
 
 
 def image_pull_requires_egress(image: str) -> bool:
@@ -2928,7 +3061,7 @@ def ensure_image_pull_egress_proxy(state: Dict[str, Any], image: str) -> str:
     registry = _image_registry_host(image)
     if registry not in _egress_pull_registries():
         return f"Image pull egress not required: {registry}"
-    _require_egress_gateway_running()
+    _require_egress_gateway_running(state)
     info = _docker_info_with_retry()
     if _docker_info_uses_egress_proxy(info):
         return f"Image pull egress ready for {registry}: Docker daemon proxy {EGRESS_PROXY_URL}"
@@ -3006,22 +3139,24 @@ def _merge_no_proxy(*values: str) -> str:
     return ",".join(merged)
 
 
-def _require_egress_gateway_running() -> None:
+def _require_egress_gateway_running(state: Dict[str, Any]) -> None:
     try:
-        docker_request("GET", "/services/egress_mihomo")
-        filters = urllib.parse.quote(json.dumps({"service": {"egress_mihomo": True}, "desired-state": {"running": True}}), safe="")
-        tasks = docker_request("GET", f"/tasks?filters={filters}")
+        config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+        config = load_config(config_path)
+        _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+        allocations = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or "")).request("GET", "/v1/job/egress/allocations")
     except LumaError as exc:
-        raise LumaError("image pull egress requires egress_mihomo; run `luma egress setup` on the manager") from exc
-    if not isinstance(tasks, list) or not any(_docker_task_is_running(task) for task in tasks):
-        raise LumaError("image pull egress requires a running egress_mihomo task; run `luma egress setup` on the manager")
+        raise LumaError("image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager") from exc
+    if not isinstance(allocations, list) or not any(_nomad_allocation_is_running(item) for item in allocations):
+        raise LumaError("image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager")
 
 
-def _docker_task_is_running(task: Any) -> bool:
-    if not isinstance(task, dict):
+def _nomad_allocation_is_running(allocation: Any) -> bool:
+    if not isinstance(allocation, dict):
         return False
-    status = task.get("Status") if isinstance(task.get("Status"), dict) else {}
-    return str(status.get("State") or "").lower() == "running"
+    client_status = str(allocation.get("ClientStatus") or allocation.get("client_status") or "").lower()
+    desired_status = str(allocation.get("DesiredStatus") or allocation.get("desired_status") or "run").lower()
+    return client_status == "running" and desired_status in {"run", "running"}
 
 
 def _docker_info_with_retry() -> Dict[str, Any]:
@@ -3051,14 +3186,16 @@ def _docker_info_uses_egress_proxy(info: Dict[str, Any]) -> bool:
 
 def _local_control_node_name(state: Dict[str, Any], info: Dict[str, Any]) -> str:
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    swarm = info.get("Swarm") if isinstance(info.get("Swarm"), dict) else {}
-    local_ids = {str(info.get("ID") or ""), str(swarm.get("NodeID") or "")} - {""}
+    local_ids = {str(info.get("ID") or ""), str(info.get("Name") or "")} - {""}
     for name, record in nodes.items():
         if not isinstance(record, dict):
             continue
         labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
         record_ids = {
-            str(record.get("swarmNodeId") or ""),
+            str(record.get("nodeId") or ""),
+            str(record.get("nomadNodeId") or ""),
+            str(record.get("hostname") or ""),
+            str(record.get("name") or ""),
             str(labels.get("luma.node.id") or ""),
         } - {""}
         if local_ids & record_ids:
@@ -3082,8 +3219,8 @@ def _stack_env_for_text(stack_text: str) -> list[dict[str, str]]:
 
 
 def _probe_public_route(service: ServiceSpec) -> str:
-    if service.exposure not in {"cn-edge", "external-edge"}:
-        return "Public route probe skipped: service is not exposed through Traefik"
+    if service.exposure not in {"cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"}:
+        return "Public route probe skipped: service is not an HTTP route"
     if not service.domain:
         return "Public route probe skipped: service has no domain"
     url = f"https://{service.domain}/"
@@ -3134,6 +3271,8 @@ def _step_message(result: Any) -> str:
         if selected:
             return str(selected)
     if isinstance(result, str):
+        if "\n" in result or len(result) > 200:
+            return "generated"
         return result
     if isinstance(result, int):
         return "written"
@@ -3165,7 +3304,8 @@ def labels_for_node(region: str, *, luma_name: str, node_id: str = "") -> Dict[s
     return labels
 
 
-def resolve_service_node_pin(service: ServiceSpec, state: Dict[str, Any]) -> ServiceSpec:
+def resolve_service_node_pin(service: ServiceSpec, state: Dict[str, Any], *, engine: str = "nomad") -> ServiceSpec:
+    _require_nomad_engine(engine)
     if not service.node:
         return service
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
@@ -3176,67 +3316,81 @@ def resolve_service_node_pin(service: ServiceSpec, state: Dict[str, Any]) -> Ser
     region = str(record.get("region") or "")
     if region and region != service.region:
         raise LumaError(f"Luma node {service.node} is in region {region}, not {service.region}")
+    _ensure_nomad_node_record_schedulable(service.node, record)
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-    node_id = str(record.get("swarmNodeId") or labels.get("luma.node.id") or "").strip()
-    if not node_id:
-        raise LumaError(f"Luma node {service.node} has no Swarm NodeID; rerun luma node join on that node")
-    node_platform = _ensure_luma_node_schedulable(service.node, node_id)
-    return replace(service, node_id=node_id, node_platform=node_platform or None)
+    node_id = str(record.get("nodeId") or record.get("nomadNodeId") or labels.get("luma.node.id") or "").strip()
+    node_platform = _nomad_node_platform_from_record(record)
+    return replace(service, node_id=node_id or None, node_platform=node_platform or None)
 
 
-def _ensure_luma_node_schedulable(node_name: str, node_id: str) -> str:
-    try:
-        nodes = docker_request("GET", "/nodes")
-    except LumaError:
+def _ensure_nomad_node_record_schedulable(node_name: str, record: Dict[str, Any]) -> None:
+    status = str(record.get("nomadStatus") or record.get("nomadState") or "").strip().lower()
+    if status in {"down", "missing", "offline", "disconnected", "unknown"}:
+        raise LumaError(f"Luma node {node_name} Nomad node is {status}; restore the node before deploying pinned services")
+    eligibility = str(record.get("schedulingEligibility") or record.get("nomadSchedulingEligibility") or "").strip().lower()
+    if eligibility in {"ineligible", "disabled"}:
+        raise LumaError(f"Luma node {node_name} Nomad scheduling eligibility is {eligibility}; set it eligible before deploying pinned services")
+    if bool(record.get("drain") or record.get("nomadDrain")):
+        raise LumaError(f"Luma node {node_name} Nomad node is draining; stop drain before deploying pinned services")
+
+
+def _nomad_node_platform_from_record(record: Dict[str, Any]) -> str:
+    direct = record.get("nodePlatform") or record.get("platform")
+    parsed = _nomad_platform_from_value(direct)
+    if parsed:
+        return parsed
+    attrs = record.get("nomadAttributes") or record.get("attributes")
+    if not isinstance(attrs, dict):
+        attrs = {}
+    os_name = (
+        record.get("os")
+        or record.get("operatingSystem")
+        or attrs.get("os.name")
+        or attrs.get("kernel.name")
+        or attrs.get("driver.docker.os_type")
+    )
+    arch = (
+        record.get("arch")
+        or record.get("architecture")
+        or attrs.get("cpu.arch")
+        or attrs.get("unique.platform.arch")
+        or attrs.get("driver.docker.arch")
+    )
+    return _compose_platform(os_name, arch)
+
+
+def _nomad_platform_from_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return _compose_platform(value.get("os") or value.get("OS"), value.get("arch") or value.get("architecture") or value.get("Architecture"))
+    if not isinstance(value, str):
         return ""
-    if not isinstance(nodes, list):
+    raw = value.strip()
+    if not raw:
         return ""
-    match = None
-    for item in nodes:
-        if not isinstance(item, dict):
-            continue
-        labels = (item.get("Spec") if isinstance(item.get("Spec"), dict) else {}).get("Labels")
-        labels = labels if isinstance(labels, dict) else {}
-        raw_id = str(item.get("ID") or "")
-        label_id = str(labels.get("luma.node.id") or "")
-        if label_id == node_id and not (raw_id == node_id or raw_id.startswith(node_id) or node_id.startswith(raw_id)):
-            raise LumaError(
-                f"Luma node {node_name} label is attached to Swarm node {raw_id}, expected {node_id}; "
-                "rerun luma node join on the intended host to repair node labels"
-            )
-        if raw_id == node_id or raw_id.startswith(node_id) or node_id.startswith(raw_id):
-            match = item
-            break
-    if not match:
-        raise LumaError(f"Luma node {node_name} Swarm node {node_id} is missing; rerun luma node join on that node before deploying pinned services")
-    summary = _swarm_node_summary_item(match)
-    state = str(summary.get("state") or "").lower()
-    availability = str(summary.get("availability") or "").lower()
-    if state and state != "ready":
-        raise LumaError(f"Luma node {node_name} Swarm node {node_id} is {state}; restore the node before deploying pinned services")
-    if availability in {"drain", "pause"}:
-        raise LumaError(f"Luma node {node_name} Swarm node {node_id} availability is {availability}; set it active before deploying pinned services")
-    return _docker_node_platform(match)
+    if "/" in raw:
+        os_name, arch = raw.split("/", 1)
+        return _compose_platform(os_name, arch)
+    return ""
 
 
-def _docker_node_platform(node: Dict[str, Any]) -> str:
-    description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
-    platform = description.get("Platform") if isinstance(description.get("Platform"), dict) else {}
-    os_name = _normalize_docker_platform_os(str(platform.get("OS") or ""))
-    architecture = _normalize_docker_platform_arch(str(platform.get("Architecture") or ""))
-    if not os_name or not architecture:
+def _compose_platform(os_name: Any, arch: Any) -> str:
+    normalized_os = _normalize_platform_os(str(os_name or ""))
+    normalized_arch = _normalize_platform_arch(str(arch or ""))
+    if not normalized_os or not normalized_arch:
         return ""
-    return f"{os_name}/{architecture}"
+    return f"{normalized_os}/{normalized_arch}"
 
 
-def _normalize_docker_platform_os(value: str) -> str:
+def _normalize_platform_os(value: str) -> str:
     value = value.strip().lower()
+    if value in {"darwin", "macos", "mac os", "mac os x"}:
+        return "darwin"
     if value in {"linux", "windows"}:
         return value
     return value
 
 
-def _normalize_docker_platform_arch(value: str) -> str:
+def _normalize_platform_arch(value: str) -> str:
     value = value.strip().lower()
     aliases = {
         "x86_64": "amd64",
@@ -3250,81 +3404,39 @@ def _node_record_for_name(nodes: Dict[str, Any], name: str) -> Dict[str, Any] | 
     direct = nodes.get(name)
     if isinstance(direct, dict):
         return direct
-    for value in nodes.values():
-        if isinstance(value, dict) and value.get("displayName") == name:
+    for key, value in nodes.items():
+        if isinstance(value, dict) and name in _node_record_names(str(key), value):
             return value
     return None
+
+
+def _node_record_names(key: str, record: Dict[str, Any]) -> set[str]:
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    names = {
+        str(key or "").strip(),
+        str(record.get("name") or "").strip(),
+        str(record.get("displayName") or "").strip(),
+        str(record.get("hostname") or "").strip(),
+        str(labels.get("luma.node.name") or "").strip(),
+        str(labels.get("luma_node_name") or "").strip(),
+    }
+    aliases = record.get("aliases")
+    if isinstance(aliases, list):
+        names.update(str(value).strip() for value in aliases)
+    elif isinstance(aliases, str):
+        names.add(aliases.strip())
+    return {value for value in names if value}
 
 
 def _node_record_is_manager(record: Dict[str, Any]) -> bool:
     if str(record.get("status") or "").lower() == "manager":
         return True
-    if str(record.get("swarmRole") or "").lower() == "manager":
+    if str(record.get("nomadRole") or "").lower() == "server":
         return True
-    return bool(record.get("swarmManager"))
-
-
-def _adopt_swarm_node_for_storage(state: Dict[str, Any], node_name: str) -> None:
-    node_name = str(node_name or "").strip()
-    if not node_name:
-        return
-    try:
-        nodes = docker_request("GET", "/nodes")
-    except LumaError:
-        return
-    if not isinstance(nodes, list):
-        return
-    match = _match_luma_swarm_node(nodes, node_name=node_name)
-    if not match:
-        return
-    spec = match.get("Spec") if isinstance(match.get("Spec"), dict) else {}
-    labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
-    description = match.get("Description") if isinstance(match.get("Description"), dict) else {}
-    manager_status = match.get("ManagerStatus") if isinstance(match.get("ManagerStatus"), dict) else {}
-    hostname = str(description.get("Hostname") or "")
-    swarm_node_id = str(match.get("ID") or "").strip()
-    luma_name = str(node_name or labels.get("luma.node.name") or swarm_node_id[:12]).strip()
-    region = str(labels.get("region") or "").strip()
-    values: Dict[str, Any] = {
-        "status": "adopted",
-        "displayName": luma_name,
-        "swarmHostname": hostname,
-        "labels": {str(key): str(value) for key, value in labels.items()},
-    }
-    if region:
-        values["region"] = region
-    if swarm_node_id:
-        values["swarmNodeId"] = swarm_node_id
-    if spec.get("Role"):
-        values["swarmRole"] = str(spec.get("Role") or "")
-    if manager_status:
-        values["swarmManager"] = True
-    _remember_node(state, luma_name, **values)
-    if node_name != luma_name and not _node_record_for_name(_state_nodes(state), node_name):
-        _remember_node(state, node_name, **values)
-
-
-def _ensure_storage_node_swarm_label(node_name: str, record: Dict[str, Any]) -> None:
+    if bool(record.get("nomadServer")):
+        return True
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-    node_id = str(record.get("swarmNodeId") or labels.get("luma.node.id") or "").strip()
-    if labels.get("luma.node.name") == node_name and labels.get("luma.node.id") == node_id:
-        return
-    if not node_id:
-        return
-    region = str(record.get("region") or labels.get("region") or "").strip()
-    if not region:
-        raise LumaError(f"managed storage node {node_name} has no region; rerun luma update manager or luma node join")
-    applied = labels_for_node(region, luma_name=node_name, node_id=node_id)
-    try:
-        label_swarm_node(node_name, applied, node_id=node_id)
-    except LumaError as exc:
-        raise LumaError(f"managed storage node {node_name} could not be labeled for storage placement: {exc}") from exc
-    merged = {str(key): str(value) for key, value in labels.items()}
-    merged.update(applied)
-    record["labels"] = merged
-    record["status"] = str(record.get("status") or "labeled")
-    if node_id:
-        record["swarmNodeId"] = node_id
+    return str(labels.get("role.nomad-manager") or "").lower() == "true"
 
 
 def _remember_node(state: Dict[str, Any], node_name: str, *, merge_from: str = "", **values: Any) -> None:
@@ -3339,6 +3451,13 @@ def _remember_node(state: Dict[str, Any], node_name: str, *, merge_from: str = "
     if isinstance(existing, dict):
         current.update(existing)
     current.update(values)
+    if merge_from and merge_from != node_name:
+        aliases = current.get("aliases")
+        if not isinstance(aliases, list):
+            aliases = [str(aliases)] if aliases else []
+        if merge_from not in aliases:
+            aliases.append(merge_from)
+        current["aliases"] = aliases
     nodes[node_name] = current
 
 
@@ -3349,68 +3468,54 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
         if not isinstance(raw, dict):
             raw = {}
         labels = raw.get("labels") if isinstance(raw.get("labels"), dict) else {}
+        aliases = sorted(_node_record_names(name, raw) - {name, str(raw.get("displayName") or name)})
         agent = raw.get("agent") if isinstance(raw.get("agent"), dict) else {}
         metrics = agent.get("metrics") if isinstance(agent.get("metrics"), dict) else {}
         container_stats = agent.get("containerStats") if isinstance(agent.get("containerStats"), list) else []
-        items.append(
-            {
-                "name": name,
-                "displayName": str(raw.get("displayName") or name),
-                "swarmHostname": str(raw.get("swarmHostname") or ""),
-                "swarmNodeId": str(raw.get("swarmNodeId") or labels.get("luma.node.id") or ""),
-                "region": str(raw.get("region") or labels.get("region") or ""),
-                "tailscaleIP": str(raw.get("tailscaleIP") or ""),
-                "tailscaleName": str(raw.get("tailscaleName") or ""),
-                "status": str(raw.get("status") or "registered"),
-                "labels": {str(key): str(value) for key, value in labels.items()},
-                "agentStatus": _node_agent_status(raw),
-                "agentOs": str(agent.get("os") or ""),
-                "agentLastSeen": int(agent.get("lastSeen") or 0),
-                "storageCapabilities": [str(value) for value in agent.get("capabilities") or []],
-                "metrics": _agent_metrics(metrics),
-                "containerStats": _container_stats(container_stats),
-            }
-        )
+        item = {
+            "name": name,
+            "displayName": str(raw.get("displayName") or name),
+            "aliases": aliases,
+            "hostname": str(raw.get("hostname") or ""),
+            "nodeId": str(raw.get("nodeId") or raw.get("nomadNodeId") or labels.get("luma.node.id") or ""),
+            "region": str(raw.get("region") or labels.get("region") or ""),
+            "tailscaleIP": str(raw.get("tailscaleIP") or ""),
+            "tailscaleName": str(raw.get("tailscaleName") or ""),
+            "status": str(raw.get("status") or "registered"),
+            "labels": {str(key): str(value) for key, value in labels.items()},
+            "agentStatus": _node_agent_status(raw),
+            "agentOs": str(agent.get("os") or ""),
+            "agentLastSeen": int(agent.get("lastSeen") or 0),
+            "storageCapabilities": [str(value) for value in agent.get("capabilities") or []],
+            "metrics": _agent_metrics(metrics),
+            "containerStats": _container_stats(container_stats),
+        }
+        items.append(item)
     return items
 
 
-def _attach_swarm_status_to_registered_nodes(registered_nodes: list[Dict[str, Any]], swarm_nodes: list[Any]) -> None:
-    by_raw_id: dict[str, Dict[str, Any]] = {}
-    by_luma_name: dict[str, Dict[str, Any]] = {}
-    by_luma_id: dict[str, Dict[str, Any]] = {}
-    for raw in swarm_nodes:
-        if not isinstance(raw, dict):
-            continue
-        node = raw
-        raw_id = str(node.get("rawId") or node.get("id") or "").strip()
-        luma_name = str(node.get("lumaNode") or "").strip()
-        luma_id = str(node.get("lumaNodeId") or "").strip()
-        if raw_id:
-            by_raw_id[raw_id] = node
-        if luma_name:
-            by_luma_name[luma_name] = node
-        if luma_id:
-            by_luma_id[luma_id] = node
-    for item in registered_nodes:
-        registered_id = str(item.get("swarmNodeId") or "")
-        match = by_raw_id.get(registered_id) if registered_id else None
-        if not match and not registered_id:
-            match = by_luma_name.get(str(item.get("name") or "")) or by_luma_id.get(registered_id)
-        if not match:
-            item["swarmState"] = "missing"
-            continue
-        item["swarmState"] = str(match.get("state") or "")
-        item["swarmAvailability"] = str(match.get("availability") or "")
-        item["swarmReachability"] = str(match.get("reachability") or "")
-        item["swarmRole"] = str(match.get("role") or "")
-        item["swarmAddr"] = str(match.get("addr") or "")
-
-
-def _service_stats_by_name(registered_nodes: list[Dict[str, Any]]) -> dict[str, list[Dict[str, Any]]]:
+def _service_stats_by_name(
+    registered_nodes: list[Dict[str, Any]],
+    *,
+    config: Any | None = None,
+    state: Dict[str, Any] | None = None,
+) -> dict[str, list[Dict[str, Any]]]:
     result: dict[str, list[Dict[str, Any]]] = {}
+    allocation_index: dict[str, Dict[str, str]] | None = None
+    try:
+        cfg = config or load_config(_control_config_path())
+        defaults = getattr(cfg, "defaults", {})
+        if str(defaults.get("engine") or "nomad") == "nomad":
+            allocation_index = _nomad_allocation_service_index(cfg, state if isinstance(state, dict) else {})
+        else:
+            allocation_index = {}
+    except Exception:
+        allocation_index = {}
     for node in registered_nodes:
         node_name = str(node.get("name") or "")
-        for raw in node.get("containerStats") or []:
+        raw_stats = node.get("containerStats") if isinstance(node.get("containerStats"), list) else []
+        stats = _normalize_container_stats_for_engine(raw_stats, config=config, state=state, allocation_index=allocation_index)
+        for raw in stats:
             if not isinstance(raw, dict):
                 continue
             service = str(raw.get("service") or "").strip()
@@ -3499,28 +3604,6 @@ def _dashboard_issues(nodes: list[Dict[str, Any]], services: list[Dict[str, Any]
     return issues
 
 
-def _dashboard_docker_list(path: str, label: str, errors: list[str]) -> list[Dict[str, Any]]:
-    try:
-        value = docker_request("GET", path)
-    except LumaError as exc:
-        errors.append(f"Docker {label} unavailable: {exc}")
-        return []
-    if not isinstance(value, list):
-        errors.append(f"Docker {label} response was not a list")
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
-def _dashboard_node_map(raw_nodes: list[Dict[str, Any]]) -> dict[str, Dict[str, Any]]:
-    result: dict[str, Dict[str, Any]] = {}
-    for node in raw_nodes:
-        node_id = str(node.get("ID") or "")
-        if not node_id:
-            continue
-        result[node_id] = _swarm_node_summary_item(node)
-    return result
-
-
 def _dashboard_nodes(
     registered_nodes: list[Dict[str, Any]],
     raw_nodes: list[Dict[str, Any]],
@@ -3535,17 +3618,17 @@ def _dashboard_nodes(
             continue
         merged.setdefault(name, {})["registered"] = node
     for raw_node in raw_nodes:
-        node = _swarm_node_summary_item(raw_node)
+        node = raw_node
         name = str(node.get("lumaNode") or node.get("rawId") or node.get("id") or "")
         if not name:
             continue
-        merged.setdefault(name, {})["swarm"] = node
+        merged.setdefault(name, {})["orchestrator"] = node
 
     rows: list[Dict[str, Any]] = []
     for name in sorted(merged):
         registered = merged[name].get("registered") if isinstance(merged[name].get("registered"), dict) else {}
-        swarm = merged[name].get("swarm") if isinstance(merged[name].get("swarm"), dict) else {}
-        display = str(registered.get("displayName") or swarm.get("hostname") or name)
+        orchestrator = merged[name].get("orchestrator") if isinstance(merged[name].get("orchestrator"), dict) else {}
+        display = str(registered.get("displayName") or orchestrator.get("hostname") or name)
         capabilities = [str(value) for value in registered.get("storageCapabilities") or []]
         agent_status = str(registered.get("agentStatus") or "missing")
         terminal_capable = "terminal" in capabilities
@@ -3555,13 +3638,13 @@ def _dashboard_nodes(
             {
                 "name": name,
                 "displayName": display,
-                "swarmHostname": str(registered.get("swarmHostname") or swarm.get("hostname") or ""),
-                "swarmNodeId": str(registered.get("swarmNodeId") or swarm.get("rawId") or swarm.get("lumaNodeId") or swarm.get("id") or ""),
-                "region": str(registered.get("region") or swarm.get("region") or ""),
-                "role": str(swarm.get("role") or ""),
-                "state": str(swarm.get("state") or "missing"),
-                "availability": str(swarm.get("availability") or ""),
-                "leader": bool(swarm.get("leader")),
+                "hostname": str(registered.get("hostname") or orchestrator.get("hostname") or ""),
+                "nodeId": str(registered.get("nodeId") or orchestrator.get("rawId") or orchestrator.get("lumaNodeId") or orchestrator.get("id") or ""),
+                "region": str(registered.get("region") or orchestrator.get("region") or ""),
+                "role": str(orchestrator.get("role") or ""),
+                "state": str(orchestrator.get("state") or "missing"),
+                "availability": str(orchestrator.get("availability") or ""),
+                "leader": bool(orchestrator.get("leader")),
                 "agentStatus": agent_status,
                 "agentOs": str(registered.get("agentOs") or ""),
                 "agentLastSeen": int(registered.get("agentLastSeen") or 0),
@@ -3569,7 +3652,7 @@ def _dashboard_nodes(
                 "terminalConnected": terminal_connected,
                 "terminalStatus": terminal_status,
                 "metrics": registered.get("metrics") if isinstance(registered.get("metrics"), dict) else {},
-                "capacity": swarm.get("capacity") if isinstance(swarm.get("capacity"), dict) else {},
+                "capacity": orchestrator.get("capacity") if isinstance(orchestrator.get("capacity"), dict) else {},
             }
         )
     return rows
@@ -3646,88 +3729,287 @@ def _dashboard_route_file(route_id: str, data: Dict[str, Any]) -> Dict[str, Any]
     return {"id": route_id, "kind": "http", "domain": domain, "upstreams": upstreams}
 
 
-def _dashboard_services(
-    raw_services: list[Dict[str, Any]],
-    raw_tasks: list[Dict[str, Any]],
-    node_by_id: dict[str, Dict[str, Any]],
+def _dashboard_nomad_services(
+    nomad_services: list[Dict[str, Any]],
     route_files: dict[str, Dict[str, Any]],
+    *,
+    state: Dict[str, Any] | None = None,
 ) -> list[Dict[str, Any]]:
-    tasks_by_service: dict[str, list[Dict[str, Any]]] = {}
-    for task in raw_tasks:
-        service_id = str(task.get("ServiceID") or "")
-        if service_id:
-            tasks_by_service.setdefault(service_id, []).append(task)
+    """Assemble the dashboard service list from Nomad jobs + Traefik file routes.
 
-    services: list[Dict[str, Any]] = []
-    for service in raw_services:
-        item = _dashboard_service(service, tasks_by_service.get(str(service.get("ID") or ""), []), node_by_id, route_files)
+    Single-service deployments remain job-level. Compose deployments are a
+    single Nomad job with multiple tasks, so those are expanded to task-level
+    dashboard services and enriched from the stored Luma manifest.
+    """
+    deployment_index, compose_stacks = _dashboard_deployment_service_index(state or {})
+    out: list[Dict[str, Any]] = []
+    for svc in nomad_services:
+        job_name = str(svc.get("jobId") or svc.get("name") or "")
+        if not job_name:
+            continue
+        tasks = svc.get("tasks") if isinstance(svc.get("tasks"), list) else []
+        is_compose = bool(svc.get("compose")) or job_name in compose_stacks
+        if tasks and is_compose:
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                item = _dashboard_service_from_nomad_task(svc, task, route_files, deployment_index)
+                if item:
+                    out.append(item)
+            continue
+        item = _dashboard_service_from_nomad_job(svc, route_files, deployment_index)
         if item:
-            services.append(item)
-
-    cloudflare_tunnel_stacks = {item["stack"] for item in services if item.get("name") == "cloudflared" and item.get("stack")}
-    for item in services:
-        if item.get("stack") in cloudflare_tunnel_stacks and item.get("name") != "cloudflared" and item.get("exposure") == "none":
-            item["exposure"] = "cloudflare-tunnel"
-    services.sort(key=lambda item: (str(item.get("stack") or ""), str(item.get("name") or "")))
-    return services
+            out.append(item)
+    out.sort(key=lambda s: str(s.get("name") or ""))
+    return out
 
 
-def _dashboard_service(
-    service: Dict[str, Any],
-    tasks: list[Dict[str, Any]],
-    node_by_id: dict[str, Dict[str, Any]],
+def _dashboard_service_from_nomad_job(
+    svc: Dict[str, Any],
     route_files: dict[str, Dict[str, Any]],
+    deployment_index: dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
-    spec = service.get("Spec") if isinstance(service.get("Spec"), dict) else {}
-    full_name = str(spec.get("Name") or service.get("ID") or "")
-    if not full_name:
+    name = str(svc.get("jobId") or svc.get("name") or "")
+    if not name:
         return {}
-    stack, name = _split_swarm_service_name(full_name)
-    template = spec.get("TaskTemplate") if isinstance(spec.get("TaskTemplate"), dict) else {}
-    container = template.get("ContainerSpec") if isinstance(template.get("ContainerSpec"), dict) else {}
-    placement = template.get("Placement") if isinstance(template.get("Placement"), dict) else {}
-    constraints = placement.get("Constraints") if isinstance(placement.get("Constraints"), list) else []
-    labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
-    route = _traefik_route_from_labels(labels)
-    compose_stack = str(labels.get("luma.compose.stack") or "").strip()
-    compose_service = str(labels.get("luma.compose.service") or "").strip()
-    route_id = f"{compose_stack}-{slugify(compose_service)}" if compose_stack and compose_service else stack or name
-    route_file = route_files.get(route_id) or route_files.get(stack or name) or route_files.get(name)
-    counts, task_nodes, task_rows = _dashboard_task_counts(tasks, node_by_id)
-    desired = _service_desired_replicas(spec, counts)
-    region = _constraint_value(constraints, "node.labels.region")
-    exposure = "none"
-    if route.get("domain"):
-        exposure = "external-edge" if region == "global" else "cn-edge"
-    elif route_file:
-        if route_file.get("kind") == "tcp":
-            exposure = "tcp-relay"
-        else:
-            exposure = "tailscale-relay"
-    return {
-        "stack": stack,
+    config = _dashboard_deployment_config(deployment_index, name, name, name, route_id=name)
+    route = _dashboard_route_for_service(route_files, name, name, name, route_id=name)
+    edge = _nomad_edge_route_from_task(svc)
+    domain = str(config.get("domain") or route.get("domain") or edge.get("domain") or "")
+    exposure = _dashboard_exposure(config, route, edge, region=str(svc.get("region") or ""))
+    running = int(svc.get("running") or 0)
+    route_id = str(route.get("id") or config.get("routeId") or "")
+    item: Dict[str, Any] = {
         "name": name,
-        "fullName": full_name,
-        "image": str(container.get("Image") or ""),
-        "desired": desired,
-        "running": counts["running"],
-        "failed": counts["failed"],
-        "pending": counts["pending"],
-        "nodes": task_nodes,
-        "region": region,
-        "node": _constraint_value(constraints, "node.labels.luma.node.name") or _constraint_value(constraints, "node.labels.luma.node.id"),
+        "stack": str(config.get("stack") or name),
+        "fullName": str(config.get("fullName") or name),
+        "status": str(svc.get("status") or ""),
+        "region": str(config.get("region") or svc.get("region") or ""),
         "exposure": exposure,
+        "domain": domain,
         "routeId": route_id,
-        "domain": str(route.get("domain") or (route_file or {}).get("domain") or ""),
-        "targetPort": str(route.get("port") or _route_file_target_port(route_file) or ""),
-        "network": str(route.get("network") or ""),
-        "health": _service_health(desired, counts),
-        "storage": _storage_from_labels(labels),
-        "resources": _service_resources(template),
-        "tasks": task_rows,
-        "diagnostics": _service_diagnostics(desired, counts, labels),
-        "_routeFile": route_file or {},
+        "upstreams": route.get("upstreams") if isinstance(route.get("upstreams"), list) else [],
+        "targetPort": str(config.get("targetPort") or _route_file_target_port(route) or ""),
+        "running": running,
+        "desired": int(svc.get("desired") or running),
+        "failed": int(svc.get("failed") or 0),
+        "pending": int(svc.get("pending") or 0),
+        "nodes": [str(node) for node in svc.get("nodes") or [] if node],
+        "tasks": svc.get("tasks") if isinstance(svc.get("tasks"), list) else [],
+        "storage": svc.get("storage") if isinstance(svc.get("storage"), list) else [],
+        "resources": svc.get("resources") if isinstance(svc.get("resources"), dict) else {},
     }
+    if route:
+        item["_routeFile"] = route
+    return item
+
+
+def _dashboard_service_from_nomad_task(
+    job: Dict[str, Any],
+    task: Dict[str, Any],
+    route_files: dict[str, Dict[str, Any]],
+    deployment_index: dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    stack = str(task.get("stack") or job.get("jobId") or job.get("name") or "")
+    name = str(task.get("name") or "")
+    if not stack or not name:
+        return {}
+    full_name = str(task.get("fullName") or _dashboard_task_full_name(stack, name, compose=True))
+    route_id = f"{stack}-{slugify(name)}"
+    config = _dashboard_deployment_config(deployment_index, stack, name, full_name, route_id=route_id)
+    route = _dashboard_route_for_service(route_files, stack, name, full_name, route_id=str(config.get("routeId") or route_id))
+    edge = _nomad_edge_route_from_task(task)
+    domain = str(config.get("domain") or route.get("domain") or edge.get("domain") or "")
+    exposure = _dashboard_exposure(config, route, edge, region=str(config.get("region") or task.get("region") or job.get("region") or ""))
+    tasks = task.get("tasks") if isinstance(task.get("tasks"), list) else []
+    nodes = [str(node) for node in task.get("nodes") or [] if node]
+    if not nodes:
+        nodes = sorted({str(item.get("node") or "") for item in tasks if isinstance(item, dict) and item.get("node")})
+    item: Dict[str, Any] = {
+        "name": name,
+        "stack": str(config.get("stack") or stack),
+        "fullName": str(config.get("fullName") or full_name),
+        "status": str(task.get("status") or job.get("status") or ""),
+        "region": str(config.get("region") or task.get("region") or job.get("region") or ""),
+        "node": str(config.get("node") or ""),
+        "exposure": exposure,
+        "domain": domain,
+        "routeId": str(route.get("id") or config.get("routeId") or ""),
+        "upstreams": route.get("upstreams") if isinstance(route.get("upstreams"), list) else [],
+        "targetPort": str(config.get("targetPort") or task.get("targetPort") or _route_file_target_port(route) or ""),
+        "publishPort": str(config.get("publishPort") or task.get("publishPort") or ""),
+        "image": str(task.get("image") or ""),
+        "running": int(task.get("running") or 0),
+        "desired": int(task.get("desired") or 0),
+        "failed": int(task.get("failed") or 0),
+        "pending": int(task.get("pending") or 0),
+        "nodes": nodes,
+        "tasks": tasks,
+        "storage": task.get("storage") if isinstance(task.get("storage"), list) else [],
+        "resources": task.get("resources") if isinstance(task.get("resources"), dict) else {},
+    }
+    item["diagnostics"] = _service_diagnostics(
+        int(item["desired"] or 0),
+        {"running": int(item["running"] or 0), "failed": int(item["failed"] or 0), "pending": int(item["pending"] or 0)},
+        {},
+    )
+    if route:
+        item["_routeFile"] = route
+    return item
+
+
+def _dashboard_deployment_service_index(state: Dict[str, Any]) -> tuple[dict[str, Dict[str, Any]], set[str]]:
+    deployments = state.get("deployments") if isinstance(state.get("deployments"), dict) else {}
+    index: dict[str, Dict[str, Any]] = {}
+    compose_stacks: set[str] = set()
+    for raw_slug, record in (deployments.get("services") if isinstance(deployments.get("services"), dict) else {}).items():
+        if not isinstance(record, dict):
+            continue
+        data = _safe_manifest_dict(record.get("manifest"))
+        name = slugify(str(data.get("name") or record.get("name") or raw_slug))
+        entry = {
+            "kind": "service",
+            "stack": name,
+            "name": name,
+            "fullName": name,
+            "region": str(data.get("region") or ""),
+            "exposure": str(data.get("exposure") or "none"),
+            "domain": str(data.get("domain") or ""),
+            "targetPort": _string_port(data.get("port")),
+            "node": str(data.get("node") or ""),
+            "routeId": name,
+        }
+        _put_dashboard_deployment_entry(index, entry)
+    for raw_slug, record in (deployments.get("compose") if isinstance(deployments.get("compose"), dict) else {}).items():
+        if not isinstance(record, dict):
+            continue
+        data = _safe_manifest_dict(record.get("manifest"))
+        stack = slugify(str(data.get("name") or record.get("name") or raw_slug))
+        if not stack:
+            continue
+        compose_stacks.add(stack)
+        default_region = str(data.get("region") or "")
+        raw_services = data.get("services") if isinstance(data.get("services"), dict) else {}
+        for service_name, raw_config in raw_services.items():
+            config = raw_config if isinstance(raw_config, dict) else {}
+            name = str(service_name)
+            route_id = f"{stack}-{slugify(name)}"
+            entry = {
+                "kind": "compose",
+                "stack": stack,
+                "name": name,
+                "fullName": _dashboard_task_full_name(stack, name, compose=True),
+                "region": str(config.get("region") or default_region),
+                "node": str(config.get("node") or ""),
+                "exposure": str(config.get("exposure") or "none"),
+                "domain": str(config.get("domain") or ""),
+                "targetPort": _string_port(config.get("port")),
+                "publishPort": _string_port(config.get("publishPort") or config.get("publish_port")),
+                "routeId": route_id,
+            }
+            _put_dashboard_deployment_entry(index, entry)
+    return index, compose_stacks
+
+
+def _safe_manifest_dict(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = yaml.safe_load(value)
+    except yaml.YAMLError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _put_dashboard_deployment_entry(index: dict[str, Dict[str, Any]], entry: Dict[str, Any]) -> None:
+    stack = str(entry.get("stack") or "")
+    name = str(entry.get("name") or "")
+    full_name = str(entry.get("fullName") or "")
+    route_id = str(entry.get("routeId") or "")
+    for key in {
+        f"{stack}:{name}",
+        f"{stack}:{slugify(name)}",
+        f"full:{full_name}",
+        f"route:{route_id}",
+    }:
+        if key and not key.endswith(":"):
+            index[key] = entry
+    if entry.get("kind") == "service":
+        index[f"job:{stack}"] = entry
+
+
+def _dashboard_deployment_config(
+    index: dict[str, Dict[str, Any]],
+    stack: str,
+    name: str,
+    full_name: str,
+    *,
+    route_id: str,
+) -> Dict[str, Any]:
+    for key in (
+        f"{stack}:{name}",
+        f"{stack}:{slugify(name)}",
+        f"full:{full_name}",
+        f"route:{route_id}",
+        f"job:{stack}",
+    ):
+        item = index.get(key)
+        if isinstance(item, dict):
+            return item
+    return {}
+
+
+def _dashboard_route_for_service(
+    route_files: dict[str, Dict[str, Any]],
+    stack: str,
+    name: str,
+    full_name: str,
+    *,
+    route_id: str,
+) -> Dict[str, Any]:
+    for key in (route_id, f"{stack}-{slugify(name)}", slugify(full_name), stack):
+        route = route_files.get(key)
+        if isinstance(route, dict):
+            return route
+    return {}
+
+
+def _dashboard_exposure(config: Dict[str, Any], route: Dict[str, Any], edge: Dict[str, str], *, region: str) -> str:
+    configured = str(config.get("exposure") or "")
+    if configured:
+        return configured
+    if route.get("kind") == "tcp":
+        return "tcp-relay"
+    if route.get("kind") == "http":
+        return "tailscale-relay"
+    if edge.get("domain"):
+        return "external-edge" if region == "global" else "cn-edge"
+    return "none"
+
+
+def _nomad_edge_route_from_task(item: Dict[str, Any]) -> Dict[str, str]:
+    services = item.get("nomadServices") if isinstance(item.get("nomadServices"), list) else []
+    for service in services:
+        if not isinstance(service, dict):
+            continue
+        for tag in service.get("Tags") or []:
+            domain = _host_from_rule(str(tag))
+            if domain:
+                return {"domain": domain}
+    return {}
+
+
+def _dashboard_task_full_name(stack: str, name: str, *, compose: bool = False) -> str:
+    if not compose and name == stack:
+        return stack
+    return f"{stack}_{name}"
+
+
+def _string_port(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return text if text else ""
 
 
 def _public_dashboard_service(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -3812,115 +4094,6 @@ def _dashboard_storage(services: list[Dict[str, Any]], storage_classes: list[Dic
                 if warning not in warnings:
                     warnings.append(warning)
     return {"storageClasses": storage_classes or [], "volumes": list(volumes.values()), "warnings": warnings}
-
-
-def _split_swarm_service_name(name: str) -> tuple[str, str]:
-    if "_" not in name:
-        return "", name
-    stack, service = name.split("_", 1)
-    return stack, service
-
-
-def _service_desired_replicas(spec: Dict[str, Any], counts: Dict[str, int]) -> int:
-    mode = spec.get("Mode") if isinstance(spec.get("Mode"), dict) else {}
-    replicated = mode.get("Replicated") if isinstance(mode.get("Replicated"), dict) else {}
-    replicas = replicated.get("Replicas")
-    if isinstance(replicas, int):
-        return replicas
-    total = counts["running"] + counts["pending"] + counts["failed"]
-    return total or 1
-
-
-def _dashboard_task_counts(tasks: list[Dict[str, Any]], node_by_id: dict[str, Dict[str, Any]]) -> tuple[Dict[str, int], list[str], list[Dict[str, Any]]]:
-    current_tasks = [task for task in tasks if str(task.get("DesiredState") or "") == "running"]
-    if not current_tasks:
-        current_tasks = tasks
-    counts = {"running": 0, "failed": 0, "pending": 0}
-    nodes: list[str] = []
-    task_rows: list[Dict[str, Any]] = []
-    for task in current_tasks:
-        status = task.get("Status") if isinstance(task.get("Status"), dict) else {}
-        state = str(status.get("State") or "").lower()
-        if state == "running":
-            counts["running"] += 1
-        elif state in {"failed", "rejected"}:
-            counts["failed"] += 1
-        elif state and state not in {"shutdown", "complete", "remove"}:
-            counts["pending"] += 1
-        node_id = str(task.get("NodeID") or "")
-        node = node_by_id.get(node_id)
-        node_label = str((node or {}).get("lumaNode") or node_id[:12])
-        if node_label and state not in {"failed", "rejected", "shutdown", "complete", "remove"} and node_label not in nodes:
-            nodes.append(node_label)
-        container_status = status.get("ContainerStatus") if isinstance(status.get("ContainerStatus"), dict) else {}
-        task_rows.append(
-            {
-                "id": str(task.get("ID") or "")[:12],
-                "node": node_label,
-                "region": str((node or {}).get("region") or ""),
-                "nodeAddress": str((node or {}).get("addr") or ""),
-                "state": state or "unknown",
-                "desiredState": str(task.get("DesiredState") or ""),
-                "containerId": str(container_status.get("ContainerID") or "")[:12],
-                "message": str(status.get("Message") or ""),
-                "error": str(status.get("Err") or ""),
-            }
-        )
-    return counts, nodes, task_rows
-
-
-def _service_resources(template: Dict[str, Any]) -> Dict[str, Any]:
-    resources = template.get("Resources") if isinstance(template.get("Resources"), dict) else {}
-    result: Dict[str, Any] = {}
-    for section_name, output_name in (("Limits", "limits"), ("Reservations", "reservations")):
-        section = resources.get(section_name) if isinstance(resources.get(section_name), dict) else {}
-        values: Dict[str, Any] = {}
-        nano_cpus = int(section.get("NanoCPUs") or 0)
-        memory = int(section.get("MemoryBytes") or 0)
-        if nano_cpus:
-            values["cpus"] = round(nano_cpus / 1_000_000_000, 3)
-        if memory:
-            values["memoryBytes"] = memory
-        if values:
-            result[output_name] = values
-    return result
-
-
-def _service_health(desired: int, counts: Dict[str, int]) -> str:
-    if desired > 0 and counts["running"] >= desired and counts["failed"] == 0 and counts["pending"] == 0:
-        return "running"
-    if counts["running"] > 0:
-        return "degraded"
-    if counts["pending"] > 0:
-        return "pending"
-    if counts["failed"] > 0:
-        return "failed"
-    return "unknown"
-
-
-def _constraint_value(constraints: list[Any], key: str) -> str:
-    for constraint in constraints:
-        text = str(constraint)
-        match = re.search(rf"{re.escape(key)}\s*==\s*([^\s]+)", text)
-        if match:
-            return match.group(1)
-    return ""
-
-
-def _traefik_route_from_labels(labels: Dict[str, Any]) -> Dict[str, str]:
-    route: Dict[str, str] = {}
-    for key, value in labels.items():
-        label_key = str(key)
-        label_value = str(value)
-        if label_key.startswith("traefik.http.routers.") and label_key.endswith(".rule") and not route.get("domain"):
-            host = _host_from_rule(label_value)
-            if host:
-                route["domain"] = host
-        elif label_key.endswith(".loadbalancer.server.port") and not route.get("port"):
-            route["port"] = label_value
-        elif label_key == "traefik.swarm.network":
-            route["network"] = label_value
-    return route
 
 
 def _host_from_rule(rule: str) -> str:
@@ -4030,144 +4203,40 @@ def _upstream_for_node(node_address: str, upstreams: list[Any]) -> str:
     return ""
 
 
-def _swarm_node_summary_item(node: Dict[str, Any]) -> Dict[str, Any]:
-    spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
-    description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
-    resources = description.get("Resources") if isinstance(description.get("Resources"), dict) else {}
-    status = node.get("Status") if isinstance(node.get("Status"), dict) else {}
-    manager_status = node.get("ManagerStatus") if isinstance(node.get("ManagerStatus"), dict) else {}
-    labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
-    return {
-        "id": str(node.get("ID") or "")[:12],
-        "rawId": str(node.get("ID") or ""),
-        "hostname": str(description.get("Hostname") or ""),
-        "role": str(spec.get("Role") or ""),
-        "availability": str(spec.get("Availability") or ""),
-        "state": str(status.get("State") or ""),
-        "addr": str(status.get("Addr") or ""),
-        "region": str(labels.get("region") or ""),
-        "lumaNode": str(labels.get("luma.node.name") or ""),
-        "lumaNodeId": str(labels.get("luma.node.id") or ""),
-        "ingress": str(labels.get("ingress") or ""),
-        "leader": bool(manager_status.get("Leader")),
-        "reachability": str(manager_status.get("Reachability") or ""),
-        "capacity": {
-            "cpus": round(int(resources.get("NanoCPUs") or 0) / 1_000_000_000, 3) if resources.get("NanoCPUs") else 0,
-            "memoryBytes": int(resources.get("MemoryBytes") or 0),
-        },
-        "labels": {str(key): str(value) for key, value in labels.items()},
-    }
-
-
-def _swarm_nodes_summary() -> Dict[str, Any]:
-    try:
-        nodes = docker_request("GET", "/nodes")
-    except LumaError as exc:
-        return {"available": False, "error": str(exc), "nodes": []}
-    if not isinstance(nodes, list):
-        return {"available": False, "error": "Docker API returned invalid node list", "nodes": []}
-    items: list[Dict[str, Any]] = []
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        items.append(_swarm_node_summary_item(node))
-    items.sort(key=lambda item: item.get("hostname") or item.get("id") or "")
-    return {"available": True, "nodes": items}
-
-
-def remove_swarm_node(node_name: str, record: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    nodes = docker_request("GET", "/nodes")
-    if not isinstance(nodes, list):
-        raise LumaError("Docker API returned invalid node list")
-    match = _match_luma_swarm_node(nodes, node_name=node_name, record=record)
-    if not match:
-        return {"removed": False, "message": "Swarm node not found"}
-    node_id = str(match.get("ID") or "")
-    if not node_id:
-        raise LumaError("Docker API returned invalid node id")
-    spec = match.get("Spec") if isinstance(match.get("Spec"), dict) else {}
-    manager_status = match.get("ManagerStatus") if isinstance(match.get("ManagerStatus"), dict) else {}
-    role = str(spec.get("Role") or "")
-    if role == "manager" or manager_status:
-        raise LumaError(f"refusing to remove Swarm manager node: {node_name}")
-    docker_request("DELETE", f"/nodes/{urllib.parse.quote(node_id, safe='')}?force=1")
-    return {"removed": True, "nodeId": node_id, "message": f"Swarm node removed: {node_id}"}
-
-
-def _match_luma_swarm_node(
-    nodes: list[Any],
-    *,
-    node_name: str,
-    record: Dict[str, Any] | None = None,
-) -> Dict[str, Any] | None:
-    record = record or {}
-    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-    wanted_ids = {
-        str(value).strip()
-        for value in [
-            node_name,
-            record.get("swarmNodeId"),
-            labels.get("luma.node.id"),
-        ]
-        if str(value or "").strip()
-    }
-    wanted_luma_names = {
-        str(value).strip()
-        for value in [
-            node_name,
-            record.get("displayName"),
-            labels.get("luma.node.name"),
-        ]
-        if str(value or "").strip()
-    }
-    node_items: list[tuple[Dict[str, Any], str, dict[str, Any]]] = []
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        node_id = str(node.get("ID") or "")
-        spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
-        node_labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
-        node_items.append((node, node_id, node_labels))
-
-    id_match = _unique_luma_swarm_node_match(
-        [
-            node
-            for node, node_id, node_labels in node_items
-            if any(
-                _node_id_matches(candidate, wanted)
-                for candidate in {node_id, str(node_labels.get("luma.node.id") or "")}
-                for wanted in wanted_ids
-            )
-        ],
-        node_name,
-    )
-    if id_match:
-        return id_match
-
-    name_match = _unique_luma_swarm_node_match(
-        [
-            node
-            for node, _node_id, node_labels in node_items
-            if str(node_labels.get("luma.node.name") or "") in wanted_luma_names
-        ],
-        node_name,
-    )
-    return name_match
-
-
-def _unique_luma_swarm_node_match(matches: list[Dict[str, Any]], node_name: str) -> Dict[str, Any] | None:
-    unique: dict[str, Dict[str, Any]] = {str(node.get("ID") or ""): node for node in matches if str(node.get("ID") or "")}
-    if len(unique) == 1:
-        return next(iter(unique.values()))
-    if len(unique) > 1:
-        raise LumaError(f"multiple Swarm nodes match {node_name}; remove by exact Swarm NodeID")
-    return None
-
-
 def _node_id_matches(candidate: str, wanted: str) -> bool:
     candidate = candidate.strip()
     wanted = wanted.strip()
     return bool(candidate and wanted and (candidate == wanted or candidate.startswith(wanted) or wanted.startswith(candidate)))
+
+
+def _nomad_log_target_from_state(state: Dict[str, Any], service: str) -> tuple[str, str]:
+    service = str(service or "").strip()
+    if not service:
+        return "", ""
+    deployment_index, compose_stacks = _dashboard_deployment_service_index(state)
+    seen: set[int] = set()
+    for entry in deployment_index.values():
+        if not isinstance(entry, dict):
+            continue
+        identity = id(entry)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        stack = str(entry.get("stack") or "")
+        name = str(entry.get("name") or "")
+        full_name = str(entry.get("fullName") or "")
+        route_id = str(entry.get("routeId") or "")
+        if service in {full_name, route_id, f"{stack}/{name}", f"{stack}:{name}"}:
+            return stack, name if entry.get("kind") == "compose" else ""
+    if "/" in service:
+        stack, task = service.split("/", 1)
+        if stack in compose_stacks:
+            return stack, task
+    if "_" in service:
+        stack, task = service.split("_", 1)
+        if stack in compose_stacks:
+            return stack, task
+    return service, ""
 
 
 class DockerSocketConnection(http.client.HTTPConnection):
@@ -4220,270 +4289,135 @@ def docker_request_bytes(method: str, path: str, *, headers: Dict[str, str] | No
         conn.close()
 
 
-def _decode_docker_log_lines(raw: bytes) -> list[str]:
-    chunks: list[bytes] = []
-    index = 0
-    while index + 8 <= len(raw):
-        stream_type = raw[index]
-        size = int.from_bytes(raw[index + 4:index + 8], "big")
-        if stream_type not in {0, 1, 2} or size < 0 or index + 8 + size > len(raw):
-            break
-        chunks.append(raw[index + 8:index + 8 + size])
-        index += 8 + size
-    if not chunks:
-        chunks = [raw]
-    elif index < len(raw):
-        chunks.append(raw[index:])
-    text = b"".join(chunks).decode("utf-8", errors="replace")
-    return [line.rstrip("\r") for line in text.splitlines() if line.strip()]
+def _nomad_log_lines(config: Any, state: Dict[str, Any], service: str, *, tail: int = 120) -> list[str]:
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    job_id, task_filter = _nomad_log_target_from_state(state, service)
+    if not job_id:
+        raise LumaError("service is required")
+    try:
+        allocations = client.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
+    except LumaError as exc:
+        raise LumaError(f"Nomad logs unavailable for {service}: {exc}") from exc
+    if not isinstance(allocations, list):
+        raise LumaError(f"Nomad logs unavailable for {service}: invalid allocation list")
+    active = [
+        item for item in allocations
+        if isinstance(item, dict)
+        and item.get("DesiredStatus") == "run"
+        and item.get("ClientStatus") == "running"
+    ]
+    candidates = active or [item for item in allocations if isinstance(item, dict)]
+    if not candidates:
+        raise LumaError(f"Nomad logs unavailable for {service}: no allocations found")
+    candidates.sort(key=lambda item: int(item.get("CreateTime") or item.get("CreateIndex") or 0), reverse=True)
 
-
-def _iter_docker_log_stream(response: Any):
-    """Yield decoded log lines from a streaming (follow) Docker logs response.
-
-    Non-TTY containers multiplex stdout/stderr with an 8-byte frame header
-    (stream_type, 3 reserved, 4-byte big-endian size); TTY containers send raw
-    bytes. We keep a persistent buffer and only consume complete frames, so a
-    read that splits a frame mid-way never loses bytes. Framing is decided from
-    the first 8 bytes, mirroring _decode_docker_log_lines."""
-    buffer = bytearray()
-    framed: bool | None = None
-    text_pending = ""
-
-    def take_lines(text: str, *, final: bool = False):
-        nonlocal text_pending
-        text_pending += text
-        parts = text_pending.split("\n")
-        text_pending = "" if final else parts.pop()
-        out = [line.rstrip("\r") for line in parts if line.strip()]
-        if final and text_pending.strip():
-            out.append(text_pending.rstrip("\r"))
-            text_pending = ""
-        return out
-
-    while True:
-        chunk = response.read(4096)
-        if not chunk:
-            break
-        buffer.extend(chunk)
-        if framed is None:
-            if len(buffer) < 8:
-                continue
-            framed = buffer[0] in (0, 1, 2) and int.from_bytes(buffer[4:8], "big") < (1 << 30)
-        if framed:
-            while len(buffer) >= 8:
-                size = int.from_bytes(buffer[4:8], "big")
-                if len(buffer) < 8 + size:
-                    break
-                payload = bytes(buffer[8:8 + size])
-                del buffer[: 8 + size]
-                for line in take_lines(payload.decode("utf-8", errors="replace")):
-                    yield line
+    sources: list[tuple[str, str, str]] = []
+    for allocation in candidates[:2]:
+        alloc_id = str(allocation.get("ID") or "")
+        task_states = allocation.get("TaskStates") if isinstance(allocation.get("TaskStates"), dict) else {}
+        if task_filter:
+            task_names = [task_filter] if (not task_states or task_filter in task_states) else []
         else:
-            text = bytes(buffer).decode("utf-8", errors="replace")
-            buffer.clear()
-            for line in take_lines(text):
-                yield line
-    for line in take_lines("", final=True):
-        yield line
+            task_names = [str(name) for name in task_states.keys() if str(name)]
+        if not task_names:
+            task_name = str(allocation.get("TaskGroup") or job_id)
+            task_names = [task_name] if task_name else []
+        for task_name in task_names:
+            sources.append((alloc_id, task_name, "stdout"))
+            sources.append((alloc_id, task_name, "stderr"))
+
+    lines: list[str] = []
+    label_sources = len({task for _, task, _ in sources}) > 1
+    for alloc_id, task_name, log_type in sources:
+        if not alloc_id or not task_name:
+            continue
+        query = urllib.parse.urlencode({
+            "task": task_name,
+            "type": log_type,
+            "origin": "end",
+            "offset": max(int(tail or 120) * 2048, 65536),
+        })
+        try:
+            raw_payload = client.request_text("GET", f"/v1/client/fs/logs/{urllib.parse.quote(alloc_id, safe='')}?{query}")
+            payload = _decode_nomad_log_payload(raw_payload)
+        except LumaError:
+            continue
+        if not isinstance(payload, dict) or not payload.get("Data"):
+            continue
+        try:
+            raw = base64.b64decode(str(payload.get("Data") or ""), validate=False)
+        except Exception:
+            continue
+        prefix = f"[{task_name}/{log_type}] " if label_sources else ""
+        for line in raw.decode("utf-8", errors="replace").splitlines():
+            stripped = line.rstrip("\r")
+            if stripped.strip():
+                lines.append(prefix + stripped)
+    if not lines:
+        return []
+    return lines[-tail:]
 
 
-def resolve_tailscale_relay(service: ServiceSpec) -> ServiceSpec:
-    if service.exposure != "tailscale-relay":
-        return service
-    if service.relay.get("url") or service.relay.get("host"):
-        return service
-    upstream_urls = _swarm_task_upstream_urls(service)
-    relay = dict(service.relay)
-    relay["urls"] = upstream_urls
-    return replace(service, relay=relay)
+def _decode_nomad_log_payload(raw_payload: str) -> Any:
+    text = str(raw_payload or "").lstrip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        try:
+            payload, _end = decoder.raw_decode(text)
+        except json.JSONDecodeError:
+            return None
+        return payload
 
 
-def resolve_tcp_relay(service: ServiceSpec) -> ServiceSpec:
-    if service.exposure != "tcp-relay":
+def resolve_nomad_static_route_target(
+    service: ServiceSpec,
+    state: Dict[str, Any],
+    *,
+    prefer_publish_port: bool = False,
+) -> ServiceSpec:
+    """Resolve Nomad relay routes from Luma node records.
+
+    Nomad tailscale-relay/tcp-relay jobs expose a host port on the target node.
+    Routes come from the stable Luma node identity plus the node's recorded
+    Tailscale/address metadata.
+    """
+    if service.exposure not in {"tailscale-relay", "tcp-relay"}:
         return service
-    if service.tcp.get("address") or service.tcp.get("host"):
+    if service.exposure == "tailscale-relay" and (service.relay.get("url") or service.relay.get("host")):
         return service
-    upstream_addresses = _swarm_task_upstream_addresses(service)
+    if service.exposure == "tcp-relay" and (service.tcp.get("address") or service.tcp.get("host")):
+        return service
+    if not service.node:
+        raise LumaError(f"{service.exposure} on Nomad requires node or an explicit relay/tcp host")
+    host = _nomad_route_host_for_node(state, service.node)
+    port = int(service.publish_port or service.port or 0)
+    if service.exposure == "tailscale-relay":
+        relay = dict(service.relay)
+        relay["host"] = host
+        relay["port"] = port
+        return replace(service, relay=relay)
     tcp = dict(service.tcp)
-    tcp["addresses"] = upstream_addresses
+    tcp["host"] = host
+    tcp["port"] = port
     return replace(service, tcp=tcp)
 
 
-def _ensure_tcp_relay_ingress(ports: list[int]) -> str:
-    wanted_ports = sorted({int(port) for port in ports if int(port) > 0})
-    if not wanted_ports:
-        return "No TCP ingress ports required"
-    service = docker_request("GET", "/services/traefik_traefik")
-    if not isinstance(service, dict):
-        raise LumaError("Docker API returned invalid Traefik service")
-    spec = service.get("Spec")
-    version = service.get("Version", {}).get("Index") if isinstance(service.get("Version"), dict) else None
-    service_id = str(service.get("ID") or "traefik_traefik")
-    if not isinstance(spec, dict) or not version:
-        raise LumaError("Traefik service is missing update metadata")
-    task_template = spec.setdefault("TaskTemplate", {})
-    if not isinstance(task_template, dict):
-        raise LumaError("Traefik service TaskTemplate is invalid")
-    container = task_template.setdefault("ContainerSpec", {})
-    if not isinstance(container, dict):
-        raise LumaError("Traefik service ContainerSpec is invalid")
-    args = container.setdefault("Args", [])
-    if not isinstance(args, list):
-        raise LumaError("Traefik service Args is invalid")
-    endpoint = spec.setdefault("EndpointSpec", {})
-    if not isinstance(endpoint, dict):
-        raise LumaError("Traefik service EndpointSpec is invalid")
-    published_ports = endpoint.setdefault("Ports", [])
-    if not isinstance(published_ports, list):
-        raise LumaError("Traefik service EndpointSpec.Ports is invalid")
-    changed = False
-    for port in wanted_ports:
-        name = tcp_entrypoint_name(port)
-        command = f"--entrypoints.{name}.address=:{port}"
-        if command not in args:
-            args.append(command)
-            changed = True
-        existing = [
-            item
-            for item in published_ports
-            if isinstance(item, dict)
-            and int(item.get("PublishedPort") or 0) == port
-            and str(item.get("Protocol") or "tcp").lower() == "tcp"
-        ]
-        incompatible = [
-            item
-            for item in existing
-            if int(item.get("TargetPort") or 0) != port or str(item.get("PublishMode") or "").lower() != "host"
-        ]
-        if incompatible:
-            raise LumaError(f"tcp-relay port {port} conflicts with existing Traefik published port")
-        if not existing:
-            published_ports.append(
-                {
-                    "Protocol": "tcp",
-                    "TargetPort": port,
-                    "PublishedPort": port,
-                    "PublishMode": "host",
-                }
-            )
-            changed = True
-    if not changed:
-        return "TCP ingress already configured: " + ", ".join(str(port) for port in wanted_ports)
-    docker_request("POST", f"/services/{urllib.parse.quote(service_id, safe='')}/update?version={version}", spec)
-    return "TCP ingress configured: " + ", ".join(str(port) for port in wanted_ports)
-
-
-def _swarm_task_upstream_urls(service: ServiceSpec) -> list[str]:
-    port = int(service.publish_port or service.port or 0)
-    if port < 1:
-        raise LumaError("tailscale-relay requires a valid port")
-    deadline = time.monotonic() + TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS
-    last_count = 0
-    while True:
-        urls, running_count = _running_task_upstream_urls(service, port)
-        if running_count >= service.replicas and urls:
-            return urls
-        last_count = running_count
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(2)
-    raise LumaError(
-        f"tailscale-relay service {service.slug} has {last_count}/{service.replicas} running tasks; "
-        "wait for the service to become ready or check luma status"
-    )
-
-
-def _swarm_task_upstream_addresses(service: ServiceSpec) -> list[str]:
-    port = int(service.publish_port or service.port or 0)
-    if port < 1:
-        raise LumaError("tcp-relay requires a valid port")
-    deadline = time.monotonic() + TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS
-    last_count = 0
-    while True:
-        addresses, running_count = _running_task_upstream_addresses(service, port)
-        if running_count >= service.replicas and addresses:
-            return addresses
-        last_count = running_count
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(2)
-    raise LumaError(
-        f"tcp-relay service {service.slug} has {last_count}/{service.replicas} running tasks; "
-        "wait for the service to become ready or check luma status"
-    )
-
-
-def _running_task_upstream_urls(service: ServiceSpec, port: int) -> tuple[list[str], int]:
-    addresses, running_count = _running_task_upstream_addresses(service, port)
-    return [f"http://{address}" for address in addresses], running_count
-
-
-def _running_task_upstream_addresses(service: ServiceSpec, port: int) -> tuple[list[str], int]:
-    node_by_id = _swarm_node_map()
-    service_name = service.swarm_service_name or f"{service.slug}_{service.slug}"
-    filters = urllib.parse.quote(json.dumps({"service": {service_name: True}, "desired-state": {"running": True}}), safe="")
-    try:
-        tasks = docker_request("GET", f"/tasks?filters={filters}")
-    except LumaError as exc:
-        if "service" in str(exc).lower() and "not found" in str(exc).lower():
-            return [], 0
-        raise
-    if not isinstance(tasks, list):
-        raise LumaError("Docker API returned invalid task list")
-    urls: list[str] = []
-    running_count = 0
-    for task in tasks:
-        if not isinstance(task, dict):
-            continue
-        status = task.get("Status") if isinstance(task.get("Status"), dict) else {}
-        if str(status.get("State") or "") != "running":
-            continue
-        node_id = str(task.get("NodeID") or "")
-        node = node_by_id.get(node_id)
-        if not node:
-            continue
-        if service.node_id and node_id != service.node_id:
-            continue
-        if service.node and not service.node_id and str(node.get("lumaNode") or "") != service.node:
-            continue
-        region = str(node.get("region") or "")
-        if region != service.region:
-            raise LumaError(f"service task is on node {node_id} in region {region or '-'}, not {service.region}")
-        addr = str(node.get("addr") or "")
-        if not addr:
-            raise LumaError(f"node {node_id} has no reachable Docker node address")
-        running_count += 1
-        address = f"{addr}:{port}"
-        if address not in urls:
-            urls.append(address)
-    return urls, running_count
-
-
-def _swarm_node_map() -> dict[str, dict[str, str]]:
-    nodes = docker_request("GET", "/nodes")
-    if not isinstance(nodes, list):
-        raise LumaError("Docker API returned invalid node list")
-    result: dict[str, dict[str, str]] = {}
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        node_id = str(node.get("ID") or "")
-        if not node_id:
-            continue
-        description = node.get("Description") if isinstance(node.get("Description"), dict) else {}
-        spec = node.get("Spec") if isinstance(node.get("Spec"), dict) else {}
-        labels = spec.get("Labels") if isinstance(spec.get("Labels"), dict) else {}
-        status = node.get("Status") if isinstance(node.get("Status"), dict) else {}
-        result[node_id] = {
-            "id": node_id,
-            "hostname": str(description.get("Hostname") or ""),
-            "region": str(labels.get("region") or ""),
-            "lumaNode": str(labels.get("luma.node.name") or ""),
-            "lumaNodeId": str(labels.get("luma.node.id") or ""),
-            "addr": str(status.get("Addr") or ""),
-        }
-    return result
+def _nomad_route_host_for_node(state: Dict[str, Any], node_name: str) -> str:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    if not record:
+        names = ", ".join(sorted(str(name) for name in nodes)) or "none"
+        raise LumaError(f"unknown Luma node: {node_name}. Registered nodes: {names}")
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    for key in ("tailscaleIP", "tailscaleIp", "tailscaleName", "address", "hostname", "name", "displayName"):
+        value = str(record.get(key) or labels.get(key) or "").strip()
+        if value:
+            return value
+    return node_name
 
 
 def resolve_service_image(
@@ -4528,7 +4462,7 @@ def _resolve_service_image_for_deployment(
     registry_auth: Dict[str, str] | None = None,
 ) -> tuple[ServiceSpec, Dict[str, Any]]:
     if not service.node:
-        return _deferred_service_image(config, service, registry_auth=registry_auth, reason="Swarm will pull on the scheduled node")
+        return _deferred_service_image(config, service, registry_auth=registry_auth, reason="Nomad will pull on the scheduled node")
 
     if not _node_agent_has_capability(state, service.node, "docker-image"):
         return _deferred_service_image(
@@ -4768,45 +4702,6 @@ def _has_registry(image: str) -> bool:
     return "." in first or ":" in first or first == "localhost"
 
 
-def label_swarm_node(node_name: str, labels: Dict[str, str], *, node_id: str = "") -> None:
-    if not node_id:
-        raise LumaError("nodeId is required for Swarm node labeling")
-    deadline = time.monotonic() + 60
-    match = None
-    while True:
-        nodes = docker_request("GET", "/nodes")
-        if not isinstance(nodes, list):
-            raise LumaError("Docker API returned invalid node list")
-        match = _match_swarm_node(nodes, node_name=node_name, node_id=node_id)
-        if match or time.monotonic() >= deadline:
-            break
-        time.sleep(2)
-    if not match:
-        target = node_id or node_name
-        raise LumaError(f"swarm node not found: {target}")
-    node_id = match["ID"]
-    inspected = docker_request("GET", f"/nodes/{urllib.parse.quote(node_id, safe='')}")
-    version = inspected.get("Version", {}).get("Index")
-    spec = inspected.get("Spec")
-    if not version or not isinstance(spec, dict):
-        raise LumaError(f"Docker API returned invalid node spec: {node_name}")
-    current_labels = spec.get("Labels") or {}
-    if not isinstance(current_labels, dict):
-        current_labels = {}
-    spec["Labels"] = {**current_labels, **labels}
-    docker_request("POST", f"/nodes/{urllib.parse.quote(node_id, safe='')}/update?version={version}", spec)
-
-
-def _match_swarm_node(nodes: list[Any], *, node_name: str, node_id: str = "") -> Dict[str, Any] | None:
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        candidate = str(node.get("ID") or "")
-        if candidate == node_id or candidate.startswith(node_id) or node_id.startswith(candidate):
-            return node
-    return None
-
-
 DASHBOARD_ASSETS = {
     "/dashboard/": ("dashboard/index.html", "text/html; charset=utf-8"),
     "/dashboard/app.js": ("dashboard/app.js", "application/javascript; charset=utf-8"),
@@ -4858,7 +4753,12 @@ class _TerminalAgentConnection:
     def __init__(self, node_name: str, websocket: WebSocket):
         self.node_name = node_name
         self.websocket = websocket
-        self.send_lock = asyncio.Lock()
+        self.send_lock: asyncio.Lock | None = None
+
+    def send_lock_for_loop(self) -> asyncio.Lock:
+        if self.send_lock is None:
+            self.send_lock = asyncio.Lock()
+        return self.send_lock
 
 
 class TerminalBroker:
@@ -4867,8 +4767,18 @@ class TerminalBroker:
         self.idle_timeout_seconds = max(int(idle_timeout_seconds or 1800), 60)
         self._agents: dict[str, _TerminalAgentConnection] = {}
         self._sessions: dict[str, _TerminalSession] = {}
-        self._lock = asyncio.Lock()
-        self._pending_auth = asyncio.Semaphore(max(self.per_node_limit * 4, 8))
+        self._lock: asyncio.Lock | None = None
+        self._pending_auth: asyncio.Semaphore | None = None
+
+    def _lock_for_loop(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    def _pending_auth_for_loop(self) -> asyncio.Semaphore:
+        if self._pending_auth is None:
+            self._pending_auth = asyncio.Semaphore(max(self.per_node_limit * 4, 8))
+        return self._pending_auth
 
     def connected_nodes(self) -> set[str]:
         return set(self._agents)
@@ -4893,7 +4803,7 @@ class TerminalBroker:
                 await websocket.close(code=1008)
                 return
         finally:
-            self._pending_auth.release()
+            self._pending_auth_for_loop().release()
         try:
             state = load_state()
             require_token(state, token, token_type="deploy")
@@ -4906,7 +4816,7 @@ class TerminalBroker:
         session: _TerminalSession | None = None
         idle_task: asyncio.Task[Any] | None = None
         try:
-            async with self._lock:
+            async with self._lock_for_loop():
                 agent = self._agents.get(node_name)
                 active = [item for item in self._sessions.values() if item.node_name == node_name and not item.closed]
                 if not agent:
@@ -4965,7 +4875,7 @@ class TerminalBroker:
                 await websocket.close(code=1008)
                 return
         finally:
-            self._pending_auth.release()
+            self._pending_auth_for_loop().release()
         try:
             state = load_state()
             _require_node_agent_token(state, token, node_name, node_id=node_id)
@@ -4973,7 +4883,7 @@ class TerminalBroker:
             await websocket.close(code=1008)
             return
         connection = _TerminalAgentConnection(node_name, websocket)
-        async with self._lock:
+        async with self._lock_for_loop():
             previous = self._agents.get(node_name)
             self._agents[node_name] = connection
         if previous:
@@ -4994,7 +4904,7 @@ class TerminalBroker:
         except Exception:
             pass
         finally:
-            async with self._lock:
+            async with self._lock_for_loop():
                 if self._agents.get(node_name) is connection:
                     self._agents.pop(node_name, None)
             session_ids = await self._session_ids_for_agent(node_name, connection)
@@ -5002,7 +4912,7 @@ class TerminalBroker:
                 await self.close_session(session_id, notify_agent=False, browser_message="terminal agent disconnected")
 
     async def forward_to_browser(self, session_id: str, message: Dict[str, Any]) -> None:
-        async with self._lock:
+        async with self._lock_for_loop():
             session = self._sessions.get(session_id)
         if not session or session.closed:
             return
@@ -5018,7 +4928,7 @@ class TerminalBroker:
             await self.close_session(session_id, notify_agent=kind in {"exit", "error"})
 
     async def close_session(self, session_id: str, *, notify_agent: bool, browser_message: str = "") -> None:
-        async with self._lock:
+        async with self._lock_for_loop():
             session = self._sessions.pop(session_id, None)
             if session:
                 session.closed = True
@@ -5039,7 +4949,7 @@ class TerminalBroker:
             await self._send_agent(session.agent, {"type": "close", "sessionId": session_id})
 
     async def close_agent(self, node_name: str) -> None:
-        async with self._lock:
+        async with self._lock_for_loop():
             agent = self._agents.pop(node_name, None)
         if agent:
             try:
@@ -5048,12 +4958,12 @@ class TerminalBroker:
                 pass
 
     async def _session_ids_for_agent(self, node_name: str, agent: _TerminalAgentConnection) -> list[str]:
-        async with self._lock:
+        async with self._lock_for_loop():
             return [sid for sid, item in self._sessions.items() if item.node_name == node_name and item.agent is agent]
 
     async def _acquire_pending_auth(self, websocket: WebSocket) -> bool:
         try:
-            await asyncio.wait_for(self._pending_auth.acquire(), timeout=0.1)
+            await asyncio.wait_for(self._pending_auth_for_loop().acquire(), timeout=0.1)
             return True
         except Exception:
             try:
@@ -5080,7 +4990,7 @@ class TerminalBroker:
 
     async def _send_agent(self, agent: _TerminalAgentConnection, message: Dict[str, Any]) -> None:
         try:
-            async with agent.send_lock:
+            async with agent.send_lock_for_loop():
                 await agent.websocket.send_json(message)
         except Exception:
             await self.close_agent(agent.node_name)
@@ -5105,7 +5015,7 @@ class ControlHandler(BaseHTTPRequestHandler):
         if parsed_path.startswith("/dashboard/"):
             try:
                 body, content_type = _dashboard_asset(parsed_path)
-                cache_control = "no-store" if parsed_path == "/dashboard/" else "public, max-age=60"
+                cache_control = "no-store"
                 self._bytes(200, body, content_type, cache_control=cache_control)
             except (LumaError, OSError):
                 self._json(404, {"error": "not found"})
@@ -5240,6 +5150,12 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/services/remove":
                 self._json(200, handle_service_remove(token, body))
                 return
+            if self.path == "/v1/services/rollback":
+                self._json(200, handle_service_rollback(token, body))
+                return
+            if self.path == "/v1/services/history":
+                self._json(200, handle_service_history(token, body))
+                return
             if self.path == "/v1/applications/restart":
                 self._json(200, handle_application_restart(token, body))
                 return
@@ -5312,31 +5228,16 @@ class ControlHandler(BaseHTTPRequestHandler):
             emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
 
     def _stream_service_logs(self, token: str, service: str, since: str, tail: int) -> None:
-        # Authenticate and open the Docker stream BEFORE sending headers, so a
-        # failure can still return a proper error status instead of a 200 with
-        # an error body.
-        require_token(load_state(), token, token_type="deploy")
+        state = load_state()
+        require_token(state, token, token_type="deploy")
         service = service.strip()
         if not service:
             raise LumaError("service is required")
         tail = min(max(int(tail or 120), 1), 1000)
-        query_values: Dict[str, Any] = {"stdout": 1, "stderr": 1, "timestamps": 1, "follow": 1, "tail": tail}
-        if since:
-            query_values["since"] = since
-        query = urllib.parse.urlencode(query_values)
-        api_version = os.environ.get("DOCKER_API_VERSION", "1.44")
-        conn = DockerSocketConnection()
-        try:
-            conn.request("GET", f"/v{api_version}/services/{urllib.parse.quote(service, safe='')}/logs?{query}")
-            response = conn.getresponse()
-        except OSError as exc:
-            conn.close()
-            raise LumaError("Docker socket unavailable to Luma Control") from exc
-        if response.status >= 400:
-            detail = response.read().decode("utf-8", errors="replace")
-            conn.close()
-            raise LumaError(f"Docker service logs unavailable for {service}: {detail}")
-
+        config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+        config = load_config(config_path)
+        _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+        lines = _nomad_log_lines(config, state, service, tail=tail)
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-cache")
@@ -5344,16 +5245,11 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(json.dumps({"status": "start", "service": service}, separators=(",", ":")).encode("utf-8") + b"\n")
+            for line in lines:
+                self.wfile.write(json.dumps({"line": line, "ts": int(time.time())}, separators=(",", ":")).encode("utf-8") + b"\n")
             self.wfile.flush()
-            for line in _iter_docker_log_stream(response):
-                event = {"line": line, "ts": int(time.time())}
-                self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
-                self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
-            # Client navigated away / closed the tab; normal for a live tail.
             pass
-        finally:
-            conn.close()
 
     def _read_json(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length") or "0")
@@ -5411,7 +5307,7 @@ async def _asgi_dashboard_asset(request: Request) -> Response:
         return RedirectResponse("/dashboard/", status_code=308)
     try:
         body, content_type = await run_in_threadpool(_dashboard_asset, parsed_path)
-        cache_control = "no-store" if parsed_path == "/dashboard/" else "public, max-age=60"
+        cache_control = "no-store"
         return Response(body, media_type=content_type, headers={"Cache-Control": cache_control})
     except (LumaError, OSError):
         return _json_response(404, {"error": "not found"})
@@ -5508,6 +5404,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/storage": handle_storage_set,
             "/v1/storage/remove": handle_storage_remove,
             "/v1/services/remove": handle_service_remove,
+            "/v1/services/rollback": handle_service_rollback,
+            "/v1/services/history": handle_service_history,
             "/v1/applications/restart": handle_application_restart,
             "/v1/fleet/update": handle_fleet_update,
             "/v1/secrets": handle_secret_set,
@@ -5564,65 +5462,24 @@ def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) 
 
 
 async def _asgi_stream_service_logs(token: str, service: str, since: str, tail: int) -> StreamingResponse:
-    require_token(load_state(), token, token_type="deploy")
+    state = load_state()
+    require_token(state, token, token_type="deploy")
     service = service.strip()
     if not service:
         raise LumaError("service is required")
     tail = min(max(int(tail or 120), 1), 1000)
-    query_values: Dict[str, Any] = {"stdout": 1, "stderr": 1, "timestamps": 1, "follow": 1, "tail": tail}
-    if since:
-        query_values["since"] = since
-    query = urllib.parse.urlencode(query_values)
-    api_version = os.environ.get("DOCKER_API_VERSION", "1.44")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
 
-    async def generate() -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
-        loop = asyncio.get_running_loop()
-        stop_event = threading.Event()
-        connection_holder: dict[str, DockerSocketConnection] = {}
+    async def generate_nomad() -> AsyncIterator[bytes]:
+        yield json.dumps({"status": "start", "service": service}, separators=(",", ":")).encode("utf-8") + b"\n"
+        lines = await run_in_threadpool(_nomad_log_lines, config, state, service, tail=tail)
+        now = int(time.time())
+        for line in lines:
+            yield json.dumps({"line": line, "ts": now}, separators=(",", ":")).encode("utf-8") + b"\n"
 
-        def emit(event: Dict[str, Any] | None) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, event)
-
-        def read_logs() -> None:
-            conn = DockerSocketConnection()
-            connection_holder["conn"] = conn
-            try:
-                conn.request("GET", f"/v{api_version}/services/{urllib.parse.quote(service, safe='')}/logs?{query}")
-                response = conn.getresponse()
-                if response.status >= 400:
-                    detail = response.read().decode("utf-8", errors="replace")
-                    emit({"status": "fail", "message": f"Docker service logs unavailable for {service}: {detail}"})
-                    return
-                emit({"status": "start", "service": service})
-                for line in _iter_docker_log_stream(response):
-                    if stop_event.is_set():
-                        break
-                    emit({"line": line, "ts": int(time.time())})
-            except OSError:
-                if not stop_event.is_set():
-                    emit({"status": "fail", "message": "Docker socket unavailable to Luma Control"})
-            except Exception as exc:
-                if not stop_event.is_set():
-                    emit({"status": "fail", "message": str(exc)})
-            finally:
-                conn.close()
-                emit(None)
-
-        threading.Thread(target=read_logs, daemon=True).start()
-        try:
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
-                yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
-        finally:
-            stop_event.set()
-            conn = connection_holder.get("conn")
-            if conn:
-                conn.close()
-
-    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(generate_nomad(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 async def _browser_terminal_ws(websocket: WebSocket) -> None:

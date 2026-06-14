@@ -79,7 +79,16 @@ def node_agent_container_stats() -> list[Dict[str, Any]]:
                 docker,
                 "ps",
                 "--format",
-                "{{.ID}}\t{{.Names}}\t{{.Label \"com.docker.swarm.service.name\"}}\t{{.Label \"com.docker.swarm.task.id\"}}",
+                "\t".join(
+                    [
+                        "{{.ID}}",
+                        "{{.Names}}",
+                        "{{.Label \"com.hashicorp.nomad.alloc_id\"}}",
+                        "{{.Label \"com.hashicorp.nomad.job_name\"}}",
+                        "{{.Label \"com.hashicorp.nomad.task_name\"}}",
+                        "{{.Label \"com.hashicorp.nomad.task_group_name\"}}",
+                    ]
+                ),
             ],
             text=True,
             stdout=subprocess.PIPE,
@@ -94,17 +103,30 @@ def node_agent_container_stats() -> list[Dict[str, Any]]:
     containers: dict[str, Dict[str, Any]] = {}
     for line in ps.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) < 4:
+        if len(parts) < 3:
             continue
-        container_id, name, service, task_id = (part.strip() for part in parts[:4])
-        if not container_id or not service or service == "<no value>":
+        padded = [part.strip() for part in parts] + [""] * 6
+        container_id, name, nomad_alloc_id, nomad_job, nomad_task, nomad_group = padded[:6]
+        service = ""
+        if nomad_job and nomad_job != "<no value>":
+            service = nomad_job
+        if not service and nomad_alloc_id and nomad_alloc_id != "<no value>":
+            service = f"nomad:{nomad_alloc_id}"
+        if not container_id or not service:
             continue
-        containers[container_id] = {
+        item: Dict[str, Any] = {
             "containerId": container_id,
             "name": name,
             "service": service,
-            "taskId": "" if task_id == "<no value>" else task_id,
+            "taskId": "" if nomad_task == "<no value>" else nomad_task,
         }
+        if nomad_alloc_id and nomad_alloc_id != "<no value>":
+            item["nomadAllocId"] = nomad_alloc_id
+        if nomad_task and nomad_task != "<no value>":
+            item["nomadTask"] = nomad_task
+        if nomad_group and nomad_group != "<no value>":
+            item["nomadGroup"] = nomad_group
+        containers[container_id] = item
     if not containers:
         return []
     ids = list(containers)[:200]
@@ -390,14 +412,14 @@ def _node_tailscale_watchdog_install_command(os_value: str | None = None) -> str
             "fi"
         )
     return (
-        "if command -v systemctl >/dev/null 2>&1 && command -v tailscale >/dev/null 2>&1 && command -v docker >/dev/null 2>&1; then "
+        "if command -v systemctl >/dev/null 2>&1 && command -v tailscale >/dev/null 2>&1; then "
         f"printf '%s' {shlex.quote(script)} > {shlex.quote(script_path)}; "
         f"chmod 755 {shlex.quote(script_path)}; "
         "cat > /etc/systemd/system/luma-node-tailscale-watchdog.service <<'EOF'\n"
         "[Unit]\n"
         "Description=Luma node Tailscale watchdog\n"
-        "After=network-online.target docker.service tailscaled.service\n"
-        "Wants=network-online.target docker.service tailscaled.service\n"
+        "After=network-online.target tailscaled.service nomad.service\n"
+        "Wants=network-online.target tailscaled.service\n"
         "\n"
         "[Service]\n"
         "Type=oneshot\n"
@@ -442,7 +464,8 @@ set -eu
 PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 export PATH
 threshold=${{LUMA_NODE_TAILSCALE_WATCHDOG_THRESHOLD:-3}}
-ports="${{LUMA_NODE_TAILSCALE_WATCHDOG_PORTS:-2377 7946}}"
+ports="${{LUMA_NODE_TAILSCALE_WATCHDOG_PORTS:-4647}}"
+configured_managers="${{LUMA_NODE_TAILSCALE_WATCHDOG_MANAGERS:-}}"
 state_dir=/var/run/luma
 state_file=$state_dir/node-tailscale-watchdog.failures
 mkdir -p "$state_dir"
@@ -467,22 +490,25 @@ is_tailnet_addr() {{
   esac
 }}
 manager_hosts() {{
-  docker info --format '{{{{range .Swarm.RemoteManagers}}}}{{{{.Addr}}}}{{{{"\\n"}}}}{{{{end}}}}' 2>/dev/null |
+  if [ -n "$configured_managers" ]; then
+    printf '%s\\n' "$configured_managers" | tr ',' '\\n'
+  else
+    for cfg in /etc/nomad.d/nomad.hcl /opt/nomad.d/nomad.hcl /usr/local/etc/nomad.d/nomad.hcl /opt/homebrew/etc/nomad.d/nomad.hcl; do
+      [ -f "$cfg" ] || continue
+      sed -n '/retry_join/s/.*=//p' "$cfg" | tr '[]",' '    ' | tr ' ' '\\n'
+    done
+  fi |
   while IFS= read -r addr; do
     [ -n "$addr" ] || continue
-    host=${{addr%:*}}
+    host=${{addr#*://}}
+    host=${{host%%/*}}
+    host=${{host%:*}}
     is_tailnet_addr "$host" && printf '%s\\n' "$host"
   done |
   sort -u
 }}
-if ! docker info >/dev/null 2>&1; then
-  log 'skip: Docker unavailable'
-  exit 0
-fi
-swarm_state=$(docker info --format '{{{{.Swarm.LocalNodeState}}}}' 2>/dev/null || true)
-[ "$swarm_state" = active ] || {{ log 'skip: Swarm inactive'; exit 0; }}
 managers=$(manager_hosts)
-[ -n "$managers" ] || {{ log 'skip: no Tailscale Swarm managers'; exit 0; }}
+[ -n "$managers" ] || {{ log 'skip: no Tailscale Nomad servers'; exit 0; }}
 checked=0
 bad=0
 for host in $managers; do
@@ -722,7 +748,8 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                 time.sleep(max(interval, 1))
                 continue
             if isinstance(task, dict) and task.get("id"):
-                _complete_agent_task(client, node_name=node_name, node_id=node_id, task=task)
+                if _complete_agent_task(client, node_name=node_name, node_id=node_id, task=task):
+                    return 0
             if once:
                 return 0
             time.sleep(max(interval, 1))
@@ -733,7 +760,7 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
             stats_sampler.stop()
 
 
-def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dict[str, Any]) -> None:
+def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dict[str, Any]) -> bool:
     task_id = str(task.get("id") or "")
     try:
         result = execute_agent_task(task)
@@ -745,6 +772,7 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
             message=str(result.get("message") or "ok"),
             result=result,
         )
+        return bool(result.get("restartAgent"))
     except Exception as exc:
         client.complete_agent_task(
             task_id=task_id,
@@ -754,6 +782,7 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
             message=str(exc),
             result={},
         )
+        return False
 
 
 def run_terminal_supervisor(config_path: Path = DEFAULT_AGENT_CONFIG) -> int:
@@ -1302,6 +1331,7 @@ def update_luma_install(*, install_ref: str = "") -> Dict[str, Any]:
         "installRef": install_ref,
         "message": f"Luma installer finished; {watchdog_message}",
         "output": _tail_text(output),
+        "restartAgent": True,
     }
 
 

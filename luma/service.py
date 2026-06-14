@@ -12,6 +12,7 @@ from .io import load_yaml
 VALID_REGIONS = {"cn", "global", "home"}
 VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge", "tcp-relay"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
+VALID_ENGINES = {"nomad"}
 TCP_RELAY_RESERVED_PORTS = {80, 443}
 
 
@@ -60,12 +61,11 @@ class ServiceSpec:
     stack_path: Optional[Path] = None
     route_path: Optional[Path] = None
     dns: Dict[str, Any] = field(default_factory=dict)
-    portainer: Dict[str, Any] = field(default_factory=dict)
     relay: Dict[str, Any] = field(default_factory=dict)
     tunnel: Dict[str, Any] = field(default_factory=dict)
     tcp: Dict[str, Any] = field(default_factory=dict)
     proxy: bool = False
-    swarm_service_name: Optional[str] = None
+    engine: str = ""
 
     @property
     def slug(self) -> str:
@@ -127,6 +127,10 @@ def load_service(path: Path) -> ServiceSpec:
         exposure = str(explicit_exposure)
     if exposure not in VALID_EXPOSURES:
         raise LumaError(f"exposure must be one of {sorted(VALID_EXPOSURES)}")
+
+    engine = str(raw.get("engine") or "")
+    if engine and engine not in VALID_ENGINES:
+        raise LumaError(f"engine must be one of {sorted(VALID_ENGINES)}")
 
     public = exposure != "none"
 
@@ -193,9 +197,8 @@ def load_service(path: Path) -> ServiceSpec:
     dns = raw.get("dns") or {}
     if not isinstance(dns, dict):
         raise LumaError("dns must be a mapping")
-    portainer = raw.get("portainer") or {}
-    if not isinstance(portainer, dict):
-        raise LumaError("portainer must be a mapping")
+    if "portainer" in raw:
+        raise LumaError("portainer is no longer supported")
 
     return ServiceSpec(
         source=path,
@@ -223,11 +226,11 @@ def load_service(path: Path) -> ServiceSpec:
         stack_path=Path(stack_path) if stack_path else None,
         route_path=Path(route_path) if route_path else None,
         dns=dns,
-        portainer=portainer,
         relay=relay,
         tunnel=tunnel,
         tcp=tcp,
         proxy=bool(raw.get("proxy", False)),
+        engine=engine,
     )
 
 

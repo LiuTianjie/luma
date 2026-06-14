@@ -15,15 +15,15 @@ class Profile:
 PROFILES: Dict[str, Profile] = {
     "single-node": Profile(
         name="single-node",
-        roles=["swarm-manager", "edge", "egress"],
+        roles=["nomad-manager", "edge", "egress"],
         labels={"region": "cn", "ingress": "true", "egress": "true"},
-        description="One public server running Swarm, Traefik, and egress gateway.",
+        description="One public server running Nomad, Traefik, and egress gateway.",
     ),
     "cn-edge": Profile(
         name="cn-edge",
-        roles=["swarm-manager", "edge"],
+        roles=["nomad-manager", "edge"],
         labels={"region": "cn", "ingress": "true"},
-        description="Domestic public edge with Traefik and Swarm manager.",
+        description="Domestic public edge with Traefik and Nomad server.",
     ),
     "egress-gateway": Profile(
         name="egress-gateway",

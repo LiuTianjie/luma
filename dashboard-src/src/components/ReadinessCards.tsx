@@ -12,8 +12,7 @@ function ReadyValue({ lang, value }: { lang: Lang; value?: boolean }) {
 export function ReadinessCards({ lang, payload }: { lang: Lang; payload: DashboardPayload }) {
   const cluster = payload.cluster || {};
   const dns = payload.readiness?.dns || {};
-  const portainer = payload.readiness?.portainer || {};
-  const swarm = payload.readiness?.swarm || {};
+  const nomad = payload.readiness?.nomad || {};
 
   return (
     <section className="summary-grid">
@@ -28,14 +27,14 @@ export function ReadinessCards({ lang, payload }: { lang: Lang; payload: Dashboa
         <small>{[dns.provider, dns.zone, dns.target].filter(Boolean).join(" / ") || "-"}</small>
       </article>
       <article>
-        <span>Portainer</span>
-        <ReadyValue lang={lang} value={portainer.ready} />
-        <small>api {flag(lang, portainer.apiConfigured)}, endpoint {flag(lang, portainer.endpointConfigured)}</small>
+        <span>Nomad</span>
+        <ReadyValue lang={lang} value={nomad.available} />
+        <small>{nomad.leader ? `leader ${nomad.leader}` : nomad.engine || "-"}</small>
       </article>
       <article>
-        <span>Swarm</span>
-        <ReadyValue lang={lang} value={swarm.available} />
-        <small>{swarm.available ? t(lang, "dockerReachable") : t(lang, "dockerUnavailable")}</small>
+        <span>{lang === "zh" ? "部署路径" : "Deploy path"}</span>
+        <strong className="ok">Nomad</strong>
+        <small>{lang === "zh" ? "控制面直接提交 Nomad job" : "Control submits Nomad jobs directly"}</small>
       </article>
     </section>
   );

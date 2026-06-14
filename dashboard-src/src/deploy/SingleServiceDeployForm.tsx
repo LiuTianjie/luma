@@ -150,10 +150,10 @@ export function SingleServiceDeployForm({
             </div>
           </label>
           <label className="deploy-toggle">
-            <input type="checkbox" checked={draft.skipPortainer} onChange={(event) => patch({ skipPortainer: event.target.checked })} />
+            <input type="checkbox" checked={draft.skipOrchestrator} onChange={(event) => patch({ skipOrchestrator: event.target.checked })} />
             <div>
-              <strong>{zh ? "跳过 Portainer" : "Skip Portainer"}</strong>
-              <span>{zh ? "部署时不通过 Portainer API 创建或更新 Swarm stack" : "Do not create or update the Swarm stack through the Portainer API during deploy."}</span>
+              <strong>{zh ? "跳过编排器" : "Skip orchestrator"}</strong>
+              <span>{zh ? "只写入配置和路由，不提交 Nomad 部署" : "Write configuration and routes without submitting the Nomad deploy."}</span>
             </div>
           </label>
         </div>

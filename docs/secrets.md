@@ -30,7 +30,6 @@ $EDITOR .env
 | `EGRESS_SUBSCRIPTION_URL` | Required only when using egress | Proxy subscription URL used to generate the Mihomo config for image-pull proxying and services with `proxy: true`. |
 | `TAILSCALE_AUTHKEY` | Needed for private/home/tailscale-relay nodes | Auth key for unattended Tailscale login. |
 | `LUMA_SUDO_PASSWORD` | Only when sudo requires a password | Local fallback password for privileged setup commands. Prefer passwordless sudo when possible. |
-| `LUMA_PORTAINER_ADMIN_PASSWORD` | Recovery only | Optional override when binding to an already-initialized Portainer admin account. |
 | `LUMA_CONTROL_IMAGE` | Development/pinned release only | Control API image used during manager bootstrap. |
 
 ## Runtime Secret Files
@@ -41,9 +40,9 @@ Control-plane state is written on the manager:
 /opt/luma/control/control.json
 ```
 
-It contains the cluster id, management token, node join token, Docker Swarm worker join token, and copied Cloudflare/Portainer environment values needed by the control API. This file must not be committed or copied to client machines.
+It contains the cluster id, management token, node join token, the Nomad gossip key, and copied Cloudflare environment values needed by the control API. This file must not be committed or copied to client machines.
 
-Luma Control also mounts `/var/run/docker.sock` so it can apply node labels after workers join. Treat management and node join tokens as cluster-admin sensitive.
+Luma Control also mounts `/var/run/docker.sock` and reaches the Nomad HTTP API so it can record node meta after clients join. Treat management and node join tokens as cluster-admin sensitive.
 
 ## Deployment Secrets
 
@@ -55,7 +54,7 @@ luma secret set API_TOKEN
 luma secret list
 ```
 
-`luma secret list` prints only names, not values. During deploy, Luma Control resolves the referenced values on the manager before sending the stack to Portainer. If a manifest references a missing secret, deploy fails before Portainer is updated:
+`luma secret list` prints only names, not values. During deploy, Luma Control resolves the referenced values on the manager before rendering the Nomad job. If a manifest references a missing secret, deploy fails before the job is submitted:
 
 ```yaml
 env:
@@ -80,9 +79,9 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 luma registry list
 ```
 
-Luma uses these credentials only for target-node image pulls and Portainer/Swarm registry association during deploy. They are not rendered into stack YAML and are not passed to service containers as environment variables. `luma registry list` returns only the registry host and username.
+Luma uses these credentials only for target-node image pulls and for injecting the docker `config.auth` block into the Nomad jobspec during deploy. They are not rendered into manifest YAML and are not passed to service containers as environment variables. `luma registry list` returns only the registry host and username.
 
-`luma registry remove <host>` removes the credential from Luma Control and attempts to delete only the matching Luma-managed Portainer registry entry. It does not revoke provider-issued tokens and cannot remove auth snapshots already attached to existing Swarm services; rotate or revoke the token at the registry provider when access must be invalidated.
+`luma registry remove <host>` removes the credential from Luma Control. It does not revoke provider-issued tokens and cannot remove auth already baked into a running job's spec; rotate or revoke the token at the registry provider when access must be invalidated.
 
 `.env` and `.env.*` are ignored by Git. `.env.example` is committed as the safe template.
 

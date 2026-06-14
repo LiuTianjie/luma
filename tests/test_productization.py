@@ -20,6 +20,7 @@ from luma.agent import (
     _ContainerStatsSampler,
     _agent_executable_args,
     _agent_install_command,
+    _complete_agent_task,
     _node_tailscale_watchdog_install_command,
     _node_tailscale_watchdog_script,
     _systemd_unit,
@@ -34,13 +35,9 @@ from luma.bootstrap import (
     _acme_email,
     _ensure_control_image,
     _ensure_control_image_pull_egress,
-    _force_update_service_image,
     _is_tailscale_manager_addr,
     _last_command_value,
-    _portainer_agent_image_candidates,
-    _render_traefik_stack,
     _resolve_control_image,
-    _reset_portainer_state,
     _traefik_ports,
     bootstrap_node,
     bootstrap_manager_local,
@@ -48,28 +45,25 @@ from luma.bootstrap import (
     configure_public_port_guards,
     configure_tailscale_watchdog,
     deploy_control_stack,
-    ensure_swarm,
-    initialize_portainer,
     install_control_config,
     install_docker,
+    local_host_name,
     refresh_manager_control_local,
     setup_tailscale,
-    verify_local_swarm_node,
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _run_host_prep_container, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
 from luma.egress import minimal_mihomo_config_from_bytes
 from luma.errors import LumaError
 from luma.local import LocalExecutor
-from luma.portainer import deploy_with_portainer, remove_luma_portainer_registry, remove_stack, upsert_stack
 from luma.profiles import PROFILES
-from luma.registry import registry_provider_type
+from luma.registry import DEFAULT_DOCKER_REGISTRY, registry_host_from_image, registry_provider_type
 from luma.service import ServiceSpec, load_service
-from luma.cli import _node_join_examples, _portainer_url_from_state, _run_with_wait_heartbeat, build_parser, exit_local_node, main
+from luma.cli import _node_join_examples, _run_with_wait_heartbeat, build_parser, exit_local_node, main
 from luma.userconfig import configured_keys, ensure_interactive_config, load_user_config
 
 
@@ -223,6 +217,7 @@ class ProductConfigTests(unittest.TestCase):
                 client.verify_login.return_value = {"clusterId": "luma-test"}
                 client.status.return_value = {
                     "dns": {"ready": False, "missing": ["dns.token"]},
+                    "nomad": {"available": True},
                     "portainer": {"ready": True},
                     "swarm": {"available": True, "nodes": []},
                     "nodes": {"items": [{"name": "manager", "agentStatus": "missing"}]},
@@ -235,8 +230,8 @@ class ProductConfigTests(unittest.TestCase):
                 output = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
                 self.assertIn("Control status: ok", output)
                 self.assertIn("DNS readiness: fail", output)
-                self.assertIn("Portainer readiness: ok", output)
-                self.assertIn("Swarm availability: ok", output)
+                self.assertIn("Nomad readiness: ok", output)
+                self.assertIn("Scheduler availability: ok", output)
                 self.assertIn("Registered nodes: ok", output)
                 self.assertIn("Node agent heartbeats: ok", output)
                 self.assertIn("missing: dns.token", output)
@@ -261,9 +256,9 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("luma-node-tailscale-watchdog.service", command)
         self.assertIn("luma-node-tailscale-watchdog.timer", command)
         self.assertIn("systemctl restart tailscaled", command)
-        self.assertIn("LUMA_NODE_TAILSCALE_WATCHDOG_PORTS:-2377 7946", command)
+        self.assertIn("LUMA_NODE_TAILSCALE_WATCHDOG_PORTS:-4647", command)
         self.assertIn("tailscale ping --timeout=3s --c 2", command)
-        self.assertIn("docker info --format", command)
+        self.assertNotIn("docker info --format", command)
 
     def test_node_agent_install_includes_macos_tailscale_watchdog(self):
         command = _node_tailscale_watchdog_install_command("darwin")
@@ -283,26 +278,30 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("systemctl restart luma-node-agent.service", command)
         self.assertIn("luma-node-tailscale-watchdog.timer", command)
 
-    def test_node_watchdog_script_checks_manager_swarm_ports(self):
+    def test_node_watchdog_script_checks_nomad_server_rpc(self):
         script = _node_tailscale_watchdog_script("linux")
 
-        self.assertIn(".Swarm.RemoteManagers", script)
+        self.assertIn("retry_join", script)
         self.assertIn('PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"', script)
-        self.assertIn("2377 7946", script)
+        self.assertIn("4647", script)
         self.assertIn("manager TCP probe failed", script)
         self.assertIn("manager Tailscale ping failed", script)
         self.assertIn("systemctl restart tailscaled", script)
 
-    def test_node_agent_container_stats_parse_swarm_service_stats(self):
-        ps = Mock(returncode=0, stdout="abc123\tapi.1\tapi_api\ttask-1\n")
+    def test_node_agent_container_stats_parse_nomad_alloc_stats(self):
+        allocation_id = "e3e43c17-59ac-1c40-1973-02ef2c05a4d2"
+        ps = Mock(
+            returncode=0,
+            stdout=f"abc123\ttraefik-{allocation_id}\t{allocation_id}\t<no value>\t<no value>\t<no value>\n",
+        )
         stats = Mock(
             returncode=0,
             stdout=json.dumps(
                 {
                     "ID": "abc123",
-                    "Name": "api.1",
-                    "CPUPerc": "8.50%",
-                    "MemUsage": "128MiB / 512MiB",
+                    "Name": f"traefik-{allocation_id}",
+                    "CPUPerc": "0.12%",
+                    "MemUsage": "64MiB / 256MiB",
                     "MemPerc": "25.00%",
                 }
             )
@@ -311,11 +310,81 @@ class ProductConfigTests(unittest.TestCase):
         with patch("shutil.which", return_value="/usr/bin/docker"), patch("subprocess.run", side_effect=[ps, stats]):
             result = node_agent_container_stats()
 
-        self.assertEqual(result[0]["service"], "api_api")
+        self.assertEqual(result[0]["service"], f"nomad:{allocation_id}")
+        self.assertEqual(result[0]["nomadAllocId"], allocation_id)
         self.assertEqual(result[0]["containerId"], "abc123")
-        self.assertEqual(result[0]["cpuPercent"], 8.5)
-        self.assertEqual(result[0]["memoryUsageBytes"], 134217728)
-        self.assertEqual(result[0]["memoryLimitBytes"], 536870912)
+        self.assertEqual(result[0]["cpuPercent"], 0.12)
+        self.assertEqual(result[0]["memoryUsageBytes"], 67108864)
+
+    def test_nomad_container_stats_normalize_alloc_id_to_job_service(self):
+        allocation_id = "e3e43c17-59ac-1c40-1973-02ef2c05a4d2"
+        config = LumaConfig({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}, None)
+
+        def request(_client, method, path, body=None):
+            self.assertEqual((method, path), ("GET", "/v1/allocations"))
+            return [
+                {
+                    "ID": allocation_id,
+                    "JobID": "traefik",
+                    "TaskGroup": "traefik",
+                    "NodeID": "node-1",
+                    "NodeName": "aly-host",
+                    "TaskStates": {"traefik": {"State": "running"}},
+                }
+            ]
+
+        with patch("luma.control.server.NomadApi.request", request):
+            result = _normalize_container_stats_for_engine(
+                [
+                    {
+                        "service": f"nomad:{allocation_id}",
+                        "nomadAllocId": allocation_id,
+                        "containerId": "abc123",
+                        "cpuPercent": 0.12,
+                        "memoryUsageBytes": 67108864,
+                    }
+                ],
+                config=config,
+                state={},
+            )
+
+        self.assertEqual(result[0]["service"], "traefik")
+        self.assertEqual(result[0]["nomadAllocId"], allocation_id)
+        self.assertEqual(result[0]["nomadTask"], "traefik")
+        self.assertEqual(result[0]["nomadGroup"], "traefik")
+        self.assertEqual(result[0]["nomadNode"], "aly-host")
+
+    def test_service_stats_by_name_maps_nomad_alloc_stats_to_job(self):
+        allocation_id = "e3e43c17-59ac-1c40-1973-02ef2c05a4d2"
+        config = LumaConfig({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}, None)
+
+        def request(_client, method, path, body=None):
+            self.assertEqual((method, path), ("GET", "/v1/allocations"))
+            return [{"ID": allocation_id, "JobID": "traefik", "TaskGroup": "traefik", "TaskStates": {"traefik": {"State": "running"}}}]
+
+        with patch("luma.control.server.NomadApi.request", request):
+            result = _service_stats_by_name(
+                [
+                    {
+                        "name": "aly",
+                        "containerStats": [
+                            {
+                                "service": f"nomad:{allocation_id}",
+                                "nomadAllocId": allocation_id,
+                                "containerId": "abc123",
+                                "cpuPercent": 0.12,
+                                "memoryUsageBytes": 67108864,
+                            }
+                        ],
+                    }
+                ],
+                config=config,
+                state={},
+            )
+
+        self.assertIn("traefik", result)
+        self.assertEqual(result["traefik"][0]["node"], "aly")
+        self.assertEqual(result["traefik"][0]["memoryUsageBytes"], 67108864)
 
     def test_node_agent_container_stats_sampler_snapshot_does_not_block_on_slow_docker(self):
         entered = threading.Event()
@@ -399,6 +468,23 @@ class ProductConfigTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["LUMA_INSTALL_REF"], "main")
         self.assertEqual(result["installRef"], "main")
         self.assertEqual(result["message"], "Luma installer finished; Tailscale watchdog installed")
+        self.assertTrue(result["restartAgent"])
+
+    def test_node_agent_update_task_requests_restart_after_completion(self):
+        client = Mock()
+        task = {"id": "task-1", "action": "update-luma", "payload": {}}
+        with patch("luma.agent.execute_agent_task", return_value={"message": "updated", "restartAgent": True}):
+            restart = _complete_agent_task(client, node_name="aly", node_id="node-1", task=task)
+
+        self.assertTrue(restart)
+        client.complete_agent_task.assert_called_once_with(
+            task_id="task-1",
+            node_name="aly",
+            node_id="node-1",
+            status="succeeded",
+            message="updated",
+            result={"message": "updated", "restartAgent": True},
+        )
 
     def test_node_agent_capabilities_include_fleet_update_and_terminal(self):
         from luma.agent import node_agent_capabilities
@@ -443,7 +529,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertEqual(result, "Public port guards installed")
         command = remote.sudo.call_args.args[0]
         self.assertIn("luma-public-port-guards.service", command)
-        self.assertIn("restrict_swarm_public=no", command)
+        self.assertIn("restrict_nomad_public=no", command)
         self.assertIn("add_input_drop tcp 7890", command)
         self.assertIn("add_prerouting_drop tcp 7890", command)
         self.assertIn("add_docker_drop tcp 7890", command)
@@ -452,7 +538,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("systemctl enable luma-public-port-guards.service", command)
         self.assertIn("systemctl restart luma-public-port-guards.service", command)
 
-    def test_configure_firewall_restricts_swarm_public_when_tailscale_is_present(self):
+    def test_configure_firewall_restricts_nomad_public_when_tailscale_is_present(self):
         remote = Mock()
 
         def run_result(command):
@@ -471,10 +557,10 @@ class ProductConfigTests(unittest.TestCase):
         ufw_command = remote.sudo.call_args_list[0].args[0]
         guard_command = remote.sudo.call_args_list[1].args[0]
         self.assertIn("ufw deny 7890/tcp", ufw_command)
-        self.assertIn("ufw allow 2377/tcp", ufw_command)
-        self.assertIn("restrict_swarm_public=yes", guard_command)
-        self.assertIn("add_input_drop tcp 2377", guard_command)
-        self.assertIn("add_input_drop udp 4789", guard_command)
+        self.assertIn("ufw allow 4647/tcp", ufw_command)
+        self.assertIn("restrict_nomad_public=yes", guard_command)
+        self.assertIn("add_input_drop tcp 4647", guard_command)
+        self.assertIn("add_input_drop udp 4648", guard_command)
 
     def test_configure_firewall_allows_configured_tcp_ports(self):
         remote = Mock()
@@ -506,64 +592,10 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("luma-tailscale-watchdog.service", command)
         self.assertIn("luma-tailscale-watchdog.timer", command)
         self.assertIn("tailscale ping --timeout=3s --c 2", command)
-        self.assertIn("port=${LUMA_TAILSCALE_WATCHDOG_PORT:-7946}", command)
+        self.assertIn("port=${LUMA_TAILSCALE_WATCHDOG_PORT:-4647}", command)
         self.assertIn("threshold=${LUMA_TAILSCALE_WATCHDOG_THRESHOLD:-3}", command)
         self.assertIn("systemctl restart tailscaled", command)
         self.assertIn("systemctl enable --now luma-tailscale-watchdog.timer", command)
-
-    def test_render_traefik_stack_does_not_require_configured_tcp_entrypoints(self):
-        stack = yaml.safe_load(_render_traefik_stack(LumaConfig({}, None)))
-        traefik = stack["services"]["traefik"]
-
-        self.assertNotIn("--entrypoints.tcp-3306.address=:3306", traefik["command"])
-        self.assertNotIn({"target": 3306, "published": 3306, "protocol": "tcp", "mode": "host"}, traefik["ports"])
-
-    def test_ensure_swarm_uses_tolerant_dispatcher_heartbeat(self):
-        remote = Mock()
-
-        def run_result(command):
-            if command == "uname -s":
-                return Mock(code=0, output="Linux\n")
-            if "tailscale ip -4" in command:
-                return Mock(code=0, output="100.64.0.10\n")
-            return Mock(code=1, output="")
-
-        remote.run_result.side_effect = run_result
-        remote.sudo.return_value = ""
-        node = LumaConfig(
-            {
-                "nodes": {
-                    "manager": {
-                        "host": "manager",
-                        "publicIp": "203.0.113.10",
-                    }
-                }
-            },
-            None,
-        ).get_node("manager")
-
-        result = ensure_swarm(remote, node)
-
-        self.assertEqual(result, "Swarm ready")
-        command = remote.sudo.call_args.args[0]
-        self.assertIn("docker swarm init --dispatcher-heartbeat 30s", command)
-        self.assertIn("docker swarm init --force-new-cluster --dispatcher-heartbeat 30s", command)
-        self.assertIn("docker swarm update --dispatcher-heartbeat 30s", command)
-
-    def test_ensure_swarm_dispatcher_heartbeat_can_be_overridden(self):
-        old_heartbeat = _set_env("LUMA_SWARM_DISPATCHER_HEARTBEAT", "45s")
-        try:
-            remote = Mock()
-            remote.run_result.side_effect = lambda command: Mock(code=0, output="Linux\n") if command == "uname -s" else Mock(code=1, output="")
-            remote.sudo.return_value = ""
-            node = LumaConfig({"nodes": {"manager": {"host": "manager", "publicIp": "203.0.113.10"}}}, None).get_node("manager")
-
-            ensure_swarm(remote, node)
-
-            command = remote.sudo.call_args.args[0]
-            self.assertIn("--dispatcher-heartbeat 45s", command)
-        finally:
-            _restore_env("LUMA_SWARM_DISPATCHER_HEARTBEAT", old_heartbeat)
 
     def test_new_config_model_reads_nodes_and_provider_dns(self):
         config = LumaConfig(
@@ -666,16 +698,6 @@ class ProductConfigTests(unittest.TestCase):
         config = LumaConfig({"providers": {"dns": {"zone": "example.net"}}}, None)
         self.assertEqual(_acme_email(config), "admin@example.net")
 
-    def test_portainer_agent_image_candidates_include_official_fallback(self):
-        config = LumaConfig({}, None)
-        candidates = _portainer_agent_image_candidates(config)
-        self.assertEqual(candidates[0], "docker.1panel.live/portainer/agent:2.21.5")
-        self.assertIn("portainer/agent:2.21.5", candidates)
-
-    def test_portainer_agent_image_override_disables_fallbacks(self):
-        config = LumaConfig({"defaults": {"images": {"portainerAgent": "registry.local/agent:test"}}}, None)
-        self.assertEqual(_portainer_agent_image_candidates(config), ["registry.local/agent:test"])
-
     def test_sudo_prompt_is_stripped_from_command_values(self):
         self.assertEqual(_last_command_value("[sudo] password for user: SWMTKN-1-token\n"), "SWMTKN-1-token")
 
@@ -685,24 +707,23 @@ class ProductConfigTests(unittest.TestCase):
         self.assertFalse(_is_tailscale_manager_addr("100.128.0.1:2377"))
         self.assertFalse(_is_tailscale_manager_addr("203.0.113.10:2377"))
 
-    def test_packaged_core_stack_assets_are_available(self):
-        self.assertIn("traefik", asset_text("stacks/core/traefik/stack.yml"))
-        self.assertIn("luma-control", asset_text("stacks/core/luma-control/stack.yml"))
+    def test_packaged_dashboard_assets_are_available(self):
         self.assertIn("Luma · 控制台", asset_text("dashboard/index.html"))
         self.assertIn("/v1/dashboard", asset_text("dashboard/app.js"))
         self.assertGreater(asset_path("dashboard/asset-luma-logo-mark.png").stat().st_size, 0)
         root = Path(__file__).resolve().parents[1]
         self.assertIn('"assets/dashboard/*"', (root / "pyproject.toml").read_text(encoding="utf-8"))
 
-    def test_luma_control_stack_uses_healthcheck_and_start_first_update(self):
-        stack = yaml.safe_load(asset_text("stacks/core/luma-control/stack.yml"))
-        service = stack["services"]["luma-control"]
+    def test_luma_control_nomad_job_uses_autorevert_and_node_pin(self):
+        from luma.nomad_render import render_control_job
 
-        self.assertIn("/v1/health", " ".join(service["healthcheck"]["test"]))
-        update_config = service["deploy"]["update_config"]
-        self.assertEqual(update_config["order"], "start-first")
-        self.assertEqual(update_config["failure_action"], "rollback")
-        self.assertEqual(update_config["parallelism"], 1)
+        job = render_control_job(image="ghcr.io/gaojiu/luma-control:0.1.0", node_name="aly", as_json=False)["Job"]
+        self.assertEqual(job["ID"], "luma-control")
+        self.assertEqual(job["Update"]["AutoRevert"], True)
+        self.assertEqual(job["Update"]["MinHealthyTime"], 6_000_000_000)
+        self.assertEqual(job["Update"]["HealthyDeadline"], 120_000_000_000)
+        self.assertEqual(job["Constraints"][0]["LTarget"], "${meta.luma_node_name}")
+        self.assertEqual(job["Constraints"][0]["RTarget"], "aly")
 
 
 class EgressConfigTests(unittest.TestCase):
@@ -780,10 +801,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.http_port, 10080)
         self.assertEqual(args.https_port, 10443)
 
-    def test_deploy_defaults_to_portainer_control_plane(self):
+    def test_deploy_defaults_to_control_plane(self):
         args = build_parser().parse_args(["deploy", "app.yaml"])
         self.assertEqual(args.command, "deploy")
-        self.assertEqual(args.via, "portainer")
         self.assertEqual(args.timeout, 1800)
 
     def test_service_remove_parser_defaults_to_full_cleanup(self):
@@ -791,7 +811,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "service")
         self.assertEqual(args.service_command, "remove")
         self.assertFalse(args.skip_dns)
-        self.assertFalse(args.skip_portainer)
+        self.assertFalse(args.skip_orchestrator)
         self.assertFalse(args.delete_storage)
         self.assertFalse(args.dry_run)
         self.assertEqual(args.timeout, 300)
@@ -910,10 +930,10 @@ class CliTests(unittest.TestCase):
                 client.remove_service.return_value = {
                     "service": "api",
                     "dryRun": True,
-                    "portainer": "Portainer stack would be removed: api",
+                    "portainer": "Nomad job would be removed: api",
                     "generatedFiles": "Generated files would be removed: /opt/luma/stacks/cn/api",
                     "steps": [
-                        {"name": "Remove Portainer stack", "status": "ok", "message": "Portainer stack would be removed: api"},
+                        {"name": "Remove Nomad job", "status": "ok", "message": "Nomad job would be removed: api"},
                     ],
                 }
                 with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
@@ -953,10 +973,10 @@ class CliTests(unittest.TestCase):
                 client.deploy.return_value = {
                     "service": "api",
                     "image": {"selected": "nginx:alpine"},
-                    "portainer": "Portainer stack updated for api: api",
+                    "portainer": "Nomad job deployed for api: api",
                     "steps": [
                         {"name": "Sync DNS", "status": "ok", "message": "DNS skipped: service is not public"},
-                        {"name": "Deploy Portainer stack", "status": "ok", "message": "Portainer stack updated for api: api"},
+                        {"name": "Deploy Nomad job", "status": "ok", "message": "Nomad job deployed for api: api"},
                     ],
                 }
                 with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
@@ -968,7 +988,7 @@ class CliTests(unittest.TestCase):
                 self.assertIn("[start] Load deploy context", printed_text)
                 self.assertIn("[start] Waiting for control plane response (timeout 42s)", printed_text)
                 self.assertIn("[ok] Sync DNS: DNS skipped: service is not public", printed_text)
-                self.assertIn("[ok] Deploy Portainer stack: Portainer stack updated for api: api", printed_text)
+                self.assertIn("[ok] Deploy Nomad job: Nomad job deployed for api: api", printed_text)
                 self.assertIn("[ok] Deploy finished: api", printed_text)
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -1115,7 +1135,7 @@ class CliTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["result"]["dryRun"])
         self.assertEqual(payload["result"]["service"]["name"], "api")
-        self.assertEqual(payload["result"]["artifacts"][0]["kind"], "stack")
+        self.assertEqual(payload["result"]["artifacts"][0]["kind"], "job")
 
     def test_compose_validate_json_reports_degraded_context(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1278,9 +1298,6 @@ class CliTests(unittest.TestCase):
                 self.assertIn("Zone Read and DNS Edit", printed_text)
                 self.assertIn("LUMA_DNS_EDGE_TARGET [optional", printed_text)
                 self.assertIn("EGRESS_SUBSCRIPTION_URL [optional", printed_text)
-                self.assertIn("Portainer URL: https://203.0.113.10:9443", printed_text)
-                self.assertIn("Portainer username: admin", printed_text)
-                self.assertIn("Portainer password: sudo jq", printed_text)
                 self.assertNotIn("portainer-secret", printed_text)
                 self.assertIn(
                     "cn worker: luma node join https://luma.example.com --token",
@@ -1368,12 +1385,6 @@ class CliTests(unittest.TestCase):
                 _restore_env("TRAEFIK_ACME_EMAIL", old_email)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
-
-    def test_portainer_url_from_state_strips_api_suffix(self):
-        self.assertEqual(
-            _portainer_url_from_state({"portainerApiUrl": "https://203.0.113.10:9443/api"}),
-            "https://203.0.113.10:9443",
-        )
 
     def test_node_join_examples_are_region_first(self):
         examples = _node_join_examples("https://luma.example.com", "join-token")
@@ -1526,7 +1537,7 @@ class CliTests(unittest.TestCase):
     def test_update_joined_node_skips_agent_refresh_when_control_is_too_old(self):
         with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
             "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
-        ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_docker_node_id", return_value="node-1"), patch(
+        ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_nomad_node_id", return_value="node-1"), patch(
             "luma.cli._control_context",
             return_value=("https://luma.example.com", "management-token", False, None),
         ), patch(
@@ -1545,7 +1556,7 @@ class CliTests(unittest.TestCase):
     def test_update_joined_node_skips_agent_refresh_when_node_is_unregistered(self):
         with patch("luma.cli._run_luma_installer") as installer, patch("luma.cli._reexec_after_luma_update"), patch(
             "luma.cli._manager_refresh_decision", return_value=(False, "no local manager control state found")
-        ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_docker_node_id", return_value="stale-node-id"), patch(
+        ), patch("luma.cli._local_agent_config", return_value=None), patch("luma.cli._safe_local_nomad_node_id", return_value="stale-node-id"), patch(
             "luma.cli._control_context",
             return_value=("https://luma.example.com", "management-token", False, None),
         ), patch(
@@ -1573,7 +1584,7 @@ class CliTests(unittest.TestCase):
                 "nodeName": "home-mac-mini",
                 "nodeId": "old-node-id",
             },
-        ), patch("luma.cli._safe_local_docker_node_id", return_value="new-node-id"), patch(
+        ), patch("luma.cli._safe_local_nomad_node_id", return_value="new-node-id"), patch(
             "luma.cli._control_context",
             return_value=("https://luma.example.com", "join-token", False, None),
         ) as context, patch(
@@ -1741,12 +1752,6 @@ class CliTests(unittest.TestCase):
                         "target": "203.0.113.10",
                         "ready": True,
                     },
-                    "portainer": {
-                        "apiUrl": "https://100.64.0.1:9443/api",
-                        "endpointIdConfigured": True,
-                        "swarmIdConfigured": True,
-                        "ready": True,
-                    },
                     "storage": {
                         "storageClasses": [
                             {
@@ -1766,22 +1771,25 @@ class CliTests(unittest.TestCase):
                             {"name": "docker-home", "region": "home", "status": "labeled", "displayName": "mini-gaojiu"},
                         ],
                     },
-                    "swarm": {
+                    "nomad": {
                         "available": True,
+                        "leader": "100.64.0.1:4647",
                         "nodes": [
                             {
                                 "hostname": "manager",
-                                "role": "manager",
+                                "lumaNode": "manager",
+                                "role": "client",
                                 "state": "ready",
-                                "availability": "active",
+                                "availability": "eligible",
                                 "region": "cn",
                                 "leader": True,
                             },
                             {
                                 "hostname": "docker-home",
-                                "role": "worker",
+                                "lumaNode": "docker-home",
+                                "role": "client",
                                 "state": "ready",
-                                "availability": "active",
+                                "availability": "eligible",
                                 "region": "home",
                                 "leader": False,
                             },
@@ -1802,16 +1810,16 @@ class CliTests(unittest.TestCase):
         self.assertIn("DNS", printed_text)
         self.assertIn("Ready     yes", printed_text)
         self.assertIn("Provider  cloudflare", printed_text)
-        self.assertIn("Portainer", printed_text)
+        self.assertIn("Orchestrator (Nomad)", printed_text)
         self.assertIn("Storage", printed_text)
         self.assertIn("Summary: storageClasses=1", printed_text)
         self.assertIn("cn-nfs", printed_text)
         self.assertIn("/srv/luma", printed_text)
         self.assertIn("Nodes", printed_text)
-        self.assertIn("Summary: registered=2, swarm=2", printed_text)
+        self.assertIn("Summary: registered=2, nomad=2", printed_text)
         self.assertIn("NAME         REGION", printed_text)
-        self.assertIn("docker-home  home    labeled     ready  worker", printed_text)
-        self.assertIn("manager      cn      labeled     ready  manager", printed_text)
+        self.assertIn("docker-home  home    labeled     ready  client", printed_text)
+        self.assertIn("manager      cn      labeled     ready  client", printed_text)
 
     def test_status_prints_dns_missing_reasons(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1958,16 +1966,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payloads[0]["result"]["secrets"], ["DATABASE_URL"])
         self.assertEqual(payloads[1]["result"]["registries"][0]["host"], "ghcr.io")
 
-    def test_node_exit_cleans_local_swarm_and_runtime_state(self):
+    def test_node_exit_cleans_local_nomad_and_runtime_state(self):
         remote = Mock()
-        remote.sudo_result.return_value = Mock(code=0, output="left\n")
+        remote.sudo_result.return_value = Mock(code=0, output="stopped\n")
         remote.sudo.return_value = ""
 
         with patch("luma.cli.LocalExecutor", return_value=remote):
             results = exit_local_node()
 
-        self.assertEqual(results, ["Swarm left", "Removed /opt/luma"])
-        self.assertIn("docker swarm leave --force", remote.sudo_result.call_args.args[0])
+        self.assertEqual(results, ["Nomad agent stopped", "Removed /opt/luma"])
+        self.assertIn("nomad", remote.sudo_result.call_args.args[0])
         remote.sudo.assert_called_once_with("rm -rf /opt/luma")
 
     def test_node_exit_optional_deep_cleanup(self):
@@ -1984,7 +1992,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(
             results,
-            ["Swarm leave skipped", "Removed /opt/luma", "Tailscale logged out", "Docker pruned"],
+            ["Nomad agent stop skipped", "Removed /opt/luma", "Tailscale logged out", "Docker pruned"],
         )
         commands = [call.args[0] for call in remote.sudo_result.call_args_list]
         self.assertTrue(any("tailscale logout" in command for command in commands))
@@ -2002,8 +2010,7 @@ class CliTests(unittest.TestCase):
                 client.register_node.return_value = {
                     "nodeName": "worker-1",
                     "region": "global",
-                    "managerAddr": "100.64.0.1:2377",
-                    "swarmJoinToken": "swarm-token",
+                    "nomadRpcAddr": "100.64.0.1:4647",
                 }
                 client.label_node.return_value = {"message": "labels applied"}
                 with patch("sys.stdin.isatty", return_value=True), patch(
@@ -2012,10 +2019,8 @@ class CliTests(unittest.TestCase):
                     "luma.cli.install_docker", return_value="Docker available"
                 ), patch(
                     "luma.cli.ControlClient", return_value=client
-                ), patch("luma.cli.join_local_node", return_value=[]), patch(
-                    "luma.cli.local_docker_node_name", return_value="worker-1"
-                ), patch(
-                    "luma.cli.local_docker_node_id", return_value="node-id-1"
+                ), patch("luma.cli.install_nomad_node", return_value=[]), patch(
+                    "luma.cli.local_nomad_node_info", return_value=("worker-1", "node-id-1")
                 ), patch(
                     "luma.cli._local_tailscale_ip", return_value="100.64.0.10"
                 ):
@@ -2047,30 +2052,6 @@ class CliTests(unittest.TestCase):
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
-
-    def test_verify_local_swarm_node_rejects_error_state(self):
-        remote = Mock()
-        remote.run_result.return_value = Mock(
-            code=0,
-            output=(
-                "state=error nodeID= error=rpc error: code = DeadlineExceeded "
-                "desc = context deadline exceeded while waiting for connections to become ready\n"
-            ),
-        )
-
-        with self.assertRaisesRegex(LumaError, "Docker Swarm joined locally but is not healthy"):
-            verify_local_swarm_node(remote)
-
-    def test_verify_local_swarm_node_requires_node_id(self):
-        remote = Mock()
-        remote.run_result.side_effect = [
-            Mock(code=0, output="state=active nodeID= error=\n"),
-            Mock(code=0, output="state=active nodeID= error=\n"),
-        ]
-
-        with patch("luma.bootstrap.time.monotonic", side_effect=[0, 3, 30]), patch("luma.bootstrap.time.sleep"):
-            with self.assertRaisesRegex(LumaError, "did not produce an active local node"):
-                verify_local_swarm_node(remote)
 
     def test_home_node_join_requires_tailscale_key_when_disconnected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2117,8 +2098,7 @@ class CliTests(unittest.TestCase):
                 client.register_node.return_value = {
                     "nodeName": "home-mac-mini",
                     "region": "home",
-                    "managerAddr": "100.64.0.1:2377",
-                    "swarmJoinToken": "swarm-token",
+                    "nomadRpcAddr": "100.64.0.1:4647",
                 }
                 client.label_node.return_value = {"message": "labels applied"}
                 with patch("sys.stdin.isatty", return_value=True), patch(
@@ -2127,9 +2107,8 @@ class CliTests(unittest.TestCase):
                     "luma.cli.configure_dns", return_value="DNS ok"
                 ), patch("luma.cli.install_docker", return_value="Docker available"
                 ), patch("luma.cli.ControlClient", return_value=client), patch(
-                    "luma.cli.join_local_node", return_value=[]
-                ), patch("luma.cli.local_docker_node_name", return_value="docker-home"), patch(
-                    "luma.cli.local_docker_node_id", return_value="home-id-1"
+                    "luma.cli.install_nomad_node", return_value=[]
+                ), patch("luma.cli.local_nomad_node_info", return_value=("docker-home", "home-id-1")
                 ), patch(
                     "luma.cli._local_tailscale_ip", return_value="100.64.0.20"
                 ):
@@ -2156,6 +2135,74 @@ class CliTests(unittest.TestCase):
                     tailscale_ip="100.64.0.20",
                 )
                 self.assertIn("TAILSCALE_AUTHKEY", configured_keys(config_path))
+            finally:
+                _restore_env("LUMA_USER_CONFIG", old_config)
+                _restore_env("TAILSCALE_AUTHKEY", old_ts)
+                _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
+
+    def test_nomad_node_join_labels_and_installs_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".luma.config.json"
+            old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
+            old_ts = _set_env("TAILSCALE_AUTHKEY", "")
+            old_sudo = _set_env("LUMA_SUDO_PASSWORD", "")
+            try:
+                client = Mock()
+                client.register_node.return_value = {
+                    "nodeName": "bot",
+                    "region": "global",
+                    "nomadRpcAddr": "100.113.204.125:4647",
+                }
+                client.label_node.return_value = {
+                    "message": "labels applied",
+                    "agentToken": "agent-token",
+                    "nodeName": "bot",
+                }
+                with patch("sys.stdin.isatty", return_value=True), patch(
+                    "luma.userconfig.getpass.getpass", return_value="sudo-pass"
+                ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
+                    "luma.cli.install_docker", return_value="Docker available"
+                ), patch("luma.cli.ControlClient", return_value=client), patch(
+                    "luma.cli.install_nomad_node", return_value=[]
+                ) as install_nomad, patch(
+                    "luma.cli.local_nomad_node_info", return_value=("bot-host", "nomad-node-id")
+                ), patch(
+                    "luma.cli._local_tailscale_ip", return_value="100.80.0.20"
+                ), patch(
+                    "luma.cli._install_node_agent_from_token"
+                ) as install_agent:
+                    code = main(
+                        [
+                            "node",
+                            "join",
+                            "https://luma.example.com",
+                            "--token",
+                            "join-token",
+                            "--region",
+                            "global",
+                            "--name",
+                            "bot",
+                            "--engine",
+                            "nomad",
+                        ]
+                    )
+
+                self.assertEqual(code, 0)
+                client.register_node.assert_called_once_with(node_name="bot", region="global")
+                install_nomad.assert_called_once()
+                install_kwargs = install_nomad.call_args.kwargs
+                self.assertEqual(install_kwargs["server_addrs"], ["100.113.204.125:4647"])
+                self.assertIsNone(install_kwargs["egress_proxy"])
+                client.label_node.assert_called_once_with(
+                    node_name="bot-host",
+                    region="global",
+                    registered_name="bot",
+                    node_id="nomad-node-id",
+                    tailscale_ip="100.80.0.20",
+                )
+                install_agent.assert_called_once()
+                self.assertEqual(install_agent.call_args.kwargs["agent_token"], "agent-token")
+                self.assertEqual(install_agent.call_args.kwargs["node_id"], "nomad-node-id")
             finally:
                 _restore_env("LUMA_USER_CONFIG", old_config)
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
@@ -2195,7 +2242,7 @@ class CliTests(unittest.TestCase):
                 _restore_env("TAILSCALE_AUTHKEY", old_ts)
                 _restore_env("LUMA_SUDO_PASSWORD", old_sudo)
 
-    def test_node_join_unregisters_when_local_swarm_join_fails(self):
+    def test_node_join_unregisters_when_local_nomad_join_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".luma.config.json"
             old_config = _set_env("LUMA_USER_CONFIG", str(config_path))
@@ -2206,15 +2253,14 @@ class CliTests(unittest.TestCase):
                 client.register_node.return_value = {
                     "nodeName": "global-sg-1",
                     "region": "global",
-                    "managerAddr": "100.64.0.1:2377",
-                    "swarmJoinToken": "swarm-token",
+                    "nomadRpcAddr": "100.64.0.1:4647",
                 }
                 with patch("sys.stdin.isatty", return_value=True), patch(
                     "luma.userconfig.getpass.getpass", return_value="sudo-pass"
                 ), patch("luma.cli.configure_dns", return_value="DNS ok"), patch(
                     "luma.cli.install_docker", return_value="Docker available"
                 ), patch("luma.cli.ControlClient", return_value=client), patch(
-                    "luma.cli.join_local_node", side_effect=LumaError("swarm join failed")
+                    "luma.cli.install_nomad_node", side_effect=LumaError("nomad join failed")
                 ), patch("builtins.print") as printed:
                     code = main(
                         [
@@ -2363,7 +2409,7 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             try:
-                code = main(["deploy", str(service_path), "--skip-dns", "--skip-portainer"])
+                code = main(["deploy", str(service_path), "--skip-dns", "--skip-orchestrator"])
                 self.assertEqual(code, 1)
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
@@ -2464,6 +2510,36 @@ class CliTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
 
+    def test_secret_set_can_read_value_from_stdin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.set_secret.return_value = {"name": "DATABASE_URL", "saved": True}
+                with patch("luma.cli.ControlClient", return_value=client), patch(
+                    "sys.stdin", io.StringIO("postgres://secret\n")
+                ), patch("builtins.print") as printed:
+                    code = main(["secret", "set", "DATABASE_URL", "--value-stdin"])
+                self.assertEqual(code, 0)
+                client.set_secret.assert_called_once_with(name="DATABASE_URL", value="postgres://secret")
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertNotIn("postgres://secret", printed_text)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_secret_set_rejects_value_and_stdin_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                with patch("luma.cli.ControlClient") as client_cls:
+                    code = main(["secret", "set", "DATABASE_URL", "--value", "a", "--value-stdin"])
+                self.assertEqual(code, 1)
+                client_cls.return_value.set_secret.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
 
 class EnvFileTests(unittest.TestCase):
     def test_load_env_file_preserves_existing_values(self):
@@ -2497,314 +2573,7 @@ class EnvFileTests(unittest.TestCase):
                 _restore_env("LUMA_EMPTY", old_empty)
 
 
-class PortainerApiTests(unittest.TestCase):
-    def test_initialize_portainer_creates_local_endpoint_when_empty(self):
-        state = {
-            "portainerApiUrl": "https://127.0.0.1:9443/api",
-            "portainerAdminUsername": "admin",
-            "portainerAdminPassword": "secret",
-        }
-        with patch(
-            "luma.bootstrap._portainer_request",
-            side_effect=[
-                (200, {}),
-                (200, {"jwt": "jwt-token"}),
-                (200, []),
-            ],
-        ) as request, patch(
-            "luma.bootstrap._portainer_form_request",
-            return_value=(200, {"Id": 7, "Name": "luma-local"}),
-        ) as form_request:
-            result = initialize_portainer(Mock(), state)
-        self.assertEqual(result, "Portainer initialized")
-        self.assertEqual(state["portainerEndpointId"], 7)
-        self.assertEqual(state["portainerEndpointName"], "luma-local")
-        form_request.assert_called_once_with(
-            "https://127.0.0.1:9443/api",
-            "POST",
-            "/endpoints",
-            {
-                "Name": "luma-local",
-                "EndpointCreationType": "2",
-                "URL": "tcp://tasks.agent:9001",
-                "TLS": "true",
-                "TLSSkipVerify": "true",
-                "TLSSkipClientVerify": "true",
-            },
-            token="jwt-token",
-        )
-        self.assertEqual(request.call_count, 3)
-
-    def test_initialize_portainer_uses_env_password_override(self):
-        state = {
-            "portainerApiUrl": "https://127.0.0.1:9443/api",
-            "portainerAdminUsername": "admin",
-            "portainerAdminPassword": "stale",
-        }
-        with patch.dict(os.environ, {"LUMA_PORTAINER_ADMIN_PASSWORD": "current"}), patch(
-            "luma.bootstrap._portainer_request",
-            side_effect=[
-                (200, {}),
-                (200, {"jwt": "jwt-token"}),
-                (200, [{"Id": 7, "Name": "luma-local"}]),
-            ],
-        ) as request:
-            result = initialize_portainer(Mock(), state)
-        self.assertEqual(result, "Portainer initialized")
-        self.assertEqual(state["portainerAdminPassword"], "current")
-        request.assert_any_call(
-            "https://127.0.0.1:9443/api",
-            "POST",
-            "/auth",
-            {"Username": "admin", "Password": "current"},
-        )
-
-    def test_deploy_with_portainer_uses_api_with_registry_auth(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "private-api",
-                        "image": "ghcr.io/acme/private-api:1",
-                        "region": "cn",
-                        "exposure": "none",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
-            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert:
-                result = deploy_with_portainer(config, service, "services: {}", state, registry_auth=registry_auth)
-            self.assertEqual(result, "Portainer stack updated")
-            upsert.assert_called_once()
-            self.assertEqual(upsert.call_args.kwargs["registry_auth"], registry_auth)
-
-    def test_latest_image_uses_portainer_api(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "api",
-                        "image": "nginx:latest",
-                        "region": "cn",
-                        "exposure": "none",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert:
-                result = deploy_with_portainer(config, service, "services: {}", state)
-            self.assertEqual(result, "Portainer stack updated")
-            upsert.assert_called_once()
-
-    def test_digest_image_uses_portainer_api(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "api",
-                        "image": "nginx@sha256:abc123",
-                        "region": "cn",
-                        "exposure": "none",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            with patch("luma.portainer.upsert_stack", return_value="Portainer stack updated") as upsert:
-                result = deploy_with_portainer(config, service, "services: {}", state)
-            self.assertEqual(result, "Portainer stack updated")
-            upsert.assert_called_once()
-
-    def test_bootstrap_manager_saves_portainer_credentials_before_dns(self):
-        config = LumaConfig(
-            {
-                "nodes": {
-                    "manager": {
-                        "host": "localhost",
-                        "publicIp": "127.0.0.1",
-                        "roles": ["swarm-manager", "edge"],
-                    }
-                }
-            },
-            None,
-        )
-        node = config.get_node("manager")
-        state = {"clusterId": "luma-test", "domain": "luma.example.com"}
-        sequence = []
-        saved_states = []
-
-        def bind_portainer(_remote, current_state):
-            current_state["portainerAdminUsername"] = "admin"
-            current_state["portainerAdminPassword"] = "secret"
-            return "Portainer initialized"
-
-        def save_state(_remote, current_state):
-            sequence.append("save")
-            saved_states.append(dict(current_state))
-            return "Secret written: /opt/luma/control/control.json"
-
-        def sync_dns(_config, _domain):
-            sequence.append("sync-dns")
-            return "Control DNS synced"
-
-        with patch("luma.bootstrap.bootstrap_node", return_value=["Bootstrap node complete"]) as bootstrap, patch(
-            "luma.bootstrap.initialize_portainer", side_effect=bind_portainer
-        ), patch("luma.bootstrap.install_control_state", side_effect=save_state), patch(
-            "luma.bootstrap.local_swarm_join_info",
-            return_value={"managerAddr": "100.64.0.1:2377", "swarmJoinToken": "token", "swarmId": "swarm"},
-        ), patch("luma.bootstrap.sync_control_dns", side_effect=sync_dns), patch(
-            "luma.bootstrap.install_control_config", return_value="Config installed"
-        ), patch("luma.bootstrap.deploy_control_stack", return_value="Control deployed"):
-            bootstrap_manager_local(config, node, PROFILES["single-node"], "luma.example.com", state)
-
-        self.assertEqual(sequence[:2], ["save", "sync-dns"])
-        self.assertGreaterEqual(len(saved_states), 1)
-        self.assertEqual(saved_states[0]["portainerAdminPassword"], "secret")
-        self.assertEqual(saved_states[-1]["portainerApiUrl"], "https://100.64.0.1:9443/api")
-        self.assertFalse(bootstrap.call_args.kwargs["reset_portainer_state"])
-
-    def test_bootstrap_manager_recreates_portainer_after_bind_failure(self):
-        config = LumaConfig(
-            {
-                "nodes": {
-                    "manager": {
-                        "host": "localhost",
-                        "publicIp": "127.0.0.1",
-                        "roles": ["swarm-manager", "edge"],
-                    }
-                }
-            },
-            None,
-        )
-        node = config.get_node("manager")
-        state = {"clusterId": "luma-test", "domain": "luma.example.com"}
-        bind_calls = []
-
-        def bind_portainer(_remote, current_state):
-            bind_calls.append("bind")
-            if len(bind_calls) == 1:
-                current_state["portainerAdminPassword"] = "secret"
-                raise LumaError("Portainer endpoint discovery failed: HTTP 500 broken endpoint")
-            current_state["portainerEndpointId"] = 7
-            return "Portainer initialized"
-
-        with patch("luma.bootstrap.bootstrap_node", return_value=["Bootstrap node complete"]), patch(
-            "luma.bootstrap.initialize_portainer", side_effect=bind_portainer
-        ), patch("luma.bootstrap._reset_portainer_state", return_value="Portainer state reset") as reset, patch(
-            "luma.bootstrap._deploy_portainer", return_value=["Portainer redeployed"]
-        ) as redeploy, patch(
-            "luma.bootstrap.install_control_state", return_value="Secret written: /opt/luma/control/control.json"
-        ), patch(
-            "luma.bootstrap.local_swarm_join_info",
-            return_value={"managerAddr": "127.0.0.1:2377", "swarmJoinToken": "token", "swarmId": "swarm"},
-        ), patch("luma.bootstrap.sync_control_dns", return_value="Control DNS synced"), patch(
-            "luma.bootstrap.install_control_config", return_value="Config installed"
-        ), patch("luma.bootstrap.deploy_control_stack", return_value="Control deployed"):
-            bootstrap_manager_local(config, node, PROFILES["single-node"], "luma.example.com", state)
-
-        self.assertEqual(len(bind_calls), 2)
-        reset.assert_called_once()
-        redeploy.assert_called_once()
-        self.assertEqual(state["portainerAdminPassword"], "secret")
-        self.assertEqual(state["portainerEndpointId"], 7)
-
-    def test_bootstrap_node_can_reset_portainer_before_deploy(self):
-        config = LumaConfig(
-            {
-                "nodes": {
-                    "manager": {
-                        "host": "localhost",
-                        "publicIp": "127.0.0.1",
-                        "roles": ["swarm-manager", "edge"],
-                    }
-                }
-            },
-            None,
-        )
-        node = config.get_node("manager")
-        sequence = []
-
-        def mark(name):
-            def inner(*_args, **_kwargs):
-                sequence.append(name)
-                return name
-
-            return inner
-
-        with patch("luma.bootstrap.configure_dns", side_effect=mark("dns")), patch(
-            "luma.bootstrap.install_docker", side_effect=mark("docker")
-        ), patch("luma.bootstrap.setup_tailscale", side_effect=mark("tailscale")), patch(
-            "luma.bootstrap.ensure_swarm", side_effect=mark("swarm")
-        ), patch("luma.bootstrap.ensure_networks", side_effect=mark("networks")), patch(
-            "luma.bootstrap.apply_labels", side_effect=mark("labels")
-        ), patch("luma.bootstrap.prepare_paths", side_effect=mark("paths")), patch(
-            "luma.bootstrap.configure_firewall", side_effect=mark("firewall")
-        ), patch("luma.bootstrap._deploy_traefik", side_effect=mark("traefik")), patch(
-            "luma.bootstrap._reset_portainer_state", side_effect=mark("reset-portainer")
-        ), patch("luma.bootstrap._deploy_portainer", side_effect=lambda *_args, **_kwargs: [mark("portainer")()]):
-            bootstrap_node(
-                config,
-                node,
-                PROFILES["single-node"],
-                run_egress=False,
-                reset_portainer_state=True,
-                executor=Mock(),
-            )
-
-        self.assertLess(sequence.index("reset-portainer"), sequence.index("portainer"))
-
-    def test_reset_portainer_state_removes_containers_using_data_volume(self):
-        remote = Mock()
-        remote.run_result.return_value = Mock(code=0, output="Linux\n")
-        remote.sudo.return_value = ""
-
-        result = _reset_portainer_state(remote)
-
-        self.assertEqual(result, "Portainer state reset")
-        command = remote.sudo.call_args.args[0]
-        self.assertIn("docker ps -aq --filter volume=portainer_portainer_data", command)
-        self.assertIn("docker rm -f $containers", command)
-        self.assertIn("docker volume rm portainer_portainer_data", command)
-
-    def test_portainer_agent_is_manager_only(self):
-        stack = yaml.safe_load(asset_text("stacks/core/portainer/stack.yml"))
-        agent = stack["services"]["agent"]
-
-        self.assertEqual(agent["environment"]["AGENT_CLUSTER_ADDR"], "tasks.agent")
-        self.assertIn("node.role == manager", agent["deploy"]["placement"]["constraints"])
-        self.assertIn("node.platform.os == linux", agent["deploy"]["placement"]["constraints"])
-        self.assertEqual(stack["services"]["portainer"]["command"], "-H tcp://tasks.agent:9001 --tlsskipverify")
-
+class NomadBootstrapTests(unittest.TestCase):
     def test_install_control_config_generates_config_without_local_path(self):
         config = LumaConfig({}, None)
         node = config.default_manager()
@@ -2816,7 +2585,7 @@ class PortainerApiTests(unittest.TestCase):
                 host="localhost",
                 public_ip="127.0.0.1",
                 region="cn",
-                roles=["swarm-manager", "edge"],
+                roles=["nomad-manager", "edge"],
             )
         remote = Mock()
         remote.write_secret.return_value = "Secret written: /opt/luma/luma.yaml"
@@ -2857,10 +2626,9 @@ class PortainerApiTests(unittest.TestCase):
 
     def test_control_latest_image_resolves_to_pulled_repo_digest(self):
         remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Status = running\n")
 
         def sudo(command):
-            if "docker service inspect egress_mihomo" in command:
-                return ""
             if "docker info --format" in command:
                 return "HTTPProxy=http://127.0.0.1:7890 HTTPSProxy=http://127.0.0.1:7890\n"
             if "docker pull" in command:
@@ -2879,10 +2647,9 @@ class PortainerApiTests(unittest.TestCase):
 
     def test_control_pinned_image_does_not_require_repo_digest_lookup(self):
         remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Status = running\n")
 
         def sudo(command):
-            if "docker service inspect egress_mihomo" in command:
-                return ""
             if "docker info --format" in command:
                 return "HTTPProxy=http://127.0.0.1:7890 HTTPSProxy=http://127.0.0.1:7890\n"
             return ""
@@ -2899,12 +2666,11 @@ class PortainerApiTests(unittest.TestCase):
 
     def test_control_image_pull_configures_docker_daemon_egress_proxy(self):
         remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Status = running\n")
         info_calls = 0
 
         def sudo(command):
             nonlocal info_calls
-            if "docker service inspect egress_mihomo" in command:
-                return ""
             if "docker info --format" in command:
                 info_calls += 1
                 if info_calls == 1:
@@ -2919,34 +2685,34 @@ class PortainerApiTests(unittest.TestCase):
         result = _ensure_control_image_pull_egress(remote, "ghcr.io/liutianjie/luma-control:latest")
 
         self.assertEqual(result, "Control image pull egress configured for ghcr.io: Docker daemon proxy http://127.0.0.1:7890")
+        self.assertTrue(any("nomad job status -short egress" in call.args[0] for call in remote.run_result.call_args_list))
         docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
-        self.assertTrue(any("docker service inspect egress_mihomo" in cmd for cmd in docker_commands))
         self.assertTrue(any("HTTP_PROXY=http://127.0.0.1:7890" in cmd for cmd in docker_commands))
         self.assertTrue(any("NO_PROXY=localhost,127.0.0.1" in cmd for cmd in docker_commands))
 
     def test_control_image_pull_requires_running_egress_gateway(self):
         remote = Mock()
-        remote.sudo.side_effect = Exception("missing")
+        remote.run_result.return_value = Mock(code=1, output="")
 
-        with self.assertRaisesRegex(LumaError, "control image pull egress requires a running egress_mihomo"):
+        with self.assertRaisesRegex(LumaError, "control image pull egress requires a running Nomad egress job"):
             _ensure_control_image_pull_egress(remote, "ghcr.io/liutianjie/luma-control:latest")
 
-        docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
-        self.assertTrue(any("docker service inspect egress_mihomo" in cmd for cmd in docker_commands))
-        self.assertFalse(any("docker pull" in cmd for cmd in docker_commands))
+        self.assertIn("nomad job status -short egress", remote.run_result.call_args.args[0])
+        remote.sudo.assert_not_called()
 
     def test_control_stack_deploy_uses_resolved_digest_image(self):
         digest_image = "ghcr.io/liutianjie/luma-control@sha256:abc123"
         remote = Mock()
-        remote.run_result.return_value = Mock(code=1, output="")
+        remote.run_result.return_value = Mock(code=0, output="Status = running\n")
         remote.sudo.return_value = ""
-        uploaded = {}
+        submitted = {}
         progress = []
 
-        def capture_upload(local_path, remote_path):
-            uploaded["stack"] = Path(local_path).read_text(encoding="utf-8")
+        def capture_job(_remote, job_json, job_id):
+            submitted["job"] = job_json
+            submitted["jobId"] = job_id
+            return f"Nomad job deployed: {job_id}"
 
-        remote.upload.side_effect = capture_upload
         config = LumaConfig({}, None)
 
         with patch(
@@ -2955,41 +2721,45 @@ class PortainerApiTests(unittest.TestCase):
         ), patch("luma.bootstrap._ensure_control_image", return_value="Control image pulled: ghcr.io/liutianjie/luma-control:latest"), patch(
             "luma.bootstrap._control_image_repo_digest", return_value=digest_image
         ), patch(
-            "luma.bootstrap._wait_service_ready", return_value="Service ready: luma-control_luma-control"
+            "luma.bootstrap._deploy_nomad_job", side_effect=capture_job
+        ), patch(
+            "luma.bootstrap._wait_nomad_job", return_value="Nomad job running: luma-control"
         ):
             result = deploy_control_stack(remote, config, "luma.example.com", emit=progress.append)
 
         self.assertIn("Control image pull egress ready for ghcr.io", result[0])
         self.assertEqual(result[1], "Control image pulled: ghcr.io/liutianjie/luma-control:latest")
         self.assertEqual(result[2], f"Control image digest resolved: {digest_image}")
+        self.assertEqual(result[3], "Nomad job deployed: luma-control")
+        self.assertEqual(result[4], "Nomad job running: luma-control")
         progress_text = "\n".join(progress)
         self.assertIn("[start] Ensure control image pull egress", progress_text)
         self.assertIn("[start] Pull Luma control image", progress_text)
         self.assertIn("[start] Resolve Luma control image digest", progress_text)
-        self.assertIn(f"image: {digest_image}", uploaded["stack"])
-        docker_commands = [call.args[0] for call in remote.sudo.call_args_list]
-        self.assertTrue(any(f"docker service update --image {digest_image}" in cmd for cmd in docker_commands))
-        self.assertFalse(any("docker service update --image ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
+        self.assertEqual(submitted["jobId"], "luma-control")
+        self.assertIn(f'"image": "{digest_image}"', submitted["job"])
 
     def test_control_stack_deploy_can_skip_pull_egress_precheck(self):
         digest_image = "ghcr.io/liutianjie/luma-control@sha256:abc123"
         remote = Mock()
-        remote.run_result.return_value = Mock(code=1, output="")
+        remote.run_result.return_value = Mock(code=0, output="Status = running\n")
         remote.sudo.return_value = ""
-        uploaded = {}
+        submitted = {}
         progress = []
 
-        def capture_upload(local_path, remote_path):
-            uploaded["stack"] = Path(local_path).read_text(encoding="utf-8")
+        def capture_job(_remote, job_json, job_id):
+            submitted["job"] = job_json
+            return f"Nomad job deployed: {job_id}"
 
-        remote.upload.side_effect = capture_upload
         config = LumaConfig({}, None)
 
         with patch("luma.bootstrap._ensure_control_image_pull_egress") as ensure_egress, patch(
             "luma.bootstrap._ensure_control_image",
             return_value="Control image pulled: ghcr.io/liutianjie/luma-control:latest",
         ), patch("luma.bootstrap._control_image_repo_digest", return_value=digest_image), patch(
-            "luma.bootstrap._wait_service_ready", return_value="Service ready: luma-control_luma-control"
+            "luma.bootstrap._deploy_nomad_job", side_effect=capture_job
+        ), patch(
+            "luma.bootstrap._wait_nomad_job", return_value="Nomad job running: luma-control"
         ):
             result = deploy_control_stack(
                 remote,
@@ -3002,68 +2772,125 @@ class PortainerApiTests(unittest.TestCase):
         ensure_egress.assert_not_called()
         self.assertEqual(result[0], "Control image pulled: ghcr.io/liutianjie/luma-control:latest")
         self.assertNotIn("[start] Ensure control image pull egress", "\n".join(progress))
-        self.assertIn(f"image: {digest_image}", uploaded["stack"])
+        self.assertIn(f'"image": "{digest_image}"', submitted["job"])
 
-    def test_control_service_force_updates_image_after_stack_deploy(self):
-        remote = Mock()
-        remote.run_result.return_value = Mock(code=0, output="Linux\n")
-        remote.sudo.return_value = ""
-
-        result = _force_update_service_image(remote, "luma-control_luma-control", "ghcr.io/liutianjie/luma-control:latest")
-
-        self.assertEqual(result, "Service image refreshed: luma-control_luma-control -> ghcr.io/liutianjie/luma-control:latest")
-        command = remote.sudo.call_args.args[0]
-        self.assertIn("docker service update --image ghcr.io/liutianjie/luma-control:latest", command)
-        self.assertIn("--update-order start-first", command)
-        self.assertIn("--update-failure-action rollback", command)
-        self.assertIn("--update-parallelism 1", command)
-        self.assertIn("--force luma-control_luma-control", command)
-
-    def test_manager_control_refresh_does_not_recreate_core_stacks(self):
+    def test_manager_control_refresh_updates_ingress_without_recreating_other_core_stacks(self):
         config = LumaConfig(
             {
+                "defaults": {"engine": "nomad"},
                 "nodes": {
                     "manager": {
                         "host": "localhost",
                         "publicIp": "127.0.0.1",
-                        "roles": ["swarm-manager", "edge"],
+                        "roles": ["nomad-manager", "edge"],
                     }
                 }
             },
             None,
         )
         node = config.get_node("manager")
-        state = {"clusterId": "luma-test", "deployToken": "deploy", "joinToken": "join", "portainerAdminPassword": "secret"}
-        with patch("luma.bootstrap.local_swarm_join_info", return_value={"managerAddr": "127.0.0.1:2377", "swarmJoinToken": "swarm", "swarmId": "sid"}), patch(
+        state = {
+            "clusterId": "luma-test",
+            "deployToken": "deploy",
+            "joinToken": "join",
+            "deployments": {
+                "services": {},
+                "compose": {
+                    "granary": {
+                        "status": "active",
+                        "tcpRelayPorts": [3306],
+                    }
+                },
+            },
+        }
+        with patch("luma.bootstrap.local_host_name", return_value="manager-host"), patch(
+            "luma.bootstrap.local_nomad_node_info", return_value=("manager-host", "nomad-node-id")
+        ), patch(
             "luma.bootstrap.install_control_config", return_value="config"
         ) as install_config, patch("luma.bootstrap.install_control_state", return_value="state") as install_state, patch(
             "luma.bootstrap.deploy_control_stack", return_value=["control"]
-        ) as deploy_control, patch("luma.bootstrap._deploy_traefik") as traefik, patch(
-            "luma.bootstrap._deploy_portainer"
-        ) as portainer, patch("luma.bootstrap.bind_portainer_credentials") as bind, patch(
+        ) as deploy_control, patch(
+            "luma.bootstrap.configure_firewall", return_value="firewall"
+        ) as configure_fw, patch(
+            "luma.bootstrap._deploy_nomad_job", return_value="traefik deployed"
+        ) as deploy_nomad, patch(
+            "luma.bootstrap._wait_nomad_job", return_value="traefik ready"
+        ), patch(
             "luma.bootstrap.install_docker"
         ) as docker, patch("luma.bootstrap.setup_egress") as egress, patch(
             "luma.bootstrap._refresh_core_services"
         ) as refresh_core, patch("luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog") as watchdog:
             result = refresh_manager_control_local(config, node, "luma.example.com", state)
 
+        self.assertIn("firewall", result)
+        self.assertIn("traefik ready", result)
         self.assertIn("watchdog", result)
         self.assertIn("config", result)
         self.assertIn("state", result)
         self.assertIn("control", result)
         self.assertEqual(state["domain"], "luma.example.com")
-        self.assertEqual(state["managerAddr"], "127.0.0.1:2377")
-        self.assertEqual(state["portainerAdminPassword"], "secret")
+        self.assertEqual(state["nodes"]["manager"]["nomadNodeId"], "nomad-node-id")
+        self.assertNotIn("managerAddr", state)
         install_config.assert_called_once()
         install_state.assert_called_once()
         deploy_control.assert_called_once()
+        configure_fw.assert_called_once()
+        self.assertEqual(configure_fw.call_args.kwargs["tcp_ports"], [3306])
+        deploy_nomad.assert_called_once()
+        self.assertIn("--entrypoints.tcp-3306.address=:3306", deploy_nomad.call_args.args[1])
         watchdog.assert_called_once()
-        traefik.assert_not_called()
-        portainer.assert_not_called()
-        bind.assert_not_called()
         docker.assert_not_called()
         egress.assert_not_called()
         refresh_core.assert_not_called()
+
+    def test_nomad_manager_control_refresh_uses_luma_node_name(self):
+        config = LumaConfig(
+            {
+                "defaults": {"engine": "nomad"},
+                "nodes": {
+                    "aly": {
+                        "host": "iZ0jl8auywzycory05d9cuZ",
+                        "publicIp": "127.0.0.1",
+                        "region": "cn",
+                        "roles": ["nomad-manager", "edge"],
+                    }
+                },
+            },
+            None,
+        )
+        node = config.get_node("aly")
+        state = {
+            "clusterId": "luma-test",
+            "deployToken": "deploy",
+            "joinToken": "join",
+            "nodes": {
+                "iZ0jl8auywzycory05d9cuZ": {
+                    "region": "cn",
+                    "aliases": ["old-manager"],
+                }
+            },
+        }
+        with patch("luma.bootstrap.local_host_name", return_value="iZ0jl8auywzycory05d9cuZ"), patch(
+            "luma.bootstrap.local_nomad_node_info", return_value=("iZ0jl8auywzycory05d9cuZ", "node-id")
+        ), patch("luma.bootstrap._tailscale_ip", return_value="100.113.204.125"), patch(
+            "luma.bootstrap.install_control_config", return_value="config"
+        ), patch("luma.bootstrap.install_control_state", return_value="state"), patch(
+            "luma.bootstrap.deploy_control_stack", return_value=["control"]
+        ) as deploy_control, patch("luma.bootstrap.configure_firewall", return_value="firewall"), patch(
+            "luma.bootstrap._deploy_nomad_job", return_value="traefik deployed"
+        ), patch("luma.bootstrap._wait_nomad_job", return_value="traefik ready"), patch(
+            "luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog"
+        ):
+            refresh_manager_control_local(config, node, "luma.example.com", state)
+
+        deploy_control.assert_called_once()
+        self.assertEqual(deploy_control.call_args.kwargs["node_name"], "aly")
+        self.assertIn("aly", state["nodes"])
+        self.assertNotIn("iZ0jl8auywzycory05d9cuZ", state["nodes"])
+        self.assertEqual(state["nodes"]["aly"]["displayName"], "aly")
+        self.assertIn("iZ0jl8auywzycory05d9cuZ", state["nodes"]["aly"]["aliases"])
+        self.assertIn("old-manager", state["nodes"]["aly"]["aliases"])
+        self.assertNotIn("managerAddr", state)
 
     def test_install_docker_repairs_known_bad_apt_mirror(self):
         remote = Mock()
@@ -3103,64 +2930,126 @@ class PortainerApiTests(unittest.TestCase):
             install_docker(remote)
 
 class ControlApiTests(unittest.TestCase):
-    def test_node_and_deploy_tokens_are_separate(self):
+    def test_management_and_join_tokens_can_register_nodes(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                with self.assertRaises(Exception):
-                    handle_node_register(state["deployToken"], {"nodeName": "b", "region": "global"})
-                result = handle_node_register(state["joinToken"], {"nodeName": "b", "region": "global"})
-                self.assertEqual(result["nodeName"], "b")
-                self.assertEqual(result["region"], "global")
+                state["nomadRpcAddr"] = "100.64.0.1:4647"
+                save_state(state)
+                management_result = handle_node_register(state["deployToken"], {"nodeName": "b", "region": "global"})
+                join_result = handle_node_register(state["joinToken"], {"nodeName": "c", "region": "home"})
+                self.assertEqual(management_result["nodeName"], "b")
+                self.assertEqual(management_result["region"], "global")
+                self.assertEqual(join_result["nodeName"], "c")
+                self.assertEqual(join_result["region"], "home")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_join_token_can_label_node_after_join(self):
+    def test_nomad_node_register_returns_rpc_addr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "aly": {
+                        "status": "manager",
+                        "tailscaleIP": "100.113.204.125",
+                        "labels": {"role.nomad-manager": "true", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad"}}), encoding="utf-8")
+
+                result = handle_node_register(state["joinToken"], {"nodeName": "bot", "region": "global"})
+
+                self.assertEqual(result["nomadRpcAddr"], "100.113.204.125:4647")
+                self.assertEqual(result["nomadServerAddr"], "100.113.204.125:4647")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_management_and_join_tokens_can_label_node_after_join(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                with patch("luma.control.server.label_swarm_node") as label:
-                    result = handle_node_label(state["joinToken"], {"nodeName": "b", "nodeId": "node-id-b", "region": "global"})
-                label.assert_called_once()
-                labels = label.call_args.args[1]
+                result = handle_node_label(state["joinToken"], {"nodeName": "b", "nodeId": "node-id-b", "region": "global"})
+                labels = result["labels"]
                 self.assertEqual(labels["region"], "global")
                 self.assertEqual(labels["luma.node.name"], "b")
                 self.assertNotIn("egress", labels)
                 self.assertNotIn("role.global-worker", labels)
                 self.assertEqual(result["nodeName"], "b")
-                with self.assertRaises(Exception):
-                    handle_node_label(state["deployToken"], {"nodeName": "b", "nodeId": "node-id-b", "region": "global"})
+                self.assertEqual(result["nomadNodeId"], "node-id-b")
+                management_result = handle_node_label(state["deployToken"], {"nodeName": "b", "nodeId": "node-id-b", "region": "global"})
+                self.assertEqual(management_result["nodeName"], "b")
+                self.assertEqual(management_result["nomadNodeId"], "node-id-b")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_nomad_join_token_labels_node_without_swarm_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {"m4": {"region": "home", "status": "registered"}}
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad"}}), encoding="utf-8")
+
+                result = handle_node_label(
+                    state["joinToken"],
+                    {
+                        "nodeName": "m4-host",
+                        "registeredName": "m4",
+                        "nodeId": "nomad-node-id",
+                        "region": "home",
+                        "tailscaleIP": "100.121.94.123",
+                    },
+                )
+
+                self.assertEqual(result["nodeName"], "m4")
+                self.assertEqual(result["nomadNodeId"], "nomad-node-id")
+                saved = load_state()
+                self.assertEqual(saved["nodes"]["m4"]["nodeId"], "nomad-node-id")
+                self.assertEqual(saved["nodes"]["m4"]["nomadNodeId"], "nomad-node-id")
+                self.assertEqual(saved["nodes"]["m4"]["tailscaleIP"], "100.121.94.123")
+                self.assertTrue(saved["nodes"]["m4"]["agent"]["tokenHash"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_label_node_keeps_requested_name_as_luma_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nomadRpcAddr"] = "100.64.0.1:4647"
+                save_state(state)
                 handle_node_register(state["joinToken"], {"nodeName": "global-sg-1", "region": "global"})
-                with patch("luma.control.server.label_swarm_node"):
-                    result = handle_node_label(
-                        state["joinToken"],
-                        {
-                            "nodeName": "docker-hostname",
-                            "nodeId": "node-id-1",
-                            "registeredName": "global-sg-1",
-                            "region": "global",
-                            "tailscaleIP": "100.64.0.30",
-                            "tailscaleName": "global-sg-1.ts.net",
-                        },
-                    )
+                result = handle_node_label(
+                    state["joinToken"],
+                    {
+                        "nodeName": "docker-hostname",
+                        "nodeId": "node-id-1",
+                        "registeredName": "global-sg-1",
+                        "region": "global",
+                        "tailscaleIP": "100.64.0.30",
+                        "tailscaleName": "global-sg-1.ts.net",
+                    },
+                )
                 saved = load_state()
                 self.assertEqual(result["nodeName"], "global-sg-1")
                 self.assertEqual(result["displayName"], "global-sg-1")
                 self.assertEqual(result["tailscaleIP"], "100.64.0.30")
                 self.assertEqual(result["tailscaleName"], "global-sg-1.ts.net")
                 self.assertIn("global-sg-1", saved["nodes"])
-                self.assertEqual(saved["nodes"]["global-sg-1"]["swarmHostname"], "docker-hostname")
-                self.assertEqual(saved["nodes"]["global-sg-1"]["swarmNodeId"], "node-id-1")
+                self.assertEqual(saved["nodes"]["global-sg-1"]["nomadHostname"], "docker-hostname")
+                self.assertEqual(saved["nodes"]["global-sg-1"]["nomadNodeId"], "node-id-1")
                 self.assertEqual(saved["nodes"]["global-sg-1"]["tailscaleIP"], "100.64.0.30")
                 self.assertEqual(saved["nodes"]["global-sg-1"]["tailscaleName"], "global-sg-1.ts.net")
                 self.assertEqual(saved["nodes"]["global-sg-1"]["labels"]["luma.node.id"], "node-id-1")
@@ -3168,104 +3057,36 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_label_node_with_node_id_does_not_fall_back_to_duplicate_hostname(self):
-        from luma.control.server import label_swarm_node
-
-        nodes = [
-            {
-                "ID": "m4mini-node-id",
-                "Description": {"Hostname": "orbstack"},
-                "Spec": {"Labels": {"luma.node.name": "m4mini", "luma.node.id": "m4mini-node-id"}},
-            }
-        ]
-        with patch("luma.control.server.docker_request", return_value=nodes) as docker, patch("luma.control.server.time.monotonic", side_effect=[0, 61]):
-            with self.assertRaisesRegex(LumaError, "swarm node not found: home-node-id"):
-                label_swarm_node("orbstack", {"luma.node.name": "home-mac-mini", "luma.node.id": "home-node-id"}, node_id="home-node-id")
-        docker.assert_called_once_with("GET", "/nodes")
-
-    def test_node_rejoin_refreshes_live_service_node_id_constraints(self):
+    def test_node_rejoin_updates_nomad_identity_without_swarm_refresh(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                with patch("luma.control.server.label_swarm_node"):
-                    handle_node_label(
-                        state["joinToken"],
-                        {
-                            "nodeName": "orbstack",
-                            "nodeId": "old-node-id",
-                            "registeredName": "home-mac-mini",
-                            "region": "home",
-                        },
-                    )
-                service_detail = {
-                    "ID": "svc-docs",
-                    "Version": {"Index": 7},
-                    "Spec": {
-                        "Name": "tifenxia-docs_tifenxia-docs",
-                        "TaskTemplate": {
-                            "Placement": {
-                                "Constraints": [
-                                    "node.labels.region == home",
-                                    "node.labels.luma.node.id == old-node-id",
-                                ]
-                            }
-                        },
+                handle_node_label(
+                    state["joinToken"],
+                    {
+                        "nodeName": "m4-host",
+                        "nodeId": "old-node-id",
+                        "registeredName": "m4",
+                        "region": "home",
                     },
-                }
-                posted: list[tuple[str, dict]] = []
-
-                def docker_side_effect(method, path, body=None):
-                    if method == "GET" and path == "/services":
-                        return [
-                            {
-                                "ID": "svc-docs",
-                                "Spec": {
-                                    "Name": "tifenxia-docs_tifenxia-docs",
-                                    "TaskTemplate": {
-                                        "Placement": {
-                                            "Constraints": [
-                                                "node.labels.region == home",
-                                                "node.labels.luma.node.id == old-node-id",
-                                            ]
-                                        }
-                                    },
-                                },
-                            },
-                            {
-                                "ID": "svc-other",
-                                "Spec": {
-                                    "Name": "global-api_global-api",
-                                    "TaskTemplate": {"Placement": {"Constraints": ["node.labels.region == global"]}},
-                                },
-                            },
-                        ]
-                    if method == "GET" and path == "/services/svc-docs":
-                        return json.loads(json.dumps(service_detail))
-                    if method == "POST" and path == "/services/svc-docs/update?version=7":
-                        posted.append((path, json.loads(json.dumps(body))))
-                        return {}
-                    raise AssertionError(f"unexpected docker request: {method} {path}")
-
-                with patch("luma.control.server.label_swarm_node"), patch("luma.control.server.docker_request", side_effect=docker_side_effect):
+                )
+                with patch("luma.control.server.docker_request") as docker:
                     result = handle_node_label(
                         state["joinToken"],
                         {
-                            "nodeName": "orbstack",
+                            "nodeName": "m4-host",
                             "nodeId": "new-node-id",
-                            "registeredName": "home-mac-mini",
+                            "registeredName": "m4",
                             "region": "home",
                         },
                     )
                 saved = load_state()
-                self.assertEqual(saved["nodes"]["home-mac-mini"]["swarmNodeId"], "new-node-id")
-                self.assertEqual(result["previousSwarmNodeId"], "old-node-id")
-                self.assertEqual(result["pinnedServicesUpdated"][0]["name"], "tifenxia-docs_tifenxia-docs")
-                self.assertEqual(len(posted), 1)
-                constraints = posted[0][1]["TaskTemplate"]["Placement"]["Constraints"]
-                self.assertIn("node.labels.luma.node.id == new-node-id", constraints)
-                self.assertNotIn("node.labels.luma.node.id == old-node-id", constraints)
-                self.assertIn("node.labels.region == home", constraints)
+                docker.assert_not_called()
+                self.assertEqual(saved["nodes"]["m4"]["nomadNodeId"], "new-node-id")
+                self.assertEqual(saved["nodes"]["m4"]["nodeId"], "new-node-id")
+                self.assertEqual(result["previousNodeId"], "old-node-id")
+                self.assertNotIn("pinnedServicesUpdated", result)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -3403,18 +3224,18 @@ class ControlApiTests(unittest.TestCase):
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nomadRpcAddr"] = "100.64.0.1:4647"
+                save_state(state)
                 handle_node_register(state["joinToken"], {"nodeName": "m3max", "region": "home"})
-                with patch("luma.control.server.docker_request", return_value=[]):
-                    result = handle_node_unregister(state["deployToken"], {"nodeName": "m3max"})
+                result = handle_node_unregister(state["deployToken"], {"nodeName": "m3max"})
                 saved = load_state()
                 self.assertTrue(result["removed"])
                 self.assertTrue(result["registeredRemoved"])
-                self.assertFalse(result["swarmRemoved"])
                 self.assertNotIn("m3max", saved.get("nodes", {}))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_node_unregister_removes_matching_swarm_node(self):
+    def test_node_unregister_removes_registered_nomad_node_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
@@ -3423,32 +3244,24 @@ class ControlApiTests(unittest.TestCase):
                     "m4mini": {
                         "region": "home",
                         "displayName": "m4mini",
-                        "swarmHostname": "orbstack",
-                        "swarmNodeId": "node-id-1",
+                        "hostname": "orbstack",
+                        "nodeId": "node-id-1",
+                        "nomadNodeId": "node-id-1",
                         "labels": {"luma.node.name": "m4mini", "luma.node.id": "node-id-1", "region": "home"},
                     }
                 }
                 save_state(state)
-                nodes = [
-                    {
-                        "ID": "node-id-1",
-                        "Description": {"Hostname": "orbstack"},
-                        "Spec": {"Role": "worker", "Labels": {"luma.node.name": "m4mini", "luma.node.id": "node-id-1"}},
-                    }
-                ]
-                with patch("luma.control.server.docker_request", side_effect=[nodes, None]) as docker:
+                with patch("luma.control.server.docker_request") as docker:
                     result = handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
 
                 self.assertTrue(result["removed"])
                 self.assertTrue(result["registeredRemoved"])
-                self.assertTrue(result["swarmRemoved"])
-                self.assertEqual(result["swarmNodeId"], "node-id-1")
-                docker.assert_any_call("DELETE", "/nodes/node-id-1?force=1")
+                docker.assert_not_called()
                 self.assertNotIn("m4mini", load_state().get("nodes", {}))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_node_unregister_prefers_saved_swarm_node_id_over_duplicate_hostname(self):
+    def test_node_unregister_prefers_saved_luma_record_over_duplicate_hostname(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
@@ -3458,64 +3271,45 @@ class ControlApiTests(unittest.TestCase):
                         "region": "home",
                         "status": "labeled",
                         "displayName": "m4mini",
-                        "swarmHostname": "orbstack",
-                        "swarmNodeId": "stale-node-id",
+                        "hostname": "orbstack",
+                        "nodeId": "stale-node-id",
+                        "nomadNodeId": "stale-node-id",
                         "labels": {"luma.node.name": "m4mini", "luma.node.id": "stale-node-id", "region": "home"},
                     },
                     "home-mac-mini": {
                         "region": "home",
                         "status": "labeled",
-                        "swarmHostname": "orbstack",
-                        "swarmNodeId": "active-node-id",
+                        "hostname": "orbstack",
+                        "nodeId": "active-node-id",
+                        "nomadNodeId": "active-node-id",
                         "labels": {"luma.node.name": "home-mac-mini", "luma.node.id": "active-node-id", "region": "home"},
                     },
                 }
                 save_state(state)
-                nodes = [
-                    {
-                        "ID": "active-node-id",
-                        "Description": {"Hostname": "orbstack"},
-                        "Spec": {"Role": "worker", "Labels": {"luma.node.name": "home-mac-mini", "luma.node.id": "active-node-id"}},
-                    },
-                    {
-                        "ID": "stale-node-id",
-                        "Description": {"Hostname": "orbstack"},
-                        "Spec": {"Role": "worker", "Labels": {"luma.node.name": "m4mini", "luma.node.id": "stale-node-id"}},
-                    },
-                ]
-                with patch("luma.control.server.docker_request", side_effect=[nodes, None]) as docker:
+                with patch("luma.control.server.docker_request") as docker:
                     result = handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
 
                 self.assertTrue(result["removed"])
                 self.assertTrue(result["registeredRemoved"])
-                self.assertTrue(result["swarmRemoved"])
-                self.assertEqual(result["swarmNodeId"], "stale-node-id")
-                docker.assert_any_call("DELETE", "/nodes/stale-node-id?force=1")
+                docker.assert_not_called()
                 saved_nodes = load_state().get("nodes", {})
                 self.assertNotIn("m4mini", saved_nodes)
                 self.assertIn("home-mac-mini", saved_nodes)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_node_unregister_removes_swarm_only_luma_node(self):
+    def test_node_unregister_reports_missing_node_without_docker_lookup(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                nodes = [
-                    {
-                        "ID": "node-id-2",
-                        "Description": {"Hostname": "orbstack"},
-                        "Spec": {"Role": "worker", "Labels": {"luma.node.name": "m4mini", "region": "home"}},
-                    }
-                ]
-                with patch("luma.control.server.docker_request", side_effect=[nodes, None]) as docker:
+                save_state(state)
+                with patch("luma.control.server.docker_request") as docker:
                     result = handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
 
-                self.assertTrue(result["removed"])
+                self.assertFalse(result["removed"])
                 self.assertFalse(result["registeredRemoved"])
-                self.assertTrue(result["swarmRemoved"])
-                docker.assert_any_call("DELETE", "/nodes/node-id-2?force=1")
+                docker.assert_not_called()
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -3524,34 +3318,30 @@ class ControlApiTests(unittest.TestCase):
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                nodes = [
-                    {
-                        "ID": "manager-id",
-                        "Description": {"Hostname": "manager"},
-                        "Spec": {"Role": "manager", "Labels": {"luma.node.name": "manager"}},
-                        "ManagerStatus": {"Leader": True},
-                    }
-                ]
-                with patch("luma.control.server.docker_request", return_value=nodes), self.assertRaisesRegex(LumaError, "refusing to remove Swarm manager"):
+                state["nodes"] = {"manager": {"region": "cn", "status": "manager", "nomadRole": "server"}}
+                save_state(state)
+                with self.assertRaisesRegex(LumaError, "refusing to unregister Nomad manager"):
                     handle_node_unregister(state["deployToken"], {"nodeName": "manager"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_node_unregister_keeps_state_when_swarm_remove_fails(self):
+    def test_node_unregister_does_not_call_docker_when_removing_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 state["nodes"] = {"m4mini": {"region": "home", "displayName": "m4mini"}}
                 save_state(state)
-                with patch("luma.control.server.docker_request", side_effect=LumaError("Docker unavailable")), self.assertRaisesRegex(LumaError, "Docker unavailable"):
-                    handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
+                with patch("luma.control.server.docker_request", side_effect=LumaError("Docker unavailable")) as docker:
+                    result = handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
 
-                self.assertIn("m4mini", load_state().get("nodes", {}))
+                self.assertTrue(result["removed"])
+                docker.assert_not_called()
+                self.assertNotIn("m4mini", load_state().get("nodes", {}))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_deployment_resolves_luma_node_name_to_swarm_node_id_constraint(self):
+    def test_deployment_resolves_luma_node_name_to_nomad_meta_constraint(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -3562,8 +3352,9 @@ class ControlApiTests(unittest.TestCase):
                     "mac-mini-gaojiu": {
                         "region": "home",
                         "status": "labeled",
-                        "swarmHostname": "orbstack",
-                        "swarmNodeId": "node-id-gaojiu",
+                        "hostname": "orbstack",
+                        "nodeId": "node-id-gaojiu",
+                        "nomadNodeId": "node-id-gaojiu",
                         "labels": {
                             "region": "home",
                             "luma.node.name": "mac-mini-gaojiu",
@@ -3587,28 +3378,63 @@ class ControlApiTests(unittest.TestCase):
                         "exposure": "none",
                     }
                 )
-                docker_nodes = [
-                    {
-                        "ID": "node-id-gaojiu",
-                        "Description": {"Hostname": "orbstack"},
-                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "mac-mini-gaojiu", "luma.node.id": "node-id-gaojiu"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
-                    }
-                ]
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})
-                ), patch("luma.control.server.docker_request", return_value=docker_nodes):
+                ):
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "home-panel.yaml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": manifest, "sourceName": "home-panel.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 self.assertEqual(result["service"], "home-panel")
                 stack = (root / "stacks" / "home" / "home-panel" / "stack.yml").read_text(encoding="utf-8")
-                self.assertIn("node.labels.luma.node.id == node-id-gaojiu", stack)
+                self.assertIn('"LTarget": "${meta.luma_node_name}"', stack)
+                self.assertIn('"RTarget": "mac-mini-gaojiu"', stack)
                 self.assertNotIn("node.hostname", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_nomad_node_pin_does_not_require_swarm_node_id(self):
+        state = {"nodes": {"lab": {"name": "lab", "region": "home", "status": "ready"}}}
+        service = ServiceSpec(
+            source=Path("kato.yaml"),
+            name="kato",
+            image="ghcr.io/liutianjie/kato:latest",
+            region="home",
+            node="lab",
+            exposure="none",
+        )
+        resolved = resolve_service_node_pin(service, state, engine="nomad")
+        self.assertEqual(resolved.node, "lab")
+        self.assertIsNone(resolved.node_id)
+
+    def test_node_record_lookup_accepts_aliases(self):
+        nodes = {
+            "gaojiu": {
+                "displayName": "gaojiu",
+                "aliases": ["home-mac-mini", "Mac.lan"],
+                "region": "home",
+            }
+        }
+
+        self.assertIs(_node_record_for_name(nodes, "gaojiu"), nodes["gaojiu"])
+        self.assertIs(_node_record_for_name(nodes, "home-mac-mini"), nodes["gaojiu"])
+        self.assertIs(_node_record_for_name(nodes, "Mac.lan"), nodes["gaojiu"])
+
+    def test_state_nodes_expands_aliases_for_internal_resolution(self):
+        state = {
+            "nodes": {
+                "aly": {
+                    "displayName": "aly",
+                    "aliases": ["iZ0jl8auywzycory05d9cuZ"],
+                    "region": "cn",
+                }
+            }
+        }
+
+        nodes = _state_nodes(state)
+        self.assertEqual(nodes["aly"]["region"], "cn")
+        self.assertEqual(nodes["iZ0jl8auywzycory05d9cuZ"]["region"], "cn")
 
     def test_pinned_deployment_validates_image_for_target_node_platform_before_stack_write(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3621,7 +3447,9 @@ class ControlApiTests(unittest.TestCase):
                     "home-mac-mini": {
                         "region": "home",
                         "status": "labeled",
-                        "swarmNodeId": "node-id-home",
+                        "nodeId": "node-id-home",
+                        "nomadNodeId": "node-id-home",
+                        "platform": {"os": "linux", "arch": "aarch64"},
                         "agent": {
                             "status": "online",
                             "lastSeen": int(time.time()),
@@ -3646,24 +3474,14 @@ class ControlApiTests(unittest.TestCase):
                         "exposure": "none",
                     }
                 )
-                docker_nodes = [
-                    {
-                        "ID": "node-id-home",
-                        "Description": {"Hostname": "orbstack", "Platform": {"OS": "linux", "Architecture": "aarch64"}},
-                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
-                    }
-                ]
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
-                    "luma.control.server.docker_request", return_value=docker_nodes
-                ), patch(
                     "luma.control.server._run_node_agent_task",
                     side_effect=LumaError("target node Docker pull failed; image does not provide a manifest for target platform linux/arm64"),
                 ) as agent:
                     with self.assertRaisesRegex(LumaError, "target platform linux/arm64"):
                         handle_deployment(
                             state["deployToken"],
-                            {"manifest": manifest, "sourceName": "pura.yaml", "skipDns": True, "skipPortainer": True},
+                            {"manifest": manifest, "sourceName": "pura.yaml", "skipDns": True, "skipOrchestrator": True},
                         )
                 agent.assert_called_once()
                 self.assertEqual(agent.call_args.args[1], "home-mac-mini")
@@ -3685,7 +3503,9 @@ class ControlApiTests(unittest.TestCase):
                     "home-mac-mini": {
                         "region": "home",
                         "status": "labeled",
-                        "swarmNodeId": "node-id-home",
+                        "nodeId": "node-id-home",
+                        "nomadNodeId": "node-id-home",
+                        "nomadAttributes": {"os.name": "linux", "cpu.arch": "aarch64"},
                         "agent": {
                             "status": "online",
                             "lastSeen": int(time.time()),
@@ -3710,25 +3530,15 @@ class ControlApiTests(unittest.TestCase):
                         "exposure": "none",
                     }
                 )
-                docker_nodes = [
-                    {
-                        "ID": "node-id-home",
-                        "Description": {"Hostname": "orbstack", "Platform": {"OS": "linux", "Architecture": "aarch64"}},
-                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
-                    }
-                ]
                 digest = "ghcr.io/acme/pura@sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"
 
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
-                    "luma.control.server.docker_request", return_value=docker_nodes
-                ), patch(
                     "luma.control.server._run_node_agent_task",
                     return_value={"deployed": digest, "digest": digest, "message": "Target node image pull ready"},
                 ) as agent:
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "pura.yaml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": manifest, "sourceName": "pura.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 agent.assert_called_once()
                 self.assertEqual(agent.call_args.args[1], "home-mac-mini")
@@ -3738,13 +3548,13 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result["image"]["deployed"], digest)
                 self.assertEqual(result["image"]["platform"], "linux/arm64")
                 self.assertEqual(result["image"]["resolvedBy"], "target-node")
-                self.assertIn(f"image: {digest}", stack)
+                self.assertIn(f'"image": "{digest}"', stack)
                 self.assertNotIn("ghcr.io/acme/pura:main", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_deployment_refuses_pinned_down_swarm_node(self):
+    def test_deployment_refuses_pinned_down_nomad_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
             try:
@@ -3753,8 +3563,10 @@ class ControlApiTests(unittest.TestCase):
                     "home-mac-mini": {
                         "region": "home",
                         "status": "labeled",
-                        "swarmHostname": "orbstack",
-                        "swarmNodeId": "node-id-home",
+                        "hostname": "orbstack",
+                        "nodeId": "node-id-home",
+                        "nomadNodeId": "node-id-home",
+                        "nomadStatus": "down",
                         "labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"},
                     }
                 }
@@ -3766,25 +3578,19 @@ class ControlApiTests(unittest.TestCase):
                     node="home-mac-mini",
                     exposure="none",
                 )
-                docker_nodes = [
-                    {
-                        "ID": "node-id-home",
-                        "Description": {"Hostname": "orbstack"},
-                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "node-id-home"}},
-                        "Status": {"State": "down", "Addr": "100.64.0.2"},
-                    }
-                ]
-                with patch("luma.control.server.docker_request", return_value=docker_nodes), self.assertRaisesRegex(LumaError, "Swarm node node-id-home is down"):
+                with self.assertRaisesRegex(LumaError, "Nomad node is down"):
                     resolve_service_node_pin(service, state)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_deployment_refuses_pinned_node_label_attached_to_different_swarm_node(self):
+    def test_deployment_refuses_pinned_nomad_node_when_scheduling_ineligible(self):
         state = {
             "nodes": {
                 "home-mac-mini": {
                     "region": "home",
-                    "swarmNodeId": "home-node-id",
+                    "nodeId": "home-node-id",
+                    "nomadNodeId": "home-node-id",
+                    "schedulingEligibility": "ineligible",
                     "labels": {"luma.node.name": "home-mac-mini", "luma.node.id": "home-node-id"},
                 }
             }
@@ -3797,15 +3603,7 @@ class ControlApiTests(unittest.TestCase):
             node="home-mac-mini",
             exposure="none",
         )
-        docker_nodes = [
-            {
-                "ID": "m4mini-node-id",
-                "Description": {"Hostname": "orbstack"},
-                "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "home-mac-mini", "luma.node.id": "home-node-id"}},
-                "Status": {"State": "ready", "Addr": "100.64.0.2"},
-            }
-        ]
-        with patch("luma.control.server.docker_request", return_value=docker_nodes), self.assertRaisesRegex(LumaError, "label is attached to Swarm node m4mini-node-id"):
+        with self.assertRaisesRegex(LumaError, "scheduling eligibility is ineligible"):
             resolve_service_node_pin(service, state)
 
     def test_deployment_uses_control_state_and_portainer_resolution(self):
@@ -3850,7 +3648,7 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.sync_dns", return_value="DNS updated"
                 ), patch(
-                    "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
+                    "luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"
                 ), patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
                 self.assertEqual(result["service"], "api")
@@ -3858,7 +3656,7 @@ class ControlApiTests(unittest.TestCase):
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Parse manifest=ok:api -> cn/cn-edge", steps)
                 self.assertIn("Sync DNS=ok:DNS updated", steps)
-                self.assertIn("Deploy Portainer stack=ok:Portainer deploy triggered", steps)
+                self.assertIn("Deploy Nomad job=ok:Nomad job deployed", steps)
                 self.assertIn("Probe public route=ok:Public route reachable: https://api.example.com/ -> HTTP 404", steps)
                 deployment_state = load_state()
                 self.assertEqual(deployment_state["deployments"]["services"]["api"]["name"], "api")
@@ -3869,6 +3667,26 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_tailscale_relay_public_probe_checks_https_domain(self):
+        from luma.control.server import _probe_public_route
+
+        service = ServiceSpec(
+            source=Path("home-panel.yaml"),
+            name="home-panel",
+            image="nginx:alpine",
+            region="home",
+            exposure="tailscale-relay",
+            domain="panel.example.com",
+            port=8080,
+        )
+        response = MagicMock()
+        response.__enter__.return_value.status = 200
+        with patch("luma.control.server.urllib.request.urlopen", return_value=response) as urlopen:
+            result = _probe_public_route(service)
+
+        self.assertEqual(result, "Public route reachable: https://panel.example.com/ -> HTTP 200")
+        self.assertEqual(urlopen.call_args.args[0].full_url, "https://panel.example.com/")
 
     def test_deployment_failure_after_manager_work_leaves_failed_partial_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3902,7 +3720,7 @@ class ControlApiTests(unittest.TestCase):
                     "luma.control.server.resolve_service_image",
                     side_effect=lambda _config, service, **_kwargs: (service, {"requested": service.image, "selected": service.image}),
                 ), patch("luma.control.server.sync_dns", return_value="DNS updated"), patch(
-                    "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
+                    "luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"
                 ), patch("luma.control.server._probe_public_route", side_effect=LumaError("route refused")):
                     with self.assertRaisesRegex(LumaError, "Probe public route failed"):
                         handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
@@ -3913,7 +3731,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(deployment["manifest"], manifest)
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in deployment["steps"])
                 self.assertIn("Sync DNS=ok:DNS updated", steps)
-                self.assertIn("Deploy Portainer stack=ok:Portainer deploy triggered", steps)
+                self.assertIn("Deploy Nomad job=ok:Nomad job deployed", steps)
                 self.assertIn("Probe public route=fail:route refused", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -3951,12 +3769,13 @@ class ControlApiTests(unittest.TestCase):
                         "port": 80,
                     }
                 )
-                with patch("luma.control.server.sync_dns") as sync, patch("luma.control.server.deploy_with_portainer") as deploy:
+                with patch("luma.control.server.sync_dns") as sync, patch("luma.control.server.deploy_to_nomad") as deploy:
                     result = handle_deployment_preview(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
                 self.assertEqual(result["service"], "api")
                 self.assertEqual(result["summary"]["exposure"], "cn-edge")
-                self.assertEqual(result["artifacts"][0]["kind"], "stack")
-                self.assertIn("node.labels.luma.node.id == edge-node-id", result["artifacts"][0]["content"])
+                self.assertEqual(result["artifacts"][0]["kind"], "job")
+                self.assertIn('"LTarget": "${meta.luma_node_name}"', result["artifacts"][0]["content"])
+                self.assertIn('"RTarget": "edge"', result["artifacts"][0]["content"])
                 self.assertFalse((root / "stacks").exists())
                 sync.assert_not_called()
                 deploy.assert_not_called()
@@ -3985,7 +3804,7 @@ class ControlApiTests(unittest.TestCase):
                 save_state(state)
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
                 manifest = yaml.safe_dump({"name": "api", "image": "nginx:alpine", "region": "cn", "exposure": "none"})
-                with patch("luma.control.server.deploy_with_portainer") as deploy:
+                with patch("luma.control.server.deploy_to_nomad") as deploy:
                     with self.assertRaisesRegex(LumaError, "deployment name already exists"):
                         handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
                 deploy.assert_not_called()
@@ -4085,33 +3904,25 @@ class ControlApiTests(unittest.TestCase):
     def test_application_restart_force_updates_business_stack(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
-            calls = []
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-
-                def fake_docker(method, path, body=None):
-                    calls.append((method, path, body))
-                    if method == "GET" and path == "/services":
-                        return [
-                            {"ID": "svc-api", "Spec": {"Name": "myapp_api"}},
-                            {"ID": "svc-worker", "Spec": {"Name": "myapp_worker"}},
-                            {"ID": "svc-traefik", "Spec": {"Name": "traefik_traefik"}},
-                        ]
-                    if method == "GET" and path.startswith("/services/svc-"):
-                        service_id = path.rsplit("/", 1)[-1]
-                        return {"Version": {"Index": 7}, "Spec": {"Name": service_id, "TaskTemplate": {"ForceUpdate": 2}}}
-                    if method == "POST" and path.startswith("/services/"):
-                        return None
-                    raise AssertionError((method, path, body))
-
-                with patch("luma.control.server.docker_request", side_effect=fake_docker):
+                api = Mock()
+                api.request.side_effect = [
+                    [
+                        {"ID": "alloc-api", "ClientStatus": "running", "TaskStates": {"api": {}}},
+                        {"ID": "alloc-worker", "ClientStatus": "running", "TaskStates": {"worker": {}}},
+                        {"ID": "alloc-old", "ClientStatus": "complete", "TaskStates": {"old": {}}},
+                    ],
+                    {},
+                    {},
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api):
                     result = handle_application_restart(state["deployToken"], {"stack": "myapp"})
                 self.assertEqual(result["stack"], "myapp")
                 self.assertEqual(len(result["restarted"]), 2)
-                update_calls = [call for call in calls if call[0] == "POST"]
-                self.assertEqual(len(update_calls), 2)
-                self.assertIn("/services/svc-api/update?version=7", update_calls[0][1])
-                self.assertEqual(update_calls[0][2]["TaskTemplate"]["ForceUpdate"], 3)
+                api.request.assert_any_call("GET", "/v1/job/myapp/allocations")
+                api.request.assert_any_call("POST", "/v1/client/allocation/alloc-api/restart", {"TaskName": "api"})
+                api.request.assert_any_call("POST", "/v1/client/allocation/alloc-worker/restart", {"TaskName": "worker"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -4175,7 +3986,7 @@ class ControlApiTests(unittest.TestCase):
                 }
                 save_state(state)
                 with patch("luma.control.server.delete_dns", return_value="DNS deleted: panel.example.com") as dns, patch(
-                    "luma.control.server.remove_stack", return_value="Portainer stack removed: home-panel"
+                    "luma.control.server.remove_from_nomad", return_value="Nomad job removed: home-panel"
                 ) as stack:
                     result = handle_service_remove(state["deployToken"], {"name": "home-panel"})
                 dns.assert_called_once()
@@ -4187,7 +3998,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn(str(route_file), result["files"])
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Delete DNS=ok:DNS deleted: panel.example.com", steps)
-                self.assertIn("Remove Portainer stack=ok:Portainer stack removed: home-panel", steps)
+                self.assertIn("Remove Nomad job=ok:Nomad job removed: home-panel", steps)
                 self.assertIn("Delete generated files=ok:Generated files removed", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -4222,14 +4033,14 @@ class ControlApiTests(unittest.TestCase):
                     "compose": {},
                 }
                 save_state(state)
-                with patch("luma.control.server.delete_dns") as dns, patch("luma.control.server.remove_stack") as stack:
+                with patch("luma.control.server.delete_dns") as dns, patch("luma.control.server.remove_from_nomad") as stack:
                     result = handle_service_remove(state["deployToken"], {"name": "api", "dryRun": True})
                 dns.assert_not_called()
                 stack.assert_not_called()
                 self.assertTrue(stack_dir.exists())
                 self.assertTrue(result["dryRun"])
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
-                self.assertIn("Portainer stack would be removed: api", steps)
+                self.assertIn("Nomad job would be removed: api", steps)
                 self.assertIn("Generated files would be removed", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -4260,7 +4071,7 @@ class ControlApiTests(unittest.TestCase):
                 stack_dir.mkdir(parents=True)
                 (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: api") as stack:
+                with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: api") as stack:
                     result = handle_service_remove(state["deployToken"], {"name": "api"})
                 stack.assert_called_once()
                 self.assertEqual(result["service"], "api")
@@ -4271,65 +4082,24 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_service_remove_falls_back_to_live_swarm_stack_when_state_is_missing(self):
+    def test_service_remove_requires_registered_deployment(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 state["deployments"] = {"services": {}, "compose": {}}
-                state["portainerApiUrl"] = "https://127.0.0.1:9443/api"
-                state["portainerAdminPassword"] = "secret"
-                state["portainerEndpointId"] = 1
                 save_state(state)
-                stack_dir = root / "stacks" / "cn" / "gitea"
-                stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
-                (root / "luma.yaml").write_text(
-                    yaml.safe_dump(
-                        {
-                            "providers": {"dns": {"type": "cloudflare", "zoneId": "zone-id"}},
-                            "defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")},
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                docker_services = [
-                    {
-                        "ID": "svc-gitea",
-                        "Spec": {
-                            "Name": "gitea_gitea",
-                            "Labels": {
-                                "traefik.enable": "true",
-                                "traefik.http.routers.gitea.rule": "Host(`gitea.example.com`)",
-                                "traefik.http.services.gitea.loadbalancer.server.port": "3000",
-                                "traefik.swarm.network": "public",
-                            },
-                            "TaskTemplate": {
-                                "ContainerSpec": {"Image": "gitea/gitea:1.22@sha256:abc"},
-                                "Placement": {"Constraints": ["node.labels.region == cn"]},
-                            },
-                            "Mode": {"Replicated": {"Replicas": 1}},
-                        },
-                    }
-                ]
-                with patch("luma.control.server.docker_request", return_value=docker_services), patch(
-                    "luma.control.server.delete_dns", return_value="DNS deleted: gitea.example.com"
-                ) as dns, patch("luma.control.server.remove_stack", return_value="Portainer stack removed: gitea") as stack:
-                    result = handle_service_remove(state["deployToken"], {"name": "gitea"})
-                dns.assert_called_once()
-                stack.assert_called_once()
-                self.assertEqual(stack.call_args.args[1].name, "gitea")
-                self.assertEqual(dns.call_args.args[1].domain, "gitea.example.com")
-                self.assertEqual(result["service"], "gitea")
-                self.assertEqual(result["sourceName"], "live:gitea")
-                self.assertFalse(stack_dir.exists())
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                with patch("luma.control.server.docker_request") as docker_request, patch("luma.control.server.remove_from_nomad") as remove:
+                    with self.assertRaisesRegex(LumaError, "deployment not found: gitea"):
+                        handle_service_remove(state["deployToken"], {"name": "gitea"})
+                docker_request.assert_not_called()
+                remove.assert_not_called()
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
-                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
     def test_service_remove_by_name_removes_registered_compose_deployment(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4358,7 +4128,7 @@ class ControlApiTests(unittest.TestCase):
                 stack_dir.mkdir(parents=True)
                 (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: app-stack") as stack:
+                with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: app-stack") as stack:
                     result = handle_service_remove(state["deployToken"], {"name": "app-stack"})
                 stack.assert_called_once()
                 self.assertEqual(result["deployment"], "app-stack")
@@ -4401,10 +4171,7 @@ class ControlApiTests(unittest.TestCase):
                 stack_dir.mkdir(parents=True)
                 (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                task_nodes = [{"id": "node-1", "hostname": "worker-1", "lumaNode": "worker-1"}]
-                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: api"), patch(
-                    "luma.control.server._service_task_nodes", return_value=task_nodes
-                ) as task_lookup, patch(
+                with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: api"), patch(
                     "luma.control.server._remove_docker_volume_across_nodes",
                     return_value={"name": "api_api-data", "status": "removed local Docker volume"},
                 ) as remove_volume:
@@ -4412,10 +4179,9 @@ class ControlApiTests(unittest.TestCase):
                         state["deployToken"],
                         {"name": "api", "skipDns": True, "deleteStorage": True},
                     )
-                task_lookup.assert_called_once()
                 remove_volume.assert_called_once()
                 self.assertEqual(remove_volume.call_args.args[0], "api_api-data")
-                self.assertEqual(remove_volume.call_args.args[1], task_nodes)
+                self.assertEqual(remove_volume.call_args.args[1], [])
                 self.assertIn("removed=1", result["storageCleanup"])
                 self.assertNotIn("api", load_state()["deployments"]["services"])
             finally:
@@ -4437,7 +4203,7 @@ class ControlApiTests(unittest.TestCase):
                         "path": "/srv/luma",
                     }
                 }
-                state["nodes"] = {"home-node": {"region": "home", "swarmHostname": "home-node"}}
+                state["nodes"] = {"home-node": {"region": "home", "hostname": "home-node"}}
                 manifest = yaml.safe_dump(
                     {
                         "name": "api",
@@ -4464,12 +4230,9 @@ class ControlApiTests(unittest.TestCase):
                 stack_dir.mkdir(parents=True)
                 (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                task_nodes = [{"id": "node-1", "hostname": "home-node", "lumaNode": "home-node"}]
-                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: api"), patch(
+                with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: api"), patch(
                     "luma.control.server._storage_node_is_local", return_value=True
                 ), patch("luma.control.server._run_host_prep_command", return_value="removed") as host_prep, patch(
-                    "luma.control.server._service_task_nodes", return_value=task_nodes
-                ), patch(
                     "luma.control.server._remove_docker_volume_across_nodes",
                     return_value={"name": "api_api-data", "status": "removed local Docker volume"},
                 ):
@@ -4516,8 +4279,8 @@ class ControlApiTests(unittest.TestCase):
                     "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {"selected": service.image})
                 ), patch("luma.control.server._storage_node_is_local", return_value=True), patch(
                     "luma.control.server._run_host_prep_command", return_value="ok"
-                ) as host_prep, patch("luma.control.server.deploy_with_portainer", return_value="Portainer deploy skipped"):
-                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "console:api", "skipDns": True, "skipPortainer": True})
+                ) as host_prep, patch("luma.control.server.deploy_to_nomad", return_value="Orchestrator deploy skipped"):
+                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "console:api", "skipDns": True, "skipOrchestrator": True})
                 commands = "\n".join(call.args[0] for call in host_prep.call_args_list)
                 self.assertIn("/srv/luma/api/api-data", commands)
                 self.assertIn("storagePreparation", result)
@@ -4579,7 +4342,7 @@ class ControlApiTests(unittest.TestCase):
                 stack_dir.mkdir(parents=True)
                 (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: nextcloud"), patch(
+                with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: nextcloud"), patch(
                     "luma.control.server._storage_node_is_local", return_value=True
                 ), patch("luma.control.server._run_host_prep_command", return_value="removed") as host_prep:
                     result = handle_service_remove(state["deployToken"], {"name": "nextcloud", "deleteStorage": True})
@@ -4632,7 +4395,7 @@ class ControlApiTests(unittest.TestCase):
                 }
                 save_state(state)
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                with patch("luma.control.server.remove_stack") as remove, patch("luma.control.server._run_host_prep_command") as host_prep:
+                with patch("luma.control.server.remove_from_nomad") as remove, patch("luma.control.server._run_host_prep_command") as host_prep:
                     result = handle_service_remove(state["deployToken"], {"name": "nextcloud", "deleteStorage": True, "dryRun": True})
                 remove.assert_not_called()
                 host_prep.assert_not_called()
@@ -4642,7 +4405,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_service_remove_rejects_delete_storage_with_skip_portainer(self):
+    def test_service_remove_rejects_delete_storage_with_skip_orchestrator(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -4650,11 +4413,11 @@ class ControlApiTests(unittest.TestCase):
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 save_state(state)
                 with self.assertRaisesRegex(LumaError, "delete-storage"):
-                    handle_service_remove(state["deployToken"], {"name": "nextcloud", "deleteStorage": True, "skipPortainer": True})
+                    handle_service_remove(state["deployToken"], {"name": "nextcloud", "deleteStorage": True, "skipOrchestrator": True})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_control_status_reports_dns_and_portainer_readiness(self):
+    def test_control_status_reports_dns_and_nomad_readiness(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -4664,12 +4427,9 @@ class ControlApiTests(unittest.TestCase):
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 handle_secret_set(state["deployToken"], {"name": "CLOUDFLARE_API_TOKEN", "value": "cf-token"})
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=False)
-                state["portainerApiUrl"] = "https://100.64.0.1:9443/api"
-                state["portainerEndpointId"] = 2
-                state["swarmId"] = "swarm"
                 state["nodes"] = {
-                    "manager": {"region": "cn", "status": "labeled", "labels": {"region": "cn"}},
-                    "docker-home": {"displayName": "mini-gaojiu", "region": "home", "status": "labeled"},
+                    "manager": {"region": "cn", "status": "manager", "labels": {"region": "cn", "role.nomad-manager": "true"}},
+                    "home": {"displayName": "mini-gaojiu", "region": "home", "status": "labeled"},
                 }
                 state["storageClasses"] = {
                     "cn-nfs": {
@@ -4701,35 +4461,25 @@ class ControlApiTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                docker_nodes = [
-                    {
-                        "ID": "manager-id-123456",
-                        "Description": {"Hostname": "manager"},
-                        "Spec": {"Role": "manager", "Availability": "active", "Labels": {"region": "cn", "ingress": "true"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.1"},
-                        "ManagerStatus": {"Leader": True, "Reachability": "reachable"},
-                    },
-                    {
-                        "ID": "home-id-123456",
-                        "Description": {"Hostname": "docker-home"},
-                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "docker-home", "luma.node.id": "home-id-123456"}},
-                        "Status": {"State": "down", "Addr": "100.64.0.2"},
-                    },
+                nomad_nodes = [
+                    {"name": "home", "hostname": "home-host", "region": "home", "status": "ready"},
+                    {"name": "manager", "hostname": "manager", "region": "cn", "status": "ready", "leader": True},
                 ]
-                with patch("luma.control.server.docker_request", return_value=docker_nodes):
+                with patch(
+                    "luma.control.server.nomad_status_summary",
+                    return_value={"available": True, "leader": "100.64.0.1:4647", "nodes": nomad_nodes},
+                ), patch("luma.control.server.nomad_services_summary", return_value=[]):
                     result = handle_control_status(state["deployToken"])
                 self.assertEqual(result["dns"]["provider"], "cloudflare")
                 self.assertTrue(result["dns"]["tokenConfigured"])
                 self.assertTrue(result["dns"]["zoneIdConfigured"])
                 self.assertEqual(result["dns"]["target"], "203.0.113.10")
                 self.assertEqual(result["dns"]["missing"], [])
-                self.assertTrue(result["portainer"]["ready"])
+                self.assertTrue(result["nomad"]["available"])
+                self.assertEqual(result["nomad"]["nodes"][1]["leader"], True)
                 self.assertEqual(result["nodes"]["registered"], 2)
-                self.assertEqual(result["nodes"]["items"][0]["name"], "docker-home")
+                self.assertEqual(result["nodes"]["items"][0]["name"], "home")
                 self.assertEqual(result["nodes"]["items"][0]["displayName"], "mini-gaojiu")
-                self.assertEqual(result["nodes"]["items"][0]["swarmState"], "down")
-                self.assertEqual(result["swarm"]["nodes"][0]["hostname"], "docker-home")
-                self.assertEqual(result["swarm"]["nodes"][1]["leader"], True)
                 self.assertEqual(result["storage"]["storageClasses"][0]["name"], "cn-nfs")
                 self.assertEqual(result["storage"]["storageClasses"][0]["path"], "/srv/luma")
             finally:
@@ -4737,109 +4487,111 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
-    def test_dashboard_payload_reports_nodes_services_and_traffic_paths(self):
-        from luma.control import server as control_server
-
+    def test_dashboard_nomad_readiness_uses_nomad_summary_available(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
-            old_token = _set_env("CLOUDFLARE_API_TOKEN", "cf-token")
-            original_broker = control_server.TERMINAL_BROKER
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["portainerApiUrl"] = "https://100.64.0.1:9443/api?token=secret"
-                state["portainerAdminPassword"] = "portainer-secret"
-                state["portainerEndpointId"] = 2
-                state["swarmId"] = "swarm"
-                state["nodes"] = {
-                    "manager": {
-                        "region": "cn",
-                        "status": "labeled",
-                        "swarmNodeId": "node-manager",
-                        "labels": {"region": "cn", "luma.node.name": "manager", "luma.node.id": "node-manager"},
-                        "agent": {
-                            "status": "online",
-                            "lastSeen": int(time.time()),
-                            "os": "linux",
-                            "capabilities": ["nfs-host"],
-                            "containerStats": [
-                                {
-                                    "service": "api_api",
-                                    "containerId": "api-container-1",
-                                    "name": "api.1",
-                                    "cpuPercent": 8.5,
-                                    "memoryUsageBytes": 134217728,
-                                    "memoryLimitBytes": 536870912,
-                                    "memoryPercent": 25.0,
-                                }
-                            ],
-                        },
-                    },
-                    "home-node": {
-                        "displayName": "mini",
+                state["nodes"] = {"bot": {"region": "global", "status": "registered"}}
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad"}, "providers": {"dns": {"type": "cloudflare"}}}),
+                    encoding="utf-8",
+                )
+                nomad_summary = {
+                    "available": False,
+                    "error": "Nomad API unavailable",
+                    "leader": "",
+                    "nodes": [],
+                }
+                with patch("luma.control.server.nomad_status_summary", return_value=nomad_summary), patch(
+                    "luma.control.server.nomad_services_summary", return_value=[]
+                ):
+                    result = handle_dashboard(state["deployToken"])
+
+                self.assertFalse(result["readiness"]["nomad"]["available"])
+                self.assertEqual(result["readiness"]["nomad"]["error"], "Nomad API unavailable")
+                self.assertEqual(result["nodes"][0]["name"], "bot")
+                self.assertEqual(result["nodes"][0]["state"], "missing")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_dashboard_expands_compose_job_services_with_manifest_exposure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "granary",
+                        "compose": "docker-compose.yml",
                         "region": "home",
-                        "status": "labeled",
-                        "swarmNodeId": "node-home",
-                        "labels": {"region": "home", "luma.node.name": "home-node", "luma.node.id": "node-home"},
-                        "agent": {
-                            "status": "online",
-                            "lastSeen": int(time.time()),
-                            "os": "linux",
-                            "capabilities": ["nfs-host", "terminal"],
-                            "metrics": {
-                                "cpuPercent": 18.4,
-                                "load1": 0.42,
-                                "memoryTotalBytes": 8589934592,
-                                "memoryAvailableBytes": 4294967296,
-                                "memoryUsedPercent": 50.0,
+                        "services": {
+                            "mysql": {
+                                "node": "lab",
+                                "exposure": "tcp-relay",
+                                "domain": "granary-db.itool.tech",
+                                "port": 3306,
+                                "publishPort": 3306,
+                            },
+                            "granary": {
+                                "node": "lab",
+                                "exposure": "tailscale-relay",
+                                "domain": "api-granary.itool.tech",
+                                "port": 8888,
+                                "publishPort": 8888,
+                            },
+                            "granary-frontend": {
+                                "node": "lab",
+                                "exposure": "tailscale-relay",
+                                "domain": "granary.itool.tech",
+                                "port": 80,
+                                "publishPort": 8081,
                             },
                         },
+                    }
+                )
+                state["deployments"] = {
+                    "services": {},
+                    "compose": {
+                        "granary": {
+                            "kind": "compose",
+                            "name": "granary",
+                            "slug": "granary",
+                            "manifest": sidecar,
+                            "composeContent": "services: {}\n",
+                            "sourceName": "luma.compose.yml",
+                        }
                     },
                 }
-                from luma.control.state import save_state
-
                 save_state(state)
-                (root / "routes").mkdir()
-                (root / "routes" / "home-panel.yml").write_text(
-                    yaml.safe_dump(
-                        {
-                            "http": {
-                                "routers": {"home-panel": {"rule": "Host(`panel.example.com`)"}},
-                                "services": {
-                                    "home-panel": {
-                                        "loadBalancer": {"servers": [{"url": "http://100.64.0.2:8080"}]}
-                                    }
-                                },
-                            }
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                (root / "routes" / "nextcloud-nextcloud.yml").write_text(
-                    yaml.safe_dump(
-                        {
-                            "http": {
-                                "routers": {"nextcloud-nextcloud": {"rule": "Host(`next.example.com`)"}},
-                                "services": {
-                                    "nextcloud-nextcloud": {
-                                        "loadBalancer": {"servers": [{"url": "http://100.64.0.2:80"}]}
-                                    }
-                                },
-                            }
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                (root / "routes" / "granary-mysql.yml").write_text(
+                routes = root / "routes"
+                routes.mkdir()
+                (routes / "granary-mysql.yml").write_text(
                     yaml.safe_dump(
                         {
                             "tcp": {
-                                "routers": {"granary-mysql": {"rule": "HostSNI(`*`)"}},
+                                "routers": {"granary-mysql": {"rule": "HostSNI(`*`)", "service": "granary-mysql"}},
                                 "services": {
-                                    "granary-mysql": {
-                                        "loadBalancer": {"servers": [{"address": "100.64.0.2:3306"}]}
-                                    }
+                                    "granary-mysql": {"loadBalancer": {"servers": [{"address": "100.64.0.10:3306"}]}}
+                                },
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (routes / "granary-granary-frontend.yml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "http": {
+                                "routers": {"granary-frontend": {"rule": "Host(`granary.itool.tech`)", "service": "granary-frontend"}},
+                                "services": {
+                                    "granary-frontend": {"loadBalancer": {"servers": [{"url": "http://100.64.0.10:8081"}]}}
                                 },
                             }
                         }
@@ -4847,229 +4599,187 @@ class ControlApiTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 (root / "luma.yaml").write_text(
-                    yaml.safe_dump(
-                        {
-                            "providers": {
-                                "dns": {
-                                    "type": "cloudflare",
-                                    "zone": "example.com",
-                                    "zoneId": "zone-id",
-                                    "edgeTarget": "203.0.113.10",
-                                }
-                            },
-                            "defaults": {"routesRoot": str(root / "routes")},
-                        }
-                    ),
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "routesRoot": str(routes)}}),
                     encoding="utf-8",
                 )
-                docker_nodes = [
+                nomad_services = [
                     {
-                        "ID": "node-manager",
-                        "Description": {
-                            "Hostname": "manager",
-                            "Resources": {"NanoCPUs": 4000000000, "MemoryBytes": 17179869184},
-                        },
-                        "Spec": {"Role": "manager", "Availability": "active", "Labels": {"region": "cn", "ingress": "true", "luma.node.name": "manager", "luma.node.id": "node-manager"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.1"},
-                        "ManagerStatus": {"Leader": True},
-                    },
-                    {
-                        "ID": "node-home",
-                        "Description": {
-                            "Hostname": "home-node",
-                            "Resources": {"NanoCPUs": 8000000000, "MemoryBytes": 8589934592},
-                        },
-                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "home", "luma.node.name": "home-node", "luma.node.id": "node-home"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
-                    },
+                        "name": "granary",
+                        "jobId": "granary",
+                        "status": "running",
+                        "running": 1,
+                        "region": "home",
+                        "compose": True,
+                        "tasks": [
+                            {
+                                "name": "mysql",
+                                "stack": "granary",
+                                "fullName": "granary_mysql",
+                                "status": "running",
+                                "region": "home",
+                                "targetPort": "3306",
+                                "publishPort": "3306",
+                                "running": 1,
+                                "desired": 1,
+                                "nodes": ["lab"],
+                                "tasks": [{"id": "alloc-1", "node": "lab", "state": "running"}],
+                            },
+                            {
+                                "name": "granary",
+                                "stack": "granary",
+                                "fullName": "granary_granary",
+                                "status": "running",
+                                "region": "home",
+                                "targetPort": "8888",
+                                "publishPort": "8888",
+                                "running": 1,
+                                "desired": 1,
+                                "nodes": ["lab"],
+                            },
+                            {
+                                "name": "granary-frontend",
+                                "stack": "granary",
+                                "fullName": "granary_granary-frontend",
+                                "status": "running",
+                                "region": "home",
+                                "targetPort": "80",
+                                "publishPort": "8081",
+                                "running": 1,
+                                "desired": 1,
+                                "nodes": ["lab"],
+                            },
+                        ],
+                    }
                 ]
-                docker_services = [
-                    _docker_service(
-                        "svc-api",
-                        "api_api",
-                        "ghcr.io/me/api:1",
-                        2,
-                        ["node.labels.region == cn"],
-                        {
-                            "traefik.http.routers.api.rule": "Host(`api.example.com`)",
-                            "traefik.http.services.api.loadbalancer.server.port": "3000",
-                            "traefik.swarm.network": "public",
-                        },
-                    ),
-                    _docker_service(
-                        "svc-worker",
-                        "worker_worker",
-                        "ghcr.io/me/worker:1",
-                        1,
-                        ["node.labels.region == global"],
-                        {"luma.storage.pg-data": "unmanaged"},
-                    ),
-                    _docker_service("svc-home", "home-panel_home-panel", "ghcr.io/me/panel:1", 1, ["node.labels.region == home"], {}),
-                    _docker_service(
-                        "svc-nextcloud",
-                        "nextcloud_nextcloud",
-                        "nextcloud:apache",
-                        1,
-                        ["node.labels.region == home"],
-                        {"luma.compose.stack": "nextcloud", "luma.compose.service": "nextcloud"},
-                    ),
-                    _docker_service(
-                        "svc-mysql",
-                        "granary_mysql",
-                        "mysql:8.4.9",
-                        1,
-                        ["node.labels.region == home"],
-                        {"luma.compose.stack": "granary", "luma.compose.service": "mysql"},
-                    ),
-                ]
-                docker_services[0]["Spec"]["TaskTemplate"]["Resources"] = {
-                    "Limits": {"NanoCPUs": 1000000000, "MemoryBytes": 536870912},
-                    "Reservations": {"NanoCPUs": 500000000, "MemoryBytes": 268435456},
-                }
-                docker_tasks = [
-                    _docker_task("svc-api", "node-manager", "running", container_id="api-container-1"),
-                    _docker_task("svc-api", "node-home", "accepted"),
-                    _docker_task("svc-api", "node-home", "failed"),
-                    _docker_task("svc-worker", "node-manager", "running"),
-                    _docker_task("svc-home", "node-home", "running"),
-                    _docker_task("svc-nextcloud", "node-home", "running"),
-                    _docker_task("svc-mysql", "node-home", "running"),
-                ]
-
-                def fake_docker(method, path, body=None):
-                    self.assertEqual(method, "GET")
-                    if path == "/nodes":
-                        return docker_nodes
-                    if path == "/services":
-                        return docker_services
-                    if path == "/tasks":
-                        return docker_tasks
-                    raise AssertionError(path)
-
-                with patch("luma.control.server.docker_request", side_effect=fake_docker):
-                    control_server.TERMINAL_BROKER = control_server.TerminalBroker(per_node_limit=2, idle_timeout_seconds=60)
-                    waiting_result = handle_dashboard(state["deployToken"])
-                    waiting_home = next(item for item in waiting_result["nodes"] if item["name"] == "home-node")
-                    self.assertFalse(waiting_home["terminalConnected"])
-                    self.assertEqual(waiting_home["terminalStatus"], "waiting")
-
-                    control_server.TERMINAL_BROKER._agents["home-node"] = control_server._TerminalAgentConnection("home-node", Mock())
+                with patch(
+                    "luma.control.server.nomad_status_summary",
+                    return_value={"available": True, "leader": "127.0.0.1:4647", "nodes": []},
+                ), patch("luma.control.server.nomad_services_summary", return_value=nomad_services), patch(
+                    "luma.control.server._service_stats_by_name", return_value={}
+                ):
                     result = handle_dashboard(state["deployToken"])
 
-                self.assertEqual(result["cluster"]["id"], "luma-test")
-                self.assertTrue(result["readiness"]["dns"]["ready"])
-                self.assertTrue(result["readiness"]["portainer"]["ready"])
-                self.assertEqual(result["readiness"]["dns"]["target"], "203.0.113.10")
-                self.assertEqual(result["nodes"][0]["name"], "home-node")
-                self.assertEqual(result["nodes"][0]["metrics"]["cpuPercent"], 18.4)
-                self.assertEqual(result["nodes"][0]["metrics"]["memoryUsedPercent"], 50.0)
-                self.assertEqual(result["nodes"][0]["capacity"]["cpus"], 8.0)
-                self.assertTrue(result["nodes"][0]["terminalConnected"])
-                self.assertEqual(result["nodes"][0]["terminalStatus"], "connected")
-                manager_node = next(item for item in result["nodes"] if item["name"] == "manager")
-                self.assertFalse(manager_node["terminalConnected"])
-                self.assertEqual(manager_node["terminalStatus"], "unsupported")
-                api = next(item for item in result["services"] if item["routeId"] == "api")
-                self.assertEqual(api["domain"], "api.example.com")
-                self.assertEqual(api["targetPort"], "3000")
-                self.assertEqual(api["running"], 1)
-                self.assertEqual(api["pending"], 1)
-                self.assertEqual(api["failed"], 1)
-                self.assertEqual(api["exposure"], "cn-edge")
-                self.assertEqual(api["health"], "degraded")
-                self.assertEqual(api["resources"]["limits"]["cpus"], 1.0)
-                self.assertEqual(api["resources"]["reservations"]["memoryBytes"], 268435456)
-                self.assertEqual(api["resources"]["actual"]["cpuPercent"], 8.5)
-                self.assertEqual(api["resources"]["actual"]["memoryUsageBytes"], 134217728)
-                self.assertTrue(any(item["node"] == "manager" and item["state"] == "running" for item in api["tasks"]))
-                api_path = next(item for item in result["trafficPaths"] if item["id"] == "api")
-                self.assertEqual(api_path["destinations"][0]["region"], "cn")
-                self.assertEqual(api_path["destinations"][0]["node"], "manager")
-                self.assertEqual(api_path["destinations"][0]["state"], "running")
-                self.assertEqual(api_path["destinations"][0]["nodeAddress"], "100.64.0.1")
-                self.assertTrue(any(item["kind"] == "service-failed" and item["target"] == "api_api" for item in result["issues"]))
-                self.assertTrue(any(item["kind"] == "service-pending" and item["target"] == "api_api" for item in result["issues"]))
-                worker = next(item for item in result["services"] if item["routeId"] == "worker")
-                self.assertEqual(worker["exposure"], "none")
-                self.assertEqual(worker["health"], "running")
-                self.assertEqual(worker["storage"][0]["name"], "pg-data")
-                self.assertTrue(any("pg-data is unmanaged" in item for item in result["storage"]["warnings"]))
-                home_path = next(item for item in result["trafficPaths"] if item["id"] == "home-panel")
-                self.assertEqual(home_path["kind"], "tailscale-relay")
-                self.assertIn("http://100.64.0.2:8080", home_path["segments"])
-                self.assertEqual(home_path["destinations"][0]["region"], "home")
-                self.assertEqual(home_path["destinations"][0]["node"], "home-node")
-                self.assertEqual(home_path["destinations"][0]["address"], "http://100.64.0.2:8080")
-                nextcloud = next(item for item in result["services"] if item["fullName"] == "nextcloud_nextcloud")
-                self.assertEqual(nextcloud["routeId"], "nextcloud-nextcloud")
-                self.assertEqual(nextcloud["domain"], "next.example.com")
-                self.assertEqual(nextcloud["exposure"], "tailscale-relay")
-                mysql = next(item for item in result["services"] if item["fullName"] == "granary_mysql")
-                self.assertEqual(mysql["routeId"], "granary-mysql")
-                self.assertEqual(mysql["exposure"], "tcp-relay")
-                self.assertEqual(mysql["targetPort"], "3306")
-                mysql_path = next(item for item in result["trafficPaths"] if item["id"] == "granary-mysql")
-                self.assertEqual(mysql_path["kind"], "tcp-relay")
-                self.assertIn("Traefik TCP", mysql_path["segments"])
-                self.assertIn("100.64.0.2:3306", mysql_path["segments"])
-                self.assertEqual(mysql_path["destinations"][0]["region"], "home")
-                self.assertEqual(mysql_path["destinations"][0]["node"], "home-node")
-                self.assertEqual(mysql_path["destinations"][0]["address"], "100.64.0.2:3306")
-                serialized = json.dumps(result)
-                self.assertNotIn("portainer-secret", serialized)
-                self.assertNotIn(state["deployToken"], serialized)
-                self.assertNotIn("token=secret", serialized)
+                services = {item["fullName"]: item for item in result["services"]}
+                self.assertEqual(services["granary_mysql"]["exposure"], "tcp-relay")
+                self.assertEqual(services["granary_mysql"]["domain"], "granary-db.itool.tech")
+                self.assertEqual(services["granary_mysql"]["targetPort"], "3306")
+                self.assertEqual(services["granary_mysql"]["routeId"], "granary-mysql")
+                self.assertEqual(services["granary_granary"]["domain"], "api-granary.itool.tech")
+                self.assertEqual(services["granary_granary-frontend"]["domain"], "granary.itool.tech")
+                self.assertEqual(services["granary_granary-frontend"]["exposure"], "tailscale-relay")
             finally:
-                control_server.TERMINAL_BROKER = original_broker
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
-                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
-    def test_dashboard_returns_partial_payload_when_docker_socket_fails(self):
+    def test_dashboard_logs_resolve_compose_task_full_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                state["nodes"] = {"manager": {"region": "cn", "status": "registered"}}
-                from luma.control.state import save_state
-
+                state["deployments"] = {
+                    "services": {},
+                    "compose": {
+                        "granary": {
+                            "kind": "compose",
+                            "name": "granary",
+                            "slug": "granary",
+                            "manifest": yaml.safe_dump(
+                                {
+                                    "name": "granary",
+                                    "compose": "docker-compose.yml",
+                                    "services": {"mysql": {"exposure": "tcp-relay", "domain": "granary-db.itool.tech", "port": 3306}},
+                                }
+                            ),
+                            "composeContent": "services: {}\n",
+                            "sourceName": "luma.compose.yml",
+                        }
+                    },
+                }
                 save_state(state)
-                (root / "luma.yaml").write_text(yaml.safe_dump({"providers": {"dns": {"type": "cloudflare"}}}), encoding="utf-8")
-                with patch("luma.control.server.docker_request", side_effect=LumaError("Docker socket unavailable")):
-                    result = handle_dashboard(state["deployToken"])
-                self.assertFalse(result["readiness"]["swarm"]["available"])
-                self.assertEqual(result["nodes"][0]["name"], "manager")
-                self.assertEqual(result["nodes"][0]["state"], "missing")
-                self.assertTrue(any("Docker nodes unavailable" in item for item in result["errors"]))
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}), encoding="utf-8")
+                log_text = "mysql ready\n"
+                calls: list[str] = []
+
+                def request(_self, method, path, body=None):
+                    calls.append(path)
+                    if path == "/v1/job/granary/allocations":
+                        return [
+                            {
+                                "ID": "alloc-1",
+                                "DesiredStatus": "run",
+                                "ClientStatus": "running",
+                                "CreateTime": 10,
+                                "TaskGroup": "granary",
+                                "TaskStates": {"mysql": {"State": "running"}, "granary": {"State": "running"}},
+                            }
+                        ]
+                    raise AssertionError(path)
+
+                def request_text(_self, method, path, body=None):
+                    calls.append(path)
+                    self.assertIn("task=mysql", path)
+                    if "type=stdout" in path:
+                        return json.dumps({"Data": base64.b64encode(log_text.encode()).decode(), "Offset": 10})
+                    if "type=stderr" in path:
+                        return json.dumps({"Data": "", "Offset": 0})
+                    raise AssertionError(path)
+
+                with patch("luma.control.server.NomadApi.request", request), patch("luma.control.server.NomadApi.request_text", request_text):
+                    result = handle_dashboard_logs(state["deployToken"], "granary_mysql", tail=20)
+
+                self.assertIn("/v1/job/granary/allocations", calls)
+                self.assertEqual(result["service"], "granary_mysql")
+                self.assertEqual(result["logs"], ["mysql ready"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_dashboard_logs_tails_swarm_service_logs(self):
+    def test_dashboard_logs_tails_nomad_alloc_logs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 save_state(state)
-                first = b"2026-06-05T10:00:00Z api booted\n"
-                second = b"2026-06-05T10:00:01Z api ready\n"
-                raw = b"\x01\x00\x00\x00" + len(first).to_bytes(4, "big") + first
-                raw += b"\x02\x00\x00\x00" + len(second).to_bytes(4, "big") + second
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}), encoding="utf-8")
+                log_text = "2026-06-05T10:00:00Z api booted\n2026-06-05T10:00:01Z api ready\n"
+                calls: list[str] = []
 
-                with patch("luma.control.server.docker_request_bytes", return_value=(200, raw)) as logs:
-                    result = handle_dashboard_logs(state["deployToken"], "nextcloud_nextcloud", tail=20, since="1780650000")
+                def request(_self, method, path, body=None):
+                    calls.append(path)
+                    if path == "/v1/job/codex-gitea/allocations":
+                        return [{
+                            "ID": "alloc-1",
+                            "DesiredStatus": "run",
+                            "ClientStatus": "running",
+                            "CreateTime": 10,
+                            "TaskGroup": "codex-gitea",
+                            "TaskStates": {"codex-gitea": {"State": "running"}},
+                        }]
+                    raise AssertionError(path)
 
-                path = logs.call_args.args[1]
-                self.assertIn("/services/nextcloud_nextcloud/logs?", path)
-                self.assertIn("since=1780650000", path)
-                self.assertEqual(result["service"], "nextcloud_nextcloud")
-                self.assertEqual(result["since"], "1780650000")
-                self.assertEqual(result["logs"], [first.decode().strip(), second.decode().strip()])
+                def request_text(_self, method, path, body=None):
+                    calls.append(path)
+                    if path.startswith("/v1/client/fs/logs/alloc-1?") and "type=stdout" in path:
+                        payload = {"Data": base64.b64encode(log_text.encode()).decode(), "Offset": 10}
+                        return json.dumps(payload) + json.dumps({"Data": "ignored"})
+                    if path.startswith("/v1/client/fs/logs/alloc-1?") and "type=stderr" in path:
+                        return json.dumps({"Data": "", "Offset": 0})
+                    raise AssertionError(path)
+
+                with patch("luma.control.server.NomadApi.request", request), patch("luma.control.server.NomadApi.request_text", request_text):
+                    result = handle_dashboard_logs(state["deployToken"], "codex-gitea", tail=20)
+
+                self.assertIn("/v1/job/codex-gitea/allocations", calls)
+                self.assertTrue(any("/v1/client/fs/logs/alloc-1?" in call for call in calls))
+                self.assertEqual(result["service"], "codex-gitea")
+                self.assertEqual(result["logs"], [line for line in log_text.splitlines()])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_dashboard_handler_serves_static_assets_and_rejects_missing_token(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), ControlHandler)
@@ -5293,7 +5003,7 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_deployment_passes_referenced_secrets_as_portainer_stack_env(self):
+    def test_deployment_renders_referenced_secrets_into_nomad_job_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -5326,14 +5036,15 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.sync_dns", return_value="DNS updated"
                 ), patch(
-                    "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
+                    "luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"
                 ) as deploy, patch("luma.control.server.urllib.request.urlopen", return_value=response):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
                 self.assertEqual(result["service"], "api")
                 self.assertEqual(result["probe"], "Public route reachable: https://api.example.com/ -> HTTP 200")
                 deploy.assert_called_once()
-                self.assertEqual(deploy.call_args.kwargs["stack_env"], [{"name": "DATABASE_URL", "value": "postgres://secret"}])
-                self.assertIn("DATABASE_URL: ${DATABASE_URL}", (root / "stacks" / "cn" / "api" / "stack.yml").read_text())
+                job_text = deploy.call_args.args[1]
+                self.assertIn('"DATABASE_URL": "postgres://secret"', job_text)
+                self.assertIn('"DATABASE_URL": "postgres://secret"', (root / "stacks" / "cn" / "api" / "stack.yml").read_text())
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -5375,18 +5086,19 @@ class ControlApiTests(unittest.TestCase):
                                 "exposure": "tailscale-relay",
                                 "domain": "kuma.example.com",
                                 "port": 3001,
+                                "relay": {"host": "100.64.0.2"},
                             }
                         },
                     }
                 )
-                with patch("luma.control.server.upsert_stack") as upsert:
+                with patch("luma.control.server.deploy_to_nomad") as upsert:
                     result = handle_compose_deployment_preview(
                         state["deployToken"],
                         {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
                     )
                 self.assertEqual(result["deployment"], "uptime-kuma")
-                self.assertEqual(result["artifacts"][0]["kind"], "stack")
-                self.assertIn("driver_opts", result["artifacts"][0]["content"])
+                self.assertEqual(result["artifacts"][0]["kind"], "job")
+                self.assertIn('"source": "kuma-data"', result["artifacts"][0]["content"])
                 self.assertEqual(result["storage"]["storageClasses"][0]["name"], "home-nfs")
                 self.assertFalse((root / "stacks").exists())
                 upsert.assert_not_called()
@@ -5454,7 +5166,7 @@ class ControlApiTests(unittest.TestCase):
                 with self.assertRaisesRegex(LumaError, "storage backend changed"):
                     handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True},
                     )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -5493,7 +5205,7 @@ class ControlApiTests(unittest.TestCase):
                 )
                 result = handle_compose_deployment(
                     state["deployToken"],
-                    {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
+                    {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True},
                 )
                 self.assertEqual(result["deployment"], "app-stack")
             finally:
@@ -5520,7 +5232,7 @@ class ControlApiTests(unittest.TestCase):
                 with self.assertRaisesRegex(LumaError, "managed by Luma Control"):
                     handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True},
                     )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -5539,7 +5251,7 @@ class ControlApiTests(unittest.TestCase):
                 with self.assertRaisesRegex(LumaError, "relative path without"):
                     handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True},
                     )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -5629,7 +5341,7 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_storage_set_can_adopt_manager_swarm_node(self):
+    def test_storage_set_rejects_unregistered_manager_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
             try:
@@ -5638,67 +5350,17 @@ class ControlApiTests(unittest.TestCase):
                     "home-mac-mini": {"name": "home-mac-mini", "region": "home", "status": "labeled"},
                 }
                 save_state(state)
-                swarm_nodes = [
-                    {
-                        "ID": "manager-node-id-1234567890",
-                        "Spec": {
-                            "Role": "manager",
-                            "Labels": {
-                                "region": "cn",
-                                "ingress": "true",
-                                "luma.node.name": "iZ0jl8auywzycory05d9cuZ",
-                            },
-                        },
-                        "Description": {"Hostname": "iZ0jl8auywzycory05d9cuZ"},
-                        "Status": {"State": "ready"},
-                        "ManagerStatus": {"Leader": True, "Reachability": "reachable"},
-                    }
-                ]
-                docker_calls = []
-
-                def fake_docker_request(method, path, body=None):
-                    docker_calls.append((method, path, body))
-                    if method == "GET" and path == "/info":
-                        return {"Name": "iZ0jl8auywzycory05d9cuZ", "Swarm": {"NodeID": "manager-node-id-1234567890"}}
-                    if method == "GET" and path == "/nodes":
-                        return swarm_nodes
-                    if method == "GET" and path.startswith("/nodes/"):
-                        return {
-                            "Version": {"Index": 12},
-                            "Spec": {
-                                "Role": "manager",
-                                "Labels": {
-                                    "region": "cn",
-                                    "ingress": "true",
-                                    "luma.node.name": "iZ0jl8auywzycory05d9cuZ",
-                                },
-                            },
-                        }
-                    if method == "POST" and path.startswith("/nodes/manager-node-id-1234567890/update"):
-                        return {}
-                    raise AssertionError(f"unexpected Docker request: {method} {path}")
-
-                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
-                    "luma.control.server._run_host_prep_command", return_value="ok"
-                ):
-                    result = handle_storage_set(
-                        state["deployToken"],
-                        {"name": "cn-nfs", "provider": "nfs", "node": "iZ0jl8auywzycory05d9cuZ", "path": "/srv/luma"},
-                    )
-                self.assertTrue(result["saved"])
-                persisted = load_state()
-                self.assertEqual(persisted["storageClasses"]["cn-nfs"]["path"], "/srv/luma")
-                manager = persisted["nodes"]["iZ0jl8auywzycory05d9cuZ"]
-                self.assertEqual(manager["region"], "cn")
-                self.assertEqual(manager["swarmHostname"], "iZ0jl8auywzycory05d9cuZ")
-                self.assertEqual(manager["swarmNodeId"], "manager-node-id-1234567890")
-                self.assertEqual(manager["status"], "adopted")
-                self.assertEqual(manager["labels"]["luma.node.name"], "iZ0jl8auywzycory05d9cuZ")
-                self.assertTrue(any(method == "POST" and "/update" in path for method, path, _ in docker_calls))
+                with patch("luma.control.server.docker_request", side_effect=AssertionError("Docker discovery should not run")):
+                    with self.assertRaisesRegex(LumaError, "unknown Luma node"):
+                        handle_storage_set(
+                            state["deployToken"],
+                            {"name": "cn-nfs", "provider": "nfs", "node": "iZ0jl8auywzycory05d9cuZ", "path": "/srv/luma"},
+                        )
+                self.assertNotIn("cn-nfs", load_state().get("storageClasses", {}))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_storage_set_labels_registered_manager_for_storage_placement(self):
+    def test_storage_set_uses_registered_manager_without_swarm_labeling(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
             try:
@@ -5707,8 +5369,8 @@ class ControlApiTests(unittest.TestCase):
                     "manager-host": {
                         "region": "cn",
                         "status": "manager",
-                        "swarmHostname": "manager-host",
-                        "swarmNodeId": "manager-node-id",
+                        "hostname": "manager-host",
+                        "nodeId": "manager-node-id",
                         "labels": {"region": "cn", "ingress": "true"},
                     }
                 }
@@ -5718,22 +5380,50 @@ class ControlApiTests(unittest.TestCase):
                 def fake_docker_request(method, path, body=None):
                     docker_calls.append((method, path, body))
                     if method == "GET" and path == "/info":
-                        return {"Name": "manager-host", "Swarm": {"NodeID": "manager-node-id"}}
-                    if method == "GET" and path == "/nodes":
-                        return [
-                            {
-                                "ID": "manager-node-id",
-                                "Spec": {"Role": "manager", "Labels": {"region": "cn", "ingress": "true"}},
-                                "Description": {"Hostname": "manager-host"},
-                            }
-                        ]
-                    if method == "GET" and path.startswith("/nodes/"):
-                        return {
-                            "Version": {"Index": 5},
-                            "Spec": {"Role": "manager", "Labels": {"region": "cn", "ingress": "true"}},
-                        }
-                    if method == "POST" and path.startswith("/nodes/manager-node-id/update"):
-                        return {}
+                        return {"Name": "manager-host", "ID": "manager-node-id"}
+                    raise AssertionError(f"unexpected Docker request: {method} {path}")
+
+                with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
+                    "luma.control.server._run_host_prep_command", return_value="ok"
+                ):
+                    result = handle_storage_set(
+                        state["deployToken"],
+                        {"name": "cn-nfs", "provider": "nfs", "node": "manager-host", "path": "/srv/luma"},
+                    )
+                self.assertTrue(result["saved"])
+                persisted = load_state()
+                self.assertEqual(persisted["storageClasses"]["cn-nfs"]["path"], "/srv/luma")
+                manager = persisted["nodes"]["manager-host"]
+                self.assertEqual(manager["region"], "cn")
+                self.assertEqual(manager["hostname"], "manager-host")
+                self.assertEqual(manager["nodeId"], "manager-node-id")
+                self.assertEqual(manager["status"], "manager")
+                self.assertEqual(manager["labels"], {"region": "cn", "ingress": "true"})
+                self.assertFalse(any(method == "POST" for method, _path, _body in docker_calls))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_set_keeps_registered_manager_labels_for_storage_placement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "manager-host": {
+                        "region": "cn",
+                        "status": "manager",
+                        "hostname": "manager-host",
+                        "nodeId": "manager-node-id",
+                        "labels": {"region": "cn", "ingress": "true"},
+                    }
+                }
+                save_state(state)
+                docker_calls = []
+
+                def fake_docker_request(method, path, body=None):
+                    docker_calls.append((method, path, body))
+                    if method == "GET" and path == "/info":
+                        return {"Name": "manager-host", "ID": "manager-node-id"}
                     raise AssertionError(f"unexpected Docker request: {method} {path}")
 
                 with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
@@ -5745,9 +5435,8 @@ class ControlApiTests(unittest.TestCase):
                     )
                 self.assertTrue(result["saved"])
                 manager = load_state()["nodes"]["manager-host"]
-                self.assertEqual(manager["labels"]["luma.node.name"], "manager-host")
-                self.assertEqual(manager["labels"]["luma.node.id"], "manager-node-id")
-                self.assertTrue(any(method == "POST" and "/update" in path for method, path, _ in docker_calls))
+                self.assertEqual(manager["labels"], {"region": "cn", "ingress": "true"})
+                self.assertFalse(any(method == "POST" for method, _path, _body in docker_calls))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -5811,7 +5500,7 @@ class ControlApiTests(unittest.TestCase):
 
                 with patch("luma.control.server.docker_request", side_effect=fake_docker_request), patch(
                     "luma.control.server._run_host_prep_command", side_effect=LumaError("prep failed")
-                ), patch("luma.control.server.remove_stack") as remove:
+                ), patch("luma.control.server.remove_from_nomad") as remove:
                     with self.assertRaisesRegex(LumaError, "failed to prepare managed NFS storage"):
                         handle_storage_set(
                             state["deployToken"],
@@ -6040,6 +5729,59 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_node_agent_alias_can_lease_canonical_node_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "aly": {
+                        "region": "cn",
+                        "aliases": ["iZ0jl8auywzycory05d9cuZ"],
+                        "swarmNodeId": "node-id-aly",
+                    }
+                }
+                save_state(state)
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "iZ0jl8auywzycory05d9cuZ", "nodeId": "node-id-aly"})
+                agent_token = issued["agentToken"]
+                current = load_state()
+                current.setdefault("agentTasks", {})["task-image"] = {
+                    "id": "task-image",
+                    "nodeName": "aly",
+                    "action": "resolve-docker-image",
+                    "payload": {"image": "ghcr.io/acme/api:latest"},
+                    "status": "queued",
+                }
+                save_state(current)
+
+                leased = handle_node_agent_lease(
+                    agent_token,
+                    {
+                        "nodeName": "iZ0jl8auywzycory05d9cuZ",
+                        "nodeId": "node-id-aly",
+                        "os": "linux",
+                        "capabilities": ["docker-image"],
+                        "waitSeconds": 0,
+                    },
+                ).get("task")
+
+                self.assertIsNotNone(leased)
+                self.assertEqual(leased["id"], "task-image")
+                handle_node_agent_complete(
+                    agent_token,
+                    {
+                        "nodeName": "iZ0jl8auywzycory05d9cuZ",
+                        "nodeId": "node-id-aly",
+                        "taskId": "task-image",
+                        "status": "succeeded",
+                        "message": "resolved",
+                        "result": {"deployed": "ghcr.io/acme/api@sha256:abc"},
+                    },
+                )
+                self.assertEqual(load_state()["agentTasks"]["task-image"]["status"], "succeeded")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_host_prep_runs_privileged_chroot_container(self):
         docker_calls = []
         raw_calls = []
@@ -6078,7 +5820,7 @@ class ControlApiTests(unittest.TestCase):
         self.assertIn("/:/host", create_body["HostConfig"]["Binds"])
         self.assertTrue(any(method == "DELETE" and path.startswith("/containers/container-id") for method, path, _ in docker_calls))
 
-    def test_storage_remove_removes_managed_storage_stack_when_portainer_is_configured(self):
+    def test_storage_remove_removes_managed_storage_nomad_job_when_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -6099,11 +5841,11 @@ class ControlApiTests(unittest.TestCase):
                 }
                 save_state(state)
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
-                with patch("luma.control.server.remove_stack", return_value="Portainer stack removed: luma-storage-cn-nfs") as remove:
+                with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: luma-storage-cn-nfs") as remove:
                     result = handle_storage_remove(state["deployToken"], {"name": "cn-nfs"})
                 remove.assert_called_once()
-                self.assertEqual(remove.call_args.args[1].name, "luma-storage-cn-nfs")
-                self.assertEqual(result["storageHost"]["removed"], "Portainer stack removed: luma-storage-cn-nfs")
+                self.assertEqual(remove.call_args.kwargs["slug"], "luma-storage-cn-nfs")
+                self.assertEqual(result["storageHost"]["removed"], "Nomad job removed: luma-storage-cn-nfs")
                 self.assertNotIn("cn-nfs", load_state().get("storageClasses", {}))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -6139,14 +5881,111 @@ class ControlApiTests(unittest.TestCase):
                         "volumes": {"pg-data": {"storageClass": "home-nfs", "path": "pg-data", "initialize": "empty"}},
                     }
                 )
-                with patch("luma.control.server.upsert_stack", return_value="Portainer stack updated") as upsert:
+                with patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed") as upsert:
                     result = handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": False},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": False},
                     )
-                stack_text = upsert.call_args.args[2]
-                self.assertIn("home-nas", stack_text)
+                stack_text = upsert.call_args.args[1]
+                self.assertIn('"source": "pg-data"', stack_text)
                 self.assertEqual(result["storage"]["storageClasses"][0]["name"], "home-nfs")
+                self.assertEqual(result["storage"]["mounts"][0]["endpoint"], "home-nas:/srv/luma")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_nomad_compose_deployment_registers_job_and_resolves_node_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "lab": {
+                        "name": "lab",
+                        "region": "home",
+                        "status": "ready",
+                        "tailscaleIP": "100.69.154.50",
+                    }
+                }
+                state["registries"] = {
+                    "gcode.gaojiua.com:3000": {
+                        "username": "deploy",
+                        "password": "registry-token",
+                        "serverAddress": "gcode.gaojiua.com:3000",
+                    }
+                }
+                save_state(state)
+                handle_secret_set(state["deployToken"], {"name": "GRANARY_MYSQL_ROOT_PASSWORD", "value": "mysql-secret"})
+                handle_secret_set(state["deployToken"], {"name": "GRANARY_ADMIN_PASSWORD", "value": "admin-secret"})
+                handle_secret_set(state["deployToken"], {"name": "GRANARY_JWT_SECRET", "value": "jwt-secret"})
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")}}),
+                    encoding="utf-8",
+                )
+                compose = yaml.safe_dump(
+                    {
+                        "services": {
+                            "mysql": {
+                                "image": "mysql:8.4.9",
+                                "environment": {
+                                    "MYSQL_DATABASE": "granary",
+                                    "MYSQL_ROOT_PASSWORD": "${GRANARY_MYSQL_ROOT_PASSWORD}",
+                                },
+                                "volumes": ["granary_mysql_data:/var/lib/mysql"],
+                            },
+                            "granary": {
+                                "image": "gcode.gaojiua.com:3000/gaojiuatech/granary:latest",
+                                "environment": {
+                                    "GRANARY_ADMIN_PASSWORD": "${GRANARY_ADMIN_PASSWORD}",
+                                    "GRANARY_JWT_SECRET": "${GRANARY_JWT_SECRET}",
+                                    "GRANARY_MYSQL_DSN": "root:${GRANARY_MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/granary",
+                                },
+                            },
+                            "granary-frontend": {
+                                "image": "gcode.gaojiua.com:3000/gaojiuatech/granary-frontend:latest",
+                            },
+                        },
+                        "volumes": {"granary_mysql_data": {}},
+                    }
+                )
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "granary",
+                        "compose": "docker-compose.yml",
+                        "region": "home",
+                        "services": {
+                            "mysql": {"node": "lab", "exposure": "tcp-relay", "domain": "granary-db.itool.tech", "port": 3306},
+                            "granary": {"node": "lab", "exposure": "tailscale-relay", "domain": "api-granary.itool.tech", "port": 8888},
+                            "granary-frontend": {"node": "lab", "exposure": "tailscale-relay", "domain": "granary.itool.tech", "port": 80, "publishPort": 8081},
+                        },
+                    }
+                )
+                with patch("luma.control.server.deploy_to_nomad", return_value="Nomad job registered for granary") as deploy, patch(
+                    "luma.control.server.docker_request"
+                ) as docker_request, patch(
+                    "luma.control.server.sync_dns", return_value="DNS skipped"
+                ), patch("luma.control.server._probe_public_route", return_value="Public route probe skipped"):
+                    result = handle_compose_deployment(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True},
+                    )
+
+                deploy.assert_called_once()
+                docker_request.assert_not_called()
+                job_text = deploy.call_args.args[1]
+                self.assertIn('"ID": "granary"', job_text)
+                self.assertIn('"source": "granary_mysql_data"', job_text)
+                self.assertIn('"server_address": "gcode.gaojiua.com:3000"', job_text)
+                self.assertIn("mysql-secret", job_text)
+                self.assertEqual(result["orchestrator"], "Nomad job registered for granary")
+                mysql_route = (root / "routes" / "granary-mysql.yml").read_text(encoding="utf-8")
+                api_route = (root / "routes" / "granary-granary.yml").read_text(encoding="utf-8")
+                frontend_route = (root / "routes" / "granary-granary-frontend.yml").read_text(encoding="utf-8")
+                self.assertIn("100.69.154.50:3306", mysql_route)
+                self.assertIn("http://100.69.154.50:8888", api_route)
+                self.assertIn("http://100.69.154.50:8081", frontend_route)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -6196,7 +6035,7 @@ class ControlApiTests(unittest.TestCase):
                 ) as host_prep:
                     result = handle_compose_deployment(
                         state["deployToken"],
-                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True},
                     )
                 commands = [call.args[0] for call in host_prep.call_args_list]
                 self.assertTrue(any("nfs-kernel-server" in command for command in commands))
@@ -6357,7 +6196,7 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_registry_remove_cleans_luma_portainer_registry(self):
+    def test_registry_remove_cleans_luma_registry_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -6369,17 +6208,15 @@ class ControlApiTests(unittest.TestCase):
                     state["deployToken"],
                     {"host": "ghcr.io", "username": "octo", "password": "ghp_secret"},
                 )
-                with patch("luma.control.server.remove_luma_portainer_registry", return_value=True) as cleanup:
-                    result = handle_registry_remove(state["deployToken"], {"host": "ghcr.io"})
+                result = handle_registry_remove(state["deployToken"], {"host": "ghcr.io"})
                 self.assertTrue(result["removed"])
-                self.assertTrue(result["portainerRegistryRemoved"])
-                cleanup.assert_called_once()
+                self.assertNotIn("portainerRegistryRemoved", result)
                 self.assertNotIn("ghcr.io", load_state().get("registries", {}))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_deployment_uses_registry_auth_for_pull_and_portainer(self):
+    def test_deployment_uses_registry_auth_for_pull_and_nomad_render(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -6416,18 +6253,19 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.resolve_service_image", side_effect=fake_resolve
                 ), patch(
-                    "luma.control.server.deploy_with_portainer", return_value="Portainer deploy triggered"
+                    "luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"
                 ) as deploy:
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": False},
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": False},
                     )
                 self.assertTrue(result["image"]["registryAuth"])
                 self.assertEqual(captured["image_auth"]["username"], "octo")
                 deploy.assert_called_once()
-                self.assertEqual(deploy.call_args.kwargs["registry_auth"]["password"], "ghp_secret")
                 stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
-                self.assertNotIn("ghp_secret", stack)
+                self.assertIn('"auth": {', stack)
+                self.assertIn('"username": "octo"', stack)
+                self.assertIn('"password": "ghp_secret"', stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -6458,12 +6296,12 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.docker_request_raw", side_effect=fail_manager_pull):
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 self.assertTrue(result["image"]["deferred"])
                 self.assertEqual(result["image"]["resolvedBy"], "scheduled-node")
                 stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
-                self.assertIn("image: ghcr.io/acme/api:latest", stack)
+                self.assertIn("\"image\": \"ghcr.io/acme/api:latest\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -6540,13 +6378,13 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.docker_request_raw", side_effect=fail_manager_pull):
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 self.assertTrue(result["image"]["deferred"])
                 self.assertTrue(result["image"]["fallback"])
                 self.assertEqual(result["image"]["deployed"], "mirror.local/nginx:alpine")
                 stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
-                self.assertIn("image: mirror.local/nginx:alpine", stack)
+                self.assertIn("\"image\": \"mirror.local/nginx:alpine\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -6606,23 +6444,27 @@ class ControlApiTests(unittest.TestCase):
                 ) as agent:
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 self.assertEqual([call.args[2] for call in agent.call_args_list], ["resolve-docker-image", "configure-docker-egress-proxy", "resolve-docker-image"])
                 self.assertEqual(result["image"]["deployed"], digest)
                 stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
-                self.assertIn(f"image: {digest}", stack)
+                self.assertIn(f"\"image\": \"{digest}\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_tailscale_relay_follows_actual_home_task_node(self):
+    def test_tailscale_relay_uses_pinned_nomad_node_tailscale_ip(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "m3max": {"name": "m3max", "region": "home", "status": "ready", "tailscaleIP": "100.64.0.3"},
+                }
+                save_state(state)
                 (root / "luma.yaml").write_text(
                     yaml.safe_dump(
                         {
@@ -6637,40 +6479,18 @@ class ControlApiTests(unittest.TestCase):
                         "name": "home-panel",
                         "image": "nginx:alpine",
                         "region": "home",
+                        "node": "m3max",
                         "exposure": "tailscale-relay",
                         "domain": "panel.example.com",
                         "port": 8080,
                     }
                 )
-                docker_nodes = [
-                    {
-                        "ID": "home-1",
-                        "Description": {"Hostname": "orbstack"},
-                        "Spec": {"Labels": {"region": "home"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
-                    },
-                    {
-                        "ID": "home-2",
-                        "Description": {"Hostname": "m3max"},
-                        "Spec": {"Labels": {"region": "home"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.3"},
-                    },
-                ]
-                docker_tasks = [
-                    {
-                        "NodeID": "home-2",
-                        "DesiredState": "running",
-                        "Status": {"State": "running"},
-                    },
-                ]
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
-                    "luma.control.server.docker_request", side_effect=[docker_nodes, docker_tasks]
-                ), patch(
                     "luma.control.server.resolve_service_image",
                     side_effect=lambda _config, service, **_kwargs: (service, {"requested": service.image, "selected": service.image}),
                 ), patch(
-                    "luma.control.server.deploy_with_portainer",
-                    return_value="Portainer stack updated",
+                    "luma.control.server.deploy_to_nomad",
+                    return_value="Nomad job deployed",
                 ):
                     result = handle_deployment(
                         state["deployToken"],
@@ -6684,8 +6504,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_tailscale_relay_waits_for_slow_first_start_task(self):
-        self.assertGreaterEqual(TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, 300)
+    def test_tailscale_relay_uses_publish_port_for_pinned_nomad_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -6693,7 +6512,12 @@ class ControlApiTests(unittest.TestCase):
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 state["nodes"] = {
-                    "home-mac-mini": {"name": "home-mac-mini", "region": "home", "status": "labeled", "swarmNodeId": "home-1"},
+                    "home-mac-mini": {
+                        "name": "home-mac-mini",
+                        "region": "home",
+                        "status": "ready",
+                        "tailscaleIP": "100.64.0.2",
+                    },
                 }
                 save_state(state)
                 (root / "luma.yaml").write_text(
@@ -6717,49 +6541,36 @@ class ControlApiTests(unittest.TestCase):
                         "publishPort": 1997,
                     }
                 )
-                docker_nodes = [
-                    {
-                        "ID": "home-1",
-                        "Description": {"Hostname": "orbstack"},
-                        "Spec": {"Labels": {"region": "home", "luma.node.name": "home-mac-mini"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
-                    },
-                ]
-                docker_tasks = [{"NodeID": "home-1", "DesiredState": "running", "Status": {"State": "running"}}]
-                missing_service = LumaError('Docker API error 404: {"message":"service code-server_code-server not found"}')
-                docker_responses = [docker_nodes, docker_nodes, missing_service, docker_nodes, missing_service, docker_nodes, docker_tasks]
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
-                    "luma.control.server.docker_request", side_effect=docker_responses
-                ), patch(
-                    "luma.control.server.time.monotonic",
-                    side_effect=[0, 1, 3],
-                ), patch("luma.control.server.time.sleep") as sleep, patch(
                     "luma.control.server.resolve_service_image",
                     side_effect=lambda _config, service, **_kwargs: (service, {"requested": service.image, "selected": service.image}),
                 ), patch(
-                    "luma.control.server.deploy_with_portainer",
-                    return_value="Portainer stack updated",
+                    "luma.control.server.deploy_to_nomad",
+                    return_value="Nomad job deployed",
                 ):
                     result = handle_deployment(
                         state["deployToken"],
                         {"manifest": manifest, "sourceName": "code-server.yaml", "skipDns": True},
-                    )
+                )
                 route = (root / "routes" / "code-server.yml").read_text(encoding="utf-8")
                 self.assertIn("http://100.64.0.2:1997", route)
-                self.assertEqual(sleep.call_count, 2)
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Resolve relay=ok", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_compose_tailscale_relay_follows_actual_home_task_node(self):
+    def test_compose_tailscale_relay_uses_pinned_nomad_node_tailscale_ip(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "home-mac-mini": {"name": "home-mac-mini", "region": "home", "status": "ready", "tailscaleIP": "100.64.0.2"},
+                }
+                save_state(state)
                 (root / "luma.yaml").write_text(
                     yaml.safe_dump(
                         {
@@ -6778,6 +6589,7 @@ class ControlApiTests(unittest.TestCase):
                         "services": {
                             "nextcloud": {
                                 "region": "home",
+                                "node": "home-mac-mini",
                                 "exposure": "tailscale-relay",
                                 "domain": "next.example.com",
                                 "port": 80,
@@ -6785,26 +6597,9 @@ class ControlApiTests(unittest.TestCase):
                         },
                     }
                 )
-                docker_nodes = [
-                    {
-                        "ID": "home-1",
-                        "Description": {"Hostname": "orbstack"},
-                        "Spec": {"Labels": {"region": "home"}},
-                        "Status": {"State": "ready", "Addr": "100.64.0.2"},
-                    }
-                ]
-                docker_tasks = [
-                    {
-                        "NodeID": "home-1",
-                        "DesiredState": "running",
-                        "Status": {"State": "running"},
-                    }
-                ]
-                with patch("luma.control.server.upsert_stack", return_value="Portainer stack updated"), patch(
+                with patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
                     "luma.control.server.sync_dns", return_value="DNS synced"
-                ), patch("luma.control.server._probe_public_route", return_value="Public route probe skipped"), patch(
-                    "luma.control.server.docker_request", side_effect=[docker_nodes, docker_tasks]
-                ):
+                ), patch("luma.control.server._probe_public_route", return_value="Public route probe skipped"):
                     result = handle_compose_deployment(
                         state["deployToken"],
                         {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
@@ -6887,20 +6682,20 @@ class ControlApiTests(unittest.TestCase):
                 )
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
                     "luma.control.server.sync_dns"
-                ) as sync, patch("luma.control.server.deploy_with_portainer") as portainer:
+                ) as sync, patch("luma.control.server.deploy_to_nomad") as deploy:
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 sync.assert_not_called()
-                portainer.assert_not_called()
+                deploy.assert_not_called()
                 self.assertEqual(result["dns"], "DNS skipped: --skip-dns")
-                self.assertEqual(result["portainer"], "Portainer deploy skipped: --skip-portainer")
-                self.assertEqual(result["probe"], "Public route probe skipped: --skip-portainer")
+                self.assertEqual(result["orchestrator"], "Orchestrator deploy skipped")
+                self.assertEqual(result["probe"], "Public route probe skipped: orchestrator deploy skipped")
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Sync DNS=ok:DNS skipped: --skip-dns", steps)
-                self.assertIn("Deploy Portainer stack=ok:Portainer deploy skipped: --skip-portainer", steps)
-                self.assertIn("Probe public route=ok:Public route probe skipped: --skip-portainer", steps)
+                self.assertIn("Deploy Nomad job=ok:Orchestrator deploy skipped", steps)
+                self.assertIn("Probe public route=ok:Public route probe skipped: orchestrator deploy skipped", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -6938,14 +6733,14 @@ class ControlApiTests(unittest.TestCase):
                 ):
                     result = handle_deployment(
                         state["deployToken"],
-                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipPortainer": True},
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
                 self.assertEqual(result["image"]["requested"], "ghcr.io/acme/api:latest")
                 self.assertEqual(result["image"]["deployed"], "ghcr.io/acme/api:latest")
                 self.assertTrue(result["image"]["deferred"])
                 self.assertEqual(result["image"]["resolvedBy"], "scheduled-node")
-                self.assertIn("image: ghcr.io/acme/api:latest", stack)
+                self.assertIn("\"image\": \"ghcr.io/acme/api:latest\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -7025,8 +6820,8 @@ class ControlApiTests(unittest.TestCase):
         state = {
             "nodes": {
                 "manager-1": {
-                    "swarmNodeId": "node-1",
-                    "swarmHostname": "manager-host",
+                    "nodeId": "node-1",
+                    "hostname": "manager-host",
                     "agent": {
                         "status": "online",
                         "lastSeen": int(time.time()),
@@ -7039,21 +6834,20 @@ class ControlApiTests(unittest.TestCase):
 
         def fake_docker(method, path, body=None):
             docker_calls.append((method, path))
-            if path == "/services/egress_mihomo":
-                return {"ID": "egress"}
-            if path.startswith("/tasks?"):
-                return [{"Status": {"State": "running"}}]
             if path == "/info":
                 if len([call for call in docker_calls if call[1] == "/info"]) == 1:
-                    return {"Name": "manager-host", "Swarm": {"NodeID": "node-1"}}
-                return {"Name": "manager-host", "Swarm": {"NodeID": "node-1"}, "HTTPProxy": "http://127.0.0.1:7890"}
+                    return {"Name": "manager-host", "ID": "node-1"}
+                return {"Name": "manager-host", "ID": "node-1", "HTTPProxy": "http://127.0.0.1:7890"}
             raise AssertionError(path)
 
         with patch("luma.control.server.docker_request", side_effect=fake_docker), patch(
+            "luma.control.server._require_egress_gateway_running"
+        ) as require_egress, patch(
             "luma.control.server._run_node_agent_task",
             return_value={"message": "Docker daemon egress proxy configured"},
         ) as agent:
             result = ensure_image_pull_egress_proxy(state, "ghcr.io/acme/api:latest")
+        require_egress.assert_called_once()
         agent.assert_called_once()
         self.assertEqual(agent.call_args.args[2], "configure-docker-egress-proxy")
         self.assertEqual(agent.call_args.kwargs["required_capability"], "docker-egress-proxy")
@@ -7070,8 +6864,8 @@ class ControlApiTests(unittest.TestCase):
             },
             "nodes": {
                 "manager-1": {
-                    "swarmNodeId": "node-1",
-                    "swarmHostname": "manager-host",
+                    "nodeId": "node-1",
+                    "hostname": "manager-host",
                     "agent": {
                         "status": "online",
                         "lastSeen": int(time.time()),
@@ -7088,13 +6882,13 @@ class ControlApiTests(unittest.TestCase):
                 if len([call for call in docker_calls if call[1] == "/info"]) == 1:
                     return {
                         "Name": "manager-host",
-                        "Swarm": {"NodeID": "node-1"},
+                        "ID": "node-1",
                         "HTTPProxy": "http://127.0.0.1:7890",
                         "NoProxy": "localhost,127.0.0.1",
                     }
                 return {
                     "Name": "manager-host",
-                    "Swarm": {"NodeID": "node-1"},
+                    "ID": "node-1",
                     "HTTPProxy": "http://127.0.0.1:7890",
                     "NoProxy": "localhost,127.0.0.1,gcode.gaojiua.com:3000,gcode.gaojiua.com",
                 }
@@ -7180,449 +6974,9 @@ class ControlApiTests(unittest.TestCase):
         ):
             ensure_image_present("ghcr.io/acme/api:1.0.0", platform="linux/arm64")
 
-    def test_portainer_api_binding_creates_missing_stack(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "API Service",
-                        "image": "nginx:alpine",
-                        "region": "cn",
-                        "exposure": "cn-edge",
-                        "domain": "api.example.com",
-                        "port": 80,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            client = Mock()
-            client.authenticate.return_value = "jwt"
-            client.request.side_effect = [
-                [],
-                {"Id": 7, "Name": "api-service"},
-            ]
-            with patch("luma.portainer.PortainerApi", return_value=client):
-                result = upsert_stack(config, service, "services: {}", state)
-            self.assertIn("Portainer stack created", result)
-            client.request.assert_any_call(
-                "POST",
-                "/stacks/create/swarm/string?endpointId=1",
-                {
-                    "Name": "api-service",
-                    "StackFileContent": "services: {}",
-                    "SwarmID": "swarm-test",
-                    "Env": [],
-                },
-                token="jwt",
-            )
-
-    def test_portainer_stack_remove_deletes_existing_stack(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump({"name": "api-service", "image": "nginx:alpine", "region": "cn", "exposure": "none"}),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-            }
-            client = Mock()
-            client.authenticate.return_value = "jwt"
-            client.request.side_effect = [[{"Id": 7, "Name": "api-service"}], None]
-            with patch("luma.portainer.PortainerApi", return_value=client):
-                result = remove_stack(config, service, state)
-            self.assertEqual(result, "Portainer stack removed: api-service")
-            client.request.assert_any_call("DELETE", "/stacks/7?endpointId=1", token="jwt")
-
-    def test_portainer_stack_create_links_registry_credentials(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "private-api",
-                        "image": "ghcr.io/acme/private-api:1",
-                        "region": "cn",
-                        "exposure": "none",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            client = Mock()
-            client.authenticate.return_value = "jwt"
-            client.request.side_effect = [
-                [],
-                {"Id": 42},
-                None,
-                [],
-                {"Id": 7, "Name": "private-api"},
-            ]
-            registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
-            with patch("luma.portainer.PortainerApi", return_value=client):
-                result = upsert_stack(
-                    config,
-                    service,
-                    "services: {}",
-                    state,
-                    registry_auth=registry_auth,
-                )
-            self.assertIn("Portainer stack created", result)
-            client.request.assert_any_call(
-                "POST",
-                "/registries",
-                {
-                    "Name": "luma-ghcr-io",
-                    "URL": "ghcr.io",
-                    "Authentication": True,
-                    "Username": "octo",
-                    "Password": "ghp_secret",
-                    "Type": 3,
-                    "TLS": True,
-                },
-                token="jwt",
-            )
-            client.request.assert_any_call(
-                "PUT",
-                "/endpoints/1/registries/42",
-                {"UserAccessPolicies": {}, "TeamAccessPolicies": {}, "Namespaces": []},
-                token="jwt",
-            )
-            client.request.assert_any_call(
-                "POST",
-                "/stacks/create/swarm/string?endpointId=1",
-                {
-                    "Name": "private-api",
-                    "StackFileContent": "services: {}",
-                    "SwarmID": "swarm-test",
-                    "Env": [],
-                },
-                token="jwt",
-                headers={"X-Registry-Auth": base64.b64encode(b'{"registryId":42}').decode("ascii")},
-            )
-
-    def test_ghcr_uses_custom_registry_type_for_default_portainer_ce(self):
-        self.assertEqual(registry_provider_type("ghcr.io"), 3)
-
-    def test_portainer_registry_does_not_overwrite_foreign_same_url(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "private-api",
-                        "image": "ghcr.io/acme/private-api:1",
-                        "region": "cn",
-                        "exposure": "none",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            client = Mock()
-            client.authenticate.return_value = "jwt"
-            client.request.side_effect = [
-                [{"Id": 9, "Name": "manually-managed", "URL": "ghcr.io"}],
-                {"Id": 42},
-                None,
-                [],
-                {"Id": 7, "Name": "private-api"},
-            ]
-            registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
-            with patch("luma.portainer.PortainerApi", return_value=client):
-                upsert_stack(
-                    config,
-                    service,
-                    "services: {}",
-                    state,
-                    registry_auth=registry_auth,
-                )
-            self.assertFalse(any(call.args[:2] == ("PUT", "/registries/9") for call in client.request.call_args_list))
-            client.request.assert_any_call(
-                "POST",
-                "/registries",
-                {
-                    "Name": "luma-ghcr-io",
-                    "URL": "ghcr.io",
-                    "Authentication": True,
-                    "Username": "octo",
-                    "Password": "ghp_secret",
-                    "Type": 3,
-                    "TLS": True,
-                },
-                token="jwt",
-            )
-
-    def test_portainer_stack_update_pulls_with_registry_credentials(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "private-api",
-                        "image": "ghcr.io/acme/private-api:1",
-                        "region": "cn",
-                        "exposure": "none",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            client = Mock()
-            client.authenticate.return_value = "jwt"
-            client.request.side_effect = [
-                [{"Id": 42, "Name": "luma-ghcr-io", "URL": "ghcr.io"}],
-                None,
-                None,
-                [{"Id": 7, "Name": "private-api"}],
-                # upsert_stack now asks Portainer for the live stack file
-                # to compare image digests. Return a different tag (no
-                # digest) so the comparison falls through to the
-                # original "PullImage=True for private registries" path.
-                {"StackFileContent": "services:\n  private-api:\n    image: ghcr.io/acme/private-api:0.9\n"},
-                None,
-            ]
-            registry_auth = {"username": "octo", "password": "ghp_secret", "serveraddress": "ghcr.io"}
-            with patch("luma.portainer.PortainerApi", return_value=client):
-                result = upsert_stack(
-                    config,
-                    service,
-                    "services: {}",
-                    state,
-                    registry_auth=registry_auth,
-                )
-            self.assertIn("Portainer stack updated", result)
-            client.request.assert_any_call(
-                "PUT",
-                "/stacks/7?endpointId=1",
-                {
-                    "StackFileContent": "services: {}",
-                    "Env": [],
-                    "Prune": True,
-                    "PullImage": True,
-                },
-                token="jwt",
-                headers={"X-Registry-Auth": base64.b64encode(b'{"registryId":42}').decode("ascii")},
-            )
-
-    def test_portainer_stack_update_pulls_latest_without_registry_credentials(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "api",
-                        "image": "nginx:latest",
-                        "region": "cn",
-                        "exposure": "none",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            client = Mock()
-            client.authenticate.return_value = "jwt"
-            client.request.side_effect = [
-                [{"Id": 7, "Name": "api"}],
-                # New digest-aware PullImage path asks Portainer for
-                # the live stack file. The current image has no
-                # matching digest, so the code falls through to the
-                # original "PullImage=True for :latest" path.
-                {"StackFileContent": "services:\n  api:\n    image: nginx:1.25\n"},
-                None,
-            ]
-            with patch("luma.portainer.PortainerApi", return_value=client):
-                result = upsert_stack(config, service, "services: {}", state)
-            self.assertIn("Portainer stack updated", result)
-            client.request.assert_any_call(
-                "PUT",
-                "/stacks/7?endpointId=1",
-                {
-                    "StackFileContent": "services: {}",
-                    "Env": [],
-                    "Prune": True,
-                    "PullImage": True,
-                },
-                token="jwt",
-            )
-
-    def test_portainer_stack_update_pulls_digest_without_registry_credentials(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "api",
-                        "image": "nginx@sha256:abc123",
-                        "region": "cn",
-                        "exposure": "none",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            client = Mock()
-            client.authenticate.return_value = "jwt"
-            # The new digest-aware PullImage logic asks Portainer for the
-            # live stack file so it can compare sha256 digests. We return
-            # a stack with a *different* image (no digest on the current
-            # stack), which forces the code back into the original
-            # "always pull for digest/private/latest" path and keeps the
-            # final PUT body asserting PullImage=True.
-            client.request.side_effect = [
-                [{"Id": 7, "Name": "api"}],
-                {"StackFileContent": "services:\n  api:\n    image: nginx:1.25\n"},
-                None,
-            ]
-            with patch("luma.portainer.PortainerApi", return_value=client):
-                result = upsert_stack(config, service, "services: {}", state)
-            self.assertIn("Portainer stack updated", result)
-            client.request.assert_any_call(
-                "PUT",
-                "/stacks/7?endpointId=1",
-                {
-                    "StackFileContent": "services: {}",
-                    "Env": [],
-                    "Prune": True,
-                    "PullImage": True,
-                },
-                token="jwt",
-            )
-
-    def test_portainer_stack_update_skips_pull_when_digests_match(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service_path = Path(tmp) / "service.yaml"
-            service_path.write_text(
-                yaml.safe_dump(
-                    {
-                        "name": "api",
-                        "image": "nginx@sha256:abc123",
-                        "region": "cn",
-                        "exposure": "none",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            service = load_service(service_path)
-            config = LumaConfig({}, None)
-            state = {
-                "portainerApiUrl": "https://portainer.example.com/api",
-                "portainerAdminUsername": "admin",
-                "portainerAdminPassword": "secret",
-                "portainerEndpointId": 1,
-                "swarmId": "swarm-test",
-            }
-            client = Mock()
-            client.authenticate.return_value = "jwt"
-            # The live stack already pins the same sha256 digest, so the
-            # digest-aware logic should flip PullImage off and reuse the
-            # image already on the target node.
-            client.request.side_effect = [
-                [{"Id": 7, "Name": "api"}],
-                {
-                    "StackFileContent": (
-                        "services:\n  api:\n    image: nginx@sha256:abc123\n"
-                    )
-                },
-                None,
-            ]
-            # The stack_content we hand to upsert_stack must declare the
-            # api service so the new _parse_stack_images step has a
-            # non-empty mapping to compare against the live stack file.
-            new_stack_content = (
-                "services:\n  api:\n    image: nginx@sha256:abc123\n"
-            )
-            with patch("luma.portainer.PortainerApi", return_value=client):
-                result = upsert_stack(config, service, new_stack_content, state)
-            self.assertIn("Portainer stack updated", result)
-            client.request.assert_any_call(
-                "PUT",
-                "/stacks/7?endpointId=1",
-                {
-                    "StackFileContent": new_stack_content,
-                    "Env": [],
-                    "Prune": True,
-                    "PullImage": False,
-                },
-                token="jwt",
-            )
-
-    def test_remove_luma_portainer_registry_deletes_only_luma_owned_match(self):
-        config = LumaConfig({}, None)
-        state = {
-            "portainerApiUrl": "https://portainer.example.com/api",
-            "portainerAdminUsername": "admin",
-            "portainerAdminPassword": "secret",
-        }
-        client = Mock()
-        client.authenticate.return_value = "jwt"
-        client.request.side_effect = [
-            [
-                {"Id": 9, "Name": "manually-managed", "URL": "ghcr.io"},
-                {"Id": 42, "Name": "luma-ghcr-io", "URL": "ghcr.io"},
-            ],
-            None,
-        ]
-        with patch("luma.portainer.PortainerApi", return_value=client):
-            removed = remove_luma_portainer_registry(config, state, "ghcr.io")
-        self.assertTrue(removed)
-        client.request.assert_any_call("DELETE", "/registries/42", token="jwt")
-        self.assertFalse(any(call.args[:2] == ("DELETE", "/registries/9") for call in client.request.call_args_list))
+    def test_digest_image_without_registry_uses_docker_hub_registry(self):
+        image = "mysql:8.4.9@sha256:c36050afdca850f23cef85703f84c7531a5ae155a11b5ee1c60acb09937c4084"
+        self.assertEqual(registry_host_from_image(image), DEFAULT_DOCKER_REGISTRY)
 
 
 def _docker_service(service_id, name, image, replicas, constraints, labels):

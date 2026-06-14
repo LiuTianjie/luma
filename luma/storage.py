@@ -25,7 +25,7 @@ def managed_storage_stacks(deployment: ComposeDeploymentSpec) -> List[StorageSta
 
 def managed_storage_stack(storage_class: StorageClassSpec) -> StorageStack | None:
     # Managed NFS is prepared on the storage host by Luma Control during
-    # storage set/apply. Older versions rendered a Swarm storage stack here.
+    # storage set/apply; there is no separate storage workload to render.
     if storage_class.mode != "managed":
         return None
     if storage_class.provider != "nfs":

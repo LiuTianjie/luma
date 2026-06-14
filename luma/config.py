@@ -74,11 +74,6 @@ class LumaConfig:
         return dns
 
     @property
-    def portainer(self) -> Dict[str, Any]:
-        providers = self.raw.get("providers") or {}
-        return dict(providers.get("portainer") or self.raw.get("portainer") or {})
-
-    @property
     def git(self) -> Dict[str, Any]:
         return dict(self.raw.get("git") or {})
 
@@ -117,7 +112,7 @@ class LumaConfig:
 
     def default_manager(self) -> Optional[NodeConfig]:
         return (
-            self.find_node(role="swarm-manager")
+            self.find_node(role="nomad-manager")
             or self.find_node(role="edge")
             or next(iter(self.nodes.values()), None)
         )

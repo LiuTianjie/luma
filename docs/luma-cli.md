@@ -1,21 +1,21 @@
 # Luma CLI
 
-Luma is the command line interface for installing nodes, wiring providers, generating Swarm stacks, deploying services, and keeping Portainer as the operations UI.
+Luma is the command line interface for installing nodes, wiring providers, rendering Nomad jobs, and deploying services. The orchestrator underneath is HashiCorp Nomad, so the unit of deployment is a Nomad job.
 
-The default path is control-plane first and Portainer-backed:
+The default path is control-plane first and Nomad-backed:
 
 ```text
-luma deploy service.yaml -> Luma Control API -> render stack on manager -> sync DNS -> Portainer API -> Docker Swarm
+luma deploy service.yaml -> Luma Control API -> render jobspec on manager -> sync DNS -> Nomad API (/v1/jobs) -> docker driver
 ```
 
-Portainer is required and installed by bootstrap. It shows stacks, services, logs, tasks, and node placement. Luma Control is the authentication and orchestration layer; it does not replace Portainer.
+Luma Control is the authentication and orchestration layer. It renders the manifest into a Nomad jobspec and submits it directly to the Nomad HTTP API. Inspect deployments with `luma status`, the dashboard, or `nomad job status` on the manager.
 
 ## Install
 
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.87"
+python -m pip install "luma-infra==0.1.88"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.87 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.88 sh
 ```
 
 Development checkout:
@@ -54,16 +54,16 @@ By default uninstall keeps `~/.luma.config.json` and `~/.config/luma` so a reins
 curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/uninstall-luma.sh | sh -s -- --purge
 ```
 
-This only removes the local CLI install. It does not remove Docker, Swarm, Portainer, Traefik, Luma Control, deployed services, or server-side `/opt/luma` state.
+This only removes the local CLI install. It does not remove Docker, Nomad, Traefik, Luma Control, deployed services, or server-side `/opt/luma` state.
 
 ## CI Usage
 
-CI can run Luma as a stateless control-plane client. It does not need SSH, Docker, Cloudflare, Portainer, or files under `~/.config/luma`.
+CI can run Luma as a stateless control-plane client. It does not need SSH, Docker, Cloudflare, Nomad, or files under `~/.config/luma`.
 
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.87"
+python -m pip install "luma-infra==0.1.88"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.87"
+python -m pip install "luma-infra==0.1.88"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -107,7 +107,6 @@ providers:
     zoneId: ""
     apiTokenEnv: CLOUDFLARE_API_TOKEN
     edgeTarget: 203.0.113.10
-  portainer: {}
 
 nodes:
   manager-1:
@@ -115,7 +114,7 @@ nodes:
     publicIp: 203.0.113.10
     region: cn
     roles:
-      - swarm-manager
+      - nomad-server
       - edge
       - egress
 
@@ -124,10 +123,10 @@ defaults:
   registry: ghcr.io/liutianjie
   stackRoot: stacks
   routesRoot: routes
-  publicNetwork: public
   egressNetwork: egress
   entrypoint: websecure
   certResolver: letsencrypt
+  engine: nomad
 ```
 
 Secrets stay outside Git. For normal use, run the command you actually need:
@@ -142,7 +141,7 @@ If required local values are missing, Luma prompts for them before continuing an
 luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
-`luma configure --role manager|worker` remains available if you want to edit local secrets ahead of time, and `luma configure --show` lists configured keys without printing values. Luma loads `.env` and `~/.luma.config.json` automatically. Use `--env-file <path>` to load another project-local env file or `--no-env` to disable local secret loading. Values already exported in your shell take priority. On the manager node, bootstrap and update copy the required Cloudflare and Portainer values into `/opt/luma/control/control.json` so client machines do not need those secrets. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, bootstrap and `luma update manager` infer the Cloudflare zone from the control domain and write the provider config before installing `/opt/luma/luma.yaml`. If no edge DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET`; non-interactive update uses the configured edge node public IP or an existing `LUMA_DNS_EDGE_TARGET`.
+`luma configure --role manager|worker` remains available if you want to edit local secrets ahead of time, and `luma configure --show` lists configured keys without printing values. Luma loads `.env` and `~/.luma.config.json` automatically. Use `--env-file <path>` to load another project-local env file or `--no-env` to disable local secret loading. Values already exported in your shell take priority. On the manager node, bootstrap and update copy the required Cloudflare values into `/opt/luma/control/control.json` so client machines do not need those secrets. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, bootstrap and `luma update manager` infer the Cloudflare zone from the control domain and write the provider config before installing `/opt/luma/luma.yaml`. If no edge DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET`; non-interactive update uses the configured edge node public IP or an existing `LUMA_DNS_EDGE_TARGET`.
 
 ## Commands
 
@@ -164,7 +163,7 @@ Show control-plane and cluster state from any logged-in client:
 luma status
 ```
 
-`luma status` prints DNS and Portainer readiness, registered Luma nodes from the control state, and actual Docker Swarm nodes from the manager Docker socket.
+`luma status` prints DNS readiness, the orchestrator (Nomad) with its server leader, and registered Luma nodes from the control state with `role=client`.
 
 Store private registry credentials for image pulls:
 
@@ -201,16 +200,16 @@ Bootstrap the manager by running this directly on the manager server:
 luma bootstrap manager --domain luma.example.com
 ```
 
-For `single-node`, it installs Docker, connects Tailscale when configured, initializes Swarm, configures networks and labels, deploys Traefik, deploys Portainer, deploys Luma Control, configures firewall rules, and sets up egress. Set `EGRESS_SUBSCRIPTION_URL` first when the manager needs a proxy to pull the configured control image. Mainland managers using the default GHCR control image should not use `--skip-egress`.
+For `single-node`, it installs Docker, connects Tailscale when configured, installs and starts the Nomad server, applies node `meta`, deploys Traefik and Luma Control as Nomad jobs, configures firewall rules, and sets up egress. Set `EGRESS_SUBSCRIPTION_URL` first when the manager needs a proxy to pull the configured control image. Mainland managers using the default GHCR control image should not use `--skip-egress`.
 
 It streams progress:
 
 ```text
-[start] Create overlay networks
-[ok] Overlay networks ready
-[start] Deploy Portainer
-[fail] Deploy Portainer
-  Fix: Run: luma portainer setup
+[start] Install Nomad server
+[ok] Nomad server ready
+[start] Deploy Luma Control
+[fail] Deploy Luma Control
+  Fix: Re-run luma bootstrap manager after fixing the error
 ```
 
 Skip egress only when the control image registry is directly reachable, or when `LUMA_CONTROL_IMAGE` / `defaults.images.lumaControl` points at a registry the manager can pull:
@@ -235,7 +234,7 @@ luma node join https://luma.example.com --token <node-join-token> --region globa
 luma node join https://luma.example.com --token <node-join-token> --region home --name home-mac-mini
 ```
 
-`--name` is the Luma node name used by `luma status` and by service manifests. Luma labels the Swarm node with both `luma.node.name` and `luma.node.id`, then uses the NodeID label for pinned scheduling.
+`--name` is the Luma node name used by `luma status` and by service manifests. Luma writes it to the Nomad client `meta.luma_node_name` and uses it for pinned scheduling; the Nomad node identity is a stable UUID, so a rejoin under the same name keeps pinned services valid. Add `--engine nomad` to force the Nomad client agent path explicitly; it is the default.
 
 Refresh a joined node agent after upgrading an older node:
 
@@ -247,13 +246,13 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.87 --timeout 900
+luma update fleet --install-ref v0.1.88 --timeout 900
 luma update fleet --include-manager
 ```
 
-Fleet update runs through the node agents. It updates the CLI on each ready non-manager node and then refreshes the local node-agent service and Tailscale watchdog. Swarm manager nodes are skipped by default; update the manager separately with `luma update manager` from the manager host. `--include-manager` is available for explicit repair workflows, but normal fleet updates should leave the active control plane alone. Nodes whose agent is too old to advertise `luma-update` are reported as skipped; run `luma update` once on those nodes, then they can participate in later fleet updates.
+Fleet update runs through the node agents. It updates the CLI on each ready non-manager node and then refreshes the local node-agent service and Tailscale watchdog. The Nomad server (manager) node is skipped by default; update the manager separately with `luma update manager` from the manager host. `--include-manager` is available for explicit repair workflows, but normal fleet updates should leave the active control plane alone. Nodes whose agent is too old to advertise `luma-update` are reported as skipped; run `luma update` once on those nodes, then they can participate in later fleet updates.
 
-Leave Swarm and optionally unregister the node from the control plane:
+Drain the local Nomad client and optionally unregister the node from the control plane:
 
 ```bash
 luma node exit --endpoint https://luma.example.com --token <management-or-node-join-token> --name home-mac-mini
@@ -265,7 +264,7 @@ Remove a node from any logged-in client:
 luma node remove home-mac-mini
 ```
 
-The control plane removes the Luma registration record and then removes the matching Docker Swarm worker node on the manager. Matching uses the saved Swarm NodeID, `luma.node.id`, `luma.node.name`, or the Swarm hostname. Luma refuses to remove a Swarm manager node through this command.
+The control plane removes the Luma registration record and then drains the matching Nomad client on the manager. Matching uses the saved Nomad node ID, `meta.luma_node_name`, or the node name. Luma refuses to remove a Nomad server (manager) node through this command.
 
 Connect Cloudflare and write `providers.dns.zoneId`:
 
@@ -280,19 +279,13 @@ luma egress setup
 luma egress refresh
 ```
 
-Repair Portainer:
-
-```bash
-luma portainer setup
-```
-
 Install/login Tailscale:
 
 ```bash
 luma tailscale connect
 ```
 
-Managers and joined nodes install a lightweight Tailscale watchdog during bootstrap/update. The manager watchdog verifies Tailscale peers plus Swarm gossip TCP reachability; node watchdogs verify manager Tailscale plus Swarm manager/gossip ports. Consecutive failures restart local Tailscale. This is intended to recover tailnet TCP stalls without restarting Docker, Traefik, Portainer, or application stacks.
+Managers and joined nodes install a lightweight Tailscale watchdog during bootstrap/update. The manager watchdog verifies Tailscale peers plus Nomad gossip/RPC TCP reachability; node watchdogs verify manager Tailscale plus the Nomad server ports. Consecutive failures restart local Tailscale. This is intended to recover tailnet TCP stalls without restarting Docker, Traefik, the Nomad agent, or application jobs.
 
 Generate a service manifest interactively:
 
@@ -305,13 +298,26 @@ Validate and render:
 ```bash
 luma validate examples/public-cn-service.yaml
 luma render examples/public-cn-service.yaml
+luma render examples/public-cn-service.yaml --engine nomad
 ```
 
-Deploy through Portainer:
+`luma render` renders locally. `--engine nomad` forces the Nomad jobspec renderer; this is also the default on current clusters.
+
+Deploy through the control plane:
 
 ```bash
 luma deploy examples/public-cn-service.yaml
 ```
+
+Roll back or inspect version history of a deployed service:
+
+```bash
+luma history public-cn-service
+luma rollback public-cn-service
+luma rollback public-cn-service --to-version 3
+```
+
+`luma history` lists prior versions of the Nomad job (`nomad job history`). `luma rollback` reverts to the previous version, or to the version given by `--to-version N` (`nomad job revert`). Jobspecs also render `update { auto_revert = true }`, so a new version that fails its health checks rolls back automatically.
 
 Remove a deployed service:
 
@@ -352,14 +358,15 @@ Public services also require:
 
 Optional fields:
 
-- `node`: Luma node name from `luma node join --name` for pinning the service to one node. The control plane resolves it to the Swarm NodeID and still adds the `region` constraint.
+- `engine`: `nomad`. Selects the orchestration backend for this service. Omit it to inherit the cluster default.
+- `node`: Luma node name from `luma node join --name` for pinning the service to one node. The control plane renders it as a Nomad constraint on `${node.unique.name}` (or `meta.luma_node_name`) and still adds the `region` constraint.
 - `env` / `environment`
 - `command`
 - `constraints`
 - `labels`
 - `networks`
-- `proxy`: when `true`, runtime traffic uses the egress proxy; Luma adds the egress network and default proxy env. Scheduling still follows `region`.
-- `resources`: passed through to Swarm `deploy.resources`; supports `limits` and `reservations` for CPU and memory.
+- `proxy`: when `true`, runtime traffic uses the egress proxy; Luma attaches the egress proxy and default proxy env. Scheduling still follows `region`.
+- `resources`: rendered into the Nomad task's `resources` block; supports `limits` and `reservations` for CPU and memory. Luma converts `cpus` to Nomad CPU MHz and the memory suffix string to Nomad memory MB.
 - `stackPath`
 - `routePath`
 - `dns.target`
@@ -404,18 +411,18 @@ For `luma deploy service.yaml`, Luma does:
 1. parse and validate the service manifest;
 2. read the current login context from `~/.config/luma`;
 3. submit the manifest to the manager's Luma Control API;
-4. render `stacks/<region>/<service>/stack.yml` on the manager;
+4. render `stacks/<region>/<service>/<service>.nomad.json` (the jobspec) on the manager;
 5. render `routes/<service>.yml` on the manager for `tailscale-relay` or `tcp-relay`;
 6. upsert Cloudflare DNS unless skipped;
-7. create or update the service's Portainer stack through the Portainer API;
+7. submit the job to Nomad through `PUT /v1/jobs` (create or update);
 8. probe the public route for `cn-edge` and `external-edge` services.
 
-The client prints local progress before submitting the request, while waiting for the control plane, and for each control-plane step. A public route probe reports the HTTP status from `/`; `404` means the route is reachable but the application may not serve a root page. The default deploy response timeout is 1800 seconds because first deploys may pull large images through the manager; use `--timeout <seconds>` to override it.
+The client prints local progress before submitting the request, while waiting for the control plane, and for each control-plane step. A public route probe reports the HTTP status from `/`; `404` means the route is reachable but the application may not serve a root page. The default deploy response timeout is 1800 seconds because first deploys may pull large images on the target node; use `--timeout <seconds>` to override it.
 
-Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Portainer stack instead of creating a duplicate. The update uses the current rendered manifest as the source of truth; resources removed from the manifest can be pruned by Portainer.
+Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Nomad job (the job id is the service slug) instead of creating a duplicate. The update uses the current rendered jobspec as the source of truth, and Nomad keeps the previous version so `luma rollback` can return to it.
 
-`--dry-run` renders locally and does not submit a deployment. When local rendering cannot read optional cluster context such as node or storage metadata, JSON output includes `validationMode: "degraded"` plus warnings; text output prints `[warn]` lines. `--skip-dns` and `--skip-portainer` are sent to the control API. `--commit` and `--push` are deprecated in control-plane deploy mode.
+`--dry-run` renders locally and does not submit a deployment. When local rendering cannot read optional cluster context such as node or storage metadata, JSON output includes `validationMode: "degraded"` plus warnings; text output prints `[warn]` lines. `--skip-dns` and `--skip-orchestrator` are sent to the control API. `--commit` and `--push` are deprecated in control-plane deploy mode.
 
-Luma records deployment state before running external operations. A successful deploy is marked `active`; if DNS, Portainer, route rendering, or probing fails after earlier steps have changed the manager, the recorded deployment is kept with `status: failed_partial` so the dashboard and `luma service remove <name>` can still find the partially applied stack.
+Luma records deployment state before running external operations. A successful deploy is marked `active`; if DNS, the Nomad submission, route rendering, or probing fails after earlier steps have changed the manager, the recorded deployment is kept with `status: failed_partial` so the dashboard and `luma service remove <name>` can still find the partially applied job.
 
-For `luma service remove <name>`, Luma looks up the manifest recorded by the control plane during the last successful deploy and removes the matching single-service or Compose deployment slug. This recorded manifest is the source of truth, so remove and storage cleanup also work for deployments created from the web UI when the client running the command has no YAML file. By default Luma deletes Luma-managed Cloudflare DNS, removes the Portainer stack, and deletes generated stack files. `tailscale-relay` and `tcp-relay` route files are removed too. Use `--dry-run` to preview, `--skip-dns` to keep the DNS record, and `--skip-portainer` only when you intentionally want to remove generated Luma files without stopping the stack. Storage data is preserved by default; add `--delete-storage` to delete removable storage declared by the recorded deployment. For single-service deployments this removes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects such as `data:/data`; bind mounts are skipped. For Compose deployments this removes managed storage paths referenced by the sidecar. `--delete-storage` cannot be combined with `--skip-portainer`. `cloudflare-tunnel` public hostnames are still managed in Cloudflare Zero Trust, so Luma reports that cleanup as skipped.
+For `luma service remove <name>`, Luma looks up the manifest recorded by the control plane during the last successful deploy and removes the matching single-service or Compose deployment slug. This recorded manifest is the source of truth, so remove and storage cleanup also work for deployments created from the web UI when the client running the command has no YAML file. By default Luma deletes Luma-managed Cloudflare DNS, deregisters and purges the Nomad job, and deletes generated jobspec files. `tailscale-relay` and `tcp-relay` route files are removed too. Use `--dry-run` to preview, `--skip-dns` to keep the DNS record, and `--skip-orchestrator` only when you intentionally want to remove generated Luma files without stopping the Nomad job. Storage data is preserved by default; add `--delete-storage` to delete removable storage declared by the recorded deployment. For single-service deployments this removes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects such as `data:/data`; bind mounts are skipped. For Compose deployments this removes managed storage paths referenced by the sidecar. `--delete-storage` cannot be combined with `--skip-orchestrator`. `cloudflare-tunnel` public hostnames are still managed in Cloudflare Zero Trust, so Luma reports that cleanup as skipped.

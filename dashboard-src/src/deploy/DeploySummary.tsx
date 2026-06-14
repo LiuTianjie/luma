@@ -44,7 +44,7 @@ export function DeploySummary({
       </div>
       <div className="deploy-summary-card warning">
         <h3>{zh ? "部署动作" : "Deploy action"}</h3>
-        <p>{zh ? "部署会写入生成的 stack，按配置同步 DNS，并通过 Portainer 更新 Swarm 服务。" : "Deploy writes the generated stack, syncs DNS according to the config, and updates Swarm services through Portainer."}</p>
+        <p>{zh ? "部署会写入生成的 Nomad job，按配置同步 DNS，并通过 Luma Control 提交到 Nomad。" : "Deploy writes the generated Nomad job, syncs DNS according to the config, and submits it to Nomad through Luma Control."}</p>
       </div>
       {preview ? (
         <div className="deploy-summary-card">

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
-import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
+import { appToComposeDraft, isServiceHealthy, serviceToDraft } from "./components/applicationModel";
 import { IssuesPanel } from "./components/IssuesPanel";
 import { LoginPanel } from "./components/LoginPanel";
 import { NodeFleetMap } from "./components/NodeFleetMap";
@@ -28,6 +28,38 @@ type DetailState =
   | { kind: "node"; title: string; items: Record<string, string | number | boolean | undefined> }
   | { kind: "service"; title: string; items: Record<string, string | number | boolean | undefined> }
   | null;
+
+type PageMetric = {
+  label: string;
+  value: string | number;
+};
+
+type PageHeaderMeta = {
+  eyebrow: string;
+  title: string;
+  description: string;
+  metrics: PageMetric[];
+};
+
+function PageHeader({ meta }: { meta: PageHeaderMeta }) {
+  return (
+    <section className="hero-strip" aria-labelledby="page-title">
+      <div>
+        <p className="eyebrow">{meta.eyebrow}</p>
+        <h1 id="page-title">{meta.title}</h1>
+        <p>{meta.description}</p>
+      </div>
+      <div className="hero-metrics" aria-label="Page metrics">
+        {meta.metrics.map((metric) => (
+          <span key={metric.label}>
+            <strong>{metric.value}</strong>
+            <small>{metric.label}</small>
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 export function App() {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
@@ -63,7 +95,7 @@ export function App() {
   const storageClasses = payload?.storage?.storageClasses || [];
   const storageWarnings = payload?.storage?.warnings || [];
   const activeNavPage = activePage === "update" ? "status" : activePage;
-  const healthyServices = services.filter((service) => (service.health || "").toLowerCase() === "healthy" || (service.health || "").toLowerCase() === "running").length;
+  const healthyServices = services.filter(isServiceHealthy).length;
   const activeNodes = nodes.filter((node) => (node.state || "").toLowerCase() === "ready" && (node.availability || "").toLowerCase() !== "drain").length;
 
   const navItems = useMemo(
@@ -119,6 +151,79 @@ export function App() {
     }
     return { ...updateRequest, deployMode: "compose" as const, serviceDraft: undefined, composeDraft: appToComposeDraft(app) };
   }, [updateRequest]);
+
+  const pageMeta = useMemo<PageHeaderMeta>(() => {
+    if (activePage === "deploy") {
+      return {
+        eyebrow: lang === "zh" ? "部署工作台" : "Deploy workspace",
+        title: lang === "zh" ? "创建应用" : "Create application",
+        description: lang === "zh" ? "模板、表单和 YAML 收敛在一个流程内，先校验再部署。" : "Templates, forms, and YAML stay in one flow with validation before deploy.",
+        metrics: [
+          { label: lang === "zh" ? "单服务" : "Service", value: DEPLOY_TEMPLATES.filter((item) => item.mode === "service").length },
+          { label: "Compose", value: DEPLOY_TEMPLATES.filter((item) => item.mode === "compose").length },
+          { label: "storageClass", value: storageClasses.length },
+        ],
+      };
+    }
+    if (activePage === "update" && updateContext) {
+      return {
+        eyebrow: lang === "zh" ? "应用更新" : "Application update",
+        title: lang === "zh" ? `更新 ${updateContext.app.stack}` : `Update ${updateContext.app.stack}`,
+        description: lang === "zh" ? "沿用当前应用配置作为起点，提交时按同名 stack 更新。" : "Start from the current application config and update the same stack.",
+        metrics: [
+          { label: "Stack", value: updateContext.app.stack },
+          { label: t(lang, "services"), value: updateContext.app.services.length },
+          { label: t(lang, "replicas"), value: `${updateContext.app.running}/${updateContext.app.desired}` },
+        ],
+      };
+    }
+    if (activePage === "topology") {
+      return {
+        eyebrow: lang === "zh" ? "拓扑视图" : "Topology",
+        title: lang === "zh" ? "节点拓扑与流量路径" : "Node topology and traffic paths",
+        description: lang === "zh" ? "按入口、代理、服务和节点梳理真实流向，快速定位路径断点。" : "Trace real ingress, proxy, service, and node placement to spot route breaks quickly.",
+        metrics: [
+          { label: t(lang, "nodes"), value: `${activeNodes}/${nodes.length}` },
+          { label: t(lang, "services"), value: services.length },
+          { label: t(lang, "trafficPaths"), value: paths.length },
+        ],
+      };
+    }
+    if (activePage === "storage") {
+      return {
+        eyebrow: lang === "zh" ? "存储状态" : "Storage",
+        title: lang === "zh" ? "存储类、卷与绑定关系" : "Storage classes, volumes, and bindings",
+        description: lang === "zh" ? "集中查看存储类、卷来源、节点绑定以及消费服务。" : "Review classes, volume sources, node bindings, and consuming services in one place.",
+        metrics: [
+          { label: "storageClass", value: storageClasses.length },
+          { label: t(lang, "volume"), value: storageVolumes.length },
+          { label: "Warnings", value: storageWarnings.length },
+        ],
+      };
+    }
+    if (activePage === "observability") {
+      return {
+        eyebrow: lang === "zh" ? "可观测性" : "Observability",
+        title: lang === "zh" ? "资源趋势与实时日志" : "Resource trends and live logs",
+        description: lang === "zh" ? "CPU、内存、任务状态和日志在同一工作面内联动。" : "CPU, memory, task state, and logs stay connected in one operational view.",
+        metrics: [
+          { label: t(lang, "nodes"), value: nodes.length },
+          { label: t(lang, "services"), value: services.length },
+          { label: "Streams", value: services.filter((service) => service.fullName).length },
+        ],
+      };
+    }
+    return {
+      eyebrow: t(lang, "controlPlane"),
+      title: lang === "zh" ? "集群、节点和应用状态" : "Cluster, node, and application status",
+      description: lang === "zh" ? "总览只保留健康、问题、应用和关键表格，其他深度视图进入对应页面。" : "Overview keeps readiness, issues, applications, and critical tables while deeper views live in dedicated pages.",
+      metrics: [
+        { label: t(lang, "nodes"), value: nodes.length },
+        { label: t(lang, "services"), value: services.length },
+        { label: t(lang, "trafficPaths"), value: paths.length },
+      ],
+    };
+  }, [activeNodes, activePage, lang, nodes.length, paths.length, services, services.length, storageClasses.length, storageVolumes.length, storageWarnings.length, updateContext]);
 
   const openUpdatePage = (request: ApplicationUpdateRequest) => {
     setUpdateRequest(request);
@@ -254,20 +359,7 @@ export function App() {
             {payload ? (
               activePage === "deploy" ? (
                 <>
-                  {deployTemplateLanding ? (
-                    <section className="hero-strip deploy-page-hero" id="section-deploy">
-                      <div>
-                        <p className="eyebrow">{lang === "zh" ? "部署工作台" : "Deploy workspace"}</p>
-                        <h1>{lang === "zh" ? "从模板创建应用" : "Create from templates"}</h1>
-                        <p>{lang === "zh" ? "选择模板后进入表单或 YAML，校验通过后再部署。" : "Select a template, edit form or YAML, then validate before deploy."}</p>
-                      </div>
-                      <div className="hero-metrics" aria-label="Deploy summary">
-                        <span>{lang === "zh" ? "单服务" : "Service"} {DEPLOY_TEMPLATES.filter((item) => item.mode === "service").length}</span>
-                        <span>Compose {DEPLOY_TEMPLATES.filter((item) => item.mode === "compose").length}</span>
-                        <span>storageClass {storageClasses.length}</span>
-                      </div>
-                    </section>
-                  ) : null}
+                  {deployTemplateLanding ? <PageHeader meta={pageMeta} /> : null}
                   <DeployWorkspace
                     lang={lang}
                     token={token}
@@ -278,18 +370,7 @@ export function App() {
                 </>
               ) : activePage === "update" && updateContext ? (
                 <>
-                  <section className="hero-strip application-update-hero" id="section-update">
-                    <div>
-                      <p className="eyebrow">{lang === "zh" ? "应用更新" : "Application update"}</p>
-                      <h1>{lang === "zh" ? `更新应用 · ${updateContext.app.stack}` : `Update application · ${updateContext.app.stack}`}</h1>
-                      <p>{lang === "zh" ? "使用当前应用配置作为起点，提交时按同名 stack 更新。" : "Start from the current application config and update the same stack."}</p>
-                    </div>
-                    <div className="hero-metrics" aria-label="Update summary">
-                      <span>Stack {updateContext.app.stack}</span>
-                      <span>{updateContext.app.services.length} {t(lang, "services")}</span>
-                      <span>{updateContext.app.running}/{updateContext.app.desired} {t(lang, "replicas")}</span>
-                    </div>
-                  </section>
+                  <PageHeader meta={pageMeta} />
                   <DeployWorkspace
                     lang={lang}
                     token={token}
@@ -317,68 +398,22 @@ export function App() {
                 </>
               ) : activePage === "topology" ? (
                 <>
-                  <section className="hero-strip topology-page-hero" id="section-topology">
-                    <div>
-                      <p className="eyebrow">{lang === "zh" ? "拓扑视图" : "Topology"}</p>
-                      <h1>{lang === "zh" ? "节点拓扑与流量路径。" : "Node placement and traffic paths."}</h1>
-                      <p>{lang === "zh" ? "先看入口流量最终落到哪个 region 和节点，再看服务与节点的运行关系。" : "Start with where traffic lands by region and node, then inspect service placement across the fleet."}</p>
-                    </div>
-                    <div className="hero-metrics" aria-label="Topology summary">
-                      <span>{activeNodes}/{nodes.length} {t(lang, "nodes")}</span>
-                      <span>{services.length} {t(lang, "services")}</span>
-                      <span>{paths.length} {t(lang, "trafficPaths")}</span>
-                    </div>
-                  </section>
+                  <PageHeader meta={pageMeta} />
                   <TrafficPaths lang={lang} paths={paths} theme={theme} />
                   <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
                 </>
               ) : activePage === "storage" ? (
                 <>
-                  <section className="hero-strip storage-page-hero" id="section-storage">
-                    <div>
-                      <p className="eyebrow">{lang === "zh" ? "存储状态" : "Storage"}</p>
-                      <h1>{lang === "zh" ? "storageClass、卷和绑定关系。" : "Storage classes, volumes, and bindings."}</h1>
-                      <p>{lang === "zh" ? "查看控制面登记的存储类、卷来源、节点绑定以及使用这些卷的服务。" : "Review registered storage classes, volume placement, node bindings, and consuming services."}</p>
-                    </div>
-                    <div className="hero-metrics" aria-label="Storage summary">
-                      <span>{storageClasses.length} storageClass</span>
-                      <span>{storageVolumes.length} {t(lang, "volume")}</span>
-                      <span>{storageWarnings.length} warnings</span>
-                    </div>
-                  </section>
+                  <PageHeader meta={pageMeta} />
                   <StoragePanel lang={lang} volumes={storageVolumes} storageClasses={storageClasses} warnings={storageWarnings} />
                 </>
               ) : activePage === "observability" ? (
                 <>
-                  <section className="hero-strip observability-page-hero" id="section-observability">
-                    <div>
-                      <p className="eyebrow">{lang === "zh" ? "可观测性" : "Observability"}</p>
-                      <h1>{lang === "zh" ? "节点资源与实时日志。" : "Node resources and live logs."}</h1>
-                      <p>{lang === "zh" ? "查看节点 CPU、内存、服务任务和最近日志。" : "Review node CPU, memory, service tasks, and recent logs."}</p>
-                    </div>
-                    <div className="hero-metrics" aria-label="Observability summary">
-                      <span>{nodes.length} {t(lang, "nodes")}</span>
-                      <span>{services.length} {t(lang, "services")}</span>
-                      <span>logs</span>
-                    </div>
-                  </section>
+                  <PageHeader meta={pageMeta} />
                   <ObservabilityPanel lang={lang} token={token} nodes={nodes} services={services} />
                 </>
               ) : (
                 <>
-                  <section className="hero-strip status-page-hero" id="section-status">
-                    <div>
-                      <p className="eyebrow">{t(lang, "controlPlane")}</p>
-                      <h1>{lang === "zh" ? "集群、节点和应用状态。" : "Cluster, node, and application status."}</h1>
-                      <p>{lang === "zh" ? "总览只保留健康、问题、应用和基础表格；拓扑、观察和存储放到各自页面。" : "Overview keeps readiness, issues, applications, and core tables; topology, observability, and storage live on their own pages."}</p>
-                    </div>
-                    <div className="hero-metrics" aria-label="Cluster summary">
-                      <span>{nodes.length} {t(lang, "nodes")}</span>
-                      <span>{services.length} {t(lang, "services")}</span>
-                      <span>{paths.length} {t(lang, "trafficPaths")}</span>
-                    </div>
-                  </section>
-
                   <ReadinessCards lang={lang} payload={payload} />
                   <NodeFleetMap lang={lang} nodes={nodes} services={services} onSelect={openNodeDetail} onTerminal={setTerminalNode} />
                   <IssuesPanel lang={lang} issues={issues} token={token} />

@@ -206,7 +206,7 @@ class ControlClient:
         manifest: str,
         source_name: str,
         skip_dns: bool = False,
-        skip_portainer: bool = False,
+        skip_orchestrator: bool = False,
         timeout: int = 1800,
     ) -> Dict[str, Any]:
         return self.request(
@@ -216,7 +216,7 @@ class ControlClient:
                 "manifest": manifest,
                 "sourceName": source_name,
                 "skipDns": skip_dns,
-                "skipPortainer": skip_portainer,
+                "skipOrchestrator": skip_orchestrator,
             },
             timeout=timeout,
         )
@@ -227,7 +227,7 @@ class ControlClient:
         manifest: str,
         source_name: str,
         skip_dns: bool = False,
-        skip_portainer: bool = False,
+        skip_orchestrator: bool = False,
         timeout: int = 1800,
     ) -> Iterator[Dict[str, Any]]:
         return self.stream(
@@ -237,7 +237,7 @@ class ControlClient:
                 "manifest": manifest,
                 "sourceName": source_name,
                 "skipDns": skip_dns,
-                "skipPortainer": skip_portainer,
+                "skipOrchestrator": skip_orchestrator,
             },
             timeout=timeout,
         )
@@ -249,7 +249,7 @@ class ControlClient:
         compose_content: str,
         source_name: str,
         skip_dns: bool = False,
-        skip_portainer: bool = False,
+        skip_orchestrator: bool = False,
         timeout: int = 1800,
     ) -> Dict[str, Any]:
         return self.request(
@@ -260,7 +260,7 @@ class ControlClient:
                 "composeContent": compose_content,
                 "sourceName": source_name,
                 "skipDns": skip_dns,
-                "skipPortainer": skip_portainer,
+                "skipOrchestrator": skip_orchestrator,
             },
             timeout=timeout,
         )
@@ -272,7 +272,7 @@ class ControlClient:
         compose_content: str,
         source_name: str,
         skip_dns: bool = False,
-        skip_portainer: bool = False,
+        skip_orchestrator: bool = False,
         timeout: int = 1800,
     ) -> Iterator[Dict[str, Any]]:
         return self.stream(
@@ -283,7 +283,7 @@ class ControlClient:
                 "composeContent": compose_content,
                 "sourceName": source_name,
                 "skipDns": skip_dns,
-                "skipPortainer": skip_portainer,
+                "skipOrchestrator": skip_orchestrator,
             },
             timeout=timeout,
         )
@@ -293,7 +293,7 @@ class ControlClient:
         *,
         name: str,
         skip_dns: bool = False,
-        skip_portainer: bool = False,
+        skip_orchestrator: bool = False,
         delete_storage: bool = False,
         dry_run: bool = False,
         timeout: int = 300,
@@ -301,11 +301,26 @@ class ControlClient:
         body: Dict[str, Any] = {
             "name": name,
             "skipDns": skip_dns,
-            "skipPortainer": skip_portainer,
+            "skipOrchestrator": skip_orchestrator,
             "deleteStorage": delete_storage,
             "dryRun": dry_run,
         }
         return self.request("POST", "/v1/services/remove", body, timeout=timeout)
+
+    def rollback_service(
+        self,
+        *,
+        name: str,
+        version: int | None = None,
+        timeout: int = 120,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"name": name}
+        if version is not None:
+            body["version"] = version
+        return self.request("POST", "/v1/services/rollback", body, timeout=timeout)
+
+    def service_history(self, *, name: str, timeout: int = 60) -> Dict[str, Any]:
+        return self.request("POST", "/v1/services/history", {"name": name}, timeout=timeout)
 
     def apply_storage(
         self,
@@ -377,7 +392,7 @@ def _timeout_message(path: str, timeout: int) -> str:
     if path == "/v1/deployments":
         message += (
             "; the manager may still be applying the deployment. "
-            "Check `docker service logs -f luma-control_luma-control` and Portainer stack status, "
+            "Check `nomad job status <service>` and luma-control allocation logs, "
             "or retry with `luma deploy <service.yaml> --timeout 3600`."
         )
     return message

@@ -12,7 +12,12 @@ DEFAULT_DOCKER_REGISTRY = "registry-1.docker.io"
 
 
 def registry_host_from_image(image: str) -> str:
-    first = image.split("/", 1)[0]
+    image_ref = str(image or "").split("@", 1)[0]
+    parts = image_ref.split("/", 1)
+    if len(parts) > 1:
+        first = parts[0]
+    else:
+        return DEFAULT_DOCKER_REGISTRY
     if "." in first or ":" in first or first == "localhost":
         return normalize_registry_host(first)
     return DEFAULT_DOCKER_REGISTRY

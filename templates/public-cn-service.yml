@@ -1,26 +1,11 @@
-version: "3.8"
-
-services:
-  app:
-    image: ghcr.io/your-org/your-app:latest
-    # Luma service manifest equivalent:
-    # exposure: cn-edge
-    networks:
-      - public
-    environment:
-      NODE_ENV: production
-    deploy:
-      replicas: 2
-      placement:
-        constraints:
-          - node.labels.region == cn
-      labels:
-        - traefik.enable=true
-        - traefik.http.routers.your-app.rule=Host(`app.example.com`)
-        - traefik.http.routers.your-app.entrypoints=websecure
-        - traefik.http.routers.your-app.tls.certresolver=letsencrypt
-        - traefik.http.services.your-app.loadbalancer.server.port=3000
-
-networks:
-  public:
-    external: true
+# Luma manifest template — public China HTTPS service.
+# Deploy with: luma deploy public-cn-service.yml
+name: your-app
+image: ghcr.io/your-org/your-app:latest
+region: cn
+exposure: cn-edge          # Cloudflare DNS -> CN Traefik -> this service
+domain: app.example.com    # public hostname (Luma syncs the DNS record)
+port: 3000                 # container's internal listening port
+replicas: 2
+env:
+  NODE_ENV: production

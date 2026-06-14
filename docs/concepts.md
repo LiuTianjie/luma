@@ -12,7 +12,7 @@ nodes:
     host: manager-1
     publicIp: 203.0.113.10
     region: cn
-    roles: [swarm-manager, edge, egress]
+    roles: [nomad-server, edge, egress]
 ```
 
 ## Region
@@ -39,11 +39,11 @@ Outbound proxy for image pulls, dependency downloads, and selected services.
 
 It is not a public ingress.
 
-Image pulls use the Docker daemon proxy configured by `luma egress setup`. Service runtime proxy is explicit: set `proxy: true` in the service manifest. Luma then attaches the service to the `egress` overlay network and injects default `HTTP_PROXY` / `HTTPS_PROXY`. Scheduling still follows the service `region`.
+Image pulls use the Docker daemon proxy configured by `luma egress setup`. Service runtime proxy is explicit: set `proxy: true` in the service manifest. Luma then attaches the egress proxy to the service and injects default `HTTP_PROXY` / `HTTPS_PROXY`. Scheduling still follows the service `region`.
 
 ## Service
 
-A small YAML manifest that Luma turns into a Swarm stack:
+A small YAML manifest that Luma turns into a Nomad job:
 
 ```yaml
 name: app
@@ -55,4 +55,4 @@ port: 3000
 replicas: 2
 ```
 
-Set `node: <luma-node-name>` only when the service must run on one specific machine. The value is the name passed to `luma node join --name`. Luma still adds the `region` placement constraint, then resolves that name to the real Swarm NodeID and adds a `node.labels.luma.node.id == <node-id>` constraint.
+Set `node: <luma-node-name>` only when the service must run on one specific machine. The value is the name passed to `luma node join --name`. Luma still adds the `region` placement constraint, then renders that name into a Nomad constraint on `${node.unique.name}` (or `meta.luma_node_name`).

@@ -84,7 +84,7 @@ ROLE_KEYS = {
             "Tailscale auth key",
             True,
             False,
-            "Used when this worker/home node needs to join the tailnet before joining Swarm.",
+            "Used when this worker/home node needs to join the tailnet before joining the Luma cluster.",
         ),
         ConfigPrompt(
             "LUMA_SUDO_PASSWORD",

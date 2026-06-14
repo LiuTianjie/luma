@@ -62,7 +62,7 @@ function terminalUnavailableLabel(node: DashboardNode, lang: Lang) {
 function nodeStateLabel(node: DashboardNode, lang: Lang) {
   const state = (node.state || "").toLowerCase();
   const agent = (node.agentStatus || "").toLowerCase();
-  if ((state === "missing" || !state) && agent === "ready") return lang === "zh" ? "Swarm 未知" : "Swarm unknown";
+  if ((state === "missing" || !state) && agent === "ready") return lang === "zh" ? "调度状态未知" : "Scheduler unknown";
   return localizeState(lang, node.state);
 }
 

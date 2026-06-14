@@ -34,7 +34,7 @@ function buildNodeTopology(nodes: DashboardNode[], services: DashboardService[])
     const name = node.name || node.displayName;
     if (!name) return;
     const isLeader = node.leader;
-    const labelText = isLeader ? `👑 Leader\n${name}` : `🖥️ Worker\n${name}`;
+    const labelText = isLeader ? `Leader\n${name}` : `Worker\n${name}`;
     graphNodes.set(`node:${name}`, {
       id: `node:${name}`,
       label: labelText,
@@ -46,7 +46,7 @@ function buildNodeTopology(nodes: DashboardNode[], services: DashboardService[])
     const title = serviceTitle(service);
     const serviceId = `service:${service.fullName || title || serviceIndex}`;
     const isExposed = service.exposure && service.exposure !== "none";
-    const labelText = isExposed ? `🌐 Public\n${title}` : `📦 Swarm\n${title}`;
+    const labelText = isExposed ? `Public\n${title}` : `Nomad\n${title}`;
     
     graphNodes.set(serviceId, {
       id: serviceId,
@@ -59,7 +59,7 @@ function buildNodeTopology(nodes: DashboardNode[], services: DashboardService[])
       if (!graphNodes.has(hostId)) {
         graphNodes.set(hostId, {
           id: hostId,
-          label: `🖥️ Worker\n${nodeName}`,
+          label: `Worker\n${nodeName}`,
           kind: "host",
         });
       }
@@ -115,15 +115,15 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
   const isDark = theme === "dark";
   const textColor = isDark ? "#f8fafc" : "#0f172a";
   const nodeBg = isDark ? "#0f172a" : "#ffffff";
-  const nodeBorder = isDark ? "rgba(99, 102, 241, 0.35)" : "rgba(99, 102, 241, 0.15)";
-  const edgeColor = isDark ? "rgba(148, 163, 184, 0.3)" : "rgba(148, 163, 184, 0.6)";
+  const nodeBorder = isDark ? "rgba(125, 211, 252, 0.28)" : "rgba(14, 116, 144, 0.18)";
+  const edgeColor = isDark ? "rgba(148, 163, 184, 0.32)" : "rgba(100, 116, 139, 0.5)";
   
-  const leaderBorder = "#8b5cf6";
-  const hostBg = isDark ? "#131b2e" : "#f1f5f9";
+  const leaderBorder = "#38bdf8";
+  const hostBg = isDark ? "#111827" : "#f8fafc";
   const hostBorder = isDark ? "#334155" : "#cbd5e1";
   
-  const serviceBorder = isDark ? "rgba(99, 102, 241, 0.45)" : "rgba(99, 102, 241, 0.2)";
-  const exposedBorder = "#10b981";
+  const serviceBorder = isDark ? "rgba(20, 184, 166, 0.38)" : "rgba(15, 118, 110, 0.2)";
+  const exposedBorder = "#22c55e";
   
   return [
     {
@@ -132,7 +132,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "background-color": nodeBg,
         "border-color": nodeBorder,
         "border-width": 1.5,
-        "font-family": '"Outfit", "Inter", sans-serif',
+        "font-family": '"IBM Plex Sans", "Aptos", "Segoe UI", sans-serif',
         "font-size": 12,
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
@@ -152,7 +152,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       style: {
         "border-width": 2.5,
         "border-color": leaderBorder,
-        "background-color": isDark ? "#1e1b4b" : "#eef2ff",
+        "background-color": isDark ? "#082f49" : "#ecfeff",
       },
     },
     {
@@ -175,7 +175,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       style: {
         "border-width": 2.5,
         "border-color": exposedBorder,
-        "background-color": isDark ? "#064e3b" : "#ecfdf5",
+        "background-color": isDark ? "#052e2b" : "#ecfdf5",
       },
     },
     {
@@ -199,16 +199,16 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     {
       selector: "node.highlighted",
       style: {
-        "border-color": "#8b5cf6",
+        "border-color": "#38bdf8",
         "border-width": 3,
-        "background-color": isDark ? "#2e1065" : "#f5f3ff",
+        "background-color": isDark ? "#0c4a6e" : "#e0f2fe",
       },
     },
     {
       selector: "edge.highlighted",
       style: {
-        "line-color": "#6366f1",
-        "target-arrow-color": "#6366f1",
+        "line-color": "#38bdf8",
+        "target-arrow-color": "#38bdf8",
         "width": "3px",
       },
     },
@@ -304,14 +304,13 @@ export function NodeTopology({
           maxZoom={1.6}
           minZoom={0.35}
           stylesheet={stylesheet}
-          wheelSensitivity={0.16}
           cy={(cy) => setCyRef(cy)}
         />
         
         <div className="cy-controls" aria-label="Topology controls">
-          <button className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</button>
-          <button className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</button>
-          <button className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">⟲</button>
+          <button aria-label="Zoom in" className="cy-control-btn" onClick={handleZoomIn} type="button" title="Zoom In">+</button>
+          <button aria-label="Zoom out" className="cy-control-btn" onClick={handleZoomOut} type="button" title="Zoom Out">-</button>
+          <button aria-label="Reset view" className="cy-control-btn" onClick={handleReset} type="button" title="Reset View">0</button>
         </div>
       </div>
     </section>

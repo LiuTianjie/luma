@@ -36,7 +36,7 @@ export function serviceDraft(overrides: Partial<ServiceManifestDraft> = {}): Ser
     memoryLimit: "",
     healthcheckUrl: "",
     skipDns: false,
-    skipPortainer: false,
+    skipOrchestrator: false,
     ...overrides,
   };
 }
@@ -58,7 +58,7 @@ function composeDraft(overrides: Partial<ComposeDeploymentDraft> = {}): ComposeD
     volumes: [],
     dockerComposeYaml: "",
     skipDns: false,
-    skipPortainer: false,
+    skipOrchestrator: false,
     ...overrides,
   };
 }

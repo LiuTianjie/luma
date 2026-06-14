@@ -20,7 +20,8 @@ export function LoginPanel({ lang, onSubmit }: { lang: Lang; onSubmit: (token: s
       </div>
       <form onSubmit={submit}>
         <input
-          autoComplete="off"
+          autoComplete="current-password"
+          name="management-token"
           onChange={(event) => setToken(event.target.value)}
           placeholder={lang === "zh" ? "管理 Token" : "Management token"}
           spellCheck={false}

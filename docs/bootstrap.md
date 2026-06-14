@@ -22,7 +22,7 @@ nodes:
     publicIp: 203.0.113.10
     region: cn
     roles:
-      - swarm-manager
+      - nomad-server
       - edge
       - egress
 ```
@@ -65,7 +65,7 @@ For the first all-in-one server:
 luma bootstrap manager --domain luma.example.com
 ```
 
-The command is idempotent and can be re-run. It installs Docker, initializes Swarm if inactive, creates overlay networks, applies labels, creates runtime directories, configures UFW, and deploys Traefik, Portainer, and Luma Control.
+The command is idempotent and can be re-run. It installs Docker, installs and starts the Nomad server agent if inactive, applies node `meta` (region / luma_node_name / ingress / egress), creates runtime directories, configures UFW, and deploys Traefik and Luma Control as Nomad jobs.
 It also installs Tailscale. When `TAILSCALE_AUTHKEY` is set, it logs the node into the tailnet automatically.
 For profiles with the `egress` role, it also runs egress setup. Set `EGRESS_SUBSCRIPTION_URL` first when the manager needs a proxy to pull the configured control image. Mainland managers using the default GHCR control image should not use `--skip-egress`.
 
@@ -83,7 +83,6 @@ If a step fails, fix that layer and either re-run bootstrap or run the focused r
 
 ```bash
 luma tailscale connect
-luma portainer setup
 luma egress setup
 ```
 
@@ -98,15 +97,14 @@ The output includes:
 ```text
 Control domain: luma.example.com
 Control URL: https://luma.example.com
-Portainer URL: https://203.0.113.10:9443
-Portainer username: admin
-Portainer password: sudo jq -r '.portainerAdminPassword' /opt/luma/control/control.json
+Orchestrator: nomad
+Nomad API: http://203.0.113.10:4646
 Cluster: luma-...
 Management token: ...
 Node join token: ...
 ```
 
-Keep the management token, node join token, and Portainer admin password private.
+Keep the management token and node join token private.
 
 Luma exposes only two user-facing tokens:
 
@@ -115,13 +113,7 @@ Luma exposes only two user-facing tokens:
 
 Per-node agent credentials are internal. `luma node join` and `luma update` request and install them automatically, and Control stores only their hash.
 
-The `--domain` value is the Luma Control URL. Portainer is not routed through that domain by default.
-Bootstrap exposes Portainer directly on the manager at `https://<manager-ip>:9443`, with Traefik disabled for
-the Portainer stack. To read the generated Portainer password later:
-
-```bash
-sudo jq -r '.portainerAdminUsername, .portainerAdminPassword' /opt/luma/control/control.json
-```
+The `--domain` value is the Luma Control URL. The Nomad HTTP API is not routed through that domain; it listens on the manager's Tailscale address at `4646` and is reachable only over the tailnet.
 
 ## 4. Login From A Client
 
@@ -132,7 +124,7 @@ luma login https://luma.example.com --token <management-token>
 luma context list
 ```
 
-The client stores the endpoint, cluster id, and management token in `~/.config/luma/contexts/`. It does not need Docker, SSH access, Cloudflare credentials, or Portainer credentials.
+The client stores the endpoint, cluster id, and management token in `~/.config/luma/contexts/`. It does not need Docker, SSH access, Cloudflare credentials, or Nomad credentials.
 
 For a read-only Web view, open:
 
@@ -152,10 +144,12 @@ luma node join https://luma.example.com --token <node-join-token> --region globa
 luma node join https://luma.example.com --token <node-join-token> --region home --name home-mac-mini
 ```
 
-The node asks the manager for the Docker Swarm join token and manager address, then joins the cluster locally.
-After the local join succeeds, it calls back to Luma Control so the manager applies the region and Luma node labels automatically. `--name` is the Luma node name used in status output and service manifests; Luma stores the real Swarm NodeID separately and uses that NodeID for pinned scheduling. `--region` is the scheduling boundary.
+The node asks the manager for the Nomad gossip key and server retry-join address, then enrolls as a Nomad client locally.
+After the local join succeeds, it calls back to Luma Control so the manager records the region and Luma node `meta` automatically. `--name` is the Luma node name used in status output and service manifests; it is written to the client's `meta.luma_node_name` and used for pinned scheduling. `--region` is the scheduling boundary, written to `meta.region`.
 
-Luma configures Docker Swarm's dispatcher heartbeat to `30s` during manager bootstrap/repair. This is more tolerant of home workers that reach the manager through Tailscale relay paths. Override it with `LUMA_SWARM_DISPATCHER_HEARTBEAT` only when you deliberately want faster or slower worker-down detection.
+Add `--engine nomad` to force the Nomad client agent path explicitly; it is the default and rarely needs to be passed.
+
+Nomad's `max_client_disconnect` (rendered into every Luma job) is what makes home workers reaching the server over Tailscale tolerant of transient drops: when a client briefly loses its RPC path, its local allocations keep running instead of being killed and rescheduled.
 
 ### Required node ports
 
@@ -165,15 +159,14 @@ Luma configures UFW on Linux nodes during bootstrap/join. If you use a cloud sec
 | --- | --- | --- |
 | `80/tcp` | Internet to manager/edge | HTTP entrypoint and Let's Encrypt HTTP-01 challenge. |
 | `443/tcp` | Internet to manager/edge | HTTPS entrypoint for public services and Luma Control. |
-| `9443/tcp` | trusted clients to manager | Direct Portainer UI/API access. Restrict this when possible. |
 | `tcp-relay` published ports | Internet to manager/edge | Public TCP relay ports, for example `3306/tcp` for MySQL. Luma restores Traefik listeners from Control state; cloud firewalls/security groups must allow the same ports. |
-| `2377/tcp` | workers to manager | Docker Swarm control-plane join and manager communication. |
-| `7946/tcp` and `7946/udp` | node to node | Docker Swarm node discovery and overlay-network gossip. |
-| `4789/udp` | node to node | Docker overlay/VXLAN data path. |
+| `4646/tcp` | clients/Traefik to Nomad server | Nomad HTTP API (deploy, status, service discovery). |
+| `4647/tcp` | Nomad clients to server | Nomad RPC. |
+| `4648/tcp` and `4648/udp` | node to node | Nomad Serf gossip (server membership). |
 
 `7890/tcp` and `7890/udp` are intentionally denied for public inbound access; the egress proxy is for local Docker/service outbound traffic only. Luma installs host firewall, raw `PREROUTING`, and Docker `DOCKER-USER` guards for this because Docker-published ports and Docker's userland proxy can bypass plain UFW deny rules.
 
-When the manager has a Tailscale address, Luma also installs public-interface guards for `2377/tcp`, `7946/tcp`, `7946/udp`, and `4789/udp`; Swarm traffic should use Tailscale in that topology. If you intentionally run Swarm over public IPs without Tailscale, restrict these ports with a cloud security group or trusted source ACL.
+When the manager has a Tailscale address, Luma opens `4646/tcp`, `4647/tcp`, `4648/tcp`, and `4648/udp` only on the `tailscale0` interface; Nomad control-plane traffic should use Tailscale in that topology. Agents bind to `0.0.0.0` but advertise their Tailscale IP, so binding wide is safe behind the interface-scoped UFW rules. If you intentionally run Nomad over public IPs without Tailscale, restrict these ports with a cloud security group or trusted source ACL.
 
 If a node needs to leave a broken or rebuilt manager before joining again, run this on that node:
 
@@ -181,7 +174,7 @@ If a node needs to leave a broken or rebuilt manager before joining again, run t
 luma node exit
 ```
 
-By default this leaves Docker Swarm and removes `/opt/luma`, while keeping Tailscale login state and Docker caches. Add `--endpoint <control-url> --token <management-token-or-node-join-token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` only when the node should leave the tailnet too; add `--prune-docker` only when unused Docker cache and volumes should be removed.
+By default this drains the local Nomad client and removes `/opt/luma`, while keeping Tailscale login state and Docker caches. Add `--endpoint <control-url> --token <management-token-or-node-join-token>` to unregister the Luma node name from the control plane during exit. Add `--tailscale` only when the node should leave the tailnet too; add `--prune-docker` only when unused Docker cache and volumes should be removed.
 
 ## 6. Configure Or Refresh Providers
 
@@ -199,7 +192,7 @@ Use `luma update` after upgrading Luma itself:
 luma update
 ```
 
-The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and hot-refreshes only the Luma Control API: it preserves existing tokens, Portainer credentials, nodes, and app stacks; refreshes control config/state metadata; refreshes inferred DNS provider config when local Cloudflare credentials are available; pulls the current Luma Control image; rolls the `luma-control` service with healthcheck-based rollback; and refreshes the manager's local node agent when possible. It does not redeploy or force-restart Traefik, Portainer, Docker, egress, or user services.
+The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and hot-refreshes only the Luma Control API: it preserves existing tokens, nodes, and Nomad jobs; refreshes control config/state metadata; refreshes inferred DNS provider config when local Cloudflare credentials are available; pulls the current Luma Control image; rolls the `luma-control` job with healthcheck-based auto-revert; and refreshes the manager's local node agent when possible. It does not redeploy or force-restart Traefik, the Nomad agent, Docker, egress, or user services.
 
 On a joined worker/home node, `luma update` updates the CLI and refreshes the local node agent. If an older node has no saved agent metadata, pass the Control URL and node join token once:
 
@@ -215,15 +208,15 @@ luma update fleet
 
 Fleet update depends on the node agent already being new enough to support the `luma-update` task. If a node is reported as skipped because it does not support fleet update, run `luma update` once on that node; future fleet updates can then refresh it remotely. Fleet update also refreshes node-side support services such as the Tailscale watchdog.
 
-Fleet update skips Swarm manager nodes by default so a client-side fleet operation cannot disrupt the active control plane. Update the manager separately from the manager host with `luma update manager`.
+Fleet update skips the Nomad server (manager) node by default so a client-side fleet operation cannot disrupt the active control plane. Update the manager separately from the manager host with `luma update manager`.
 
 On an ordinary client, `luma update` only updates the CLI. Use `luma update manager` on a manager to force the same control-only refresh when you need to pass `--domain`.
 
-Use `luma bootstrap manager --domain ...` for first install or explicit infrastructure repair. Full bootstrap can touch Docker, firewall, Traefik, Portainer, and egress, so treat it as a maintenance-window operation. If an old installed CLI still implements the previous update behavior, update the CLI first through the installer or package manager, then rerun the new `luma update manager` control-only refresh.
+Use `luma bootstrap manager --domain ...` for first install or explicit infrastructure repair. Full bootstrap can touch Docker, firewall, Traefik, the Nomad agent, and egress, so treat it as a maintenance-window operation. If an old installed CLI still implements the previous update behavior, update the CLI first through the installer or package manager, then rerun the new `luma update manager` control-only refresh.
 
 If the installed CLI is too old to recognize `luma update`, run the installer once and then retry the update command.
 
-Manager bootstrap/update installs a systemd Tailscale watchdog when Tailscale and systemd are available. Joined node-agent install/update does the same on Linux with systemd and on macOS with LaunchDaemon. The watchdog only restarts local Tailscale after consecutive peer TCP failures, so application deploys should not take down Docker or Swarm services.
+Manager bootstrap/update installs a systemd Tailscale watchdog when Tailscale and systemd are available. Joined node-agent install/update does the same on Linux with systemd and on macOS with LaunchDaemon. The watchdog only restarts local Tailscale after consecutive peer TCP failures, so application deploys should not take down Docker or the Nomad agent.
 
 Verify the manager is really running the new control API:
 
@@ -241,9 +234,9 @@ export LUMA_DNS_EDGE_TARGET='203.0.113.10'
 luma cloudflare connect --zone example.com
 ```
 
-Portainer is initialized automatically during bootstrap. Luma deploys through the Portainer API.
+Nomad is initialized automatically during bootstrap. Luma deploys through the Nomad HTTP API.
 
-Bootstrap stores the relevant Cloudflare and Portainer values in `/opt/luma/control/control.json` on the manager. Client machines do not need these values.
+Bootstrap stores the relevant Cloudflare values in `/opt/luma/control/control.json` on the manager. Client machines do not need these values.
 
 ## 7. Verify
 
@@ -251,13 +244,12 @@ Bootstrap stores the relevant Cloudflare and Portainer values in `/opt/luma/cont
 luma doctor
 ```
 
-Expected core services:
+Expected core Nomad jobs:
 
 ```text
-traefik_traefik
-portainer_portainer
-portainer_agent
-egress_mihomo
+traefik
+luma-control
+egress-mihomo
 ```
 
 ## 8. First Public Service

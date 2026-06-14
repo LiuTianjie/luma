@@ -3,20 +3,11 @@ from __future__ import annotations
 import json
 import ipaddress
 import os
-import secrets
 import shlex
-import ssl
-import tempfile
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Union
 
-import yaml
-
-from .assets import asset_text
 from .config import LumaConfig, NodeConfig
 from .cloudflare import sync_control_dns
 from .egress import minimal_mihomo_config_from_url
@@ -30,12 +21,8 @@ from .remote import RemoteExecutor
 
 ROOT = "/opt/luma"
 DEFAULT_TRAEFIK_IMAGE = "docker.1panel.live/library/traefik:v3.6"
-DEFAULT_PORTAINER_IMAGE = "docker.1panel.live/portainer/portainer-ce:2.21.5"
-DEFAULT_PORTAINER_AGENT_IMAGE = "docker.1panel.live/portainer/agent:2.21.5"
 DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
-DEFAULT_PORTAINER_API_URL = "https://127.0.0.1:9443/api"
-DEFAULT_SWARM_DISPATCHER_HEARTBEAT = "30s"
 EGRESS_PROXY_URL = "http://127.0.0.1:7890"
 EGRESS_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
 DEFAULT_EGRESS_PULL_REGISTRIES = {
@@ -51,16 +38,6 @@ DEFAULT_EGRESS_PULL_REGISTRIES = {
     "public.ecr.aws",
     "nvcr.io",
 }
-PORTAINER_IMAGE_FALLBACKS = [
-    "docker.m.daocloud.io/portainer/portainer-ce:2.21.5",
-    "docker.1ms.run/portainer/portainer-ce:2.21.5",
-    "portainer/portainer-ce:2.21.5",
-]
-PORTAINER_AGENT_IMAGE_FALLBACKS = [
-    "docker.m.daocloud.io/portainer/agent:2.21.5",
-    "docker.1ms.run/portainer/agent:2.21.5",
-    "portainer/agent:2.21.5",
-]
 Progress = Callable[[str], None]
 
 
@@ -87,67 +64,11 @@ def _step(results: list[str], emit: Progress | None, title: str, action: Callabl
 Executor = Union[RemoteExecutor, LocalExecutor]
 
 
-def _deploy_stack(remote: Executor, local_stack: Path, stack_name: str) -> str:
-    if not local_stack.exists():
-        raise LumaError(f"stack file not found: {local_stack}")
-    remote_tmp = f"/tmp/luma-{stack_name}-stack.yml"
-    remote.upload(local_stack, remote_tmp)
-    _docker(remote, f"docker stack deploy --resolve-image never -c {shlex.quote(remote_tmp)} {shlex.quote(stack_name)}")
-    return f"Stack deployed: {stack_name}"
-
-
-def _deploy_stack_text(remote: Executor, stack_text: str, stack_name: str) -> str:
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fh:
-        fh.write(stack_text)
-        local_stack = Path(fh.name)
-    try:
-        return _deploy_stack(remote, local_stack, stack_name)
-    finally:
-        local_stack.unlink(missing_ok=True)
-
-
 def _core_image(config: LumaConfig, key: str, env_name: str, default: str) -> str:
     images = config.defaults.get("images") or {}
     if isinstance(images, dict) and images.get(key):
         return str(images[key])
     return os.environ.get(env_name, default)
-
-
-def _core_image_candidates(config: LumaConfig, key: str, env_name: str, default: str, fallbacks: list[str]) -> list[str]:
-    selected = _core_image(config, key, env_name, default)
-    override = os.environ.get(env_name)
-    images = config.defaults.get("images") or {}
-    if override or (isinstance(images, dict) and images.get(key)):
-        return [selected]
-    candidates = [selected, *fallbacks]
-    return list(dict.fromkeys(candidates))
-
-
-def _wait_service_ready(remote: Executor, service_name: str, *, timeout_seconds: int = 120) -> str:
-    attempts = max(1, timeout_seconds // 2)
-    _docker(
-        remote,
-        "set -euo pipefail; "
-        f"service={shlex.quote(service_name)}; "
-        f"for i in $(seq 1 {attempts}); do "
-        "replicas=$(docker service ls --filter name=\"$service\" --format '{{.Name}} {{.Replicas}}' | awk -v s=\"$service\" '$1 == s {print $2; exit}'); "
-        "if [ -n \"$replicas\" ]; then "
-        "running=${replicas%%/*}; desired=${replicas##*/}; "
-        "[ \"$running\" = \"$desired\" ] && [ \"$desired\" != \"0\" ] && exit 0; "
-        "fi; "
-        "sleep 2; "
-        "done; "
-        "docker service ps \"$service\" --no-trunc; "
-        "exit 1"
-    )
-    return f"Service ready: {service_name}"
-
-
-def _deploy_egress_stack(remote: Executor, config: LumaConfig) -> str:
-    image = _egress_image(config)
-    stack_text = asset_text("stacks/core/egress-gateway/stack.yml")
-    stack_text = stack_text.replace(f"${{LUMA_EGRESS_IMAGE:-{DEFAULT_EGRESS_IMAGE}}}", image)
-    return _deploy_stack_text(remote, stack_text, "egress")
 
 
 def _egress_image(config: LumaConfig) -> str:
@@ -172,32 +93,6 @@ def _traefik_ports(config: LumaConfig) -> tuple[int, int]:
     return http_port, https_port
 
 
-def _render_traefik_stack(config: LumaConfig, *, tcp_ports: list[int] | None = None) -> str:
-    image = _traefik_image(config)
-    http_port, https_port = _traefik_ports(config)
-    stack_text = asset_text("stacks/core/traefik/stack.yml")
-    stack_text = stack_text.replace("traefik:v3.6", image)
-    stack_text = stack_text.replace("admin@example.com", _acme_email(config))
-    stack_text = stack_text.replace("published: 80", f"published: {http_port}")
-    stack_text = stack_text.replace("published: 443", f"published: {https_port}")
-    ports = sorted({int(port) for port in (tcp_ports or []) if int(port) > 0})
-    if not ports:
-        return stack_text
-    stack = yaml.safe_load(stack_text) or {}
-    traefik = stack["services"]["traefik"]
-    commands = traefik.setdefault("command", [])
-    published = traefik.setdefault("ports", [])
-    for port in ports:
-        name = f"tcp-{port}"
-        command = f"--entrypoints.{name}.address=:{port}"
-        if command not in commands:
-            commands.append(command)
-        port_spec = {"target": port, "published": port, "protocol": "tcp", "mode": "host"}
-        if port_spec not in published:
-            published.append(port_spec)
-    return dump_yaml(stack)
-
-
 def _acme_email(config: LumaConfig) -> str:
     dns = config.dns
     zone = str(dns.get("zone") or "").strip()
@@ -206,28 +101,6 @@ def _acme_email(config: LumaConfig) -> str:
         or str(config.defaults.get("acmeEmail") or "").strip()
         or str(dns.get("acmeEmail") or "").strip()
         or (f"admin@{zone}" if zone and zone != "example.com" else "admin@example.com")
-    )
-
-
-def _portainer_image(config: LumaConfig) -> str:
-    return _core_image(config, "portainer", "LUMA_PORTAINER_IMAGE", DEFAULT_PORTAINER_IMAGE)
-
-
-def _portainer_image_candidates(config: LumaConfig) -> list[str]:
-    return _core_image_candidates(config, "portainer", "LUMA_PORTAINER_IMAGE", DEFAULT_PORTAINER_IMAGE, PORTAINER_IMAGE_FALLBACKS)
-
-
-def _portainer_agent_image(config: LumaConfig) -> str:
-    return _core_image(config, "portainerAgent", "LUMA_PORTAINER_AGENT_IMAGE", DEFAULT_PORTAINER_AGENT_IMAGE)
-
-
-def _portainer_agent_image_candidates(config: LumaConfig) -> list[str]:
-    return _core_image_candidates(
-        config,
-        "portainerAgent",
-        "LUMA_PORTAINER_AGENT_IMAGE",
-        DEFAULT_PORTAINER_AGENT_IMAGE,
-        PORTAINER_AGENT_IMAGE_FALLBACKS,
     )
 
 
@@ -248,62 +121,6 @@ def _pull_image(remote: Executor, image: str) -> str:
     return f"Image pulled: {image}"
 
 
-def _pull_first_available(remote: Executor, images: list[str]) -> tuple[str, str]:
-    errors = []
-    for image in images:
-        try:
-            return image, _pull_image(remote, image)
-        except Exception as exc:
-            errors.append(f"{image}: {exc}")
-    raise LumaError("failed to pull any candidate image:\n" + "\n".join(errors))
-
-
-def _deploy_traefik(remote: Executor, config: LumaConfig, *, tcp_ports: list[int] | None = None) -> list[str]:
-    image = _traefik_image(config)
-    stack_text = _render_traefik_stack(config, tcp_ports=tcp_ports)
-    return [
-        _pull_image(remote, image),
-        _deploy_stack_text(remote, stack_text, "traefik"),
-        _wait_service_ready(remote, "traefik_traefik"),
-    ]
-
-
-def _deploy_portainer(remote: Executor, config: LumaConfig) -> list[str]:
-    agent_image, agent_result = _pull_first_available(remote, _portainer_agent_image_candidates(config))
-    portainer_image, portainer_result = _pull_first_available(remote, _portainer_image_candidates(config))
-    stack_text = asset_text("stacks/core/portainer/stack.yml")
-    stack_text = stack_text.replace("portainer/portainer-ce:2.21.5", portainer_image)
-    stack_text = stack_text.replace("portainer/agent:2.21.5", agent_image)
-    return [
-        agent_result,
-        portainer_result,
-        _deploy_stack_text(remote, stack_text, "portainer"),
-        _wait_service_ready(remote, "portainer_portainer"),
-        _wait_service_ready(remote, "portainer_agent"),
-    ]
-
-
-def _reset_portainer_state(remote: Executor) -> str:
-    _docker(
-        remote,
-        "set -euo pipefail; "
-        "docker stack rm portainer >/dev/null 2>&1 || true; "
-        "for i in $(seq 1 60); do "
-        "services=$(docker service ls --filter label=com.docker.stack.namespace=portainer --format '{{.Name}}'); "
-        "[ -z \"$services\" ] && break; "
-        "sleep 2; "
-        "done; "
-        "services=$(docker service ls --filter label=com.docker.stack.namespace=portainer --format '{{.Name}}'); "
-        "[ -z \"$services\" ]; "
-        "if docker volume inspect portainer_portainer_data >/dev/null 2>&1; then "
-        "containers=$(docker ps -aq --filter volume=portainer_portainer_data); "
-        "if [ -n \"$containers\" ]; then docker rm -f $containers >/dev/null; fi; "
-        "docker volume rm portainer_portainer_data >/dev/null; "
-        "fi",
-    )
-    return "Portainer state reset"
-
-
 def deploy_control_stack(
     remote: Executor,
     config: LumaConfig,
@@ -311,8 +128,10 @@ def deploy_control_stack(
     *,
     emit: Progress | None = None,
     require_pull_egress: bool = True,
+    node_name: str | None = None,
 ) -> list[str]:
     results: list[str] = []
+    engine = str(config.defaults.get("engine") or "nomad")
     image = _control_image(config)
     if require_pull_egress and _control_image_pull_requires_egress(image):
         _step(results, emit, "Ensure control image pull egress", lambda: _ensure_control_image_pull_egress(remote, image))
@@ -328,27 +147,50 @@ def deploy_control_stack(
 
         _step(results, emit, "Resolve Luma control image digest", resolve_digest)
         deploy_image = resolved["image"]
-    stack_text = asset_text("stacks/core/luma-control/stack.yml")
-    stack_text = stack_text.replace("${LUMA_CONTROL_DOMAIN:-luma.local}", domain)
-    stack_text = stack_text.replace(f"${{LUMA_CONTROL_IMAGE:-{DEFAULT_CONTROL_IMAGE}}}", deploy_image)
-    _step(results, emit, "Deploy Luma control stack", lambda: _deploy_stack_text(remote, stack_text, "luma-control"))
-    _step(results, emit, "Refresh Luma control service image", lambda: _force_update_service_image(remote, "luma-control_luma-control", deploy_image))
-    _step(results, emit, "Wait Luma control service", lambda: _wait_service_ready(remote, "luma-control_luma-control"))
+
+    if engine != "nomad":
+        raise LumaError("Nomad is the only supported deployment engine")
+
+    from .nomad_render import render_control_job
+
+    node = node_name or local_host_name()
+    job_json = render_control_job(image=deploy_image, node_name=node)
+    _step(results, emit, "Deploy Luma control job", lambda: _deploy_nomad_job(remote, job_json, "luma-control"))
+    _step(results, emit, "Wait Luma control job", lambda: _wait_nomad_job(remote, "luma-control"))
     return results
 
 
-def _force_update_service_image(remote: Executor, service: str, image: str) -> str:
-    update_flags = ""
-    if service == "luma-control_luma-control":
-        update_flags = " --update-order start-first --update-failure-action rollback --update-monitor 30s --update-delay 5s --update-parallelism 1"
-    _docker(
-        remote,
-        "set -euo pipefail; "
-        f"docker service inspect {shlex.quote(service)} >/dev/null 2>&1; "
-        f"docker service update --image {shlex.quote(image)}{update_flags} --force {shlex.quote(service)} >/dev/null",
-    )
-    return f"Service image refreshed: {service} -> {image}"
+def _deploy_nomad_job(remote: Executor, job_json: str, job_id: str) -> str:
+    """Submit a rendered Nomad job (JSON) via the local Nomad agent.
 
+    Uses base64 to avoid any shell-quoting hazard with the JSON payload.
+    """
+    import base64
+
+    b64 = base64.b64encode(job_json.encode("utf-8")).decode("ascii")
+    remote.run(
+        f"set -e; echo {b64} | base64 -d > /tmp/{shlex.quote(job_id)}.nomad.json; "
+        f"nomad job run -json /tmp/{shlex.quote(job_id)}.nomad.json"
+    )
+    return f"Nomad job deployed: {job_id}"
+
+
+def _wait_nomad_job(remote: Executor, job_id: str, *, timeout: int = 120) -> str:
+    """Poll until the Nomad job reports a running allocation."""
+    deadline = time.monotonic() + timeout
+    while True:
+        result = remote.run_result(
+            f"nomad job status -short {shlex.quote(job_id)} 2>/dev/null | grep -iE 'Status' | head -1"
+        )
+        if "running" in result.output.lower():
+            return f"Nomad job running: {job_id}"
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(4)
+    raise LumaError(
+        f"Nomad job {job_id} did not reach running within {timeout}s. "
+        f"Check `nomad job status {job_id}` and alloc logs."
+    )
 
 def _ensure_control_image(remote: Executor, image: str) -> str:
     image_arg = shlex.quote(image)
@@ -414,15 +256,12 @@ def _egress_pull_registries() -> set[str]:
 
 
 def _require_egress_gateway_running(remote: Executor) -> None:
-    try:
-        _docker(
-            remote,
-            "set -euo pipefail; "
-            "docker service inspect egress_mihomo >/dev/null; "
-            "docker service ps egress_mihomo --filter desired-state=running --format '{{.CurrentState}}' | grep -q '^Running '",
-        )
-    except Exception as exc:
-        raise LumaError("control image pull egress requires a running egress_mihomo task; run `luma egress setup` on the manager") from exc
+    result = remote.run_result(
+        "command -v nomad >/dev/null 2>&1 && "
+        "nomad job status -short egress 2>/dev/null | grep -qiE 'Status[[:space:]]*=[[:space:]]*running|Status[[:space:]]+running'"
+    )
+    if result.code != 0:
+        raise LumaError("control image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager")
 
 
 def _docker_daemon_uses_egress_proxy(remote: Executor) -> bool:
@@ -476,11 +315,12 @@ def install_control_config(remote: Executor, config: LumaConfig, node: NodeConfi
 def _bootstrap_config(config: LumaConfig, node: NodeConfig | None = None) -> dict[str, object]:
     raw = dict(config.raw)
     raw.setdefault("project", "luma")
-    providers = raw.setdefault("providers", {})
-    if isinstance(providers, dict):
-        providers.setdefault("portainer", {})
     defaults = raw.setdefault("defaults", {})
     if isinstance(defaults, dict):
+        # Fresh installs are Nomad-native by default — this is the product's
+        # target engine. Existing clusters keep their luma.yaml as-is (read
+        # directly, not regenerated), so this only affects new bootstraps.
+        defaults.setdefault("engine", "nomad")
         defaults.setdefault("exposure", "cn-edge")
         defaults.setdefault("stackRoot", "stacks")
         defaults.setdefault("routesRoot", "routes")
@@ -503,145 +343,6 @@ def _bootstrap_config(config: LumaConfig, node: NodeConfig | None = None) -> dic
 def install_control_state(remote: Executor, state: dict[str, object]) -> str:
     content = json.dumps(state, indent=2, sort_keys=True) + "\n"
     return remote.write_secret(content, f"{ROOT}/control/control.json", mode="600")
-
-
-def initialize_portainer(remote: Executor, state: dict[str, object]) -> str:
-    username = str(
-        os.environ.get("LUMA_PORTAINER_ADMIN_USERNAME")
-        or state.get("portainerAdminUsername")
-        or "admin"
-    )
-    password = str(
-        os.environ.get("LUMA_PORTAINER_ADMIN_PASSWORD")
-        or state.get("portainerAdminPassword")
-        or f"{secrets.token_urlsafe(24)}A1!"
-    )
-    api_url = str(state.get("portainerApiUrl") or DEFAULT_PORTAINER_API_URL)
-    state["portainerAdminUsername"] = username
-    state["portainerAdminPassword"] = password
-    state["portainerApiUrl"] = api_url
-
-    status, payload = _portainer_request(api_url, "GET", "/users/admin/check")
-    if status == 303 and isinstance(payload, dict) and payload.get("message") == "Administrator initialization timeout":
-        _docker(remote, "docker service update --force portainer_portainer >/dev/null")
-        _wait_service_ready(remote, "portainer_portainer")
-        status, payload = _portainer_request(api_url, "GET", "/users/admin/check")
-    if status == 404:
-        status, payload = _portainer_request(
-            api_url,
-            "POST",
-            "/users/admin/init",
-            {"Username": username, "Password": password},
-        )
-    if status not in {200, 204}:
-        detail = payload.get("message") if isinstance(payload, dict) else payload
-        raise LumaError(f"Portainer admin initialization failed: HTTP {status} {detail}")
-    status, payload = _portainer_request(api_url, "POST", "/auth", {"Username": username, "Password": password})
-    if status != 200 or not isinstance(payload, dict) or not payload.get("jwt"):
-        detail = payload.get("message") if isinstance(payload, dict) else payload
-        raise LumaError(
-            f"Portainer authentication failed: HTTP {status} {detail}. "
-            "If Portainer was already initialized, set LUMA_PORTAINER_ADMIN_PASSWORD to the existing admin password "
-            "or reset the Portainer admin password, then rerun bootstrap manager."
-        )
-    jwt = str(payload["jwt"])
-    status, payload = _portainer_request(api_url, "GET", "/endpoints", token=jwt)
-    if status == 200 and isinstance(payload, list) and not payload:
-        status, payload = _portainer_form_request(
-            api_url,
-            "POST",
-            "/endpoints",
-            {
-                "Name": "luma-local",
-                "EndpointCreationType": "2",
-                "URL": "tcp://tasks.agent:9001",
-                "TLS": "true",
-                "TLSSkipVerify": "true",
-                "TLSSkipClientVerify": "true",
-            },
-            token=jwt,
-        )
-        if status in {200, 201} and isinstance(payload, dict):
-            payload = [payload]
-        elif status == 409:
-            status, payload = _portainer_request(api_url, "GET", "/endpoints", token=jwt)
-    if status != 200 or not isinstance(payload, list) or not payload:
-        detail = payload.get("message") if isinstance(payload, dict) else payload
-        raise LumaError(f"Portainer endpoint discovery failed: HTTP {status} {detail}")
-    endpoint = payload[0]
-    if not isinstance(endpoint, dict) or not endpoint.get("Id"):
-        raise LumaError("Portainer returned an invalid endpoint")
-    state["portainerEndpointId"] = int(endpoint["Id"])
-    state["portainerEndpointName"] = str(endpoint.get("Name") or endpoint["Id"])
-    return "Portainer initialized"
-
-
-def bind_portainer_credentials(remote: Executor, config: LumaConfig, state: dict[str, object]) -> str | list[str]:
-    try:
-        return initialize_portainer(remote, state)
-    except LumaError:
-        return [
-            _reset_portainer_state(remote),
-            *_deploy_portainer(remote, config),
-            initialize_portainer(remote, state),
-        ]
-
-
-def _portainer_request(
-    api_url: str,
-    method: str,
-    path: str,
-    body: dict[str, object] | None = None,
-    token: str | None = None,
-) -> tuple[int, object | None]:
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    headers = {"Accept": "application/json"}
-    if body is not None:
-        headers["Content-Type"] = "application/json"
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(api_url.rstrip("/") + path, data=data, method=method, headers=headers)
-    context = ssl._create_unverified_context()
-    try:
-        with urllib.request.urlopen(request, timeout=20, context=context) as response:
-            raw = response.read().decode("utf-8")
-            return response.status, json.loads(raw) if raw else None
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        try:
-            payload: object | None = json.loads(raw) if raw else None
-        except json.JSONDecodeError:
-            payload = raw
-        return exc.code, payload
-
-
-def _portainer_form_request(
-    api_url: str,
-    method: str,
-    path: str,
-    form: dict[str, str],
-    token: str | None = None,
-) -> tuple[int, object | None]:
-    data = urllib.parse.urlencode(form).encode("utf-8")
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(api_url.rstrip("/") + path, data=data, method=method, headers=headers)
-    context = ssl._create_unverified_context()
-    try:
-        with urllib.request.urlopen(request, timeout=20, context=context) as response:
-            raw = response.read().decode("utf-8")
-            return response.status, json.loads(raw) if raw else None
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        try:
-            payload: object | None = json.loads(raw) if raw else None
-        except json.JSONDecodeError:
-            payload = raw
-        return exc.code, payload
 
 
 def configure_dns(remote: Executor) -> str:
@@ -673,7 +374,7 @@ def install_docker(remote: Executor) -> str:
         result = remote.run_result("command -v docker >/dev/null 2>&1")
         if result.code != 0:
             raise LumaError(
-                "Docker is required before this macOS node can join Swarm. "
+                "Docker is required before this macOS node can run Nomad workloads. "
                 "Install Docker Desktop, start it, then rerun luma node join."
             )
         result = remote.run_result("docker info >/dev/null 2>&1")
@@ -782,42 +483,46 @@ def _redact_tailscale_authkey(output: str, authkey: str) -> str:
     return output.replace(authkey, "<redacted>")
 
 
-def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int = 443, tcp_ports: list[int] | None = None, allow_portainer: bool = True) -> str:
+def configure_firewall(remote: Executor, *, http_port: int = 80, https_port: int = 443, tcp_ports: list[int] | None = None, engine: str = "nomad") -> str:
     if _is_darwin(remote):
         return "Firewall configuration skipped on macOS"
-    restrict_swarm_public = _tailscale_ip(remote) is not None
+    if engine != "nomad":
+        raise LumaError("Nomad is the only supported deployment engine")
+    restrict_nomad_public = _tailscale_ip(remote) is not None
     commands = [
         "ufw --force enable",
         "ufw allow OpenSSH",
         f"ufw allow {int(http_port)}/tcp",
         f"ufw allow {int(https_port)}/tcp",
-        "ufw allow 2377/tcp",
-        "ufw allow 7946/tcp",
-        "ufw allow 7946/udp",
-        "ufw allow 4789/udp",
+        "ufw allow 4646/tcp",
+        "ufw allow 4647/tcp",
+        "ufw allow 4648/tcp",
+        "ufw allow 4648/udp",
+    ]
+    commands += [
         "ufw deny 7890/tcp",
         "ufw deny 7890/udp",
     ]
     for port in sorted({int(port) for port in (tcp_ports or [])}):
         commands.append(f"ufw allow {port}/tcp")
-    if allow_portainer:
-        commands.append("ufw allow 9443/tcp")
     remote.sudo("set -euo pipefail; " + "; ".join(commands))
-    configure_public_port_guards(remote, restrict_swarm_public=restrict_swarm_public)
+    configure_public_port_guards(remote, restrict_nomad_public=restrict_nomad_public, engine=engine)
     return "Firewall configured"
 
 
-def configure_public_port_guards(remote: Executor, *, restrict_swarm_public: bool = False) -> str:
+def configure_public_port_guards(remote: Executor, *, restrict_nomad_public: bool = False, engine: str = "nomad") -> str:
     if _is_darwin(remote):
         return "Public port guards skipped on macOS"
-    swarm_guard = "yes" if restrict_swarm_public else "no"
+    if engine != "nomad":
+        raise LumaError("Nomad is the only supported deployment engine")
+    nomad_guard = "yes" if restrict_nomad_public else "no"
     remote.sudo(
         "set -euo pipefail; "
         f"install -d -m 755 {ROOT}/firewall; "
         f"cat > {ROOT}/firewall/public-port-guards.sh <<'EOF'\n"
         "#!/bin/sh\n"
         "set -eu\n"
-        f"restrict_swarm_public={swarm_guard}\n"
+        f"restrict_nomad_public={nomad_guard}\n"
         "iface=$(ip route show default 2>/dev/null | awk '{print $5; exit}')\n"
         "[ -n \"${iface:-}\" ] || exit 0\n"
         "add_rule() {\n"
@@ -864,11 +569,11 @@ def configure_public_port_guards(remote: Executor, *, restrict_swarm_public: boo
         "add_prerouting_drop udp 7890\n"
         "add_docker_drop tcp 7890\n"
         "add_docker_drop udp 7890\n"
-        "if [ \"$restrict_swarm_public\" = \"yes\" ]; then\n"
-        "  add_input_drop tcp 2377\n"
-        "  add_input_drop tcp 7946\n"
-        "  add_input_drop udp 7946\n"
-        "  add_input_drop udp 4789\n"
+        "if [ \"$restrict_nomad_public\" = \"yes\" ]; then\n"
+        "  add_input_drop tcp 4646\n"
+        "  add_input_drop tcp 4647\n"
+        "  add_input_drop tcp 4648\n"
+        "  add_input_drop udp 4648\n"
         "fi\n"
         "EOF\n"
         f"chmod 755 {ROOT}/firewall/public-port-guards.sh; "
@@ -907,7 +612,8 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "#!/bin/sh\n"
         "set -eu\n"
         "threshold=${LUMA_TAILSCALE_WATCHDOG_THRESHOLD:-3}\n"
-        "port=${LUMA_TAILSCALE_WATCHDOG_PORT:-7946}\n"
+        "port=${LUMA_TAILSCALE_WATCHDOG_PORT:-4647}\n"
+        "peers=${LUMA_TAILSCALE_WATCHDOG_PEERS:-}\n"
         "state_dir=/run/luma\n"
         "state_file=$state_dir/tailscale-watchdog.failures\n"
         "mkdir -p \"$state_dir\"\n"
@@ -936,24 +642,12 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "  echo 0 > \"$state_file\"\n"
         "  exit 0\n"
         "fi\n"
-        "if ! docker info >/dev/null 2>&1; then\n"
-        "  log 'skip: Docker unavailable'\n"
-        "  exit 0\n"
-        "fi\n"
-        "control=$(docker info --format '{{.Swarm.ControlAvailable}}' 2>/dev/null || true)\n"
-        "[ \"$control\" = true ] || { log 'skip: not a Swarm manager'; exit 0; }\n"
-        "self=$(docker info --format '{{.Swarm.NodeID}}' 2>/dev/null || true)\n"
-        "nodes=$(docker node ls -q 2>/dev/null || true)\n"
+        "peers=$(printf '%s' \"$peers\" | tr ',' ' ')\n"
         "checked=0\n"
         "bad=0\n"
-        "for node in $nodes; do\n"
-        "  [ -n \"$node\" ] || continue\n"
-        "  [ \"$node\" = \"$self\" ] && continue\n"
-        "  line=$(docker node inspect --format '{{.Status.Addr}} {{.Spec.Availability}}' \"$node\" 2>/dev/null || true)\n"
-        "  [ -n \"$line\" ] || continue\n"
-        "  addr=${line%% *}\n"
-        "  availability=${line#* }\n"
-        "  [ \"$availability\" = active ] || continue\n"
+        "for addr in $peers; do\n"
+        "  [ -n \"$addr\" ] || continue\n"
+        "  addr=${addr%%:*}\n"
         "  is_tailnet_addr \"$addr\" || continue\n"
         "  if tailscale ping --timeout=3s --c 2 \"$addr\" >/dev/null 2>&1; then\n"
         "    checked=$((checked + 1))\n"
@@ -964,7 +658,7 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "  fi\n"
         "done\n"
         "if [ \"$checked\" -eq 0 ]; then\n"
-        "  log 'skip: no reachable Tailscale peers to validate'\n"
+        "  log 'skip: no configured reachable Tailscale peers to validate'\n"
         "  exit 0\n"
         "fi\n"
         "if [ \"$bad\" -eq 0 ]; then\n"
@@ -987,8 +681,8 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "cat > /etc/systemd/system/luma-tailscale-watchdog.service <<'EOF'\n"
         "[Unit]\n"
         "Description=Luma Tailscale TCP watchdog\n"
-        "After=network-online.target docker.service tailscaled.service\n"
-        "Wants=network-online.target docker.service tailscaled.service\n"
+        "After=network-online.target tailscaled.service nomad.service\n"
+        "Wants=network-online.target tailscaled.service\n"
         "\n"
         "[Service]\n"
         "Type=oneshot\n"
@@ -1019,71 +713,6 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
     return "Tailscale watchdog installed"
 
 
-def ensure_swarm(remote: Executor, node: NodeConfig) -> str:
-    heartbeat = _swarm_dispatcher_heartbeat()
-    advertise = node.raw.get("swarmAdvertiseAddr") or _tailscale_ip(remote) or node.raw.get("advertiseAddr") or node.public_ip
-    init = f"docker swarm init --dispatcher-heartbeat {shlex.quote(heartbeat)}"
-    if advertise:
-        init += f" --advertise-addr {shlex.quote(str(advertise))}"
-        init += f" --listen-addr {shlex.quote(_listen_addr(str(advertise)))}"
-    force_new_cluster = f"docker swarm init --force-new-cluster --dispatcher-heartbeat {shlex.quote(heartbeat)}"
-    if advertise:
-        force_new_cluster += f" --advertise-addr {shlex.quote(str(advertise))}"
-        force_new_cluster += f" --listen-addr {shlex.quote(_listen_addr(str(advertise)))}"
-    _docker(
-        remote,
-        "set -euo pipefail; "
-        'state="$(docker info --format \'{{.Swarm.LocalNodeState}}\')"; '
-        'node_addr="$(docker info --format \'{{.Swarm.NodeAddr}}\' 2>/dev/null || true)"; '
-        'control="$(docker info --format \'{{.Swarm.ControlAvailable}}\' 2>/dev/null || true)"; '
-        'manager_addr="$(docker node inspect self --format \'{{.ManagerStatus.Addr}}\' 2>/dev/null || true)"; '
-        f'if [ "$state" = "inactive" ]; then {init}; '
-        f"elif [ \"$control\" = \"true\" ] && [ -n {shlex.quote(str(advertise or ''))} ] && "
-        f"{{ [ \"$node_addr\" != {shlex.quote(str(advertise or ''))} ] || [ \"$manager_addr\" != {shlex.quote(_listen_addr(str(advertise)) if advertise else '')} ]; }}; then {force_new_cluster}; "
-        "fi; "
-        'control_after="$(docker info --format \'{{.Swarm.ControlAvailable}}\' 2>/dev/null || true)"; '
-        f'if [ "$control_after" = "true" ]; then docker swarm update --dispatcher-heartbeat {shlex.quote(heartbeat)} >/dev/null; fi'
-    )
-    return "Swarm ready"
-
-
-def _swarm_dispatcher_heartbeat() -> str:
-    return os.environ.get("LUMA_SWARM_DISPATCHER_HEARTBEAT", DEFAULT_SWARM_DISPATCHER_HEARTBEAT)
-
-
-def _listen_addr(advertise: str) -> str:
-    host = advertise.rsplit(":", 1)[0] if ":" in advertise and advertise.count(":") == 1 else advertise
-    return f"{host}:2377"
-
-
-def ensure_networks(remote: Executor, config: LumaConfig, *, include_egress: bool = True) -> str:
-    networks = [config.public_network]
-    if include_egress:
-        networks.append(config.egress_network)
-    for network in networks:
-        _docker(
-            remote,
-            f"docker network inspect {shlex.quote(network)} >/dev/null 2>&1 || "
-            f"docker network create --driver=overlay --attachable {shlex.quote(network)} >/dev/null"
-        )
-    return "Overlay networks ready"
-
-
-def apply_labels(remote: Executor, profile: Profile, node: NodeConfig) -> str:
-    label_args = []
-    for key, value in profile.labels.items():
-        label_args.extend(["--label-add", f"{key}={value}"])
-    for role in profile.roles:
-        label_args.extend(["--label-add", f"role.{role}=true"])
-    label_text = " ".join(shlex.quote(arg) for arg in label_args)
-    _docker(
-        remote,
-        'node="$(docker node ls --format \'{{.Hostname}}\' | head -1)"; '
-        f"docker node update {label_text} \"$node\" >/dev/null"
-    )
-    return f"Labels applied: {profile.name}"
-
-
 def prepare_paths(remote: Executor) -> str:
     remote.sudo(
         f"set -euo pipefail; "
@@ -1095,59 +724,129 @@ def prepare_paths(remote: Executor) -> str:
     return "Runtime paths ready"
 
 
+def _bootstrap_node_nomad(
+    config: LumaConfig,
+    node: NodeConfig,
+    profile: Profile,
+    *,
+    run_egress: bool = True,
+    tcp_ports: list[int] | None = None,
+    emit: Progress | None = None,
+    remote: Executor,
+) -> list[str]:
+    """Nomad-native manager/single-node bootstrap.
+
+    Reuses building blocks already live-verified on the running cluster:
+    install_nomad_node (agent install + config), the core-job renderers, and the
+    engine-aware firewall.
+    NOTE: the from-scratch orchestration ordering is constructed from those
+    verified pieces but a clean-room manager bootstrap is the one path that
+    cannot be re-tested without tearing down the live cluster; treat with care.
+    """
+    results: list[str] = []
+    roles = profile.roles if profile else node.roles
+    is_server = "nomad-manager" in roles or profile.name == "single-node"
+    region = node.region or "cn"
+    extra_meta: dict[str, str] = {}
+    if "edge" in roles or profile.name == "single-node":
+        extra_meta["ingress"] = "true"
+    if "egress" in roles:
+        extra_meta["egress"] = "true"
+
+    _step(results, emit, "Configure system DNS", lambda: configure_dns(remote))
+
+    # install_nomad_node handles Docker + Tailscale + Nomad agent install/config.
+    install_results = install_nomad_node(
+        node,
+        role="server" if is_server else "client",
+        region=region,
+        node_name=node.name,
+        server_addrs=None if is_server else _nomad_server_addrs(config, node),
+        extra_meta=extra_meta,
+        emit=emit,
+        install_docker_first=True,
+    )
+    results.extend(install_results)
+
+    _step(results, emit, "Create runtime paths", lambda: prepare_paths(remote))
+    http_port, https_port = _traefik_ports(config)
+    _step(
+        results, emit, "Configure firewall",
+        lambda: configure_firewall(remote, http_port=http_port, https_port=https_port,
+                                   tcp_ports=tcp_ports, engine="nomad"),
+    )
+    if is_server:
+        _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
+
+    if "edge" in roles or profile.name == "single-node":
+        def _deploy_traefik_nomad() -> str:
+            from .nomad_render import render_traefik_job
+            job = render_traefik_job(
+                image=_traefik_image(config),
+                nomad_addr="http://127.0.0.1:4646",
+                acme_email=_acme_email(config),
+                cert_resolver=config.cert_resolver,
+                tcp_entrypoints=sorted({int(p) for p in (tcp_ports or [])}),
+            )
+            _deploy_nomad_job(remote, job, "traefik")
+            return _wait_nomad_job(remote, "traefik")
+        _step(results, emit, "Deploy Traefik (Nomad)", _deploy_traefik_nomad)
+
+    if run_egress and "egress" in roles:
+        def _deploy_egress_nomad() -> str:
+            from .nomad_render import render_egress_job
+            job = render_egress_job(image=_egress_image(config))
+            _deploy_nomad_job(remote, job, "egress")
+            return _wait_nomad_job(remote, "egress")
+        _step(results, emit, "Deploy egress (Nomad)", _deploy_egress_nomad)
+
+    return results
+
+
+def _nomad_server_addrs(config: LumaConfig, node: NodeConfig) -> list[str]:
+    """Resolve the Nomad server RPC address(es) a client should join.
+
+    Prefer the manager's Tailscale IP: Nomad advertises over Tailscale and the
+    host firewall keeps 4647 off the public interface, so a public IP would not
+    be reachable. Fall back to advertise/public/config only if no Tailscale IP
+    is recorded.
+    """
+    manager = config.default_manager()
+    host = ""
+    if manager is not None:
+        host = str(
+            manager.raw.get("tailscaleIP")
+            or manager.raw.get("advertiseAddr")
+            or manager.public_ip
+            or ""
+        )
+    if not host:
+        host = str(config.defaults.get("nomadServer") or "")
+    if not host:
+        raise LumaError("cannot resolve Nomad server address; set defaults.nomadServer or a manager node")
+    if ":" not in host:
+        host = f"{host}:4647"
+    return [host]
+
+
 def bootstrap_node(
     config: LumaConfig,
     node: NodeConfig,
     profile: Profile,
     *,
     run_egress: bool = True,
-    reset_portainer_state: bool = False,
     tcp_ports: list[int] | None = None,
     emit: Progress | None = None,
     executor: Executor | None = None,
 ) -> list[str]:
     remote = executor or RemoteExecutor(node)
-    local_mode = isinstance(remote, LocalExecutor)
-    tailscale_fix = "Run: luma tailscale connect" if local_mode else f"Run: luma tailscale connect {node.name}"
-    portainer_fix = "Run: luma portainer setup" if local_mode else f"Run: luma portainer setup {node.name}"
-    egress_fix = "luma egress setup" if local_mode else f"luma egress setup {node.name}"
-    bootstrap_fix = "Re-run luma bootstrap manager after fixing the error" if local_mode else f"Run: luma node bootstrap {node.name} --profile {profile.name}"
-    results: list[str] = []
-    _step(results, emit, "Configure system DNS", lambda: configure_dns(remote))
-    _step(results, emit, "Install Docker", lambda: install_docker(remote))
-    _step(results, emit, "Install and connect Tailscale", lambda: setup_tailscale(node, executor=remote), fix=tailscale_fix)
-    _step(results, emit, "Initialize Docker Swarm", lambda: ensure_swarm(remote, node))
-    _step(results, emit, "Create overlay networks", lambda: ensure_networks(remote, config, include_egress=("egress" in profile.roles or "edge" in profile.roles)))
-    _step(results, emit, "Apply node labels", lambda: apply_labels(remote, profile, node))
-    _step(results, emit, "Create runtime paths", lambda: prepare_paths(remote))
-    http_port, https_port = _traefik_ports(config)
-    _step(results, emit, "Configure firewall", lambda: configure_firewall(remote, http_port=http_port, https_port=https_port, tcp_ports=tcp_ports, allow_portainer=True))
-    if "swarm-manager" in profile.roles or profile.name == "single-node":
-        _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
-    if "edge" in profile.roles or profile.name == "single-node":
-        _step(results, emit, "Deploy Traefik", lambda: _deploy_traefik(remote, config, tcp_ports=tcp_ports), fix=bootstrap_fix)
-    if "swarm-manager" in profile.roles or profile.name == "single-node":
-        if reset_portainer_state:
-            _step(results, emit, "Reset Portainer state", lambda: _reset_portainer_state(remote), fix=portainer_fix)
-        _step(results, emit, "Deploy Portainer", lambda: _deploy_portainer(remote, config), fix=portainer_fix)
-    if run_egress and "egress" in profile.roles:
-        subscription_url = os.environ.get("EGRESS_SUBSCRIPTION_URL")
-        if not subscription_url:
-            _emit(emit, "[fail] Set up egress gateway")
-            _emit(emit, f"  Fix: set EGRESS_SUBSCRIPTION_URL in .env, or rerun with --skip-egress and later run: {egress_fix}")
-            raise LumaError(
-                "missing EGRESS_SUBSCRIPTION_URL for egress bootstrap. "
-                f"Set it in .env, or rerun with --skip-egress and later run: {egress_fix}"
-            )
-        _emit(emit, "[start] Set up egress gateway")
-        try:
-            results.extend(setup_egress(config, node, subscription_url, emit=emit, executor=remote))
-        except Exception:
-            _emit(emit, "[fail] Set up egress gateway")
-            _emit(emit, f"  Fix: {egress_fix}")
-            raise
-        _emit(emit, "[ok] Egress setup complete")
-    return results
+    engine = str(config.defaults.get("engine") or "nomad")
+    if engine != "nomad":
+        raise LumaError("Nomad is the only supported deployment engine")
+    return _bootstrap_node_nomad(
+        config, node, profile, run_egress=run_egress, tcp_ports=tcp_ports,
+        emit=emit, remote=remote,
+    )
 
 
 def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profile, domain: str, state: dict[str, object], *, run_egress: bool = True, emit: Progress | None = None) -> list[str]:
@@ -1158,34 +857,24 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
         node,
         profile,
         run_egress=run_egress,
-        reset_portainer_state=False,
         tcp_ports=tcp_ports,
         emit=emit,
         executor=remote,
     )
-    state["portainerApiUrl"] = _portainer_api_url_for_node(node)
-    _step(
-        results,
-        emit,
-        "Bind Portainer credentials",
-        lambda: bind_portainer_credentials(remote, config, state),
-        fix=(
-            "Check Portainer service logs and rerun bootstrap manager"
-        ),
-    )
-    _step(results, emit, "Save Portainer credentials", lambda: install_control_state(remote, state))
-    manager_info = local_swarm_join_info(node)
-    state.update(manager_info)
+    engine = str(config.defaults.get("engine") or "nomad")
+    if engine != "nomad":
+        raise LumaError("Nomad is the only supported deployment engine")
     _remember_local_manager_node(state, node, profile, remote)
-    state["portainerApiUrl"] = _portainer_api_url_for_control(node, manager_info)
+    state["nomadAddr"] = str(state.get("nomadAddr") or "http://127.0.0.1:4646")
     _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
+    _step(results, emit, "Write control route", lambda: _write_control_route(remote, config, domain, node))
     _step(
         results,
         emit,
         "Deploy Luma control API",
-        lambda: deploy_control_stack(remote, config, domain, emit=emit, require_pull_egress=run_egress),
+        lambda: deploy_control_stack(remote, config, domain, emit=emit, require_pull_egress=run_egress, node_name=node.name),
         fix=(
             "Build and publish the Luma control image, then rerun bootstrap manager. "
             "For mainland managers using the default GHCR image, configure EGRESS_SUBSCRIPTION_URL "
@@ -1193,6 +882,42 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
         ),
     )
     return results
+
+
+def _write_control_route(remote: Executor, config: LumaConfig, domain: str, node: NodeConfig) -> str:
+    """Write the Traefik file-provider route for luma-control (Nomad engine).
+
+    The control job runs bridge :8080 on the manager; Traefik reaches it over the
+    manager's Tailscale IP. Without this route the control domain is unreachable
+    (the job has no nomad-provider tags), so this closes the bootstrap gap.
+    """
+    import base64
+
+    target = _tailscale_ip(remote) or node.public_ip or "127.0.0.1"
+    entrypoint = config.entrypoint
+    cert_resolver = config.cert_resolver
+    route_yaml = (
+        "http:\n"
+        "  routers:\n"
+        "    luma-control:\n"
+        f"      rule: Host(`{domain}`)\n"
+        "      entryPoints:\n"
+        f"      - {entrypoint}\n"
+        "      tls:\n"
+        f"        certResolver: {cert_resolver}\n"
+        "      service: luma-control\n"
+        "  services:\n"
+        "    luma-control:\n"
+        "      loadBalancer:\n"
+        "        servers:\n"
+        f"        - url: http://{target}:8080\n"
+    )
+    b64 = base64.b64encode(route_yaml.encode("utf-8")).decode("ascii")
+    remote.sudo(
+        f"set -e; install -d -m 755 {ROOT}/routes; "
+        f"echo {b64} | base64 -d > {ROOT}/routes/luma-control.yml"
+    )
+    return f"Control route written: {domain} -> {target}:8080"
 
 
 def _state_tcp_relay_ports(state: dict[str, object]) -> list[int]:
@@ -1219,10 +944,32 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
     remote = LocalExecutor()
     results: list[str] = []
     state["domain"] = domain
-    manager_info = local_swarm_join_info(node)
-    state.update(manager_info)
+    engine = str(config.defaults.get("engine") or "nomad")
+    if engine != "nomad":
+        raise LumaError("Nomad is the only supported deployment engine")
+    tcp_ports = _state_tcp_relay_ports(state)
     _remember_local_manager_node(state, node, None, remote)
-    state["portainerApiUrl"] = _portainer_api_url_for_control(node, manager_info)
+    http_port, https_port = _traefik_ports(config)
+    _step(
+        results,
+        emit,
+        "Refresh firewall TCP relay ports",
+        lambda: configure_firewall(remote, http_port=http_port, https_port=https_port, tcp_ports=tcp_ports, engine="nomad"),
+    )
+    if "edge" in node.roles:
+        def _deploy_traefik_nomad() -> str:
+            from .nomad_render import render_traefik_job
+            job = render_traefik_job(
+                image=_traefik_image(config),
+                nomad_addr=str(state.get("nomadAddr") or config.defaults.get("nomadAddr") or "http://127.0.0.1:4646"),
+                acme_email=_acme_email(config),
+                cert_resolver=config.cert_resolver,
+                tcp_entrypoints=tcp_ports,
+            )
+            _deploy_nomad_job(remote, job, "traefik")
+            return _wait_nomad_job(remote, "traefik")
+
+        _step(results, emit, "Refresh Traefik ingress", _deploy_traefik_nomad)
     _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
@@ -1230,31 +977,42 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         results,
         emit,
         "Refresh Luma control API",
-        lambda: deploy_control_stack(remote, config, domain, emit=emit),
+        lambda: deploy_control_stack(remote, config, domain, emit=emit, node_name=node.name),
         fix="Check luma-control service logs and rerun luma update manager",
     )
     return results
 
 
 def _remember_local_manager_node(state: dict[str, object], node: NodeConfig, profile: Profile | None, remote: Executor) -> None:
-    hostname = local_docker_node_name()
-    node_id = local_docker_node_id()
+    hostname = local_host_name(remote)
+    nomad_name, node_id = local_nomad_node_info(remote)
+    canonical_name = node.name or nomad_name or hostname
     labels = {**(profile.labels if profile else {"region": node.region})}
     roles = profile.roles if profile else node.roles
     for role in roles:
         labels[f"role.{role}"] = "true"
+    labels["luma.node.name"] = canonical_name
+    if node_id:
+        labels["luma.node.id"] = node_id
     region = str(labels.get("region") or node.region or "cn")
+    aliases = {
+        value
+        for value in (hostname, nomad_name, node.host)
+        if value and value != canonical_name
+    }
     values: dict[str, object] = {
         "region": region,
         "status": "manager",
-        "displayName": hostname,
-        "swarmHostname": hostname,
+        "displayName": canonical_name,
+        "hostname": hostname,
         "labels": labels,
-        "swarmRole": "manager",
-        "swarmManager": True,
+        "nomadRole": "server",
+        "nomadServer": True,
+        "aliases": sorted(aliases),
     }
     if node_id:
-        values["swarmNodeId"] = node_id
+        values["nodeId"] = node_id
+        values["nomadNodeId"] = node_id
     tailscale_ip = _tailscale_ip(remote)
     if tailscale_ip:
         values["tailscaleIP"] = tailscale_ip
@@ -1262,39 +1020,164 @@ def _remember_local_manager_node(state: dict[str, object], node: NodeConfig, pro
     if not isinstance(nodes, dict):
         nodes = {}
         state["nodes"] = nodes
-    nodes[hostname] = {**(nodes.get(hostname) if isinstance(nodes.get(hostname), dict) else {}), **values}
+    current = nodes.get(canonical_name) if isinstance(nodes.get(canonical_name), dict) else {}
+    legacy = nodes.get(hostname) if hostname != canonical_name and isinstance(nodes.get(hostname), dict) else {}
+    merged_aliases = set(values["aliases"])
+    for source in (legacy, current):
+        raw_aliases = source.get("aliases") if isinstance(source, dict) else []
+        if isinstance(raw_aliases, list):
+            merged_aliases.update(str(alias) for alias in raw_aliases if alias and str(alias) != canonical_name)
+    values["aliases"] = sorted(merged_aliases)
+    nodes[canonical_name] = {**legacy, **current, **values}
+    if hostname != canonical_name:
+        nodes.pop(hostname, None)
     if node.name and node.name != hostname:
         alias_values = {**values, "displayName": node.name}
         nodes[node.name] = {**(nodes.get(node.name) if isinstance(nodes.get(node.name), dict) else {}), **alias_values}
 
 
-def join_local_node(
+def install_nomad_node(
     node: NodeConfig,
-    profile: Profile,
-    manager_addr: str,
-    swarm_token: str,
     *,
+    role: str,
+    region: str,
+    node_name: str,
+    server_addrs: list[str] | None = None,
+    extra_meta: dict[str, str] | None = None,
     emit: Progress | None = None,
     install_docker_first: bool = True,
+    egress_proxy: str | None = None,
 ) -> list[str]:
+    """Install and start a Nomad agent on the local node.
+
+    Auto-detects node facts (Tailscale IP, OS/arch, Apple-Silicon CPU) and
+    generates the agent config via nomad_node, so the operator just runs the
+    command and types their password once — zero hand-tuning. The shell steps
+    mirror what was validated by hand on aly/lab/gaojiu during the migration.
+    NOTE: constructed to match those hand-verified steps; pending a fresh-node
+    live test before being wired as the default join path.
+    """
+    import base64
+
+    from . import nomad_node
+
     remote = LocalExecutor()
     results: list[str] = []
     if install_docker_first:
         _step(results, emit, "Install Docker", lambda: install_docker(remote))
-    _step(results, emit, "Install and connect Tailscale", lambda: setup_tailscale(node, executor=remote), fix="Run: luma tailscale connect")
-    _step(results, emit, "Join Docker Swarm", lambda: _join_swarm(remote, manager_addr, swarm_token))
-    _step(results, emit, "Verify Docker Swarm node", lambda: verify_local_swarm_node(remote))
+    _step(
+        results,
+        emit,
+        "Install and connect Tailscale",
+        lambda: setup_tailscale(node, executor=remote),
+        fix="Run: luma tailscale connect",
+    )
+
+    os_name = nomad_node.detect_os()
+    arch = os.uname().machine
+    tailscale_ip = _tailscale_ip(remote) or ""
+    if not tailscale_ip:
+        raise LumaError(
+            "could not detect this node's Tailscale IPv4; run `luma tailscale connect` then rerun"
+        )
+    cpu_override = nomad_node.detect_cpu_total_compute(os_name, run=_subprocess_capture)
+    config_hcl = nomad_node.render_agent_config(
+        os_name=os_name,
+        role=role,
+        tailscale_ip=tailscale_ip,
+        region=region,
+        node_name=node_name,
+        server_addrs=server_addrs,
+        cpu_total_compute=cpu_override,
+        extra_meta=extra_meta,
+    )
+    install = nomad_node.install_nomad_commands(os_name=os_name, arch=arch, config_hcl=config_hcl)
+
+    # CN nodes cannot reach releases.hashicorp.com / GitHub directly; route the
+    # binary + CNI downloads through the egress proxy when one is provided
+    # (workers derive it from the manager's Tailscale IP).
+    proxy = f"https_proxy={shlex.quote(egress_proxy)} http_proxy={shlex.quote(egress_proxy)} " if egress_proxy else ""
+
+    def _install_binary() -> str:
+        url = install["download_url"]
+        remote.sudo(
+            f"set -e; cd /tmp; {proxy}curl -fsSL {shlex.quote(url)} -o nomad.zip; "
+            "command -v unzip >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq unzip) || true; "
+            "unzip -o nomad.zip -d /usr/local/bin/ >/dev/null"
+        )
+        return "Nomad binary installed"
+
+    _step(results, emit, "Install Nomad binary", _install_binary)
+
+    def _write_config() -> str:
+        cfg_b64 = base64.b64encode(install["config"].encode("utf-8")).decode("ascii")
+        unit_b64 = base64.b64encode(install["service_unit"].encode("utf-8")).decode("ascii")
+        cmds = "set -e; mkdir -p /etc/nomad.d /opt/nomad/data; "
+        cmds += f"echo {cfg_b64} | base64 -d > /etc/nomad.d/nomad.hcl; "
+        if install["service_kind"] == "systemd":
+            cmds += f"echo {unit_b64} | base64 -d > /etc/systemd/system/nomad.service"
+        else:
+            cmds += f"echo {unit_b64} | base64 -d > /Library/LaunchDaemons/io.luma.nomad.plist"
+        remote.sudo(cmds)
+        return "Nomad config written"
+
+    _step(results, emit, "Write Nomad config", _write_config)
+
+    if os_name != "darwin":
+        def _install_cni() -> str:
+            # Bridge mode (Linux) requires CNI plugins + bridge netfilter.
+            cni_url = nomad_node.cni_plugins_url(arch)
+            remote.sudo(
+                "set -e; if [ ! -f /opt/cni/bin/bridge ]; then mkdir -p /opt/cni/bin; cd /tmp; "
+                f"{proxy}curl -fsSL {shlex.quote(cni_url)} -o cni.tgz; tar -C /opt/cni/bin -xzf cni.tgz; fi; "
+                "modprobe bridge br_netfilter 2>/dev/null || true; "
+                "sysctl -w net.bridge.bridge-nf-call-iptables=1 >/dev/null 2>&1 || true"
+            )
+            return "CNI plugins installed"
+
+        _step(results, emit, "Install CNI plugins", _install_cni)
+
+    def _start_service() -> str:
+        if install["service_kind"] == "systemd":
+            remote.sudo("systemctl daemon-reload && systemctl enable --now nomad")
+        else:
+            remote.sudo(
+                "launchctl unload /Library/LaunchDaemons/io.luma.nomad.plist 2>/dev/null || true; "
+                "launchctl load /Library/LaunchDaemons/io.luma.nomad.plist"
+            )
+        return "Nomad agent started"
+
+    _step(results, emit, "Start Nomad agent", _start_service)
+    _step(results, emit, "Verify Nomad node", lambda: verify_local_nomad_node(remote))
     return results
 
 
-def local_swarm_join_info(node: NodeConfig) -> dict[str, str]:
-    remote = LocalExecutor()
-    token = _last_command_value(_docker(remote, "docker swarm join-token -q worker"))
-    swarm_id = _last_command_value(_docker(remote, "docker info --format '{{.Swarm.Cluster.ID}}'"))
-    manager = str(node.raw.get("swarmJoinAddr") or _tailscale_ip(remote) or node.raw.get("advertiseAddr") or node.public_ip or os.uname().nodename)
-    if ":" not in manager:
-        manager = f"{manager}:2377"
-    return {"managerAddr": manager, "swarmJoinToken": token, "swarmId": swarm_id}
+def verify_local_nomad_node(remote: Executor | None = None) -> str:
+    remote = remote or LocalExecutor()
+    deadline = time.monotonic() + 30
+    while True:
+        result = remote.run_result(
+            "curl -fsS --connect-timeout 4 http://127.0.0.1:4646/v1/agent/self >/dev/null 2>&1 && echo ready || echo waiting"
+        )
+        if "ready" in result.output:
+            return "Nomad agent ready"
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(3)
+    raise LumaError(
+        "Nomad agent did not become ready within 30s. Check `journalctl -u nomad` "
+        "(Linux) or /var/log/nomad.log (macOS)."
+    )
+
+
+def _subprocess_capture(cmd: list[str]) -> str | None:
+    import subprocess as _sp
+
+    try:
+        out = _sp.run(cmd, capture_output=True, text=True, timeout=10)
+    except (OSError, _sp.SubprocessError):
+        return None
+    return out.stdout if out.returncode == 0 else None
 
 
 def _last_command_value(output: str) -> str:
@@ -1315,59 +1198,8 @@ def _tailscale_ip(remote: Executor) -> str | None:
     return value or None
 
 
-def _portainer_api_url_for_node(node: NodeConfig) -> str:
-    host = str(node.raw.get("portainerHost") or node.public_ip or "127.0.0.1")
-    port = int(node.raw.get("portainerPort") or 9443)
-    return f"https://{host}:{port}/api"
-
-
-def _portainer_api_url_for_control(node: NodeConfig, manager_info: dict[str, str]) -> str:
-    explicit_host = node.raw.get("portainerHost")
-    if explicit_host:
-        host = str(explicit_host)
-    elif node.public_ip and not _is_loopback_host(node.public_ip):
-        host = node.public_ip
-    else:
-        manager_addr = str(manager_info.get("managerAddr") or "")
-        host = manager_addr.rsplit(":", 1)[0] if manager_addr else ""
-        if not host or _is_loopback_host(host):
-            host = str(node.public_ip or "127.0.0.1")
-    port = int(node.raw.get("portainerPort") or 9443)
-    return f"https://{host}:{port}/api"
-
-
 def _is_loopback_host(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
-
-
-def _join_swarm(remote: Executor, manager_addr: str, swarm_token: str) -> str:
-    if not manager_addr or not swarm_token:
-        raise LumaError("control plane did not return managerAddr and swarmJoinToken")
-    advertise = _tailscale_ip(remote)
-    if not advertise and _is_tailscale_manager_addr(manager_addr):
-        raise LumaError(
-            "managerAddr is a Tailscale address but this node is not connected to Tailscale. "
-            "Set TAILSCALE_AUTHKEY and rerun luma node join, run luma tailscale connect first, "
-            "or configure swarmJoinAddr on the manager to use a reachable public/private address."
-        )
-    advertise_arg = f" --advertise-addr {shlex.quote(advertise)}" if advertise else ""
-    _docker(
-        remote,
-        "set -euo pipefail; "
-        'state="$(docker info --format \'{{.Swarm.LocalNodeState}}\')"; '
-        'node_addr="$(docker info --format \'{{.Swarm.NodeAddr}}\' 2>/dev/null || true)"; '
-        'managers="$(docker info --format \'{{range .Swarm.RemoteManagers}}{{.Addr}} {{end}}\' 2>/dev/null || true)"; '
-        f"if [ \"$state\" = \"active\" ] && [ -n {shlex.quote(advertise or '')} ] && [ \"$node_addr\" != {shlex.quote(advertise or '')} ]; then "
-        "docker swarm leave; state=inactive; "
-        "fi; "
-        f"if [ \"$state\" = \"active\" ] && ! printf '%s\\n' \"$managers\" | grep -F {shlex.quote(manager_addr)} >/dev/null 2>&1; then "
-        "docker swarm leave; state=inactive; "
-        "fi; "
-        'if [ "$state" = "inactive" ]; then '
-        f"docker swarm join --token {shlex.quote(swarm_token)}{advertise_arg} {shlex.quote(manager_addr)}; "
-        "fi"
-    )
-    return "Swarm joined"
 
 
 def _is_tailscale_manager_addr(manager_addr: str) -> bool:
@@ -1379,47 +1211,25 @@ def _is_tailscale_manager_addr(manager_addr: str) -> bool:
     return address in ipaddress.ip_network("100.64.0.0/10")
 
 
-def local_docker_node_name() -> str:
-    remote = LocalExecutor()
-    output = _last_command_value(_docker(remote, "docker info --format '{{.Name}}'"))
-    return output or os.uname().nodename
-
-
-def local_docker_node_id() -> str:
-    remote = LocalExecutor()
-    output = _last_command_value(_docker(remote, "docker info --format '{{.Swarm.NodeID}}'"))
-    return output
-
-
-def verify_local_swarm_node(remote: LocalExecutor | None = None) -> str:
+def local_host_name(remote: Executor | None = None) -> str:
     remote = remote or LocalExecutor()
-    deadline = time.monotonic() + 20
-    last_output = ""
-    while True:
-        result = remote.run_result(
-            "docker info --format 'state={{.Swarm.LocalNodeState}} nodeID={{.Swarm.NodeID}} error={{.Swarm.Error}}' 2>&1"
-        )
-        last_output = result.output.strip()
-        if result.code == 0:
-            values = _parse_key_values(last_output)
-            state = values.get("state", "")
-            node_id = values.get("nodeID", "")
-            error = values.get("error", "")
-            if state == "active" and node_id:
-                return f"Swarm node active: {node_id}"
-            if state == "error" or error:
-                raise LumaError(
-                    "Docker Swarm joined locally but is not healthy on this node. "
-                    f"docker info: {last_output}. "
-                    "Run `docker swarm leave --force`, fix Docker/Tailscale connectivity, then rerun `luma node join`."
-                )
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(2)
-    raise LumaError(
-        "Docker Swarm join did not produce an active local node within 20s. "
-        f"Last docker info output: {last_output or '-'}"
-    )
+    result = remote.run_result("hostname -s 2>/dev/null || hostname 2>/dev/null || true")
+    return _last_command_value(result.output) or os.uname().nodename
+
+
+def local_nomad_node_info(remote: Executor | None = None) -> tuple[str, str]:
+    remote = remote or LocalExecutor()
+    result = remote.run_result("command -v nomad >/dev/null 2>&1 && nomad node status -self -json 2>/dev/null")
+    if result.code != 0 or not result.output.strip():
+        return local_host_name(remote), ""
+    try:
+        data = json.loads(result.output)
+    except json.JSONDecodeError:
+        return local_host_name(remote), ""
+    node_id = str(data.get("ID") or "").strip()
+    meta = data.get("Meta") if isinstance(data.get("Meta"), dict) else {}
+    node_name = str(meta.get("luma_node_name") or data.get("Name") or "").strip()
+    return node_name or local_host_name(remote), node_id
 
 
 def _parse_key_values(text: str) -> dict[str, str]:
@@ -1463,7 +1273,6 @@ def setup_egress(config: LumaConfig, node: NodeConfig, subscription_url: str, *,
     _step(results, emit, "Configure system DNS", lambda: configure_dns(remote))
     _step(results, emit, "Create egress runtime paths", lambda: prepare_paths(remote))
     _step(results, emit, "Write egress config secret", lambda: remote.write_secret(config_text, f"{ROOT}/egress-gateway/config.yaml"))
-    _step(results, emit, "Ensure egress network", lambda: ensure_networks(remote, config, include_egress=True))
     _step(
         results,
         emit,
@@ -1477,20 +1286,18 @@ def setup_egress(config: LumaConfig, node: NodeConfig, subscription_url: str, *,
         lambda: _pull_image(remote, _egress_image(config)),
         fix="Check defaults.images.egressGateway points to a domestic mirror image",
     )
-    egress_profile = PROFILES["egress-gateway"]
-    _step(results, emit, "Apply egress gateway label", lambda: apply_labels(remote, egress_profile, node))
     _step(
         results,
         emit,
         "Deploy egress gateway",
-        lambda: [_deploy_egress_stack(remote, config), _wait_service_ready(remote, "egress_mihomo")],
+        lambda: _deploy_egress_nomad(remote, config),
         fix=f"Run: luma egress setup {node.name}",
     )
     _step(
         results,
         emit,
         "Install public port guards",
-        lambda: configure_public_port_guards(remote, restrict_swarm_public=(_tailscale_ip(remote) is not None)),
+        lambda: configure_public_port_guards(remote, restrict_nomad_public=(_tailscale_ip(remote) is not None), engine="nomad"),
     )
     _step(
         results,
@@ -1534,19 +1341,20 @@ def _configure_docker_proxy(remote: Executor) -> str:
 
 
 def _refresh_core_services(remote: Executor) -> str:
-    remote.sudo(
+    remote.run(
         "set -euo pipefail; "
-        "for service in traefik_traefik portainer_portainer portainer_agent; do "
-        "docker service inspect \"$service\" >/dev/null 2>&1 && docker service update --force \"$service\" >/dev/null || true; "
+        "for job in traefik egress luma-control; do "
+        "nomad job status \"$job\" >/dev/null 2>&1 && nomad job restart -yes \"$job\" >/dev/null || true; "
         "done"
     )
     return "Core services refresh requested"
 
 
-def setup_portainer(node: NodeConfig, *, emit: Progress | None = None, executor: Executor | None = None) -> list[str]:
-    remote = executor or RemoteExecutor(node)
-    results: list[str] = []
-    config = LumaConfig({}, None)
-    _step(results, emit, "Create runtime paths", lambda: prepare_paths(remote))
-    _step(results, emit, "Deploy Portainer", lambda: _deploy_portainer(remote, config), fix=f"Run: luma portainer setup {node.name}")
-    return results
+def _deploy_egress_nomad(remote: Executor, config: LumaConfig) -> list[str]:
+    from .nomad_render import render_egress_job
+
+    job = render_egress_job(image=_egress_image(config))
+    return [
+        _deploy_nomad_job(remote, job, "egress"),
+        _wait_nomad_job(remote, "egress"),
+    ]

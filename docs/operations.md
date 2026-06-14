@@ -1,14 +1,14 @@
 # Operations
 
-Portainer is the required operations UI and deployment runner. Luma Control is the self-hosted API on the manager node that handles login tokens, node registration, DNS sync, stack rendering, and Portainer deployment calls. `luma deploy` talks to Luma Control; it does not SSH into a node to deploy.
+Luma Control is the self-hosted API on the manager node that handles login tokens, node registration, DNS sync, job rendering, and Nomad deployment calls. `luma deploy` talks to Luma Control; it does not SSH into a node to deploy. The orchestrator underneath is HashiCorp Nomad, so the unit of deployment is a Nomad job.
 
 The default path is:
 
 ```text
-service.yaml -> luma deploy -> Luma Control -> render stack -> sync DNS -> Portainer API -> Docker Swarm
+service.yaml -> luma deploy -> Luma Control -> render jobspec -> sync DNS -> Nomad API (/v1/jobs) -> docker driver
 ```
 
-Luma deploys through the Portainer API.
+Luma deploys through the Nomad HTTP API.
 
 ## Add A Service
 
@@ -74,7 +74,7 @@ luma deploy api.yaml
 Temporary scale from a manager node:
 
 ```bash
-sudo docker service scale api_api=3
+nomad job scale api 3
 ```
 
 Temporary commands do not update Git. Commit the manifest change afterward if it should persist.
@@ -88,40 +88,45 @@ region: home
 node: home-mac-mini
 ```
 
-`node` must be the Luma node name passed to `luma node join --name`. Luma resolves it to the Swarm NodeID before deploy and still keeps the `region` constraint, so the selected node must also be in that region.
+`node` must be the Luma node name passed to `luma node join --name`. Luma renders it as a Nomad constraint on `${node.unique.name}` (or `meta.luma_node_name`) and still keeps the `region` constraint on `${meta.region}`, so the selected node must also be in that region. The Nomad node identity is stable across rejoins, so pinned placement does not need to be refreshed.
 
 ## View Status
-
-From Portainer, check stacks, services, tasks, logs, and node placement.
 
 From a client:
 
 ```bash
+luma status
 luma context list
 luma context use <cluster-id>
 ```
 
+`luma status` shows the orchestrator (Nomad), the server leader, and nodes with `role=client`.
+
 From a manager node:
 
 ```bash
-sudo docker service ls
-sudo docker service ps <stack>_<service>
-sudo docker service logs --tail 200 -f <stack>_<service>
+nomad job status <service>
+nomad job status -verbose <service>
+nomad alloc logs -f <alloc-id>
 ```
 
 ## Roll Back
 
-Preferred path:
+Nomad keeps a version history per job, so Luma exposes one-command rollback:
+
+```bash
+luma history <service>
+luma rollback <service>
+luma rollback <service> --to-version <N>
+```
+
+`luma rollback` reverts the job to its previous version (or the version chosen with `--to-version`), backed by `nomad job revert`. `luma history` lists prior versions, backed by `nomad job history`. Jobspecs also render `update { auto_revert = true }`, so a new version that fails its health checks rolls back to the last healthy version automatically.
+
+Git-first path, when you want the manifest and the running job to stay in sync:
 
 ```bash
 git revert <deploy-commit>
 luma deploy <service>.yaml
-```
-
-Emergency Docker rollback:
-
-```bash
-sudo docker service rollback <stack>_<service>
 ```
 
 ## Remove A Deployment
@@ -132,7 +137,7 @@ Use the deployed service or Compose application name:
 luma service remove <service>
 ```
 
-The control plane uses the manifest recorded during the last successful deploy, deletes the Luma-managed Cloudflare DNS record for public services, removes the Portainer stack, and deletes generated manager files. The same command removes single-service and Compose deployments. Because the control plane stores the manifest, this also works for deployments created through the web UI when the client no longer has a local YAML file. For `tailscale-relay`, it also deletes `/opt/luma/routes/<service>.yml`. For `cloudflare-tunnel`, Cloudflare Tunnel public hostname cleanup is skipped because that hostname is still managed in Cloudflare Zero Trust.
+The control plane uses the manifest recorded during the last successful deploy, deletes the Luma-managed Cloudflare DNS record for public services, deregisters and purges the Nomad job (`DELETE /v1/job/<id>?purge=true`), and deletes generated manager files. The same command removes single-service and Compose deployments. Because the control plane stores the manifest, this also works for deployments created through the web UI when the client no longer has a local YAML file. For `tailscale-relay`, it also deletes `/opt/luma/routes/<service>.yml`. For `cloudflare-tunnel`, Cloudflare Tunnel public hostname cleanup is skipped because that hostname is still managed in Cloudflare Zero Trust.
 
 Storage data is preserved by default. To intentionally delete removable storage referenced by the recorded deployment, preview and then run:
 
@@ -141,7 +146,7 @@ luma service remove <service> --dry-run --delete-storage
 luma service remove <service> --delete-storage
 ```
 
-For single-service deployments, this deletes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects declared in the manifest; bind mounts are skipped. For Compose deployments, this deletes managed volume subdirectories referenced by the sidecar, not the storage class itself. It cannot be combined with `--skip-portainer`.
+For single-service deployments, this deletes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects declared in the manifest; bind mounts are skipped. For Compose deployments, this deletes managed volume subdirectories referenced by the sidecar, not the storage class itself. It cannot be combined with `--skip-orchestrator`.
 
 Preview the cleanup without changing the manager:
 
@@ -149,24 +154,19 @@ Preview the cleanup without changing the manager:
 luma service remove <service> --dry-run
 ```
 
-Keep DNS or the Portainer stack when you are doing a partial cleanup:
+Keep DNS or the running Nomad job when you are doing a partial cleanup. `--skip-orchestrator` leaves the Nomad job in place:
 
 ```bash
 luma service remove <service> --skip-dns
-luma service remove <service> --skip-portainer
+luma service remove <service> --skip-orchestrator
 ```
 
-If the control plane is unavailable, remove the stack in Portainer, then remove generated files on the manager:
+If the control plane is unavailable, remove the Nomad job directly on the manager, then remove generated files:
 
 ```bash
+nomad job stop -purge <service>
 sudo rm -rf /opt/luma/stacks/<region>/<service>
 sudo rm -f /opt/luma/routes/<service>.yml
-```
-
-If Portainer is unavailable:
-
-```bash
-sudo docker stack rm <service>
 ```
 
 ## Remove A Node
@@ -177,20 +177,20 @@ From any logged-in client:
 luma node remove <node-name>
 ```
 
-The request is handled by Luma Control on the manager. It deletes the Luma node registration and removes the matching Docker Swarm worker node using the saved NodeID or Luma node labels. Use this for stale nodes that already left locally, failed joins, or decommissioned worker/home machines. Manager nodes are protected and must not be removed through this command.
+The request is handled by Luma Control on the manager. It deletes the Luma node registration and drains the matching Nomad client (`PUT /v1/node/<id>/drain`); a dead client is then garbage-collected by Nomad automatically. Use this for stale nodes that already left locally, failed joins, or decommissioned worker/home machines. Manager nodes (Nomad servers) are protected and must not be removed through this command.
 
-If a worker/home machine intentionally leaves Swarm and later rejoins with the same Luma node name, it receives a new Swarm NodeID. During join/update, Luma refreshes the saved `luma.node.id` label and updates Luma-managed services that were pinned to the old NodeID. Keep manifests pinned by Luma node name; do not replace them with Docker hostnames.
+Because the Nomad node identity is a stable UUID, a worker/home machine that leaves and rejoins with the same Luma node name keeps the same `meta.luma_node_name`, so services pinned by Luma node name do not need a NodeID refresh. Keep manifests pinned by Luma node name; do not replace them with Docker hostnames.
 
 ## Drain A Node
 
 ```bash
-sudo docker node update --availability drain <node-name>
+nomad node drain -enable <node-id>
 ```
 
 Restore it:
 
 ```bash
-sudo docker node update --availability active <node-name>
+nomad node drain -disable <node-id>
 ```
 
 ## Refresh Egress
@@ -210,7 +210,6 @@ sudo docker pull hello-world:latest
 
 ```bash
 luma bootstrap manager --domain luma.example.com
-luma portainer setup
 luma doctor
 ```
 
@@ -222,33 +221,12 @@ For Linux nodes, Luma configures UFW during bootstrap/join. Mirror the same acce
 | --- | --- | --- |
 | `80/tcp` | public clients -> edge manager | HTTP redirect and Let's Encrypt challenge. |
 | `443/tcp` | public clients -> edge manager | HTTPS ingress for Luma Control and public services. |
-| `9443/tcp` | trusted operators -> manager | Direct Portainer UI/API. Prefer a restricted source range. |
 | `tcp-relay` published ports | public clients -> edge manager | Public TCP relay ports, for example `3306/tcp` for MySQL. Luma restores Traefik listeners from Control state; cloud firewalls/security groups must allow the same ports. |
-| `2377/tcp` | worker nodes -> manager | Swarm control plane. |
-| `7946/tcp`, `7946/udp` | all Swarm nodes | Swarm discovery and overlay-network gossip. |
-| `4789/udp` | all Swarm nodes | Overlay/VXLAN service traffic. |
+| `4646/tcp` | clients/Traefik -> Nomad server | Nomad HTTP API (deploy, status, service discovery). |
+| `4647/tcp` | Nomad clients -> Nomad server | Nomad RPC. |
+| `4648/tcp`, `4648/udp` | all Nomad agents | Nomad Serf gossip (server membership). |
 
-Luma's Portainer deployment path uses a manager-constrained `portainer_agent` so `cn` deployments do not depend on worker-side Portainer agents. The Swarm ports are still required for workloads that run across multiple nodes.
-
-## Portainer Access
-
-Portainer is deployed on the manager's `9443` port for the first bootstrap experience:
-
-```text
-https://<manager-ip>:9443
-```
-
-The `luma bootstrap manager --domain ...` domain is for Luma Control, not Portainer. Portainer's stack has
-Traefik disabled by default, so bootstrap does not create a Portainer domain.
-
-The Portainer username defaults to `admin`. The generated password is stored on the manager:
-
-```bash
-sudo jq -r '.portainerAdminUsername, .portainerAdminPassword' /opt/luma/control/control.json
-```
-
-For production, prefer accessing Portainer through a trusted network, a restricted source IP, or a private
-control-plane path. Keep the Portainer API credentials secret because they can update deployments.
+Nomad agents bind to `0.0.0.0` but advertise their Tailscale address, and UFW only opens `4646/4647/4648` on the `tailscale0` interface, so the control plane is not exposed on public IPs.
 
 ## Tailscale Relay
 

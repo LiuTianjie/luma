@@ -150,18 +150,19 @@ export function TerminalDrawer({
   return (
     <div className="terminal-modal-backdrop" onClick={onClose}>
       <section
-        className="terminal-modal"
+        className={`terminal-modal terminal-modal-${status}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby="terminal-modal-title"
         onClick={(event) => event.stopPropagation()}
       >
-        <header>
-          <div>
+        <header className="terminal-modal-header">
+          <div className="terminal-modal-heading">
             <p className="eyebrow">Terminal</p>
             <h2 id="terminal-modal-title">{node.name || "-"}</h2>
-            <span className="terminal-node-meta">{node.region || "-"} · {node.agentOs || "agent"} · {statusLabel}</span>
+            <span className="terminal-node-meta">{node.region || "-"} · {node.agentOs || "agent"}</span>
           </div>
+          <span className="terminal-status-pill">{statusLabel}</span>
           <button type="button" className="icon-button" onClick={onClose}>
             {t(lang, "close")}
           </button>

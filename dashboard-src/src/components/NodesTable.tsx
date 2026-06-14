@@ -67,8 +67,21 @@ export function NodesTable({
           <tbody>
             {nodes.map((node, index) => {
               const hasTerminal = terminalReady(node);
+              const openNode = () => onSelect(node);
               return (
-                <tr key={`${node.name || "node"}-${index}`} onClick={() => onSelect(node)}>
+                <tr
+                  aria-label={`${t(lang, "details")}: ${node.name || "-"}`}
+                  key={`${node.name || "node"}-${index}`}
+                  onClick={openNode}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openNode();
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
                   <td><PrimaryCell meta={node.displayName} title={node.name || "-"} /></td>
                   <td><Badge value={node.region || "-"} /></td>
                   <td><Badge value={node.role || "-"} /></td>

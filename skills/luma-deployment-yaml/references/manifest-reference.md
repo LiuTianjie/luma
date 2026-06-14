@@ -7,18 +7,19 @@
 | `name` | yes | string | Service name. Luma slugifies it for stack, service, route, and deployment records. |
 | `image` | yes | string | Container image. `latest` or omitted tags are resolved to `name@sha256:...` during deploy. Prefer pinned version tags for production rollback. |
 | `region` | yes | `cn` / `global` / `home` | Runtime placement region. |
-| `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a Swarm NodeID constraint and keeps the region constraint. Do not use Docker hostnames for normal pins. |
+| `engine` | no | `nomad` | Orchestrator override. Omit to inherit the cluster default. |
+| `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a node-meta placement constraint and keeps the region constraint. Stable across node restarts. Do not use Docker hostnames for normal pins. |
 | `exposure` | recommended | `none` / `cn-edge` / `external-edge` / `tailscale-relay` / `tcp-relay` / `cloudflare-tunnel` | Access mode. Use explicit exposure in new files. |
 | `domain` | public only | string | Public hostname for exposed services. |
 | `port` | public only | integer | Container internal port, not the cloud firewall or host port. |
-| `publishPort` | relay only | integer | Host-mode published port on the task node for `tailscale-relay` or `tcp-relay`; defaults to `port` when omitted. Choose a free host port if the node already has a local service bound to `port`. |
+| `publishPort` | public services | integer | Explicit Nomad bridge port mapping on Linux nodes: host `publishPort` -> container `port`. For `cn-edge` / `external-edge`, omit for dynamic ports. For Mac/OrbStack relay services, omit because they use docker host mode and routes target the real `port`. |
 | `replicas` | no | integer | Defaults to `1`; must be at least `1`. |
 | `env` / `environment` | no | map | Service environment. Use direct values for non-sensitive settings and `${SECRET_NAME}` for values stored with `luma secret set`. |
 | `command` | no | string/list | Overrides container command. |
-| `constraints` | no | string[] | Extra Swarm placement constraints. Luma adds region and node/storage constraints. |
-| `labels` | no | string[] | Extra service labels. Luma adds Traefik labels for `cn-edge` and `external-edge`. |
-| `networks` | no | string[] | Extra external overlay networks. |
-| `volumes` | no | string[] | Compose-style service mounts. Named sources such as `data:/data` are rendered as stack volumes. |
+| `constraints` | no | string[] | Extra placement constraints (`attr == value`). Luma adds region and node/storage constraints automatically. |
+| `labels` | no | string[] | Extra service tags. Luma adds Traefik routing tags for `cn-edge` and `external-edge`. |
+| `networks` | no | string[] | Extra network names for advanced renderers; Nomad services normally use bridge or host mode. |
+| `volumes` | no | string[] | Compose-style service mounts. Named sources such as `data:/data` are mounted as named volumes (Nomad mount blocks). |
 | `storage` | no | map | Maps named volumes from `volumes` to manager storage classes. Keys must reference named volume sources. |
 | `storage.<name>.storageClass` | storage only | string | Registered Luma storage class name. |
 | `storage.<name>.path` | no | string | Subdirectory under the storage class export. |
@@ -26,8 +27,8 @@
 | `storage.<name>.initialize` | no | `empty` | Explicit fresh-path acknowledgement. |
 | `storage.<name>.adopted` | no | boolean | Set after manual migration/adoption verification. |
 | `proxy` | no | boolean | Runtime outbound proxy. When true, Luma adds egress network and default proxy env unless already set. Not used for image pulls. |
-| `resources` | no | map | Swarm `deploy.resources` limits/reservations. Quote `cpus` values as strings. |
-| `healthcheck` | no | map | Swarm service healthcheck. Public HTTP services should probe `http://127.0.0.1:<port>/healthz` when possible. |
+| `resources` | no | map | CPU/memory limits/reservations. Quote `cpus` values as fractional-core strings such as `"0.50"`; Luma converts to the engine's units (Nomad CPU MHz). |
+| `healthcheck` | no | map | Container health check. Public HTTP services should probe `http://127.0.0.1:<port>/healthz` when possible. |
 | `relay.host` | relay override | string | Optional advanced upstream host override. Usually omit. |
 | `relay.url` | relay override | string | Optional full upstream URL override. Usually omit. |
 | `tunnel.tokenEnv` | tunnel | string | Env var name for Cloudflare Tunnel token. Defaults to `CLOUDFLARE_TUNNEL_TOKEN`. |
@@ -60,17 +61,16 @@ Rules:
 
 ## Render Behavior
 
-- Every service gets `node.labels.region == <region>`.
-- If `node` is set and the control plane knows the node, Luma renders `node.labels.luma.node.id == <node-id>`; otherwise local render may use `node.labels.luma.node.name == <node>`.
-- If a node leaves Swarm and rejoins with the same Luma node name, Control refreshes the saved Swarm NodeID and updates Luma-managed pinned service constraints from the old `luma.node.id` to the new one.
-- `cn-edge` and `external-edge` add Traefik labels, attach the public overlay network, and use `port` as the load-balancer server port.
-- `tailscale-relay` deploys the stack first, inspects running tasks, then routes through host-mode published ports on the actual home nodes unless `relay.host`/`relay.url` overrides are set.
-- `tcp-relay` updates Traefik with the derived TCP entrypoint, writes a TCP route, and forwards to task host ports; the published port is exclusive to that TCP service.
-- `cloudflare-tunnel` adds a `cloudflared` sidecar using `${<tokenEnv>}`.
-- `proxy: true` adds the configured egress overlay network and default `HTTP_PROXY=http://egress_mihomo:7890` / `HTTPS_PROXY=http://egress_mihomo:7890` values unless those env vars are already present.
-- Named `volumes` are rendered as stack volumes. If a named volume is also declared in `storage`, Luma renders Docker local driver options for the resolved storage class endpoint.
-- `resources` is copied to Swarm `deploy.resources`; `cpus` should be a YAML string such as `"0.50"` for Portainer/Compose compatibility.
-- `healthcheck` is copied to the rendered service. Use it when task `running` is not enough to prove the app is listening.
+- Every service gets a `${meta.region} == <region>` placement constraint.
+- If `node` is set, Luma renders a `${meta.luma_node_name} == <node>` constraint. Node identities are stable across restarts, so a rejoining node keeps its pin with no constraint rewrite.
+- `cn-edge` and `external-edge` register Traefik routing via the Nomad service provider (service tags), using a bridge network with `port` as the load-balancer target.
+- `tailscale-relay` runs the container in docker host network mode and routes through the published port on the actual home node via a Traefik file-provider route, unless `relay.host`/`relay.url` overrides are set.
+- `tcp-relay` adds the derived TCP entrypoint to Traefik, writes a TCP route, and forwards to the host port; the published port is exclusive to that TCP service.
+- `cloudflare-tunnel` adds a `cloudflared` sidecar task in the same group using `${<tokenEnv>}`.
+- `proxy: true` injects default `HTTP_PROXY`/`HTTPS_PROXY` pointing at the egress proxy unless those env vars are already present.
+- Named `volumes` are rendered as Nomad docker `mount` blocks (`type=volume` for named volumes, `type=bind` for host paths) — never the docker `volumes` shorthand, which would bind an empty alloc directory. If a named volume is also declared in `storage`, the resolved storage-class endpoint is used.
+- `resources` maps to Nomad `resources` (CPU MHz from fractional cores, MemoryMB); quote `cpus` as a YAML string such as `"0.50"`.
+- `healthcheck` is rendered as a Nomad/Traefik check. Use it when task `running` is not enough to prove the app is listening.
 
 ## Private Registry Credentials
 
@@ -82,7 +82,7 @@ luma registry list
 luma registry remove ghcr.io
 ```
 
-During deploy, Luma matches credentials by image registry host, pre-pulls with Docker registry auth, and associates the matching Portainer/Swarm registry credential with the stack through the Portainer API path.
+During deploy, Luma matches credentials by image registry host and injects them into the Nomad job's docker `auth` block, so the placed client pulls the private image with the stored credentials.
 
 Private registry image pulls are separate from runtime `proxy: true`. If `curl https://<registry>/v2/` reaches the registry but `docker pull` fails with EOF/timeout, inspect Docker daemon `HTTPProxy`/`HTTPSProxy` and add the private registry host to daemon `NO_PROXY`.
 
@@ -141,7 +141,7 @@ storage:
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `name` | yes | Stack/deployment name. Reusing it updates the same Portainer stack. |
+| `name` | yes | Stack/deployment name. Reusing it updates the same Nomad job. |
 | `compose` | yes | Relative path to the standard Compose file. Control-plane deploy rejects absolute paths and `..`. |
 | `region` | yes | Default service region: `cn`, `global`, or `home`. |
 | `volumes.<name>.storageClass` | no | Registered manager storage class. |
@@ -156,8 +156,8 @@ storage:
 | `services.<name>.exposure` | no | `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `tcp-relay`, or `cloudflare-tunnel`. |
 | `services.<name>.domain` | public only | Public hostname. |
 | `services.<name>.port` | public only | Container internal port. |
-| `services.<name>.publishPort` | relay only | Host-mode published port for `tailscale-relay` or `tcp-relay`. |
-| `services.<name>.replicas` | no | Swarm replicas; must be at least `1`. |
+| `services.<name>.publishPort` | relay only | Explicit Nomad bridge port mapping on Linux nodes for `tailscale-relay` or `tcp-relay`; omit on Mac/OrbStack nodes. |
+| `services.<name>.replicas` | no | Replica count; must be at least `1`. |
 | `services.<name>.proxy` | no | Adds Luma egress env/network for runtime outbound traffic. |
 | `services.<name>.relay` | relay only | Optional relay override. Usually omit. |
 | `services.<name>.tunnel` | tunnel only | Optional Cloudflare Tunnel settings. |
@@ -275,14 +275,14 @@ luma service remove <name>
 
 Luma removes by deployed name, not by local YAML path. The control plane uses the manifest or sidecar recorded during the last successful deploy, so removal also works for web-dashboard deployments.
 
-By default, Luma removes Luma-managed DNS, Portainer stack, generated stack files, and `tailscale-relay` / `tcp-relay` route files. Storage data is preserved. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment:
+By default, Luma removes Luma-managed DNS, the Nomad job, generated job/stack files, and `tailscale-relay` / `tcp-relay` route files. Storage data is preserved. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment:
 
 ```bash
 luma service remove <name> --dry-run --delete-storage
 luma service remove <name> --delete-storage
 ```
 
-`--delete-storage` cannot be combined with `--skip-portainer`. For single-service manifests it removes managed storage paths and named Docker volume objects from the recorded manifest while skipping bind mounts. For Compose it removes managed storage subdirectories referenced by the recorded sidecar, not the storage class itself.
+`--delete-storage` for single-service manifests removes managed storage paths and named Docker volume objects from the recorded manifest while skipping bind mounts. For Compose it removes managed storage subdirectories referenced by the recorded sidecar, not the storage class itself.
 
 ## Review Checklist
 
@@ -290,7 +290,7 @@ luma service remove <name> --delete-storage
 - Is `port` the container's internal port?
 - Is `region` compatible with `exposure`?
 - If `node` is set, does it match a registered Luma node name and the selected region?
-- If the target node was rejoined recently, has Control refreshed the saved Swarm NodeID?
+- If `node` is set, does it match a registered Luma node name and the selected region? (Node identity is stable across restarts, so a rejoined node keeps its pin.)
 - Are secrets represented as `${ENV_NAME}` and backed by `luma secret set`?
 - Are private registry credentials stored with `luma registry login` instead of YAML/env?
 - Does the image include a meaningful tag? If not, remember that Luma resolves mutable tags to digests during deploy.
@@ -310,9 +310,8 @@ Manifest `port` is the container's internal listening port. It is separate from 
 | --- | --- | --- |
 | `80/tcp` | public clients to edge manager | HTTP redirect and Let's Encrypt challenge. |
 | `443/tcp` | public clients to edge manager | HTTPS ingress for public services and Luma Control. |
-| `9443/tcp` | trusted operators to manager | Direct Portainer UI/API access. |
-| `2377/tcp` | workers to manager | Docker Swarm control plane. |
-| `7946/tcp`, `7946/udp` | all Swarm nodes | Swarm discovery and overlay gossip. |
-| `4789/udp` | all Swarm nodes | Overlay/VXLAN data path. |
+| `4646/tcp` | Control / operators to manager | Nomad HTTP API. |
+| `4647/tcp` | clients to server | Nomad RPC. |
+| `4648/tcp`, `4648/udp` | all Nomad nodes | Nomad Serf gossip. |
 
-Current Luma Portainer stacks keep the endpoint URL `tcp://tasks.agent:9001` for compatibility, but schedule `portainer_agent` only on manager nodes. This prevents worker gossip failures from blocking unrelated deploys.
+The Nomad cluster ports (`4646`/`4647`/`4648`) are kept private to the Tailscale interface by the host firewall and public-iface guards; they are not exposed on the public internet.

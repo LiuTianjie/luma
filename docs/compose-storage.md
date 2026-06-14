@@ -20,7 +20,7 @@ export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 ```
 
-Use the Luma node name when declaring node pins. For the first manager-hosted storage service, you may also use the manager Swarm hostname shown by `luma status`, because the manager might not have gone through `luma node join`.
+Use the Luma node name when declaring node pins. For the first manager-hosted storage service, you may also use the manager node name shown by `luma status`, because the manager might not have gone through `luma node join`.
 
 ## Declare Storage Services
 
@@ -34,13 +34,13 @@ To use the current manager as the first managed NFS node (recommended for single
 ```bash
 luma status
 luma storage set cn-nfs \
-  --node <manager-swarm-hostname> \
+  --node <manager-node-name> \
   --path /srv/luma \
   --region cn
 ```
 
 - `cn-nfs` is the stable storage class name deployments reference.
-- `--node <manager-swarm-hostname>` identifies the host that owns and exports the storage path.
+- `--node <manager-node-name>` identifies the host that owns and exports the storage path.
 - `--path /srv/luma` is the host export directory.
 - `--region cn` restricts which service regions can use this storage class.
 
@@ -162,7 +162,7 @@ Sidecar fields:
 | `services.<name>.domain` | public only | Public hostname. |
 | `services.<name>.port` | public only | Container internal port. |
 | `services.<name>.publishPort` | relay only | Host-mode published port for `tailscale-relay` or `tcp-relay`. |
-| `services.<name>.replicas` | no | Swarm replicas, must be at least `1`. |
+| `services.<name>.replicas` | no | Nomad group count, must be at least `1`. |
 | `services.<name>.proxy` | no | Adds Luma egress proxy env/network for runtime outbound HTTP/HTTPS traffic. |
 
 ## ⚠️ Critical Storage Mounting Caveats
@@ -189,7 +189,7 @@ When configuring and deploying Luma-managed storage, pay attention to the follow
 
 3. **Consistent Class Names and Regions**
    To keep your layout clean, match your StorageClass names with their physical location and region scope. For example, for manager-hosted storage in region `cn`, name it `cn-nfs` and register it accordingly:
-   `luma storage set cn-nfs --node <manager-swarm-hostname> --path /srv/luma --region cn`
+   `luma storage set cn-nfs --node <manager-node-name> --path /srv/luma --region cn`
 
 ---
 
@@ -229,9 +229,9 @@ luma compose deploy luma.compose.yml --dry-run
 luma compose deploy luma.compose.yml --format ndjson
 ```
 
-`compose deploy` submits both the sidecar and Compose file to Luma Control. The manager renders one Swarm stack, writes generated files under the configured stack root, syncs DNS for public services, deploys through Portainer, and probes public routes.
+`compose deploy` submits both the sidecar and Compose file to Luma Control. The manager renders one Nomad job, writes generated files under the configured stack root, syncs DNS for public services, deploys through the Nomad HTTP API, and probes public routes.
 
-Update by editing `docker-compose.yml` and/or `luma.compose.yml`, then run the same deploy command again. The same sidecar `name` maps to the same Portainer stack. Re-running deploy updates that stack instead of creating a duplicate.
+Update by editing `docker-compose.yml` and/or `luma.compose.yml`, then run the same deploy command again. The same sidecar `name` maps to the same Nomad job. Re-running deploy updates that job instead of creating a duplicate.
 
 Storage backend changes are guarded. If an existing deployed volume changes from unmanaged/local to `storageClass`, or from one storage backend to another, deploy blocks unless the sidecar explicitly says how to treat the data:
 
@@ -277,7 +277,7 @@ luma service remove app-stack --dry-run
 luma service remove app-stack
 ```
 
-This removes the application Portainer stack, generated route files, and DNS records for public services. It does not delete storage data and does not remove manager storage class declarations. Remove storage class declarations separately with `luma storage remove <name>` only when no deployments depend on them.
+This removes the application Nomad job, generated route files, and DNS records for public services. It does not delete storage data and does not remove manager storage class declarations. Remove storage class declarations separately with `luma storage remove <name>` only when no deployments depend on them.
 
 To deliberately remove the managed storage paths referenced by this Compose deployment, add `--delete-storage`:
 
@@ -286,16 +286,16 @@ luma service remove app-stack --dry-run --delete-storage
 luma service remove app-stack --delete-storage
 ```
 
-This uses the Compose sidecar content recorded by the control plane during the last successful deploy, not a YAML file on the client running the command. It deletes only the application volume subdirectories declared in the sidecar, such as `volumes.pg-data.path`. It does not delete the storage class itself or unmanaged/external storage. `--delete-storage` cannot be combined with `--skip-portainer`.
+This uses the Compose sidecar content recorded by the control plane during the last successful deploy, not a YAML file on the client running the command. It deletes only the application volume subdirectories declared in the sidecar, such as `volumes.pg-data.path`. It does not delete the storage class itself or unmanaged/external storage. `--delete-storage` cannot be combined with `--skip-orchestrator`.
 
 ## Storage Rules
 
-- `storageClass` is the Luma-managed path. The sidecar references the class by name; Luma Control provides the storage declaration from manager state and Luma resolves the service-specific endpoint during validation/render/deploy. For `provider: nfs`, Luma renders Docker local volume driver options with NFS mount settings, so application tasks mount the NFS export through Docker.
+- `storageClass` is the Luma-managed path. The sidecar references the class by name; Luma Control provides the storage declaration from manager state and Luma resolves the service-specific endpoint during validation/render/deploy. For `provider: nfs`, Luma renders a Nomad docker `mount` block with NFS volume options, so application tasks mount the NFS export through the docker driver.
 - If the same top-level Compose volume is used by services in different regions and managed storage would resolve to different endpoints, validation fails. Split the data into region-specific volume names instead.
 - `local.node` is allowed for explicitly node-pinned local state. Luma rewrites the mount to a bind path and pins every service using that volume to the specified Luma node.
-- Bare compose volumes are allowed, but Luma marks them unmanaged. If Swarm reschedules the service, Docker may use a different node-local volume. Luma does not guarantee data consistency for unmanaged volumes.
+- Bare compose volumes are allowed, but Luma marks them unmanaged. If Nomad reschedules the allocation to another node, the docker driver may use a different node-local volume. Luma does not guarantee data consistency for unmanaged volumes.
 - Switching an existing deployed volume from unmanaged/local to `storageClass` is blocked by default. Run an explicit migration first and set `adopted: true` on that volume after verifying copied data, or set `initialize: empty` when starting from a fresh storage path.
-- Removing a stack does not delete storage data by default. Use `luma service remove <name> --delete-storage` only when you intentionally want to delete removable data referenced by the recorded deployment. For Compose this deletes managed storage paths referenced by the sidecar. For single-service manifests this deletes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects, while skipping bind mounts.
+- Removing a job does not delete storage data by default. Use `luma service remove <name> --delete-storage` only when you intentionally want to delete removable data referenced by the recorded deployment. For Compose this deletes managed storage paths referenced by the sidecar. For single-service manifests this deletes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects, while skipping bind mounts.
 
 ## Local Node Volumes
 

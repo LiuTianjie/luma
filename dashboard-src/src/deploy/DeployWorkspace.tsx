@@ -282,8 +282,8 @@ export function DeployWorkspace({
     setStatus("previewing");
     try {
       const result = mode === "service"
-        ? await previewService({ token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipPortainer: serviceDraft.skipPortainer })
-        : await previewCompose({ token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipPortainer: composeDraft.skipPortainer });
+        ? await previewService({ token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipOrchestrator: serviceDraft.skipOrchestrator })
+        : await previewCompose({ token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipOrchestrator: composeDraft.skipOrchestrator });
       setPreview(result);
     } catch (error) {
       setRuntimeErrors([String(error instanceof Error ? error.message : error)]);
@@ -305,8 +305,8 @@ export function DeployWorkspace({
     try {
       await deployStream(
         mode === "service"
-          ? { token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipPortainer: serviceDraft.skipPortainer }
-          : { token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipPortainer: composeDraft.skipPortainer },
+          ? { token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipOrchestrator: serviceDraft.skipOrchestrator }
+          : { token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipOrchestrator: composeDraft.skipOrchestrator },
         mode,
         (step) => setSteps((current) => [...current, step]),
       );
@@ -320,7 +320,7 @@ export function DeployWorkspace({
 
   return (
     <section className={`deploy-workspace-panel ${modalTitle ? "modal-deploy-workspace" : ""}`} id="section-6">
-      <div className="panel-heading deploy-heading">
+      {!templateLanding ? <div className="panel-heading deploy-heading">
         <div>
           <p className="eyebrow">{templateLanding ? (lang === "zh" ? "模板库" : "Template gallery") : (lang === "zh" ? "配置应用" : "Configure application")}</p>
           <h2>{modalTitle || (templateLanding ? (lang === "zh" ? "选择一个模板开始" : "Choose a template to start") : (lang === "zh" ? "配置并部署" : "Configure and deploy"))}</h2>
@@ -336,7 +336,7 @@ export function DeployWorkspace({
           ) : null}
           {onClose ? <button type="button" className="icon-button" onClick={onClose}>{lang === "zh" ? "关闭" : "Close"}</button> : null}
         </div>
-      </div>
+      </div> : null}
       {modalContext}
       {showTemplates && templateLanding ? (
         <DeployTemplates lang={lang} mode={mode} templates={DEPLOY_TEMPLATES} activeId={activeTemplateId} onModeChange={changeMode} onSelect={selectTemplate} />

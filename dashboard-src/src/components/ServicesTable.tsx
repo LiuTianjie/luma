@@ -44,24 +44,39 @@ export function ServicesTable({
           </thead>
           <tbody>
             {services.map((service, index) => {
-              const title = service.stack ? `${service.stack}/${service.name || "-"}` : service.name || "-";
+              // Nomad jobs use job-id == name, so avoid the redundant "x/x" title.
+              const title =
+                service.stack && service.stack !== service.name
+                  ? `${service.stack}/${service.name || "-"}`
+                  : service.name || "-";
+              const statusValue = service.status || service.health;
+              const hasNodes = (service.nodes || []).length > 0;
+              const openService = () => onSelect(service);
               return (
-                <tr key={`${title}-${index}`} onClick={() => onSelect(service)}>
+                <tr
+                  aria-label={`${t(lang, "details")}: ${title}`}
+                  key={`${title}-${index}`}
+                  onClick={openService}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openService();
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                >
                   <td><PrimaryCell meta={service.fullName} title={title} /></td>
                   <td><Badge value={service.region || "-"} /></td>
                   <td><Badge value={service.exposure || "none"} /></td>
-                  <td><CodeCell value={service.image || "-"} /></td>
+                  <td><CodeCell value={service.image || service.domain || "-"} /></td>
                   <td>
-                    <BadgeGroup>
-                      <Badge value={`${service.running ?? 0}/${service.desired ?? 0} ${t(lang, "running")}`} />
-                      <Badge value={`${service.pending ?? 0} ${t(lang, "pending")}`} />
-                      <Badge value={`${service.failed ?? 0} ${t(lang, "failed")}`} />
-                    </BadgeGroup>
+                    <Badge value={`${service.running ?? 0}/${service.desired ?? service.running ?? 0} ${t(lang, "running")}`} />
                   </td>
-                  <td><StatePill label={localizeState(lang, service.health)} value={service.health} /></td>
+                  <td><StatePill label={localizeState(lang, statusValue)} value={statusValue} /></td>
                   <td>
                     <BadgeGroup>
-                      {(service.nodes || []).length ? service.nodes?.map((node) => <Badge key={node} value={node} />) : "-"}
+                      {hasNodes ? service.nodes?.map((node) => <Badge key={node} value={node} />) : "-"}
                     </BadgeGroup>
                   </td>
                 </tr>

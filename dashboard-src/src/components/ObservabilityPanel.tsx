@@ -387,14 +387,25 @@ export function ObservabilityPanel({
               </tr>
             </thead>
             <tbody>
-              {services.map((service, index) => (
+              {services.map((service, index) => {
+                const selectRuntime = () => {
+                  setSelectedApp(appKey(service));
+                  setSelectedService(service.fullName || "");
+                };
+                return (
                 <tr
+                  aria-label={`${lang === "zh" ? "查看运行态" : "View runtime"}: ${serviceTitle(service)}`}
                   className={service.fullName && service.fullName === selectedService ? "is-selected" : undefined}
                   key={`${service.fullName || "service"}-${index}`}
-                  onClick={() => {
-                    setSelectedApp(appKey(service));
-                    setSelectedService(service.fullName || "");
+                  onClick={selectRuntime}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      selectRuntime();
+                    }
                   }}
+                  role="button"
+                  tabIndex={0}
                 >
                   <td><CodeCell value={serviceTitle(service)} /></td>
                   <td><Badge value={actualText(service.resources?.actual)} /></td>
@@ -417,7 +428,8 @@ export function ObservabilityPanel({
                     </BadgeGroup>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

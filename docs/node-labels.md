@@ -1,30 +1,36 @@
 # Node Labels
 
-Docker Swarm 使用节点标签控制服务调度。所有生产 stack 都应该显式声明 placement constraints，避免服务被调度到错误区域。
+Nomad 用 client 的 `meta` 控制服务调度。所有生产 job 都应该显式声明 placement constraint，避免服务被调度到错误区域。
 
-当前 Luma 的正常路径是通过 `luma node join --name <luma-node-name> --region <region>` 自动维护标签。Luma 会写入：
+当前 Luma 的正常路径是通过 `luma node join --name <luma-node-name> --region <region>` 自动写入 client `meta`。Luma 会写入：
 
 - `region=<cn|global|home>`：服务 `region` 调度使用。
-- `luma.node.name=<luma-node-name>`：人类可读的 Luma 节点名。
-- `luma.node.id=<swarm-node-id>`：固定节点调度使用的真实 Swarm NodeID。
+- `luma_node_name=<luma-node-name>`：人类可读的 Luma 节点名，固定节点调度使用。
+- `ingress`/`egress`：入口和出站网关角色标记。
 
-服务 manifest 的 `node` 字段应使用 Luma 节点名，不要使用 Docker hostname。控制面部署时会把它解析成 `node.labels.luma.node.id == <swarm-node-id>`。如果节点离开 Swarm 后重新 join，Swarm NodeID 会变化，Luma 会刷新该 label 并更新 Luma 管理的固定节点服务。
+服务 manifest 的 `node` 字段应使用 Luma 节点名，不要使用 Docker hostname。控制面部署时会把它渲染成 `constraint { attribute = "${meta.luma_node_name}"; value = ... }`。Nomad 节点身份是稳定的 UUID，节点离开集群后用同一个 Luma 节点名重新 join，`meta.luma_node_name` 不变，固定节点服务约束仍然有效。
 
-## 推荐标签
+## meta 写入方式
 
-```bash
-docker node update --label-add region=cn cn-manager-1
-docker node update --label-add region=cn cn-worker-1
-docker node update --label-add region=global global-sg-1
-docker node update --label-add region=home home-1
-docker node update --label-add ingress=true cn-manager-1
+`meta` 在装机时写进 Nomad client 的 HCL 配置，由 `luma node join` 维护，不需要运行时手改：
+
+```hcl
+client {
+  enabled = true
+  meta {
+    region         = "cn"
+    luma_node_name = "cn-worker-1"
+    ingress        = "true"
+    egress         = "true"
+  }
+}
 ```
 
-## 标签含义
+## meta 含义
 
 ### `region=cn`
 
-国内主服务区域。用于公开 Web/API、数据库、Redis、Traefik、Portainer 和核心业务服务。
+国内主服务区域。用于公开 Web/API、数据库、Redis、Traefik、Luma Control 和核心业务服务。
 
 ### `region=global`
 
@@ -36,34 +42,19 @@ docker node update --label-add ingress=true cn-manager-1
 
 ### `ingress=true`
 
-公网入口节点。Traefik 应该部署到带有该标签的国内节点，负责接收备案域名流量。
+公网入口节点。Traefik 应该部署到带有该标记的国内节点，负责接收备案域名流量。
 
 ### `egress=true`
 
-内部网关标签，不是普通节点加入模型。`luma egress setup` 会在承载 egress gateway 的机器上维护这个标签，确保 `egress_mihomo` 调度到正确位置。业务服务声明 `proxy: true` 后会加入 `egress` 网络并注入代理环境变量，但仍按服务 `region` 调度。
+内部网关标记，不是普通节点加入模型。`luma egress setup` 会在承载 egress gateway 的机器上维护这个标记，确保 `egress_mihomo` 调度到正确位置。业务服务声明 `proxy: true` 后会挂上 egress 代理并注入代理环境变量，但仍按服务 `region` 调度。
 
-如果老版本曾经在普通 worker 上执行过包含 `--egress` 的 join 命令，它可能仍残留 `egress=true`。升级到 region-first 模型后，普通业务服务不再需要这个标签。只在你确认该机器不应该承载内部 egress gateway 时移除：
-
-```bash
-docker node update --label-rm egress <node-name>
-```
-
-## 检查标签
+## 检查 meta
 
 ```bash
-docker node inspect <node-name> --format '{{ json .Spec.Labels }}'
+nomad node status -self
+nomad node status <node-id>      # 查看 Meta 段
 ```
 
-## 修改标签
+## 修改 meta
 
-添加标签：
-
-```bash
-docker node update --label-add region=global global-sg-1
-```
-
-删除标签：
-
-```bash
-docker node update --label-rm region global-sg-1
-```
+`meta` 由 `luma node join` 在装机时写入。需要调整时改 client 的 HCL 配置后重启 Nomad agent；正常情况下不应运行时手改，以免和控制面记录不一致。

@@ -13,11 +13,10 @@ const devDashboardPayload = {
   },
   readiness: {
     dns: { ready: true, provider: "Cloudflare", zone: "itool.tech", target: "8.130.148.30" },
-    portainer: { ready: true, apiConfigured: true, endpointConfigured: true },
-    swarm: { available: true },
+    nomad: { ready: true, available: true, leader: "100.113.204.125:4647" },
   },
   nodes: [
-    { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 21.4, load1: 0.82, memoryUsedPercent: 58.2, memoryTotalBytes: 17179869184 }, capacity: { cpus: 4, memoryBytes: 17179869184 } },
+    { name: "cn-edge", displayName: "cn-edge", region: "cn", role: "manager", state: "ready", availability: "active", leader: true, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: true, terminalStatus: "connected", metrics: { cpuPercent: 21.4, load1: 0.82, memoryUsedPercent: 58.2, memoryTotalBytes: 17179869184 }, capacity: { cpus: 4, memoryBytes: 17179869184 } },
     { name: "home-mac-mini", displayName: "home-mac-mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 13.8, load1: 1.1, memoryUsedPercent: 61.5, memoryTotalBytes: 34359738368 }, capacity: { cpus: 10, memoryBytes: 34359738368 } },
     { name: "tailscale-relay", displayName: "tailscale-relay", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "linux", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 8.1, load1: 0.2, memoryUsedPercent: 44.0, memoryTotalBytes: 8589934592 }, capacity: { cpus: 4, memoryBytes: 8589934592 } },
     { name: "m4mini", displayName: "m4mini", region: "home", role: "worker", state: "ready", availability: "active", leader: false, agentStatus: "ready", agentOs: "darwin", storageCapabilities: ["terminal"], terminalConnected: false, terminalStatus: "waiting", metrics: { cpuPercent: 29.7, load1: 2.4, memoryUsedPercent: 67.9, memoryTotalBytes: 17179869184 }, capacity: { cpus: 8, memoryBytes: 17179869184 } },
@@ -80,32 +79,38 @@ const devDashboardPayload = {
       nodes: ["cn-edge"],
     },
     {
-      name: "agent",
-      fullName: "portainer_agent",
-      stack: "portainer",
+      name: "mysql",
+      fullName: "granary_mysql",
+      stack: "granary",
       region: "home",
-      exposure: "internal",
-      image: "docker.m.daocloud.io/portainer/agent:2.21.5",
+      exposure: "tcp-relay",
+      domain: "granary-db.itool.tech",
+      targetPort: 3306,
+      publishPort: 3306,
+      image: "mysql:8",
       desired: 1,
       running: 1,
       pending: 0,
       failed: 0,
       health: "running",
-      nodes: ["home-mac-mini"],
+      nodes: ["tailscale-relay"],
     },
     {
-      name: "portainer",
-      fullName: "portainer_portainer",
-      stack: "portainer",
+      name: "frontend",
+      fullName: "granary_frontend",
+      stack: "granary",
       region: "home",
-      exposure: "internal",
-      image: "portainer/portainer-ce:2.21.5",
+      exposure: "tailscale-relay",
+      domain: "granary.itool.tech",
+      targetPort: 3000,
+      publishPort: 3000,
+      image: "ghcr.io/liutianjie/granary-frontend:latest",
       desired: 1,
       running: 1,
       pending: 0,
       failed: 0,
       health: "running",
-      nodes: ["home-mac-mini"],
+      nodes: ["tailscale-relay"],
     },
     {
       name: "tifenxia-docs",
@@ -142,7 +147,7 @@ const devDashboardPayload = {
     { id: "codex-gitea", kind: "tailscale-relay", domain: "codex-bot.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "Tailscale", "http://100.115.5.84:8080"] },
     { id: "tifenxia-docs", kind: "tailscale-relay", domain: "tifenxia-docs.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30", "Traefik", "Tailscale", "http://100.115.5.84:18080"] },
     { id: "egress", kind: "internal", domain: "", segments: ["client/internal", "mihomo", "m4mini"] },
-    { id: "portainer", kind: "internal", domain: "", segments: ["client/internal", "portainer", "home-mac-mini"] },
+    { id: "granary", kind: "tcp-relay", domain: "granary-db.itool.tech", segments: ["Cloudflare DNS", "8.130.148.30:3306", "Traefik TCP", "Tailscale", "100.115.5.84:3306"] },
   ],
   storage: {
     storageClasses: [
@@ -150,7 +155,7 @@ const devDashboardPayload = {
       { name: "cn-nfs", provider: "nfs", mode: "managed", node: "cn-edge", path: "/srv/luma", regions: ["cn"] },
     ],
     volumes: [
-      { name: "portainer-data", kind: "bind", storageClass: "local", node: "home-mac-mini", services: ["portainer"] },
+      { name: "granary-mysql", kind: "volume", storageClass: "local", node: "tailscale-relay", services: ["granary"] },
       { name: "gitea-data", kind: "bind", storageClass: "local", node: "tailscale-relay", services: ["codex-gitea"] },
     ],
     warnings: [],
@@ -448,7 +453,7 @@ export default defineConfig({
           response.setHeader("Content-Type", "application/x-ndjson");
           response.write(JSON.stringify({ status: "start", name: "Render stack", message: "started" }) + "\n");
           response.write(JSON.stringify({ status: "ok", name: "Render stack", message: "Stack rendered" }) + "\n");
-          response.write(JSON.stringify({ status: "ok", name: "Deploy Portainer stack", message: "Mock deploy complete" }) + "\n");
+          response.write(JSON.stringify({ status: "ok", name: "Deploy Nomad job", message: "Mock deploy complete" }) + "\n");
           response.end(JSON.stringify({ status: "done", result: { service: "preview-service" } }) + "\n");
         });
         server.middlewares.use("/v1/compose-deployments/stream", async (_request, response) => {
@@ -456,7 +461,7 @@ export default defineConfig({
           response.setHeader("Content-Type", "application/x-ndjson");
           response.write(JSON.stringify({ status: "start", name: "Render compose stack", message: "started" }) + "\n");
           response.write(JSON.stringify({ status: "ok", name: "Render compose stack", message: "Compose rendered" }) + "\n");
-          response.write(JSON.stringify({ status: "ok", name: "Deploy Portainer stack", message: "Mock compose deploy complete" }) + "\n");
+          response.write(JSON.stringify({ status: "ok", name: "Deploy Nomad job", message: "Mock compose deploy complete" }) + "\n");
           response.end(JSON.stringify({ status: "done", result: { deployment: "preview-compose" } }) + "\n");
         });
         server.middlewares.use("/v1/applications/restart", async (request, response) => {

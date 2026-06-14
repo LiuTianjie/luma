@@ -1,6 +1,6 @@
 ---
 name: luma-deployment-yaml
-description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, region/exposure choices, routing domains to workloads, storageClass volumes, manager-managed storage, private registry credentials, service removal, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Portainer stack YAML errors.
+description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, region/exposure choices, the optional engine field, routing domains to workloads, storageClass volumes, manager-managed storage, private registry credentials, service removal, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
 ---
 
 # Luma Deployment YAML
@@ -10,7 +10,7 @@ Use this skill for Luma deployment artifacts:
 - Single-service manifests consumed by `luma deploy`.
 - Compose deployments made from a standard `docker-compose.yml` plus a Luma sidecar consumed by `luma compose deploy`.
 
-Single-service manifests are not Docker Compose. They describe one service: image, region, optional node pin, exposure, domain, port, replicas, storage, and runtime options. Luma Control renders Swarm stack YAML, DNS, Traefik routes, and Portainer deployment actions.
+Single-service manifests are not Docker Compose. They describe one service: image, region, optional node pin, exposure, domain, port, replicas, storage, and runtime options. Luma Control renders a Nomad job, syncs DNS, writes Traefik routes, and deploys via the Nomad API.
 
 Compose files stay standard for local development. Put Luma-specific deployment semantics in `luma.compose.yml`: region, exposure, routing, service node pins, local storage pins, and references to manager-managed storage classes.
 
@@ -52,12 +52,13 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 - `port` is the container's internal listening port, not a cloud firewall or host port. For `tcp-relay`, `publishPort` is the task node host port that Traefik forwards to.
 - `replicas` defaults to `1` and must be at least `1`.
 - Do not use the removed `public` field; set `exposure` explicitly.
-- `node` is the Luma node name from `luma node join --name`. Control-plane deploy resolves it to a Swarm NodeID constraint and also keeps the region constraint. Do not use Docker hostnames for normal pins; hosts such as OrbStack may share generic names.
-- If a node leaves Swarm and rejoins with the same Luma node name, Luma refreshes `luma.node.id` and updates Luma-managed pinned service constraints to the new Swarm NodeID.
+- `node` is the Luma node name from `luma node join --name`. Control-plane deploy resolves it to a placement constraint on the node's stable Luma identity and also keeps the region constraint. Do not use Docker hostnames for normal pins; hosts such as OrbStack may share generic names.
+- Nomad node identities are stable across agent restarts, so a node that rejoins keeps its pin without needing constraint rewrites.
 - Use `proxy: true` for container runtime HTTP/HTTPS egress through Luma. Do not hand-write the default `egress` network or default `HTTP_PROXY`/`HTTPS_PROXY`.
 - `proxy: true` is not for image pulls. Image pulls use Docker daemon proxy and registry credentials managed by Luma. For private registries, Docker daemon `NO_PROXY` may need the registry host even when `curl https://<registry>/v2/` is reachable.
-- `resources.limits.cpus` and `resources.reservations.cpus` should be quoted strings, for example `"0.50"`. Portainer/Compose expects `cpus` to be a string; current Luma normalizes numeric YAML for compatibility, but generated examples should still quote it.
-- `healthcheck` is copied to Swarm service healthcheck. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
+- `resources.limits.cpus` and `resources.reservations.cpus` are fractional cores, for example `"0.50"`. Quote them as strings in YAML; Luma converts cores to Nomad CPU MHz.
+- `healthcheck` is passed to the running container's health check. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
+- `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
 - Single-service `storage` can map named volumes from `volumes` to manager storage classes.
 
 ## Compose And Storage Rules
@@ -86,7 +87,7 @@ luma storage set company-nfs \
 
 - A sidecar volume can reference registered storage with `storageClass: <name>` and optional `path`, `accessMode`, `adopted`, or `initialize: empty`.
 - `local.node` is the explicit local bind storage escape hatch. Luma pins every service using that volume to the specified Luma node.
-- Bare Compose named volumes are allowed but unmanaged; Swarm rescheduling can land the task on a node with different local data.
+- Bare Compose named volumes are allowed but unmanaged; pin stateful services to the node that owns the local data.
 - Switching an already deployed volume to another backend is blocked unless `adopted: true` follows verified migration, or `initialize: empty` explicitly accepts a fresh path.
 - Managed cross-region NFS requires the storage node to have a `tailscaleIP`; otherwise validation/render/deploy should block.
 - If one top-level Compose volume is used by services in different regions and managed storage would resolve to different endpoints, split it into separate region-specific volume names.
@@ -193,7 +194,7 @@ For generic CI, install the PyPI package. The distribution is `luma-infra`, but 
 python -m pip install "luma-infra==0.1.84"
 ```
 
-CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, Cloudflare setup, or Portainer setup:
+CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:
 
 ```bash
 export LUMA_CONTROL_URL="https://luma.example.com"
@@ -212,12 +213,12 @@ luma storage check luma.compose.yml --format json
 ## Operational Notes
 
 - `latest` or omitted image tags are resolved by the manager to `name@sha256:...` during deploy. Prefer pinned version tags for production rollback.
-- Private registry credentials are stored with `luma registry login` and matched by image registry host during deploy. Luma pre-pulls with auth and links the Portainer/Swarm registry credential through the Portainer API path. If Docker daemon proxying causes EOF/timeout against a private registry, check daemon `NO_PROXY`; do not try to fix it with manifest `proxy: true`.
+- Private registry credentials are stored with `luma registry login` and matched by image registry host during deploy. Luma injects them into the Nomad job's docker `auth` block so the placed client pulls the private image. If Docker daemon proxying causes EOF/timeout against a private registry, check daemon `NO_PROXY`; do not try to fix it with manifest `proxy: true`.
 - `luma service remove <name>` uses the manifest recorded by the control plane during the last successful single-service or Compose deploy. This also works for deployments created from the web dashboard.
-- Storage data is preserved by default. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment. It cannot be combined with `--skip-portainer`.
-- `region` controls workload scheduling; Portainer deployment itself runs through the manager.
-- Current Portainer stacks constrain the agent to manager nodes while keeping endpoint compatibility, so worker agent gossip issues should not be diagnosed as manifest region errors.
-- Required platform ports are separate from manifest `port`: public `80/tcp` and `443/tcp`, `tcp-relay` published ports such as `3306/tcp`, trusted operator `9443/tcp`, Swarm `2377/tcp`, node gossip `7946/tcp` and `7946/udp`, and overlay `4789/udp`.
-- `luma update` on a manager refreshes Luma Control only. Use `luma bootstrap manager --domain <control-domain>` for first install or explicit ingress/egress/bootstrap repair.
-- `luma update fleet` updates ready non-manager node agents from a logged-in client. It skips Swarm manager nodes by default so the active control plane is not updated through a remote fleet task. Update the manager separately with `luma update manager` from the manager host.
-- Bootstrap/update installs Tailscale watchdogs on supported manager and node hosts. When diagnosing `down heartbeat failure`, first separate Docker/container health from Tailscale peer TCP reachability on `2377`/`7946`.
+- Storage data is preserved by default. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment.
+- `region` controls workload scheduling via a node-meta constraint; the deploy itself is issued by Luma Control through the Nomad API on the manager.
+- A service stays running on its node even if that node briefly disconnects from the manager (Nomad keeps the local allocation alive and reconnects), so transient node-down blips should not be diagnosed as manifest region errors.
+- Required platform ports are separate from manifest `port`: public `80/tcp` and `443/tcp`, `tcp-relay` published ports such as `3306/tcp`, and the Nomad cluster ports `4646/tcp` (HTTP API), `4647/tcp` (RPC), `4648/tcp`+`4648/udp` (Serf). These cluster ports are kept private to the Tailscale interface.
+- `luma update` on a manager refreshes Luma Control only and never touches running service allocations. Use `luma bootstrap manager --domain <control-domain>` for first install or explicit ingress/egress/bootstrap repair.
+- `luma update fleet` updates ready non-manager node agents from a logged-in client. It skips the manager so the active control plane is not updated through a remote fleet task. Update the manager separately with `luma update manager` from the manager host.
+- Bootstrap/update installs Tailscale watchdogs on supported manager and node hosts. When diagnosing a node-down heartbeat failure, first separate Docker/container health from Tailscale peer TCP reachability on the Nomad RPC/Serf ports `4647`/`4648`.

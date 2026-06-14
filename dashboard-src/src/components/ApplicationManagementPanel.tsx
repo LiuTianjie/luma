@@ -4,7 +4,7 @@ import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfi
 import { localizeState, t } from "../i18n";
 import { restartApplication } from "../lifecycleApi";
 import type { DashboardPayload, Lang } from "../types";
-import { groupApplications, type Application } from "./applicationModel";
+import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
 import { Badge, BadgeGroup, CodeCell, PrimaryCell, StatePill } from "./ui";
 
 export type ApplicationUpdateRequest = {
@@ -184,7 +184,7 @@ export function ApplicationManagementPanel({
                 <article className="application-service-detail" key={service.fullName || service.name}>
                   <div className="application-service-title">
                     <strong>{service.name}</strong>
-                    <StatePill label={localizeState(lang, service.health)} value={service.health} />
+                    <StatePill label={localizeState(lang, serviceRuntimeStatus(service))} value={serviceRuntimeStatus(service)} />
                   </div>
                   <dl>
                     <div><dt>{t(lang, "image")}</dt><dd>{service.image || "-"}</dd></div>
@@ -239,9 +239,23 @@ export function ApplicationManagementPanel({
             </tr>
           </thead>
           <tbody>
-            {applications.length ? applications.map((app) => (
-              <tr key={app.stack}>
-                <td onClick={() => openDetails(app)}><PrimaryCell title={app.stack} meta={serviceCountLabel(app.services.length)} /></td>
+            {applications.length ? applications.map((app) => {
+              const openApp = () => openDetails(app);
+              return (
+              <tr
+                aria-label={`${t(lang, "details")}: ${app.stack}`}
+                key={app.stack}
+                onClick={openApp}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openApp();
+                  }
+                }}
+                role="button"
+                tabIndex={0}
+              >
+                <td><PrimaryCell title={app.stack} meta={serviceCountLabel(app.services.length)} /></td>
                 <td><StatePill label={localizeState(lang, app.status)} value={app.status} /></td>
                 <td>
                   {app.domains.length ? <CodeCell value={app.domains.join(", ")} /> : <Badge value={t(lang, "internalOnly")} />}
@@ -250,13 +264,14 @@ export function ApplicationManagementPanel({
                 <td><Badge value={`${app.running}/${app.desired}`} /></td>
                 <td>
                   <div className="app-action-row">
-                    <button type="button" className="ghost" onClick={() => openDetails(app)}>{t(lang, "details")}</button>
-                    <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(app)}>{actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
-                    <button type="button" disabled={Boolean(configBusy)} onClick={() => void openUpdate(app)}>{configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}</button>
+                    <button type="button" className="ghost" onClick={(event) => { event.stopPropagation(); openDetails(app); }}>{t(lang, "details")}</button>
+                    <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={(event) => { event.stopPropagation(); void restart(app); }}>{actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
+                    <button type="button" disabled={Boolean(configBusy)} onClick={(event) => { event.stopPropagation(); void openUpdate(app); }}>{configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}</button>
                   </div>
                 </td>
               </tr>
-            )) : (
+              );
+            }) : (
               <tr><td colSpan={6}>{t(lang, "noApplications")}</td></tr>
             )}
           </tbody>

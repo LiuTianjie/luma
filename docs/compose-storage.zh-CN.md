@@ -26,13 +26,13 @@ Luma 支持通过一个旁车配置文件 `luma.compose.yml` 部署标准的 `do
 
 ```bash
 luma storage set cn-nfs \
-  --node <manager-swarm-hostname> \
+  --node <manager-node-name> \
   --path /srv/luma \
   --region cn
 ```
 
 - `cn-nfs` 为部署引用的存储类名称。
-- `--node` 指定拥有并导出该存储路径的 Luma 节点名（在此处为 Manager 的 Swarm 主机名，可通过 `luma status` 查看）。
+- `--node` 指定拥有并导出该存储路径的 Luma 节点名（在此处为 Manager 的节点名，可通过 `luma status` 查看）。
 - `--path` NFS 导出的物理根路径（也是主机的持久化数据目录）。
 - `--region` 限制可以使用该存储类的业务区域。
 
@@ -155,7 +155,7 @@ services:
 
 3. **命名与 Region 语义严谨**
    为保证架构清晰，建议将存储类名称与其实际物理分布及 Region 语义统一。例如对于在 `cn` 区域运行的 Manager 节点存储，建议命名为 `cn-nfs`，并配套注册：
-   `luma storage set cn-nfs --node <manager-swarm-hostname> --path /srv/luma --region cn`
+   `luma storage set cn-nfs --node <manager-node-name> --path /srv/luma --region cn`
 
 ---
 
@@ -167,7 +167,7 @@ services:
 # 校验 YAML 格式与结构
 luma compose validate luma.compose.yml
 
-# 渲染合并后的 Swarm Compose 文件进行预览
+# 渲染合并后的 Nomad jobspec 进行预览
 luma compose render luma.compose.yml
 
 # 检查存储类绑定与端点解析计划
@@ -190,7 +190,7 @@ luma storage apply luma.compose.yml
 `storage apply` 会解析控制面里的存储类，并创建本次旁车引用到的具体卷目录，例如 `/srv/luma/app-stack/pg-data`。`compose deploy` 在部署应用栈前也会执行同样的准备步骤。
 
 ### 第二步：部署 Compose 服务栈
-提交旁车和标准 Compose 文件到 Luma Control，控制面会自动渲染生成 Swarm Stack 并执行部署：
+提交旁车和标准 Compose 文件到 Luma Control，控制面会自动渲染生成 Nomad job 并执行部署：
 
 ```bash
 luma compose deploy luma.compose.yml
@@ -237,4 +237,4 @@ luma service remove app-stack --dry-run --delete-storage
 luma service remove app-stack --delete-storage
 ```
 
-清理依据来自 control-plane 在上次成功部署时保存的 sidecar/manifest，不依赖执行命令的 client 机器上还有 YAML 文件。Compose 部署只删除旁车清单里 `volumes.<name>.path` 指向的 managed storage 子目录，不删除 storageClass 本身，也不清理 unmanaged/external 存储。普通单服务部署也支持 `--delete-storage`：如果 manifest 的 `storage.<volume>.path` 引用了 managed storage，会删除对应子目录；同时会删除记录 manifest 中声明的 named Docker volume 对象，例如 `data:/data`，但会跳过 bind mount 路径。`--delete-storage` 不能和 `--skip-portainer` 一起使用。
+清理依据来自 control-plane 在上次成功部署时保存的 sidecar/manifest，不依赖执行命令的 client 机器上还有 YAML 文件。Compose 部署只删除旁车清单里 `volumes.<name>.path` 指向的 managed storage 子目录，不删除 storageClass 本身，也不清理 unmanaged/external 存储。普通单服务部署也支持 `--delete-storage`：如果 manifest 的 `storage.<volume>.path` 引用了 managed storage，会删除对应子目录；同时会删除记录 manifest 中声明的 named Docker volume 对象，例如 `data:/data`，但会跳过 bind mount 路径。`--delete-storage` 不能和 `--skip-orchestrator` 一起使用。

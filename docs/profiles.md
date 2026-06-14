@@ -7,9 +7,8 @@ Profiles are Luma's manager bootstrap presets. Ordinary worker joins do not use 
 One public server running:
 
 - Docker
-- Swarm manager
+- Nomad server (also a client in `region=cn`)
 - Traefik
-- Portainer
 - Luma Control API
 - egress gateway
 
@@ -19,21 +18,13 @@ Use:
 luma bootstrap manager --domain luma.example.com --profile single-node
 ```
 
-This profile also deploys Portainer. To repair only the Portainer control plane:
-
-```bash
-luma portainer setup
-```
-
 ## `cn-edge`
 
 Domestic public edge:
 
 - Docker
-- Swarm manager
+- Nomad server
 - Traefik
-- Portainer
-- `public` overlay network
 
 ## Worker regions
 
@@ -45,6 +36,6 @@ luma node join https://luma.example.com --token <node-join-token> --region globa
 luma node join https://luma.example.com --token <node-join-token> --region home --name home-mac-mini
 ```
 
-- `region` is the scheduling boundary.
-- `name` is the Luma node name used in status output and service manifests; pinned scheduling resolves it to the real Swarm NodeID.
+- `region` is the scheduling boundary, written to the Nomad client `meta.region`.
+- `name` is the Luma node name used in status output and service manifests; pinned scheduling uses `meta.luma_node_name`.
 - Services that require the proxy declare `proxy: true`.

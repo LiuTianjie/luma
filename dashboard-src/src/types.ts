@@ -7,13 +7,10 @@ export type Readiness = {
     zone?: string;
     target?: string;
   };
-  portainer?: {
-    ready?: boolean;
-    apiConfigured?: boolean;
-    endpointConfigured?: boolean;
-  };
-  swarm?: {
+  nomad?: {
     available?: boolean;
+    engine?: string;
+    leader?: string;
   };
 };
 
@@ -93,6 +90,8 @@ export type DashboardService = {
   routeId?: string;
   network?: string;
   image?: string;
+  status?: string;
+  upstreams?: string[];
   running?: number;
   desired?: number;
   pending?: number;

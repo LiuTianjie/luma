@@ -10,14 +10,13 @@ providers:
     proxied: false
     controlProxied: false
     edgeTarget: 203.0.113.10
-  portainer: {}
 nodes:
   manager-1:
     host: manager-1
     publicIp: 203.0.113.10
     region: cn
     roles:
-    - swarm-manager
+    - nomad-manager
     - edge
     - egress
   worker-global-1:
@@ -27,6 +26,7 @@ nodes:
     roles:
     - global-worker
 defaults:
+  engine: nomad
   exposure: cn-edge
   registry: ghcr.io/liutianjie
   stackRoot: stacks
@@ -37,8 +37,6 @@ defaults:
   certResolver: letsencrypt
   images:
     traefik: docker.1panel.live/library/traefik:v3.6
-    portainer: docker.1panel.live/portainer/portainer-ce:2.21.5
-    portainerAgent: docker.1ms.run/portainer/agent:2.21.5
     egressGateway: docker.1panel.live/metacubex/mihomo:latest
     lumaControl: ghcr.io/liutianjie/luma-control:latest
 git:

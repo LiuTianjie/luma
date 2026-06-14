@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, TypeVar
 
-from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, install_docker, join_local_node, local_docker_node_id, local_docker_node_name, refresh_manager_control_local, setup_egress, setup_portainer, setup_tailscale
+from .bootstrap import _is_tailscale_manager_addr, bootstrap_manager_local, bootstrap_node, configure_dns, install_docker, install_nomad_node, local_host_name, refresh_manager_control_local, setup_egress, setup_tailscale
 from .cloudflare import find_zone, sync_dns
 from .compose import (
     DEFAULT_NFS_MOUNT_OPTIONS,
@@ -23,7 +23,6 @@ from .compose import (
     init_compose_sidecar,
     load_compose_deployment,
     render_compose_routes,
-    render_compose_stack,
     storage_summary,
 )
 from .config import LumaConfig, load_config, save_config
@@ -36,7 +35,7 @@ from .errors import LumaError
 from .io import dump_yaml, write_yaml
 from .local import LocalExecutor
 from .profiles import PROFILES
-from .render import render_stack, render_tailscale_route, render_tcp_route, route_path, stack_path
+from .render import render_tailscale_route, render_tcp_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
 from .storage import storage_check_plan, storage_migration_plan
 from .userconfig import configured_keys, ensure_interactive_config, interactive_configure, load_user_config, masked_config_lines, user_config_path
@@ -53,7 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=None, help="Path to luma.yaml")
     parser.add_argument("--env-file", type=Path, default=Path(".env"), help="Path to local env file")
     parser.add_argument("--no-env", action="store_true", help="Do not load .env")
-    sub = parser.add_subparsers(dest="command", required=True)
+    visible_commands = (
+        "init,version,status,preflight,configure,login,context,secret,registry,"
+        "bootstrap,update,doctor,node,cloudflare,egress,tailscale,"
+        "service,validate,render,dns-sync,deploy,rollback,history,compose,storage"
+    )
+    sub = parser.add_subparsers(dest="command", required=True, metavar="{" + visible_commands + "}")
 
     sub.add_parser("init")
     version = sub.add_parser("version")
@@ -89,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
     secret_set = secret_sub.add_parser("set")
     secret_set.add_argument("name")
     secret_set.add_argument("--value")
+    secret_set.add_argument("--value-stdin", action="store_true", help="Read the secret value from stdin")
     registry = sub.add_parser("registry")
     registry_sub = registry.add_subparsers(dest="registry_command", required=True)
     registry_list = registry_sub.add_parser("list")
@@ -117,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.87 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.88 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -128,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     update_fleet = update_sub.add_parser("fleet", help="update Luma on registered non-manager nodes with ready agents")
     update_fleet.add_argument("--install-ref", dest="fleet_install_ref", help="Git ref passed to the installer on every node")
     update_fleet.add_argument("--all", action="store_true", help="Include offline nodes in the report as skipped")
-    update_fleet.add_argument("--include-manager", action="store_true", help="Also update Swarm manager nodes through fleet tasks")
+    update_fleet.add_argument("--include-manager", action="store_true", help="Also update manager nodes through fleet tasks")
     update_fleet.add_argument("--timeout", type=int, default=900, help="Per-node update timeout in seconds")
     _add_control_arguments(update_fleet)
     _add_output_arguments(update_fleet)
@@ -147,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     node_join.add_argument("--token", required=True)
     node_join.add_argument("--region", choices=sorted(VALID_REGIONS))
     node_join.add_argument("--name", default=os.uname().nodename)
+    node_join.add_argument("--engine", choices=("nomad",), default="nomad", metavar="{nomad}", help="Orchestrator to join; Nomad is the only supported engine")
     node_join.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
     node_join.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
     node_exit = node_sub.add_parser("exit")
@@ -175,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     node_agent_run.add_argument("--poll-interval", type=int)
     node_agent_terminal = node_agent_sub.add_parser("terminal-supervisor", help=argparse.SUPPRESS)
     node_agent_terminal.add_argument("--config", type=Path, default=DEFAULT_AGENT_CONFIG)
+    sub._choices_actions = [action for action in sub._choices_actions if action.dest != "node-agent"]
 
     cf = sub.add_parser("cloudflare")
     cf_sub = cf.add_subparsers(dest="cloudflare_command", required=True)
@@ -185,10 +192,6 @@ def build_parser() -> argparse.ArgumentParser:
     egress_sub = egress.add_subparsers(dest="egress_command", required=True)
     for name in ("setup", "refresh"):
         egress_sub.add_parser(name)
-
-    portainer = sub.add_parser("portainer")
-    portainer_sub = portainer.add_subparsers(dest="portainer_command", required=True)
-    portainer_sub.add_parser("setup")
 
     tailscale = sub.add_parser("tailscale")
     tailscale_sub = tailscale.add_subparsers(dest="tailscale_command", required=True)
@@ -201,16 +204,18 @@ def build_parser() -> argparse.ArgumentParser:
     service_remove = service_sub.add_parser("remove")
     service_remove.add_argument("service", help="Deployed service or Compose application name")
     service_remove.add_argument("--skip-dns", action="store_true", help="Keep Cloudflare DNS records")
-    service_remove.add_argument("--skip-portainer", action="store_true", help="Keep the Portainer stack running")
+    service_remove.add_argument("--skip-orchestrator", action="store_true", help="Keep the Nomad job running")
     service_remove.add_argument("--delete-storage", action="store_true", help="Delete removable storage referenced by the recorded deployment")
     service_remove.add_argument("--dry-run", action="store_true", help="Show what would be removed without changing the manager")
     service_remove.add_argument("--timeout", type=int, default=300, help="Seconds to wait for the control-plane remove response")
 
     validate = sub.add_parser("validate")
     validate.add_argument("service", type=Path)
+    validate.add_argument("--engine", choices=("nomad",), metavar="{nomad}", help="Orchestrator to validate for; Nomad is the only supported engine")
     _add_output_arguments(validate)
     render = sub.add_parser("render")
     render.add_argument("service", type=Path)
+    render.add_argument("--engine", choices=("nomad",), metavar="{nomad}", help="Orchestrator to render for; Nomad is the only supported engine")
 
     dns = sub.add_parser("dns-sync")
     dns.add_argument("service", type=Path)
@@ -221,11 +226,21 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_arguments(deploy)
     deploy.add_argument("--dry-run", action="store_true")
     deploy.add_argument("--skip-dns", action="store_true")
-    deploy.add_argument("--skip-portainer", action="store_true")
+    deploy.add_argument("--skip-orchestrator", action="store_true")
     deploy.add_argument("--timeout", type=int, default=1800, help="Seconds to wait for the control-plane deploy response")
     deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
-    deploy.add_argument("--via", choices=("portainer",), default="portainer", help="Deployment runner")
+
+    rollback = sub.add_parser("rollback", help="Roll a Nomad-engine service back to a previous version")
+    rollback.add_argument("name")
+    rollback.add_argument("--to-version", type=int, default=None, help="Target version (default: previous)")
+    _add_control_arguments(rollback)
+    _add_output_arguments(rollback)
+
+    history = sub.add_parser("history", help="Show a Nomad-engine service's deploy version history")
+    history.add_argument("name")
+    _add_control_arguments(history)
+    _add_output_arguments(history)
 
     compose = sub.add_parser("compose")
     compose_sub = compose.add_subparsers(dest="compose_command", required=True)
@@ -234,18 +249,21 @@ def build_parser() -> argparse.ArgumentParser:
     compose_init.add_argument("--output", type=Path, default=Path("luma.compose.yml"))
     compose_validate = compose_sub.add_parser("validate")
     compose_validate.add_argument("sidecar", type=Path)
+    compose_validate.add_argument("--engine", choices=("nomad",), metavar="{nomad}", help="Orchestrator to validate for; Nomad is the only supported engine")
     _add_control_arguments(compose_validate)
     _add_output_arguments(compose_validate)
     compose_render = compose_sub.add_parser("render")
     compose_render.add_argument("sidecar", type=Path)
+    compose_render.add_argument("--engine", choices=("nomad",), metavar="{nomad}", help="Orchestrator to render for; Nomad is the only supported engine")
     _add_control_arguments(compose_render)
     compose_deploy = compose_sub.add_parser("deploy")
     compose_deploy.add_argument("sidecar", type=Path)
+    compose_deploy.add_argument("--engine", choices=("nomad",), metavar="{nomad}", help="Orchestrator for local dry-run preview; live deploy follows the control-plane config")
     _add_control_arguments(compose_deploy)
     _add_output_arguments(compose_deploy)
     compose_deploy.add_argument("--dry-run", action="store_true")
     compose_deploy.add_argument("--skip-dns", action="store_true")
-    compose_deploy.add_argument("--skip-portainer", action="store_true")
+    compose_deploy.add_argument("--skip-orchestrator", action="store_true")
     compose_deploy.add_argument("--timeout", type=int, default=1800)
     storage = sub.add_parser("storage")
     storage_sub = storage.add_subparsers(dest="storage_command", required=True)
@@ -325,11 +343,11 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "type": "cloudflare",
                 "zone": "example.com",
                 "apiTokenEnv": "CLOUDFLARE_API_TOKEN",
-            },
-            "portainer": {},
+            }
         },
         "nodes": {},
         "defaults": {
+            "engine": "nomad",
             "exposure": "cn-edge",
             "stackRoot": "stacks",
             "routesRoot": "routes",
@@ -443,14 +461,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         "DNS",
         dns_rows,
     )
-    portainer = payload.get("portainer") if isinstance(payload.get("portainer"), dict) else {}
+    nomad = payload.get("nomad") if isinstance(payload.get("nomad"), dict) else {}
     _print_key_values(
-        "Portainer",
+        "Orchestrator (Nomad)",
         [
-            ("Ready", _yes_no(bool(portainer.get("ready")))),
-            ("API", _status_value(portainer.get("apiUrl"))),
-            ("Endpoint", _configured_label(bool(portainer.get("endpointIdConfigured")))),
-            ("Swarm ID", _configured_label(bool(portainer.get("swarmIdConfigured")))),
+            ("Ready", _yes_no(bool(nomad.get("available")))),
+            ("Leader", _status_value(nomad.get("leader"))),
         ],
     )
     storage = payload.get("storage") if isinstance(payload.get("storage"), dict) else {}
@@ -464,17 +480,17 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("  No storage classes registered")
     nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
     registered_items = nodes.get("items") if isinstance(nodes.get("items"), list) else []
-    swarm = payload.get("swarm") if isinstance(payload.get("swarm"), dict) else {}
-    swarm_nodes = swarm.get("nodes") if isinstance(swarm.get("nodes"), list) else []
+    nomad = payload.get("nomad") if isinstance(payload.get("nomad"), dict) else {}
+    nomad_nodes = nomad.get("nodes") if isinstance(nomad.get("nodes"), list) else []
     print()
     print("Nodes")
-    if swarm and not swarm.get("available"):
-        print(f"  Swarm: unavailable ({swarm.get('error') or 'unknown error'})")
+    if nomad and not nomad.get("available"):
+        print(f"  Orchestrator unavailable ({nomad.get('error') or 'unknown error'})")
     else:
-        print(f"  Summary: registered={nodes.get('registered', len(registered_items))}, swarm={len(swarm_nodes)}")
-    rows = _status_node_rows(registered_items, swarm_nodes)
+        print(f"  Summary: registered={nodes.get('registered', len(registered_items))}, nomad={len(nomad_nodes)}")
+    rows = _status_node_rows(registered_items, nomad_nodes)
     if rows:
-        _print_table(["NAME", "REGION", "REGISTERED", "SWARM", "ROLE", "AVAIL", "LEADER", "DISPLAY", "AGENT"], rows)
+        _print_table(["NAME", "REGION", "REGISTERED", "NODE", "ROLE", "AVAIL", "LEADER", "DISPLAY", "AGENT"], rows)
     elif isinstance(nodes.get("names"), list) and nodes.get("names"):
         print("  Registered: " + ", ".join(str(name) for name in nodes["names"]))
     else:
@@ -616,7 +632,7 @@ def _env_bool(name: str) -> bool | None:
     raise LumaError(f"{name} must be true or false")
 
 
-def _status_node_rows(registered_items: list[object], swarm_nodes: list[object]) -> list[list[str]]:
+def _status_node_rows(registered_items: list[object], orchestrator_nodes: list[object]) -> list[list[str]]:
     merged: dict[str, dict[str, object]] = {}
     for item in registered_items:
         if not isinstance(item, dict):
@@ -625,34 +641,34 @@ def _status_node_rows(registered_items: list[object], swarm_nodes: list[object])
         if name == "-":
             continue
         merged.setdefault(name, {})["registered"] = item
-    for item in swarm_nodes:
+    for item in orchestrator_nodes:
         if not isinstance(item, dict):
             continue
         name = _status_value(item.get("lumaNode") or item.get("hostname") or item.get("id"))
         if name == "-":
             continue
-        merged.setdefault(name, {})["swarm"] = item
+        merged.setdefault(name, {})["orchestrator"] = item
 
     rows: list[list[str]] = []
     for name in sorted(merged):
         registered = merged[name].get("registered")
-        swarm = merged[name].get("swarm")
+        orchestrator = merged[name].get("orchestrator")
         registered_dict = registered if isinstance(registered, dict) else {}
-        swarm_dict = swarm if isinstance(swarm, dict) else {}
+        orchestrator_dict = orchestrator if isinstance(orchestrator, dict) else {}
         display = _status_value(registered_dict.get("displayName"))
         if display == "-":
-            display = _status_value(swarm_dict.get("hostname"))
+            display = _status_value(orchestrator_dict.get("hostname"))
         if display == name:
             display = "-"
         rows.append(
             [
                 name,
-                _status_value(registered_dict.get("region") or swarm_dict.get("region")),
+                _status_value(registered_dict.get("region") or orchestrator_dict.get("region")),
                 _status_value(registered_dict.get("status")),
-                _status_value(swarm_dict.get("state")) if swarm_dict else "missing",
-                _status_value(swarm_dict.get("role")),
-                _status_value(swarm_dict.get("availability")),
-                "yes" if swarm_dict.get("leader") else "-",
+                _status_value(orchestrator_dict.get("state")) if orchestrator_dict else "missing",
+                _status_value(orchestrator_dict.get("role")),
+                _status_value(orchestrator_dict.get("availability")),
+                "yes" if orchestrator_dict.get("leader") else "-",
                 display,
                 _status_value(registered_dict.get("agentStatus")),
             ]
@@ -767,6 +783,46 @@ def _docker_compose_available() -> bool:
     return result.returncode == 0
 
 
+def _host_from_hostport(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("[") and "]" in text:
+        return text[1:text.index("]")]
+    if text.count(":") == 1:
+        return text.rsplit(":", 1)[0]
+    if text.count(":") > 1:
+        return text
+    return text
+
+
+def local_nomad_node_info() -> tuple[str, str]:
+    nomad = shutil.which("nomad")
+    if not nomad:
+        raise LumaError("Nomad CLI not found after install")
+    result = subprocess.run(
+        [nomad, "node", "status", "-self", "-json"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=15,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise LumaError(f"Nomad local node is not ready: {detail or 'nomad node status failed'}")
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise LumaError("Nomad local node status returned invalid JSON") from exc
+    node_id = str(data.get("ID") or "").strip()
+    meta = data.get("Meta") if isinstance(data.get("Meta"), dict) else {}
+    node_name = str(meta.get("luma_node_name") or data.get("Name") or "").strip()
+    if not node_id:
+        raise LumaError("Nomad local node status did not include a node ID")
+    return node_name or os.uname().nodename, node_id
+
+
 def log(message: str) -> None:
     print(message, flush=True)
 
@@ -828,17 +884,24 @@ def cmd_node(args: argparse.Namespace) -> int:
         result = client.register_node(node_name=args.name, region=args.region)
         print(f"Node registered: {result['nodeName']} ({result['region']})")
         registered_node_name = str(result.get("nodeName") or args.name)
-        manager_addr = result.get("managerAddr")
-        swarm_token = result.get("swarmJoinToken")
-        if manager_addr and _is_tailscale_manager_addr(str(manager_addr)) and not _local_tailscale_connected():
-            ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
         node = _local_node_for_region(args.region, name=args.name)
+        nomad_rpc_addr = str(result.get("nomadRpcAddr") or result.get("nomadServerAddr") or "").strip()
+        if not nomad_rpc_addr:
+            raise LumaError("control did not return a Nomad RPC address")
+        server_host = _host_from_hostport(nomad_rpc_addr)
+        if server_host and _is_tailscale_manager_addr(nomad_rpc_addr) and not _local_tailscale_connected():
+            ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
         try:
-            join_local_node(
+            # CN-side and home nodes may need the manager egress proxy for
+            # HashiCorp/GitHub downloads; global nodes download directly.
+            egress_proxy = f"http://{server_host}:7890" if args.region in {"cn", "home"} else None
+            install_nomad_node(
                 node,
-                _join_profile_for_region(args.region),
-                str(manager_addr or ""),
-                str(swarm_token or ""),
+                role="client",
+                region=args.region,
+                node_name=registered_node_name,
+                server_addrs=[nomad_rpc_addr],
+                egress_proxy=egress_proxy,
                 emit=log,
                 install_docker_first=False,
             )
@@ -847,15 +910,13 @@ def cmd_node(args: argparse.Namespace) -> int:
             try:
                 client.unregister_node(node_name=registered_node_name)
             except LumaError as cleanup_exc:
-                log(f"[fail] Roll back node registration: {cleanup_exc}")
                 raise LumaError(
-                    f"{exc}. Node registration cleanup also failed; run `luma node remove {registered_node_name}` "
-                    "from a logged-in machine after fixing control API access."
+                    f"{exc}. Node registration cleanup also failed; run `luma node remove "
+                    f"{registered_node_name}` after fixing control API access."
                 ) from exc
             log(f"[ok] Rolled back node registration: {registered_node_name}")
             raise
-        actual_node_name = local_docker_node_name()
-        actual_node_id = local_docker_node_id()
+        actual_node_name, actual_node_id = local_nomad_node_info()
         label_result = client.label_node(
             node_name=actual_node_name,
             region=args.region,
@@ -1010,7 +1071,14 @@ def cmd_secret(args: argparse.Namespace) -> int:
         resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
     )
     if args.secret_command == "set":
-        value = args.value
+        if args.value is not None and args.value_stdin:
+            raise LumaError("--value and --value-stdin cannot be used together")
+        if args.value_stdin:
+            value = sys.stdin.read()
+            if value.endswith("\n"):
+                value = value[:-1]
+        else:
+            value = args.value
         if value is None:
             value = getpass.getpass(f"{args.name}: ")
         result = client.set_secret(name=args.name, value=value)
@@ -1055,12 +1123,6 @@ def cmd_registry(args: argparse.Namespace) -> int:
         result = client.remove_registry(host=args.host)
         status = "removed" if result.get("removed") else "not configured"
         print(f"Registry credential {status}: {result.get('host', args.host)}")
-        if result.get("portainerRegistryRemoved"):
-            print("Removed matching Luma-managed Portainer registry credential.")
-        if result.get("warning"):
-            print(result["warning"])
-        elif result.get("removed") and not result.get("portainerRegistryRemoved"):
-            print("Revoke or rotate the registry token at the provider to invalidate downstream Portainer/Swarm copies.")
         return 0
     raise LumaError(f"unknown registry command: {args.registry_command}")
 
@@ -1087,11 +1149,6 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         print("Bootstrap complete")
         print(f"Control domain: {args.domain}")
         print(f"Control URL: {control_url}")
-        portainer_url = _portainer_url_from_state(state)
-        if portainer_url:
-            print(f"Portainer URL: {portainer_url}")
-            print(f"Portainer username: {state.get('portainerAdminUsername', 'admin')}")
-            print("Portainer password: sudo jq -r '.portainerAdminPassword' /opt/luma/control/control.json")
         print(f"Cluster: {state['clusterId']}")
         print(f"Management token: {state['deployToken']}")
         print(f"Node join token: {state['joinToken']}")
@@ -1135,7 +1192,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         print("[ok] Manager update complete")
         return 0
 
-    if _local_agent_config() or _safe_local_docker_node_id():
+    if _local_agent_config() or _safe_local_nomad_node_id():
         print("[info] Role: joined node")
         _refresh_joined_node_agent(args)
         print("[ok] Joined node update complete")
@@ -1270,10 +1327,9 @@ def _refresh_local_node_agent(
     resolve_ip: str | None,
     allow_skip: bool,
 ) -> None:
-    local_name = local_docker_node_name()
-    local_id = _safe_local_docker_node_id()
+    local_name, local_id = _safe_local_nomad_node_info()
     if not local_id:
-        message = "local Docker Swarm node id is unavailable"
+        message = "local Nomad node id is unavailable"
         if allow_skip:
             raise LumaError(message)
         raise LumaError(message + "; run this command on a joined node")
@@ -1282,7 +1338,7 @@ def _refresh_local_node_agent(
     issued = client.issue_agent_token(node_name=local_name, node_id=local_id)
     node_name = str(issued.get("nodeName") or "")
     if not node_name:
-        raise LumaError(f"this Swarm node is not registered in Luma Control: hostname={local_name}, nodeId={local_id}")
+        raise LumaError(f"this Nomad node is not registered in Luma Control: hostname={local_name}, nodeId={local_id}")
     agent_token = str(issued.get("agentToken") or "")
     if not agent_token:
         raise LumaError("control API did not return node agent credentials")
@@ -1330,11 +1386,15 @@ def _local_agent_config() -> Dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _safe_local_docker_node_id() -> str:
+def _safe_local_nomad_node_info() -> tuple[str, str]:
     try:
-        return local_docker_node_id()
+        return local_nomad_node_info()
     except LumaError:
-        return ""
+        return "", ""
+
+
+def _safe_local_nomad_node_id() -> str:
+    return _safe_local_nomad_node_info()[1]
 
 
 def _manager_refresh_decision(args: argparse.Namespace) -> tuple[bool, str]:
@@ -1368,20 +1428,24 @@ def _run_luma_installer(*, install_ref: str | None = None) -> None:
 
 
 def _reexec_after_luma_update() -> None:
-    executable = _current_luma_executable()
-    if not executable:
+    command = _current_luma_command()
+    if not command:
         print("[warn] Unable to re-exec updated Luma CLI; continuing in current process")
         return
     env = os.environ.copy()
     env[UPDATE_REEXEC_ENV] = "1"
-    os.execvpe(executable, [executable, *sys.argv[1:]], env)
+    os.execvpe(command[0], [*command, *sys.argv[1:]], env)
 
 
-def _current_luma_executable() -> str:
+def _current_luma_command() -> list[str]:
     candidate = str(sys.argv[0] or "").strip()
     if candidate and (Path(candidate).is_absolute() or "/" in candidate):
-        return candidate
-    return shutil.which("luma") or candidate
+        path = Path(candidate)
+        if path.suffix == ".py" and not os.access(path, os.X_OK):
+            return [sys.executable, "-m", "luma.cli"]
+        return [candidate]
+    found = shutil.which("luma") or candidate
+    return [found] if found else []
 
 
 def _refresh_manager_control(args: argparse.Namespace) -> None:
@@ -1402,7 +1466,11 @@ def _refresh_manager_control(args: argparse.Namespace) -> None:
 
 def _reject_bootstrap_only_update_options(args: argparse.Namespace) -> None:
     if args.http_port is not None or args.https_port is not None:
-        raise LumaError("luma update no longer changes Traefik ports. Use luma bootstrap manager --domain <control-domain> for ingress repair.")
+        raise LumaError(
+            "luma update manager refreshes existing ingress from control state; "
+            "HTTP/HTTPS port overrides are bootstrap-only. Use luma bootstrap manager "
+            "--domain <control-domain> for explicit ingress repair."
+        )
     if args.skip_egress:
         raise LumaError("luma update no longer runs egress setup. Use luma bootstrap manager --skip-egress only during full bootstrap repair.")
     if args.overwrite_control_state:
@@ -1458,13 +1526,6 @@ def _config_https_port(config: LumaConfig) -> int:
 def _control_url(domain: str, https_port: int) -> str:
     port = "" if https_port == 443 else f":{https_port}"
     return f"https://{domain}{port}"
-
-
-def _portainer_url_from_state(state: Dict[str, object]) -> str:
-    api_url = str(state.get("portainerApiUrl") or "")
-    if not api_url:
-        return ""
-    return api_url.removesuffix("/api")
 
 
 def _node_join_examples(control_url: str, join_token: str) -> list[tuple[str, str]]:
@@ -1641,10 +1702,10 @@ def exit_local_node(
     remote = LocalExecutor()
     results: list[str] = []
     if endpoint and token:
-        node_name = name or _local_luma_node_name(remote) or local_docker_node_name()
+        node_name = name or _local_luma_node_name(remote) or local_host_name(remote)
         result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).unregister_node(node_name=node_name)
         results.append(str(result.get("message") or f"Node unregistered: {node_name}"))
-    results.append(_leave_local_swarm(remote))
+    results.append(_stop_local_nomad(remote))
     results.append(_remove_local_runtime_state(remote))
     if tailscale:
         results.append(_tailscale_logout(remote))
@@ -1654,30 +1715,32 @@ def exit_local_node(
 
 
 def _local_luma_node_name(remote: LocalExecutor) -> str:
-    result = remote.sudo_result(
-        "if command -v docker >/dev/null 2>&1; then "
-        "docker node inspect self --format '{{ index .Spec.Labels \"luma.node.name\" }}' 2>/dev/null || true; "
-        "fi"
-    )
-    if result.code != 0:
-        return ""
-    return _last_nonempty_line(result.output)
+    agent = _local_agent_config()
+    if agent:
+        name = str(agent.get("nodeName") or "").strip()
+        if name:
+            return name
+    name, _node_id = _safe_local_nomad_node_info()
+    return name
 
 
-def _leave_local_swarm(remote: LocalExecutor) -> str:
+def _stop_local_nomad(remote: LocalExecutor) -> str:
     result = remote.sudo_result(
         "set -euo pipefail; "
-        "if command -v docker >/dev/null 2>&1; then "
-        "state=$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || echo inactive); "
-        "if [ \"$state\" = \"active\" ]; then docker swarm leave --force >/dev/null; echo left; else echo skipped; fi; "
+        "if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files nomad.service >/dev/null 2>&1; then "
+        "systemctl disable --now nomad >/dev/null 2>&1 || true; echo stopped; "
+        "elif command -v launchctl >/dev/null 2>&1 && [ -f /Library/LaunchDaemons/io.luma.nomad.plist ]; then "
+        "launchctl unload /Library/LaunchDaemons/io.luma.nomad.plist >/dev/null 2>&1 || true; echo stopped; "
         "else echo skipped; fi"
     )
     if result.code != 0:
-        raise LumaError(f"failed to leave Docker Swarm:\n{result.output.strip()}")
+        raise LumaError(f"failed to stop Nomad agent:\n{result.output.strip()}")
     status = _last_nonempty_line(result.output)
     if status == "left":
-        return "Swarm left"
-    return "Swarm leave skipped"
+        return "Nomad agent stopped"
+    if status == "stopped":
+        return "Nomad agent stopped"
+    return "Nomad agent stop skipped"
 
 
 def _remove_local_runtime_state(remote: LocalExecutor) -> str:
@@ -1736,13 +1799,6 @@ def cmd_egress(args: argparse.Namespace) -> int:
     else:
         print("Egress setup complete")
     return 0
-
-
-def cmd_portainer(args: argparse.Namespace) -> int:
-    if args.portainer_command == "setup":
-        setup_portainer(_local_node("single-node"), emit=log, executor=LocalExecutor())
-        return 0
-    raise LumaError(f"unknown portainer command: {args.portainer_command}")
 
 
 def cmd_tailscale(args: argparse.Namespace) -> int:
@@ -1836,7 +1892,7 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
         lambda: client.remove_service(
             name=service_name,
             skip_dns=args.skip_dns,
-            skip_portainer=args.skip_portainer,
+            skip_orchestrator=args.skip_orchestrator,
             delete_storage=args.delete_storage,
             dry_run=args.dry_run,
             timeout=args.timeout,
@@ -1850,8 +1906,9 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
     print(f"[ok] {action}: {result.get('service') or result.get('deployment') or service_name}")
     if result.get("dns"):
         print(result["dns"])
-    if result.get("portainer"):
-        print(result["portainer"])
+    orchestrator_message = result.get("orchestrator")
+    if orchestrator_message:
+        print(orchestrator_message)
     if result.get("generatedFiles"):
         print(result["generatedFiles"])
     if result.get("storageCleanup"):
@@ -1862,8 +1919,10 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
 def cmd_validate(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
-    storage_classes, node_records = _service_storage_context_for_local(args, service)
-    rendered = render_stack(config, service, storage_classes=storage_classes, node_records=node_records)
+    _require_nomad_engine(_service_engine(config, service, args))
+    from .nomad_render import render_nomad_job
+
+    rendered = render_nomad_job(config, service, resolve_secrets=False)
     target = stack_path(config, service)
     rendered_route = None
     if service.exposure == "tailscale-relay":
@@ -1872,7 +1931,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         rendered_route = render_tcp_route(config, service)
     route_target = route_path(config, service) if rendered_route else None
     if _output_format(args) != "text":
-        _print_success(args, _render_result(service, target, rendered, route_target, rendered_route))
+        _print_success(args, _render_result(service, target, rendered, route_target, rendered_route, artifact_kind="job"))
         return 0
     if not _quiet(args):
         print(f"Service valid: {service.name} ({service.service_kind})")
@@ -1885,8 +1944,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
 def cmd_render(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
-    storage_classes, node_records = _service_storage_context_for_local(args, service)
-    print(render_stack(config, service, storage_classes=storage_classes, node_records=node_records))
+    _require_nomad_engine(_service_engine(config, service, args))
+    from .nomad_render import render_nomad_job
+
+    print(render_nomad_job(config, service, resolve_secrets=False))
     return 0
 
 
@@ -1894,6 +1955,40 @@ def cmd_dns_sync(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
     print(sync_dns(config, service))
+    return 0
+
+
+def cmd_rollback(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    result = client.rollback_service(name=args.name, version=args.to_version)
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    print(result.get("message") or f"Rolled back {args.name}")
+    return 0
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    result = client.service_history(name=args.name)
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    versions = result.get("versions") or []
+    if not versions:
+        print(f"No version history for {args.name}")
+        return 0
+    rows = [
+        [
+            str(v.get("version")),
+            "stable" if v.get("stable") else "-",
+            str(v.get("image") or "-"),
+        ]
+        for v in versions
+    ]
+    _print_table(["version", "stable", "image"], rows)
     return 0
 
 
@@ -1920,8 +2015,10 @@ def _render_result(
     rendered: str,
     route_target: Path | None = None,
     rendered_route: str | None = None,
+    *,
+    artifact_kind: str = "stack",
 ) -> Dict[str, Any]:
-    artifacts: list[Dict[str, Any]] = [{"kind": "stack", "path": str(target), "content": rendered}]
+    artifacts: list[Dict[str, Any]] = [{"kind": artifact_kind, "path": str(target), "content": rendered}]
     if route_target and rendered_route:
         artifacts.append({"kind": "route", "path": str(route_target), "content": rendered_route})
     return {"service": _service_summary(service), "artifacts": artifacts}
@@ -1938,20 +2035,24 @@ def _service_storage_context_for_local(args: argparse.Namespace, service: Any) -
 def cmd_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
-    storage_classes, node_records = _service_storage_context_for_local(args, service)
-    rendered = render_stack(config, service, storage_classes=storage_classes, node_records=node_records)
-    target = stack_path(config, service)
-    rendered_route = None
-    if service.exposure == "tailscale-relay":
-        rendered_route = render_tailscale_route(config, service)
-    elif service.exposure == "tcp-relay":
-        rendered_route = render_tcp_route(config, service)
-    route_target = route_path(config, service) if rendered_route else None
+    # Inherit cluster engine when the manifest omits it, mirroring the control
+    # plane, so `--dry-run` previews the SAME artifact that will be deployed.
+    effective_engine = _require_nomad_engine(_service_engine(config, service, args))
     output_format = _output_format(args)
     quiet = _quiet(args) or output_format != "text"
 
     if args.dry_run:
-        result = _render_result(service, target, rendered, route_target, rendered_route)
+        rendered_route = None
+        from .nomad_render import render_nomad_job
+
+        rendered = render_nomad_job(config, service, resolve_secrets=False)
+        target = stack_path(config, service)
+        if service.exposure == "tailscale-relay":
+            rendered_route = render_tailscale_route(config, service)
+        elif service.exposure == "tcp-relay":
+            rendered_route = render_tcp_route(config, service)
+        route_target = route_path(config, service) if rendered_route else None
+        result = _render_result(service, target, rendered, route_target, rendered_route, artifact_kind="job")
         result["dryRun"] = True
         result.update(_validation_context(args))
         if output_format != "text":
@@ -1990,7 +2091,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             manifest=manifest_text,
             source_name=str(args.service),
             skip_dns=args.skip_dns,
-            skip_portainer=args.skip_portainer,
+            skip_orchestrator=args.skip_orchestrator,
             timeout=args.timeout,
         ):
             status = str(event.get("status") or "")
@@ -2021,7 +2122,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 manifest=manifest_text,
                 source_name=str(args.service),
                 skip_dns=args.skip_dns,
-                skip_portainer=args.skip_portainer,
+                skip_orchestrator=args.skip_orchestrator,
                 timeout=args.timeout,
             ),
             timeout=args.timeout,
@@ -2045,8 +2146,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             print(f"Image ready: {image.get('selected')}")
     if result.get("dns"):
         print(result["dns"])
-    if result.get("portainer"):
-        print(result["portainer"])
+    orchestrator_message = result.get("orchestrator")
+    if orchestrator_message:
+        print(orchestrator_message)
     return 0
 
 
@@ -2068,9 +2170,16 @@ def cmd_compose_validate(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
     node_records = _control_node_records_for_local(args)
-    stack = render_compose_stack(config, deployment, node_records=node_records)
+    _require_nomad_engine(_compose_engine(config, args))
+    from .nomad_render import render_compose_job
+
+    stack = render_compose_job(config, deployment, resolve_secrets=False)
     routes = render_compose_routes(config, deployment)
-    result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment, node_records=node_records), **_validation_context(args)}
+    result = {
+        "deployment": _compose_summary(config, deployment, stack, routes, artifact_kind="job"),
+        "storage": storage_summary(deployment, node_records=node_records),
+        **_validation_context(args),
+    }
     if _output_format(args) != "text":
         _print_success(args, result)
         return 0
@@ -2085,7 +2194,10 @@ def cmd_compose_validate(args: argparse.Namespace) -> int:
 def cmd_compose_render(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
-    rendered = render_compose_stack(config, deployment, node_records=_control_node_records_for_local(args))
+    _require_nomad_engine(_compose_engine(config, args))
+    from .nomad_render import render_compose_job
+
+    rendered = render_compose_job(config, deployment, resolve_secrets=False)
     for warning in _context_warnings(args):
         print(f"# warning: {warning}")
     print(rendered)
@@ -2100,12 +2212,21 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
     storage_classes = _control_storage_classes_for_local(args, required=True)
     node_records = _control_node_records_for_local(args, required=True)
     deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
-    stack = render_compose_stack(config, deployment, node_records=node_records)
-    routes = render_compose_routes(config, deployment)
+    # Inherit cluster engine when unset, mirroring the control plane, so the
+    # dry-run preview matches what will actually be deployed.
+    effective_engine = _require_nomad_engine(_compose_engine(config, args))
     output_format = _output_format(args)
     quiet = _quiet(args) or output_format != "text"
     if args.dry_run:
-        result = {"deployment": _compose_summary(config, deployment, stack, routes), "storage": storage_summary(deployment, node_records=node_records), "dryRun": True}
+        from .nomad_render import render_compose_job
+
+        stack = render_compose_job(config, deployment, resolve_secrets=False)
+        routes = render_compose_routes(config, deployment)
+        result = {
+            "deployment": _compose_summary(config, deployment, stack, routes, artifact_kind="job"),
+            "storage": storage_summary(deployment, node_records=node_records),
+            "dryRun": True,
+        }
         if output_format != "text":
             _print_success(args, result)
             return 0
@@ -2133,7 +2254,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
             compose_content=compose_text,
             source_name=str(args.sidecar),
             skip_dns=args.skip_dns,
-            skip_portainer=args.skip_portainer,
+            skip_orchestrator=args.skip_orchestrator,
             timeout=args.timeout,
         ):
             status = str(event.get("status") or "")
@@ -2159,7 +2280,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
                 compose_content=compose_text,
                 source_name=str(args.sidecar),
                 skip_dns=args.skip_dns,
-                skip_portainer=args.skip_portainer,
+                skip_orchestrator=args.skip_orchestrator,
                 timeout=args.timeout,
             ),
             timeout=args.timeout,
@@ -2264,7 +2385,9 @@ def cmd_storage_apply(args: argparse.Namespace) -> int:
     storage_classes = _control_storage_classes_for_local(args, required=True)
     node_records = _control_node_records_for_local(args, required=True)
     deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
-    render_compose_stack(load_config(args.config), deployment, node_records=node_records)
+    from .nomad_render import render_compose_job
+
+    render_compose_job(load_config(args.config), deployment, resolve_secrets=False)
     if args.dry_run:
         print(dump_yaml(storage_summary(deployment, node_records=node_records)))
         return 0
@@ -2322,8 +2445,8 @@ def cmd_storage_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _compose_summary(config: LumaConfig, deployment: Any, stack: str, routes: Dict[str, str]) -> Dict[str, Any]:
-    artifacts = [{"kind": "stack", "path": str(compose_stack_path(config, deployment)), "content": stack}]
+def _compose_summary(config: LumaConfig, deployment: Any, stack: str, routes: Dict[str, str], *, artifact_kind: str = "stack") -> Dict[str, Any]:
+    artifacts = [{"kind": artifact_kind, "path": str(compose_stack_path(config, deployment)), "content": stack}]
     for service_name, route_text in routes.items():
         artifacts.append({"kind": "route", "path": str(compose_route_path(config, deployment, service_name)), "content": route_text})
     return {
@@ -2335,6 +2458,21 @@ def _compose_summary(config: LumaConfig, deployment: Any, stack: str, routes: Di
         "artifacts": artifacts,
         "warnings": deployment.warnings,
     }
+
+
+def _compose_engine(config: LumaConfig, args: argparse.Namespace) -> str:
+    return str(getattr(args, "engine", None) or config.defaults.get("engine") or "nomad")
+
+
+def _service_engine(config: LumaConfig, service: Any, args: argparse.Namespace) -> str:
+    return str(getattr(args, "engine", None) or getattr(service, "engine", "") or config.defaults.get("engine") or "nomad")
+
+
+def _require_nomad_engine(engine: str) -> str:
+    value = str(engine or "nomad").strip() or "nomad"
+    if value != "nomad":
+        raise LumaError("Nomad is the only supported deployment engine")
+    return value
 
 
 def _compose_request_text(sidecar: Path, deployment: Any) -> tuple[str, str]:
@@ -2426,16 +2564,15 @@ def _append_control_status_checks(checks: list[tuple[str, bool, str]], client: C
             + (f"; missing: {', '.join(str(item) for item in dns_missing)}" if dns_missing else ""),
         )
     )
-    portainer = status.get("portainer") if isinstance(status.get("portainer"), dict) else {}
+    nomad = status.get("nomad") if isinstance(status.get("nomad"), dict) else {}
     checks.append(
         (
-            "Portainer readiness",
-            bool(portainer.get("ready")),
-            "Run `luma portainer setup` or rerun manager bootstrap/update to bind Portainer endpoint and swarm ID",
+            "Nomad readiness",
+            bool(nomad.get("available")),
+            str(nomad.get("error") or "Check the Nomad server and rerun manager bootstrap/update"),
         )
     )
-    swarm = status.get("swarm") if isinstance(status.get("swarm"), dict) else {}
-    checks.append(("Swarm availability", bool(swarm.get("available")), str(swarm.get("error") or "Check Docker Swarm on the manager")))
+    checks.append(("Scheduler availability", bool(nomad.get("available")), str(nomad.get("error") or "Check Nomad on the manager")))
     nodes = status.get("nodes") if isinstance(status.get("nodes"), dict) else {}
     node_items = nodes.get("items") if isinstance(nodes.get("items"), list) else []
     checks.append(("Registered nodes", bool(node_items), "Run `luma node join` on at least one worker or rerun manager bootstrap"))
@@ -2528,8 +2665,6 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_cloudflare(args)
         if args.command == "egress":
             return cmd_egress(args)
-        if args.command == "portainer":
-            return cmd_portainer(args)
         if args.command == "tailscale":
             return cmd_tailscale(args)
         if args.command == "service":
@@ -2542,6 +2677,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_dns_sync(args)
         if args.command == "deploy":
             return cmd_deploy(args)
+        if args.command == "rollback":
+            return cmd_rollback(args)
+        if args.command == "history":
+            return cmd_history(args)
         if args.command == "compose":
             return cmd_compose(args)
         if args.command == "storage":

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "luma-infra"
-version = "0.1.87"
-description = "Declarative deployment CLI for region-aware Docker Swarm infrastructure."
+version = "0.1.88"
+description = "Declarative deployment CLI for region-aware Nomad infrastructure."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
@@ -56,5 +56,4 @@ luma = [
   "assets/README.md",
   "assets/pyproject.toml",
   "assets/dashboard/*",
-  "assets/stacks/core/*/stack.yml",
 ]

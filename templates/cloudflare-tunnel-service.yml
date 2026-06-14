@@ -1,19 +1,11 @@
-services:
-  app:
-    image: ghcr.io/your-org/home-tool:latest
-    deploy:
-      replicas: 1
-      placement:
-        constraints:
-          - node.labels.region == home
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
-    deploy:
-      replicas: 1
-      placement:
-        constraints:
-          - node.labels.region == home
+# Luma manifest template — home/private service via Cloudflare Tunnel.
+# Deploy with: luma deploy cloudflare-tunnel-service.yml
+name: home-tool
+image: ghcr.io/your-org/home-tool:latest
+region: home
+exposure: cloudflare-tunnel   # User -> Cloudflare -> cloudflared -> service
+domain: tool.example.com
+port: 8080
+replicas: 1
+tunnel:
+  tokenEnv: CLOUDFLARE_TUNNEL_TOKEN   # store with: luma secret set CLOUDFLARE_TUNNEL_TOKEN
