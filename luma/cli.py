@@ -122,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.92 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.93 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -796,8 +796,21 @@ def _host_from_hostport(value: str) -> str:
     return text
 
 
+def _find_nomad_cli() -> str:
+    candidates = [
+        shutil.which("nomad"),
+        "/usr/local/bin/nomad",
+        "/opt/homebrew/bin/nomad",
+        "/usr/bin/nomad",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return ""
+
+
 def local_nomad_node_info() -> tuple[str, str]:
-    nomad = shutil.which("nomad")
+    nomad = _find_nomad_cli()
     if not nomad:
         raise LumaError("Nomad CLI not found after install")
     result = subprocess.run(

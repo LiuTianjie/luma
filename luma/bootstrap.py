@@ -1231,7 +1231,14 @@ def local_host_name(remote: Executor | None = None) -> str:
 
 def local_nomad_node_info(remote: Executor | None = None) -> tuple[str, str]:
     remote = remote or LocalExecutor()
-    result = remote.run_result("command -v nomad >/dev/null 2>&1 && nomad node status -self -json 2>/dev/null")
+    result = remote.run_result(
+        "if command -v nomad >/dev/null 2>&1; then nomad_bin=$(command -v nomad); "
+        "elif test -x /usr/local/bin/nomad; then nomad_bin=/usr/local/bin/nomad; "
+        "elif test -x /opt/homebrew/bin/nomad; then nomad_bin=/opt/homebrew/bin/nomad; "
+        "elif test -x /usr/bin/nomad; then nomad_bin=/usr/bin/nomad; "
+        "else nomad_bin=; fi; "
+        "test -n \"$nomad_bin\" && \"$nomad_bin\" node status -self -json 2>/dev/null"
+    )
     if result.code != 0 or not result.output.strip():
         return local_host_name(remote), ""
     try:

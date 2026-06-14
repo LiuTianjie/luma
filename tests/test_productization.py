@@ -720,6 +720,27 @@ class ProductConfigTests(unittest.TestCase):
         self.assertFalse(_is_tailscale_manager_addr("100.128.0.1:2377"))
         self.assertFalse(_is_tailscale_manager_addr("203.0.113.10:2377"))
 
+    def test_cli_nomad_detection_checks_common_install_paths(self):
+        from luma.cli import _find_nomad_cli
+
+        with patch("luma.cli.shutil.which", return_value=None), patch("luma.cli.Path.exists", return_value=True), patch(
+            "luma.cli.os.access", return_value=True
+        ):
+            self.assertEqual(_find_nomad_cli(), "/usr/local/bin/nomad")
+
+    def test_remote_nomad_detection_checks_common_install_paths(self):
+        from luma.bootstrap import local_nomad_node_info
+
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=1, output="")
+
+        local_nomad_node_info(remote)
+
+        command = remote.run_result.call_args_list[0].args[0]
+        self.assertIn("elif test -x /usr/local/bin/nomad", command)
+        self.assertIn("elif test -x /opt/homebrew/bin/nomad", command)
+        self.assertIn('"$nomad_bin" node status -self -json', command)
+
     def test_packaged_dashboard_assets_are_available(self):
         self.assertIn("Luma · 控制台", asset_text("dashboard/index.html"))
         self.assertIn("/v1/dashboard", asset_text("dashboard/app.js"))
