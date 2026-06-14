@@ -307,7 +307,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("node agent launchd reload scheduled", result["message"])
         service_command = executor.sudo.call_args_list[0].args[0]
         self.assertIn("sh -c", service_command)
-        self.assertIn("( sleep 2;", service_command)
+        self.assertIn("( sleep ${LUMA_AGENT_RELOAD_DELAY_SECONDS:-20};", service_command)
         self.assertIn("/Users/tao/.local/bin/luma", service_command)
         self.assertIn("launchctl bootout system/io.luma.node-agent", service_command)
 

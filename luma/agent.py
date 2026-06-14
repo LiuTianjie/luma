@@ -1432,7 +1432,7 @@ def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AG
         executor = LocalExecutor()
         if os_value == "darwin":
             refresh_command = _agent_install_command(config_path, executable=executable)
-            delayed_script = f"( sleep 2; {refresh_command} ) >/tmp/luma-node-agent-reload.log 2>&1 &"
+            delayed_script = f"( sleep ${{LUMA_AGENT_RELOAD_DELAY_SECONDS:-20}}; {refresh_command} ) >/tmp/luma-node-agent-reload.log 2>&1 &"
             delayed_command = f"sh -c {shlex.quote(delayed_script)}"
             executor.sudo(delayed_command, timeout=10)
             restart_agent = False
