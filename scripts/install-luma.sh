@@ -127,6 +127,75 @@ run_sudo() {
   fi
 }
 
+refresh_node_agent_service() {
+  agent_config="/opt/luma/node-agent/agent.json"
+  [ -f "$agent_config" ] || return 0
+  [ -x "$BIN_DIR/luma" ] || return 0
+
+  os_name="$(uname -s 2>/dev/null || echo unknown)"
+  case "$os_name" in
+    Darwin)
+      plist="/Library/LaunchDaemons/io.luma.node-agent.plist"
+      tmp_plist="$(mktemp)"
+      cat > "$tmp_plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.luma.node-agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$BIN_DIR/luma</string>
+    <string>node-agent</string>
+    <string>run</string>
+    <string>--config</string>
+    <string>$agent_config</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/var/log/luma-node-agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/luma-node-agent.err</string>
+</dict>
+</plist>
+EOF
+      run_sudo install -m 0644 "$tmp_plist" "$plist"
+      rm -f "$tmp_plist"
+      run_sudo sh -c "nohup sh -c 'sleep 2; launchctl bootout system/io.luma.node-agent >/dev/null 2>&1 || true; launchctl bootstrap system $plist; launchctl kickstart -k system/io.luma.node-agent' >/tmp/luma-node-agent-reload.log 2>&1 &"
+      echo "Luma node agent launchd reload scheduled"
+      ;;
+    Linux)
+      if command -v systemctl >/dev/null 2>&1; then
+        tmp_unit="$(mktemp)"
+        cat > "$tmp_unit" <<EOF
+[Unit]
+Description=Luma node agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$BIN_DIR/luma node-agent run --config $agent_config
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        run_sudo install -m 0644 "$tmp_unit" /etc/systemd/system/luma-node-agent.service
+        rm -f "$tmp_unit"
+        run_sudo systemctl daemon-reload
+        run_sudo systemctl enable luma-node-agent.service >/dev/null
+        echo "Luma node agent systemd service refreshed"
+      fi
+      ;;
+  esac
+}
+
 if ! command -v python3 >/dev/null 2>&1; then
   echo "Python 3 is required."
   echo "macOS: brew install python"
@@ -215,6 +284,7 @@ exec "$VENV_DIR/bin/python" -m luma.cli "\$@"
 EOF
   chmod +x "$BIN_DIR/luma"
   ensure_path
+  refresh_node_agent_service
 fi
 
 echo "Luma installed in $VENV_DIR"

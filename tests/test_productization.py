@@ -596,6 +596,17 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn('PYTHONPATH="$SOURCE_DIR\\${PYTHONPATH:+:\\$PYTHONPATH}"', installer)
         self.assertIn('exec "$VENV_DIR/bin/python" -m luma.cli', installer)
 
+    def test_installer_refreshes_existing_node_agent_service_to_shim(self):
+        root = Path(__file__).resolve().parents[1]
+        installer = (root / "scripts" / "install-luma.sh").read_text(encoding="utf-8")
+
+        self.assertIn("refresh_node_agent_service()", installer)
+        self.assertIn('agent_config="/opt/luma/node-agent/agent.json"', installer)
+        self.assertIn("ExecStart=$BIN_DIR/luma node-agent run --config $agent_config", installer)
+        self.assertIn("systemctl daemon-reload", installer)
+        self.assertIn("Luma node agent systemd service refreshed", installer)
+        self.assertIn("Luma node agent launchd reload scheduled", installer)
+
     def test_public_port_guards_install_docker_user_proxy_guard(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Linux\n")
