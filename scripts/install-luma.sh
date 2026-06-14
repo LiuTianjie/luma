@@ -69,6 +69,44 @@ chown_install_paths() {
 
 resolve_install_owner
 
+run_sudo() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif [ -n "${LUMA_SUDO_PASSWORD:-}" ]; then
+    printf '%s\n' "$LUMA_SUDO_PASSWORD" | sudo -S "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+can_run_sudo_noninteractive() {
+  if [ "$(id -u)" -eq 0 ] || [ -n "${LUMA_SUDO_PASSWORD:-}" ]; then
+    return 0
+  fi
+  sudo -n true >/dev/null 2>&1
+}
+
+repair_install_ownership() {
+  [ "$(id -u)" -ne 0 ] || return 0
+  [ -e "$INSTALL_HOME" ] || return 0
+
+  needs_repair=0
+  [ -w "$INSTALL_HOME" ] || needs_repair=1
+  if [ -e "$INSTALL_HOME/src" ]; then
+    [ -w "$INSTALL_HOME/src" ] || needs_repair=1
+    if [ -n "$(find "$INSTALL_HOME/src" ! -user "$(id -u)" -print -quit 2>/dev/null)" ]; then
+      needs_repair=1
+    fi
+  fi
+  [ "$needs_repair" -eq 1 ] || return 0
+
+  if ! can_run_sudo_noninteractive; then
+    echo "Install directory contains files not owned by $(id -un); rerun with sudo or set LUMA_SUDO_PASSWORD." >&2
+    exit 1
+  fi
+  run_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_HOME"
+}
+
 ensure_path() {
   case ":$PATH:" in
     *":$BIN_DIR:"*) return 0 ;;
@@ -127,6 +165,7 @@ download_source() {
     exit 1
   fi
   mkdir -p "$INSTALL_HOME"
+  repair_install_ownership
   tar -xzf "$archive" -C "$tmp_dir"
   extracted="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   if [ -z "$extracted" ]; then
@@ -151,16 +190,6 @@ if [ -f .env ]; then
   . ./.env
   set +a
 fi
-
-run_sudo() {
-  if [ "$(id -u)" -eq 0 ]; then
-    "$@"
-  elif [ -n "${LUMA_SUDO_PASSWORD:-}" ]; then
-    printf '%s\n' "$LUMA_SUDO_PASSWORD" | sudo -S "$@"
-  else
-    sudo "$@"
-  fi
-}
 
 refresh_node_agent_service() {
   agent_config="/opt/luma/node-agent/agent.json"

@@ -647,13 +647,24 @@ class ProductConfigTests(unittest.TestCase):
 
         self.assertIn("resolve_install_owner()", installer)
         self.assertIn("chown_install_paths()", installer)
+        self.assertIn("repair_install_ownership()", installer)
         self.assertIn("OWNER_SPEC=\"$(stat -c '%u:%g' \"$LUMA_USER_HOME\" 2>/dev/null)\"", installer)
         self.assertIn("OWNER_SPEC=\"$(stat -f '%u:%g' \"$LUMA_USER_HOME\" 2>/dev/null)\"", installer)
         self.assertIn('chown -R "$OWNER_SPEC" "$INSTALL_HOME"', installer)
+        self.assertIn('find "$INSTALL_HOME/src" ! -user "$(id -u)"', installer)
+        self.assertIn('run_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_HOME"', installer)
         self.assertIn('chown "$OWNER_SPEC" "$BIN_DIR/luma"', installer)
         self.assertLess(
             installer.index("refresh_node_agent_service"),
             installer.rindex("chown_install_paths"),
+        )
+        self.assertLess(
+            installer.index("run_sudo()"),
+            installer.index("download_source()"),
+        )
+        self.assertLess(
+            installer.index("repair_install_ownership"),
+            installer.index('rm -rf "$INSTALL_HOME/src"'),
         )
 
     def test_public_port_guards_install_docker_user_proxy_guard(self):
