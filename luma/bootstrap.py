@@ -864,7 +864,7 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
     engine = str(config.defaults.get("engine") or "nomad")
     if engine != "nomad":
         raise LumaError("Nomad is the only supported deployment engine")
-    _remember_local_manager_node(state, node, profile, remote)
+    manager_node_name = _remember_local_manager_node(state, node, profile, remote)
     state["nomadAddr"] = str(state.get("nomadAddr") or "http://127.0.0.1:4646")
     _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
@@ -874,7 +874,7 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
         results,
         emit,
         "Deploy Luma control API",
-        lambda: deploy_control_stack(remote, config, domain, emit=emit, require_pull_egress=run_egress, node_name=node.name),
+        lambda: deploy_control_stack(remote, config, domain, emit=emit, require_pull_egress=run_egress, node_name=manager_node_name),
         fix=(
             "Build and publish the Luma control image, then rerun bootstrap manager. "
             "For mainland managers using the default GHCR image, configure EGRESS_SUBSCRIPTION_URL "
@@ -948,7 +948,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
     if engine != "nomad":
         raise LumaError("Nomad is the only supported deployment engine")
     tcp_ports = _state_tcp_relay_ports(state)
-    _remember_local_manager_node(state, node, None, remote)
+    manager_node_name = _remember_local_manager_node(state, node, None, remote)
     http_port, https_port = _traefik_ports(config)
     _step(
         results,
@@ -977,16 +977,27 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         results,
         emit,
         "Refresh Luma control API",
-        lambda: deploy_control_stack(remote, config, domain, emit=emit, node_name=node.name),
+        lambda: deploy_control_stack(remote, config, domain, emit=emit, node_name=manager_node_name),
         fix="Check luma-control service logs and rerun luma update manager",
     )
     return results
 
 
-def _remember_local_manager_node(state: dict[str, object], node: NodeConfig, profile: Profile | None, remote: Executor) -> None:
+def _manager_canonical_node_name(node: NodeConfig, *, hostname: str, nomad_name: str) -> str:
+    configured = str(node.name or "").strip()
+    node_host = str(node.host or "").strip()
+    host_aliases = {hostname, node_host, "localhost", "127.0.0.1", "::1"}
+    if configured and configured not in host_aliases:
+        return configured
+    if nomad_name and nomad_name != hostname:
+        return nomad_name
+    return configured or nomad_name or hostname
+
+
+def _remember_local_manager_node(state: dict[str, object], node: NodeConfig, profile: Profile | None, remote: Executor) -> str:
     hostname = local_host_name(remote)
     nomad_name, node_id = local_nomad_node_info(remote)
-    canonical_name = node.name or nomad_name or hostname
+    canonical_name = _manager_canonical_node_name(node, hostname=hostname, nomad_name=nomad_name)
     labels = {**(profile.labels if profile else {"region": node.region})}
     roles = profile.roles if profile else node.roles
     for role in roles:
@@ -1034,6 +1045,7 @@ def _remember_local_manager_node(state: dict[str, object], node: NodeConfig, pro
     if node.name and node.name != hostname:
         alias_values = {**values, "displayName": node.name}
         nodes[node.name] = {**(nodes.get(node.name) if isinstance(nodes.get(node.name), dict) else {}), **alias_values}
+    return canonical_name
 
 
 def install_nomad_node(

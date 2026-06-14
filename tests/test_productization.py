@@ -2892,6 +2892,55 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertIn("old-manager", state["nodes"]["aly"]["aliases"])
         self.assertNotIn("managerAddr", state)
 
+    def test_nomad_manager_control_refresh_prefers_existing_nomad_meta_over_hostname_config(self):
+        config = LumaConfig(
+            {
+                "defaults": {"engine": "nomad"},
+                "nodes": {
+                    "iZ0jl8auywzycory05d9cuZ": {
+                        "host": "localhost",
+                        "publicIp": "127.0.0.1",
+                        "region": "cn",
+                        "roles": ["nomad-manager", "edge"],
+                    }
+                },
+            },
+            None,
+        )
+        node = config.get_node("iZ0jl8auywzycory05d9cuZ")
+        state = {
+            "clusterId": "luma-test",
+            "deployToken": "deploy",
+            "joinToken": "join",
+            "nodes": {
+                "aly": {
+                    "region": "cn",
+                    "nodeId": "node-id",
+                    "labels": {"luma.node.name": "aly", "luma.node.id": "node-id"},
+                }
+            },
+        }
+        with patch("luma.bootstrap.local_host_name", return_value="iZ0jl8auywzycory05d9cuZ"), patch(
+            "luma.bootstrap.local_nomad_node_info", return_value=("aly", "node-id")
+        ), patch("luma.bootstrap._tailscale_ip", return_value="100.113.204.125"), patch(
+            "luma.bootstrap.install_control_config", return_value="config"
+        ), patch("luma.bootstrap.install_control_state", return_value="state"), patch(
+            "luma.bootstrap.deploy_control_stack", return_value=["control"]
+        ) as deploy_control, patch("luma.bootstrap.configure_firewall", return_value="firewall"), patch(
+            "luma.bootstrap._deploy_nomad_job", return_value="traefik deployed"
+        ), patch("luma.bootstrap._wait_nomad_job", return_value="traefik ready"), patch(
+            "luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog"
+        ):
+            refresh_manager_control_local(config, node, "luma.example.com", state)
+
+        deploy_control.assert_called_once()
+        self.assertEqual(deploy_control.call_args.kwargs["node_name"], "aly")
+        self.assertIn("aly", state["nodes"])
+        self.assertNotIn("iZ0jl8auywzycory05d9cuZ", state["nodes"])
+        self.assertEqual(state["nodes"]["aly"]["displayName"], "aly")
+        self.assertIn("iZ0jl8auywzycory05d9cuZ", state["nodes"]["aly"]["aliases"])
+        self.assertNotIn("managerAddr", state)
+
     def test_install_docker_repairs_known_bad_apt_mirror(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Linux\n")
