@@ -1314,7 +1314,7 @@ code {
 
 .terminal-modal-backdrop {
   place-items: center;
-  padding: clamp(14px, 3vw, 36px);
+  padding: clamp(18px, 3vw, 40px);
   background:
     linear-gradient(180deg, rgba(2, 6, 12, 0.78), rgba(2, 6, 12, 0.7)),
     rgba(2, 6, 12, 0.72);
@@ -1323,7 +1323,7 @@ code {
 .application-detail-page,
 .detail-drawer,
 .terminal-modal {
-  width: min(1120px, calc(100vw - 48px));
+  width: min(1160px, calc(100vw - 48px));
   max-height: calc(100vh - 56px);
   overflow: auto;
   border: 1px solid var(--line-strong);
@@ -1377,7 +1377,7 @@ dd {
 
 .application-detail-header,
 .application-detail-body {
-  padding: 20px 22px;
+  padding: 22px 24px;
 }
 
 .application-detail-header {
@@ -1426,6 +1426,7 @@ dd {
 }
 
 .application-access-list a,
+.application-access-list p,
 .application-diagnostics-list div,
 .application-diagnostics-list p {
   margin: 0;
@@ -1888,8 +1889,8 @@ dd {
 .terminal-modal {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  width: min(1120px, calc(100vw - 56px));
-  height: min(720px, calc(100vh - 56px));
+  width: min(1120px, calc(100vw - 40px));
+  height: min(720px, calc(100vh - 40px));
   max-height: none;
   overflow: hidden;
   border-color: rgba(148, 163, 184, 0.28);
@@ -1901,8 +1902,8 @@ dd {
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 14px;
-  min-height: 82px;
-  padding: 16px 18px;
+  min-height: 78px;
+  padding: 18px 20px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(17, 24, 36, 0.96), rgba(12, 16, 24, 0.96));
 }
@@ -1925,7 +1926,7 @@ dd {
   min-height: 0;
   height: 100%;
   overflow: hidden;
-  padding: 14px;
+  padding: 16px;
   background: #03060a;
 }
 
