@@ -169,8 +169,11 @@ def _deploy_nomad_job(remote: Executor, job_json: str, job_id: str) -> str:
 
     b64 = base64.b64encode(job_json.encode("utf-8")).decode("ascii")
     remote.run(
-        f"set -e; echo {b64} | base64 -d > /tmp/{shlex.quote(job_id)}.nomad.json; "
-        f"nomad job run -json /tmp/{shlex.quote(job_id)}.nomad.json"
+        "set -e; "
+        "tmp=$(mktemp /tmp/luma-nomad-job.XXXXXX.json); "
+        "trap 'rm -f \"$tmp\"' EXIT; "
+        f"printf %s {shlex.quote(b64)} | base64 -d > \"$tmp\"; "
+        "nomad job run -json \"$tmp\""
     )
     return f"Nomad job deployed: {job_id}"
 

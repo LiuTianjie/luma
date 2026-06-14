@@ -33,6 +33,7 @@ from luma.compose import load_compose_deployment
 from luma.cloudflare import delete_dns, sync_control_dns
 from luma.bootstrap import (
     _acme_email,
+    _deploy_nomad_job,
     _ensure_control_image,
     _ensure_control_image_pull_egress,
     _is_tailscale_manager_addr,
@@ -769,6 +770,17 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("elif test -x /usr/local/bin/nomad", command)
         self.assertIn("elif test -x /opt/homebrew/bin/nomad", command)
         self.assertIn('"$nomad_bin" node status -self -json', command)
+
+    def test_nomad_job_deploy_uses_unique_tmp_file(self):
+        remote = Mock()
+        result = _deploy_nomad_job(remote, '{"Job":{"ID":"traefik"}}', "traefik")
+
+        command = remote.run.call_args.args[0]
+        self.assertEqual(result, "Nomad job deployed: traefik")
+        self.assertIn("mktemp /tmp/luma-nomad-job.", command)
+        self.assertIn("trap 'rm -f \"$tmp\"' EXIT", command)
+        self.assertIn('nomad job run -json "$tmp"', command)
+        self.assertNotIn("/tmp/traefik.nomad.json", command)
 
     def test_packaged_dashboard_assets_are_available(self):
         self.assertIn("Luma · 控制台", asset_text("dashboard/index.html"))
