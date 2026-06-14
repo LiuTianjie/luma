@@ -122,7 +122,7 @@ class NomadApiTests(unittest.TestCase):
                     "Type": "service",
                     "Status": "running",
                     "Meta": {"luma.region": "home", "luma.compose": "true"},
-                    "JobSummary": {"Summary": {"granary": {"Running": 1}}},
+                    "JobSummary": {"Summary": {"granary": {"Running": 1, "Failed": 13}}},
                 }
             ],
             "GET /v1/job/granary": {
@@ -149,7 +149,16 @@ class NomadApiTests(unittest.TestCase):
                     "ClientStatus": "running",
                     "NodeName": "lab",
                     "TaskStates": {"mysql": {"State": "running"}, "granary": {"State": "running"}},
-                }
+                },
+                {
+                    "ID": "alloc-old",
+                    "JobID": "granary",
+                    "TaskGroup": "granary",
+                    "DesiredStatus": "stop",
+                    "ClientStatus": "failed",
+                    "NodeName": "lab",
+                    "TaskStates": {"mysql": {"State": "dead", "Failed": True}, "granary": {"State": "dead", "Failed": True}},
+                },
             ],
         }
         fake = _FakeApi(responses)
@@ -161,6 +170,9 @@ class NomadApiTests(unittest.TestCase):
         self.assertEqual(tasks["mysql"]["fullName"], "granary_mysql")
         self.assertEqual(tasks["mysql"]["targetPort"], "3306")
         self.assertEqual(tasks["mysql"]["nodes"], ["lab"])
+        self.assertEqual(tasks["mysql"]["status"], "running")
+        self.assertEqual(tasks["mysql"]["failed"], 0)
+        self.assertEqual([row["id"] for row in tasks["mysql"]["tasks"]], ["alloc-1"])
         self.assertEqual(tasks["granary"]["fullName"], "granary_granary")
 
 

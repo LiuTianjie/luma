@@ -245,7 +245,7 @@ def _job_task_summaries(
             running = len([row for row in alloc_rows if str(row.get("state") or "") == "running"])
             if not alloc_rows:
                 running = int(group_summary.get("Running") or job_item.get("running") or 0)
-            counts = _group_counts(group_summary)
+            counts = _active_allocation_counts(alloc_rows) if alloc_rows else _group_counts(group_summary)
             result.append(
                 {
                     "name": task_name,
@@ -326,6 +326,20 @@ def _group_counts(group_summary: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _active_allocation_counts(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    pending_states = {"pending", "starting", "queued", "unknown"}
+    failed_states = {"dead", "failed", "lost"}
+    pending = 0
+    failed = 0
+    for row in rows:
+        state = str(row.get("state") or "").lower()
+        if state in pending_states:
+            pending += 1
+        if state in failed_states or str(row.get("error") or "").lower() == "true":
+            failed += 1
+    return {"pending": pending, "failed": failed}
+
+
 def _task_status(job_status: str, running: int, desired: int, counts: Dict[str, int]) -> str:
     if counts.get("failed", 0) > 0:
         return "failed"
@@ -351,6 +365,9 @@ def _task_allocations(
         if str(allocation.get("JobID") or job_id) != job_id:
             continue
         if str(allocation.get("TaskGroup") or group_name) != group_name:
+            continue
+        desired_status = str(allocation.get("DesiredStatus") or "run").lower()
+        if desired_status not in {"run", "running"}:
             continue
         task_states = allocation.get("TaskStates") if isinstance(allocation.get("TaskStates"), dict) else {}
         task_state = task_states.get(task_name) if isinstance(task_states.get(task_name), dict) else {}
