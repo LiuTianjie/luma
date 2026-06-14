@@ -3751,6 +3751,28 @@ class ControlApiTests(unittest.TestCase):
         self.assertIs(_node_record_for_name(nodes, "home-mac-mini"), nodes["gaojiu"])
         self.assertIs(_node_record_for_name(nodes, "Mac.lan"), nodes["gaojiu"])
 
+    def test_dashboard_nodes_accept_terminal_alias_connections(self):
+        from luma.control.server import _dashboard_nodes
+
+        rows = _dashboard_nodes(
+            [
+                {
+                    "name": "bot",
+                    "displayName": "bot",
+                    "hostname": "global-sg-1",
+                    "aliases": ["global-sg-1"],
+                    "agentStatus": "ready",
+                    "storageCapabilities": ["terminal"],
+                }
+            ],
+            [],
+            terminal_nodes={"global-sg-1"},
+        )
+
+        self.assertEqual(rows[0]["name"], "bot")
+        self.assertTrue(rows[0]["terminalConnected"])
+        self.assertEqual(rows[0]["terminalStatus"], "connected")
+
     def test_state_nodes_expands_aliases_for_internal_resolution(self):
         state = {
             "nodes": {
@@ -5253,6 +5275,50 @@ class ControlApiTests(unittest.TestCase):
                             self.assertEqual(exit_event["exitCode"], 0)
                             with self.assertRaises(WebSocketDisconnect):
                                 browser.receive_json()
+            finally:
+                control_server.TERMINAL_BROKER = original_broker
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_terminal_websocket_canonicalizes_agent_alias(self):
+        from starlette.testclient import TestClient
+        from luma.control import server as control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            original_broker = control_server.TERMINAL_BROKER
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "gaojiu": {
+                        "displayName": "gaojiu",
+                        "hostname": "home-mac-mini",
+                        "aliases": ["home-mac-mini"],
+                        "region": "home",
+                        "nodeId": "gaojiu-node-id",
+                        "labels": {"luma.node.name": "gaojiu", "luma.node.id": "gaojiu-node-id", "region": "home"},
+                    }
+                }
+                save_state(state)
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "gaojiu", "nodeId": "gaojiu-node-id"})
+                agent_token = issued["agentToken"]
+                control_server.TERMINAL_BROKER = control_server.TerminalBroker(per_node_limit=2, idle_timeout_seconds=60)
+                with TestClient(control_server.create_app()) as client:
+                    with client.websocket_connect(
+                        "/v1/terminal/agent?node=home-mac-mini&nodeId=gaojiu-node-id"
+                    ) as agent:
+                        agent.send_json({"type": "auth", "token": agent_token})
+                        ready = agent.receive_json()
+                        self.assertEqual(ready["type"], "ready")
+                        self.assertEqual(ready["node"], "gaojiu")
+                        self.assertEqual(control_server.TERMINAL_BROKER.connected_nodes(), {"gaojiu"})
+                        with client.websocket_connect("/v1/terminal/browser?node=gaojiu") as browser:
+                            browser.send_json({"type": "auth", "token": state["deployToken"]})
+                            opened = browser.receive_json()
+                            self.assertEqual(opened["type"], "open")
+                            self.assertEqual(opened["node"], "gaojiu")
+                            agent_open = agent.receive_json()
+                            self.assertEqual(agent_open["type"], "open")
+                            self.assertEqual(agent_open["node"], "gaojiu")
             finally:
                 control_server.TERMINAL_BROKER = original_broker
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)

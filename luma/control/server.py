@@ -217,11 +217,12 @@ def _node_record_entry_for_name_or_id(nodes: Dict[str, Any], node_name: str, nod
     return None
 
 
-def _require_node_agent_token(state: Dict[str, Any], token: str, node_name: str, *, node_id: str = "") -> Dict[str, Any]:
+def _require_node_agent_token_entry(state: Dict[str, Any], token: str, node_name: str, *, node_id: str = "") -> tuple[str, Dict[str, Any]]:
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    record = _node_record_for_name(nodes, node_name)
-    if record is None:
+    entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id=node_id)
+    if entry is None:
         raise LumaError("unauthorized")
+    canonical_name, record = entry
     if node_id:
         known_ids = _node_record_identity_ids(record)
         if known_ids and node_id not in known_ids:
@@ -230,7 +231,11 @@ def _require_node_agent_token(state: Dict[str, Any], token: str, node_name: str,
     expected = str(agent.get("tokenHash") or "")
     if not expected or not secrets.compare_digest(expected, _hash_agent_token(token)):
         raise LumaError("unauthorized")
-    return record
+    return canonical_name, record
+
+
+def _require_node_agent_token(state: Dict[str, Any], token: str, node_name: str, *, node_id: str = "") -> Dict[str, Any]:
+    return _require_node_agent_token_entry(state, token, node_name, node_id=node_id)[1]
 
 
 def _update_agent_heartbeat(
@@ -3545,13 +3550,8 @@ def _normalize_platform_arch(value: str) -> str:
 
 
 def _node_record_for_name(nodes: Dict[str, Any], name: str) -> Dict[str, Any] | None:
-    direct = nodes.get(name)
-    if isinstance(direct, dict):
-        return direct
-    for key, value in nodes.items():
-        if isinstance(value, dict) and name in _node_record_names(str(key), value):
-            return value
-    return None
+    entry = _node_record_entry_for_name_or_id(nodes, name)
+    return entry[1] if entry else None
 
 
 def _node_record_names(key: str, record: Dict[str, Any]) -> set[str]:
@@ -3776,7 +3776,8 @@ def _dashboard_nodes(
         capabilities = [str(value) for value in registered.get("storageCapabilities") or []]
         agent_status = str(registered.get("agentStatus") or "missing")
         terminal_capable = "terminal" in capabilities
-        terminal_connected = name in connected_terminals
+        terminal_names = _node_record_names(name, registered) if registered else {name}
+        terminal_connected = bool(terminal_names & connected_terminals)
         terminal_status = "connected" if terminal_connected else "waiting" if agent_status == "ready" and terminal_capable else "unsupported"
         rows.append(
             {
@@ -4951,9 +4952,11 @@ class TerminalBroker:
         try:
             state = load_state()
             require_token(state, token, token_type="deploy")
-            record = _node_record_for_name(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name)
-            if record is None:
+            nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+            entry = _node_record_entry_for_name_or_id(nodes, node_name)
+            if entry is None:
                 raise LumaError(f"node is not registered: {node_name}")
+            node_name = entry[0]
         except LumaError:
             await websocket.close(code=1008)
             return
@@ -5022,21 +5025,21 @@ class TerminalBroker:
             self._pending_auth_for_loop().release()
         try:
             state = load_state()
-            _require_node_agent_token(state, token, node_name, node_id=node_id)
+            canonical_node_name, _record = _require_node_agent_token_entry(state, token, node_name, node_id=node_id)
         except LumaError:
             await websocket.close(code=1008)
             return
-        connection = _TerminalAgentConnection(node_name, websocket)
+        connection = _TerminalAgentConnection(canonical_node_name, websocket)
         async with self._lock_for_loop():
-            previous = self._agents.get(node_name)
-            self._agents[node_name] = connection
+            previous = self._agents.get(canonical_node_name)
+            self._agents[canonical_node_name] = connection
         if previous:
             try:
                 await previous.websocket.close(code=1012)
             except Exception:
                 pass
         try:
-            await websocket.send_json({"type": "ready", "node": node_name})
+            await websocket.send_json({"type": "ready", "node": canonical_node_name})
             while True:
                 message = await websocket.receive_json()
                 if not isinstance(message, dict):
@@ -5049,9 +5052,9 @@ class TerminalBroker:
             pass
         finally:
             async with self._lock_for_loop():
-                if self._agents.get(node_name) is connection:
-                    self._agents.pop(node_name, None)
-            session_ids = await self._session_ids_for_agent(node_name, connection)
+                if self._agents.get(canonical_node_name) is connection:
+                    self._agents.pop(canonical_node_name, None)
+            session_ids = await self._session_ids_for_agent(canonical_node_name, connection)
             for session_id in session_ids:
                 await self.close_session(session_id, notify_agent=False, browser_message="terminal agent disconnected")
 
