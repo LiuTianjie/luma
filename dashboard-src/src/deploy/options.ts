@@ -15,7 +15,7 @@ export function requiredRegionForExposure(exposure: Exposure): Region | "" {
 }
 
 export function isReadyNode(node: DashboardNode): boolean {
-  return node.state === "ready" && node.availability === "active";
+  return node.state === "ready" && ["active", "eligible", ""].includes(node.availability || "");
 }
 
 export function hasReadyNodeInRegion(nodes: DashboardNode[], region: Region): boolean {

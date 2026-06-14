@@ -6,7 +6,7 @@ import { DeploySummary } from "./DeploySummary";
 import { DeployTemplates } from "./DeployTemplates";
 import { DEPLOY_TEMPLATES, deployTemplateName } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeployTemplate, ServiceManifestDraft } from "./types";
-import { findNode, hasReadyNodeInRegion, isReadyNode } from "./options";
+import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion } from "./options";
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
 import { SingleServiceDeployForm } from "./SingleServiceDeployForm";
 import { YamlPreviewEditor } from "./YamlPreviewEditor";
@@ -17,6 +17,72 @@ function clone<T>(value: T): T {
 
 function firstTemplate(mode: DeployMode) {
   return DEPLOY_TEMPLATES.find((template) => template.mode === mode) || DEPLOY_TEMPLATES[0];
+}
+
+type DashboardStorageClasses = NonNullable<NonNullable<DashboardPayload["storage"]>["storageClasses"]>;
+
+function storageClassAllowsRegion(
+  storageClass: DashboardStorageClasses[number] | undefined,
+  region: ServiceManifestDraft["region"] | "",
+) {
+  const regions = storageClass?.regions || [];
+  return !regions.length || !region || regions.includes(region);
+}
+
+function defaultStorageClassName(
+  storageClasses: DashboardStorageClasses = [],
+  region: ServiceManifestDraft["region"] | "" = "",
+) {
+  return storageClasses.find((storageClass) => storageClass.name && storageClassAllowsRegion(storageClass, region))?.name || "";
+}
+
+function hydrateStorageVolume<T extends { storageMode: string; storageClass: string }>(
+  volume: T,
+  region: ServiceManifestDraft["region"] | "",
+  storageClasses: DashboardStorageClasses,
+) {
+  if (volume.storageMode !== "storageClass") return volume;
+  const selected = storageClasses.find((storageClass) => storageClass.name === volume.storageClass);
+  if (volume.storageClass && storageClassAllowsRegion(selected, region)) return volume;
+  const fallback = defaultStorageClassName(storageClasses, region);
+  if (fallback) return { ...volume, storageClass: fallback };
+  return { ...volume, storageMode: "unmanaged", storageClass: "" };
+}
+
+function defaultNodeName(nodes: NonNullable<DashboardPayload["nodes"]>, region: ServiceManifestDraft["region"] | "") {
+  return nodesForRegion(nodes, region)[0]?.name || "";
+}
+
+function hydrateServiceDraftDefaults(
+  draft: ServiceManifestDraft,
+  nodes: NonNullable<DashboardPayload["nodes"]>,
+  storageClasses: DashboardStorageClasses,
+) {
+  const next = clone(draft);
+  if ((next.exposure === "tailscale-relay" || next.exposure === "tcp-relay") && !next.node) {
+    next.node = defaultNodeName(nodes, next.region);
+  }
+  next.volumeMounts = (next.volumeMounts || []).map((volume) => (
+    hydrateStorageVolume(volume, next.region, storageClasses)
+  ));
+  return next;
+}
+
+function hydrateComposeDraftDefaults(
+  draft: ComposeDeploymentDraft,
+  nodes: NonNullable<DashboardPayload["nodes"]>,
+  storageClasses: DashboardStorageClasses,
+) {
+  const next = clone(draft);
+  next.services = (next.services || []).map((service) => (
+    (service.exposure === "tailscale-relay" || service.exposure === "tcp-relay") && !service.node
+      ? { ...service, node: defaultNodeName(nodes, service.region || next.region) }
+      : service
+  ));
+  next.volumes = (next.volumes || []).map((volume) => (
+    hydrateStorageVolume(volume, next.region, storageClasses)
+  ));
+  return next;
 }
 
 const secretRefPattern = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
@@ -233,12 +299,12 @@ export function DeployWorkspace({
     setYamlDirty(false);
     setSourceName(template.mode === "compose" ? "luma.compose.yml" : "service.yaml");
     if (template.mode === "service" && template.service) {
-      const next = clone(template.service);
+      const next = hydrateServiceDraftDefaults(template.service, nodes, storageClasses);
       setServiceDraft(next);
       setServiceYaml(serviceDraftToYaml(next));
     }
     if (template.mode === "compose" && template.compose) {
-      const next = clone(template.compose);
+      const next = hydrateComposeDraftDefaults(template.compose, nodes, storageClasses);
       setComposeDraft(next);
       setComposeYaml(next.dockerComposeYaml);
       setSidecarYaml(composeDraftToSidecarYaml(next));
