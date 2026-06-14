@@ -165,7 +165,7 @@ refresh_node_agent_service() {
 EOF
       run_sudo install -m 0644 "$tmp_plist" "$plist"
       rm -f "$tmp_plist"
-      run_sudo sh -c "nohup sh -c 'sleep 2; launchctl bootout system/io.luma.node-agent >/dev/null 2>&1 || true; launchctl bootstrap system $plist; launchctl kickstart -k system/io.luma.node-agent' >/tmp/luma-node-agent-reload.log 2>&1 &"
+      run_sudo sh -c "( sleep 2; launchctl bootout system/io.luma.node-agent >/dev/null 2>&1 || true; launchctl bootstrap system $plist; launchctl kickstart -k system/io.luma.node-agent ) >/tmp/luma-node-agent-reload.log 2>&1 &"
       echo "Luma node agent launchd reload scheduled"
       ;;
     Linux)
@@ -190,7 +190,7 @@ EOF
         rm -f "$tmp_unit"
         run_sudo systemctl daemon-reload
         run_sudo systemctl enable luma-node-agent.service >/dev/null
-        run_sudo sh -c "nohup sh -c 'sleep 2; systemctl restart luma-node-agent.service' >/tmp/luma-node-agent-reload.log 2>&1 &"
+        run_sudo sh -c "( sleep 2; systemctl restart luma-node-agent.service ) >/tmp/luma-node-agent-reload.log 2>&1 &"
         echo "Luma node agent systemd restart scheduled"
       fi
       ;;
