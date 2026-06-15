@@ -6836,7 +6836,7 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_unpinned_docker_hub_deployment_rewrites_to_mirror_without_manager_pull(self):
+    def test_unpinned_docker_hub_deployment_keeps_original_image_without_manager_pull(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -6865,10 +6865,10 @@ class ControlApiTests(unittest.TestCase):
                         {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 self.assertTrue(result["image"]["deferred"])
-                self.assertTrue(result["image"]["fallback"])
-                self.assertEqual(result["image"]["deployed"], "mirror.local/nginx:alpine")
+                self.assertFalse(result["image"]["fallback"])
+                self.assertEqual(result["image"]["deployed"], "nginx:alpine")
                 stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
-                self.assertIn("\"image\": \"mirror.local/nginx:alpine\"", stack)
+                self.assertIn("\"image\": \"nginx:alpine\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -6934,6 +6934,82 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result["image"]["deployed"], digest)
                 stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
                 self.assertIn(f"\"image\": \"{digest}\"", stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_pinned_docker_hub_image_falls_back_to_mirror_after_proxy_retry_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-1": {
+                        "region": "cn",
+                        "status": "labeled",
+                        "swarmNodeId": "worker-node-id",
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["docker-image", "docker-egress-proxy"],
+                        },
+                        "labels": {"region": "cn", "luma.node.name": "worker-1", "luma.node.id": "worker-node-id"},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks"), "imageMirrors": ["mirror.local"]}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "node": "worker-1",
+                        "exposure": "none",
+                    }
+                )
+                docker_nodes = [
+                    {
+                        "ID": "worker-node-id",
+                        "Description": {"Hostname": "worker-1", "Platform": {"OS": "linux", "Architecture": "x86_64"}},
+                        "Spec": {"Role": "worker", "Availability": "active", "Labels": {"region": "cn", "luma.node.name": "worker-1", "luma.node.id": "worker-node-id"}},
+                        "Status": {"State": "ready", "Addr": "100.64.0.10"},
+                    }
+                ]
+                mirror_digest = "mirror.local/nginx@sha256:def456"
+                with patch("luma.control.server.docker_request", return_value=docker_nodes), patch(
+                    "luma.control.server._require_egress_gateway_running"
+                ) as require_egress, patch(
+                    "luma.control.server._run_node_agent_task",
+                    side_effect=[
+                        LumaError("target node Docker pull failed for nginx:alpine: failed to do request: EOF"),
+                        {"message": "Docker daemon egress proxy configured"},
+                        LumaError("target node Docker pull failed for nginx:alpine: failed to do request: EOF"),
+                        {"deployed": mirror_digest, "digest": mirror_digest},
+                    ],
+                ) as agent:
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
+                    )
+                self.assertEqual(
+                    [call.args[2] for call in agent.call_args_list],
+                    ["resolve-docker-image", "configure-docker-egress-proxy", "resolve-docker-image", "resolve-docker-image"],
+                )
+                self.assertEqual(
+                    [call.args[3]["image"] for call in agent.call_args_list if call.args[2] == "resolve-docker-image"],
+                    ["nginx:alpine", "nginx:alpine", "mirror.local/nginx:alpine"],
+                )
+                require_egress.assert_called_once()
+                self.assertTrue(result["image"]["fallback"])
+                self.assertEqual(result["image"]["selected"], "mirror.local/nginx:alpine")
+                self.assertEqual(result["image"]["deployed"], mirror_digest)
+                stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
+                self.assertIn(f"\"image\": \"{mirror_digest}\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -7404,6 +7480,30 @@ class ControlApiTests(unittest.TestCase):
             self.assertEqual(result["selected"], "mirror.local/traefik/whoami:latest")
             self.assertEqual(result["deployed"], "mirror.local/traefik/whoami@sha256:abc123")
             self.assertTrue(result["fallback"])
+
+    def test_empty_image_mirrors_disables_default_mirror_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "traefik/whoami:latest",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig({"defaults": {"imageMirrors": []}}, None)
+            with patch("luma.control.server.ensure_image_present", side_effect=LumaError("upstream failed")) as ensure:
+                with self.assertRaisesRegex(
+                    LumaError,
+                    "unable to pull service image; tried traefik/whoami:latest",
+                ):
+                    resolve_service_image(config, service)
+            self.assertEqual(ensure.call_count, 1)
 
     def test_service_image_pull_sends_registry_auth_header(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -4797,7 +4797,7 @@ def _target_image_pull_proxy_applicable(state: Dict[str, Any], node_name: str, i
 
 
 def _configure_target_image_pull_proxy(state: Dict[str, Any], node_name: str, image: str) -> None:
-    _require_egress_gateway_running()
+    _require_egress_gateway_running(state)
     _run_node_agent_task(
         state,
         node_name,
@@ -4815,15 +4815,12 @@ def _deferred_service_image(
     registry_auth: Dict[str, str] | None,
     reason: str,
 ) -> tuple[ServiceSpec, Dict[str, Any]]:
-    images = [service.image, *_fallback_images(config, service.image)]
-    deploy_image = images[1] if len(images) > 1 else service.image
-    deploy_service = replace(service, image=deploy_image) if deploy_image != service.image else service
-    return deploy_service, {
+    return service, {
         "requested": service.image,
-        "selected": deploy_image,
-        "deployed": deploy_image,
-        "fallback": deploy_image != service.image,
-        "registryAuth": bool(registry_auth and registry_auth_matches_image(registry_auth, deploy_image)),
+        "selected": service.image,
+        "deployed": service.image,
+        "fallback": False,
+        "registryAuth": bool(registry_auth and registry_auth_matches_image(registry_auth, service.image)),
         "forcePull": False,
         "platform": str(service.node_platform or "").strip(),
         "node": service.node or "",
@@ -4941,11 +4938,14 @@ def _image_repository(image: str) -> str:
 def _fallback_images(config: Any, image: str) -> list[str]:
     if _has_registry(image):
         return []
-    mirrors = config.defaults.get("imageMirrors") or [
-        "docker.1panel.live",
-        "docker.1ms.run",
-        "docker.m.daocloud.io",
-    ]
+    defaults = config.defaults if hasattr(config, "defaults") else {}
+    mirrors = defaults.get("imageMirrors")
+    if mirrors is None:
+        mirrors = [
+            "docker.1panel.live",
+            "docker.1ms.run",
+            "docker.m.daocloud.io",
+        ]
     if not isinstance(mirrors, list):
         return []
     return [f"{mirror}/{image}" for mirror in mirrors if isinstance(mirror, str) and mirror]
