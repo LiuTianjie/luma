@@ -289,7 +289,7 @@ Remove a service or Compose application by its deployed name:
 luma service remove app
 ```
 
-Luma Control uses the manifest recorded during the last successful deploy. This deletes the Cloudflare DNS record for public services, deregisters and purges the Nomad job, and deletes generated manager files such as `/opt/luma/stacks/<region>/<service>` and `routes/<service>.yml` for `tailscale-relay`. The same command removes single-service and Compose deployments. Preview first or keep DNS when needed:
+Luma Control uses the manifest recorded during the last successful deploy. This deletes the Cloudflare DNS record for public services, deregisters and purges the Nomad job, and deletes generated manager files such as `/opt/luma/stacks/<region>/<service>/<service>.nomad.json`, `/opt/luma/stacks/compose/<name>/<name>.nomad.json`, and `routes/<service>.yml` for `tailscale-relay`. The same command removes single-service and Compose deployments. Preview first or keep DNS when needed:
 
 ```bash
 luma service remove app --dry-run

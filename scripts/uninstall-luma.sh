@@ -20,7 +20,7 @@ Use --purge to also remove:
   - ~/.luma.config.json
   - ~/.config/luma
 
-This does not remove Docker, Swarm, Portainer, Traefik, Luma Control, or deployed services.
+This does not remove Docker, Nomad, Luma Control state, or deployed services.
 EOF
 }
 

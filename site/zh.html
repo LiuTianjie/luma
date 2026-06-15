@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="Luma 将 YAML 服务清单转换为 DNS 记录、HTTPS 证书、Traefik 路由和 Swarm 工作负载更新。" />
+  <meta name="description" content="Luma 将 YAML 服务清单转换为 DNS 记录、HTTPS 证书、Traefik 路由和 Nomad 工作负载更新。" />
   <title>Luma - 轻量多服务器管理控制面</title>
   <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
@@ -49,7 +49,7 @@
         </h1>
         <p class="hero-lede">
           把域名、端口、入口和 region 写进 YAML。Luma 负责同步 Cloudflare DNS、
-          Traefik HTTPS 路由和 Swarm 服务；每台服务器只需要在本机加入集群。
+          Traefik HTTPS 路由和 Nomad job；每台服务器只需要在本机加入集群。
         </p>
         <div class="hero-status" aria-label="部署能力">
           <span><strong>DNS</strong> Cloudflare 同步</span>
@@ -125,7 +125,7 @@
             <!-- Control -> Edge -->
             <path class="arch-svg-bg" d="M 531,160 L 667,160" />
             <path class="arch-svg-pulse" d="M 531,160 L 667,160" />
-            <!-- Control -> Swarm -->
+            <!-- Control -> Nomad -->
             <path class="arch-svg-bg" d="M 531,190 C 580,190 600,267 667,267" />
             <path class="arch-svg-pulse" d="M 531,190 C 580,190 600,267 667,267" />
           </svg>
@@ -150,10 +150,10 @@
             <strong>Traefik Edge</strong>
             <small>Host 规则 + ACME 证书</small>
           </div>
-          <div class="arch-card arch-swarm">
+          <div class="arch-card arch-nomad">
             <span class="brand-icon icon-docker" aria-hidden="true"></span>
-            <strong>Swarm Nodes</strong>
-            <small>status:80 副本 x2</small>
+            <strong>Nomad Clients</strong>
+            <small>status:80 allocation x2</small>
           </div>
         </div>
         <div class="deploy-output">
@@ -161,7 +161,7 @@
 ok dns     status.example.com -> cn-edge
 ok tls     acme certificate requested
 ok route   Host(status.example.com) -> status:80
-ok swarm   status replicated x2</code></pre>
+ok nomad   status allocations x2</code></pre>
           <div class="route-summary">
             <span><strong>Domain</strong>status.example.com</span>
             <span><strong>Exposure</strong>cn-edge</span>
@@ -421,14 +421,14 @@ resources:
             <span>05</span>
             <div>
               <strong>更新服务</strong>
-              <p>更新 stack，把 <code>status.example.com</code> 转发到 <code>status:80</code>。</p>
+              <p>更新 Nomad job，把 <code>status.example.com</code> 转发到 <code>status:80</code>。</p>
             </div>
           </li>
           <li>
             <span>06</span>
             <div>
               <strong>限制资源</strong>
-              <p>业务服务和控制组件共用小型服务器时，用 Swarm resources 限制 CPU 和内存。</p>
+              <p>业务服务和控制组件共用小型服务器时，用 Nomad resources 限制 CPU 和内存。</p>
             </div>
           </li>
         </ul>
@@ -537,11 +537,11 @@ volumes:
             <span class="ring ring-two"></span>
             <span class="service-dot docker"></span>
             <span class="service-dot traefik"></span>
-            <span class="service-dot portainer"></span>
+            <span class="service-dot nomad"></span>
           </div>
           <div>
             <h3>初始化控制面</h3>
-            <p>在第一台服务器上初始化 Swarm，并启动 Traefik、Portainer、Luma Control 和 egress gateway。</p>
+            <p>在第一台服务器上初始化 Nomad server，并以 Nomad job 启动 Traefik、Luma Control 和 egress gateway。</p>
             <pre><code>luma bootstrap manager --domain luma.example.com</code></pre>
           </div>
         </article>

@@ -2482,7 +2482,7 @@ def cmd_storage_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _compose_summary(config: LumaConfig, deployment: Any, stack: str, routes: Dict[str, str], *, artifact_kind: str = "stack") -> Dict[str, Any]:
+def _compose_summary(config: LumaConfig, deployment: Any, stack: str, routes: Dict[str, str], *, artifact_kind: str = "job") -> Dict[str, Any]:
     artifacts = [{"kind": artifact_kind, "path": str(compose_stack_path(config, deployment)), "content": stack}]
     for service_name, route_text in routes.items():
         artifacts.append({"kind": "route", "path": str(compose_route_path(config, deployment, service_name)), "content": route_text})

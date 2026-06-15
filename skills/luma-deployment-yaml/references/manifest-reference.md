@@ -275,7 +275,7 @@ luma service remove <name>
 
 Luma removes by deployed name, not by local YAML path. The control plane uses the manifest or sidecar recorded during the last successful deploy, so removal also works for web-dashboard deployments.
 
-By default, Luma removes Luma-managed DNS, the Nomad job, generated job/stack files, and `tailscale-relay` / `tcp-relay` route files. Storage data is preserved. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment:
+By default, Luma removes Luma-managed DNS, the Nomad job, generated jobspec files, and `tailscale-relay` / `tcp-relay` route files. Storage data is preserved. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment:
 
 ```bash
 luma service remove <name> --dry-run --delete-storage

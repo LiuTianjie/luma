@@ -14,6 +14,36 @@ VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "e
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
 VALID_ENGINES = {"nomad"}
 TCP_RELAY_RESERVED_PORTS = {80, 443}
+SERVICE_FIELDS = {
+    "command",
+    "constraints",
+    "dns",
+    "domain",
+    "engine",
+    "env",
+    "environment",
+    "exposure",
+    "healthcheck",
+    "image",
+    "labels",
+    "name",
+    "networks",
+    "node",
+    "port",
+    "proxy",
+    "public",
+    "publishPort",
+    "region",
+    "relay",
+    "replicas",
+    "resources",
+    "routePath",
+    "stackPath",
+    "storage",
+    "tcp",
+    "tunnel",
+    "volumes",
+}
 
 
 def slugify(value: str) -> str:
@@ -105,6 +135,9 @@ def tcp_entrypoint_name(port: int) -> str:
 
 def load_service(path: Path) -> ServiceSpec:
     raw = load_yaml(path)
+    unknown_fields = sorted(str(key) for key in raw if str(key) not in SERVICE_FIELDS)
+    if unknown_fields:
+        raise LumaError(f"unsupported service manifest field(s): {', '.join(unknown_fields)}")
     name = raw.get("name")
     image = raw.get("image")
     region = raw.get("region")
@@ -197,9 +230,6 @@ def load_service(path: Path) -> ServiceSpec:
     dns = raw.get("dns") or {}
     if not isinstance(dns, dict):
         raise LumaError("dns must be a mapping")
-    if "portainer" in raw:
-        raise LumaError("portainer is no longer supported")
-
     return ServiceSpec(
         source=path,
         name=name.strip(),

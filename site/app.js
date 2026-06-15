@@ -99,8 +99,8 @@ if (demoStage && demoButtons.length) {
     },
     bootstrap: {
       phase: isZh ? "初始化 Manager" : "Bootstrap Manager",
-      activity: isZh ? "在第一台服务器上建 Swarm" : "Initializes Swarm on the first server",
-      manager: isZh ? "Swarm manager + Control API" : "Swarm manager + Control API",
+      activity: isZh ? "在第一台服务器上启动 Nomad" : "Initializes Nomad on the first server",
+      manager: isZh ? "Nomad server + Control API" : "Nomad server + Control API",
       edge: isZh ? "Traefik 已启动" : "Traefik running",
       worker: isZh ? "等待加入" : "waiting to join",
       global: isZh ? "等待加入" : "waiting to join",
@@ -163,7 +163,7 @@ if (demoStage && demoButtons.length) {
       tls: isZh ? "申请 HTTPS" : "requesting HTTPS",
       tlsStatus: isZh ? "Traefik 按 Host 规则申请证书" : "Traefik requests cert from the Host rule",
       stack: "Host(status.example.com) -> status:80",
-      stackStatus: isZh ? "路由指向 Swarm 服务" : "route points to the Swarm service",
+      stackStatus: isZh ? "路由指向 Nomad job" : "route points to the Nomad job",
     },
     published: {
       phase: isZh ? "发布完成" : "Published",

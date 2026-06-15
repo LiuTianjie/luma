@@ -11,7 +11,7 @@ Luma uses a self-hosted control plane instead of SSH-driven deployment:
 - The first full node runs `luma bootstrap manager --domain luma.example.com` locally on the server.
 - Worker nodes run `luma node join https://luma.example.com --token <node-join-token> --region cn|global|home --name <node-name>` locally on each server.
 - Client machines only run `luma login` and `luma deploy`; they do not need Docker, SSH, Cloudflare credentials, or Nomad credentials.
-- The orchestrator is HashiCorp Nomad; deploy goes directly through the Nomad HTTP API (no Portainer).
+- The orchestrator is HashiCorp Nomad; deploy goes directly through the Nomad HTTP API.
 - Luma Control owns login tokens, node registration, node meta, DNS sync, jobspec rendering, image pull fallback, deployment state, and Nomad API orchestration.
 
 ## Main Flow

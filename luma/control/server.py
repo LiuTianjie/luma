@@ -1447,7 +1447,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             lambda: render_nomad_job(config, service, registry_auth=registry_auth),
             progress=progress,
         )
-        _deploy_step(steps, "Write stack", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
+        _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
         written = [str(target)]
         dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
         orchestrator_result = _deploy_step(

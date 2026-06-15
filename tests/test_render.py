@@ -106,7 +106,7 @@ image: ghcr.io/acme/api:latest
 region: cn
 """
         )
-        self.assertEqual(stack_path(self.config(), service), Path("stacks/cn/api/stack.yml"))
+        self.assertEqual(stack_path(self.config(), service), Path("stacks/cn/api/api.nomad.json"))
         self.assertEqual(route_path(self.config(), service), Path("routes/api.yml"))
 
     def test_compose_routes_still_render_without_stack_renderer(self):

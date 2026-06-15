@@ -143,7 +143,7 @@ def load_compose_deployment(
 
 
 def compose_stack_path(config: LumaConfig, deployment: ComposeDeploymentSpec) -> Path:
-    return config.stack_root / "compose" / deployment.slug / "stack.yml"
+    return config.stack_root / "compose" / deployment.slug / f"{deployment.slug}.nomad.json"
 
 
 def compose_route_path(config: LumaConfig, deployment: ComposeDeploymentSpec, service_name: str) -> Path:

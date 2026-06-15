@@ -427,7 +427,7 @@ export default defineConfig({
           response.end(JSON.stringify({
             service: "preview-service",
             summary: { name: "preview-service" },
-            artifacts: [{ kind: "stack", path: "stacks/cn/preview-service/stack.yml", content: body.manifest || "" }],
+            artifacts: [{ kind: "job", path: "stacks/cn/preview-service/preview-service.nomad.json", content: body.manifest || "" }],
             warnings: [],
           }));
         });
@@ -443,7 +443,7 @@ export default defineConfig({
           response.end(JSON.stringify({
             deployment: "preview-compose",
             summary: { name: "preview-compose" },
-            artifacts: [{ kind: "stack", path: "stacks/compose/preview-compose/stack.yml", content: body.composeContent || "" }],
+            artifacts: [{ kind: "job", path: "stacks/compose/preview-compose/preview-compose.nomad.json", content: body.composeContent || "" }],
             storage: { storageClasses: devDashboardPayload.storage.storageClasses, volumes: [], warnings: [] },
             warnings: [],
           }));
@@ -451,16 +451,16 @@ export default defineConfig({
         server.middlewares.use("/v1/deployments/stream", async (_request, response) => {
           response.statusCode = 200;
           response.setHeader("Content-Type", "application/x-ndjson");
-          response.write(JSON.stringify({ status: "start", name: "Render stack", message: "started" }) + "\n");
-          response.write(JSON.stringify({ status: "ok", name: "Render stack", message: "Stack rendered" }) + "\n");
+          response.write(JSON.stringify({ status: "start", name: "Render Nomad job", message: "started" }) + "\n");
+          response.write(JSON.stringify({ status: "ok", name: "Render Nomad job", message: "Nomad job rendered" }) + "\n");
           response.write(JSON.stringify({ status: "ok", name: "Deploy Nomad job", message: "Mock deploy complete" }) + "\n");
           response.end(JSON.stringify({ status: "done", result: { service: "preview-service" } }) + "\n");
         });
         server.middlewares.use("/v1/compose-deployments/stream", async (_request, response) => {
           response.statusCode = 200;
           response.setHeader("Content-Type", "application/x-ndjson");
-          response.write(JSON.stringify({ status: "start", name: "Render compose stack", message: "started" }) + "\n");
-          response.write(JSON.stringify({ status: "ok", name: "Render compose stack", message: "Compose rendered" }) + "\n");
+          response.write(JSON.stringify({ status: "start", name: "Render compose Nomad job", message: "started" }) + "\n");
+          response.write(JSON.stringify({ status: "ok", name: "Render compose Nomad job", message: "Compose Nomad job rendered" }) + "\n");
           response.write(JSON.stringify({ status: "ok", name: "Deploy Nomad job", message: "Mock compose deploy complete" }) + "\n");
           response.end(JSON.stringify({ status: "done", result: { deployment: "preview-compose" } }) + "\n");
         });

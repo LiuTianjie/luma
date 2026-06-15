@@ -11,7 +11,7 @@ from .service import ServiceSpec, tcp_entrypoint_name, tcp_relay_publish_port
 def stack_path(config: LumaConfig, service: ServiceSpec) -> Path:
     if service.stack_path:
         return service.stack_path
-    return config.stack_root / service.region / service.slug / "stack.yml"
+    return config.stack_root / service.region / service.slug / f"{service.slug}.nomad.json"
 
 
 def route_path(config: LumaConfig, service: ServiceSpec) -> Path:

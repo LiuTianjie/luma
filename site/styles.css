@@ -771,7 +771,7 @@ html[lang="zh-CN"] h2 {
   grid-row: 3 / 5;
 }
 
-.arch-swarm {
+.arch-nomad {
   grid-column: 9 / 13;
   grid-row: 5 / 7;
 }
@@ -1942,7 +1942,7 @@ pre {
   background: var(--purple);
 }
 
-.service-dot.portainer {
+.service-dot.nomad {
   right: 42px;
   bottom: 34px;
   background: var(--green);
@@ -2306,7 +2306,7 @@ footer span:first-child {
   .arch-control,
   .arch-dns,
   .arch-edge,
-  .arch-swarm {
+  .arch-nomad {
     grid-column: auto;
     grid-row: auto;
   }
@@ -2785,5 +2785,4 @@ footer span:first-child {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
-
 

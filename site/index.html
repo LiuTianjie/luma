@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Luma turns YAML service manifests into DNS records, HTTPS certificates, Traefik routes, and Swarm workload updates."
+      content="Luma turns YAML service manifests into DNS records, HTTPS certificates, Traefik routes, and Nomad workload updates."
     />
     <title>Luma - Lightweight multi-server control plane</title>
     <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
@@ -51,7 +51,7 @@
           </h1>
           <p class="hero-lede">
             Write one YAML file for the domain, port, exposure, and region. Luma syncs Cloudflare DNS,
-            Traefik HTTPS routes, and Swarm services while each server joins the cluster locally.
+            Traefik HTTPS routes, and Nomad jobs while each server joins the cluster locally.
           </p>
           <div class="hero-status" aria-label="Deployment capabilities">
             <span><strong>DNS</strong> Cloudflare sync</span>
@@ -126,7 +126,7 @@
               <!-- Control -> Edge -->
               <path class="arch-svg-bg" d="M 531,160 L 667,160" />
               <path class="arch-svg-pulse" d="M 531,160 L 667,160" />
-              <!-- Control -> Swarm -->
+              <!-- Control -> Nomad -->
               <path class="arch-svg-bg" d="M 531,190 C 580,190 600,267 667,267" />
               <path class="arch-svg-pulse" d="M 531,190 C 580,190 600,267 667,267" />
             </svg>
@@ -151,10 +151,10 @@
               <strong>Traefik Edge</strong>
               <small>Host rule + ACME certificate</small>
             </div>
-            <div class="arch-card arch-swarm">
+            <div class="arch-card arch-nomad">
               <span class="brand-icon icon-docker" aria-hidden="true"></span>
-              <strong>Swarm Nodes</strong>
-              <small>status:80 replicated x2</small>
+              <strong>Nomad Clients</strong>
+              <small>status:80 allocations x2</small>
             </div>
           </div>
           <div class="deploy-output">
@@ -162,7 +162,7 @@
 ok dns     status.example.com -> cn-edge
 ok tls     acme certificate requested
 ok route   Host(status.example.com) -> status:80
-ok swarm   status replicated x2</code></pre>
+ok nomad   status allocations x2</code></pre>
             <div class="route-summary">
               <span><strong>Domain</strong>status.example.com</span>
               <span><strong>Exposure</strong>cn-edge</span>
@@ -423,14 +423,14 @@ resources:
               <span>05</span>
               <div>
                 <strong>Update service</strong>
-                <p>Update the stack so <code>status.example.com</code> forwards to <code>status:80</code>.</p>
+                <p>Update the Nomad job so <code>status.example.com</code> forwards to <code>status:80</code>.</p>
               </div>
             </li>
             <li>
               <span>06</span>
               <div>
                 <strong>Limit resources</strong>
-                <p>Use Swarm resource limits when apps and control services share a small server.</p>
+                <p>Use Nomad resource limits when apps and control services share a small server.</p>
               </div>
             </li>
           </ul>
@@ -539,11 +539,11 @@ volumes:
               <span class="ring ring-two"></span>
               <span class="service-dot docker"></span>
               <span class="service-dot traefik"></span>
-              <span class="service-dot portainer"></span>
+              <span class="service-dot nomad"></span>
             </div>
             <div>
               <h3>Initialize the control plane</h3>
-              <p>Initialize Swarm on the first server, then start Traefik, Portainer, Luma Control, and the egress gateway.</p>
+              <p>Initialize the Nomad server on the first machine, then deploy Traefik, Luma Control, and the egress gateway as Nomad jobs.</p>
               <pre><code>luma bootstrap manager --domain luma.example.com</code></pre>
             </div>
           </article>

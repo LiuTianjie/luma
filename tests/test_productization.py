@@ -3727,7 +3727,7 @@ class ControlApiTests(unittest.TestCase):
                         {"manifest": manifest, "sourceName": "home-panel.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 self.assertEqual(result["service"], "home-panel")
-                stack = (root / "stacks" / "home" / "home-panel" / "stack.yml").read_text(encoding="utf-8")
+                stack = (root / "stacks" / "home" / "home-panel" / "home-panel.nomad.json").read_text(encoding="utf-8")
                 self.assertIn('"LTarget": "${meta.luma_node_name}"', stack)
                 self.assertIn('"RTarget": "mac-mini-gaojiu"', stack)
                 self.assertNotIn("node.hostname", stack)
@@ -3850,7 +3850,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(agent.call_args.args[1], "home-mac-mini")
                 self.assertEqual(agent.call_args.args[2], "resolve-docker-image")
                 self.assertEqual(agent.call_args.args[3]["platform"], "linux/arm64")
-                self.assertFalse((root / "stacks" / "home" / "pura" / "stack.yml").exists())
+                self.assertFalse((root / "stacks" / "home" / "pura" / "pura.nomad.json").exists())
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -3907,7 +3907,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(agent.call_args.args[1], "home-mac-mini")
                 self.assertEqual(agent.call_args.args[2], "resolve-docker-image")
                 self.assertEqual(agent.call_args.args[3]["platform"], "linux/arm64")
-                stack = (root / "stacks" / "home" / "pura" / "stack.yml").read_text(encoding="utf-8")
+                stack = (root / "stacks" / "home" / "pura" / "pura.nomad.json").read_text(encoding="utf-8")
                 self.assertEqual(result["image"]["deployed"], digest)
                 self.assertEqual(result["image"]["platform"], "linux/arm64")
                 self.assertEqual(result["image"]["resolvedBy"], "target-node")
@@ -4015,7 +4015,7 @@ class ControlApiTests(unittest.TestCase):
                 ), patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
                 self.assertEqual(result["service"], "api")
-                self.assertIn(str(root / "stacks" / "cn" / "api" / "stack.yml"), result["written"])
+                self.assertIn(str(root / "stacks" / "cn" / "api" / "api.nomad.json"), result["written"])
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Parse manifest=ok:api -> cn/cn-edge", steps)
                 self.assertIn("Sync DNS=ok:DNS updated", steps)
@@ -4338,7 +4338,7 @@ class ControlApiTests(unittest.TestCase):
                 state["portainerEndpointId"] = 1
                 stack_dir = root / "stacks" / "home" / "home-panel"
                 stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (stack_dir / f"{stack_dir.name}.nomad.json").write_text("services: {}\n", encoding="utf-8")
                 route_file = root / "routes" / "home-panel.yml"
                 route_file.parent.mkdir(parents=True)
                 route_file.write_text("http:\n", encoding="utf-8")
@@ -4403,7 +4403,7 @@ class ControlApiTests(unittest.TestCase):
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 stack_dir = root / "stacks" / "cn" / "api"
                 stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (stack_dir / f"{stack_dir.name}.nomad.json").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(
                     yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
                     encoding="utf-8",
@@ -4458,7 +4458,7 @@ class ControlApiTests(unittest.TestCase):
                 save_state(state)
                 stack_dir = root / "stacks" / "cn" / "api"
                 stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (stack_dir / f"{stack_dir.name}.nomad.json").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
                 with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: api") as stack:
                     result = handle_service_remove(state["deployToken"], {"name": "api"})
@@ -4515,7 +4515,7 @@ class ControlApiTests(unittest.TestCase):
                 save_state(state)
                 stack_dir = root / "stacks" / "compose" / "app-stack"
                 stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (stack_dir / f"{stack_dir.name}.nomad.json").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
                 with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: app-stack") as stack:
                     result = handle_service_remove(state["deployToken"], {"name": "app-stack"})
@@ -4558,7 +4558,7 @@ class ControlApiTests(unittest.TestCase):
                 save_state(state)
                 stack_dir = root / "stacks" / "cn" / "api"
                 stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (stack_dir / f"{stack_dir.name}.nomad.json").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
                 with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: api"), patch(
                     "luma.control.server._remove_docker_volume_across_nodes",
@@ -4617,7 +4617,7 @@ class ControlApiTests(unittest.TestCase):
                 save_state(state)
                 stack_dir = root / "stacks" / "home" / "api"
                 stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (stack_dir / f"{stack_dir.name}.nomad.json").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
                 with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: api"), patch(
                     "luma.control.server._storage_node_is_local", return_value=True
@@ -4729,7 +4729,7 @@ class ControlApiTests(unittest.TestCase):
                 save_state(state)
                 stack_dir = root / "stacks" / "compose" / "nextcloud"
                 stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text("services: {}\n", encoding="utf-8")
+                (stack_dir / f"{stack_dir.name}.nomad.json").write_text("services: {}\n", encoding="utf-8")
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
                 with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: nextcloud"), patch(
                     "luma.control.server._storage_node_is_local", return_value=True
@@ -5477,7 +5477,7 @@ class ControlApiTests(unittest.TestCase):
                 deploy.assert_called_once()
                 job_text = deploy.call_args.args[1]
                 self.assertIn('"DATABASE_URL": "postgres://secret"', job_text)
-                self.assertIn('"DATABASE_URL": "postgres://secret"', (root / "stacks" / "cn" / "api" / "stack.yml").read_text())
+                self.assertIn('"DATABASE_URL": "postgres://secret"', (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text())
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -5605,7 +5605,7 @@ class ControlApiTests(unittest.TestCase):
                 save_state(state)
                 stack_dir = root / "stacks" / "compose" / "app-stack"
                 stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text(
+                (stack_dir / f"{stack_dir.name}.nomad.json").write_text(
                     yaml.safe_dump({"services": {"app": {"image": "nginx:alpine"}}, "volumes": {"pg-data": {}}}),
                     encoding="utf-8",
                 )
@@ -5645,7 +5645,7 @@ class ControlApiTests(unittest.TestCase):
                 save_state(state)
                 stack_dir = root / "stacks" / "compose" / "app-stack"
                 stack_dir.mkdir(parents=True)
-                (stack_dir / "stack.yml").write_text(
+                (stack_dir / f"{stack_dir.name}.nomad.json").write_text(
                     yaml.safe_dump({"services": {"app": {"image": "nginx:alpine"}}, "volumes": {"pg-data": {}}}),
                     encoding="utf-8",
                 )
@@ -6718,7 +6718,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertTrue(result["image"]["registryAuth"])
                 self.assertEqual(captured["image_auth"]["username"], "octo")
                 deploy.assert_called_once()
-                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
                 self.assertIn('"auth": {', stack)
                 self.assertIn('"username": "octo"', stack)
                 self.assertIn('"password": "ghp_secret"', stack)
@@ -6756,7 +6756,7 @@ class ControlApiTests(unittest.TestCase):
                     )
                 self.assertTrue(result["image"]["deferred"])
                 self.assertEqual(result["image"]["resolvedBy"], "scheduled-node")
-                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
                 self.assertIn("\"image\": \"ghcr.io/acme/api:latest\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -6839,7 +6839,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertTrue(result["image"]["deferred"])
                 self.assertTrue(result["image"]["fallback"])
                 self.assertEqual(result["image"]["deployed"], "mirror.local/nginx:alpine")
-                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
                 self.assertIn("\"image\": \"mirror.local/nginx:alpine\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -6904,7 +6904,7 @@ class ControlApiTests(unittest.TestCase):
                     )
                 self.assertEqual([call.args[2] for call in agent.call_args_list], ["resolve-docker-image", "configure-docker-egress-proxy", "resolve-docker-image"])
                 self.assertEqual(result["image"]["deployed"], digest)
-                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
                 self.assertIn(f"\"image\": \"{digest}\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -7191,7 +7191,7 @@ class ControlApiTests(unittest.TestCase):
                         state["deployToken"],
                         {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
-                stack = (root / "stacks" / "cn" / "api" / "stack.yml").read_text(encoding="utf-8")
+                stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
                 self.assertEqual(result["image"]["requested"], "ghcr.io/acme/api:latest")
                 self.assertEqual(result["image"]["deployed"], "ghcr.io/acme/api:latest")
                 self.assertTrue(result["image"]["deferred"])
