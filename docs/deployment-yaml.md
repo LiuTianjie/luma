@@ -106,13 +106,27 @@ env:
   LOG_LEVEL: info
 ```
 
-敏感值不要写明文。先把 secret 存到控制面：
+敏感值不要写明文。可以手动把 secret 存到控制面：
 
 ```bash
-luma secret set DATABASE_URL
-luma secret set OPENAI_API_KEY
+luma secret set DATABASE_URL --scope api
+luma secret set OPENAI_API_KEY --scope api
 luma secret list
 ```
+
+如果项目已经有 `.env` 文件，推荐直接在部署时提供它：
+
+```bash
+luma deploy service.yaml --env .env
+```
+
+Compose 部署同理：
+
+```bash
+luma compose deploy luma.compose.yml --env .env
+```
+
+`--env` 会按当前应用名隔离保存 secret。比如 `name: api` 的服务会把 `.env` 中实际被 manifest 引用的 `DATABASE_URL` 保存为 `api/DATABASE_URL` 这个作用域内的值；另一个 `name: worker` 的服务即使也有 `DATABASE_URL`，也不会互相覆盖。`.env` 里没有被 YAML 引用的变量不会上传。
 
 然后在 YAML 里引用：
 
@@ -358,7 +372,7 @@ tunnel:
 - `region` 和 `exposure` 是否匹配。
 - 公开服务是否填写了 `domain` 和 `port`。
 - 镜像是否带 tag；`latest`/未带 tag 会在部署时解析成 digest，但生产回滚仍建议使用固定版本 tag。
-- secret 不要直接写明文，优先写 `${ENV_NAME}`。
+- secret 不要直接写明文，优先写 `${ENV_NAME}`，部署时用 `--env .env` 或 scoped `luma secret set --scope <app>` 提供值。
 - worker 默认使用 `exposure: none`，不要给它配公网域名。
 - home 节点不要承载核心高频公网服务。
 

@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.108 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.110 sh
 ```
 
 For local development from a checkout:
@@ -260,6 +260,14 @@ Default deploy path:
 ```bash
 luma deploy app.yaml
 ```
+
+If the application already has a project `.env`, pass it as scoped deployment secrets:
+
+```bash
+luma deploy app.yaml --env .env
+```
+
+Luma imports only variables referenced by the manifest, stores them under the service `name`, and then resolves `${NAME}` placeholders during manager-side render. This lets different applications reuse common names such as `DATABASE_URL` without colliding.
 
 This submits the manifest to the logged-in Luma Control endpoint. The manager renders generated files under `/opt/luma`, syncs DNS, creates or updates the Nomad job through the Nomad HTTP API, and probes the public route for `cn-edge` and `external-edge` services.
 

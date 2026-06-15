@@ -275,17 +275,23 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 
 私有镜像拉取和运行时 `proxy: true` 是两条路径。如果 Docker daemon 配了全局代理，而私有 registry 在认证前就 EOF/timeout，先看 `docker info` 的 HTTPProxy/HTTPSProxy/NO_PROXY，并确保私有 registry host 在 Docker daemon 的 `NO_PROXY` 里；`curl https://<registry>/v2/` 返回 `401` 通常说明 registry 本身可达，下一步应查 Docker daemon 的代理绕过。
 
-敏感值不要直接写进 manifest。先存到控制面：
+敏感值不要直接写进 manifest。如果项目已经有 `.env`，部署时直接传入：
 
 ```bash
-luma secret set DATABASE_URL
+luma deploy app.yaml --env .env
 ```
 
-再在 YAML 中引用：
+Luma 只会导入 manifest 里实际引用的变量，并按应用名隔离保存；两个服务都叫 `DATABASE_URL` 也不会互相覆盖。YAML 里照常引用：
 
 ```yaml
 env:
   DATABASE_URL: ${DATABASE_URL}
+```
+
+也可以手动管理 scoped secret：
+
+```bash
+luma secret set DATABASE_URL --scope app
 ```
 
 完整字段参考见 [docs/deployment-yaml.md](docs/deployment-yaml.md)，示例见 [examples](examples)。

@@ -2594,6 +2594,34 @@ class CliTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
 
+    def test_deploy_env_file_must_exist_when_explicit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_home = _set_env("LUMA_CONFIG_HOME", str(root / "home"))
+            service_path = root / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                        "env": {"DATABASE_URL": "${DATABASE_URL}"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                with patch("luma.cli.ControlClient", return_value=client):
+                    code = main(["deploy", str(service_path), "--env", str(root / "missing.env")])
+                self.assertEqual(code, 1)
+                client.deploy_events.assert_not_called()
+                client.deploy.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
     def test_control_client_requires_https(self):
         with self.assertRaises(Exception):
             ControlClient("http://luma.example.com", "secret")
@@ -7109,6 +7137,156 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result, {"secrets": ["DATABASE_URL"]})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_scoped_env_secrets_are_imported_from_deploy_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_db = _set_env("DATABASE_URL", "postgres://stale-global")
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_secret_set(state["deployToken"], {"name": "DATABASE_URL", "value": "postgres://legacy-global"})
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                        "env": {"DATABASE_URL": "${DATABASE_URL}"},
+                    }
+                )
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"):
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {
+                            "manifest": manifest,
+                            "sourceName": "api.yaml",
+                            "skipDns": True,
+                            "skipOrchestrator": True,
+                            "envSecrets": {"DATABASE_URL": "postgres://scoped-api", "UNUSED_TOKEN": "do-not-store"},
+                        },
+                    )
+                persisted = load_state()
+                self.assertEqual(persisted["scopedSecrets"]["api"]["DATABASE_URL"], "postgres://scoped-api")
+                self.assertNotIn("UNUSED_TOKEN", persisted["scopedSecrets"]["api"])
+                self.assertIn("api/DATABASE_URL", handle_secret_list(state["deployToken"])["secrets"])
+                stack_text = Path(result["written"][0]).read_text(encoding="utf-8")
+                self.assertIn("postgres://scoped-api", stack_text)
+                self.assertNotIn("postgres://legacy-global", stack_text)
+                self.assertNotIn("postgres://stale-global", stack_text)
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Load scoped env=ok:api: imported 1 of 1 referenced secret(s)", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("DATABASE_URL", old_db)
+
+    def test_existing_scoped_secret_blocks_global_fallback_for_missing_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_openai = _set_env("OPENAI_API_KEY", "global-openai")
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_secret_set(state["deployToken"], {"name": "DATABASE_URL", "value": "postgres://scoped-api", "scope": "api"})
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                        "env": {"OPENAI_API_KEY": "${OPENAI_API_KEY}"},
+                    }
+                )
+                with self.assertRaisesRegex(LumaError, "missing scoped deployment secrets for api: OPENAI_API_KEY"):
+                    handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("OPENAI_API_KEY", old_openai)
+
+    def test_scoped_secret_env_does_not_leak_to_unscoped_deployment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            old_db = _set_env("DATABASE_URL", "")
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "providers": {"dns": {"type": "cloudflare", "zone": "example.com"}},
+                            "defaults": {"stackRoot": str(root / "stacks")},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                api_manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                        "env": {"DATABASE_URL": "${DATABASE_URL}"},
+                    }
+                )
+                worker_manifest = yaml.safe_dump(
+                    {
+                        "name": "worker",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                        "env": {"DATABASE_URL": "${DATABASE_URL}"},
+                    }
+                )
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"):
+                    handle_deployment(
+                        state["deployToken"],
+                        {
+                            "manifest": api_manifest,
+                            "sourceName": "api.yaml",
+                            "skipDns": True,
+                            "skipOrchestrator": True,
+                            "envSecrets": {"DATABASE_URL": "postgres://api-only"},
+                        },
+                    )
+                    self.assertEqual(os.environ.get("DATABASE_URL"), "postgres://api-only")
+                    with self.assertRaisesRegex(LumaError, "missing deployment secret: DATABASE_URL"):
+                        handle_deployment(
+                            state["deployToken"],
+                            {
+                                "manifest": worker_manifest,
+                                "sourceName": "worker.yaml",
+                                "skipDns": True,
+                                "skipOrchestrator": True,
+                            },
+                        )
+                self.assertIsNone(os.environ.get("DATABASE_URL"))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+                _restore_env("DATABASE_URL", old_db)
 
     def test_deployment_skip_flags_are_honored_by_control_api(self):
         with tempfile.TemporaryDirectory() as tmp:

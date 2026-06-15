@@ -30,7 +30,7 @@ from .control.client import ControlClient
 from .control.context import list_contexts, load_current_context, save_context, use_context
 from .control.state import load_state, new_state, state_path
 from .agent import DEFAULT_AGENT_CONFIG, install_node_agent, run_node_agent, run_terminal_supervisor
-from .envfile import load_env_file
+from .envfile import load_env_file, parse_env_file
 from .errors import LumaError
 from .io import dump_yaml, write_yaml
 from .local import LocalExecutor
@@ -92,8 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_arguments(secret_list)
     secret_set = secret_sub.add_parser("set")
     secret_set.add_argument("name")
+    secret_set.add_argument("--scope", default="", help="Application/stack scope; omit only for legacy global secrets")
     secret_set.add_argument("--value")
     secret_set.add_argument("--value-stdin", action="store_true", help="Read the secret value from stdin")
+    secret_import = secret_sub.add_parser("import", help="Import deployment secrets from a .env file into an application scope")
+    secret_import.add_argument("env_file", type=Path)
+    secret_import.add_argument("--scope", required=True, help="Application/stack scope used to isolate common names like DATABASE_URL")
     registry = sub.add_parser("registry")
     registry_sub = registry.add_subparsers(dest="registry_command", required=True)
     registry_list = registry_sub.add_parser("list")
@@ -122,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.108 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.110 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -234,6 +238,8 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--dry-run", action="store_true")
     deploy.add_argument("--skip-dns", action="store_true")
     deploy.add_argument("--skip-orchestrator", action="store_true")
+    deploy.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for this service")
+    deploy.add_argument("--secrets-env-file", dest="deploy_env_file", type=Path, help=argparse.SUPPRESS)
     deploy.add_argument("--timeout", type=int, default=1800, help="Seconds to wait for the control-plane deploy response")
     deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
@@ -271,6 +277,8 @@ def build_parser() -> argparse.ArgumentParser:
     compose_deploy.add_argument("--dry-run", action="store_true")
     compose_deploy.add_argument("--skip-dns", action="store_true")
     compose_deploy.add_argument("--skip-orchestrator", action="store_true")
+    compose_deploy.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for this Compose application")
+    compose_deploy.add_argument("--secrets-env-file", dest="deploy_env_file", type=Path, help=argparse.SUPPRESS)
     compose_deploy.add_argument("--timeout", type=int, default=1800)
     storage = sub.add_parser("storage")
     storage_sub = storage.add_subparsers(dest="storage_command", required=True)
@@ -1118,8 +1126,22 @@ def cmd_secret(args: argparse.Namespace) -> int:
             value = args.value
         if value is None:
             value = getpass.getpass(f"{args.name}: ")
-        result = client.set_secret(name=args.name, value=value)
-        print(f"Secret saved: {result.get('name', args.name)}")
+        if args.scope:
+            result = client.set_secret(name=args.name, value=value, scope=str(args.scope))
+        else:
+            result = client.set_secret(name=args.name, value=value)
+        scope = result.get("scope")
+        label = f"{scope}/{result.get('name', args.name)}" if scope else result.get("name", args.name)
+        print(f"Secret saved: {label}")
+        return 0
+    if args.secret_command == "import":
+        values = parse_env_file(args.env_file)
+        if not values:
+            print(f"No secrets found in {args.env_file}")
+            return 0
+        for key, value in sorted(values.items()):
+            client.set_secret(name=key, value=value, scope=str(args.scope))
+        print(f"Secrets imported: {len(values)} into scope {args.scope}")
         return 0
     raise LumaError(f"unknown secret command: {args.secret_command}")
 
@@ -2069,6 +2091,18 @@ def _service_storage_context_for_local(args: argparse.Namespace, service: Any) -
     return storage_classes, node_records
 
 
+def _deploy_env_secrets(path: Path | None, texts: list[str]) -> Dict[str, str] | None:
+    if not path:
+        return None
+    if not path.exists():
+        raise LumaError(f"deployment env file not found: {path}")
+    values = parse_env_file(path)
+    referenced: set[str] = set()
+    for text in texts:
+        referenced.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", text))
+    return {key: value for key, value in values.items() if key in referenced}
+
+
 def cmd_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
@@ -2121,6 +2155,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if not quiet:
         print(f"[start] Submit deploy: {service.name} -> {service.region}/{service.exposure}", flush=True)
     manifest_text = args.service.read_text(encoding="utf-8")
+    env_secrets = _deploy_env_secrets(args.deploy_env_file, [manifest_text])
     streamed = False
     result: Dict[str, Any] | None = None
     try:
@@ -2129,6 +2164,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             source_name=str(args.service),
             skip_dns=args.skip_dns,
             skip_orchestrator=args.skip_orchestrator,
+            env_secrets=env_secrets,
             timeout=args.timeout,
         ):
             status = str(event.get("status") or "")
@@ -2160,6 +2196,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 source_name=str(args.service),
                 skip_dns=args.skip_dns,
                 skip_orchestrator=args.skip_orchestrator,
+                env_secrets=env_secrets,
                 timeout=args.timeout,
             ),
             timeout=args.timeout,
@@ -2284,6 +2321,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
         print(f"[ok] Control endpoint: {endpoint}", flush=True)
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     manifest_text, compose_text = _compose_request_text(args.sidecar, deployment)
+    env_secrets = _deploy_env_secrets(args.deploy_env_file, [manifest_text, compose_text])
     result: Dict[str, Any] | None = None
     try:
         for event in client.deploy_compose_events(
@@ -2292,6 +2330,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
             source_name=str(args.sidecar),
             skip_dns=args.skip_dns,
             skip_orchestrator=args.skip_orchestrator,
+            env_secrets=env_secrets,
             timeout=args.timeout,
         ):
             status = str(event.get("status") or "")
@@ -2318,6 +2357,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
                 source_name=str(args.sidecar),
                 skip_dns=args.skip_dns,
                 skip_orchestrator=args.skip_orchestrator,
+                env_secrets=env_secrets,
                 timeout=args.timeout,
             ),
             timeout=args.timeout,

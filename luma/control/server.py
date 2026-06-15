@@ -1415,6 +1415,15 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
+    secret_result = _apply_deployment_secrets(state, scope=service.slug, body=body, texts=[manifest])
+    if secret_result["scoped"] or body.get("envSecrets") is not None:
+        secret_step = {
+            "name": "Load scoped env",
+            "status": "ok",
+            "message": f"{secret_result['scope']}: imported {secret_result['imported']} of {len(secret_result['referenced'])} referenced secret(s)",
+        }
+        steps.append(secret_step)
+        _emit_progress(progress, secret_step)
     _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
 
     try:
@@ -1921,6 +1930,16 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     parse_step = {"name": "Parse compose deployment", "status": "ok", "message": f"{deployment.name} ({len(deployment.compose.get('services', {}))} services)"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
+    compose_content = str(body.get("composeContent") or "")
+    secret_result = _apply_deployment_secrets(state, scope=deployment.slug, body=body, texts=[str(body.get("manifest") or ""), compose_content])
+    if secret_result["scoped"] or body.get("envSecrets") is not None:
+        secret_step = {
+            "name": "Load scoped env",
+            "status": "ok",
+            "message": f"{secret_result['scope']}: imported {secret_result['imported']} of {len(secret_result['referenced'])} referenced secret(s)",
+        }
+        steps.append(secret_step)
+        _emit_progress(progress, secret_step)
     _emit_compose_warnings(steps, progress, deployment)
     _mark_compose_deployment(deployment, body, source_name, status="pending", steps=steps)
 
@@ -3009,11 +3028,19 @@ def handle_secret_list(token: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
-    return {"secrets": sorted(str(key) for key in secrets)}
+    scoped = state.get("scopedSecrets") if isinstance(state.get("scopedSecrets"), dict) else {}
+    names = sorted(str(key) for key in secrets)
+    for scope, values in scoped.items():
+        if not isinstance(values, dict):
+            continue
+        names.extend(f"{scope}/{key}" for key in sorted(str(key) for key in values))
+    return {"secrets": sorted(names)}
 
 
 def handle_secret_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     name = str(body.get("name") or "").strip()
+    raw_scope = str(body.get("scope") or "").strip()
+    scope = slugify(raw_scope) if raw_scope else ""
     value = body.get("value")
     if not _valid_env_name(name):
         raise LumaError("secret name must be a valid environment variable name")
@@ -3022,6 +3049,17 @@ def handle_secret_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     def mutate(state: Dict[str, Any]) -> None:
         require_token(state, token, token_type="deploy")
+        if scope:
+            scoped = state.setdefault("scopedSecrets", {})
+            if not isinstance(scoped, dict):
+                scoped = {}
+                state["scopedSecrets"] = scoped
+            secrets = scoped.setdefault(scope, {})
+            if not isinstance(secrets, dict):
+                secrets = {}
+                scoped[scope] = secrets
+            secrets[name] = str(value)
+            return
         secrets = state.setdefault("secrets", {})
         if not isinstance(secrets, dict):
             secrets = {}
@@ -3029,7 +3067,7 @@ def handle_secret_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         secrets[name] = str(value)
 
     mutate_state(mutate)
-    return {"name": name, "saved": True}
+    return {"name": name, "scope": scope, "saved": True}
 
 
 def handle_registry_list(token: str) -> Dict[str, Any]:
@@ -3154,6 +3192,79 @@ def _apply_state_secrets(state: Dict[str, Any]) -> None:
         if value is None:
             continue
         os.environ[str(key)] = str(value)
+
+
+def _apply_deployment_secrets(state: Dict[str, Any], *, scope: str, body: Dict[str, Any], texts: list[str]) -> Dict[str, Any]:
+    referenced = _referenced_env_names(texts)
+    incoming = _request_env_secrets(body)
+    global_secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+    scoped = state.get("scopedSecrets") if isinstance(state.get("scopedSecrets"), dict) else {}
+    current = scoped.get(scope) if isinstance(scoped.get(scope), dict) else {}
+    scoped_mode = incoming is not None or bool(current)
+    imported: Dict[str, str] = {}
+    if incoming is not None:
+        imported = {key: value for key, value in incoming.items() if key in referenced}
+        if imported:
+            def mutate(persisted: Dict[str, Any]) -> None:
+                persisted_scoped = persisted.setdefault("scopedSecrets", {})
+                if not isinstance(persisted_scoped, dict):
+                    persisted_scoped = {}
+                    persisted["scopedSecrets"] = persisted_scoped
+                persisted_current = persisted_scoped.setdefault(scope, {})
+                if not isinstance(persisted_current, dict):
+                    persisted_current = {}
+                    persisted_scoped[scope] = persisted_current
+                persisted_current.update(imported)
+
+            mutate_state(mutate)
+            if not isinstance(state.get("scopedSecrets"), dict):
+                state["scopedSecrets"] = {}
+            if not isinstance(state["scopedSecrets"].get(scope), dict):
+                state["scopedSecrets"][scope] = {}
+            state["scopedSecrets"][scope].update(imported)
+            scoped = state["scopedSecrets"]
+            current = scoped.get(scope) if isinstance(scoped.get(scope), dict) else {}
+
+    if scoped_mode:
+        missing: list[str] = []
+        for name in sorted(referenced):
+            if name in current:
+                os.environ[name] = str(current[name])
+            else:
+                os.environ.pop(name, None)
+                missing.append(name)
+        if missing:
+            raise LumaError(f"missing scoped deployment secrets for {scope}: {', '.join(missing)}. Add them to --env or run: luma secret set <NAME> --scope {scope}")
+    else:
+        for name in sorted(referenced):
+            if name in global_secrets and global_secrets[name] is not None:
+                os.environ[name] = str(global_secrets[name])
+            else:
+                os.environ.pop(name, None)
+
+    return {"scope": scope, "imported": len(imported), "referenced": sorted(referenced), "scoped": scoped_mode}
+
+
+def _request_env_secrets(body: Dict[str, Any]) -> Dict[str, str] | None:
+    raw = body.get("envSecrets")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise LumaError("envSecrets must be a mapping")
+    values: Dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key)
+        if not _valid_env_name(name):
+            raise LumaError(f"env secret name must be a valid environment variable name: {name!r}")
+        values[name] = "" if value is None else str(value)
+    return values
+
+
+def _referenced_env_names(texts: list[str]) -> set[str]:
+    names: set[str] = set()
+    for text in texts:
+        names.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", text))
+    return names
 
 
 def _registry_auth_for_service(state: Dict[str, Any], service: ServiceSpec) -> Dict[str, str] | None:

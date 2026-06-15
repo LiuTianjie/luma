@@ -37,7 +37,7 @@ For complete field tables and examples, read `references/manifest-reference.md`.
    - Runtime outbound proxy: add `proxy: true` and keep the chosen scheduling region.
 3. Ask only for missing required facts: service or stack name, image or compose path, domain, container port, region/exposure, storage class, and Luma node name when pinning is required.
 4. Emit only YAML unless the user asks for explanation.
-5. Use `${ENV_NAME}` for secrets and tell the user to run `luma secret set ENV_NAME`; never put secret values in YAML.
+5. Use `${ENV_NAME}` for secrets; never put secret values in YAML. If the project has a `.env`, recommend `luma deploy service.yaml --env .env` or `luma compose deploy luma.compose.yml --env .env` so Luma stores only referenced variables under the application scope.
 6. For private images, do not put registry tokens in YAML or container env. Use `luma registry login <host> --username <user> --password-stdin`.
 7. Recommend targeted validation and dry runs, not live deploys, unless the user explicitly asks to deploy.
 
@@ -185,6 +185,8 @@ Deploy with event streaming only when the user asks for a real deploy:
 luma deploy service.yaml --format ndjson --timeout 1800
 luma compose deploy luma.compose.yml --format ndjson --timeout 1800
 ```
+
+If the manifest uses `${ENV_NAME}` placeholders and the project has a `.env`, add `--env .env` to the deploy command.
 
 ## CI Usage
 

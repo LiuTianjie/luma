@@ -48,6 +48,28 @@ Luma Control also mounts `/var/run/docker.sock` and reaches the Nomad HTTP API s
 
 Service manifests can reference control-plane deployment secrets with `${NAME}` in fields such as `env`.
 
+For most project deploys, pass the project's existing `.env` file directly:
+
+```bash
+luma deploy service.yaml --env .env
+luma compose deploy luma.compose.yml --env .env
+```
+
+Luma stores these values under the deployed application scope, using the service
+or Compose `name`. A service named `api` and a service named `worker` can both
+use `DATABASE_URL` without overwriting each other. Only variables referenced by
+the manifest or Compose content are imported from the `.env` file.
+
+You can also manage scoped secrets manually:
+
+```bash
+luma secret set DATABASE_URL --scope api
+luma secret import .env --scope api
+```
+
+Legacy global deployment secrets still work when an application has no scoped
+secrets:
+
 ```bash
 luma login https://luma.example.com --token <management-token>
 luma secret set API_TOKEN

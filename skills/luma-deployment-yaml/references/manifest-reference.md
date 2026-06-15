@@ -14,7 +14,7 @@
 | `port` | public only | integer | Container internal port, not the cloud firewall or host port. |
 | `publishPort` | public services | integer | Explicit Nomad bridge port mapping on Linux nodes: host `publishPort` -> container `port`. For `cn-edge` / `external-edge`, omit for dynamic ports. For Mac/OrbStack relay services, omit because they use docker host mode and routes target the real `port`. |
 | `replicas` | no | integer | Defaults to `1`; must be at least `1`. |
-| `env` / `environment` | no | map | Service environment. Use direct values for non-sensitive settings and `${SECRET_NAME}` for values stored with `luma secret set`. |
+| `env` / `environment` | no | map | Service environment. Use direct values for non-sensitive settings and `${SECRET_NAME}` for deployment secrets supplied by `--env` or stored with scoped `luma secret set`. |
 | `command` | no | string/list | Overrides container command. |
 | `constraints` | no | string[] | Extra placement constraints (`attr == value`). Luma adds region and node/storage constraints automatically. |
 | `labels` | no | string[] | Extra service tags. Luma adds Traefik routing tags for `cn-edge` and `external-edge`. |
@@ -71,6 +71,34 @@ Rules:
 - Named `volumes` are rendered as Nomad docker `mount` blocks (`type=volume` for named volumes, `type=bind` for host paths) — never the docker `volumes` shorthand, which would bind an empty alloc directory. If a named volume is also declared in `storage`, the resolved storage-class endpoint is used.
 - `resources` maps to Nomad `resources` (CPU MHz from fractional cores, MemoryMB); quote `cpus` as a YAML string such as `"0.50"`.
 - `healthcheck` is rendered as a Nomad/Traefik check. Use it when task `running` is not enough to prove the app is listening.
+
+## Deployment Secrets
+
+Do not put secret values in manifests, Compose files, or examples. Use `${ENV_NAME}` placeholders in YAML:
+
+```yaml
+env:
+  NODE_ENV: production
+  DATABASE_URL: ${DATABASE_URL}
+```
+
+If the project already has a `.env`, prefer passing it at deploy time:
+
+```bash
+luma deploy service.yaml --env .env
+luma compose deploy luma.compose.yml --env .env
+```
+
+The CLI filters the `.env` to variables referenced as `${NAME}` by the manifest or Compose content. Luma Control stores those values under the application scope, using the service or Compose `name`; `api/DATABASE_URL` and `worker/DATABASE_URL` do not overwrite each other.
+
+Manual scoped secret management is available when needed:
+
+```bash
+luma secret set DATABASE_URL --scope api
+luma secret import .env --scope api
+```
+
+Legacy global `luma secret set DATABASE_URL` still works for applications that have no scoped secrets, but new project deploys should prefer `--env` or scoped secrets to avoid cross-project collisions.
 
 ## Private Registry Credentials
 
@@ -266,6 +294,8 @@ luma deploy service.yaml --format ndjson --timeout 1800
 luma compose deploy luma.compose.yml --format ndjson --timeout 1800
 ```
 
+When deploying manifests that reference secrets and the project has a `.env`, include `--env .env` so Luma imports scoped deployment secrets.
+
 ## Remove Behavior
 
 ```bash
@@ -291,7 +321,7 @@ luma service remove <name> --delete-storage
 - Is `region` compatible with `exposure`?
 - If `node` is set, does it match a registered Luma node name and the selected region?
 - If `node` is set, does it match a registered Luma node name and the selected region? (Node identity is stable across restarts, so a rejoined node keeps its pin.)
-- Are secrets represented as `${ENV_NAME}` and backed by `luma secret set`?
+- Are secrets represented as `${ENV_NAME}` and supplied through `--env .env` or scoped `luma secret set --scope <app>`?
 - Are private registry credentials stored with `luma registry login` instead of YAML/env?
 - Does the image include a meaningful tag? If not, remember that Luma resolves mutable tags to digests during deploy.
 - If the service needs runtime outbound network access, is `proxy: true` used instead of manual proxy boilerplate?

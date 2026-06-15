@@ -8,9 +8,19 @@ from .errors import LumaError
 
 
 def load_env_file(path: Path, *, override: bool = False) -> list[str]:
-    if not path.exists():
-        return []
+    values = parse_env_file(path)
     loaded = []
+    for key, value in values.items():
+        if override or key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
     for lineno, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -24,10 +34,8 @@ def load_env_file(path: Path, *, override: bool = False) -> list[str]:
         if not key or not key.replace("_", "").isalnum() or key[0].isdigit():
             raise LumaError(f"invalid env var name {path}:{lineno}: {key!r}")
         value = _parse_env_value(value.strip(), path=path, lineno=lineno)
-        if override or key not in os.environ:
-            os.environ[key] = value
-            loaded.append(key)
-    return loaded
+        values[key] = value
+    return values
 
 
 def _parse_env_value(value: str, *, path: Path, lineno: int) -> str:

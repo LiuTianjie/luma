@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.108"
+python -m pip install "luma-infra==0.1.110"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.108 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.110 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.108"
+python -m pip install "luma-infra==0.1.110"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.108"
+python -m pip install "luma-infra==0.1.110"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -246,7 +246,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.108 --timeout 900
+luma update fleet --install-ref v0.1.110 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -409,17 +409,21 @@ resources:
 For `luma deploy service.yaml`, Luma does:
 
 1. parse and validate the service manifest;
-2. read the current login context from `~/.config/luma`;
-3. submit the manifest to the manager's Luma Control API;
-4. render `stacks/<region>/<service>/<service>.nomad.json` (the jobspec) on the manager;
-5. render `routes/<service>.yml` on the manager for `tailscale-relay` or `tcp-relay`;
-6. upsert Cloudflare DNS unless skipped;
-7. submit the job to Nomad through `PUT /v1/jobs` (create or update);
-8. probe the public route for `cn-edge` and `external-edge` services.
+2. if `--env <file>` is provided, parse that `.env` locally and keep only variables referenced as `${NAME}` by the manifest;
+3. read the current login context from `~/.config/luma`;
+4. submit the manifest and filtered scoped env secrets to the manager's Luma Control API;
+5. store incoming env secrets under the service `name` scope and resolve `${NAME}` before rendering;
+6. render `stacks/<region>/<service>/<service>.nomad.json` (the jobspec) on the manager;
+7. render `routes/<service>.yml` on the manager for `tailscale-relay` or `tcp-relay`;
+8. upsert Cloudflare DNS unless skipped;
+9. submit the job to Nomad through `PUT /v1/jobs` (create or update);
+10. probe the public route for `cn-edge` and `external-edge` services.
 
 The client prints local progress before submitting the request, while waiting for the control plane, and for each control-plane step. A public route probe reports the HTTP status from `/`; `404` means the route is reachable but the application may not serve a root page. The default deploy response timeout is 1800 seconds because first deploys may pull large images on the target node; use `--timeout <seconds>` to override it.
 
 Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Nomad job (the job id is the service slug) instead of creating a duplicate. The update uses the current rendered jobspec as the source of truth, and Nomad keeps the previous version so `luma rollback` can return to it.
+
+Use `luma deploy service.yaml --env .env` when the project already has a deployment env file. Scoped env secrets are isolated by service name, so `api/DATABASE_URL` and `worker/DATABASE_URL` are distinct values. Legacy global `luma secret set NAME` values are still used only for applications that have no scoped secrets.
 
 `--dry-run` renders locally and does not submit a deployment. When local rendering cannot read optional cluster context such as node or storage metadata, JSON output includes `validationMode: "degraded"` plus warnings; text output prints `[warn]` lines. `--skip-dns` and `--skip-orchestrator` are sent to the control API. `--commit` and `--push` are deprecated in control-plane deploy mode.
 

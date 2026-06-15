@@ -222,17 +222,21 @@ class ControlClient:
         source_name: str,
         skip_dns: bool = False,
         skip_orchestrator: bool = False,
+        env_secrets: Dict[str, str] | None = None,
         timeout: int = 1800,
     ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "manifest": manifest,
+            "sourceName": source_name,
+            "skipDns": skip_dns,
+            "skipOrchestrator": skip_orchestrator,
+        }
+        if env_secrets is not None:
+            body["envSecrets"] = env_secrets
         return self.request(
             "POST",
             "/v1/deployments",
-            {
-                "manifest": manifest,
-                "sourceName": source_name,
-                "skipDns": skip_dns,
-                "skipOrchestrator": skip_orchestrator,
-            },
+            body,
             timeout=timeout,
         )
 
@@ -243,17 +247,21 @@ class ControlClient:
         source_name: str,
         skip_dns: bool = False,
         skip_orchestrator: bool = False,
+        env_secrets: Dict[str, str] | None = None,
         timeout: int = 1800,
     ) -> Iterator[Dict[str, Any]]:
+        body: Dict[str, Any] = {
+            "manifest": manifest,
+            "sourceName": source_name,
+            "skipDns": skip_dns,
+            "skipOrchestrator": skip_orchestrator,
+        }
+        if env_secrets is not None:
+            body["envSecrets"] = env_secrets
         return self.stream(
             "POST",
             "/v1/deployments/stream",
-            {
-                "manifest": manifest,
-                "sourceName": source_name,
-                "skipDns": skip_dns,
-                "skipOrchestrator": skip_orchestrator,
-            },
+            body,
             timeout=timeout,
         )
 
@@ -265,18 +273,22 @@ class ControlClient:
         source_name: str,
         skip_dns: bool = False,
         skip_orchestrator: bool = False,
+        env_secrets: Dict[str, str] | None = None,
         timeout: int = 1800,
     ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "manifest": manifest,
+            "composeContent": compose_content,
+            "sourceName": source_name,
+            "skipDns": skip_dns,
+            "skipOrchestrator": skip_orchestrator,
+        }
+        if env_secrets is not None:
+            body["envSecrets"] = env_secrets
         return self.request(
             "POST",
             "/v1/compose-deployments",
-            {
-                "manifest": manifest,
-                "composeContent": compose_content,
-                "sourceName": source_name,
-                "skipDns": skip_dns,
-                "skipOrchestrator": skip_orchestrator,
-            },
+            body,
             timeout=timeout,
         )
 
@@ -288,18 +300,22 @@ class ControlClient:
         source_name: str,
         skip_dns: bool = False,
         skip_orchestrator: bool = False,
+        env_secrets: Dict[str, str] | None = None,
         timeout: int = 1800,
     ) -> Iterator[Dict[str, Any]]:
+        body: Dict[str, Any] = {
+            "manifest": manifest,
+            "composeContent": compose_content,
+            "sourceName": source_name,
+            "skipDns": skip_dns,
+            "skipOrchestrator": skip_orchestrator,
+        }
+        if env_secrets is not None:
+            body["envSecrets"] = env_secrets
         return self.stream(
             "POST",
             "/v1/compose-deployments/stream",
-            {
-                "manifest": manifest,
-                "composeContent": compose_content,
-                "sourceName": source_name,
-                "skipDns": skip_dns,
-                "skipOrchestrator": skip_orchestrator,
-            },
+            body,
             timeout=timeout,
         )
 
@@ -355,8 +371,11 @@ class ControlClient:
     def list_secrets(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/secrets")
 
-    def set_secret(self, *, name: str, value: str) -> Dict[str, Any]:
-        return self.request("POST", "/v1/secrets", {"name": name, "value": value})
+    def set_secret(self, *, name: str, value: str, scope: str = "") -> Dict[str, Any]:
+        body: Dict[str, Any] = {"name": name, "value": value}
+        if scope:
+            body["scope"] = scope
+        return self.request("POST", "/v1/secrets", body)
 
     def list_registries(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/registries")

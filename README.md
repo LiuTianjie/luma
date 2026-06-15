@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.108"
+python -m pip install "luma-infra==0.1.110"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.108 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.110 sh
 ```
 
 Develop from source:
@@ -252,7 +252,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.108"
+python -m pip install "luma-infra==0.1.110"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -297,17 +297,23 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 After that, manifests still only contain the image name, for example `image: ghcr.io/acme/private-api:1.0.0`. During deploy, Luma matches the registry host and injects the registry auth into the Nomad jobspec's docker `config.auth` block, so the node that receives the allocation can pull. Fixed-node deployments may ask that target node to resolve the image first; unpinned services are pulled by the node where Nomad places the allocation, not by the manager as a deploy prerequisite. Docker Hub-style images may still be rewritten to a configured mirror before scheduling. This is useful for private GHCR images produced by GitHub Actions, including images built from repositories that also publish docs or marketing pages through GitHub Pages.
 Private registry image pulls are separate from runtime `proxy: true`. If a scheduled node has a global Docker proxy and a private registry fails before auth, check `docker info` proxy settings on that node and make sure that registry host is in Docker daemon `NO_PROXY`; `curl https://<registry>/v2/` returning `401` usually means the registry is reachable and Docker proxy routing is the next thing to inspect.
 
-Do not put sensitive values directly in manifests. Store them in the control plane:
+Do not put sensitive values directly in manifests. If the project already has a `.env` file, pass it during deploy:
 
 ```bash
-luma secret set DATABASE_URL
+luma deploy app.yaml --env .env
 ```
 
-Then reference them from YAML:
+Luma imports only the variables referenced by the manifest and stores them under the application scope, so two services can both use names like `DATABASE_URL` without overwriting each other. Reference them from YAML as usual:
 
 ```yaml
 env:
   DATABASE_URL: ${DATABASE_URL}
+```
+
+You can also manage scoped secrets manually:
+
+```bash
+luma secret set DATABASE_URL --scope app
 ```
 
 See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examples](examples) for service templates.
