@@ -1003,6 +1003,37 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "compose")
         self.assertEqual(args.compose_command, "deploy")
         self.assertTrue(args.dry_run)
+        args = build_parser().parse_args(
+            [
+                "secret",
+                "set",
+                "DATABASE_URL",
+                "--value",
+                "postgres://secret",
+                "--control-url",
+                "https://luma.example.com",
+                "--token",
+                "deploy-token",
+            ]
+        )
+        self.assertEqual(args.secret_command, "set")
+        self.assertEqual(args.control_url, "https://luma.example.com")
+        args = build_parser().parse_args(
+            [
+                "registry",
+                "login",
+                "ghcr.io",
+                "--username",
+                "bot",
+                "--password-stdin",
+                "--control-url",
+                "https://luma.example.com",
+                "--token",
+                "deploy-token",
+            ]
+        )
+        self.assertEqual(args.registry_command, "login")
+        self.assertEqual(args.control_url, "https://luma.example.com")
         args = build_parser().parse_args(["compose", "validate", "luma.compose.yml", "--control-url", "https://luma.example.com", "--token", "deploy-token"])
         self.assertEqual(args.compose_command, "validate")
         self.assertEqual(args.control_url, "https://luma.example.com")
@@ -2145,6 +2176,84 @@ class CliTests(unittest.TestCase):
         payloads = [json.loads(call.args[0]) for call in printed.call_args_list]
         self.assertEqual(payloads[0]["result"]["secrets"], ["DATABASE_URL"])
         self.assertEqual(payloads[1]["result"]["registries"][0]["host"], "ghcr.io")
+
+    def test_secret_and_registry_writes_use_env_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            old_url = _set_env("LUMA_CONTROL_URL", "https://luma.example.com")
+            old_token = _set_env("LUMA_DEPLOY_TOKEN", "deploy-token")
+            try:
+                secret_client = Mock()
+                secret_client.set_secret.return_value = {"name": "DATABASE_URL", "saved": True}
+                registry_client = Mock()
+                registry_client.set_registry.return_value = {"host": "ghcr.io"}
+                with patch("luma.cli.ControlClient", side_effect=[secret_client, registry_client]) as client_cls, patch(
+                    "sys.stdin", io.StringIO("registry-token\n")
+                ), patch("builtins.print"):
+                    secret_code = main(["--no-env", "secret", "set", "DATABASE_URL", "--value", "postgres://secret"])
+                    registry_code = main(["--no-env", "registry", "login", "ghcr.io", "--username", "bot", "--password-stdin"])
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+                _restore_env("LUMA_CONTROL_URL", old_url)
+                _restore_env("LUMA_DEPLOY_TOKEN", old_token)
+
+        self.assertEqual(secret_code, 0)
+        self.assertEqual(registry_code, 0)
+        self.assertEqual(client_cls.call_count, 2)
+        for call in client_cls.call_args_list:
+            self.assertEqual(call.args[:2], ("https://luma.example.com", "deploy-token"))
+        secret_client.set_secret.assert_called_once_with(name="DATABASE_URL", value="postgres://secret")
+        registry_client.set_registry.assert_called_once_with(host="ghcr.io", username="bot", password="registry-token")
+
+    def test_node_status_accepts_node_alias_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.status.return_value = {
+                    "clusterId": "luma-test",
+                    "nodes": {
+                        "registered": 2,
+                        "items": [
+                            {
+                                "name": "gaojiu",
+                                "displayName": "gaojiu",
+                                "aliases": ["home-mac-mini"],
+                                "region": "home",
+                                "status": "labeled",
+                                "agentStatus": "ready",
+                                "agentOs": "darwin",
+                                "agentLastSeen": 0,
+                            },
+                            {
+                                "name": "lab",
+                                "displayName": "lab",
+                                "region": "home",
+                                "status": "labeled",
+                                "agentStatus": "ready",
+                                "agentOs": "linux",
+                                "agentLastSeen": 0,
+                            },
+                        ],
+                    },
+                    "nomad": {
+                        "available": True,
+                        "nodes": [
+                            {"name": "gaojiu", "lumaNode": "gaojiu", "hostname": "Mac.lan"},
+                            {"name": "lab", "lumaNode": "lab", "hostname": "ubuntu"},
+                        ],
+                    },
+                }
+                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                    code = main(["node", "status", "home-mac-mini"])
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+        self.assertEqual(code, 0)
+        printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+        self.assertIn("gaojiu", printed_text)
+        self.assertNotIn("\n  lab", printed_text)
 
     def test_node_exit_cleans_local_nomad_and_runtime_state(self):
         remote = Mock()

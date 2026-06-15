@@ -95,9 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
     secret_set.add_argument("--scope", default="", help="Application/stack scope; omit only for legacy global secrets")
     secret_set.add_argument("--value")
     secret_set.add_argument("--value-stdin", action="store_true", help="Read the secret value from stdin")
+    _add_control_arguments(secret_set)
     secret_import = secret_sub.add_parser("import", help="Import deployment secrets from a .env file into an application scope")
     secret_import.add_argument("env_file", type=Path)
     secret_import.add_argument("--scope", required=True, help="Application/stack scope used to isolate common names like DATABASE_URL")
+    _add_control_arguments(secret_import)
     registry = sub.add_parser("registry")
     registry_sub = registry.add_subparsers(dest="registry_command", required=True)
     registry_list = registry_sub.add_parser("list")
@@ -107,8 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
     registry_login.add_argument("host")
     registry_login.add_argument("--username", required=True)
     registry_login.add_argument("--password-stdin", action="store_true", help="Read the registry password/token from stdin")
+    _add_control_arguments(registry_login)
     registry_remove = registry_sub.add_parser("remove")
     registry_remove.add_argument("host")
+    _add_control_arguments(registry_remove)
     bootstrap = sub.add_parser("bootstrap")
     bootstrap_sub = bootstrap.add_subparsers(dest="bootstrap_command", required=True)
     manager = bootstrap_sub.add_parser("manager")
@@ -126,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.112 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.114 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -174,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     node_remove.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
     node_remove.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
     node_status = node_sub.add_parser("status")
+    node_status.add_argument("name", nargs="?", help="Optional Luma node name, display name, hostname, or alias to show")
     _add_control_arguments(node_status)
     _add_output_arguments(node_status)
     node_nomad_join = node_sub.add_parser("nomad-join", help="ask a ready node agent to install and join Nomad on that node")
@@ -1007,11 +1012,15 @@ def cmd_node(args: argparse.Namespace) -> int:
     if args.node_command == "status":
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         payload = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).status()
+        if args.name:
+            payload = _filter_node_status_payload(payload, args.name)
         if _output_format(args) != "text":
             _print_success(args, payload)
             return 0
         registered = ((payload.get("nodes") or {}).get("items") if isinstance(payload.get("nodes"), dict) else [])
         if not isinstance(registered, list) or not registered:
+            if args.name:
+                raise LumaError(f"node not found: {args.name}")
             print("No nodes registered")
             return 0
         rows = []
@@ -1032,6 +1041,62 @@ def cmd_node(args: argparse.Namespace) -> int:
         _print_table(["NODE", "REGION", "NODE STATUS", "AGENT", "OS", "CAPABILITIES", "LAST SEEN"], rows)
         return 0
     raise LumaError(f"unknown node command: {args.node_command}")
+
+
+def _filter_node_status_payload(payload: Dict[str, Any], name: str) -> Dict[str, Any]:
+    nodes = payload.get("nodes") if isinstance(payload.get("nodes"), dict) else {}
+    registered = nodes.get("items") if isinstance(nodes.get("items"), list) else []
+    matched_registered = [item for item in registered if isinstance(item, dict) and _node_status_item_matches(item, name)]
+    if not matched_registered:
+        return {**payload, "nodes": {**nodes, "items": [], "registered": 0, "names": []}}
+
+    matched_names = {_node_status_canonical_name(item) for item in matched_registered}
+    matched_aliases = set[str]()
+    for item in matched_registered:
+        matched_aliases.update(_node_status_names(item))
+
+    nomad = payload.get("nomad") if isinstance(payload.get("nomad"), dict) else {}
+    nomad_nodes = nomad.get("nodes") if isinstance(nomad.get("nodes"), list) else []
+    matched_nomad = [
+        item
+        for item in nomad_nodes
+        if isinstance(item, dict)
+        and (
+            _node_status_item_matches(item, name)
+            or _node_status_canonical_name(item) in matched_names
+            or bool(_node_status_names(item) & matched_aliases)
+        )
+    ]
+    next_nodes = {**nodes, "items": matched_registered, "registered": len(matched_registered), "names": sorted(matched_names)}
+    return {**payload, "nodes": next_nodes, "nomad": {**nomad, "nodes": matched_nomad}}
+
+
+def _node_status_item_matches(item: Dict[str, Any], name: str) -> bool:
+    return name in _node_status_names(item)
+
+
+def _node_status_canonical_name(item: Dict[str, Any]) -> str:
+    return str(item.get("name") or item.get("lumaNode") or item.get("displayName") or "").strip()
+
+
+def _node_status_names(item: Dict[str, Any]) -> set[str]:
+    labels = item.get("labels") if isinstance(item.get("labels"), dict) else {}
+    values = {
+        str(item.get("name") or "").strip(),
+        str(item.get("displayName") or "").strip(),
+        str(item.get("hostname") or "").strip(),
+        str(item.get("lumaNode") or "").strip(),
+        str(item.get("nodeId") or "").strip(),
+        str(item.get("address") or "").strip(),
+        str(labels.get("luma.node.name") or "").strip(),
+        str(labels.get("luma_node_name") or "").strip(),
+    }
+    aliases = item.get("aliases")
+    if isinstance(aliases, list):
+        values.update(str(value).strip() for value in aliases)
+    elif isinstance(aliases, str):
+        values.add(aliases.strip())
+    return {value for value in values if value}
 
 
 def cmd_login(args: argparse.Namespace) -> int:
@@ -1094,9 +1159,10 @@ def cmd_context(args: argparse.Namespace) -> int:
 
 
 def cmd_secret(args: argparse.Namespace) -> int:
-    if args.secret_command == "list":
+    if args.secret_command in {"list", "set", "import"}:
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    if args.secret_command == "list":
         result = client.list_secrets()
         keys = result.get("secrets") if isinstance(result.get("secrets"), list) else []
         if _output_format(args) != "text":
@@ -1108,13 +1174,6 @@ def cmd_secret(args: argparse.Namespace) -> int:
         for key in keys:
             print(str(key))
         return 0
-    context = load_current_context()
-    client = ControlClient(
-        str(context["endpoint"]),
-        str(context["token"]),
-        insecure=bool(context.get("insecure")),
-        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
-    )
     if args.secret_command == "set":
         if args.value is not None and args.value_stdin:
             raise LumaError("--value and --value-stdin cannot be used together")
@@ -1147,9 +1206,10 @@ def cmd_secret(args: argparse.Namespace) -> int:
 
 
 def cmd_registry(args: argparse.Namespace) -> int:
-    if args.registry_command == "list":
+    if args.registry_command in {"list", "login", "remove"}:
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    if args.registry_command == "list":
         result = client.list_registries()
         items = result.get("registries") if isinstance(result.get("registries"), list) else []
         if _output_format(args) != "text":
@@ -1163,13 +1223,6 @@ def cmd_registry(args: argparse.Namespace) -> int:
             username = str(item.get("username") or "")
             print(f"{host}\t{username}")
         return 0
-    context = load_current_context()
-    client = ControlClient(
-        str(context["endpoint"]),
-        str(context["token"]),
-        insecure=bool(context.get("insecure")),
-        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
-    )
     if args.registry_command == "login":
         if args.password_stdin:
             password = sys.stdin.read().strip()
