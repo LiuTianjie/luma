@@ -3945,6 +3945,69 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_pinned_private_deployment_sends_registry_auth_to_target_resolver(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "lab": {
+                        "region": "home",
+                        "status": "labeled",
+                        "nodeId": "node-id-lab",
+                        "nomadNodeId": "node-id-lab",
+                        "nomadAttributes": {"os.name": "linux", "cpu.arch": "amd64"},
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["docker-image"],
+                        },
+                        "labels": {"region": "home", "luma.node.name": "lab", "luma.node.id": "node-id-lab"},
+                    }
+                }
+                from luma.control.state import save_state
+
+                save_state(state)
+                handle_registry_set(
+                    state["deployToken"],
+                    {"host": "gcode.gaojiua.com:3000", "username": "nick", "password": "secret"},
+                )
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "docs",
+                        "image": "gcode.gaojiua.com:3000/acme/docs:latest",
+                        "region": "home",
+                        "node": "lab",
+                        "exposure": "none",
+                    }
+                )
+                digest = "gcode.gaojiua.com:3000/acme/docs@sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"
+
+                with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
+                    "luma.control.server._run_node_agent_task",
+                    return_value={"deployed": digest, "digest": digest, "message": "Target node image pull ready"},
+                ) as agent:
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "docs.yaml", "skipDns": True, "skipOrchestrator": True},
+                    )
+                payload = agent.call_args.args[3]
+                self.assertEqual(payload["platform"], "linux/amd64")
+                self.assertEqual(payload["registryAuth"]["password"], "secret")
+                self.assertTrue(result["image"]["registryAuth"])
+                stack = (root / "stacks" / "home" / "docs" / "docs.nomad.json").read_text(encoding="utf-8")
+                self.assertIn(f'"image": "{digest}"', stack)
+                self.assertIn('"server_address": "gcode.gaojiua.com:3000"', stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_deployment_refuses_pinned_down_nomad_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))

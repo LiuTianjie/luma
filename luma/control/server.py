@@ -4739,6 +4739,8 @@ def _resolve_service_image_for_deployment(
             "forcePull": force_pull,
             "platform": platform,
         }
+        if image_registry_auth:
+            payload["registryAuth"] = image_registry_auth
         try:
             result = _resolve_image_on_target_node(state, service.node, image, payload)
             deploy_image = str(result.get("deployed") or result.get("digest") or image)
