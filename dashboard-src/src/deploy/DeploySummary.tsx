@@ -70,9 +70,9 @@ export function DeploySummary({
           <h3>{zh ? "部署步骤" : "Deploy steps"}</h3>
           {steps.map((step, index) => (
             <div className={`deploy-step ${step.status || ""}`} key={`${step.name || step.status}-${index}`}>
-              <span>{step.status || "-"}</span>
-              <strong>{step.name || (step.status === "done" ? "Done" : "Event")}</strong>
-              <small>{step.message || ""}</small>
+              <span className="deploy-step-status">{step.status || "-"}</span>
+              <strong className="deploy-step-name">{step.name || (step.status === "done" ? "Done" : "Event")}</strong>
+              {step.message ? <small className="deploy-step-message">{step.message}</small> : null}
             </div>
           ))}
         </div>

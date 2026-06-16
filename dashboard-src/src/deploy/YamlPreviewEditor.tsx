@@ -17,8 +17,8 @@ export function YamlPreviewEditor({
 }) {
   if (mode === "service") {
     return (
-      <section className="deploy-yaml-grid single">
-        <label>
+      <section className="deploy-yaml-grid deploy-yaml-editor-grid single">
+        <label className="deploy-yaml-editor">
           <span>service.yaml</span>
           <textarea value={serviceYaml} onChange={(event) => onServiceYamlChange(event.target.value)} spellCheck={false} />
         </label>
@@ -26,12 +26,12 @@ export function YamlPreviewEditor({
     );
   }
   return (
-    <section className="deploy-yaml-grid">
-      <label>
+    <section className="deploy-yaml-grid deploy-yaml-editor-grid">
+      <label className="deploy-yaml-editor">
         <span>docker-compose.yml</span>
         <textarea value={composeYaml} onChange={(event) => onComposeYamlChange(event.target.value)} spellCheck={false} />
       </label>
-      <label>
+      <label className="deploy-yaml-editor">
         <span>luma.compose.yml</span>
         <textarea value={sidecarYaml} onChange={(event) => onSidecarYamlChange(event.target.value)} spellCheck={false} />
       </label>

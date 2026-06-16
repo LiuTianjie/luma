@@ -4,7 +4,7 @@ import { ComposeDeployForm } from "./ComposeDeployForm";
 import { deployStream, previewCompose, previewService } from "./deployApi";
 import { DeploySummary } from "./DeploySummary";
 import { DeployTemplates } from "./DeployTemplates";
-import { DEPLOY_TEMPLATES, deployTemplateName } from "./templates";
+import { DEPLOY_TEMPLATES } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeployTemplate, ServiceManifestDraft } from "./types";
 import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion } from "./options";
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
@@ -17,6 +17,35 @@ function clone<T>(value: T): T {
 
 function firstTemplate(mode: DeployMode) {
   return DEPLOY_TEMPLATES.find((template) => template.mode === mode) || DEPLOY_TEMPLATES[0];
+}
+
+function compact(values: Array<string | number | undefined | null | false>) {
+  return values.filter((value) => value !== undefined && value !== null && value !== false && value !== "").join(" / ") || "-";
+}
+
+function currentConfigTitle(mode: DeployMode, serviceDraft: ServiceManifestDraft, composeDraft: ComposeDeploymentDraft) {
+  return mode === "service" ? serviceDraft.name || "-" : composeDraft.name || "-";
+}
+
+function currentConfigFacts(mode: DeployMode, serviceDraft: ServiceManifestDraft, composeDraft: ComposeDeploymentDraft, lang: Lang) {
+  if (mode === "service") {
+    const publicTarget = serviceDraft.exposure === "none"
+      ? (lang === "zh" ? "内部访问" : "internal only")
+      : compact([serviceDraft.domain || "-", serviceDraft.port ? `:${serviceDraft.port}` : ""]);
+    return [
+      compact([serviceDraft.image]),
+      compact([serviceDraft.region, serviceDraft.exposure]),
+      publicTarget,
+      `${serviceDraft.replicas} ${lang === "zh" ? "副本" : "replica"}`,
+    ];
+  }
+  const exposed = composeDraft.services.filter((service) => service.exposure !== "none");
+  return [
+    `${composeDraft.services.length} ${lang === "zh" ? "服务" : "services"}`,
+    compact([composeDraft.region, exposed.length ? exposed.map((service) => service.exposure).join(", ") : "none"]),
+    exposed.length ? exposed.map((service) => `${service.name} -> ${service.domain || "-"}${service.port ? `:${service.port}` : ""}`).join(", ") : (lang === "zh" ? "内部访问" : "internal only"),
+    `${composeDraft.volumes.length} ${lang === "zh" ? "卷" : "volumes"}`,
+  ];
 }
 
 type DashboardStorageClasses = NonNullable<NonNullable<DashboardPayload["storage"]>["storageClasses"]>;
@@ -286,7 +315,8 @@ export function DeployWorkspace({
     [composeDraft, composeYaml, lang, mode, nodes, serviceDraft, serviceYaml, sidecarYaml, yamlDirty],
   );
   const allErrors = [...validationErrors, ...runtimeErrors];
-  const selectedTemplate = DEPLOY_TEMPLATES.find((item) => item.id === activeTemplateId);
+  const configTitle = currentConfigTitle(mode, serviceDraft, composeDraft);
+  const configFacts = currentConfigFacts(mode, serviceDraft, composeDraft, lang);
 
   const selectTemplate = (template: DeployTemplate) => {
     setActiveTemplateId(template.id);
@@ -419,12 +449,17 @@ export function DeployWorkspace({
         <>
           {showTemplates ? (
             <div className="selected-template-strip">
-              <span>{lang === "zh" ? "当前模板" : "Selected template"}</span>
-              <strong>{selectedTemplate ? deployTemplateName(selectedTemplate, lang) : activeTemplateId}</strong>
-              <small>{mode === "service" ? (lang === "zh" ? "单服务" : "Single service") : "Compose"}</small>
+              <div>
+                <span>{lang === "zh" ? "当前配置" : "Current config"}</span>
+                <strong>{configTitle}</strong>
+                <small>{mode === "service" ? (lang === "zh" ? "单服务" : "Single service") : "Compose"}</small>
+              </div>
+              <div className="selected-template-facts">
+                {configFacts.map((fact) => <small key={fact}>{fact}</small>)}
+              </div>
             </div>
           ) : null}
-          <div className="deploy-workspace-grid">
+          <div className={`deploy-workspace-grid ${editorMode === "yaml" ? "yaml-active" : ""}`}>
             <main className="deploy-config-main">
               {editorMode === "form" ? (
                 mode === "service"

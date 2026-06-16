@@ -103,6 +103,12 @@ export function DeployTemplates({
   onSelect: (template: DeployTemplate) => void;
 }) {
   const visibleTemplates = templates.filter((template) => template.mode === mode);
+  const featuredTemplate = visibleTemplates.find((template) => template.id === activeId) || visibleTemplates[0];
+  const secondaryTemplates = visibleTemplates.filter((template) => template.id !== featuredTemplate?.id);
+
+  const renderFacts = (template: DeployTemplate) => (
+    templateFacts(template, lang).map((fact) => <span key={fact}>{fact}</span>)
+  );
 
   return (
     <div className="deploy-gallery-container">
@@ -135,28 +141,53 @@ export function DeployTemplates({
         </div>
       </div>
 
-      <div className="deploy-gallery-grid">
-        {visibleTemplates.map((template) => (
+      <div className="deploy-gallery-showcase">
+        {featuredTemplate ? (
           <button
             type="button"
-            className={`deploy-gallery-card ${activeId === template.id ? "active" : ""}`}
-            key={template.id}
-            onClick={() => onSelect(template)}
-            style={{ "--template-accent": brandFor(template).accent } as CSSProperties}
+            className={`template-feature-card ${activeId === featuredTemplate.id ? "active" : ""}`}
+            onClick={() => onSelect(featuredTemplate)}
+            style={{ "--template-accent": brandFor(featuredTemplate).accent } as CSSProperties}
           >
-            <div className="template-card-top">
-              <BrandIcon template={template} />
-              <span className="template-card-action">{lang === "zh" ? "使用" : "Use"} →</span>
+            <div className="template-feature-visual" aria-hidden="true">
+              <BrandIcon template={featuredTemplate} />
+              <span>{featuredTemplate.mode === "compose" ? "Compose" : lang === "zh" ? "单服务" : "Service"}</span>
             </div>
-            <div className="template-card-info">
-              <strong className="template-card-name">{deployTemplateName(template, lang)}</strong>
-              <span className="template-card-desc">{deployTemplateDescription(template, lang)}</span>
+            <div className="template-feature-copy">
+              <p className="eyebrow">{lang === "zh" ? "当前蓝图" : "Selected blueprint"}</p>
+              <h3>{deployTemplateName(featuredTemplate, lang)}</h3>
+              <p>{deployTemplateDescription(featuredTemplate, lang)}</p>
             </div>
-            <div className="template-card-facts">
-              {templateFacts(template, lang).map((fact) => <span key={fact}>{fact}</span>)}
+            <div className="template-feature-facts">
+              {renderFacts(featuredTemplate)}
             </div>
+            <span className="template-feature-action">{lang === "zh" ? "使用并进入配置" : "Use and configure"} →</span>
           </button>
-        ))}
+        ) : null}
+
+        <div className="deploy-gallery-grid">
+          {secondaryTemplates.map((template) => (
+            <button
+              type="button"
+              className={`deploy-gallery-card ${activeId === template.id ? "active" : ""}`}
+              key={template.id}
+              onClick={() => onSelect(template)}
+              style={{ "--template-accent": brandFor(template).accent } as CSSProperties}
+            >
+              <div className="template-card-top">
+                <BrandIcon template={template} />
+                <span className="template-card-action">{lang === "zh" ? "使用" : "Use"} →</span>
+              </div>
+              <div className="template-card-info">
+                <strong className="template-card-name">{deployTemplateName(template, lang)}</strong>
+                <span className="template-card-desc">{deployTemplateDescription(template, lang)}</span>
+              </div>
+              <div className="template-card-facts">
+                {renderFacts(template)}
+              </div>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -304,7 +304,7 @@ export function App() {
   };
 
   return (
-    <div className="dashboard-shell">
+    <div className={`dashboard-shell page-${activeNavPage}`}>
       <aside className="sidebar">
         <div className="sidebar-brand">
           <div className="brand-mark" aria-hidden="true">
@@ -334,6 +334,11 @@ export function App() {
             </button>
           ))}
         </nav>
+        <div className="sidebar-status" aria-label={lang === "zh" ? "当前运行状态" : "Current runtime status"}>
+          <span>{lang === "zh" ? "在线节点" : "Live nodes"}</span>
+          <strong>{activeNodes}/{nodes.length || 0}</strong>
+          <small>{healthyServices}/{services.length || 0} {lang === "zh" ? "服务正常" : "services healthy"}</small>
+        </div>
       </aside>
 
       <main className="workspace">
@@ -414,6 +419,7 @@ export function App() {
                 </>
               ) : (
                 <>
+                  <PageHeader meta={pageMeta} />
                   <ReadinessCards lang={lang} payload={payload} />
                   <NodeFleetMap lang={lang} nodes={nodes} services={services} onSelect={openNodeDetail} onTerminal={setTerminalNode} />
                   <IssuesPanel lang={lang} issues={issues} token={token} />
