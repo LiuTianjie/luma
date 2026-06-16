@@ -1837,6 +1837,62 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def handle_certificate_retry(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    domain = str(body.get("domain") or "").strip().lower()
+    route_id = str(body.get("routeId") or "").strip()
+    if not domain:
+        raise LumaError("domain is required")
+
+    config_path = _control_config_path()
+    config = load_config(config_path)
+    routes_root = _resolve_control_path(config.routes_root, config_path)
+    if not routes_root.exists():
+        raise LumaError("route files directory not found")
+    candidates: list[tuple[Dict[str, Any], Path]] = []
+    for path in sorted([*routes_root.glob("*.yml"), *routes_root.glob("*.yaml")]):
+        route = _dashboard_route_file(path.stem, load_yaml(path))
+        if (
+            route
+            and route.get("kind") == "http"
+            and str(route.get("domain") or "").strip().lower() == domain
+            and (not route_id or str(route.get("id") or "") == route_id)
+        ):
+            candidates.append((route, path))
+    if not candidates:
+        suffix = f" routeId={route_id}" if route_id else ""
+        raise LumaError(f"HTTP route file not found for domain: {domain}{suffix}")
+    if len(candidates) > 1 and not route_id:
+        raise LumaError(f"multiple route files match domain {domain}; routeId is required")
+
+    route, path = candidates[0]
+    if not path.exists() or not path.is_file():
+        raise LumaError(f"route file unavailable for domain: {domain}")
+    cert_resolver = str(route.get("certResolver") or "").strip()
+    if not cert_resolver:
+        raise LumaError(f"route has no TLS certResolver: {domain}")
+
+    original = path.read_text(encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.retry.tmp")
+    tmp.write_text(original, encoding="utf-8")
+    try:
+        shutil.copymode(path, tmp)
+    except OSError:
+        pass
+    tmp.replace(path)
+    os.utime(path, None)
+    return {
+        "clusterId": state["clusterId"],
+        "domain": domain,
+        "routeId": str(route.get("id") or ""),
+        "mode": "route-file-reload",
+        "certResolver": cert_resolver,
+        "path": str(path),
+        "message": f"Route file reloaded for {domain}; Traefik will retry ACME if needed.",
+    }
+
+
 def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -3965,10 +4021,14 @@ def _dashboard_route_file(route_id: str, data: Dict[str, Any]) -> Dict[str, Any]
     routers = http.get("routers") if isinstance(http.get("routers"), dict) else {}
     services = http.get("services") if isinstance(http.get("services"), dict) else {}
     domain = ""
+    cert_resolver = ""
     for router in routers.values():
         if not isinstance(router, dict):
             continue
         domain = _host_from_rule(str(router.get("rule") or ""))
+        tls = router.get("tls") if isinstance(router.get("tls"), dict) else {}
+        if tls.get("certResolver"):
+            cert_resolver = str(tls.get("certResolver") or "")
         if domain:
             break
     upstreams: list[str] = []
@@ -3982,7 +4042,7 @@ def _dashboard_route_file(route_id: str, data: Dict[str, Any]) -> Dict[str, Any]
                 upstreams.append(str(server["url"]))
     if not domain and not upstreams:
         return {}
-    return {"id": route_id, "kind": "http", "domain": domain, "upstreams": upstreams}
+    return {"id": route_id, "kind": "http", "domain": domain, "upstreams": upstreams, "certResolver": cert_resolver}
 
 
 def _dashboard_nomad_services(
@@ -4407,6 +4467,10 @@ def _dashboard_traffic_paths(
                 "kind": exposure,
                 "domain": str(service.get("domain") or ""),
                 "segments": segments,
+                "certificateRetry": _dashboard_certificate_retry_capability(
+                    service.get("_routeFile") if isinstance(service.get("_routeFile"), dict) else route_files.get(route_id, {}),
+                    exposure,
+                ),
                 "destinations": _traffic_path_destinations(
                     service,
                     service.get("_routeFile") if isinstance(service.get("_routeFile"), dict) else route_files.get(route_id, {}),
@@ -4414,6 +4478,23 @@ def _dashboard_traffic_paths(
             }
         )
     return paths
+
+
+def _dashboard_certificate_retry_capability(route_file: Dict[str, Any], exposure: str) -> Dict[str, Any]:
+    if exposure not in {"tailscale-relay"}:
+        return {"available": False, "reason": "not a route-file HTTP exposure"}
+    if not isinstance(route_file, dict) or route_file.get("kind") != "http":
+        return {"available": False, "reason": "HTTP route file unavailable"}
+    if not route_file.get("domain"):
+        return {"available": False, "reason": "route has no public domain"}
+    if not route_file.get("certResolver"):
+        return {"available": False, "reason": "route has no TLS certResolver"}
+    return {
+        "available": True,
+        "mode": "route-file-reload",
+        "routeId": str(route_file.get("id") or ""),
+        "certResolver": str(route_file.get("certResolver") or ""),
+    }
 
 
 def _traffic_path_destinations(service: Dict[str, Any], route_file: Dict[str, Any]) -> list[Dict[str, str]]:
@@ -5422,6 +5503,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/applications/restart":
                 self._json(200, handle_application_restart(token, body))
                 return
+            if self.path == "/v1/certificates/retry":
+                self._json(200, handle_certificate_retry(token, body))
+                return
             if self.path == "/v1/fleet/update":
                 self._json(200, handle_fleet_update(token, body))
                 return
@@ -5671,6 +5755,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/services/rollback": handle_service_rollback,
             "/v1/services/history": handle_service_history,
             "/v1/applications/restart": handle_application_restart,
+            "/v1/certificates/retry": handle_certificate_retry,
             "/v1/fleet/update": handle_fleet_update,
             "/v1/secrets": handle_secret_set,
             "/v1/registries": handle_registry_set,

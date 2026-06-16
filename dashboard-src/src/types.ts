@@ -134,6 +134,13 @@ export type TrafficPath = {
   domain?: string;
   kind?: string;
   segments?: string[];
+  certificateRetry?: {
+    available?: boolean;
+    mode?: string;
+    routeId?: string;
+    certResolver?: string;
+    reason?: string;
+  };
   destinations?: TrafficDestination[];
 };
 

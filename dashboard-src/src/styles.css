@@ -1321,6 +1321,35 @@ code {
   background: rgba(7, 10, 15, 0.38);
 }
 
+.route-index-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.route-index-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.route-cert-message {
+  color: var(--text-subtle);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.route-cert-message.ok {
+  color: var(--green);
+}
+
+.route-cert-message.error {
+  color: var(--red);
+}
+
 .application-detail-backdrop,
 .detail-backdrop,
 .terminal-modal-backdrop {

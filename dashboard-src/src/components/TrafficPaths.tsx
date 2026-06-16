@@ -3,6 +3,7 @@ import dagre from "dagre";
 import CytoscapeComponent from "react-cytoscapejs";
 import type cytoscape from "cytoscape";
 import { t } from "../i18n";
+import { retryCertificate } from "../lifecycleApi";
 import type { Lang, TrafficDestination, TrafficPath } from "../types";
 import { Badge, PrimaryCell } from "./ui";
 
@@ -309,12 +310,18 @@ export function TrafficPaths({
   lang,
   paths,
   theme,
+  token,
+  onRefresh,
 }: {
   lang: Lang;
   paths: TrafficPath[];
   theme: "light" | "dark";
+  token: string;
+  onRefresh: () => Promise<void> | void;
 }) {
   const [cyRef, setCyRef] = useState<cytoscape.Core | null>(null);
+  const [certBusy, setCertBusy] = useState("");
+  const [certMessage, setCertMessage] = useState<{ routeId: string; kind: "ok" | "error"; text: string } | null>(null);
 
   const { elements, nodes, edges } = useMemo(() => buildTopology(paths), [paths]);
   const stylesheet = useMemo(() => getStylesheet(theme), [theme]);
@@ -374,6 +381,31 @@ export function TrafficPaths({
     }
   };
 
+  const handleCertificateRetry = async (path: TrafficPath) => {
+    const domain = path.domain || "";
+    const routeId = path.certificateRetry?.routeId || path.id || "";
+    if (!domain || !routeId) return;
+    setCertBusy(routeId);
+    setCertMessage(null);
+    try {
+      await retryCertificate({ token, domain, routeId });
+      setCertMessage({
+        routeId,
+        kind: "ok",
+        text: lang === "zh" ? "已触发路由重载，Traefik 会重新尝试签发。" : "Route reload triggered. Traefik will retry ACME.",
+      });
+      await onRefresh();
+    } catch (error) {
+      setCertMessage({
+        routeId,
+        kind: "error",
+        text: String(error instanceof Error ? error.message : error),
+      });
+    } finally {
+      setCertBusy("");
+    }
+  };
+
   return (
     <section className="panel path-panel" id="section-5">
       <div className="panel-heading">
@@ -405,6 +437,8 @@ export function TrafficPaths({
           <aside className="route-index" aria-label={t(lang, "trafficPaths")}>
             {paths.map((path, index) => {
               const destinations = path.destinations || [];
+              const routeId = path.certificateRetry?.routeId || path.id || "";
+              const certificateRetryAvailable = Boolean(path.certificateRetry?.available && path.domain && routeId);
               const destinationSummary = destinations
                 .map((destination) => [destination.region, destination.node].filter(Boolean).join(" / "))
                 .filter(Boolean)
@@ -412,7 +446,24 @@ export function TrafficPaths({
               return (
                 <article key={`${path.id || "path"}-${index}`}>
                   <PrimaryCell meta={destinationSummary || path.domain || t(lang, "noPublicDomain")} title={path.id || "-"} />
-                  <Badge value={path.kind || "unknown"} />
+                  <div className="route-index-actions">
+                    <Badge value={path.kind || "unknown"} />
+                    {certificateRetryAvailable ? (
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={Boolean(certBusy)}
+                        onClick={() => void handleCertificateRetry(path)}
+                      >
+                        {certBusy === routeId
+                          ? (lang === "zh" ? "重试中..." : "Retrying...")
+                          : (lang === "zh" ? "重试证书" : "Retry cert")}
+                      </button>
+                    ) : null}
+                  </div>
+                  {certMessage?.routeId === routeId ? (
+                    <small className={`route-cert-message ${certMessage.kind}`}>{certMessage.text}</small>
+                  ) : null}
                 </article>
               );
             })}

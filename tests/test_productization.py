@@ -56,7 +56,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -4524,6 +4524,84 @@ class ControlApiTests(unittest.TestCase):
                     handle_application_restart(state["deployToken"], {"stack": "traefik"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_certificate_retry_reloads_matching_http_route_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                routes = root / "routes"
+                routes.mkdir()
+                route_file = routes / "tikhub.yml"
+                route_text = yaml.safe_dump(
+                    {
+                        "http": {
+                            "routers": {
+                                "tikhub": {
+                                    "rule": "Host(`tikhub.itool.tech`)",
+                                    "entryPoints": ["websecure"],
+                                    "tls": {"certResolver": "letsencrypt"},
+                                    "service": "tikhub",
+                                }
+                            },
+                            "services": {
+                                "tikhub": {"loadBalancer": {"servers": [{"url": "http://100.64.0.10:8082"}]}}
+                            },
+                        }
+                    }
+                )
+                route_file.write_text(route_text, encoding="utf-8")
+                old_mtime = route_file.stat().st_mtime_ns
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"routesRoot": str(routes)}}),
+                    encoding="utf-8",
+                )
+                with patch("luma.control.server.NomadApi") as nomad_api:
+                    result = handle_certificate_retry(
+                        state["deployToken"],
+                        {"domain": "tikhub.itool.tech", "routeId": "tikhub"},
+                    )
+                self.assertEqual(result["mode"], "route-file-reload")
+                self.assertEqual(result["routeId"], "tikhub")
+                self.assertEqual(result["certResolver"], "letsencrypt")
+                self.assertEqual(route_file.read_text(encoding="utf-8"), route_text)
+                self.assertGreaterEqual(route_file.stat().st_mtime_ns, old_mtime)
+                nomad_api.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_certificate_retry_rejects_tcp_route_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                routes = root / "routes"
+                routes.mkdir()
+                (routes / "mysql.yml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "tcp": {
+                                "routers": {"mysql": {"rule": "HostSNI(`*`)", "service": "mysql"}},
+                                "services": {"mysql": {"loadBalancer": {"servers": [{"address": "100.64.0.10:3306"}]}}},
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"routesRoot": str(routes)}}),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(LumaError, "HTTP route file not found"):
+                    handle_certificate_retry(state["deployToken"], {"domain": "mysql.itool.tech", "routeId": "mysql"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_service_remove_cleans_dns_portainer_and_generated_files(self):
         with tempfile.TemporaryDirectory() as tmp:

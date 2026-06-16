@@ -404,7 +404,7 @@ export function App() {
               ) : activePage === "topology" ? (
                 <>
                   <PageHeader meta={pageMeta} />
-                  <TrafficPaths lang={lang} paths={paths} theme={theme} />
+                  <TrafficPaths lang={lang} paths={paths} theme={theme} token={token} onRefresh={loadDashboard} />
                   <NodeTopology lang={lang} nodes={nodes} services={services} theme={theme} />
                 </>
               ) : activePage === "storage" ? (
