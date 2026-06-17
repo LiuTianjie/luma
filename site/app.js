@@ -151,7 +151,7 @@ if (demoStage && demoButtons.length) {
     deploy: {
       phase: isZh ? "部署服务" : "Deploy Service",
       activity: isZh ? "读取 status.yaml，开始更新" : "Reads status.yaml and starts updating",
-      manager: isZh ? "接收 status.yaml" : "received status.yaml",
+      manager: isZh ? "接收 status.yaml，记录版本" : "received status.yaml, version recorded",
       edge: isZh ? "写 Host 路由" : "writing Host route",
       worker: "status:80 x2",
       global: isZh ? "保持可用" : "still available",
@@ -168,19 +168,19 @@ if (demoStage && demoButtons.length) {
     published: {
       phase: isZh ? "发布完成" : "Published",
       activity: isZh ? "域名已经能访问服务" : "The domain now reaches the service",
-      manager: isZh ? "部署记录已保存" : "deployment record saved",
+      manager: isZh ? "部署记录与版本历史已保存" : "deployment record and version history saved",
       edge: isZh ? "HTTPS 可访问" : "HTTPS reachable",
       worker: "status:80 x2",
       global: isZh ? "空闲" : "idle",
-      client: isZh ? "返回 URL" : "URL returned",
+      client: isZh ? "URL 与版本入口可用" : "URL and Versions action ready",
       domain: "https://status.example.com",
       domainStatus: isZh ? "打开域名即可访问服务" : "opening the domain reaches the service",
       dns: "status.example.com -> cn-edge",
       dnsStatus: isZh ? "DNS、证书、路由已更新" : "DNS, certificate, and route updated",
       tls: isZh ? "HTTPS 可用" : "HTTPS active",
       tlsStatus: isZh ? "证书后续由 Traefik 续期" : "Traefik renews the certificate later",
-      stack: "status service healthy",
-      stackStatus: isZh ? "服务在节点上运行" : "service is running on nodes",
+      stack: isZh ? "status healthy / 可回滚" : "status healthy / rollback ready",
+      stackStatus: isZh ? "旧 job 版本可从控制台或 CLI 回滚" : "previous job versions can be reverted from dashboard or CLI",
     },
   };
 

@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.116"
+python -m pip install "luma-infra==0.1.117"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.116 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.117 sh
 ```
 
 Develop from source:
@@ -252,7 +252,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.116"
+python -m pip install "luma-infra==0.1.117"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -324,7 +324,7 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | When does `luma update` need `--domain`? | Only when you intentionally changed the control domain. If manager state is missing, run `luma bootstrap manager --domain ...` for first install or repair. |
 | Move service A to another region | Edit the manifest `region`, adjust `exposure` if needed, then run `luma deploy app.yaml` again. |
 | Pin service A to one node | Set manifest `node` to the Luma node name passed to `luma node join --name`, keep the matching `region`, then deploy again. Control renders it as a Nomad constraint on the node identity. |
-| Roll back service A | Run `luma rollback app` to revert to the previous version, or `luma rollback app --to-version <N>` for a specific one. Use `luma history app` to list versions. |
+| Roll back service A | Run `luma history app` and `luma rollback app` (or `--to-version <N>`), or open the dashboard and choose Applications -> Versions. Rollback is a Nomad job-version runtime revert; use pinned image tags/digests when you need predictable production rollback. |
 | Rejoined node | Keep the same Luma node name and rerun `luma node join` / `luma update` on that node. The Nomad node UUID is stable, so pinned services stay valid. |
 | Remove service A | Run `luma service remove app` after it has been deployed through Luma Control. It removes the matching single-service or Compose deployment, including DNS, the Nomad job, and generated route files; use `--dry-run` to preview or `--skip-dns` to keep DNS. |
 | Make a public service internal | Change `exposure` to `none`, remove public-only domain/ingress config if no longer needed, then deploy again. |

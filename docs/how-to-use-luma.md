@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.116 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.117 sh
 ```
 
 For local development from a checkout:
@@ -277,7 +277,7 @@ This submits the manifest to the logged-in Luma Control endpoint. The manager re
 luma deploy app.yaml --timeout 3600
 ```
 
-Repeated deploys are updates. The same service `name` maps to the same Nomad job (the job id is the service slug); running deploy again rewrites the generated jobspec and updates that job. Nomad keeps the previous version, so `luma rollback app` can return to it. Changing `name` creates a different job.
+Repeated deploys are updates. The same service `name` maps to the same Nomad job (the job id is the service slug); running deploy again rewrites the generated jobspec and updates that job. Nomad keeps the previous version, so `luma rollback app` or the dashboard's Applications -> Versions action can return to it. This is a running job rollback, not a Git/manifest rewrite; use pinned image tags or digests for production. Changing `name` creates a different job.
 
 Preview without side effects:
 

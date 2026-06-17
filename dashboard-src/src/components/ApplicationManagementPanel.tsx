@@ -2,8 +2,8 @@ import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
-import { restartApplication } from "../lifecycleApi";
-import type { DashboardPayload, Lang } from "../types";
+import { fetchServiceHistory, restartApplication, rollbackService } from "../lifecycleApi";
+import type { DashboardPayload, Lang, ServiceVersion } from "../types";
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
 import { Badge, BadgeGroup, CodeCell, PrimaryCell, StatePill } from "./ui";
 
@@ -15,6 +15,15 @@ export type ApplicationUpdateRequest = {
 
 type ConfigTab = "manifest" | "compose";
 
+type RollbackState = {
+  app: string;
+  versions: ServiceVersion[];
+  loading: boolean;
+  error: string;
+  message: string;
+  busyVersion: number | null;
+};
+
 const DEPLOY_ROOT = typeof document === "undefined" ? null : document.body;
 
 function accessHref(domain: string) {
@@ -24,6 +33,26 @@ function accessHref(domain: string) {
 function configUpdatedLabel(updatedAt?: number) {
   if (!updatedAt) return "-";
   return new Date(updatedAt * 1000).toLocaleString();
+}
+
+function versionNumber(version: ServiceVersion["version"]) {
+  const value = Number(version);
+  return Number.isInteger(value) ? value : null;
+}
+
+function versionSubmittedLabel(value: ServiceVersion["submitTime"]) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "-";
+  let milliseconds = timestamp;
+  if (timestamp > 1_000_000_000_000_000_000) {
+    milliseconds = timestamp / 1_000_000;
+  } else if (timestamp > 1_000_000_000_000_000) {
+    milliseconds = timestamp / 1_000;
+  } else if (timestamp < 10_000_000_000) {
+    milliseconds = timestamp * 1000;
+  }
+  const date = new Date(milliseconds);
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString();
 }
 
 export function ApplicationManagementPanel({
@@ -48,6 +77,7 @@ export function ApplicationManagementPanel({
   const [actionError, setActionError] = useState("");
   const [actionBusy, setActionBusy] = useState("");
   const [configBusy, setConfigBusy] = useState("");
+  const [rollbackState, setRollbackState] = useState<RollbackState | null>(null);
   const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
 
   const restart = async (app: Application) => {
@@ -114,9 +144,69 @@ export function ApplicationManagementPanel({
     }
   };
 
+  const loadVersions = async (app: Application, message = "") => {
+    setActionError("");
+    setRollbackState({ app: app.stack, versions: [], loading: true, error: "", message, busyVersion: null });
+    try {
+      const result = await fetchServiceHistory({ token, name: app.stack });
+      setRollbackState({
+        app: app.stack,
+        versions: result.versions || [],
+        loading: false,
+        error: "",
+        message,
+        busyVersion: null,
+      });
+    } catch (error) {
+      setRollbackState({
+        app: app.stack,
+        versions: [],
+        loading: false,
+        error: String(error instanceof Error ? error.message : error),
+        message: "",
+        busyVersion: null,
+      });
+    }
+  };
+
+  const openVersions = async (app: Application) => {
+    setDeploymentConfig(null);
+    setDeploymentConfigFor("");
+    setSelected(app);
+    await loadVersions(app);
+  };
+
+  const rollbackToVersion = async (app: Application, version: number) => {
+    const prompt = lang === "zh"
+      ? `确认将 ${app.stack} 的运行态回滚到 v${version}？`
+      : `Rollback ${app.stack} runtime to v${version}?`;
+    if (!window.confirm(prompt)) return;
+    setActionError("");
+    setRollbackState((current) => current && current.app === app.stack
+      ? { ...current, error: "", message: "", busyVersion: version }
+      : current);
+    try {
+      const result = await rollbackService({ token, name: app.stack, version });
+      await onRefresh();
+      await loadVersions(app, result.message || (lang === "zh" ? `已回滚到 v${version}` : `Rolled back to v${version}`));
+    } catch (error) {
+      setRollbackState((current) => current && current.app === app.stack
+        ? {
+          ...current,
+          loading: false,
+          error: String(error instanceof Error ? error.message : error),
+          message: "",
+          busyVersion: null,
+        }
+        : current);
+    }
+  };
+
   const selectedDiagnostics = selected?.services.flatMap((service) => service.diagnostics || []) || [];
   const selectedVolumes = selected?.services.flatMap((service) => service.storage || []) || [];
   const selectedConfig = selected && deploymentConfigFor === selected.stack ? deploymentConfig : null;
+  const selectedRollback = selected && rollbackState?.app === selected.stack ? rollbackState : null;
+  const selectedRollbackBusy = selectedRollback?.busyVersion !== null && selectedRollback?.busyVersion !== undefined;
   const selectedConfigTabs: ConfigTab[] = [
     ...(selectedConfig?.manifest ? ["manifest" as const] : []),
     ...(selectedConfig?.composeContent ? ["compose" as const] : []),
@@ -134,6 +224,7 @@ export function ApplicationManagementPanel({
             <span>{serviceCountLabel(selected.services.length)} · {replicaLabel(selected.running, selected.desired)}</span>
           </div>
           <div className="application-detail-actions">
+            <button type="button" className="ghost" disabled={Boolean(selectedRollback?.loading || selectedRollbackBusy)} onClick={() => void openVersions(selected)}>{selectedRollback?.loading ? t(lang, "loadingHistory") : t(lang, "versions")}</button>
             <button type="button" className="ghost" disabled={Boolean(configBusy)} onClick={() => void openConfig(selected)}>{configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "viewConfig")}</button>
             <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(selected)}>{actionBusy === selected.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
             <button type="button" disabled={Boolean(configBusy)} onClick={() => void openUpdate(selected)}>{configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}</button>
@@ -155,6 +246,52 @@ export function ApplicationManagementPanel({
               )) : <p>{t(lang, "internalOnly")}</p>}
             </div>
           </section>
+          {selectedRollback ? (
+            <section className="application-detail-section version-history-section">
+              <div className="version-history-heading">
+                <h3>{t(lang, "versions")}</h3>
+                <button type="button" className="ghost" disabled={selectedRollback.loading || selectedRollback.busyVersion !== null} onClick={() => void loadVersions(selected)}>{selectedRollback.loading ? t(lang, "loadingHistory") : t(lang, "refresh")}</button>
+              </div>
+              {selectedRollback.message ? <div className="rollback-message">{selectedRollback.message}</div> : null}
+              {selectedRollback.error ? <div className="storage-warnings"><span>{selectedRollback.error}</span></div> : null}
+              {selectedRollback.loading ? (
+                <p className="deployment-config-empty">{t(lang, "loadingHistory")}</p>
+              ) : selectedRollback.versions.length ? (
+                <div className="version-history-list">
+                  {selectedRollback.versions.map((version, index) => {
+                    const targetVersion = versionNumber(version.version);
+                    const isCurrent = index === 0;
+                    const isBusy = targetVersion !== null && selectedRollback.busyVersion === targetVersion;
+                    return (
+                      <div className={isCurrent ? "version-history-row current" : "version-history-row"} key={`${version.version ?? "unknown"}-${index}`}>
+                        <div className="version-history-main">
+                          <strong>v{version.version ?? "-"}</strong>
+                          <CodeCell value={version.image || "-"} />
+                        </div>
+                        <div className="version-history-meta">
+                          <Badge value={version.stable ? t(lang, "stableVersion") : "-"} />
+                          <span>{t(lang, "submitted")}: {versionSubmittedLabel(version.submitTime)}</span>
+                        </div>
+                        <div className="version-history-action">
+                          {isCurrent ? (
+                            <Badge value={t(lang, "currentVersion")} />
+                          ) : targetVersion === null ? (
+                            <Badge value="-" />
+                          ) : (
+                            <button type="button" className="ghost" disabled={selectedRollback.busyVersion !== null} onClick={() => void rollbackToVersion(selected, targetVersion)}>
+                              {isBusy ? t(lang, "rollingBack") : t(lang, "rollbackToVersion")}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="deployment-config-empty">{t(lang, "noVersionHistory")}</p>
+              )}
+            </section>
+          ) : null}
           {selectedConfig ? (
             <section className="application-detail-section deployment-config-section">
               <div className="deployment-config-heading">
@@ -265,6 +402,7 @@ export function ApplicationManagementPanel({
                 <td>
                   <div className="app-action-row">
                     <button type="button" className="ghost" onClick={(event) => { event.stopPropagation(); openDetails(app); }}>{t(lang, "details")}</button>
+                    <button type="button" className="ghost" disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={(event) => { event.stopPropagation(); void openVersions(app); }}>{rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}</button>
                     <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={(event) => { event.stopPropagation(); void restart(app); }}>{actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
                     <button type="button" disabled={Boolean(configBusy)} onClick={(event) => { event.stopPropagation(); void openUpdate(app); }}>{configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}</button>
                   </div>

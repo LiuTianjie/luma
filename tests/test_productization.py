@@ -56,7 +56,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_remove, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -4671,6 +4671,49 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_service_history_handler_returns_slugged_nomad_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad"}}), encoding="utf-8")
+                with patch(
+                    "luma.control.server.job_versions",
+                    return_value=[{"version": 3, "stable": True, "image": "app:v3"}],
+                ) as versions:
+                    result = handle_service_history(state["deployToken"], {"name": "My App"})
+                versions.assert_called_once()
+                self.assertEqual(versions.call_args.kwargs["slug"], "my-app")
+                self.assertEqual(result["service"], "My App")
+                self.assertEqual(result["slug"], "my-app")
+                self.assertEqual(result["versions"][0]["image"], "app:v3")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_rollback_handler_reverts_requested_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad"}}), encoding="utf-8")
+                with patch("luma.control.server.revert_job", return_value="Nomad job api reverted to v2") as revert:
+                    result = handle_service_rollback(state["deployToken"], {"name": "api", "version": "2"})
+                revert.assert_called_once()
+                self.assertEqual(revert.call_args.kwargs["slug"], "api")
+                self.assertEqual(revert.call_args.kwargs["version"], 2)
+                self.assertEqual(result["service"], "api")
+                self.assertEqual(result["message"], "Nomad job api reverted to v2")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_service_remove_dry_run_does_not_delete_generated_files(self):
         with tempfile.TemporaryDirectory() as tmp:

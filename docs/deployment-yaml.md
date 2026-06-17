@@ -371,7 +371,7 @@ tunnel:
 - `port` 是否是容器内部监听端口，而不是公网端口。
 - `region` 和 `exposure` 是否匹配。
 - 公开服务是否填写了 `domain` 和 `port`。
-- 镜像是否带 tag；`latest`/未带 tag 会在部署时解析成 digest，但生产回滚仍建议使用固定版本 tag。
+- 镜像是否带 tag；`latest`/未带 tag 会在部署时解析成 digest，但生产回滚仍建议使用固定版本 tag 或 digest，避免旧 Nomad job 版本重新拉到新镜像内容。
 - secret 不要直接写明文，优先写 `${ENV_NAME}`，部署时用 `--env .env` 或 scoped `luma secret set --scope <app>` 提供值。
 - worker 默认使用 `exposure: none`，不要给它配公网域名。
 - home 节点不要承载核心高频公网服务。

@@ -307,7 +307,7 @@ luma secret set DATABASE_URL --scope app
 | `luma update` 什么时候需要 `--domain` | 只有 `/opt/luma/control/control.json` 缺失，或你确实要切换控制面域名时。 |
 | 服务 A 从一个 region 迁到另一个 region | 改 manifest 的 `region`，必要时同步修改 `exposure`，然后重新 `luma deploy app.yaml`。 |
 | 服务 A 固定到某个节点 | 把 manifest 的 `node` 设为 `luma node join --name` 使用的 Luma 节点名，保留匹配的 `region`，然后重新 deploy。控制面会渲染成 Nomad 的节点身份约束。 |
-| 回滚服务 A | 运行 `luma rollback app` 回到上一个版本，或 `luma rollback app --to-version <N>` 回到指定版本。用 `luma history app` 列出历史版本。 |
+| 回滚服务 A | 运行 `luma history app` 和 `luma rollback app`（或 `--to-version <N>`），也可以在控制台的「应用 -> 版本」里操作。回滚是 Nomad job 版本的运行态回退；生产回滚请使用固定镜像 tag/digest。 |
 | 节点重新 join | 保持同一个 Luma 节点名，在该节点重新 `luma node join` / `luma update`。Nomad 节点 UUID 稳定，固定节点服务仍然有效。 |
 | 下掉服务 A | 运行 `luma service remove app`。它会删除 DNS、Nomad job 和生成的 route 文件；用 `--dry-run` 预览，或用 `--skip-dns` 保留 DNS。 |
 | 服务从公开变内部 | 把 `exposure` 改为 `none`，移除不再需要的 `domain`/公开入口配置，重新 deploy。 |

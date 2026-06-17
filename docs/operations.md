@@ -112,7 +112,11 @@ nomad alloc logs -f <alloc-id>
 
 ## Roll Back
 
-Nomad keeps a version history per job, so Luma exposes one-command rollback:
+Nomad keeps a version history per job, so Luma exposes runtime rollback through both the dashboard and CLI.
+
+From the dashboard, open `https://<control-domain>/dashboard/`, choose **Applications -> Versions**, inspect the job versions, then choose a previous version and confirm rollback.
+
+From the CLI:
 
 ```bash
 luma history <service>
@@ -120,7 +124,9 @@ luma rollback <service>
 luma rollback <service> --to-version <N>
 ```
 
-`luma rollback` reverts the job to its previous version (or the version chosen with `--to-version`), backed by `nomad job revert`. `luma history` lists prior versions, backed by `nomad job history`. Jobspecs also render `update { auto_revert = true }`, so a new version that fails its health checks rolls back to the last healthy version automatically.
+`luma history` lists prior versions of the Nomad job (`GET /v1/job/<id>/versions`). `luma rollback` reverts to the previous version, or the version chosen with `--to-version`, through Nomad job revert (`POST /v1/job/<id>/revert`). Jobspecs also render `update { auto_revert = true }`, so a new version that fails its health checks rolls back to the last healthy version automatically.
+
+This is a running job rollback. It does not rewrite Git history, change the stored manifest/YAML in Luma Control, reverse database migrations, or restore volume contents. Compose rollback applies to the whole Compose job/stack. Use pinned image tags or digests for production; mutable tags such as `latest` can make an old Nomad job version pull newer bytes.
 
 Git-first path, when you want the manifest and the running job to stay in sync:
 

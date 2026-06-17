@@ -108,6 +108,27 @@ export type DashboardService = {
   diagnostics?: string[];
 };
 
+export type ServiceVersion = {
+  version?: number | string;
+  stable?: boolean;
+  submitTime?: number | string;
+  image?: string;
+};
+
+export type ServiceHistoryPayload = {
+  clusterId?: string;
+  service?: string;
+  slug?: string;
+  versions?: ServiceVersion[];
+};
+
+export type ServiceRollbackPayload = {
+  clusterId?: string;
+  service?: string;
+  slug?: string;
+  message?: string;
+};
+
 export type DashboardVolume = {
   name?: string;
   kind?: string;

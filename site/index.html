@@ -57,6 +57,7 @@
             <span><strong>DNS</strong> Cloudflare sync</span>
             <span><strong>TLS</strong> Traefik ACME</span>
             <span><strong>Nodes</strong> region labels</span>
+            <span><strong>Rollback</strong> Nomad job versions</span>
           </div>
           <div class="hero-actions">
             <a class="button primary" href="#demo">View deploy flow</a>
@@ -196,6 +197,10 @@ ok nomad   status allocations x2</code></pre>
         <div>
           <strong>Managed Storage Volumes</strong>
           <span>Register storage classes; Luma mounts volume endpoints dynamically</span>
+        </div>
+        <div>
+          <strong>Runtime Rollback</strong>
+          <span>Inspect versions and revert Nomad jobs from CLI or dashboard</span>
         </div>
       </section>
 
@@ -429,6 +434,13 @@ resources:
             <li>
               <span>06</span>
               <div>
+                <strong>Keep version history</strong>
+                <p>Nomad stores job versions so the dashboard and <code>luma rollback</code> can revert the running job.</p>
+              </div>
+            </li>
+            <li>
+              <span>07</span>
+              <div>
                 <strong>Limit resources</strong>
                 <p>Use Nomad resource limits when apps and control services share a small server.</p>
               </div>
@@ -625,7 +637,7 @@ luma deploy status.yaml</code></pre>
         <a class="docs-card reveal" href="../docs/luma-cli.md">
           <div class="docs-card-icon">💻</div>
           <h3>CLI Command Reference</h3>
-          <p>Complete manual for all <code>luma</code> subcommands, flags, and common operator workflows.</p>
+          <p>Complete manual for <code>luma</code> subcommands, including deploy, history, rollback, and operator workflows.</p>
           <span class="docs-link-arrow">Read Docs →</span>
         </a>
       </div>

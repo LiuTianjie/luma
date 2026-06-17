@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.116"
+python -m pip install "luma-infra==0.1.117"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.116 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.117 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.116"
+python -m pip install "luma-infra==0.1.117"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.116"
+python -m pip install "luma-infra==0.1.117"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -246,7 +246,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.116 --timeout 900
+luma update fleet --install-ref v0.1.117 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -317,7 +317,9 @@ luma rollback public-cn-service
 luma rollback public-cn-service --to-version 3
 ```
 
-`luma history` lists prior versions of the Nomad job (`nomad job history`). `luma rollback` reverts to the previous version, or to the version given by `--to-version N` (`nomad job revert`). Jobspecs also render `update { auto_revert = true }`, so a new version that fails its health checks rolls back automatically.
+`luma history` lists prior versions of the Nomad job (`GET /v1/job/<id>/versions`). `luma rollback` reverts to the previous version, or to the version given by `--to-version N` (`POST /v1/job/<id>/revert`). The web dashboard exposes the same operation from Applications -> Versions. Jobspecs also render `update { auto_revert = true }`, so a new version that fails its health checks rolls back automatically.
+
+Rollback changes the running Nomad job only. It does not rewrite Git, update the stored manifest in Luma Control, roll back databases, or restore volumes. For predictable production rollback, deploy immutable image tags or digests rather than `latest`.
 
 Remove a deployed service:
 
@@ -421,7 +423,7 @@ For `luma deploy service.yaml`, Luma does:
 
 The client prints local progress before submitting the request, while waiting for the control plane, and for each control-plane step. A public route probe reports the HTTP status from `/`; `404` means the route is reachable but the application may not serve a root page. The default deploy response timeout is 1800 seconds because first deploys may pull large images on the target node; use `--timeout <seconds>` to override it.
 
-Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Nomad job (the job id is the service slug) instead of creating a duplicate. The update uses the current rendered jobspec as the source of truth, and Nomad keeps the previous version so `luma rollback` can return to it.
+Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Nomad job (the job id is the service slug) instead of creating a duplicate. The update uses the current rendered jobspec as the source of truth, and Nomad keeps the previous version so `luma rollback` or the dashboard's Applications -> Versions action can return to it.
 
 Use `luma deploy service.yaml --env .env` when the project already has a deployment env file. Scoped env secrets are isolated by service name, so `api/DATABASE_URL` and `worker/DATABASE_URL` are distinct values. Legacy global `luma secret set NAME` values are still used only for applications that have no scoped secrets.
 

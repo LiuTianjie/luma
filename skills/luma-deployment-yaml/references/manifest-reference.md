@@ -5,7 +5,7 @@
 | Field | Required | Type | Notes |
 | --- | --- | --- | --- |
 | `name` | yes | string | Service name. Luma slugifies it for stack, service, route, and deployment records. |
-| `image` | yes | string | Container image. `latest` or omitted tags may be resolved to `name@sha256:...` when Luma can validate the pull on the manager or a fixed target node. Docker Hub-style images prefer the requested image, then Docker daemon egress proxy retry, then configured `defaults.imageMirrors` fallback. Prefer pinned version tags for production rollback. |
+| `image` | yes | string | Container image. `latest` or omitted tags may be resolved to `name@sha256:...` when Luma can validate the pull on the manager or a fixed target node. Docker Hub-style images prefer the requested image, then Docker daemon egress proxy retry, then configured `defaults.imageMirrors` fallback. Prefer pinned version tags or digests for production rollback; mutable tags can make an old Nomad job version pull newer image bytes. |
 | `region` | yes | `cn` / `global` / `home` | Runtime placement region. |
 | `engine` | no | `nomad` | Orchestrator override. Omit to inherit the cluster default. |
 | `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a node-meta placement constraint and keeps the region constraint. Stable across node restarts. Do not use Docker hostnames for normal pins. |

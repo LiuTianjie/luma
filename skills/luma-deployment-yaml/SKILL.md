@@ -1,6 +1,6 @@
 ---
 name: luma-deployment-yaml
-description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, region/exposure choices, the optional engine field, routing domains to workloads, storageClass volumes, manager-managed storage, private registry credentials, service removal, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
+description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, region/exposure choices, the optional engine field, routing domains to workloads, storageClass volumes, manager-managed storage, private registry credentials, service removal, rollback/version history, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
 ---
 
 # Luma Deployment YAML
@@ -188,6 +188,16 @@ luma compose deploy luma.compose.yml --format ndjson --timeout 1800
 
 If the manifest uses `${ENV_NAME}` placeholders and the project has a `.env`, add `--env .env` to the deploy command.
 
+Inspect and roll back a deployed application only when the user asks for runtime rollback:
+
+```bash
+luma history <app>
+luma rollback <app>
+luma rollback <app> --to-version <N>
+```
+
+The dashboard exposes the same Nomad job-version rollback from Applications -> Versions. Treat rollback as a running Nomad job revert; it does not rewrite Git, update the stored manifest, reverse migrations, or restore volume data. Compose rollback reverts the whole stack.
+
 ## CI Usage
 
 For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
@@ -214,7 +224,7 @@ luma storage check luma.compose.yml --format json
 
 ## Operational Notes
 
-- `latest` or omitted image tags may be resolved to `name@sha256:...` when Luma can validate the pull on the manager or a fixed target node. Prefer pinned version tags for production rollback.
+- `latest` or omitted image tags may be resolved to `name@sha256:...` when Luma can validate the pull on the manager or a fixed target node. Prefer pinned version tags or digests for production rollback; mutable tags can make an old Nomad job version pull newer image bytes.
 - Private registry credentials are stored with `luma registry login` and matched by image registry host during deploy. Luma injects them into the Nomad job's docker `auth` block so the placed client pulls the private image. If Docker daemon proxying causes EOF/timeout against a private registry, check daemon `NO_PROXY`; do not try to fix it with manifest `proxy: true`.
 - For Docker Hub-style images, Luma should prefer the requested image, then configure Docker daemon egress proxy and retry when the target node reports registry network failures, and only then fall back to configured `defaults.imageMirrors`. `defaults.imageMirrors: []` disables mirror fallback.
 - `luma service remove <name>` uses the manifest recorded by the control plane during the last successful single-service or Compose deploy. This also works for deployments created from the web dashboard.

@@ -55,6 +55,7 @@
           <span><strong>DNS</strong> Cloudflare 同步</span>
           <span><strong>TLS</strong> Traefik ACME</span>
           <span><strong>Nodes</strong> region 标签</span>
+          <span><strong>Rollback</strong> Nomad 版本回滚</span>
         </div>
         <div class="hero-actions">
           <a class="button primary" href="#demo">查看部署流程</a>
@@ -195,6 +196,10 @@ ok nomad   status allocations x2</code></pre>
       <div>
         <strong>声明式共享存储卷</strong>
         <span>在控制面注册存储类，Luma 在多节点间自动调度挂载</span>
+      </div>
+      <div>
+        <strong>运行态回滚</strong>
+        <span>在 CLI 或控制台查看版本，并回滚 Nomad job</span>
       </div>
     </section>
 
@@ -427,6 +432,13 @@ resources:
           <li>
             <span>06</span>
             <div>
+              <strong>保留版本历史</strong>
+              <p>Nomad 保存 job 版本，控制台和 <code>luma rollback</code> 都能回退运行中的 job。</p>
+            </div>
+          </li>
+          <li>
+            <span>07</span>
+            <div>
               <strong>限制资源</strong>
               <p>业务服务和控制组件共用小型服务器时，用 Nomad resources 限制 CPU 和内存。</p>
             </div>
@@ -623,7 +635,7 @@ luma deploy status.yaml</code></pre>
         <a class="docs-card reveal" href="../docs/luma-cli.md">
           <div class="docs-card-icon">💻</div>
           <h3>CLI 命令行手册</h3>
-          <p>Luma 命令行工具（luma）所有子命令、参数选项说明与常用操作指南手册。</p>
+          <p>Luma 命令行工具所有子命令、参数选项，以及 deploy、history、rollback 等常用操作指南。</p>
           <span class="docs-link-arrow">阅读文档 →</span>
         </a>
       </div>
