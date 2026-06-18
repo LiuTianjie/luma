@@ -2685,6 +2685,17 @@ footer span:first-child {
   margin: 0 0 16px;
 }
 
+.docs-content a {
+  color: #a5b4fc;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(165, 180, 252, 0.35);
+}
+
+.docs-content a:hover {
+  color: #c7d2fe;
+  border-bottom-color: rgba(199, 210, 254, 0.7);
+}
+
 .docs-content ul, .docs-content ol {
   margin: 0 0 18px;
   padding-left: 24px;
@@ -2773,6 +2784,50 @@ footer span:first-child {
   color: var(--muted);
 }
 
+.docs-modal-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 40px 0;
+  color: var(--muted-strong);
+}
+
+.docs-modal-error h4 {
+  margin: 0;
+  color: #fff;
+  font-size: 1.2rem;
+}
+
+.docs-modal-error p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.docs-modal-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.14);
+  border: 1px solid rgba(129, 140, 248, 0.35);
+  color: #c7d2fe;
+  text-decoration: none;
+  font-weight: 600;
+  transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+}
+
+.docs-modal-action:hover {
+  background: rgba(99, 102, 241, 0.22);
+  border-color: rgba(165, 180, 252, 0.55);
+  color: #fff;
+}
+
 .spinner {
   width: 32px;
   height: 32px;
@@ -2785,4 +2840,3 @@ footer span:first-child {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
-

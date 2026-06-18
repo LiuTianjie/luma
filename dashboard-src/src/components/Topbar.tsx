@@ -1,3 +1,4 @@
+import { LogOut, RefreshCw } from "lucide-react";
 import { t } from "../i18n";
 import type { Lang, SyncStatus } from "../types";
 
@@ -41,8 +42,14 @@ export function Topbar({
           <button className={lang === "zh" ? "active" : ""} onClick={() => onLangChange("zh")} type="button">中文</button>
           <button className={lang === "en" ? "active" : ""} onClick={() => onLangChange("en")} type="button">EN</button>
         </div>
-        <button type="button" onClick={onRefresh}>{t(lang, "refresh")}</button>
-        <button className="ghost" type="button" onClick={onSignOut}>{t(lang, "signOut")}</button>
+        <button type="button" onClick={onRefresh}>
+          <RefreshCw size={16} aria-hidden="true" />
+          {t(lang, "refresh")}
+        </button>
+        <button className="ghost" type="button" onClick={onSignOut}>
+          <LogOut size={16} aria-hidden="true" />
+          {t(lang, "signOut")}
+        </button>
       </div>
     </header>
   );

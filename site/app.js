@@ -250,6 +250,8 @@ if (demoStage && demoButtons.length) {
   const modalBody = document.getElementById("docsModalBody");
   const closeBtn = document.getElementById("closeDocsBtn");
   const docCards = document.querySelectorAll(".docs-card");
+  const githubSourceBase = "https://github.com/LiuTianjie/luma/blob/main/";
+  const rawSourceBase = "https://raw.githubusercontent.com/LiuTianjie/luma/main/";
 
   if (!modal || !modalTitle || !modalBody || !closeBtn) return;
 
@@ -257,14 +259,70 @@ if (demoStage && demoButtons.length) {
     return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
-  function parseInlineMarkdown(str) {
+  function normalizeDocPath(url) {
+    if (!url) return "";
+
+    try {
+      const parsed = new URL(url, window.location.href);
+      if (parsed.hostname === "github.com") {
+        const marker = "/LiuTianjie/luma/blob/main/";
+        const index = parsed.pathname.indexOf(marker);
+        if (index !== -1) {
+          return parsed.pathname.slice(index + marker.length);
+        }
+      }
+      if (parsed.hostname === "raw.githubusercontent.com") {
+        const marker = "/LiuTianjie/luma/main/";
+        const index = parsed.pathname.indexOf(marker);
+        if (index !== -1) {
+          return parsed.pathname.slice(index + marker.length);
+        }
+      }
+    } catch (err) {
+      // Relative URLs are handled below.
+    }
+
+    return url
+      .split("#")[0]
+      .split("?")[0]
+      .replace(/^(\.\/)+/, "")
+      .replace(/^(\.\.\/)+/, "")
+      .replace(/^\/+/, "");
+  }
+
+  function getGithubDocUrl(docPath) {
+    return docPath ? githubSourceBase + docPath : "#";
+  }
+
+  function getRawDocUrl(docPath) {
+    return docPath ? rawSourceBase + docPath : "";
+  }
+
+  function resolveMarkdownLink(href, docPath) {
+    if (/^(https?:|mailto:|#)/i.test(href)) {
+      return href;
+    }
+
+    if (!docPath || href.startsWith("/")) {
+      return href;
+    }
+
+    const basePath = docPath.split("/").slice(0, -1).join("/");
+    const resolvedPath = new URL(href, `https://example.com/${basePath}/`).pathname.replace(/^\/+/, "");
+    return resolvedPath.endsWith(".md") ? getGithubDocUrl(resolvedPath) : href;
+  }
+
+  function parseInlineMarkdown(str, docPath) {
     return str
       .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
       .replace(/`(.*?)`/g, "<code>$1</code>")
-      .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>');
+      .replace(/\[(.*?)\]\((.*?)\)/g, (_, label, href) => {
+        const resolvedHref = escapeHtml(resolveMarkdownLink(href, docPath));
+        return `<a href="${resolvedHref}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      });
   }
 
-  function parseMarkdownToHtml(md) {
+  function parseMarkdownToHtml(md, docPath) {
     let html = '<div class="docs-content">';
     let inCodeBlock = false;
     let codeContent = '';
@@ -307,22 +365,22 @@ if (demoStage && demoButtons.length) {
       // Headers
       if (line.startsWith("# ")) {
         if (inList) { html += "</ul>"; inList = false; }
-        html += `<h1>${parseInlineMarkdown(line.slice(2))}</h1>`;
+        html += `<h1>${parseInlineMarkdown(line.slice(2), docPath)}</h1>`;
         continue;
       }
       if (line.startsWith("## ")) {
         if (inList) { html += "</ul>"; inList = false; }
-        html += `<h2>${parseInlineMarkdown(line.slice(3))}</h2>`;
+        html += `<h2>${parseInlineMarkdown(line.slice(3), docPath)}</h2>`;
         continue;
       }
       if (line.startsWith("### ")) {
         if (inList) { html += "</ul>"; inList = false; }
-        html += `<h3>${parseInlineMarkdown(line.slice(4))}</h3>`;
+        html += `<h3>${parseInlineMarkdown(line.slice(4), docPath)}</h3>`;
         continue;
       }
       if (line.startsWith("#### ")) {
         if (inList) { html += "</ul>"; inList = false; }
-        html += `<h4>${parseInlineMarkdown(line.slice(5))}</h4>`;
+        html += `<h4>${parseInlineMarkdown(line.slice(5), docPath)}</h4>`;
         continue;
       }
 
@@ -338,9 +396,9 @@ if (demoStage && demoButtons.length) {
           else if (quoteContent.startsWith("[!CAUTION]")) { alertClass = "alert-warning"; alertLabel = "CAUTION"; }
           
           let alertText = quoteContent.replace(/^\[!.*?\]/, "").trim();
-          html += `<div class="doc-alert ${alertClass}"><strong>${alertLabel}: </strong>${parseInlineMarkdown(alertText)}</div>`;
+          html += `<div class="doc-alert ${alertClass}"><strong>${alertLabel}: </strong>${parseInlineMarkdown(alertText, docPath)}</div>`;
         } else {
-          html += `<blockquote>${parseInlineMarkdown(quoteContent)}</blockquote>`;
+          html += `<blockquote>${parseInlineMarkdown(quoteContent, docPath)}</blockquote>`;
         }
         continue;
       }
@@ -351,7 +409,7 @@ if (demoStage && demoButtons.length) {
           html += "<ul>";
           inList = true;
         }
-        html += `<li>${parseInlineMarkdown(line.slice(2))}</li>`;
+        html += `<li>${parseInlineMarkdown(line.slice(2), docPath)}</li>`;
         continue;
       }
 
@@ -366,7 +424,7 @@ if (demoStage && demoButtons.length) {
           html += "</ul>";
           inList = false;
         }
-        html += `<p>${parseInlineMarkdown(line)}</p>`;
+        html += `<p>${parseInlineMarkdown(line, docPath)}</p>`;
       }
     }
 
@@ -378,6 +436,11 @@ if (demoStage && demoButtons.length) {
   }
 
   async function loadDoc(url, cardTitle) {
+    const docPath = normalizeDocPath(url);
+    const localUrl = docPath ? new URL(docPath, window.location.href).toString() : url;
+    const rawUrl = getRawDocUrl(docPath);
+    const githubUrl = getGithubDocUrl(docPath);
+
     modalBody.innerHTML = `
       <div class="docs-modal-loading">
         <div class="spinner"></div>
@@ -386,24 +449,49 @@ if (demoStage && demoButtons.length) {
     `;
     modalTitle.textContent = cardTitle;
     modal.classList.add("active");
+    modal.setAttribute("aria-hidden", "false");
     document.body.style.overflow = "hidden"; // Prevent scrolling behind modal
 
     try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error("Network response was not ok");
+      const urls = [localUrl, rawUrl].filter(Boolean);
+      let response = null;
+      let lastError = null;
+
+      for (const candidateUrl of urls) {
+        try {
+          response = await fetch(candidateUrl);
+          if (response.ok) break;
+          lastError = new Error(`HTTP ${response.status}`);
+          response = null;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+
+      if (!response) {
+        throw lastError || new Error("Unable to load document");
+      }
+
       const mdText = await response.text();
-      const htmlContent = parseMarkdownToHtml(mdText);
+      const htmlContent = parseMarkdownToHtml(mdText, docPath);
       modalBody.innerHTML = htmlContent;
     } catch (err) {
-      console.warn("Dynamic doc fetch failed, falling back to direct link", err);
-      // Fallback: close modal and redirect to raw markdown file
-      closeModal();
-      window.open(url, "_blank");
+      console.warn("Dynamic doc fetch failed", err);
+      modalBody.innerHTML = `
+        <div class="docs-modal-error">
+          <h4>${document.documentElement.lang === "zh-CN" ? "文档暂时无法加载" : "Document could not load"}</h4>
+          <p>${document.documentElement.lang === "zh-CN" ? "请稍后重试，或直接在 GitHub 中打开该文档。" : "Please try again later, or open this document directly on GitHub."}</p>
+          <a class="docs-modal-action" href="${escapeHtml(githubUrl)}" target="_blank" rel="noopener noreferrer">
+            ${document.documentElement.lang === "zh-CN" ? "打开 GitHub 文档" : "Open GitHub document"}
+          </a>
+        </div>
+      `;
     }
   }
 
   function closeModal() {
     modal.classList.remove("active");
+    modal.setAttribute("aria-hidden", "true");
     document.body.style.overflow = "";
   }
 
@@ -411,7 +499,8 @@ if (demoStage && demoButtons.length) {
     card.addEventListener("click", (e) => {
       e.preventDefault();
       const url = card.getAttribute("href");
-      const title = card.querySelector("h3").textContent;
+      if (!url) return;
+      const title = card.querySelector("h3")?.textContent || (document.documentElement.lang === "zh-CN" ? "文档内容" : "Document");
       loadDoc(url, title);
     });
   });

@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { FileText, History, Pencil, Plus, RotateCw, Search, Settings2 } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
 import { fetchServiceHistory, restartApplication, rollbackService } from "../lifecycleApi";
-import type { DashboardPayload, Lang, ServiceVersion } from "../types";
+import type { DashboardPayload, DashboardService, Lang, ServiceVersion } from "../types";
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
+import { ServiceLogsModal } from "./ServiceLogsModal";
 import { Badge, BadgeGroup, CodeCell, PrimaryCell, StatePill } from "./ui";
 
 export type ApplicationUpdateRequest = {
@@ -15,6 +17,12 @@ export type ApplicationUpdateRequest = {
 
 type ConfigTab = "manifest" | "compose";
 
+export type ApplicationFilterState = {
+  query: string;
+  status: string;
+  region: string;
+};
+
 type RollbackState = {
   app: string;
   versions: ServiceVersion[];
@@ -22,6 +30,11 @@ type RollbackState = {
   error: string;
   message: string;
   busyVersion: number | null;
+};
+
+type LogsTarget = {
+  services: DashboardService[];
+  initialServiceName: string;
 };
 
 const DEPLOY_ROOT = typeof document === "undefined" ? null : document.body;
@@ -78,7 +91,24 @@ export function ApplicationManagementPanel({
   const [actionBusy, setActionBusy] = useState("");
   const [configBusy, setConfigBusy] = useState("");
   const [rollbackState, setRollbackState] = useState<RollbackState | null>(null);
+  const [logsTarget, setLogsTarget] = useState<LogsTarget | null>(null);
+  const [filters, setFilters] = useState<ApplicationFilterState>({ query: "", status: "all", region: "all" });
   const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
+  const statusOptions = useMemo(() => [...new Set(applications.map((app) => app.status).filter(Boolean))].sort(), [applications]);
+  const regionOptions = useMemo(() => [...new Set(applications.flatMap((app) => app.regions).filter(Boolean))].sort(), [applications]);
+  const filteredApplications = useMemo(() => {
+    const query = filters.query.trim().toLowerCase();
+    return applications.filter((app) => {
+      const matchesStatus = filters.status === "all" || app.status === filters.status;
+      const matchesRegion = filters.region === "all" || app.regions.includes(filters.region);
+      const haystack = [
+        app.stack,
+        ...app.domains,
+        ...app.services.map((service) => `${service.name || ""} ${service.fullName || ""} ${service.image || ""}`),
+      ].join(" ").toLowerCase();
+      return matchesStatus && matchesRegion && (!query || haystack.includes(query));
+    });
+  }, [applications, filters]);
 
   const restart = async (app: Application) => {
     setActionError("");
@@ -142,6 +172,27 @@ export function ApplicationManagementPanel({
     } finally {
       setConfigBusy("");
     }
+  };
+
+  const firstLogService = (app: Application) => app.services.find((service) => service.fullName);
+
+  const openApplicationLogs = (app: Application) => {
+    const service = firstLogService(app);
+    if (!service?.fullName) {
+      setActionError(lang === "zh" ? `应用 ${app.stack} 暂无可读取日志的服务。` : `Application ${app.stack} has no service logs available.`);
+      return;
+    }
+    setActionError("");
+    setLogsTarget({ services: app.services, initialServiceName: service.fullName });
+  };
+
+  const openServiceLogs = (service: DashboardService, appServices: DashboardService[]) => {
+    if (!service.fullName) {
+      setActionError(lang === "zh" ? "该服务暂无可读取日志。" : "This service has no logs available.");
+      return;
+    }
+    setActionError("");
+    setLogsTarget({ services: appServices, initialServiceName: service.fullName });
   };
 
   const loadVersions = async (app: Application, message = "") => {
@@ -214,6 +265,7 @@ export function ApplicationManagementPanel({
   const selectedConfigContent = configTab === "compose" ? selectedConfig?.composeContent : selectedConfig?.manifest;
   const serviceCountLabel = (count: number) => lang === "zh" ? `${count} 个服务` : `${count} service${count === 1 ? "" : "s"}`;
   const replicaLabel = (running: number, desired: number) => lang === "zh" ? `${running}/${desired} 副本` : `${running}/${desired} replicas`;
+  const logLabel = lang === "zh" ? "日志" : "Logs";
   const detailOverlay = selected && DEPLOY_ROOT ? createPortal(
     <div className="application-detail-backdrop" onClick={() => setSelected(null)}>
       <section className="application-detail-page" onClick={(event) => event.stopPropagation()}>
@@ -321,7 +373,18 @@ export function ApplicationManagementPanel({
                 <article className="application-service-detail" key={service.fullName || service.name}>
                   <div className="application-service-title">
                     <strong>{service.name}</strong>
-                    <StatePill label={localizeState(lang, serviceRuntimeStatus(service))} value={serviceRuntimeStatus(service)} />
+                    <div className="application-service-title-actions">
+                      <StatePill label={localizeState(lang, serviceRuntimeStatus(service))} value={serviceRuntimeStatus(service)} />
+                      <button
+                        type="button"
+                        className="ghost service-log-button"
+                        disabled={!service.fullName}
+                        onClick={() => openServiceLogs(service, selected.services)}
+                      >
+                        <FileText size={15} aria-hidden="true" />
+                        {logLabel}
+                      </button>
+                    </div>
                   </div>
                   <dl>
                     <div><dt>{t(lang, "image")}</dt><dd>{service.image || "-"}</dd></div>
@@ -352,17 +415,58 @@ export function ApplicationManagementPanel({
     </div>,
     DEPLOY_ROOT,
   ) : null;
+  const logsOverlay = logsTarget ? (
+    <ServiceLogsModal
+      lang={lang}
+      token={token}
+      services={logsTarget.services}
+      initialServiceName={logsTarget.initialServiceName}
+      onClose={() => setLogsTarget(null)}
+    />
+  ) : null;
 
   return (
     <article className="panel app-management-panel" id="section-1">
-      <div className="panel-heading">
+      <div className="panel-heading app-management-heading">
         <div>
           <p className="eyebrow">{lang === "zh" ? "应用管理" : "Applications"}</p>
           <h2>{t(lang, "applications")}</h2>
         </div>
-        <button type="button" onClick={openCreate}>{t(lang, "createApplication")}</button>
+        <button type="button" onClick={openCreate}>
+          <Plus size={16} aria-hidden="true" />
+          {t(lang, "createApplication")}
+        </button>
       </div>
       {actionError ? <div className="storage-warnings"><span>{actionError}</span></div> : null}
+      <div className="application-filter-bar" aria-label={lang === "zh" ? "应用筛选" : "Application filters"}>
+        <label className="application-search-field">
+          <Search size={16} aria-hidden="true" />
+          <span className="sr-only">{lang === "zh" ? "搜索应用" : "Search applications"}</span>
+          <input
+            value={filters.query}
+            onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+            placeholder={lang === "zh" ? "搜索应用、域名、镜像" : "Search app, domain, image"}
+          />
+        </label>
+        <label>
+          <span>{t(lang, "status")}</span>
+          <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
+            <option value="all">{lang === "zh" ? "全部状态" : "All statuses"}</option>
+            {statusOptions.map((status) => <option value={status} key={status}>{localizeState(lang, status)}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>{t(lang, "region")}</span>
+          <select value={filters.region} onChange={(event) => setFilters((current) => ({ ...current, region: event.target.value }))}>
+            <option value="all">{lang === "zh" ? "全部区域" : "All regions"}</option>
+            {regionOptions.map((region) => <option value={region} key={region}>{region}</option>)}
+          </select>
+        </label>
+        <div className="application-filter-count">
+          <strong>{filteredApplications.length}</strong>
+          <span>{lang === "zh" ? ` / ${applications.length} 个应用` : ` / ${applications.length} apps`}</span>
+        </div>
+      </div>
       <div className="table-wrap">
         <table className="app-table">
           <thead>
@@ -376,8 +480,9 @@ export function ApplicationManagementPanel({
             </tr>
           </thead>
           <tbody>
-            {applications.length ? applications.map((app) => {
+            {filteredApplications.length ? filteredApplications.map((app) => {
               const openApp = () => openDetails(app);
+              const hasLogs = Boolean(firstLogService(app));
               return (
               <tr
                 aria-label={`${t(lang, "details")}: ${app.stack}`}
@@ -401,10 +506,31 @@ export function ApplicationManagementPanel({
                 <td><Badge value={`${app.running}/${app.desired}`} /></td>
                 <td>
                   <div className="app-action-row">
-                    <button type="button" className="ghost" onClick={(event) => { event.stopPropagation(); openDetails(app); }}>{t(lang, "details")}</button>
-                    <button type="button" className="ghost" disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={(event) => { event.stopPropagation(); void openVersions(app); }}>{rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}</button>
-                    <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={(event) => { event.stopPropagation(); void restart(app); }}>{actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
-                    <button type="button" disabled={Boolean(configBusy)} onClick={(event) => { event.stopPropagation(); void openUpdate(app); }}>{configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}</button>
+                    <button
+                      type="button"
+                      className="ghost app-log-action"
+                      disabled={!hasLogs}
+                      onClick={(event) => { event.stopPropagation(); openApplicationLogs(app); }}
+                    >
+                      <FileText size={15} aria-hidden="true" />
+                      {logLabel}
+                    </button>
+                    <button type="button" className="ghost" onClick={(event) => { event.stopPropagation(); openDetails(app); }}>
+                      <Settings2 size={15} aria-hidden="true" />
+                      {t(lang, "details")}
+                    </button>
+                    <button type="button" className="ghost" disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={(event) => { event.stopPropagation(); void openVersions(app); }}>
+                      <History size={15} aria-hidden="true" />
+                      {rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}
+                    </button>
+                    <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={(event) => { event.stopPropagation(); void restart(app); }}>
+                      <RotateCw size={15} aria-hidden="true" />
+                      {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
+                    </button>
+                    <button type="button" disabled={Boolean(configBusy)} onClick={(event) => { event.stopPropagation(); void openUpdate(app); }}>
+                      <Pencil size={15} aria-hidden="true" />
+                      {configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -415,8 +541,46 @@ export function ApplicationManagementPanel({
           </tbody>
         </table>
       </div>
+      <div className="application-card-list">
+        {filteredApplications.length ? filteredApplications.map((app) => (
+          <article className="application-mobile-card" key={app.stack}>
+            <header>
+              <PrimaryCell title={app.stack} meta={serviceCountLabel(app.services.length)} />
+              <StatePill label={localizeState(lang, app.status)} value={app.status} />
+            </header>
+            <dl>
+              <div><dt>{t(lang, "accessAddress")}</dt><dd>{app.domains.length ? app.domains.join(", ") : t(lang, "internalOnly")}</dd></div>
+              <div><dt>{t(lang, "region")}</dt><dd>{app.regions.join(", ") || "-"}</dd></div>
+              <div><dt>{t(lang, "replicas")}</dt><dd>{app.running}/{app.desired}</dd></div>
+            </dl>
+            <div className="app-card-actions">
+              <button type="button" className="ghost app-log-action" disabled={!firstLogService(app)} onClick={() => openApplicationLogs(app)}>
+                <FileText size={15} aria-hidden="true" />
+                {logLabel}
+              </button>
+              <button type="button" className="ghost" onClick={() => openDetails(app)}>
+                <Settings2 size={15} aria-hidden="true" />
+                {t(lang, "details")}
+              </button>
+              <button type="button" className="ghost" disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={() => void openVersions(app)}>
+                <History size={15} aria-hidden="true" />
+                {rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}
+              </button>
+              <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(app)}>
+                <RotateCw size={15} aria-hidden="true" />
+                {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
+              </button>
+              <button type="button" disabled={Boolean(configBusy)} onClick={() => void openUpdate(app)}>
+                <Pencil size={15} aria-hidden="true" />
+                {configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
+              </button>
+            </div>
+          </article>
+        )) : <div className="empty-inline">{t(lang, "noApplications")}</div>}
+      </div>
 
       {detailOverlay}
+      {logsOverlay}
     </article>
   );
 }

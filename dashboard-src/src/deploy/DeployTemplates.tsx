@@ -3,24 +3,24 @@ import type { Lang } from "../types";
 import type { DeployMode, DeployTemplate } from "./types";
 import { deployTemplateDescription, deployTemplateName } from "./templates";
 
-const TEMPLATE_BRANDS: Record<string, { slug?: string; color: string; initials: string; accent: string }> = {
+const TEMPLATE_BRANDS: Record<string, { color: string; initials: string; accent: string }> = {
   "service-custom": { color: "#f8fafc", initials: "L", accent: "#7c3aed" },
   "compose-custom": { color: "#f8fafc", initials: "L", accent: "#7c3aed" },
-  "service-whoami": { slug: "traefikproxy", color: "#24a1c1", initials: "T", accent: "#24a1c1" },
-  "service-nginx": { slug: "nginx", color: "#009639", initials: "N", accent: "#009639" },
-  "service-redis-worker": { slug: "redis", color: "#ff4438", initials: "R", accent: "#ff4438" },
-  "service-grafana": { slug: "grafana", color: "#f46800", initials: "G", accent: "#f46800" },
-  "service-minio": { slug: "minio", color: "#c72e49", initials: "M", accent: "#c72e49" },
-  "service-jellyfin": { slug: "jellyfin", color: "#aa5cc3", initials: "J", accent: "#aa5cc3" },
-  "service-code-server": { slug: "coder", color: "#ffffff", initials: "C", accent: "#7c3aed" },
-  "compose-uptime-kuma": { slug: "uptimekuma", color: "#5cdd8b", initials: "UK", accent: "#5cdd8b" },
-  "compose-vaultwarden": { slug: "bitwarden", color: "#175ddc", initials: "VW", accent: "#175ddc" },
-  "compose-gitea": { slug: "gitea", color: "#609926", initials: "GT", accent: "#609926" },
-  "compose-n8n": { slug: "n8n", color: "#ea4b71", initials: "N8", accent: "#ea4b71" },
-  "compose-nextcloud": { slug: "nextcloud", color: "#0082c9", initials: "NC", accent: "#0082c9" },
-  "compose-ghost": { slug: "ghost", color: "#ffffff", initials: "Gh", accent: "#8b8f98" },
-  "compose-paperless-ngx": { slug: "paperlessngx", color: "#17541f", initials: "P", accent: "#22c55e" },
-  "compose-stirling-pdf": { slug: "stirlingpdf", color: "#ffb02e", initials: "PDF", accent: "#ffb02e" },
+  "service-whoami": { color: "#24a1c1", initials: "T", accent: "#24a1c1" },
+  "service-nginx": { color: "#009639", initials: "N", accent: "#009639" },
+  "service-redis-worker": { color: "#ff4438", initials: "R", accent: "#ff4438" },
+  "service-grafana": { color: "#f46800", initials: "G", accent: "#f46800" },
+  "service-minio": { color: "#c72e49", initials: "M", accent: "#c72e49" },
+  "service-jellyfin": { color: "#aa5cc3", initials: "J", accent: "#aa5cc3" },
+  "service-code-server": { color: "#ffffff", initials: "C", accent: "#7c3aed" },
+  "compose-uptime-kuma": { color: "#5cdd8b", initials: "UK", accent: "#5cdd8b" },
+  "compose-vaultwarden": { color: "#175ddc", initials: "VW", accent: "#175ddc" },
+  "compose-gitea": { color: "#609926", initials: "GT", accent: "#609926" },
+  "compose-n8n": { color: "#ea4b71", initials: "N8", accent: "#ea4b71" },
+  "compose-nextcloud": { color: "#0082c9", initials: "NC", accent: "#0082c9" },
+  "compose-ghost": { color: "#ffffff", initials: "Gh", accent: "#8b8f98" },
+  "compose-paperless-ngx": { color: "#17541f", initials: "P", accent: "#22c55e" },
+  "compose-stirling-pdf": { color: "#ffb02e", initials: "PDF", accent: "#ffb02e" },
 };
 
 function brandFor(template: DeployTemplate) {
@@ -31,19 +31,6 @@ function BrandIcon({ template }: { template: DeployTemplate }) {
   const brand = brandFor(template);
   return (
     <span className="template-brand-icon" style={{ "--template-accent": brand.accent } as CSSProperties}>
-      {brand.slug ? (
-        <img
-          alt=""
-          src={`https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/${brand.slug}.svg`}
-          onLoad={(event) => {
-            event.currentTarget.parentElement?.setAttribute("data-loaded", "true");
-          }}
-          onError={(event) => {
-            event.currentTarget.parentElement?.removeAttribute("data-loaded");
-            event.currentTarget.style.display = "none";
-          }}
-        />
-      ) : null}
       <b>{brand.initials}</b>
     </span>
   );
