@@ -1,3 +1,4 @@
+import { ArrowLeft, FileCode2, ListChecks, Rocket } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { DashboardPayload, Lang } from "../types";
 import { ComposeDeployForm } from "./ComposeDeployForm";
@@ -46,6 +47,24 @@ function currentConfigFacts(mode: DeployMode, serviceDraft: ServiceManifestDraft
     exposed.length ? exposed.map((service) => `${service.name} -> ${service.domain || "-"}${service.port ? `:${service.port}` : ""}`).join(", ") : (lang === "zh" ? "内部访问" : "internal only"),
     `${composeDraft.volumes.length} ${lang === "zh" ? "卷" : "volumes"}`,
   ];
+}
+
+function deployFlowSteps(mode: DeployMode, lang: Lang) {
+  const zh = lang === "zh";
+  return mode === "service"
+    ? [
+      { id: "deploy-basic", label: zh ? "身份" : "Identity", value: "name / image" },
+      { id: "deploy-network", label: zh ? "入口" : "Ingress", value: "domain / port" },
+      { id: "deploy-runtime", label: zh ? "运行" : "Runtime", value: "cpu / env / volume" },
+      { id: "deploy-advanced", label: zh ? "开关" : "Guardrails", value: "dns / nomad" },
+    ]
+    : [
+      { id: "compose-basic", label: zh ? "应用" : "App", value: "compose" },
+      { id: "compose-services", label: zh ? "服务" : "Services", value: "ingress / node" },
+      { id: "compose-env", label: zh ? "密钥" : "Secrets", value: "env / secret" },
+      { id: "compose-storage", label: zh ? "存储" : "Storage", value: "volume" },
+      { id: "compose-advanced", label: zh ? "开关" : "Guardrails", value: "dns / nomad" },
+    ];
 }
 
 type DashboardStorageClasses = NonNullable<NonNullable<DashboardPayload["storage"]>["storageClasses"]>;
@@ -317,6 +336,7 @@ export function DeployWorkspace({
   const allErrors = [...validationErrors, ...runtimeErrors];
   const configTitle = currentConfigTitle(mode, serviceDraft, composeDraft);
   const configFacts = currentConfigFacts(mode, serviceDraft, composeDraft, lang);
+  const flowSteps = deployFlowSteps(mode, lang);
 
   const selectTemplate = (template: DeployTemplate) => {
     setActiveTemplateId(template.id);
@@ -423,11 +443,22 @@ export function DeployWorkspace({
           {modalSubtitle || contextLabel ? <small className="deploy-context-label">{modalSubtitle || contextLabel}</small> : null}
         </div>
         <div className="deploy-heading-actions">
-          {!templateLanding && showTemplates ? <button type="button" className="ghost" onClick={backToTemplates}>{lang === "zh" ? "返回模板" : "Back to templates"}</button> : null}
+          {!templateLanding && showTemplates ? (
+            <button type="button" className="ghost" onClick={backToTemplates}>
+              <ArrowLeft size={16} aria-hidden="true" />
+              {lang === "zh" ? "返回模板" : "Back to templates"}
+            </button>
+          ) : null}
           {!templateLanding ? (
             <div className="deploy-editor-tabs">
-              <button type="button" className={editorMode === "form" ? "active" : ""} onClick={() => setEditorMode("form")}>{lang === "zh" ? "配置表单" : "Form"}</button>
-              <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => setEditorMode("yaml")}>{lang === "zh" ? "YAML 文件" : "YAML files"}</button>
+              <button type="button" className={editorMode === "form" ? "active" : ""} onClick={() => setEditorMode("form")}>
+                <ListChecks size={15} aria-hidden="true" />
+                {lang === "zh" ? "配置表单" : "Form"}
+              </button>
+              <button type="button" className={editorMode === "yaml" ? "active" : ""} onClick={() => setEditorMode("yaml")}>
+                <FileCode2 size={15} aria-hidden="true" />
+                {lang === "zh" ? "YAML 文件" : "YAML files"}
+              </button>
             </div>
           ) : null}
           {onClose ? <button type="button" className="icon-button" onClick={onClose}>{lang === "zh" ? "关闭" : "Close"}</button> : null}
@@ -459,6 +490,17 @@ export function DeployWorkspace({
               </div>
             </div>
           ) : null}
+          {editorMode === "form" ? (
+            <nav className="deploy-step-rail" aria-label={lang === "zh" ? "配置分段" : "Configuration sections"}>
+              {flowSteps.map((step, index) => (
+                <a href={`#${step.id}`} key={step.id}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <strong>{step.label}</strong>
+                  <small>{step.value}</small>
+                </a>
+              ))}
+            </nav>
+          ) : null}
           <div className={`deploy-workspace-grid ${editorMode === "yaml" ? "yaml-active" : ""}`}>
             <main className="deploy-config-main">
               {editorMode === "form" ? (
@@ -484,9 +526,18 @@ export function DeployWorkspace({
               <strong>{yamlDirty ? (lang === "zh" ? "YAML 已手动编辑" : "YAML edited manually") : (lang === "zh" ? "表单同步 YAML" : "Form syncs to YAML")}</strong>
               <span>{lang === "zh" ? <>Secret 使用 ${"{NAME}"} 引用，明文密钥请先存入 Luma Control。</> : <>Secrets must use ${"{NAME}"} references. Store plaintext secrets in Luma Control first.</>}</span>
             </div>
-            <button type="button" className="ghost" onClick={() => setEditorMode("yaml")}>{lang === "zh" ? "预览 YAML" : "Preview YAML"}</button>
-            <button type="button" className="ghost" disabled={status !== "idle"} onClick={() => void runPreview()}>{status === "previewing" ? (lang === "zh" ? "校验中..." : "Validating...") : (lang === "zh" ? "校验" : "Validate")}</button>
-            <button type="button" disabled={status !== "idle" || validationErrors.length > 0} onClick={() => void runDeploy()}>{status === "deploying" ? (lang === "zh" ? "部署中..." : "Deploying...") : (lang === "zh" ? "部署" : "Deploy")}</button>
+            <button type="button" className="ghost" onClick={() => setEditorMode("yaml")}>
+              <FileCode2 size={16} aria-hidden="true" />
+              {lang === "zh" ? "预览 YAML" : "Preview YAML"}
+            </button>
+            <button type="button" className="ghost" disabled={status !== "idle"} onClick={() => void runPreview()}>
+              <ListChecks size={16} aria-hidden="true" />
+              {status === "previewing" ? (lang === "zh" ? "校验中..." : "Validating...") : (lang === "zh" ? "校验" : "Validate")}
+            </button>
+            <button type="button" disabled={status !== "idle" || validationErrors.length > 0} onClick={() => void runDeploy()}>
+              <Rocket size={16} aria-hidden="true" />
+              {status === "deploying" ? (lang === "zh" ? "部署中..." : "Deploying...") : (lang === "zh" ? "部署" : "Deploy")}
+            </button>
           </div>
         </>
       )}

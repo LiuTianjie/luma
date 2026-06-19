@@ -2,7 +2,16 @@ import { DEPLOY_TEMPLATES } from "./deploy/templates";
 import type { DashboardIssue, DashboardNode, DashboardPayload, DashboardService, TrafficPath } from "./types";
 import { groupApplications, isServiceHealthy, type Application } from "./components/applicationModel";
 
-export type PageId = "overview" | "applications" | "deploy" | "topology" | "observability" | "storage" | "update";
+export type PageId =
+  | "overview"
+  | "applications"
+  | "deploy"
+  | "topology"
+  | "observability"
+  | "storage"
+  | "nodes"
+  | "credentials"
+  | "update";
 export type NavPage = Exclude<PageId, "update">;
 
 export type IssueCounts = {

@@ -55,7 +55,7 @@ export function SingleServiceDeployForm({
         <header><span>01</span><h3>{zh ? "基础配置" : "Basics"}</h3></header>
         <div className="deploy-field-grid">
           <label><span>{zh ? "服务名" : "Service name"}</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
-          <label><span>{zh ? "镜像" : "Image"}</span><input value={draft.image} onChange={(event) => patch({ image: event.target.value })} /></label>
+          <label className="deploy-field-wide"><span>{zh ? "镜像" : "Image"}</span><input value={draft.image} onChange={(event) => patch({ image: event.target.value })} /></label>
           <label><span>{zh ? "区域" : "Region"}</span><select value={draft.region} onChange={(event) => patchRegion(event.target.value as Region)}>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
           <label>
             <span>{zh ? "节点" : "Node"}</span>
@@ -80,14 +80,14 @@ export function SingleServiceDeployForm({
           <label><span>{zh ? "域名" : "Domain"}</span><input value={draft.domain} disabled={draft.exposure === "none"} onChange={(event) => patch({ domain: event.target.value })} /></label>
           <label><span>{zh ? "容器端口" : "Container port"}</span><input value={draft.port} disabled={draft.exposure === "none"} onChange={(event) => patch({ port: event.target.value })} /></label>
           <label><span>{zh ? "发布端口" : "Published port"}</span><input value={draft.publishPort} disabled={!["tailscale-relay", "tcp-relay"].includes(draft.exposure)} onChange={(event) => patch({ publishPort: event.target.value })} /></label>
-          <label><span>{zh ? "额外网络" : "Extra networks"}</span><textarea value={draft.networks} onChange={(event) => patch({ networks: event.target.value })} placeholder="one network per line" /></label>
-          <label><span>Labels</span><textarea value={draft.labels} onChange={(event) => patch({ labels: event.target.value })} placeholder="one label per line" /></label>
+          <label className="deploy-field-wide"><span>{zh ? "额外网络" : "Extra networks"}</span><textarea value={draft.networks} onChange={(event) => patch({ networks: event.target.value })} placeholder="one network per line" /></label>
+          <label className="deploy-field-wide"><span>Labels</span><textarea value={draft.labels} onChange={(event) => patch({ labels: event.target.value })} placeholder="one label per line" /></label>
         </div>
       </section>
       <section className="deploy-config-section" id="deploy-runtime">
         <header><span>03</span><h3>{zh ? "运行参数" : "Runtime"}</h3></header>
         <div className="deploy-field-grid">
-          <label><span>{zh ? "命令" : "Command"}</span><input value={draft.command} onChange={(event) => patch({ command: event.target.value })} /></label>
+          <label className="deploy-field-wide"><span>{zh ? "命令" : "Command"}</span><input value={draft.command} onChange={(event) => patch({ command: event.target.value })} /></label>
           <label><span>CPU limit</span><input value={draft.cpuLimit} onChange={(event) => patch({ cpuLimit: event.target.value })} placeholder="0.50" /></label>
           <label><span>Memory limit</span><input value={draft.memoryLimit} onChange={(event) => patch({ memoryLimit: event.target.value })} placeholder="512M" /></label>
           <label><span>{zh ? "健康检查 URL" : "Healthcheck URL"}</span><input value={draft.healthcheckUrl} onChange={(event) => patch({ healthcheckUrl: event.target.value })} placeholder="http://127.0.0.1:80/healthz" /></label>

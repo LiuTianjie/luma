@@ -350,6 +350,62 @@ export default defineConfig({
           response.setHeader("Cache-Control", "no-store");
           response.end(JSON.stringify({ kind, name, window: windowSeconds, series, updatedAt: nowSec }));
         });
+        server.middlewares.use("/v1/secrets", (request, response, next) => {
+          if (request.method !== "GET") {
+            next();
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({ secrets: ["CLOUDFLARE_API_TOKEN", "TAILSCALE_AUTHKEY", "granary/DATABASE_URL", "codex-gitea/GITEA_TOKEN"] }));
+        });
+        server.middlewares.use("/v1/registries", (request, response, next) => {
+          if (request.method !== "GET") {
+            next();
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({
+            registries: [
+              { host: "ghcr.io", serverAddress: "ghcr.io", username: "liutianjie", configured: true },
+              { host: "gcode.gaojiua.com:3000", serverAddress: "gcode.gaojiua.com:3000", username: "deploy", configured: true },
+            ],
+          }));
+        });
+        server.middlewares.use("/v1/storage", (request, response, next) => {
+          if (request.method !== "GET") {
+            next();
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({ storageClasses: devDashboardPayload.storage.storageClasses }));
+        });
         server.middlewares.use("/v1/dashboard", (request, response) => {
           if (request.method !== "GET") {
             response.statusCode = 405;

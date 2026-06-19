@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Boxes, GitBranch, HardDrive, LayoutDashboard, Plus } from "lucide-react";
+import { Activity, Boxes, GitBranch, HardDrive, KeyRound, LayoutDashboard, Plus, ServerCog } from "lucide-react";
 import { ErrorBanner } from "./components/ErrorBanner";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
@@ -9,6 +9,8 @@ import { Topbar } from "./components/Topbar";
 import { createDashboardViewModel, type NavPage, type PageId } from "./dashboardViewModel";
 import { ApplicationsPage } from "./pages/ApplicationsPage";
 import { DeployPage, type DeployUpdateContext } from "./pages/DeployPage";
+import { CredentialsPage } from "./pages/CredentialsPage";
+import { NodesPage } from "./pages/NodesPage";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { StoragePage } from "./pages/StoragePage";
@@ -187,6 +189,13 @@ export function App() {
       detail: lang === "zh" ? `${vm.nodes.length} 节点 · ${vm.trafficPaths.length} 路径` : `${vm.nodes.length} nodes · ${vm.trafficPaths.length} paths`,
     },
     {
+      id: "nodes" as const,
+      icon: ServerCog,
+      label: lang === "zh" ? "节点" : "Fleet",
+      value: vm.nodes.length,
+      detail: lang === "zh" ? `${vm.activeNodes}/${vm.nodes.length} ready · agent` : `${vm.activeNodes}/${vm.nodes.length} ready · agent`,
+    },
+    {
       id: "observability" as const,
       icon: Activity,
       label: lang === "zh" ? "观察" : "Observe",
@@ -199,6 +208,13 @@ export function App() {
       label: lang === "zh" ? "存储" : "Storage",
       value: vm.storageVolumes.length + vm.storageClasses.length,
       detail: lang === "zh" ? `${vm.storageClasses.length} 类 · ${vm.storageVolumes.length} 卷` : `${vm.storageClasses.length} classes · ${vm.storageVolumes.length} volumes`,
+    },
+    {
+      id: "credentials" as const,
+      icon: KeyRound,
+      label: lang === "zh" ? "凭据" : "Credentials",
+      value: vm.storageClasses.length,
+      detail: lang === "zh" ? "Secret · Registry" : "Secrets · registry",
     },
   ];
 
@@ -265,12 +281,10 @@ export function App() {
               activePage === "overview" ? (
                 <OverviewPage
                   lang={lang}
-                  token={token}
                   payload={payload}
                   vm={vm}
                   onNavigate={navigate}
                   onSelectNode={openNodeDetail}
-                  onTerminal={setTerminalNode}
                 />
               ) : activePage === "applications" ? (
                 <ApplicationsPage
@@ -296,8 +310,17 @@ export function App() {
                 />
               ) : activePage === "topology" ? (
                 <TopologyPage lang={lang} token={token} vm={vm} onRefresh={loadDashboard} />
+              ) : activePage === "nodes" ? (
+                <NodesPage
+                  lang={lang}
+                  vm={vm}
+                  onSelectNode={openNodeDetail}
+                  onTerminal={setTerminalNode}
+                />
               ) : activePage === "observability" ? (
                 <ObservabilityPage lang={lang} token={token} vm={vm} />
+              ) : activePage === "credentials" ? (
+                <CredentialsPage lang={lang} token={token} vm={vm} />
               ) : (
                 <StoragePage lang={lang} vm={vm} />
               )

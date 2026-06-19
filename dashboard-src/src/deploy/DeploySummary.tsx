@@ -30,12 +30,23 @@ export function DeploySummary({
     ? composeDraft.volumes.map((volume) => volume.storageMode === "storageClass" ? `${volume.name}:${volume.storageClass || (zh ? "未选择" : "not selected")}` : `${volume.name}:${volume.localNode || "local"}`)
     : (serviceDraft.volumeMounts || []).map((volume) => volume.storageMode === "storageClass" ? `${volume.name}:${volume.storageClass || (zh ? "未选择" : "not selected")}` : `${volume.name}:unmanaged`);
   const previewWarnings = preview ? [...(preview.warnings || []), ...(preview.storage?.warnings || [])] : [];
+  const summaryState = errors.length
+    ? (zh ? "待修正" : "Blocked")
+    : preview
+      ? (zh ? "已预览" : "Previewed")
+      : (zh ? "草稿" : "Draft");
   return (
     <aside className="deploy-summary">
-      <div className="deploy-summary-card primary">
-        <p className="eyebrow">{lang === "zh" ? "影响预览" : "Impact"}</p>
-        <h3>{mode === "service" ? serviceDraft.name : composeDraft.name}</h3>
-        <dl>
+      <div className={`deploy-summary-card primary ${errors.length ? "blocked" : preview ? "ready" : "draft"}`}>
+        <div className="deploy-summary-hero">
+          <span className="deploy-summary-indicator" aria-hidden="true" />
+          <div>
+            <p className="eyebrow">{lang === "zh" ? "影响预览" : "Impact"}</p>
+            <h3>{mode === "service" ? serviceDraft.name : composeDraft.name}</h3>
+          </div>
+          <b>{summaryState}</b>
+        </div>
+        <dl className="deploy-summary-list">
           <div><dt>{zh ? "类型" : "Type"}</dt><dd>{mode === "service" ? (zh ? "单服务" : "Single service") : (zh ? "Compose 应用" : "Compose app")}</dd></div>
           <div><dt>{zh ? "调度" : "Placement"}</dt><dd>{mode === "service" ? compact([serviceDraft.region, serviceDraft.node]) : compact([composeDraft.region, `${composeDraft.services.length} services`])}</dd></div>
           <div><dt>{zh ? "入口" : "Ingress"}</dt><dd>{publicTargets.length ? publicTargets.join(", ") : (zh ? "内部服务" : "Internal only")}</dd></div>

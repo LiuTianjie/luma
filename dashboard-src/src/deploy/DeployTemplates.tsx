@@ -2,36 +2,47 @@ import type { CSSProperties } from "react";
 import type { Lang } from "../types";
 import type { DeployMode, DeployTemplate } from "./types";
 import { deployTemplateDescription, deployTemplateName } from "./templates";
+import lumaLogoMark from "../assets/luma-logo-mark.png";
 
-const TEMPLATE_BRANDS: Record<string, { color: string; initials: string; accent: string }> = {
-  "service-custom": { color: "#f8fafc", initials: "L", accent: "#7c3aed" },
-  "compose-custom": { color: "#f8fafc", initials: "L", accent: "#7c3aed" },
-  "service-whoami": { color: "#24a1c1", initials: "T", accent: "#24a1c1" },
-  "service-nginx": { color: "#009639", initials: "N", accent: "#009639" },
-  "service-redis-worker": { color: "#ff4438", initials: "R", accent: "#ff4438" },
-  "service-grafana": { color: "#f46800", initials: "G", accent: "#f46800" },
-  "service-minio": { color: "#c72e49", initials: "M", accent: "#c72e49" },
-  "service-jellyfin": { color: "#aa5cc3", initials: "J", accent: "#aa5cc3" },
-  "service-code-server": { color: "#ffffff", initials: "C", accent: "#7c3aed" },
-  "compose-uptime-kuma": { color: "#5cdd8b", initials: "UK", accent: "#5cdd8b" },
-  "compose-vaultwarden": { color: "#175ddc", initials: "VW", accent: "#175ddc" },
-  "compose-gitea": { color: "#609926", initials: "GT", accent: "#609926" },
-  "compose-n8n": { color: "#ea4b71", initials: "N8", accent: "#ea4b71" },
-  "compose-nextcloud": { color: "#0082c9", initials: "NC", accent: "#0082c9" },
-  "compose-ghost": { color: "#ffffff", initials: "Gh", accent: "#8b8f98" },
-  "compose-paperless-ngx": { color: "#17541f", initials: "P", accent: "#22c55e" },
-  "compose-stirling-pdf": { color: "#ffb02e", initials: "PDF", accent: "#ffb02e" },
+const TEMPLATE_LOGOS: Record<string, { src: string; initials: string; accent: string; label: string }> = {
+  "service-custom": { src: lumaLogoMark, initials: "L", accent: "#1ed760", label: "Luma" },
+  "compose-custom": { src: lumaLogoMark, initials: "L", accent: "#1ed760", label: "Luma" },
+  "service-whoami": { src: "https://cdn.simpleicons.org/traefikproxy", initials: "T", accent: "#24a1c1", label: "Traefik" },
+  "service-nginx": { src: "https://cdn.simpleicons.org/nginx", initials: "N", accent: "#009639", label: "nginx" },
+  "service-redis-worker": { src: "https://cdn.simpleicons.org/redis", initials: "R", accent: "#ff4438", label: "Redis" },
+  "service-grafana": { src: "https://cdn.simpleicons.org/grafana", initials: "G", accent: "#f46800", label: "Grafana" },
+  "service-minio": { src: "https://cdn.simpleicons.org/minio", initials: "M", accent: "#c72e49", label: "MinIO" },
+  "service-jellyfin": { src: "https://cdn.simpleicons.org/jellyfin", initials: "J", accent: "#aa5cc3", label: "Jellyfin" },
+  "service-code-server": { src: "https://cdn.simpleicons.org/coder", initials: "C", accent: "#ffffff", label: "Coder" },
+  "compose-uptime-kuma": { src: "https://cdn.simpleicons.org/uptimekuma", initials: "UK", accent: "#5cdd8b", label: "Uptime Kuma" },
+  "compose-vaultwarden": { src: "https://cdn.simpleicons.org/vaultwarden", initials: "VW", accent: "#175ddc", label: "Vaultwarden" },
+  "compose-gitea": { src: "https://cdn.simpleicons.org/gitea", initials: "GT", accent: "#609926", label: "Gitea" },
+  "compose-n8n": { src: "https://cdn.simpleicons.org/n8n", initials: "N8", accent: "#ea4b71", label: "n8n" },
+  "compose-nextcloud": { src: "https://cdn.simpleicons.org/nextcloud", initials: "NC", accent: "#0082c9", label: "Nextcloud" },
+  "compose-ghost": { src: "https://cdn.simpleicons.org/ghost", initials: "Gh", accent: "#ffffff", label: "Ghost" },
+  "compose-paperless-ngx": { src: "https://cdn.simpleicons.org/paperlessngx", initials: "P", accent: "#22c55e", label: "Paperless-ngx" },
+  "compose-stirling-pdf": { src: "https://raw.githubusercontent.com/Stirling-Tools/Stirling-PDF/204bae3bc1a693de09c68cbe23e2bf2376b2f10c/docs/stirling.svg", initials: "PDF", accent: "#ffb02e", label: "Stirling PDF" },
 };
 
-function brandFor(template: DeployTemplate) {
-  return TEMPLATE_BRANDS[template.id] || { color: "#f8fafc", initials: template.name.slice(0, 2), accent: "#94a3b8" };
+function logoFor(template: DeployTemplate) {
+  return TEMPLATE_LOGOS[template.id] || { src: lumaLogoMark, initials: template.name.slice(0, 2), accent: "#1ed760", label: template.name };
 }
 
 function BrandIcon({ template }: { template: DeployTemplate }) {
-  const brand = brandFor(template);
+  const logo = logoFor(template);
   return (
-    <span className="template-brand-icon" style={{ "--template-accent": brand.accent } as CSSProperties}>
-      <b>{brand.initials}</b>
+    <span className="template-brand-icon" style={{ "--template-accent": logo.accent } as CSSProperties}>
+      <img
+        src={logo.src}
+        alt={`${logo.label} logo`}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={(event) => {
+          event.currentTarget.hidden = true;
+          event.currentTarget.parentElement?.classList.add("logo-missing");
+        }}
+      />
+      <b>{logo.initials}</b>
     </span>
   );
 }
@@ -134,7 +145,7 @@ export function DeployTemplates({
             type="button"
             className={`template-feature-card ${activeId === featuredTemplate.id ? "active" : ""}`}
             onClick={() => onSelect(featuredTemplate)}
-            style={{ "--template-accent": brandFor(featuredTemplate).accent } as CSSProperties}
+            style={{ "--template-accent": logoFor(featuredTemplate).accent } as CSSProperties}
           >
             <div className="template-feature-visual" aria-hidden="true">
               <BrandIcon template={featuredTemplate} />
@@ -159,7 +170,7 @@ export function DeployTemplates({
               className={`deploy-gallery-card ${activeId === template.id ? "active" : ""}`}
               key={template.id}
               onClick={() => onSelect(template)}
-              style={{ "--template-accent": brandFor(template).accent } as CSSProperties}
+              style={{ "--template-accent": logoFor(template).accent } as CSSProperties}
             >
               <div className="template-card-top">
                 <BrandIcon template={template} />
