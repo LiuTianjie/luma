@@ -36,6 +36,11 @@ function percent(value?: number) {
   return typeof value === "number" ? `${Math.round(value)}%` : "-";
 }
 
+function boundedPercent(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.min(100, Math.max(0, value));
+}
+
 function healthLabel(score: number, lang: Lang) {
   if (score >= 85) return lang === "zh" ? "健康" : "Healthy";
   if (score >= 65) return lang === "zh" ? "有风险" : "At risk";
@@ -87,7 +92,7 @@ export function OverviewPage({
           <span><strong>{vm.activeNodes}/{vm.nodes.length}</strong><small>{t(lang, "nodes")}</small></span>
           <span><strong>{vm.applications.length}</strong><small>{t(lang, "applications")}</small></span>
         </div>
-        <button type="button" onClick={() => onNavigate("deploy")}>
+        <button type="button" className="ops-hero-action" onClick={() => onNavigate("deploy")}>
           <Plus size={17} aria-hidden="true" />
           {t(lang, "createApplication")}
         </button>
@@ -205,11 +210,19 @@ export function OverviewPage({
             <div className="overview-node-grid">
               {nodeCards.map((node) => (
                 <button className="overview-node-card" type="button" key={node.name || "-"} onClick={() => onSelectNode(node)}>
-                  <span><i aria-hidden="true" />{node.name || "-"}</span>
+                  <span className="overview-node-title"><i aria-hidden="true" />{node.name || "-"}</span>
                   <small>{[node.role, node.region].filter(Boolean).join(" / ") || "-"}</small>
-                  <div>
-                    <b>{percent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}</b>
-                    <b>{percent(node.metrics?.memoryUsedPercent)}</b>
+                  <div className="overview-node-metrics">
+                    <span>
+                      <em>CPU</em>
+                      <b>{percent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}</b>
+                      <i style={{ width: `${boundedPercent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}%` }} aria-hidden="true" />
+                    </span>
+                    <span>
+                      <em>MEM</em>
+                      <b>{percent(node.metrics?.memoryUsedPercent)}</b>
+                      <i style={{ width: `${boundedPercent(node.metrics?.memoryUsedPercent)}%` }} aria-hidden="true" />
+                    </span>
                   </div>
                   <StatePill label={localizeState(lang, node.state)} value={node.state} />
                 </button>

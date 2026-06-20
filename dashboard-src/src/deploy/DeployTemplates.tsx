@@ -67,10 +67,10 @@ function templateFacts(template: DeployTemplate, lang: Lang) {
   if (template.mode === "service" && template.service) {
     const service = template.service;
     return [
-      compact(service.image || "image required"),
-      `${service.region} / ${service.exposure}`,
-      service.exposure === "none" ? (lang === "zh" ? "内部访问" : "internal only") : compact(`${service.domain}:${service.port}`),
-      `${service.replicas} ${lang === "zh" ? "副本" : "replica"}`,
+      { label: "Image", value: compact(service.image || "image required") },
+      { label: lang === "zh" ? "位置" : "Target", value: `${service.region} / ${service.exposure}` },
+      { label: lang === "zh" ? "入口" : "Route", value: service.exposure === "none" ? (lang === "zh" ? "内部访问" : "internal only") : compact(`${service.domain}:${service.port}`) },
+      { label: lang === "zh" ? "副本" : "Scale", value: `${service.replicas} ${lang === "zh" ? "副本" : "replica"}` },
     ];
   }
 
@@ -78,10 +78,10 @@ function templateFacts(template: DeployTemplate, lang: Lang) {
   if (!compose) return [];
   const exposed = compose.services.filter((service) => service.exposure !== "none");
   return [
-    `${compose.services.length} ${lang === "zh" ? "服务" : "services"}`,
-    `${compose.region} / ${exposed.length ? exposed.map((service) => service.exposure).join(", ") : "none"}`,
-    exposed.length ? compact(exposed.map((service) => `${service.domain}:${service.port}`).join(", ")) : (lang === "zh" ? "内部访问" : "internal only"),
-    compact(volumeModeSummary(template, lang)),
+    { label: lang === "zh" ? "服务" : "Services", value: `${compose.services.length} ${lang === "zh" ? "服务" : "services"}` },
+    { label: lang === "zh" ? "位置" : "Target", value: `${compose.region} / ${exposed.length ? exposed.map((service) => service.exposure).join(", ") : "none"}` },
+    { label: lang === "zh" ? "入口" : "Route", value: exposed.length ? compact(exposed.map((service) => `${service.domain}:${service.port}`).join(", ")) : (lang === "zh" ? "内部访问" : "internal only") },
+    { label: lang === "zh" ? "存储" : "Storage", value: compact(volumeModeSummary(template, lang)) },
   ];
 }
 
@@ -105,7 +105,12 @@ export function DeployTemplates({
   const secondaryTemplates = visibleTemplates.filter((template) => template.id !== featuredTemplate?.id);
 
   const renderFacts = (template: DeployTemplate) => (
-    templateFacts(template, lang).map((fact) => <span key={fact}>{fact}</span>)
+    templateFacts(template, lang).map((fact) => (
+      <span key={`${fact.label}-${fact.value}`}>
+        <em>{fact.label}</em>
+        <b>{fact.value}</b>
+      </span>
+    ))
   );
 
   return (

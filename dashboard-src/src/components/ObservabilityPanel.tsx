@@ -91,6 +91,19 @@ function actualText(resources?: ActualResourceValues) {
   return `${formatPercent(resources.cpuPercent)} CPU / ${formatBytes(resources.memoryUsageBytes)} / ${resources.containers} ctr`;
 }
 
+function clampPercent(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.min(100, Math.max(0, value));
+}
+
+function nodeTitle(node: DashboardNode) {
+  return node.displayName || node.name || "-";
+}
+
+function nodeMeta(node: DashboardNode) {
+  return [node.region, node.role, node.agentStatus].filter((item): item is string => Boolean(item));
+}
+
 function serviceTitle(service: DashboardService) {
   return service.stack ? `${service.stack}/${service.name || "-"}` : service.name || service.fullName || "-";
 }
@@ -180,24 +193,40 @@ export function ObservabilityPanel({
             const metrics = node.metrics || {};
             const capacity = node.capacity || {};
             const nodeCpuHistory = node.name ? histories[historyKey("node", node.name)]?.cpuPercent || [] : [];
+            const memoryPercent = clampPercent(metrics.memoryUsedPercent);
+            const title = nodeTitle(node);
+            const meta = nodeMeta(node);
             return (
-              <button className="node-metric-row" type="button" key={`${node.name || "node"}-${index}`}>
-                <span>
-                  <strong>{node.name || "-"}</strong>
-                  <small>{[node.region, node.role, node.agentStatus].filter(Boolean).join(" / ") || "-"}</small>
-                </span>
-                <span className="metric-pair">
-                  <b>CPU</b>
-                  <strong>{formatPercent(metrics.cpuPercent ?? metrics.loadPercent)}</strong>
-                  <Sparkline points={nodeCpuHistory} range={{ min: 0, max: 100 }} />
-                </span>
-                <span className="metric-pair">
-                  <b>Memory</b>
-                  <strong>{formatPercent(metrics.memoryUsedPercent)}</strong>
-                  <small>{formatBytes(metrics.memoryTotalBytes || capacity.memoryBytes)}</small>
-                </span>
-                <StatePill label={localizeState(lang, node.state)} value={node.state} />
-              </button>
+              <article className="node-metric-row" key={`${node.name || "node"}-${index}`}>
+                <div className="node-identity">
+                  <div className="node-title-line">
+                    <strong title={title}>{title}</strong>
+                    <StatePill label={localizeState(lang, node.state)} value={node.state} />
+                  </div>
+                  <div className="node-meta" aria-label={lang === "zh" ? "节点元数据" : "Node metadata"}>
+                    {meta.length ? meta.map((item) => <span key={item}>{item}</span>) : <span>-</span>}
+                  </div>
+                </div>
+                <div className="node-resource-grid">
+                  <div className="metric-pair">
+                    <span className="metric-head">
+                      <b>CPU</b>
+                      <strong>{formatPercent(metrics.cpuPercent ?? metrics.loadPercent)}</strong>
+                    </span>
+                    <Sparkline points={nodeCpuHistory} range={{ min: 0, max: 100 }} />
+                  </div>
+                  <div className="metric-pair">
+                    <span className="metric-head">
+                      <b>Memory</b>
+                      <strong>{formatPercent(metrics.memoryUsedPercent)}</strong>
+                    </span>
+                    <span className="metric-bar" aria-hidden>
+                      <span style={{ width: `${memoryPercent}%` }} />
+                    </span>
+                    <small>{formatBytes(metrics.memoryTotalBytes || capacity.memoryBytes)}</small>
+                  </div>
+                </div>
+              </article>
             );
           })}
         </div>
