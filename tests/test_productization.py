@@ -40,6 +40,9 @@ from luma.bootstrap import (
     _ensure_control_image_pull_egress,
     _is_tailscale_manager_addr,
     _last_command_value,
+    _nomad_tmpfs_compat_status,
+    _parse_kernel_version,
+    _parse_nomad_version,
     _resolve_control_image,
     _traefik_ports,
     bootstrap_node,
@@ -886,6 +889,59 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("trap 'rm -f \"$tmp\"' EXIT", command)
         self.assertIn('nomad job run -json "$tmp"', command)
         self.assertNotIn("/tmp/traefik.nomad.json", command)
+
+    def test_nomad_job_deploy_explains_tmpfs_noswap_failure(self):
+        remote = Mock()
+        remote.run.side_effect = LumaError(
+            "local command failed:\n"
+            "prestart hook \"task_dir\" failed: mount: invalid argument\n"
+            "tmpfs: Unknown parameter 'noswap'"
+        )
+
+        with self.assertRaisesRegex(LumaError, "Nomad failed while preparing the task secrets tmpfs"):
+            _deploy_nomad_job(remote, '{"Job":{"ID":"luma-control"}}', "luma-control")
+
+    def test_nomad_tmpfs_compat_reports_fallback_on_old_kernel(self):
+        remote = Mock()
+
+        def run_result(command):
+            if "uname -s" in command:
+                return Mock(code=0, output="Linux\n")
+            if "uname -r" in command:
+                return Mock(code=0, output="5.15.0-126-generic\n")
+            if "nomad version" in command:
+                return Mock(code=0, output="Nomad v1.9.7\n")
+            return Mock(code=1, output="")
+
+        remote.run_result.side_effect = run_result
+
+        result = _nomad_tmpfs_compat_status(remote)
+
+        self.assertIn("fallback available", result)
+        self.assertIn("5.15.0-126-generic", result)
+
+    def test_nomad_tmpfs_compat_reports_kernel_support(self):
+        remote = Mock()
+
+        def run_result(command):
+            if "uname -s" in command:
+                return Mock(code=0, output="Linux\n")
+            if "uname -r" in command:
+                return Mock(code=0, output="6.8.0\n")
+            if "nomad version" in command:
+                return Mock(code=0, output="Nomad v1.9.7\n")
+            return Mock(code=1, output="")
+
+        remote.run_result.side_effect = run_result
+
+        self.assertIn("supported by Linux kernel 6.8.0", _nomad_tmpfs_compat_status(remote))
+
+    def test_nomad_and_kernel_version_parsing(self):
+        self.assertEqual(_parse_nomad_version("Nomad v1.9.7"), (1, 9, 7))
+        self.assertEqual(_parse_nomad_version("Nomad v1.10.3+ent"), (1, 10, 3))
+        self.assertIsNone(_parse_nomad_version("nomad not installed"))
+        self.assertEqual(_parse_kernel_version("5.15.0-126-generic"), (5, 15))
+        self.assertIsNone(_parse_kernel_version(""))
 
     def test_packaged_dashboard_assets_are_available(self):
         self.assertIn("Luma · 控制台", asset_text("dashboard/index.html"))
@@ -3038,6 +3094,8 @@ class NomadBootstrapTests(unittest.TestCase):
         ), patch("luma.bootstrap._ensure_control_image", return_value="Control image pulled: ghcr.io/liutianjie/luma-control:latest"), patch(
             "luma.bootstrap._control_image_repo_digest", return_value=digest_image
         ), patch(
+            "luma.bootstrap._nomad_tmpfs_compat_status", return_value="Nomad tmpfs compatibility ok"
+        ), patch(
             "luma.bootstrap._deploy_nomad_job", side_effect=capture_job
         ), patch(
             "luma.bootstrap._wait_nomad_job", return_value="Nomad job running: luma-control"
@@ -3047,12 +3105,14 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertIn("Control image pull egress ready for ghcr.io", result[0])
         self.assertEqual(result[1], "Control image pulled: ghcr.io/liutianjie/luma-control:latest")
         self.assertEqual(result[2], f"Control image digest resolved: {digest_image}")
-        self.assertEqual(result[3], "Nomad job deployed: luma-control")
-        self.assertEqual(result[4], "Nomad job running: luma-control")
+        self.assertEqual(result[3], "Nomad tmpfs compatibility ok")
+        self.assertEqual(result[4], "Nomad job deployed: luma-control")
+        self.assertEqual(result[5], "Nomad job running: luma-control")
         progress_text = "\n".join(progress)
         self.assertIn("[start] Ensure control image pull egress", progress_text)
         self.assertIn("[start] Pull Luma control image", progress_text)
         self.assertIn("[start] Resolve Luma control image digest", progress_text)
+        self.assertIn("[start] Check Nomad tmpfs compatibility", progress_text)
         self.assertEqual(submitted["jobId"], "luma-control")
         self.assertIn(f'"image": "{digest_image}"', submitted["job"])
 
@@ -3074,6 +3134,8 @@ class NomadBootstrapTests(unittest.TestCase):
             "luma.bootstrap._ensure_control_image",
             return_value="Control image pulled: ghcr.io/liutianjie/luma-control:latest",
         ), patch("luma.bootstrap._control_image_repo_digest", return_value=digest_image), patch(
+            "luma.bootstrap._nomad_tmpfs_compat_status", return_value="Nomad tmpfs compatibility ok"
+        ), patch(
             "luma.bootstrap._deploy_nomad_job", side_effect=capture_job
         ), patch(
             "luma.bootstrap._wait_nomad_job", return_value="Nomad job running: luma-control"
@@ -3088,6 +3150,7 @@ class NomadBootstrapTests(unittest.TestCase):
 
         ensure_egress.assert_not_called()
         self.assertEqual(result[0], "Control image pulled: ghcr.io/liutianjie/luma-control:latest")
+        self.assertEqual(result[2], "Nomad tmpfs compatibility ok")
         self.assertNotIn("[start] Ensure control image pull egress", "\n".join(progress))
         self.assertIn(f'"image": "{digest_image}"', submitted["job"])
 

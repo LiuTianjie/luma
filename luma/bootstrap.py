@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import ipaddress
 import os
+import re
 import shlex
 import time
 from pathlib import Path
@@ -155,6 +156,7 @@ def deploy_control_stack(
 
     node = node_name or local_host_name()
     job_json = render_control_job(image=deploy_image, node_name=node)
+    _step(results, emit, "Check Nomad tmpfs compatibility", lambda: _nomad_tmpfs_compat_status(remote))
     _step(results, emit, "Deploy Luma control job", lambda: _deploy_nomad_job(remote, job_json, "luma-control"))
     _step(results, emit, "Wait Luma control job", lambda: _wait_nomad_job(remote, "luma-control"))
     return results
@@ -168,14 +170,82 @@ def _deploy_nomad_job(remote: Executor, job_json: str, job_id: str) -> str:
     import base64
 
     b64 = base64.b64encode(job_json.encode("utf-8")).decode("ascii")
-    remote.run(
-        "set -e; "
-        "tmp=$(mktemp /tmp/luma-nomad-job.XXXXXX.json); "
-        "trap 'rm -f \"$tmp\"' EXIT; "
-        f"printf %s {shlex.quote(b64)} | base64 -d > \"$tmp\"; "
-        "nomad job run -json \"$tmp\""
-    )
+    try:
+        remote.run(
+            "set -e; "
+            "tmp=$(mktemp /tmp/luma-nomad-job.XXXXXX.json); "
+            "trap 'rm -f \"$tmp\"' EXIT; "
+            f"printf %s {shlex.quote(b64)} | base64 -d > \"$tmp\"; "
+            "nomad job run -json \"$tmp\""
+        )
+    except LumaError as exc:
+        _raise_nomad_tmpfs_error(exc)
     return f"Nomad job deployed: {job_id}"
+
+
+def _raise_nomad_tmpfs_error(error: LumaError) -> None:
+    text = str(error)
+    lower = text.lower()
+    if "noswap" in lower or ("tmpfs" in lower and "task_dir" in lower):
+        raise LumaError(
+            "Nomad failed while preparing the task secrets tmpfs. "
+            "This is usually the Linux tmpfs `noswap` compatibility path: "
+            "Nomad should fall back on kernels that do not support `noswap`, "
+            "but this manager's Nomad/kernel combination did not complete the allocation. "
+            "Check `nomad version`, `uname -r`, and `journalctl -u nomad -n 120 --no-pager`; "
+            "then upgrade/reinstall Nomad or upgrade the manager kernel and rerun `luma update manager`.\n\n"
+            f"Original error:\n{text.strip()}"
+        ) from error
+    raise error
+
+
+def _nomad_tmpfs_compat_status(remote: Executor) -> str:
+    """Describe whether Nomad's secrets tmpfs noswap fallback should be available.
+
+    Nomad 1.9.5+ tries `noswap` for the per-task secrets tmpfs and falls back
+    when the kernel rejects it. We avoid doing our own probe mount here because
+    that would print the same kernel warning operators are trying to understand.
+    """
+    os_name = remote.run_result("uname -s 2>/dev/null || true").output.strip().lower()
+    if "linux" not in os_name:
+        return "Nomad tmpfs compatibility check skipped: non-Linux manager"
+
+    kernel = remote.run_result("uname -r 2>/dev/null || true").output.strip()
+    nomad_output = remote.run_result("nomad version 2>/dev/null | head -1 || true").output.strip()
+    nomad_version = _parse_nomad_version(nomad_output)
+    kernel_version = _parse_kernel_version(kernel)
+
+    if kernel_version and kernel_version >= (6, 4):
+        return f"Nomad secrets tmpfs noswap supported by Linux kernel {kernel}"
+
+    if nomad_version and nomad_version >= (1, 9, 5):
+        return (
+            "Nomad secrets tmpfs noswap fallback available"
+            f" (Nomad {'.'.join(str(p) for p in nomad_version)}, Linux {kernel or 'unknown'}); "
+            "older kernels may still print a harmless `tmpfs: Unknown parameter 'noswap'` warning"
+        )
+
+    if nomad_version:
+        return (
+            "Nomad secrets tmpfs noswap not expected: "
+            f"Nomad {'.'.join(str(p) for p in nomad_version)} predates the known noswap secrets tmpfs change"
+        )
+
+    return "Nomad secrets tmpfs compatibility unknown: could not read Nomad version"
+
+
+def _parse_nomad_version(output: str) -> tuple[int, int, int] | None:
+    match = re.search(r"Nomad\s+v?(\d+)\.(\d+)\.(\d+)", output or "", re.IGNORECASE)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _parse_kernel_version(output: str) -> tuple[int, int] | None:
+    match = re.match(r"(\d+)\.(\d+)", output or "")
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 def _wait_nomad_job(remote: Executor, job_id: str, *, timeout: int = 120) -> str:

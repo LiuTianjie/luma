@@ -110,6 +110,47 @@ luma update --control-url https://luma.example.com --token <node-join-token>
 
 After that, future `luma update fleet` runs can update it remotely.
 
+## Manager update prints `tmpfs: Unknown parameter 'noswap'`
+
+This message comes from the manager's Nomad client when it prepares an
+allocation secrets directory, not from the Luma Control image. Nomad tries to
+mount the per-task `secrets/` directory as tmpfs with `noswap`; older Linux
+kernels do not support that mount option, so the kernel may print:
+
+```text
+tmpfs: Unknown parameter 'noswap'
+```
+
+First check whether the update actually failed or only printed the kernel
+warning:
+
+```bash
+nomad job status luma-control
+nomad job allocs luma-control
+```
+
+If an allocation is running, no repair is needed; rerun `luma update manager`
+only if the command itself exited non-zero.
+
+If the allocation failed with a task-dir or tmpfs mount error, check the manager
+kernel and Nomad version:
+
+```bash
+uname -r
+nomad version
+journalctl -u nomad -n 120 --no-pager
+```
+
+The durable fix is to run a Nomad release that falls back when `noswap` is not
+supported, or upgrade the manager kernel to one with `tmpfs noswap` support.
+After repairing Nomad, restart the manager agent and rerun the control-plane
+refresh:
+
+```bash
+sudo systemctl restart nomad
+luma update manager
+```
+
 ## Dashboard terminal disconnects
 
 `terminal agent disconnected` means the browser session was connected, but the node-side terminal agent WebSocket disappeared. Common causes:
