@@ -367,5 +367,68 @@ port: 3000
         )
 
 
+class InternalFixedPortTests(unittest.TestCase):
+    def config(self):
+        return LumaConfig(
+            {
+                "defaults": {
+                    "stackRoot": "stacks",
+                    "routesRoot": "routes",
+                    "entrypoint": "websecure",
+                    "certResolver": "letsencrypt",
+                }
+            },
+            None,
+        )
+
+    def load(self, content: str):
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+        try:
+            tmp.write(content)
+            tmp.close()
+            return load_service(Path(tmp.name))
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+    def test_internal_service_with_publish_port_uses_static_reserved_port(self):
+        service = self.load(
+            """
+name: luma-registry
+image: registry:2
+region: cn
+exposure: none
+node: build-1
+port: 5000
+publishPort: 5000
+volumes:
+  - luma-registry-data:/var/lib/registry
+"""
+        )
+        job = render_nomad_job(self.config(), service, as_json=False)["Job"]
+        net = job["TaskGroups"][0]["Networks"][0]
+        self.assertEqual(net["Mode"], "bridge")
+        reserved = net["ReservedPorts"][0]
+        self.assertEqual(reserved["Value"], 5000)
+        self.assertEqual(reserved["To"], 5000)
+        # named volume bind for registry data
+        mounts = job["TaskGroups"][0]["Tasks"][0]["Config"]["mount"]
+        self.assertTrue(any(m["target"] == "/var/lib/registry" and m["type"] == "volume" for m in mounts))
+
+    def test_internal_service_without_publish_port_stays_dynamic(self):
+        service = self.load(
+            """
+name: worker
+image: ghcr.io/acme/worker:latest
+region: global
+exposure: none
+port: 8080
+"""
+        )
+        job = render_nomad_job(self.config(), service, as_json=False)["Job"]
+        net = job["TaskGroups"][0]["Networks"][0]
+        self.assertEqual(net["Mode"], "host")
+        self.assertEqual(net["DynamicPorts"][0]["To"], 8080)
+
+
 if __name__ == "__main__":
     unittest.main()

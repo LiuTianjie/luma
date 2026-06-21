@@ -5,7 +5,8 @@
 | Field | Required | Type | Notes |
 | --- | --- | --- | --- |
 | `name` | yes | string | Service name. Luma slugifies it for stack, service, route, and deployment records. |
-| `image` | yes | string | Container image. `latest` or omitted tags may be resolved to `name@sha256:...` when Luma can validate the pull on the manager or a fixed target node. Docker Hub-style images prefer the requested image, then Docker daemon egress proxy retry, then configured `defaults.imageMirrors` fallback. Prefer pinned version tags or digests for production rollback; mutable tags can make an old Nomad job version pull newer image bytes. |
+| `image` | yes* | string | Container image. `latest` or omitted tags may be resolved to `name@sha256:...` when Luma can validate the pull on the manager or a fixed target node. Docker Hub-style images prefer the requested image, then Docker daemon egress proxy retry, then configured `defaults.imageMirrors` fallback. Prefer pinned version tags or digests for production rollback; mutable tags can make an old Nomad job version pull newer image bytes. *Optional when a `build` block is present (`luma import`). |
+| `build` | no | map | Source-to-image build for `luma import`. Subfields: `build.context` (default `.`), `build.dockerfile` (default `Dockerfile`), `build.platform` (default `linux/amd64`). When present, `image` may be omitted. Not used by `luma deploy`. |
 | `region` | yes | `cn` / `global` / `home` | Runtime placement region. |
 | `engine` | no | `nomad` | Orchestrator override. Omit to inherit the cluster default. |
 | `node` | no | string | Luma node name from `luma node join --name`; control-plane deploy resolves it to a node-meta placement constraint and keeps the region constraint. Stable across node restarts. Do not use Docker hostnames for normal pins. |
@@ -113,6 +114,47 @@ luma registry remove ghcr.io
 During deploy, Luma matches credentials by image registry host and injects them into the Nomad job's docker `auth` block, so the placed client pulls the private image with the stored credentials.
 
 Private registry image pulls are separate from runtime `proxy: true`. If `curl https://<registry>/v2/` reaches the registry but `docker pull` fails with EOF/timeout, inspect Docker daemon `HTTPProxy`/`HTTPSProxy` and add the private registry host to daemon `NO_PROXY`.
+
+## Build From GitHub Source (luma import)
+
+`luma deploy` only deploys prebuilt images. `luma import` builds from source: clone a GitHub repo on a build node, build its Dockerfile, push to an in-cluster registry, then deploy.
+
+One-time setup:
+
+```bash
+# 1. A node with docker buildx auto-advertises the docker-build capability.
+luma node list
+
+# 2. Start an in-cluster registry (deploys registry:2 on the build node and
+#    wires insecure-registries on every ready Linux node for Tailscale pulls).
+luma registry serve --node build-1
+
+# 3. Private repos only: store a GitHub token in the secret store.
+luma secret set GITHUB_TOKEN <github-pat>
+```
+
+Repo `.luma.yml` (a normal manifest with a `build` block instead of `image`):
+
+```yaml
+name: myapp
+region: cn
+exposure: cn-edge
+domain: myapp.example.com
+port: 8080
+build:
+  context: .
+  dockerfile: Dockerfile
+  platform: linux/amd64
+```
+
+Import and deploy:
+
+```bash
+luma import https://github.com/acme/myapp --build-node build-1
+luma import https://github.com/acme/myapp --build-node build-1 --ref release --region cn --exposure cn-edge --domain myapp.example.com --port 8080
+```
+
+The built image is tagged `<build-node-tailscale-host>:5000/<owner>/<repo>:<git-sha>`. CLI flags (`--ref`, `--region`, `--exposure`, `--domain`, `--port`, `--platform`, `--registry-host`) override the repo's `.luma.yml`. When the build node is arm64 and target nodes are amd64, keep `platform: linux/amd64` and ensure the build node has `qemu`/`binfmt`.
 
 ## Single-Service Examples
 

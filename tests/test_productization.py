@@ -8114,5 +8114,158 @@ def _set_env(key, value):
     return old
 
 
+class GithubImportTests(unittest.TestCase):
+    def test_clone_builds_shallow_command_with_ref(self):
+        from luma import gitops
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            return Mock(returncode=0, stdout="")
+
+        with patch("luma.gitops.subprocess.run", side_effect=fake_run):
+            gitops.clone("https://github.com/acme/app", Path("/tmp/x"), ref="main")
+        self.assertEqual(captured["cmd"][:4], ["git", "clone", "--depth", "1"])
+        self.assertIn("--branch", captured["cmd"])
+        self.assertIn("main", captured["cmd"])
+
+    def test_clone_injects_token_and_proxy(self):
+        from luma import gitops
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            return Mock(returncode=0, stdout="")
+
+        with patch("luma.gitops.subprocess.run", side_effect=fake_run):
+            gitops.clone("https://github.com/acme/app", Path("/tmp/x"), proxy="http://127.0.0.1:7890", token="ghp_secret")
+        clone_url = captured["cmd"][-2]
+        self.assertIn("x-access-token:ghp_secret@", clone_url)
+        self.assertEqual(captured["env"]["HTTPS_PROXY"], "http://127.0.0.1:7890")
+
+    def test_clone_redacts_token_on_failure(self):
+        from luma import gitops
+        from luma.errors import LumaError
+
+        with patch("luma.gitops.subprocess.run", return_value=Mock(returncode=1, stdout="fatal: https://x-access-token:ghp_secret@github.com/acme/app not found")):
+            with self.assertRaises(LumaError) as ctx:
+                gitops.clone("https://github.com/acme/app", Path("/tmp/x"), token="ghp_secret")
+        self.assertNotIn("ghp_secret", str(ctx.exception))
+        self.assertIn("***@", str(ctx.exception))
+
+    def test_image_repo_from_repo_url(self):
+        from luma.control.server import _image_repo_from_repo_url
+
+        self.assertEqual(_image_repo_from_repo_url("https://github.com/Acme/App"), "acme/app")
+        self.assertEqual(_image_repo_from_repo_url("https://github.com/acme/app.git"), "acme/app")
+        self.assertEqual(_image_repo_from_repo_url("git@github.com:acme/app.git"), "acme/app")
+        self.assertEqual(_image_repo_from_repo_url("github.com/acme/My_Repo"), "acme/my_repo")
+        # query string / fragment must not leak into the image name
+        self.assertEqual(_image_repo_from_repo_url("https://github.com/acme/app?token=x"), "acme/app")
+        self.assertEqual(_image_repo_from_repo_url("https://github.com/acme/app#readme"), "acme/app")
+        self.assertEqual(_image_repo_from_repo_url("https://github.com/acme/app/"), "acme/app")
+
+    def test_build_image_credentials_injected_at_lease_not_stored(self):
+        # Security: gitToken / registryAuth must never be persisted in the build
+        # payload; they are added only when the task is leased to the agent.
+        from luma.control.server import _agent_task_lease_payload
+
+        state = {
+            "secrets": {"GITHUB_TOKEN": "ghp_secret"},
+            "registries": {"build-1:5000": {"username": "u", "password": "p", "serverAddress": "build-1:5000"}},
+        }
+        stored_payload = {"repoUrl": "https://github.com/acme/app", "pushHost": "build-1:5000", "repo": "acme/app"}
+        # the stored payload itself carries no credentials
+        self.assertNotIn("gitToken", stored_payload)
+        self.assertNotIn("registryAuth", stored_payload)
+        leased = _agent_task_lease_payload(state, {"action": "build-image", "payload": stored_payload})
+        self.assertEqual(leased.get("gitToken"), "ghp_secret")
+        self.assertEqual((leased.get("registryAuth") or {}).get("username"), "u")
+        # original stored payload is untouched (no mutation back into state)
+        self.assertNotIn("gitToken", stored_payload)
+        self.assertNotIn("registryAuth", stored_payload)
+
+    def test_build_image_lease_without_secrets(self):
+        from luma.control.server import _agent_task_lease_payload
+
+        leased = _agent_task_lease_payload({}, {"action": "build-image", "payload": {"repoUrl": "https://github.com/acme/app", "pushHost": "build-1:5000", "repo": "acme/app"}})
+        self.assertNotIn("gitToken", leased)
+        self.assertNotIn("registryAuth", leased)
+
+    def test_safe_image_repo_rejects_bad_input(self):
+        from luma.agent import _safe_image_repo
+        from luma.errors import LumaError
+
+        self.assertEqual(_safe_image_repo("acme/app"), "acme/app")
+        for bad in ("../etc", "acme/app;rm", "UP PER"):
+            with self.assertRaises(LumaError):
+                _safe_image_repo(bad)
+
+    def test_safe_registry_host(self):
+        from luma.agent import _safe_registry_host
+        from luma.errors import LumaError
+
+        self.assertEqual(_safe_registry_host("node-1:5000"), "node-1:5000")
+        self.assertEqual(_safe_registry_host("localhost:5000"), "localhost:5000")
+        with self.assertRaises(LumaError):
+            _safe_registry_host("bad host:5000")
+
+    def test_safe_repo_subpath_blocks_escape(self):
+        from luma.agent import _safe_repo_subpath
+        from luma.errors import LumaError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "sub").mkdir()
+            self.assertEqual(_safe_repo_subpath(root, "sub"), (root / "sub").resolve())
+            with self.assertRaises(LumaError):
+                _safe_repo_subpath(root, "../../etc/passwd")
+
+    def test_buildx_capability_advertised_when_present(self):
+        import luma.agent as agent
+
+        agent._BUILDX_AVAILABLE = None
+        with patch("luma.agent.shutil.which", return_value="/usr/bin/docker-buildx"):
+            caps = agent.node_agent_capabilities("linux")
+        agent._BUILDX_AVAILABLE = None
+        self.assertIn("docker-build", caps)
+
+    def test_buildx_capability_absent_when_missing(self):
+        import luma.agent as agent
+
+        agent._BUILDX_AVAILABLE = None
+        with patch("luma.agent.shutil.which", return_value=None), patch("luma.agent.os.path.exists", return_value=False):
+            caps = agent.node_agent_capabilities("linux")
+        agent._BUILDX_AVAILABLE = None
+        self.assertNotIn("docker-build", caps)
+
+    def test_egress_proxy_for_cn_build_node_uses_manager_gateway(self):
+        from luma.config import LumaConfig
+        from luma.control.server import _egress_proxy_for_node
+
+        config = LumaConfig({"defaults": {"nomadServer": "100.64.0.1:4647"}}, None)
+        state = {"nodes": {"build-1": {"region": "cn", "agent": {"capabilities": ["docker-build"]}}}}
+        self.assertEqual(_egress_proxy_for_node(config, state, "build-1"), "http://100.64.0.1:7890")
+
+    def test_egress_proxy_for_global_build_node_is_empty(self):
+        from luma.config import LumaConfig
+        from luma.control.server import _egress_proxy_for_node
+
+        config = LumaConfig({"defaults": {"nomadServer": "100.64.0.1:4647"}}, None)
+        state = {"nodes": {"build-2": {"region": "global", "agent": {"capabilities": ["docker-build"]}}}}
+        self.assertEqual(_egress_proxy_for_node(config, state, "build-2"), "")
+
+    def test_egress_proxy_for_unknown_node_is_empty(self):
+        from luma.config import LumaConfig
+        from luma.control.server import _egress_proxy_for_node
+
+        config = LumaConfig({"defaults": {"nomadServer": "100.64.0.1:4647"}}, None)
+        self.assertEqual(_egress_proxy_for_node(config, {"nodes": {}}, "missing"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

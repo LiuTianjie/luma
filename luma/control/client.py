@@ -319,6 +319,97 @@ class ControlClient:
             timeout=timeout,
         )
 
+    def build_deploy(
+        self,
+        *,
+        repo_url: str,
+        build_node: str,
+        ref: str = "",
+        region: str = "",
+        exposure: str = "",
+        domain: str = "",
+        port: int | None = None,
+        platform: str = "",
+        context: str = "",
+        dockerfile: str = "",
+        registry_host: str = "",
+        timeout: int = 2400,
+    ) -> Dict[str, Any]:
+        return self.request("POST", "/v1/builds", self._build_body(locals()), timeout=timeout)
+
+    def build_deploy_events(
+        self,
+        *,
+        repo_url: str,
+        build_node: str,
+        ref: str = "",
+        region: str = "",
+        exposure: str = "",
+        domain: str = "",
+        port: int | None = None,
+        platform: str = "",
+        context: str = "",
+        dockerfile: str = "",
+        registry_host: str = "",
+        timeout: int = 2400,
+    ) -> Iterator[Dict[str, Any]]:
+        return self.stream("POST", "/v1/builds/stream", self._build_body(locals()), timeout=timeout)
+
+    @staticmethod
+    def _build_body(values: Dict[str, Any]) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "repoUrl": values["repo_url"],
+            "buildNode": values["build_node"],
+        }
+        optional = {
+            "ref": values.get("ref"),
+            "region": values.get("region"),
+            "exposure": values.get("exposure"),
+            "domain": values.get("domain"),
+            "platform": values.get("platform"),
+            "context": values.get("context"),
+            "dockerfile": values.get("dockerfile"),
+            "registryHost": values.get("registry_host"),
+        }
+        for key, value in optional.items():
+            if value:
+                body[key] = value
+        if values.get("port"):
+            body["port"] = int(values["port"])
+        return body
+
+    def registry_serve(
+        self,
+        *,
+        node: str,
+        port: int = 5000,
+        image: str = "",
+        name: str = "",
+        storage_class: str = "",
+        timeout: int = 1800,
+    ) -> Dict[str, Any]:
+        return self.request("POST", "/v1/registry/serve", self._registry_serve_body(locals()), timeout=timeout)
+
+    def registry_serve_events(
+        self,
+        *,
+        node: str,
+        port: int = 5000,
+        image: str = "",
+        name: str = "",
+        storage_class: str = "",
+        timeout: int = 1800,
+    ) -> Iterator[Dict[str, Any]]:
+        return self.stream("POST", "/v1/registry/serve/stream", self._registry_serve_body(locals()), timeout=timeout)
+
+    @staticmethod
+    def _registry_serve_body(values: Dict[str, Any]) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"node": values["node"], "port": int(values.get("port") or 5000)}
+        for src, dst in (("image", "image"), ("name", "name"), ("storage_class", "storageClass")):
+            if values.get(src):
+                body[dst] = str(values[src])
+        return body
+
     def remove_service(
         self,
         *,

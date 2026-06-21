@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     visible_commands = (
         "init,version,status,preflight,configure,login,context,secret,registry,"
         "bootstrap,update,doctor,node,cloudflare,egress,tailscale,"
-        "service,validate,render,dns-sync,deploy,rollback,history,compose,storage"
+        "service,validate,render,dns-sync,deploy,import,rollback,history,compose,storage"
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="{" + visible_commands + "}")
 
@@ -113,6 +113,15 @@ def build_parser() -> argparse.ArgumentParser:
     registry_remove = registry_sub.add_parser("remove")
     registry_remove.add_argument("host")
     _add_control_arguments(registry_remove)
+    registry_serve = registry_sub.add_parser("serve", help="Deploy an in-cluster Docker registry on a build node and wire insecure-registries to every node")
+    registry_serve.add_argument("--node", required=True, help="Build node that hosts the registry (must be docker-build capable)")
+    registry_serve.add_argument("--port", type=int, default=5000, help="Host port the registry listens on (default: 5000)")
+    registry_serve.add_argument("--image", default="", help="Registry image (default: registry:2)")
+    registry_serve.add_argument("--name", default="", help="Service name (default: luma-registry)")
+    registry_serve.add_argument("--storage-class", dest="storage_class", default="", help="storageClass for the registry data volume (default: local)")
+    _add_control_arguments(registry_serve)
+    _add_output_arguments(registry_serve)
+    registry_serve.add_argument("--timeout", type=int, default=1800)
     bootstrap = sub.add_parser("bootstrap")
     bootstrap_sub = bootstrap.add_subparsers(dest="bootstrap_command", required=True)
     manager = bootstrap_sub.add_parser("manager")
@@ -130,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.120 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.122 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -248,6 +257,22 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--timeout", type=int, default=1800, help="Seconds to wait for the control-plane deploy response")
     deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
+
+    import_cmd = sub.add_parser("import", help="Build a GitHub repository's Dockerfile and deploy it")
+    import_cmd.add_argument("repo", help="GitHub repository URL or owner/name")
+    import_cmd.add_argument("--build-node", dest="build_node", required=True, help="Luma node (docker-build capable) that clones and builds the image")
+    import_cmd.add_argument("--ref", default="", help="Git branch or tag to build (default: repository default branch)")
+    import_cmd.add_argument("--region", default="", help="Override region from the repo's .luma.yml")
+    import_cmd.add_argument("--exposure", default="", help="Override exposure from the repo's .luma.yml")
+    import_cmd.add_argument("--domain", default="", help="Override domain from the repo's .luma.yml")
+    import_cmd.add_argument("--port", type=int, default=None, help="Override container port from the repo's .luma.yml")
+    import_cmd.add_argument("--platform", default="", help="Build platform (default: linux/amd64 or the repo's build.platform)")
+    import_cmd.add_argument("--context", dest="build_context", default="", help="Docker build context within the repo (default: .)")
+    import_cmd.add_argument("--dockerfile", default="", help="Dockerfile path within the repo (default: Dockerfile)")
+    import_cmd.add_argument("--registry-host", dest="registry_host", default="", help="Registry host other nodes pull from (default: <build-node>:5000)")
+    _add_control_arguments(import_cmd)
+    _add_output_arguments(import_cmd)
+    import_cmd.add_argument("--timeout", type=int, default=2400, help="Seconds to wait for the build+deploy response")
 
     rollback = sub.add_parser("rollback", help="Roll a Nomad-engine service back to a previous version")
     rollback.add_argument("name")
@@ -515,6 +540,32 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("  Registered: " + ", ".join(str(name) for name in nodes["names"]))
     else:
         print("  No nodes reported")
+    build_nodes = [item for item in registered_items if isinstance(item, dict) and "docker-build" in (item.get("storageCapabilities") or [])]
+    services = payload.get("services") if isinstance(payload.get("services"), list) else []
+    registry_services = [svc for svc in services if isinstance(svc, dict) and "registry" in str(svc.get("name") or "").lower()]
+    print()
+    print("Build (luma import)")
+    print(f"  Summary: build-capable nodes={len(build_nodes)}, in-cluster registries={len(registry_services)}")
+    if build_nodes:
+        _print_table(
+            ["NAME", "REGION", "OS", "AGENT"],
+            [
+                [
+                    _status_value(item.get("name")),
+                    _status_value(item.get("region")),
+                    _status_value(item.get("agentOs")),
+                    _status_value(item.get("agentStatus")),
+                ]
+                for item in build_nodes
+            ],
+        )
+    else:
+        print("  No docker-build capable nodes (install docker buildx on a node to enable luma import)")
+    if registry_services:
+        for svc in registry_services:
+            print(f"  Registry service: {svc.get('name')} (region={_status_value(svc.get('region'))})")
+    else:
+        print("  No in-cluster registry (run: luma registry serve --node <build-node>)")
     return 0
 
 
@@ -1206,7 +1257,7 @@ def cmd_secret(args: argparse.Namespace) -> int:
 
 
 def cmd_registry(args: argparse.Namespace) -> int:
-    if args.registry_command in {"list", "login", "remove"}:
+    if args.registry_command in {"list", "login", "remove", "serve"}:
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     if args.registry_command == "list":
@@ -1235,6 +1286,53 @@ def cmd_registry(args: argparse.Namespace) -> int:
         result = client.remove_registry(host=args.host)
         status = "removed" if result.get("removed") else "not configured"
         print(f"Registry credential {status}: {result.get('host', args.host)}")
+        return 0
+    if args.registry_command == "serve":
+        output_format = _output_format(args)
+        quiet = _quiet(args) or output_format != "text"
+        serve_kwargs: Dict[str, Any] = dict(
+            node=args.node,
+            port=args.port,
+            image=args.image,
+            name=args.name,
+            storage_class=args.storage_class,
+            timeout=args.timeout,
+        )
+        if not quiet:
+            print(f"[start] Deploy in-cluster registry on {args.node}:{args.port}", flush=True)
+        result: Dict[str, Any] | None = None
+        streamed = False
+        try:
+            for event in client.registry_serve_events(**serve_kwargs):
+                status = str(event.get("status") or "")
+                if output_format == "ndjson":
+                    _print_json({"type": "event", **event})
+                if status in {"start", "ok", "fail"}:
+                    if not quiet:
+                        _print_deploy_step(event)
+                    if status == "fail":
+                        raise LumaError(str(event.get("message") or "registry serve failed"))
+                elif status == "done":
+                    payload = event.get("result")
+                    if isinstance(payload, dict):
+                        result = payload
+                streamed = True
+        except LumaError as exc:
+            if "control API error 404" not in str(exc):
+                raise
+        if result is None:
+            if streamed:
+                raise LumaError("control API stream ended without a registry serve result")
+            result = client.registry_serve(**serve_kwargs)
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        print(f"[ok] Registry ready: {result.get('registryHost')}")
+        print(f"Push from build node: {result.get('pushHost')}")
+        if result.get("configuredNodes"):
+            print(f"insecure-registries configured on: {', '.join(result['configuredNodes'])}")
+        if result.get("skippedNodes"):
+            print(f"Skipped nodes: {', '.join(str(n) for n in result['skippedNodes'])}")
         return 0
     raise LumaError(f"unknown registry command: {args.registry_command}")
 
@@ -2279,6 +2377,87 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import(args: argparse.Namespace) -> int:
+    output_format = _output_format(args)
+    quiet = _quiet(args) or output_format != "text"
+    if args.timeout < 1:
+        raise LumaError("--timeout must be at least 1 second")
+
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    if not quiet:
+        print(f"[ok] Control endpoint: {endpoint}", flush=True)
+        print(f"[start] Import: {args.repo} (build on {args.build_node})", flush=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+
+    build_kwargs: Dict[str, Any] = dict(
+        repo_url=args.repo,
+        build_node=args.build_node,
+        ref=args.ref,
+        region=args.region,
+        exposure=args.exposure,
+        domain=args.domain,
+        port=args.port,
+        platform=args.platform,
+        context=args.build_context,
+        dockerfile=args.dockerfile,
+        registry_host=args.registry_host,
+        timeout=args.timeout,
+    )
+
+    streamed = False
+    result: Dict[str, Any] | None = None
+    try:
+        for event in client.build_deploy_events(**build_kwargs):
+            status = str(event.get("status") or "")
+            if output_format == "ndjson":
+                _print_json({"type": "event", **event})
+            if status in {"start", "ok", "fail"}:
+                if not quiet:
+                    _print_deploy_step(event)
+                if status == "fail":
+                    raise LumaError(str(event.get("message") or "import failed"))
+            elif status == "done":
+                payload = event.get("result")
+                if not isinstance(payload, dict):
+                    raise LumaError("control API stream ended without an import result")
+                result = payload
+            streamed = True
+    except LumaError as exc:
+        if "control API error 404" not in str(exc):
+            raise
+
+    if result is None:
+        if streamed:
+            raise LumaError("control API stream ended without an import result")
+        if not quiet:
+            print(f"[start] Waiting for control plane response (timeout {args.timeout}s)", flush=True)
+        result = _run_with_wait_heartbeat(
+            lambda: client.build_deploy(**build_kwargs),
+            timeout=args.timeout,
+            emit=not quiet,
+        )
+        for step in result.get("steps") or []:
+            if isinstance(step, dict):
+                if output_format == "ndjson":
+                    _print_json({"type": "event", **step})
+                elif not quiet:
+                    _print_deploy_step(step)
+
+    if output_format != "text":
+        _print_success(args, result)
+        return 0
+    print(f"[ok] Import finished: {result.get('service', args.repo)}")
+    if result.get("image"):
+        image = result["image"]
+        if isinstance(image, str):
+            print(f"Image built: {image}")
+        elif isinstance(image, dict):
+            print(f"Image ready: {image.get('selected') or image.get('requested')}")
+    if result.get("dns"):
+        print(result["dns"])
+    return 0
+
+
 def cmd_compose(args: argparse.Namespace) -> int:
     if args.compose_command == "init":
         init_compose_sidecar(args.compose, args.output)
@@ -2807,6 +2986,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_dns_sync(args)
         if args.command == "deploy":
             return cmd_deploy(args)
+        if args.command == "import":
+            return cmd_import(args)
         if args.command == "rollback":
             return cmd_rollback(args)
         if args.command == "history":

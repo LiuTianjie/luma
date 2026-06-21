@@ -548,6 +548,21 @@ def _network(service: ServiceSpec) -> tuple[Dict[str, Any] | None, str | None]:
         return net, "http"
     # none / cloudflare-tunnel: only add a port if the manifest declares one.
     if service.port:
+        if service.publish_port:
+            # Fixed host port for internal services that must be reachable at a
+            # known address (e.g. an in-cluster registry pulled by other nodes).
+            net = {
+                "Mode": "bridge",
+                "ReservedPorts": [
+                    {
+                        "Label": "http",
+                        "Value": int(service.publish_port),
+                        "To": int(service.port),
+                        "HostNetwork": "default",
+                    }
+                ],
+            }
+            return net, "http"
         net = {"Mode": "host", "DynamicPorts": [{"Label": "http", "To": int(service.port)}]}
         return net, "http"
     return None, None

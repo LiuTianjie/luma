@@ -4198,3 +4198,135 @@ dd {
     transform: scale(1.16);
   }
 }
+
+.github-import-entry {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 16px 20px;
+  margin-bottom: 18px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 12px;
+  background: var(--surface, #181818);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.github-import-entry:hover {
+  border-color: #1ed760;
+  transform: translateY(-1px);
+}
+.github-import-entry > svg {
+  color: #1ed760;
+  flex-shrink: 0;
+}
+.github-import-entry > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.github-import-entry > div strong {
+  font-size: 0.95rem;
+}
+.github-import-entry > div span {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+.github-import-entry-action {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+.deploy-step-log {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.deploy-step-log li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--surface, #181818);
+  font-size: 0.85rem;
+}
+.deploy-step-log li.step-fail { color: #ff6b6b; }
+.deploy-step-log li.step-ok { color: #1ed760; }
+.deploy-step-log li span { opacity: 0.75; }
+
+.credentials-notice {
+  border-color: #1ed760;
+  color: #1ed760;
+}
+
+.credential-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+.credential-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.credential-form .field span {
+  font-size: 0.8rem;
+  opacity: 0.8;
+}
+.credential-form input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  background: var(--surface, #181818);
+  color: inherit;
+  font-size: 0.9rem;
+}
+.credential-form button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+.credential-hint {
+  font-size: 0.78rem;
+  opacity: 0.65;
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+
+.registry-setup {
+  margin-top: 14px;
+  border-top: 1px solid var(--border, #2a2a2a);
+  padding-top: 12px;
+}
+.registry-setup-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+.registry-setup-toggle > span {
+  opacity: 0.6;
+}
+.registry-setup-body {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.registry-done {
+  color: #1ed760;
+}
+.registry-error {
+  color: #ff6b6b;
+}

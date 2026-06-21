@@ -54,3 +54,26 @@ export async function fetchStorageClasses({ token, signal }: { token: string; si
   });
   return readJson(response) as Promise<StorageClassesPayload>;
 }
+
+async function postJson(path: string, token: string, body: Record<string, unknown>) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return readJson(response);
+}
+
+export async function setSecret({ token, name, value, scope }: { token: string; name: string; value: string; scope?: string }) {
+  const body: Record<string, unknown> = { name, value };
+  if (scope) body.scope = scope;
+  return postJson("/v1/secrets", token, body);
+}
+
+export async function setRegistry({ token, host, username, password }: { token: string; host: string; username: string; password: string }) {
+  return postJson("/v1/registries", token, { host, username, password });
+}
+
+export async function removeRegistry({ token, host }: { token: string; host: string }) {
+  return postJson("/v1/registries/remove", token, { host });
+}

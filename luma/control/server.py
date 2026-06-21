@@ -578,6 +578,22 @@ def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Di
         tailscale_authkey = str(secrets_state.get("TAILSCALE_AUTHKEY") or "") or os.environ.get("TAILSCALE_AUTHKEY") or ""
         if tailscale_authkey:
             payload["tailscaleAuthKey"] = tailscale_authkey
+    if task.get("action") == "build-image":
+        # Inject credentials at lease time so they are never persisted in
+        # agentTasks state (see also resolve-docker-image / join-nomad above).
+        if not payload.get("gitToken"):
+            secrets_state = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+            git_token = str(secrets_state.get("GITHUB_TOKEN") or "") or os.environ.get("GITHUB_TOKEN") or ""
+            if git_token:
+                payload["gitToken"] = git_token
+        if not payload.get("registryAuth"):
+            push_host = str(payload.get("pushHost") or "")
+            repo = str(payload.get("repo") or "")
+            if push_host and repo:
+                registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+                registry_auth = registry_auth_for_image(registries, f"{push_host}/{repo}:latest")
+                if registry_auth:
+                    payload["registryAuth"] = registry_auth
     return payload
 
 
@@ -940,6 +956,25 @@ def _nomad_join_egress_proxy(region: str, server_addr: str) -> str:
     return f"http://{host}:7890" if host else ""
 
 
+def _egress_proxy_for_node(config: Any, state: Dict[str, Any], node_name: str) -> str:
+    # git clone runs on the build node's host. cn/home nodes reach the internet
+    # through the manager's egress gateway (same as image pulls and node join);
+    # global nodes have direct internet, so no proxy.
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    if not record:
+        return ""
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    region = str(record.get("region") or labels.get("region") or "").strip()
+    if region not in {"cn", "home"}:
+        return ""
+    try:
+        server_addr = _nomad_rpc_addr_for_join(config, state)
+    except LumaError:
+        return ""
+    return _nomad_join_egress_proxy(region, server_addr)
+
+
 def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     node_name = str(body.get("nodeName") or "").strip()
     registered_name = str(body.get("registeredName") or "").strip()
@@ -1138,6 +1173,199 @@ def _load_service_manifest(manifest: str) -> ServiceSpec:
         return load_service(service_path)
     finally:
         service_path.unlink(missing_ok=True)
+
+
+def _image_repo_from_repo_url(url: str) -> str:
+    text = str(url or "").strip()
+    text = re.sub(r"^[a-z]+://", "", text)
+    text = re.sub(r"^[^@/]+@", "", text)  # strip user@ from scp-style urls
+    text = text.split("?", 1)[0].split("#", 1)[0]  # drop query string / fragment
+    text = text.replace(":", "/", 1) if "/" not in text.split(":", 1)[0] else text
+    parts = [p for p in re.split(r"[/]", text) if p]
+    if len(parts) >= 2:
+        owner, name = parts[-2], parts[-1]
+    elif parts:
+        owner, name = "luma", parts[-1]
+    else:
+        raise LumaError(f"cannot derive image name from repo url: {url}")
+    name = re.sub(r"\.git$", "", name)
+    repo = f"{owner}/{name}".lower()
+    repo = re.sub(r"[^a-z0-9._/-]+", "-", repo).strip("-/")
+    if not repo:
+        raise LumaError(f"cannot derive image name from repo url: {url}")
+    return repo
+
+
+def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    repo_url = str(body.get("repoUrl") or "").strip()
+    if not repo_url:
+        raise LumaError("repoUrl is required")
+    build_node = str(body.get("buildNode") or "").strip()
+    if not build_node:
+        raise LumaError("buildNode is required")
+    ref = str(body.get("ref") or "").strip()
+    steps: list[dict[str, str]] = []
+
+    registry_host = str(body.get("registryHost") or "").strip()
+    if not registry_host:
+        registry_host = f"{_nomad_route_host_for_node(state, build_node)}:5000"
+    repo = _image_repo_from_repo_url(repo_url)
+
+    # git clone runs on the build node's host; cn/home nodes reach GitHub through
+    # the manager egress gateway. An explicit body.proxy overrides auto-resolution.
+    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
+    proxy = str(body.get("proxy") or "").strip() or _egress_proxy_for_node(config, state, build_node)
+
+    # gitToken and registryAuth are injected at lease time (see
+    # _agent_task_lease_payload) so they are never persisted in agentTasks state.
+    build_payload: Dict[str, Any] = {
+        "repoUrl": repo_url,
+        "ref": ref,
+        "registryHost": registry_host,
+        "pushHost": str(body.get("pushHost") or "localhost:5000"),
+        "repo": repo,
+        "proxy": proxy,
+        "buildTimeout": int(body.get("buildTimeout") or 1800),
+    }
+    for key in ("context", "dockerfile", "platform"):
+        if body.get(key):
+            build_payload[key] = str(body.get(key))
+
+    build_result = _deploy_step(
+        steps,
+        "Build image",
+        lambda: _run_node_agent_task(
+            state,
+            build_node,
+            "build-image",
+            build_payload,
+            timeout=int(body.get("buildTimeout") or 1800) + 120,
+            required_capability="docker-build",
+        ),
+        progress=progress,
+    )
+    built_image = str(build_result.get("image") or "").strip()
+    if not built_image:
+        raise LumaError("build did not return an image reference")
+    repo_manifest = str(build_result.get("manifest") or "").strip()
+
+    manifest_text = str(body.get("manifest") or "").strip() or repo_manifest
+    if not manifest_text:
+        raise LumaError("no .luma.yml found in repository and no manifest provided")
+
+    def _inject() -> str:
+        data = yaml.safe_load(manifest_text) or {}
+        if not isinstance(data, dict):
+            raise LumaError(".luma.yml must contain a YAML mapping")
+        data.pop("build", None)
+        data["image"] = built_image
+        for key in ("region", "exposure", "domain"):
+            if body.get(key):
+                data[key] = body.get(key)
+        if body.get("port"):
+            data["port"] = int(body["port"])
+        return yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
+
+    final_manifest = _deploy_step(steps, "Resolve manifest", _inject, progress=progress)
+
+    deploy_body = dict(body)
+    deploy_body["manifest"] = final_manifest
+    deploy_body["sourceName"] = repo_url
+    deploy_body.pop("repoUrl", None)
+    result = handle_deployment(token, deploy_body, progress=progress)
+    if isinstance(result, dict):
+        merged_steps = steps + list(result.get("steps") or [])
+        result = {**result, "steps": merged_steps, "image": built_image}
+    return result
+
+
+def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    build_node = str(body.get("node") or body.get("buildNode") or "").strip()
+    if not build_node:
+        raise LumaError("node is required (the docker-build node that hosts the registry)")
+    port = int(body.get("port") or 5000)
+    image = str(body.get("image") or "registry:2").strip()
+    name = str(body.get("name") or "luma-registry").strip()
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, build_node)
+    if not record:
+        names = ", ".join(sorted(str(n) for n in nodes)) or "none"
+        raise LumaError(f"unknown Luma node: {build_node}. Registered nodes: {names}")
+    region = str(record.get("region") or (record.get("labels") or {}).get("region") or "cn").strip() or "cn"
+    registry_host = f"{_nomad_route_host_for_node(state, build_node)}:{port}"
+
+    steps: list[dict[str, str]] = []
+
+    manifest = {
+        "name": name,
+        "image": image,
+        "region": region,
+        "exposure": "none",
+        "node": build_node,
+        "port": port,
+        "publishPort": port,
+        "volumes": [f"{name}-data:/var/lib/registry"],
+        "storage": {f"{name}-data": {"storageClass": str(body.get("storageClass") or "local")}},
+    }
+    manifest_text = yaml.safe_dump(manifest, sort_keys=False, allow_unicode=False)
+
+    deploy_body = {"manifest": manifest_text, "sourceName": f"{name} (luma registry serve)"}
+    deploy_result = handle_deployment(token, deploy_body, progress=progress)
+    if isinstance(deploy_result, dict):
+        steps.extend(s for s in (deploy_result.get("steps") or []) if isinstance(s, dict))
+
+    # Configure insecure-registries on every ready Linux node so any of them can
+    # pull from the in-cluster registry (unpinned services schedule anywhere).
+    # Skip the manager: Control runs in a container there, and restarting its
+    # Docker daemon would kill this very request mid-stream. The manager's daemon
+    # must be configured out-of-band if it also runs pulled workloads.
+    configured: list[str] = []
+    skipped: list[str] = []
+    for node_name in sorted(str(n) for n in nodes):
+        node_record = nodes.get(node_name)
+        if not isinstance(node_record, dict):
+            continue
+        agent = node_record.get("agent") if isinstance(node_record.get("agent"), dict) else {}
+        if _node_record_is_manager(node_record):
+            skipped.append(f"{node_name} (manager: configure docker daemon out-of-band)")
+            continue
+        if str(agent.get("os") or "") != "linux" or not _node_agent_is_ready(node_record):
+            skipped.append(node_name)
+            continue
+        try:
+            _run_node_agent_task(
+                state,
+                node_name,
+                "configure-insecure-registry",
+                {"registry": registry_host},
+                timeout=240,
+                required_capability=None,
+            )
+            configured.append(node_name)
+        except LumaError as exc:
+            skipped.append(f"{node_name} ({exc})")
+    insecure_step = {
+        "name": "Configure insecure-registries",
+        "status": "ok",
+        "message": f"configured: {', '.join(configured) or 'none'}; skipped: {', '.join(skipped) or 'none'}",
+    }
+    steps.append(insecure_step)
+    _emit_progress(progress, insecure_step)
+
+    return {
+        "service": name,
+        "registryHost": registry_host,
+        "pushHost": f"localhost:{port}",
+        "configuredNodes": configured,
+        "skippedNodes": skipped,
+        "steps": steps,
+    }
 
 
 def _deployments_state(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -5482,6 +5710,18 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/compose-deployments/stream":
                 self._stream_compose_deployment(token, body)
                 return
+            if self.path == "/v1/builds/stream":
+                self._stream_build_deploy(token, body)
+                return
+            if self.path == "/v1/builds":
+                self._json(200, handle_build_deploy(token, body))
+                return
+            if self.path == "/v1/registry/serve/stream":
+                self._stream_registry_serve(token, body)
+                return
+            if self.path == "/v1/registry/serve":
+                self._json(200, handle_registry_serve(token, body))
+                return
             if self.path == "/v1/storage/apply":
                 self._json(200, handle_storage_apply(token, body))
                 return
@@ -5572,6 +5812,50 @@ class ControlHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             request_id = _request_id()
             print(f"requestId={request_id} stream compose deployment internal error: {exc}", file=sys.stderr, flush=True)
+            emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+
+    def _stream_build_deploy(self, token: str, body: Dict[str, Any]) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        def emit(event: Dict[str, Any]) -> None:
+            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+
+        try:
+            result = handle_build_deploy(token, body, progress=emit)
+            emit({"status": "done", "result": result})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except LumaError as exc:
+            emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+        except Exception as exc:
+            request_id = _request_id()
+            print(f"requestId={request_id} stream build deploy internal error: {exc}", file=sys.stderr, flush=True)
+            emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+
+    def _stream_registry_serve(self, token: str, body: Dict[str, Any]) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        def emit(event: Dict[str, Any]) -> None:
+            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+
+        try:
+            result = handle_registry_serve(token, body, progress=emit)
+            emit({"status": "done", "result": result})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except LumaError as exc:
+            emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+        except Exception as exc:
+            request_id = _request_id()
+            print(f"requestId={request_id} stream registry serve internal error: {exc}", file=sys.stderr, flush=True)
             emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
 
     def _stream_service_logs(self, token: str, service: str, since: str, tail: int) -> None:
@@ -5748,6 +6032,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/deployments/preview": handle_deployment_preview,
             "/v1/compose-deployments": handle_compose_deployment,
             "/v1/compose-deployments/preview": handle_compose_deployment_preview,
+            "/v1/builds": handle_build_deploy,
+            "/v1/registry/serve": handle_registry_serve,
             "/v1/storage/apply": handle_storage_apply,
             "/v1/storage": handle_storage_set,
             "/v1/storage/remove": handle_storage_remove,
@@ -5765,6 +6051,10 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             return _asgi_stream_deployment(token, body, compose=False)
         if path == "/v1/compose-deployments/stream":
             return _asgi_stream_deployment(token, body, compose=True)
+        if path == "/v1/builds/stream":
+            return _asgi_stream_build_deploy(token, body)
+        if path == "/v1/registry/serve/stream":
+            return _asgi_stream_registry_serve(token, body)
         if path == "/v1/auth/login/verify":
             return _json_response(200, await run_in_threadpool(handle_login_verify, token))
         handler = routes.get(path)
@@ -5796,6 +6086,68 @@ def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) 
             except Exception as exc:
                 request_id = _request_id()
                 print(f"requestId={request_id} stream deployment internal error: {exc}", file=sys.stderr, flush=True)
+                emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        threading.Thread(target=run, daemon=True).start()
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _asgi_stream_build_deploy(token: str, body: Dict[str, Any]) -> StreamingResponse:
+    async def generate() -> AsyncIterator[bytes]:
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def emit(event: Dict[str, Any]) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+
+        def run() -> None:
+            try:
+                result = handle_build_deploy(token, body, progress=emit)
+                emit({"status": "done", "result": result})
+            except LumaError as exc:
+                emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+            except Exception as exc:
+                request_id = _request_id()
+                print(f"requestId={request_id} stream build deploy internal error: {exc}", file=sys.stderr, flush=True)
+                emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        threading.Thread(target=run, daemon=True).start()
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _asgi_stream_registry_serve(token: str, body: Dict[str, Any]) -> StreamingResponse:
+    async def generate() -> AsyncIterator[bytes]:
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def emit(event: Dict[str, Any]) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+
+        def run() -> None:
+            try:
+                result = handle_registry_serve(token, body, progress=emit)
+                emit({"status": "done", "result": result})
+            except LumaError as exc:
+                emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+            except Exception as exc:
+                request_id = _request_id()
+                print(f"requestId={request_id} stream registry serve internal error: {exc}", file=sys.stderr, flush=True)
                 emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)

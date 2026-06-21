@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.120 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.122 sh
 ```
 
 For local development from a checkout:
@@ -369,3 +369,112 @@ curl -I https://whoami.example.com
 ```
 
 Rotate any token or subscription URL that has been pasted into chat or logs before open-sourcing the repository.
+
+## 11. Build And Deploy From GitHub (可插拔)
+
+默认的 `luma deploy` 只部署已经构建好的镜像。如果想直接从一个 GitHub 仓库的源码构建并上线，用 `luma import`：它在集群里的**构建节点**上 clone 仓库、按 Dockerfile 构建镜像、推送到集群内自托管 registry，再走正常部署链路。这一整套是**可插拔的**——不用它，集群和现有部署不受任何影响；用它，只需下面这套一次性接入。
+
+### 接入 SOP（已部署好 Luma 的前提下）
+
+假设你已经走完上面 1–10 节，集群里 manager 正常、至少有一个 worker 节点、`luma login` 能用。接入「从 GitHub 构建部署」分四步：
+
+**Step 1 — 选一个构建节点并装好 buildx。** 构建在某个 Luma 节点上跑，需要 `docker buildx`（Linux 节点通常随 Docker 一起就有；跨架构构建还需要 `qemu`/`binfmt`）。节点 agent 会自动 advertise `docker-build` 能力，可以这样确认：
+
+```bash
+luma node list                 # 找到要用作构建节点的节点名，例如 build-1
+```
+
+如果该节点没有 buildx，先在节点上安装；装好后 agent 会自动带上 `docker-build` 能力。
+
+**Step 2 — 起一个集群内 registry。** 构建出的镜像要有地方存，并让其它区域的节点能拉。一条命令搞定（部署 registry 服务 + 给非 manager 的就绪 Linux 节点配 `insecure-registries`）：
+
+```bash
+luma registry serve --node build-1
+```
+
+它会把 `registry:2` 部署到 `build-1`（固定 `5000` 端口、带持久化卷、仅 Tailscale 内网可达），并遍历非 manager 的就绪 Linux 节点配置 `insecure-registries`，让它们能经 Tailscale 内网从这个 registry 拉镜像。构建节点本机推送走 `localhost:5000`，跨节点拉取走 `<build-1-tailscale-host>:5000`。
+
+> manager 节点会被跳过：Control 跑在 manager 的容器里，重启它的 docker 会杀掉 Control 自己。如果 manager 也要跑从该 registry 拉取的服务，手动在 manager 的 `/etc/docker/daemon.json` 加 `insecure-registries` 并重启 docker。
+
+**Step 3 —（私有仓库才需要）设置 GitHub Token。** 公开仓库跳过这步。私有仓库：
+
+```bash
+luma secret set GITHUB_TOKEN <github-personal-access-token>
+```
+
+Token 只存在控制面 secret store，构建时注入 `git clone`，不落盘、不回显。
+
+**Step 4 — 在仓库根目录放一个 `.luma.yml`。** 就是普通的 service manifest，用 `build` 块代替 `image`：
+
+```yaml
+name: myapp
+region: cn
+exposure: cn-edge
+domain: myapp.example.com
+port: 8080
+build:
+  context: .
+  dockerfile: Dockerfile
+  platform: linux/amd64
+```
+
+### 导入并部署
+
+```bash
+luma import https://github.com/acme/myapp --build-node build-1
+```
+
+CLI 流式回传 clone → build → push → deploy 每一步。命令行可覆盖 `.luma.yml`：
+
+```bash
+luma import https://github.com/acme/myapp \
+  --build-node build-1 \
+  --ref release \
+  --region cn --exposure cn-edge --domain myapp.example.com --port 8080
+```
+
+dashboard 的「创建应用」页顶部也有「从 GitHub 导入」入口：填仓库地址、选构建节点（下拉只列出有 `docker-build` 能力的就绪节点），进度实时显示。
+
+> CN 节点的 `git clone` 会自动走 manager 的 egress 网关（`http://<manager-host>:7890`），和镜像拉取、节点 join 用的是同一个出口；`global` 节点直连不走代理。需要时可用 `--proxy <url>` 显式覆盖。
+
+### 升级已部署的应用
+
+**升级 = 改完代码、推到 GitHub，再跑一次同样的 `luma import`。**
+
+```bash
+luma import https://github.com/acme/myapp --build-node build-1
+```
+
+原理：每次构建按 git commit 打 tag（`<registry>:5000/acme/myapp:<git-sha>`），注入 manifest 的是这个不可变的 sha 标签；而 Nomad job id 来自 `.luma.yml` 的 `name`。所以同名 + 新 SHA = 对同一个 Nomad job 做滚动更新，旧版本自动保留。这和普通 `luma deploy` 的「同名即更新」是同一条链路。
+
+升级特定分支/Tag：
+
+```bash
+luma import https://github.com/acme/myapp --build-node build-1 --ref v2.1.0
+```
+
+要点：
+
+- 镜像钉死在 git SHA，不是 `:latest`，所以两次构建之间即使 registry 里 `:latest` 变了，已部署的旧版本也不会漂移。
+- `name` 不变才是升级；改了 `.luma.yml` 里的 `name` 会创建一个新应用，而不是升级旧的。
+- 改了 `domain`/`region`/`port` 等也通过重跑 import 生效（或用对应 CLI flag 覆盖）。
+
+### 回滚
+
+因为每个历史版本的 jobspec 钉的是各自的 `:<git-sha>`，registry 默认不回收旧镜像，所以回滚拉得回原镜像字节：
+
+```bash
+luma history myapp                 # 看版本列表
+luma rollback myapp                # 回到上一个版本
+luma rollback myapp --to-version <N>
+```
+
+dashboard 的 Applications → Versions 也能做同样的回滚。注意这是 Nomad job 版本回退（拉回那个版本钉的镜像），不会改 Git、不会回滚数据库迁移或卷数据。
+
+### 跨架构注意
+
+构建节点是 arm64（比如 Mac mini）而目标运行节点是 amd64 时，必须让构建产出 `linux/amd64`。`.luma.yml` 的 `build.platform` 默认就是 `linux/amd64`，但构建节点要装好 `qemu`/`binfmt` 才能跨架构构建。
+
+### 取消接入
+
+不想再用时，删掉 registry 服务即可（`luma service remove luma-registry`），已经在跑的服务不受影响。`insecure-registries` 配置留在各节点的 docker daemon 里是无害的。

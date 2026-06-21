@@ -43,10 +43,49 @@ def node_agent_os() -> str:
     return system or "unknown"
 
 
+def _docker_binary() -> str | None:
+    docker = shutil.which("docker")
+    if docker:
+        return docker
+    for candidate in (
+        "/usr/local/bin/docker",
+        "/opt/homebrew/bin/docker",
+        "/Applications/OrbStack.app/Contents/MacOS/xbin/docker",
+        "/Applications/Docker.app/Contents/Resources/bin/docker",
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+_BUILDX_AVAILABLE: bool | None = None
+
+
+def _docker_buildx_available() -> bool:
+    global _BUILDX_AVAILABLE
+    if _BUILDX_AVAILABLE is not None:
+        return _BUILDX_AVAILABLE
+    # Detect the buildx CLI plugin by filesystem presence rather than shelling
+    # out, so capability advertisement stays cheap on every agent poll.
+    found = bool(shutil.which("docker-buildx"))
+    if not found:
+        plugin_dirs = [
+            os.path.expanduser("~/.docker/cli-plugins"),
+            "/usr/local/lib/docker/cli-plugins",
+            "/usr/lib/docker/cli-plugins",
+            "/usr/libexec/docker/cli-plugins",
+            "/opt/homebrew/lib/docker/cli-plugins",
+            "/Applications/Docker.app/Contents/Resources/cli-plugins",
+        ]
+        found = any(os.path.exists(os.path.join(d, "docker-buildx")) for d in plugin_dirs)
+    _BUILDX_AVAILABLE = found
+    return _BUILDX_AVAILABLE
+
+
 def node_agent_capabilities(os_name: str | None = None) -> list[str]:
     os_value = os_name or node_agent_os()
     if os_value == "linux":
-        return [
+        capabilities = [
             "nfs-host",
             "nfs-client",
             "managed-volume-path",
@@ -57,9 +96,13 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "nomad-join",
             "terminal",
         ]
-    if os_value == "darwin":
-        return ["nfs-host", "managed-volume-path", "docker-volume", "docker-image", "luma-update", "nomad-join", "terminal"]
-    return []
+    elif os_value == "darwin":
+        capabilities = ["nfs-host", "managed-volume-path", "docker-volume", "docker-image", "luma-update", "nomad-join", "terminal"]
+    else:
+        return []
+    if _docker_buildx_available():
+        capabilities.append("docker-build")
+    return capabilities
 
 
 def node_agent_metrics() -> Dict[str, Any]:
@@ -1215,6 +1258,10 @@ def execute_agent_task(task: Dict[str, Any], *, config_path: Path = DEFAULT_AGEN
         )
     if action == "update-luma":
         return update_luma_install(install_ref=str(payload.get("installRef") or ""), config_path=config_path)
+    if action == "build-image":
+        return build_image(payload)
+    if action == "configure-insecure-registry":
+        return configure_insecure_registry(registry=_required(payload, "registry"))
     if action == "join-nomad":
         return join_nomad_node(
             node_name=_required(payload, "nodeName"),
@@ -1409,6 +1456,220 @@ def _first_repo_digest(image: str, inspect_output: str) -> str:
         if "@sha256:" in digest:
             return digest
     return ""
+
+
+def _safe_image_repo(value: str) -> str:
+    repo = str(value or "").strip().lower().strip("/")
+    if not repo or not re.fullmatch(r"[a-z0-9]([a-z0-9._/-]*[a-z0-9])?", repo):
+        raise LumaError(f"invalid image repository: {value}")
+    return repo
+
+
+def _safe_registry_host(value: str) -> str:
+    host = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+(:\d+)?", host):
+        raise LumaError(f"invalid registry host: {value}")
+    return host
+
+
+def _safe_repo_subpath(root: Path, rel: str) -> Path:
+    candidate = (root / rel).resolve()
+    root_resolved = root.resolve()
+    if candidate != root_resolved and root_resolved not in candidate.parents:
+        raise LumaError(f"path escapes repository: {rel}")
+    return candidate
+
+
+def _auth_for_host(registry_auth: Dict[str, Any] | None, host: str) -> Dict[str, Any] | None:
+    if not registry_auth:
+        return None
+    return {
+        "username": registry_auth.get("username"),
+        "password": registry_auth.get("password"),
+        "serveraddress": host,
+    }
+
+
+def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") -> str:
+    # docker-container driver runs BuildKit in its own container/daemon. It does
+    # NOT inherit the host dockerd proxy nor the CLI env, so FROM base-image pulls
+    # need the proxy baked into the BuildKit container env at creation. Use a
+    # distinct builder name per proxy state so a build never reuses a builder that
+    # lacks the proxy it needs.
+    name = "luma-builder-egress" if proxy else "luma-builder"
+    inspect = subprocess.run(
+        [docker, "buildx", "inspect", name],
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=30,
+    )
+    if inspect.returncode != 0:
+        create_cmd = [docker, "buildx", "create", "--name", name, "--driver", "docker-container", "--driver-opt", "network=host"]
+        if proxy:
+            create_cmd += [
+                "--driver-opt", f"env.HTTP_PROXY={proxy}",
+                "--driver-opt", f"env.HTTPS_PROXY={proxy}",
+                "--driver-opt", f"env.NO_PROXY={no_proxy}",
+            ]
+        create_cmd.append("--bootstrap")
+        create = subprocess.run(
+            create_cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=180,
+        )
+        if create.returncode != 0:
+            raise LumaError(f"failed to create buildx builder:\n{create.stdout.strip()}")
+    return name
+
+
+def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from . import gitops
+
+    repo_url = _required(payload, "repoUrl")
+    ref = str(payload.get("ref") or "").strip() or None
+    proxy = str(payload.get("proxy") or "").strip() or None
+    git_token = str(payload.get("gitToken") or "").strip() or None
+    registry_host = _safe_registry_host(_required(payload, "registryHost"))
+    push_host = _safe_registry_host(str(payload.get("pushHost") or "localhost:5000"))
+    repo = _safe_image_repo(_required(payload, "repo"))
+    registry_auth = payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None
+    build_timeout = int(payload.get("buildTimeout") or 1800)
+
+    docker = _docker_binary()
+    if not docker:
+        raise LumaError("docker command not found on build node")
+    if not _docker_buildx_available():
+        raise LumaError("docker buildx is not available on build node")
+
+    with tempfile.TemporaryDirectory(prefix="luma-build-") as workdir:
+        src = Path(workdir) / "src"
+        gitops.clone(repo_url, src, ref=ref, proxy=proxy, token=git_token)
+        sha = gitops.head_commit(src)
+
+        manifest_text = ""
+        for candidate in (".luma.yml", ".luma.yaml"):
+            manifest_path = src / candidate
+            if manifest_path.is_file():
+                manifest_text = manifest_path.read_text(encoding="utf-8")
+                break
+
+        # Build params: repo's .luma.yml build block is the declarative source of
+        # truth; payload values (from CLI flags) act as overrides when provided.
+        build_block: Dict[str, Any] = {}
+        if manifest_text.strip():
+            import yaml
+
+            try:
+                parsed = yaml.safe_load(manifest_text) or {}
+            except yaml.YAMLError as exc:
+                raise LumaError(f"invalid .luma.yml in repository: {exc}") from exc
+            if isinstance(parsed, dict) and isinstance(parsed.get("build"), dict):
+                build_block = parsed["build"]
+        context_rel = str(payload.get("context") or build_block.get("context") or ".").strip() or "."
+        dockerfile_rel = str(payload.get("dockerfile") or build_block.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
+        platform = str(payload.get("platform") or build_block.get("platform") or "linux/amd64").strip() or "linux/amd64"
+
+        context_dir = _safe_repo_subpath(src, context_rel)
+        dockerfile_path = _safe_repo_subpath(src, dockerfile_rel)
+        if not dockerfile_path.is_file():
+            raise LumaError(f"Dockerfile not found in repository: {dockerfile_rel}")
+
+        docker_config = Path(workdir) / "docker-config"
+        _write_docker_auth_config(docker_config, _auth_for_host(registry_auth, push_host))
+
+        tag_sha = f"{push_host}/{repo}:{sha}"
+        tag_latest = f"{push_host}/{repo}:latest"
+        env = dict(os.environ)
+        env["DOCKER_CONFIG"] = str(docker_config)
+        # cn/home build nodes reach the internet through the egress proxy. The
+        # proxy must reach three places: the buildx CLI + FROM pulls (env), the
+        # RUN steps inside the build (--build-arg; BuildKit does not inherit the
+        # CLI/daemon proxy), and the BuildKit container itself (set at builder
+        # creation in _ensure_buildx_builder). Keep the in-cluster registry and
+        # localhost out of the proxy so --push stays on the internal network.
+        no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
+        proxy_build_args: list[str] = []
+        if proxy:
+            env["HTTP_PROXY"] = proxy
+            env["HTTPS_PROXY"] = proxy
+            env["NO_PROXY"] = no_proxy
+            proxy_build_args = [
+                "--build-arg", f"HTTP_PROXY={proxy}",
+                "--build-arg", f"HTTPS_PROXY={proxy}",
+                "--build-arg", f"NO_PROXY={no_proxy}",
+            ]
+        builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy)
+        command = [
+            docker, "buildx", "build",
+            "--builder", builder,
+            "--platform", platform,
+            *proxy_build_args,
+            "--push",
+            "-t", tag_sha,
+            "-t", tag_latest,
+            "-f", str(dockerfile_path),
+            str(context_dir),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                env=env,
+                timeout=build_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise LumaError(f"docker buildx build timed out after {build_timeout}s") from exc
+        if result.returncode != 0:
+            raise LumaError(f"docker buildx build failed:\n{(result.stdout or '').strip()}")
+
+    image = f"{registry_host}/{repo}:{sha}"
+    return {
+        "image": image,
+        "sha": sha,
+        "manifest": manifest_text,
+        "message": f"Built and pushed {image}",
+    }
+
+
+def configure_insecure_registry(*, registry: str) -> Dict[str, Any]:
+    os_value = node_agent_os()
+    if os_value != "linux":
+        raise LumaError(f"insecure-registries configuration is not supported on {os_value}")
+    host = _safe_registry_host(registry)
+    script = (
+        "set -euo pipefail; "
+        "mkdir -p /etc/docker; "
+        'f=/etc/docker/daemon.json; '
+        '[ -f "$f" ] || echo "{}" > "$f"; '
+        f"python3 - \"$f\" {shlex.quote(host)} <<'PY'\n"
+        "import json, sys\n"
+        "path, host = sys.argv[1], sys.argv[2]\n"
+        "try:\n"
+        "    data = json.load(open(path))\n"
+        "except Exception:\n"
+        "    data = {}\n"
+        "if not isinstance(data, dict):\n"
+        "    data = {}\n"
+        "regs = data.get('insecure-registries')\n"
+        "if not isinstance(regs, list):\n"
+        "    regs = []\n"
+        "if host not in regs:\n"
+        "    regs.append(host)\n"
+        "data['insecure-registries'] = regs\n"
+        "open(path, 'w').write(json.dumps(data, indent=2))\n"
+        "PY\n"
+        "systemctl restart docker"
+    )
+    LocalExecutor().sudo(script)
+    return {"registry": host, "message": f"insecure-registry configured: {host}"}
 
 
 def _docker_image_repository(image: str) -> str:

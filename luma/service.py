@@ -15,6 +15,7 @@ VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
 VALID_ENGINES = {"nomad"}
 TCP_RELAY_RESERVED_PORTS = {80, 443}
 SERVICE_FIELDS = {
+    "build",
     "command",
     "constraints",
     "dns",
@@ -65,6 +66,15 @@ class ServiceVolumeStorageSpec:
 
 
 @dataclass(frozen=True)
+class ServiceBuildSpec:
+    context: str = "."
+    dockerfile: str = "Dockerfile"
+    platform: str = "linux/amd64"
+    repo: Optional[str] = None
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ServiceSpec:
     source: Path
     name: str
@@ -73,6 +83,7 @@ class ServiceSpec:
     node: Optional[str] = None
     node_id: Optional[str] = None
     node_platform: Optional[str] = None
+    build: Optional[ServiceBuildSpec] = None
     public: bool = False
     exposure: str = "none"
     domain: Optional[str] = None
@@ -143,8 +154,12 @@ def load_service(path: Path) -> ServiceSpec:
     region = raw.get("region")
     if not isinstance(name, str) or not name.strip():
         raise LumaError("service manifest requires string field: name")
-    if not isinstance(image, str) or not image.strip():
-        raise LumaError("service manifest requires string field: image")
+    build = _load_service_build(raw.get("build"), slugify(name))
+    has_image = isinstance(image, str) and bool(image.strip())
+    if not has_image and build is None:
+        raise LumaError("service manifest requires string field: image (or a build block)")
+    if not has_image:
+        image = ""
     if region not in VALID_REGIONS:
         raise LumaError(f"service region must be one of {sorted(VALID_REGIONS)}")
     node = raw.get("node")
@@ -238,6 +253,7 @@ def load_service(path: Path) -> ServiceSpec:
         node=node.strip() if isinstance(node, str) else None,
         node_id=None,
         node_platform=None,
+        build=build,
         public=public,
         exposure=exposure,
         domain=domain.strip() if isinstance(domain, str) else None,
@@ -261,6 +277,28 @@ def load_service(path: Path) -> ServiceSpec:
         tcp=tcp,
         proxy=bool(raw.get("proxy", False)),
         engine=engine,
+    )
+
+
+def _load_service_build(raw: Any, slug: str) -> Optional["ServiceBuildSpec"]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise LumaError("build must be a mapping")
+    context = str(raw.get("context") or ".").strip() or "."
+    dockerfile = str(raw.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
+    platform = str(raw.get("platform") or "linux/amd64").strip() or "linux/amd64"
+    repo_value = raw.get("repo")
+    repo = str(repo_value).strip() if repo_value is not None and str(repo_value).strip() else None
+    unknown = sorted(k for k in raw if k not in {"context", "dockerfile", "platform", "repo"})
+    if unknown:
+        raise LumaError(f"unsupported build field(s): {', '.join(unknown)}")
+    return ServiceBuildSpec(
+        context=context,
+        dockerfile=dockerfile,
+        platform=platform,
+        repo=repo,
+        raw=dict(raw),
     )
 
 

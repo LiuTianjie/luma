@@ -1,6 +1,6 @@
 ---
 name: luma-deployment-yaml
-description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, region/exposure choices, the optional engine field, routing domains to workloads, storageClass volumes, manager-managed storage, private registry credentials, service removal, rollback/version history, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
+description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, region/exposure choices, the optional engine field, the build block / luma import (build from GitHub source), luma registry serve (in-cluster registry), routing domains to workloads, storageClass volumes, manager-managed storage, private registry credentials, service removal, rollback/version history, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
 ---
 
 # Luma Deployment YAML
@@ -60,6 +60,45 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 - `healthcheck` is passed to the running container's health check. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
 - `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
 - Single-service `storage` can map named volumes from `volumes` to manager storage classes.
+- `image` is optional when a `build` block is present. `build` is for source-to-image builds via `luma import`, not `luma deploy`. Subfields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`). A manifest must have either `image` or `build`.
+
+## Build From GitHub Source
+
+`luma deploy` only deploys prebuilt images. `luma import` adds a build step: it clones a GitHub repo on a build node, builds the repo's Dockerfile, pushes to an in-cluster registry, then deploys. Use it when the user wants source-to-deploy from a GitHub repo without external CI.
+
+Prerequisites (one-time):
+
+- A Luma node with `docker buildx` (the agent auto-advertises the `docker-build` capability). Cross-arch builds also need `qemu`/`binfmt`.
+- An in-cluster registry started with `luma registry serve --node <build-node>`. This deploys `registry:2` (fixed port 5000, persistent volume, Tailscale-internal, `exposure: none`) and configures `insecure-registries` on every non-manager ready Linux node so any node can pull over the Tailscale network. The manager is skipped (restarting its Docker would kill Control); configure the manager's daemon out-of-band if it also runs pulled workloads.
+- For private repos: `luma secret set GITHUB_TOKEN <token>`. Public repos need nothing.
+
+The repo must contain a Dockerfile and a `.luma.yml` (a normal service manifest using a `build` block instead of `image`):
+
+```yaml
+name: myapp
+region: cn
+exposure: cn-edge
+domain: myapp.example.com
+port: 8080
+build:
+  context: .
+  dockerfile: Dockerfile
+  platform: linux/amd64
+```
+
+Import and deploy (streams clone -> build -> push -> deploy):
+
+```bash
+luma import https://github.com/acme/myapp --build-node build-1
+```
+
+CLI flags override `.luma.yml`: `--ref`, `--region`, `--exposure`, `--domain`, `--port`, `--platform`, `--registry-host`. The built image is tagged `<build-node-tailscale-host>:5000/<owner>/<repo>:<git-sha>`. The dashboard's Create application page also has a "Import from GitHub" entry that lists only `docker-build`-capable ready nodes.
+
+The build node's `git clone` reaches GitHub through the manager egress gateway for `cn`/`home` build nodes (resolved automatically, same gateway as image pulls and node join); `global` build nodes go direct. Override with `--proxy <url>` if needed.
+
+Upgrade and rollback: re-running the same `luma import` is the upgrade path. Each build tags the image by git SHA (`...:<git-sha>`) and injects that immutable tag; the Nomad job id is the `.luma.yml` `name`, so same name + new SHA is a rolling update of the same job (identical to `luma deploy`'s same-name-is-update behavior). Because each version pins its own `:<git-sha>` and the registry keeps old images, `luma history <name>` / `luma rollback <name>` reliably revert to a prior image. Changing `name` creates a new app instead of upgrading.
+
+Cross-arch caveat: when the build node is arm64 (e.g. a Mac mini) and target nodes are amd64, the image must be built for `linux/amd64` (the default). Ensure the build node has `qemu`/`binfmt`.
 
 ## Compose And Storage Rules
 

@@ -185,5 +185,75 @@ region: cn
         self.assertEqual(plan["mounts"][0]["endpoint"], "aly.internal:/srv/luma")
 
 
+class BuildBlockTests(unittest.TestCase):
+    def load_service(self, content: str):
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+        try:
+            tmp.write(content)
+            tmp.close()
+            return load_service(Path(tmp.name))
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+    def test_build_block_allows_missing_image(self):
+        service = self.load_service(
+            """
+name: app
+region: cn
+build:
+  context: .
+  dockerfile: Dockerfile
+  platform: linux/arm64
+"""
+        )
+        self.assertEqual(service.image, "")
+        self.assertIsNotNone(service.build)
+        self.assertEqual(service.build.platform, "linux/arm64")
+        self.assertEqual(service.build.dockerfile, "Dockerfile")
+
+    def test_build_block_defaults(self):
+        service = self.load_service(
+            """
+name: app
+region: cn
+build: {}
+"""
+        )
+        self.assertEqual(service.build.context, ".")
+        self.assertEqual(service.build.dockerfile, "Dockerfile")
+        self.assertEqual(service.build.platform, "linux/amd64")
+
+    def test_missing_image_and_build_rejected(self):
+        with self.assertRaisesRegex(LumaError, "requires string field: image"):
+            self.load_service(
+                """
+name: app
+region: cn
+"""
+            )
+
+    def test_build_block_rejects_unknown_field(self):
+        with self.assertRaisesRegex(LumaError, "unsupported build field"):
+            self.load_service(
+                """
+name: app
+region: cn
+build:
+  bogus: 1
+"""
+            )
+
+    def test_image_still_works_without_build(self):
+        service = self.load_service(
+            """
+name: app
+image: ghcr.io/acme/app:latest
+region: cn
+"""
+        )
+        self.assertEqual(service.image, "ghcr.io/acme/app:latest")
+        self.assertIsNone(service.build)
+
+
 if __name__ == "__main__":
     unittest.main()

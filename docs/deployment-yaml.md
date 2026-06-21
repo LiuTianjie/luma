@@ -34,7 +34,8 @@ luma deploy status.yaml
 | 字段 | 必填 | 类型 | 说明 |
 | --- | --- | --- | --- |
 | `name` | 是 | string | 服务名。Luma 会转成 slug，用作 Nomad job/group/task 名称。 |
-| `image` | 是 | string | 容器镜像，例如 `ghcr.io/acme/api:1.0.0`。`latest` 或未带 tag 会在部署时解析成 `name@sha256:...` 再部署。 |
+| `image` | 是* | string | 容器镜像，例如 `ghcr.io/acme/api:1.0.0`。`latest` 或未带 tag 会在部署时解析成 `name@sha256:...` 再部署。*提供 `build` 块时可省略，镜像由构建产出。 |
+| `build` | 否 | map | 从源码构建镜像（`luma import`）。子字段：`context`（默认 `.`）、`dockerfile`（默认 `Dockerfile`）、`platform`（默认 `linux/amd64`）。提供 `build` 时 `image` 可省略。见下方「从 GitHub 构建部署」。 |
 | `region` | 是 | `cn` / `global` / `home` | 服务运行区域。 |
 | `engine` | 否 | `nomad` | 该服务的编排后端。当前集群默认是 Nomad，通常不需要填。 |
 | `node` | 否 | string | 指定 Luma 节点名，也就是 `luma node join --name` 的值。用于把服务钉到某台机器；控制面会渲染成 Nomad 的 `${node.unique.name}`（或 `meta.luma_node_name`）约束，仍会同时加 region 约束。 |
@@ -164,6 +165,50 @@ image: ghcr.io/acme/private-api:1.0.0
 常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。Luma 只需要 GHCR 的 registry credential 来拉运行时镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
 
 私有 registry 的镜像拉取和服务运行时 `proxy: true` 是两条路径。`proxy: true` 只给容器里的出站 HTTP/HTTPS 请求注入代理；镜像拉取走 Docker daemon。Docker Hub 风格镜像会优先使用 manifest 里的原始 image；固定节点部署在 registry 网络失败时会配置目标节点 Docker egress proxy 后重试，仍失败才 fallback 到 `defaults.imageMirrors` 配置的镜像源。设置 `defaults.imageMirrors: []` 可以禁用镜像源 fallback。如果 `curl https://<registry>/v2/` 能返回 registry 的 `401`，但 `docker pull` 报 EOF/timeout，优先检查 `docker info` 里的 HTTPProxy/HTTPSProxy/NO_PROXY，并确保私有 registry host 在 Docker daemon 的 `NO_PROXY` 中。
+
+## 从 GitHub 构建部署
+
+默认的 `luma deploy` 只部署已构建好的镜像。`luma import` 多走一步：在集群里的**构建节点**上 `git clone` 一个 GitHub 仓库、按仓库里的 Dockerfile 构建镜像、推送到集群内自托管 registry，再走正常部署链路。适合「源码到上线」的一条龙，不依赖外部 CI。
+
+前提（一次性）：
+
+1. 至少一个节点装好 `docker buildx`（节点 agent 会自动 advertise `docker-build` 能力）。
+2. 用 `luma registry serve --node <build-node>` 起一个集群内 registry（详见运维文档的接入 SOP）。
+3. 私有仓库需先 `luma secret set GITHUB_TOKEN <token>`；公开仓库不需要。
+
+仓库根目录放一个 `.luma.yml`，就是普通的 service manifest，只是用 `build` 块代替 `image`：
+
+```yaml
+name: myapp
+region: cn
+exposure: cn-edge
+domain: myapp.example.com
+port: 8080
+build:
+  context: .
+  dockerfile: Dockerfile
+  platform: linux/amd64   # 默认值；构建节点是 arm64 而目标节点是 amd64 时尤其重要
+env:
+  NODE_ENV: production
+```
+
+部署：
+
+```bash
+luma import https://github.com/acme/myapp --build-node build-1
+```
+
+CLI 会流式回传 clone → build → push → deploy 每一步。`--region` / `--exposure` / `--domain` / `--port` / `--platform` 可在命令行覆盖 `.luma.yml` 里的对应字段。构建出的镜像 tag 形如 `<build-node-tailscale-host>:5000/acme/myapp:<git-sha>`，其它区域的节点经 Tailscale 内网拉取（`luma registry serve` 已为各节点配好 `insecure-registries`）。
+
+dashboard 的「创建应用」页顶部也有「从 GitHub 导入」入口，填仓库地址、选构建节点即可，进度实时显示。
+
+`build` 块字段：
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `context` | `.` | Docker 构建上下文（仓库内相对路径）。 |
+| `dockerfile` | `Dockerfile` | Dockerfile 路径（仓库内相对路径）。 |
+| `platform` | `linux/amd64` | `docker buildx build --platform` 的目标平台。 |
 
 ### 海外 worker
 

@@ -5,6 +5,7 @@ import { ComposeDeployForm } from "./ComposeDeployForm";
 import { deployStream, previewCompose, previewService } from "./deployApi";
 import { DeploySummary } from "./DeploySummary";
 import { DeployTemplates } from "./DeployTemplates";
+import { GithubImportEntryCard, GithubImportPanel } from "./GithubImportPanel";
 import { DEPLOY_TEMPLATES } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeployTemplate, ServiceManifestDraft } from "./types";
 import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion } from "./options";
@@ -291,6 +292,7 @@ export function DeployWorkspace({
   const [steps, setSteps] = useState<DeployStep[]>([]);
   const [status, setStatus] = useState<"idle" | "previewing" | "deploying">("idle");
   const [runtimeErrors, setRuntimeErrors] = useState<string[]>([]);
+  const [importView, setImportView] = useState(false);
   const nodes = payload?.nodes || [];
   const storageClasses = payload?.storage?.storageClasses || [];
 
@@ -436,6 +438,16 @@ export function DeployWorkspace({
 
   return (
     <section className={`deploy-workspace-panel ${modalTitle ? "modal-deploy-workspace" : ""}`} id="section-6">
+      {importView ? (
+        <GithubImportPanel
+          lang={lang}
+          token={token}
+          nodes={nodes}
+          onBack={showTemplates ? () => setImportView(false) : undefined}
+          onRefresh={onRefresh}
+        />
+      ) : (
+      <>
       {!templateLanding ? <div className="panel-heading deploy-heading">
         <div>
           <p className="eyebrow">{templateLanding ? (lang === "zh" ? "模板库" : "Template gallery") : (lang === "zh" ? "配置应用" : "Configure application")}</p>
@@ -466,7 +478,10 @@ export function DeployWorkspace({
       </div> : null}
       {modalContext}
       {showTemplates && templateLanding ? (
-        <DeployTemplates lang={lang} mode={mode} templates={DEPLOY_TEMPLATES} activeId={activeTemplateId} onModeChange={changeMode} onSelect={selectTemplate} />
+        <>
+          <GithubImportEntryCard lang={lang} onOpen={() => setImportView(true)} />
+          <DeployTemplates lang={lang} mode={mode} templates={DEPLOY_TEMPLATES} activeId={activeTemplateId} onModeChange={changeMode} onSelect={selectTemplate} />
+        </>
       ) : null}
       {templateLanding ? (
         <div className="template-gallery-footer">
@@ -540,6 +555,8 @@ export function DeployWorkspace({
             </button>
           </div>
         </>
+      )}
+      </>
       )}
     </section>
   );
