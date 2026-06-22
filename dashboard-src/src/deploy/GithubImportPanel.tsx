@@ -105,7 +105,7 @@ export function GithubImportPanel({
   };
 
   return (
-    <section className="deploy-workspace-panel">
+    <>
       <div className="panel-heading deploy-heading">
         <div>
           <p className="eyebrow">{zh ? "从 GitHub 导入" : "Import from GitHub"}</p>
@@ -261,7 +261,7 @@ export function GithubImportPanel({
           {status === "running" ? (zh ? "构建并部署中..." : "Building and deploying...") : (zh ? "构建并部署" : "Build and deploy")}
         </button>
       </div>
-    </section>
+    </>
   );
 }
 
