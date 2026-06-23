@@ -5292,6 +5292,70 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_dashboard_single_service_uses_task_desired_when_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad"}}),
+                    encoding="utf-8",
+                )
+                nomad_services = [
+                    {
+                        "name": "codex-gitea",
+                        "jobId": "codex-gitea",
+                        "status": "running",
+                        "running": 0,
+                        "region": "home",
+                        "compose": False,
+                        "tasks": [
+                            {
+                                "name": "codex-gitea",
+                                "stack": "codex-gitea",
+                                "fullName": "codex-gitea",
+                                "status": "pending",
+                                "region": "home",
+                                "running": 0,
+                                "desired": 1,
+                                "pending": 1,
+                                "nodes": ["lab"],
+                            },
+                            {
+                                "name": "codex-gitea-sidecar",
+                                "stack": "codex-gitea",
+                                "fullName": "codex-gitea-sidecar",
+                                "status": "running",
+                                "region": "home",
+                                "running": 1,
+                                "desired": 1,
+                                "pending": 0,
+                                "nodes": ["lab"],
+                            }
+                        ],
+                    }
+                ]
+                with patch(
+                    "luma.control.server.nomad_status_summary",
+                    return_value={"available": True, "leader": "127.0.0.1:4647", "nodes": []},
+                ), patch("luma.control.server.nomad_services_summary", return_value=nomad_services), patch(
+                    "luma.control.server._service_stats_by_name", return_value={}
+                ):
+                    result = handle_dashboard(state["deployToken"])
+
+                service = result["services"][0]
+                self.assertEqual(service["fullName"], "codex-gitea")
+                self.assertEqual(service["running"], 0)
+                self.assertEqual(service["desired"], 1)
+                self.assertEqual(service["pending"], 1)
+                self.assertEqual(service["nodes"], ["lab"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_dashboard_expands_compose_job_services_with_manifest_exposure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -7237,6 +7301,17 @@ class ControlApiTests(unittest.TestCase):
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 state["nodes"] = {
+                    "manager-1": {
+                        "region": "cn",
+                        "status": "manager",
+                        "tailscaleIP": "100.64.0.1",
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["docker-image", "docker-egress-proxy"],
+                        },
+                        "labels": {"region": "cn", "luma.node.name": "manager-1", "role.egress": "true"},
+                    },
                     "worker-1": {
                         "region": "cn",
                         "status": "labeled",
@@ -7273,7 +7348,7 @@ class ControlApiTests(unittest.TestCase):
                 ]
                 digest = "ghcr.io/acme/api@sha256:abc123"
                 with patch("luma.control.server.docker_request", return_value=docker_nodes), patch(
-                    "luma.control.server._require_egress_gateway_running"
+                    "luma.control.server._running_egress_gateway_node_name", return_value="manager-1"
                 ), patch(
                     "luma.control.server._run_node_agent_task",
                     side_effect=[
@@ -7287,6 +7362,7 @@ class ControlApiTests(unittest.TestCase):
                         {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 self.assertEqual([call.args[2] for call in agent.call_args_list], ["resolve-docker-image", "configure-docker-egress-proxy", "resolve-docker-image"])
+                self.assertEqual(agent.call_args_list[1].args[3]["proxy"], "http://100.64.0.1:7890")
                 self.assertEqual(result["image"]["deployed"], digest)
                 stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
                 self.assertIn(f"\"image\": \"{digest}\"", stack)
@@ -7302,6 +7378,17 @@ class ControlApiTests(unittest.TestCase):
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 state["nodes"] = {
+                    "manager-1": {
+                        "region": "cn",
+                        "status": "manager",
+                        "tailscaleIP": "100.64.0.1",
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["docker-image", "docker-egress-proxy"],
+                        },
+                        "labels": {"region": "cn", "luma.node.name": "manager-1", "role.egress": "true"},
+                    },
                     "worker-1": {
                         "region": "cn",
                         "status": "labeled",
@@ -7338,8 +7425,8 @@ class ControlApiTests(unittest.TestCase):
                 ]
                 mirror_digest = "mirror.local/nginx@sha256:def456"
                 with patch("luma.control.server.docker_request", return_value=docker_nodes), patch(
-                    "luma.control.server._require_egress_gateway_running"
-                ) as require_egress, patch(
+                    "luma.control.server._running_egress_gateway_node_name", return_value="manager-1"
+                ) as running_egress, patch(
                     "luma.control.server._run_node_agent_task",
                     side_effect=[
                         LumaError("target node Docker pull failed for nginx:alpine: failed to do request: EOF"),
@@ -7356,11 +7443,12 @@ class ControlApiTests(unittest.TestCase):
                     [call.args[2] for call in agent.call_args_list],
                     ["resolve-docker-image", "configure-docker-egress-proxy", "resolve-docker-image", "resolve-docker-image"],
                 )
+                self.assertEqual(agent.call_args_list[1].args[3]["proxy"], "http://100.64.0.1:7890")
                 self.assertEqual(
                     [call.args[3]["image"] for call in agent.call_args_list if call.args[2] == "resolve-docker-image"],
                     ["nginx:alpine", "nginx:alpine", "mirror.local/nginx:alpine"],
                 )
-                require_egress.assert_called_once()
+                self.assertGreaterEqual(running_egress.call_count, 1)
                 self.assertTrue(result["image"]["fallback"])
                 self.assertEqual(result["image"]["selected"], "mirror.local/nginx:alpine")
                 self.assertEqual(result["image"]["deployed"], mirror_digest)
@@ -7905,6 +7993,50 @@ class ControlApiTests(unittest.TestCase):
         self.assertTrue(image_pull_requires_egress("ghcr.io/acme/api:latest"))
         self.assertTrue(image_pull_requires_egress("nginx:alpine"))
         self.assertFalse(image_pull_requires_egress("docker.1panel.live/library/nginx:alpine"))
+
+    def test_target_image_pull_proxy_uses_running_egress_allocation_node(self):
+        from luma.control.server import _target_image_pull_proxy_url
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(Path(tmp) / "luma.yaml"))
+            try:
+                Path(tmp, "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}),
+                    encoding="utf-8",
+                )
+                state = {
+                    "nodes": {
+                        "aaa-stale-egress": {
+                            "tailscaleIP": "100.64.0.99",
+                            "labels": {"role.egress": "true"},
+                        },
+                        "manager-1": {
+                            "nodeId": "egress-node-id",
+                            "tailscaleIP": "100.64.0.1",
+                        },
+                        "worker-1": {
+                            "nodeId": "worker-node-id",
+                            "tailscaleIP": "100.64.0.10",
+                        },
+                    }
+                }
+
+                def request(_client, method, path, body=None):
+                    self.assertEqual((method, path), ("GET", "/v1/job/egress/allocations"))
+                    return [
+                        {
+                            "ClientStatus": "running",
+                            "DesiredStatus": "run",
+                            "NodeID": "egress-node-id",
+                            "NodeName": "nomad-egress-host",
+                        }
+                    ]
+
+                with patch("luma.control.server.NomadApi.request", request):
+                    self.assertEqual(_target_image_pull_proxy_url(state, "worker-1"), "http://100.64.0.1:7890")
+                    self.assertEqual(_target_image_pull_proxy_url(state, "manager-1"), "http://127.0.0.1:7890")
+            finally:
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_image_pull_egress_configures_daemon_proxy_through_node_agent(self):
         state = {

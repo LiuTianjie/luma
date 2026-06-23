@@ -3683,7 +3683,11 @@ def _merge_no_proxy(*values: str) -> str:
     return ",".join(merged)
 
 
-def _require_egress_gateway_running(state: Dict[str, Any]) -> None:
+def _require_egress_gateway_running(state: Dict[str, Any]) -> str:
+    return _running_egress_gateway_node_name(state)
+
+
+def _running_egress_gateway_node_name(state: Dict[str, Any]) -> str:
     try:
         config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
         config = load_config(config_path)
@@ -3691,8 +3695,20 @@ def _require_egress_gateway_running(state: Dict[str, Any]) -> None:
         allocations = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or "")).request("GET", "/v1/job/egress/allocations")
     except LumaError as exc:
         raise LumaError("image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager") from exc
-    if not isinstance(allocations, list) or not any(_nomad_allocation_is_running(item) for item in allocations):
+    if not isinstance(allocations, list):
         raise LumaError("image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager")
+    for allocation in allocations:
+        if not _nomad_allocation_is_running(allocation):
+            continue
+        node_name = str(allocation.get("NodeName") or allocation.get("node_name") or "").strip()
+        node_id = str(allocation.get("NodeID") or allocation.get("node_id") or "").strip()
+        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id=node_id)
+        if entry:
+            return entry[0]
+        if node_name:
+            return node_name
+    raise LumaError("image pull egress requires a running Nomad egress job; run `luma egress setup` on the manager")
 
 
 def _nomad_allocation_is_running(allocation: Any) -> bool:
@@ -4321,7 +4337,12 @@ def _dashboard_service_from_nomad_job(
     edge = _nomad_edge_route_from_task(svc)
     domain = str(config.get("domain") or route.get("domain") or edge.get("domain") or "")
     exposure = _dashboard_exposure(config, route, edge, region=str(svc.get("region") or ""))
-    running = int(svc.get("running") or 0)
+    task_rollup = _dashboard_job_task_rollup(svc)
+    running = task_rollup["running"] if task_rollup else int(svc.get("running") or 0)
+    desired = task_rollup["desired"] if task_rollup else int(svc.get("desired") or running)
+    pending = task_rollup["pending"] if task_rollup else int(svc.get("pending") or 0)
+    failed = task_rollup["failed"] if task_rollup else int(svc.get("failed") or 0)
+    nodes = task_rollup["nodes"] if task_rollup else [str(node) for node in svc.get("nodes") or [] if node]
     route_id = str(route.get("id") or config.get("routeId") or "")
     item: Dict[str, Any] = {
         "name": name,
@@ -4335,10 +4356,10 @@ def _dashboard_service_from_nomad_job(
         "upstreams": route.get("upstreams") if isinstance(route.get("upstreams"), list) else [],
         "targetPort": str(config.get("targetPort") or _route_file_target_port(route) or ""),
         "running": running,
-        "desired": int(svc.get("desired") or running),
-        "failed": int(svc.get("failed") or 0),
-        "pending": int(svc.get("pending") or 0),
-        "nodes": [str(node) for node in svc.get("nodes") or [] if node],
+        "desired": desired,
+        "failed": failed,
+        "pending": pending,
+        "nodes": nodes,
         "tasks": svc.get("tasks") if isinstance(svc.get("tasks"), list) else [],
         "storage": svc.get("storage") if isinstance(svc.get("storage"), list) else [],
         "resources": svc.get("resources") if isinstance(svc.get("resources"), dict) else {},
@@ -4346,6 +4367,32 @@ def _dashboard_service_from_nomad_job(
     if route:
         item["_routeFile"] = route
     return item
+
+
+def _dashboard_job_task_rollup(svc: Dict[str, Any]) -> Dict[str, Any] | None:
+    tasks = [task for task in svc.get("tasks") or [] if isinstance(task, dict)]
+    if not tasks:
+        return None
+    if len(tasks) == 1:
+        rollup_tasks = tasks
+    else:
+        primary_name = str(svc.get("jobId") or svc.get("name") or "")
+        rollup_tasks = [task for task in tasks if str(task.get("name") or "") == primary_name] or tasks[:1]
+    nodes = sorted({str(node) for task in tasks for node in task.get("nodes") or [] if node})
+    if not nodes:
+        nodes = sorted({
+            str(row.get("node") or "")
+            for task in tasks
+            for row in (task.get("tasks") if isinstance(task.get("tasks"), list) else [])
+            if isinstance(row, dict) and row.get("node")
+        })
+    return {
+        "running": sum(int(task.get("running") or 0) for task in rollup_tasks),
+        "desired": sum(int(task.get("desired") or 0) for task in rollup_tasks),
+        "pending": sum(int(task.get("pending") or 0) for task in rollup_tasks),
+        "failed": sum(int(task.get("failed") or 0) for task in rollup_tasks),
+        "nodes": nodes,
+    }
 
 
 def _dashboard_service_from_nomad_task(
@@ -5104,16 +5151,52 @@ def _target_image_pull_proxy_applicable(state: Dict[str, Any], node_name: str, i
         return False
     lowered = str(error).lower()
     markers = ("failed to do request", "eof", "timeout", "connection reset", "cannot reach the registry")
-    return any(marker in lowered for marker in markers)
+    if not any(marker in lowered for marker in markers):
+        return False
+    return bool(_target_image_pull_proxy_url(state, node_name))
+
+
+def _proxy_url_is_loopback(proxy_url: str) -> bool:
+    host = (urllib.parse.urlparse(str(proxy_url or "")).hostname or "").strip().lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _canonical_node_name(state: Dict[str, Any], node_name: str) -> str:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    entry = _node_record_entry_for_name_or_id(nodes, node_name)
+    return entry[0] if entry else str(node_name or "").strip()
+
+
+def _target_image_pull_proxy_url(state: Dict[str, Any], node_name: str, *, gateway_node: str = "") -> str:
+    if not _proxy_url_is_loopback(EGRESS_PROXY_URL):
+        return EGRESS_PROXY_URL
+    gateway = str(gateway_node or "").strip() or _running_egress_gateway_node_name(state)
+    if gateway and _canonical_node_name(state, node_name) == _canonical_node_name(state, gateway):
+        return EGRESS_PROXY_URL
+    return _egress_gateway_proxy_url(state, gateway_node=gateway)
+
+
+def _egress_gateway_proxy_url(state: Dict[str, Any], *, gateway_node: str = "") -> str:
+    name = str(gateway_node or "").strip() or _running_egress_gateway_node_name(state)
+    try:
+        host = _nomad_route_host_for_node(state, name)
+    except LumaError:
+        return ""
+    if host:
+        return f"http://{host}:7890"
+    return ""
 
 
 def _configure_target_image_pull_proxy(state: Dict[str, Any], node_name: str, image: str) -> None:
-    _require_egress_gateway_running(state)
+    gateway_node = _require_egress_gateway_running(state)
+    proxy = _target_image_pull_proxy_url(state, node_name, gateway_node=gateway_node)
+    if not proxy:
+        raise LumaError(f"image pull egress is running, but no reachable egress proxy address was found for {node_name}")
     _run_node_agent_task(
         state,
         node_name,
         "configure-docker-egress-proxy",
-        {"proxy": EGRESS_PROXY_URL, "noProxy": EGRESS_NO_PROXY},
+        {"proxy": proxy, "noProxy": EGRESS_NO_PROXY},
         timeout=180,
         required_capability="docker-egress-proxy",
     )
