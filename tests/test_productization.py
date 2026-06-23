@@ -4553,7 +4553,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_application_restart_force_updates_business_stack(self):
+    def test_application_restart_recreates_business_stack_allocations_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
             try:
@@ -4571,10 +4571,31 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.NomadApi", return_value=api):
                     result = handle_application_restart(state["deployToken"], {"stack": "myapp"})
                 self.assertEqual(result["stack"], "myapp")
+                self.assertEqual(result["mode"], "recreate")
                 self.assertEqual(len(result["restarted"]), 2)
                 api.request.assert_any_call("GET", "/v1/job/myapp/allocations")
-                api.request.assert_any_call("POST", "/v1/client/allocation/alloc-api/restart", {"TaskName": "api"})
-                api.request.assert_any_call("POST", "/v1/client/allocation/alloc-worker/restart", {"TaskName": "worker"})
+                api.request.assert_any_call("POST", "/v1/allocation/alloc-api/stop", None)
+                api.request.assert_any_call("POST", "/v1/allocation/alloc-worker/stop", None)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_restart_can_restart_single_task_in_place(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                api = Mock()
+                api.request.side_effect = [
+                    [
+                        {"ID": "alloc-app", "ClientStatus": "running", "TaskStates": {"api": {}, "worker": {}}},
+                    ],
+                    {},
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api):
+                    result = handle_application_restart(state["deployToken"], {"stack": "myapp", "service": "api"})
+                self.assertEqual(result["mode"], "task")
+                self.assertEqual(result["restarted"], [{"allocId": "alloc-app", "task": "api", "mode": "task"}])
+                api.request.assert_any_call("POST", "/v1/client/allocation/alloc-app/restart", {"TaskName": "api"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

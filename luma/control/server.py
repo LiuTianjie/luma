@@ -2029,6 +2029,7 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
     _apply_state_secrets(state)
     stack = str(body.get("stack") or "").strip()
     service_name = str(body.get("service") or "").strip()
+    mode = _application_restart_mode(body.get("mode"), service_name=service_name)
     if not stack:
         raise LumaError("stack is required")
     if _is_system_stack(stack):
@@ -2049,11 +2050,17 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         if not alloc_id:
             continue
         task_states = alloc.get("TaskStates") if isinstance(alloc.get("TaskStates"), dict) else {}
+        if mode == "recreate":
+            if service_name and service_name not in task_states:
+                continue
+            api.request("POST", f"/v1/allocation/{urllib.parse.quote(alloc_id, safe='')}/stop", None)
+            restarted.append({"allocId": alloc_id, "task": service_name or "*", "mode": mode})
+            continue
         task_names = [service_name] if service_name else [str(name) for name in task_states] or [""]
         for task_name in task_names:
             payload = {"TaskName": task_name} if task_name else {}
             api.request("POST", f"/v1/client/allocation/{urllib.parse.quote(alloc_id, safe='')}/restart", payload)
-            restarted.append({"allocId": alloc_id, "task": task_name or "*"})
+            restarted.append({"allocId": alloc_id, "task": task_name or "*", "mode": mode})
     if not restarted:
         suffix = f"/{service_name}" if service_name else ""
         raise LumaError(f"application allocation not found: {stack}{suffix}")
@@ -2061,8 +2068,20 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         "clusterId": state["clusterId"],
         "stack": stack,
         "service": service_name,
+        "mode": mode,
         "restarted": restarted,
     }
+
+
+def _application_restart_mode(value: Any, *, service_name: str = "") -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "task" if service_name else "recreate"
+    if raw in {"recreate", "reschedule", "replace", "allocation", "alloc"}:
+        return "recreate"
+    if raw in {"task", "restart", "in-place", "inplace"}:
+        return "task"
+    raise LumaError("restart mode must be one of: recreate, task")
 
 
 def handle_certificate_retry(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
