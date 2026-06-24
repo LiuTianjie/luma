@@ -187,6 +187,31 @@ class ComposeRenderTests(unittest.TestCase):
         self.assertEqual(mysql["Resources"]["MemoryMB"], 256)        # reservation
         self.assertEqual(mysql["Resources"]["MemoryMaxMB"], 512)     # limit
 
+    def test_stateless_compose_blue_green_uses_dynamic_backend_ports(self):
+        dep = write_deployment(
+            """
+name: nextcloud
+compose: docker-compose.yml
+region: home
+services:
+  nextcloud:
+    exposure: tailscale-relay
+    domain: next.example.com
+    port: 80
+    publishPort: 8080
+""",
+            """
+services:
+  nextcloud:
+    image: nextcloud:apache
+""",
+        )
+        job = render_compose_job(cfg(), dep, as_json=False)["Job"]
+        network = job["TaskGroups"][0]["Networks"][0]
+        self.assertNotIn("ReservedPorts", network)
+        self.assertEqual(network["DynamicPorts"][0]["Label"], "nextcloud")
+        self.assertEqual(network["DynamicPorts"][0]["To"], 80)
+
     def test_node_pin_and_region_constraints(self):
         job = self.render()
         cons = {(c["LTarget"], c["RTarget"]) for c in job["Constraints"]}

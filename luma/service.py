@@ -39,12 +39,15 @@ SERVICE_FIELDS = {
     "replicas",
     "resources",
     "routePath",
+    "rollout",
     "stackPath",
     "storage",
     "tcp",
     "tunnel",
     "volumes",
 }
+
+VALID_ROLLOUT_MODES = {"blue-green", "replace"}
 
 
 def slugify(value: str) -> str:
@@ -75,6 +78,13 @@ class ServiceBuildSpec:
 
 
 @dataclass(frozen=True)
+class RolloutSpec:
+    mode: str = ""
+    health_path: str = ""
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ServiceSpec:
     source: Path
     name: str
@@ -99,6 +109,7 @@ class ServiceSpec:
     storage: Dict[str, ServiceVolumeStorageSpec] = field(default_factory=dict)
     resources: Dict[str, Any] = field(default_factory=dict)
     healthcheck: Dict[str, Any] = field(default_factory=dict)
+    rollout: RolloutSpec = field(default_factory=RolloutSpec)
     stack_path: Optional[Path] = None
     route_path: Optional[Path] = None
     dns: Dict[str, Any] = field(default_factory=dict)
@@ -129,6 +140,16 @@ class ServiceSpec:
         if self.region == "home":
             return "home-internal-service"
         return "internal-cn-service"
+
+    @property
+    def rollout_mode(self) -> str:
+        if self.rollout.mode:
+            return self.rollout.mode
+        if self.volumes or self.storage:
+            return "replace"
+        if self.exposure in {"cn-edge", "external-edge", "tailscale-relay", "tcp-relay"}:
+            return "blue-green"
+        return "replace"
 
 
 def tcp_relay_publish_port(service: ServiceSpec) -> int:
@@ -226,6 +247,7 @@ def load_service(path: Path) -> ServiceSpec:
     storage = _load_service_storage(raw.get("storage") or {}, volumes)
     resources = raw.get("resources") or {}
     healthcheck = raw.get("healthcheck") or {}
+    rollout = _load_rollout(raw.get("rollout") or {})
     for field_name, value in {
         "constraints": constraints,
         "labels": labels,
@@ -269,6 +291,7 @@ def load_service(path: Path) -> ServiceSpec:
         storage=storage,
         resources=resources,
         healthcheck=healthcheck,
+        rollout=rollout,
         stack_path=Path(stack_path) if stack_path else None,
         route_path=Path(route_path) if route_path else None,
         dns=dns,
@@ -278,6 +301,20 @@ def load_service(path: Path) -> ServiceSpec:
         proxy=bool(raw.get("proxy", False)),
         engine=engine,
     )
+
+
+def _load_rollout(raw: Any) -> RolloutSpec:
+    if raw is None:
+        return RolloutSpec()
+    if not isinstance(raw, dict):
+        raise LumaError("rollout must be a mapping")
+    mode = str(raw.get("mode") or "").strip()
+    if mode and mode not in VALID_ROLLOUT_MODES:
+        raise LumaError(f"rollout.mode must be one of {sorted(VALID_ROLLOUT_MODES)}")
+    health_path = str(raw.get("healthPath") or raw.get("health_path") or "").strip()
+    if health_path and not health_path.startswith("/"):
+        raise LumaError("rollout.healthPath must start with /")
+    return RolloutSpec(mode=mode, health_path=health_path, raw=dict(raw))
 
 
 def _load_service_build(raw: Any, slug: str) -> Optional["ServiceBuildSpec"]:

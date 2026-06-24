@@ -35,7 +35,7 @@ class NomadRenderTests(unittest.TestCase):
         service = self.load(content)
         return render_nomad_job(self.config(), service, as_json=False)["Job"]
 
-    def test_cn_edge_emits_traefik_nomad_tags_and_dynamic_port(self):
+    def test_cn_edge_blue_green_uses_nomad_service_without_traefik_tags(self):
         job = self.render(
             """
 name: app
@@ -57,18 +57,15 @@ replicas: 2
         )
         # dynamic port for edge
         self.assertEqual(group["Networks"][0]["DynamicPorts"][0]["To"], 3000)
-        # traefik nomad-provider service
+        # blue-green routing is handled by Luma route files, not Traefik tags.
         svc = group["Services"][0]
         self.assertEqual(svc["Provider"], "nomad")
-        self.assertIn("traefik.enable=true", svc["Tags"])
-        self.assertIn(
-            "traefik.http.routers.app.rule=Host(`app.example.com`)", svc["Tags"]
-        )
+        self.assertNotIn("Tags", svc)
         # auto_revert is on (the new capability)
         self.assertTrue(job["Update"]["AutoRevert"])
         self.assertEqual(job["Update"]["MaxParallel"], 1)
 
-    def test_cn_edge_publish_port_uses_static_reserved_port(self):
+    def test_cn_edge_publish_port_defaults_to_dynamic_backend_for_blue_green(self):
         job = self.render(
             """
 name: gateway
@@ -82,11 +79,55 @@ publishPort: 8787
         )
         group = job["TaskGroups"][0]
         net = group["Networks"][0]
+        self.assertEqual(net["Mode"], "host")
+        self.assertNotIn("ReservedPorts", net)
+        self.assertEqual(net["DynamicPorts"][0]["To"], 8787)
+        self.assertEqual(group["Tasks"][0]["Config"]["ports"], ["http"])
+
+    def test_cn_edge_publish_port_replace_mode_uses_static_reserved_port(self):
+        job = self.render(
+            """
+name: gateway
+image: ghcr.io/acme/gateway:latest
+region: cn
+exposure: cn-edge
+domain: gateway.example.com
+port: 8787
+publishPort: 8787
+rollout:
+  mode: replace
+"""
+        )
+        group = job["TaskGroups"][0]
+        net = group["Networks"][0]
         self.assertEqual(net["Mode"], "bridge")
         self.assertNotIn("DynamicPorts", net)
         self.assertEqual(net["ReservedPorts"][0]["Value"], 8787)
         self.assertEqual(net["ReservedPorts"][0]["To"], 8787)
         self.assertEqual(group["Tasks"][0]["Config"]["ports"], ["http"])
+
+    def test_public_service_with_volume_defaults_to_replace_mode(self):
+        service = self.load(
+            """
+name: mysql
+image: mysql:8
+region: home
+exposure: tcp-relay
+domain: mysql.example.com
+port: 3306
+publishPort: 3306
+volumes:
+  - data:/var/lib/mysql
+"""
+        )
+        self.assertEqual(service.rollout_mode, "replace")
+        job = render_nomad_job(self.config(), service, as_json=False)["Job"]
+        group = job["TaskGroups"][0]
+        net = group["Networks"][0]
+        self.assertEqual(net["Mode"], "bridge")
+        self.assertNotIn("DynamicPorts", net)
+        self.assertEqual(net["ReservedPorts"][0]["Value"], 3306)
+        self.assertEqual(net["ReservedPorts"][0]["To"], 3306)
 
     def test_secret_placeholder_can_be_kept_for_validation(self):
         service = self.load(
@@ -126,7 +167,7 @@ relay:
         self.assertNotIn("Services", group)
         self.assertNotIn("ports", task["Config"])
 
-    def test_tailscale_relay_publish_port_uses_bridge_mapping(self):
+    def test_tailscale_relay_publish_port_defaults_to_dynamic_backend_for_blue_green(self):
         job = self.render(
             """
 name: lab-panel
@@ -138,6 +179,32 @@ domain: panel.example.com
 port: 8080
 publishPort: 18080
 replicas: 1
+relay:
+  host: 100.64.0.10
+"""
+        )
+        group = job["TaskGroups"][0]
+        task = group["Tasks"][0]
+        port = group["Networks"][0]["DynamicPorts"][0]
+        self.assertEqual(group["Networks"][0]["Mode"], "bridge")
+        self.assertEqual(port["To"], 8080)
+        self.assertEqual(task["Config"]["ports"], ["http"])
+        self.assertNotIn("network_mode", task["Config"])
+
+    def test_tailscale_relay_publish_port_replace_mode_uses_bridge_mapping(self):
+        job = self.render(
+            """
+name: lab-panel
+image: ghcr.io/acme/panel:latest
+region: home
+node: lab
+exposure: tailscale-relay
+domain: panel.example.com
+port: 8080
+publishPort: 18080
+replicas: 1
+rollout:
+  mode: replace
 relay:
   host: 100.64.0.10
 """

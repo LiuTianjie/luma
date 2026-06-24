@@ -51,7 +51,8 @@ luma deploy status.yaml
 | `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动挂上 egress 代理和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
 | `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，用于限制 CPU/内存。支持 `limits` 和 `reservations`。Luma 把 `cpus` 换算成 Nomad CPU MHz，把内存后缀串换算成 Nomad memory MB。 |
 | `healthcheck` | 否 | map | 渲染成 Nomad `check`（脚本/http）。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
-| `publishPort` | 公开服务可用 | integer | 显式启用 Nomad bridge 端口映射，把宿主机 `publishPort` 转到容器 `port`。Linux 节点可用；Mac/OrbStack 节点不要设置，保持 host mode 并让 route 指向真实 `port`。 |
+| `rollout` | 否 | map | 部署更新策略。公开服务默认 `mode: blue-green`：先启动新 revision、健康后切 route、再停旧 revision。可设 `mode: replace` 保留旧的原地替换语义。`healthPath` 可覆盖蓝绿健康探测路径。 |
+| `publishPort` | 公开服务可用 | integer | 对外入口端口。`rollout.mode: blue-green` 时由 Traefik/route 层持有，应用 allocation 使用动态后端端口；`rollout.mode: replace` 时保留旧语义，把宿主机 `publishPort` 映射到容器 `port`。 |
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随实际运行 allocation 所在的 home 节点自动推导。 |
 | `tcp` | tcp-relay 可选 | map | TCP relay 高级上游覆盖。正常情况不需要填写；入口由 `publishPort` / `port` 自动派生。 |
 | `tunnel` | cloudflare-tunnel 可用 | map | Cloudflare Tunnel token env 等设置。 |
@@ -74,8 +75,9 @@ luma deploy status.yaml
 
 - `exposure: cn-edge` 必须配 `region: cn`。
 - `exposure: external-edge` 必须配 `region: global`。
-- `cn-edge` / `external-edge` 默认使用 Nomad 动态端口；如果要保留固定宿主端口，可显式设置 `publishPort`。
+- `cn-edge` / `external-edge` 默认蓝绿发布：Luma 启动 revision job，确认健康后写 Traefik file route 指向新 allocation。`publishPort` 若存在表示入口端口，不会被应用容器直接占用。
 - `exposure: tailscale-relay` 必须配 `region: home`。若未提供 `relay.host`/`relay.url`，控制面会在部署后根据实际 running task 所在节点自动推导上游。
+- `exposure: tailscale-relay` / `tcp-relay` 在蓝绿模式下会把 route 指向新 revision 的动态后端端口；固定公网 TCP 端口仍由 Traefik entrypoint 持有。
 - `exposure: tcp-relay` 的 Traefik TCP entrypoint 由 `publishPort` 或 `port` 自动生成。普通 MySQL 不能可靠使用 SNI 分流，因此当前实现按端口独占转发。
 - 公开服务必须提供 `domain` 和整数 `port`。
 - `public` 已移除；请使用 `exposure`。
@@ -164,7 +166,9 @@ image: ghcr.io/acme/private-api:1.0.0
 
 常见 GitHub 场景：GitHub Actions 把应用镜像推到私有 GHCR，同一个仓库还可以用 GitHub Pages 发布文档或营销页。Luma 只需要 GHCR 的 registry credential 来拉运行时镜像，不需要把 GitHub token 写进 manifest，也不影响 GitHub Pages 的静态站点发布。
 
-私有 registry 的镜像拉取和服务运行时 `proxy: true` 是两条路径。`proxy: true` 只给容器里的出站 HTTP/HTTPS 请求注入代理；镜像拉取走 Docker daemon。Docker Hub 风格镜像会优先使用 manifest 里的原始 image；固定节点部署在 registry 网络失败时会配置目标节点 Docker egress proxy 后重试，仍失败才 fallback 到 `defaults.imageMirrors` 配置的镜像源。设置 `defaults.imageMirrors: []` 可以禁用镜像源 fallback。如果 `curl https://<registry>/v2/` 能返回 registry 的 `401`，但 `docker pull` 报 EOF/timeout，优先检查 `docker info` 里的 HTTPProxy/HTTPSProxy/NO_PROXY，并确保私有 registry host 在 Docker daemon 的 `NO_PROXY` 中。
+私有 registry 的镜像拉取和服务运行时 `proxy: true` 是两条路径。`proxy: true` 只给容器里的出站 HTTP/HTTPS 请求注入代理；镜像拉取走 Docker daemon。默认情况下，带有 `luma registry login` 凭据的私有 registry 走直连：如果目标节点 Docker daemon 已经启用了 egress proxy，Luma 会把该 registry host 自动加入目标节点 Docker `NO_PROXY` 后再拉取。确实需要某个私有 registry 也走 egress proxy 时，把它加入 `LUMA_EGRESS_PULL_REGISTRIES`。
+
+Docker Hub 风格镜像会优先使用 manifest 里的原始 image；固定节点部署在 registry 网络失败时会配置目标节点 Docker egress proxy 后重试，仍失败才 fallback 到 `defaults.imageMirrors` 配置的镜像源。设置 `defaults.imageMirrors: []` 可以禁用镜像源 fallback。如果 `curl https://<registry>/v2/` 能返回 registry 的 `401`，但 `docker pull` 报 EOF/timeout，优先检查 `docker info` 里的 HTTPProxy/HTTPSProxy/NO_PROXY，并确认该 registry host 是否应该直连或加入 `LUMA_EGRESS_PULL_REGISTRIES` 走代理。
 
 ## 从 GitHub 构建部署
 
@@ -394,7 +398,35 @@ replicas: 1
 ```
 
 Luma 会把 DNS 指到公网 edge，自动确保 Traefik 监听 `tcp-3306` entrypoint，并写入 Traefik TCP route。`domain` 用于 DNS；普通 MySQL 连接无法提供 HTTP Host 或可靠起始 SNI，所以同一个发布端口一次只应给一个 TCP 服务使用。
-`publishPort` 是目标 task 节点上的宿主机端口，并会在 Nomad bridge 模式下映射到容器 `port`。如果同一台机器已有本机容器或非 Luma 服务占用 `3306`，请选择其它端口并同步调整客户端连接端口或入口配置。Mac/OrbStack 节点不支持这种映射，需省略 `publishPort` 并使用容器真实监听端口。
+默认蓝绿模式下，`publishPort` 是公网入口端口，应用容器不会直接绑定它；新旧 revision 可同时运行，route 只在新 revision 健康后切换。若显式设置 `rollout.mode: replace`，`publishPort` 会回到旧的宿主机端口映射语义。
+
+### 滚动/蓝绿发布
+
+```yaml
+name: api
+image: ghcr.io/acme/api:1.0.0
+region: cn
+exposure: cn-edge
+domain: api.example.com
+port: 3000
+publishPort: 8443
+healthcheck:
+  test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/healthz"]
+rollout:
+  mode: blue-green
+  healthPath: /healthz
+```
+
+公开服务默认使用 `blue-green`。部署流程是：生成 revision job -> 等 allocation running 和健康探测通过 -> 写入 route 文件切流 -> 公网 probe -> 停止旧 revision。任一步失败都会保留旧 revision。
+
+需要旧式原地替换时：
+
+```yaml
+rollout:
+  mode: replace
+```
+
+Compose sidecar 也支持顶层 `rollout`。无数据卷的 stateless compose 可整组蓝绿；带本地卷、命名卷或数据库的 compose 默认会被蓝绿门禁拦住，请拆分 stateful 服务或显式设置 `rollout.mode: replace`。
 
 ### Cloudflare Tunnel 服务
 

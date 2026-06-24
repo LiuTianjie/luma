@@ -82,7 +82,7 @@ curl -vk https://<registry-host>/v2/
 docker pull <registry-host>/<org>/<image>:<tag>
 ```
 
-If `curl /v2/` returns `401` with `docker-distribution-api-version`, the registry is reachable from that node. If `docker pull` still fails with EOF/timeout before auth, check Docker daemon `HTTPProxy`/`HTTPSProxy` and ensure the private registry host is in daemon `NO_PROXY` on the same node. This is separate from manifest `proxy: true`, which only affects runtime outbound traffic from the container.
+If `curl /v2/` returns `401` with `docker-distribution-api-version`, the registry is reachable from that node. If `docker pull` still fails with EOF/timeout before auth, check Docker daemon `HTTPProxy`/`HTTPSProxy` and `NO_PROXY` on the same node. Private registries with stored Luma credentials default to direct pulls, so Luma should add that registry host to Docker daemon `NO_PROXY` on pinned target nodes. If that registry really must use the egress proxy, add its host to `LUMA_EGRESS_PULL_REGISTRIES` instead. This is separate from manifest `proxy: true`, which only affects runtime outbound traffic from the container.
 
 For services pinned to `home` or ARM nodes, make sure the image has the target platform:
 
@@ -91,6 +91,28 @@ docker buildx imagetools inspect <image>
 ```
 
 Luma validates pulls for the target node platform and deploys the digest returned by that target-platform pull.
+
+## Blue-green deploy does not switch traffic
+
+For public services, Luma defaults to blue-green rollout. The old revision keeps serving until the new revision has a running allocation, the backend endpoint is healthy, and the route file has been switched.
+
+Check the revision job first:
+
+```bash
+nomad job status <service>-r<TIMESTAMP>
+nomad job allocs <service>-r<TIMESTAMP>
+```
+
+If the revision is pending, inspect the evaluation for placement, image pull, platform, or resource errors. If the revision is running but traffic did not switch, check the generated route under `/opt/luma/routes/<service>.yml` and the Luma deploy steps for `Wait for revision health` / `Switch route to revision`.
+
+`publishPort` in blue-green mode is an entrypoint port owned by Traefik, not a port bound directly by the app container. To force the old direct host-port behavior, set:
+
+```yaml
+rollout:
+  mode: replace
+```
+
+Compose stacks with local/named volumes are not blue-greened automatically. Split databases/stateful services into stable deployments or use `rollout.mode: replace` for the compose stack.
 
 ## Fleet update fails
 

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from .config import LumaConfig
 from .errors import LumaError
 from .io import dump_yaml, load_yaml
-from .service import VALID_EXPOSURES, VALID_REGIONS, slugify, tcp_entrypoint_name
+from .service import RolloutSpec, VALID_EXPOSURES, VALID_REGIONS, slugify, tcp_entrypoint_name
 
 
 VALID_STORAGE_PROVIDERS = {"nfs"}
@@ -79,6 +79,7 @@ class ComposeDeploymentSpec:
     storage_classes: Dict[str, StorageClassSpec]
     volumes: Dict[str, ComposeVolumeSpec]
     services: Dict[str, ComposeServiceSpec]
+    rollout: RolloutSpec = field(default_factory=RolloutSpec)
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -128,6 +129,7 @@ def load_compose_deployment(
         if name in storage_classes_loaded
     }
     services = _load_compose_services(sidecar.get("services") or {})
+    rollout = _load_compose_rollout(sidecar.get("rollout") or {})
     warnings = validate_compose_deployment_data(compose, storage_classes_loaded, volumes, services, default_region=str(region))
     return ComposeDeploymentSpec(
         source=path,
@@ -138,8 +140,23 @@ def load_compose_deployment(
         storage_classes=storage_classes_loaded,
         volumes=volumes,
         services=services,
+        rollout=rollout,
         warnings=warnings,
     )
+
+
+def _load_compose_rollout(raw: Any) -> RolloutSpec:
+    if raw is None:
+        return RolloutSpec()
+    if not isinstance(raw, dict):
+        raise LumaError("rollout must be a mapping")
+    mode = str(raw.get("mode") or "").strip()
+    if mode and mode not in {"blue-green", "replace"}:
+        raise LumaError("rollout.mode must be one of ['blue-green', 'replace']")
+    health_path = str(raw.get("healthPath") or raw.get("health_path") or "").strip()
+    if health_path and not health_path.startswith("/"):
+        raise LumaError("rollout.healthPath must start with /")
+    return RolloutSpec(mode=mode, health_path=health_path, raw=dict(raw))
 
 
 def compose_stack_path(config: LumaConfig, deployment: ComposeDeploymentSpec) -> Path:

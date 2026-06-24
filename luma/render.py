@@ -66,6 +66,43 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
     return dump_yaml(route)
 
 
+def render_http_route(config: LumaConfig, service: ServiceSpec) -> str:
+    service_name = service.slug
+    upstream_urls = service.relay.get("urls")
+    if isinstance(upstream_urls, list) and upstream_urls:
+        servers = [{"url": str(url)} for url in upstream_urls]
+    else:
+        upstream_url = service.relay.get("url")
+        if not upstream_url:
+            scheme = service.relay.get("scheme", "http")
+            host = service.relay.get("host") or service.node or f"auto-{service.region}-node"
+            port = service.relay.get("port", service.port)
+            upstream_url = f"{scheme}://{host}:{port}"
+        servers = [{"url": upstream_url}]
+
+    route: Dict[str, Any] = {
+        "http": {
+            "routers": {
+                service_name: {
+                    "rule": f"Host(`{service.domain}`)",
+                    "entryPoints": [config.entrypoint],
+                    "tls": {"certResolver": config.cert_resolver},
+                    "priority": 1000,
+                    "service": service_name,
+                }
+            },
+            "services": {
+                service_name: {
+                    "loadBalancer": {
+                        "servers": servers,
+                    }
+                }
+            },
+        }
+    }
+    return dump_yaml(route)
+
+
 def render_tcp_route(config: LumaConfig, service: ServiceSpec) -> str:
     service_name = service.slug
     publish_port = tcp_relay_publish_port(service)

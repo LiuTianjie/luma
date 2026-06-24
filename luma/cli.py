@@ -2135,7 +2135,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
     rendered = render_nomad_job(config, service, resolve_secrets=False)
     target = stack_path(config, service)
     rendered_route = None
-    if service.exposure == "tailscale-relay":
+    if service.rollout_mode == "blue-green" and service.exposure in {"cn-edge", "external-edge"}:
+        from .render import render_http_route
+
+        rendered_route = render_http_route(config, service)
+    elif service.exposure == "tailscale-relay":
         rendered_route = render_tailscale_route(config, service)
     elif service.exposure == "tcp-relay":
         rendered_route = render_tcp_route(config, service)
@@ -2269,7 +2273,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
         rendered = render_nomad_job(config, service, resolve_secrets=False)
         target = stack_path(config, service)
-        if service.exposure == "tailscale-relay":
+        if service.rollout_mode == "blue-green" and service.exposure in {"cn-edge", "external-edge"}:
+            from .render import render_http_route
+
+            rendered_route = render_http_route(config, service)
+        elif service.exposure == "tailscale-relay":
             rendered_route = render_tailscale_route(config, service)
         elif service.exposure == "tcp-relay":
             rendered_route = render_tcp_route(config, service)

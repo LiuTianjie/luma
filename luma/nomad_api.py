@@ -283,7 +283,7 @@ def _reserved_ports_by_label(group: Dict[str, Any]) -> Dict[str, Dict[str, str]]
     for network in networks:
         if not isinstance(network, dict):
             continue
-        for raw in network.get("ReservedPorts") or []:
+        for raw in [*(network.get("ReservedPorts") or []), *(network.get("DynamicPorts") or [])]:
             if not isinstance(raw, dict):
                 continue
             label = str(raw.get("Label") or "")

@@ -7,12 +7,12 @@ and the ``PUT /v1/jobs`` HTTP API, so the same artifact works from the CLI and
 from Luma Control.
 
 Exposure mapping:
-  - cn-edge / external-edge : Nomad-native service + Traefik nomad-provider
-    tags (Traefik discovers and routes); dynamic port by default, or a static
-    ReservedPort when publishPort is explicit.
-  - tailscale-relay / tcp-relay : by default docker host mode for
-    macOS/OrbStack; if publishPort is explicit, bridge + ReservedPorts for
-    Linux port mapping.
+  - cn-edge / external-edge : replace mode uses Nomad-native Traefik tags.
+    Blue-green mode keeps public routing in Traefik file routes and always uses
+    allocation ports for the workload, so old and new revisions can overlap.
+  - tailscale-relay / tcp-relay : replace mode keeps the historical host-port
+    behavior. Blue-green mode treats publishPort as the stable Traefik entrypoint
+    and gives the workload a dynamic backend port.
   - cloudflare-tunnel : app task + cloudflared sidecar task in one group.
   - none : worker, no service/port unless the manifest declares one.
 """
@@ -37,7 +37,11 @@ HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
 
 
 def uses_traefik_tags(service: ServiceSpec) -> bool:
-    return service.exposure in EDGE_EXPOSURES
+    return service.exposure in EDGE_EXPOSURES and not _uses_blue_green(service)
+
+
+def _uses_blue_green(service: ServiceSpec) -> bool:
+    return service.rollout_mode == "blue-green"
 
 
 def render_traefik_job(
@@ -207,6 +211,7 @@ def render_compose_job(
     extra_hosts = [f"{svc}:127.0.0.1" for svc in services.keys()]
 
     reserved_ports: List[Dict[str, Any]] = []
+    dynamic_ports: List[Dict[str, Any]] = []
     nomad_services: List[Dict[str, Any]] = []
     tasks: List[Dict[str, Any]] = []
 
@@ -233,7 +238,10 @@ def render_compose_job(
         if body.get("command") is not None:
             docker_config["args"] = _as_args(body["command"])
         if port and exposure in {"tcp-relay", "tailscale-relay", "cn-edge", "external-edge"}:
-            reserved_ports.append({"Label": label, "Value": int(publish), "To": int(port), "HostNetwork": "default"})
+            if _compose_uses_blue_green(deployment):
+                dynamic_ports.append({"Label": label, "To": int(port)})
+            else:
+                reserved_ports.append({"Label": label, "Value": int(publish), "To": int(port), "HostNetwork": "default"})
             docker_config["ports"] = [label]
         mounts: List[Dict[str, Any]] = []
         for vspec in (body.get("volumes") or []):
@@ -283,7 +291,7 @@ def render_compose_job(
             task["Env"] = env
         tasks.append(task)
 
-        if exposure in {"cn-edge", "external-edge"} and override and override.domain and port:
+        if exposure in {"cn-edge", "external-edge"} and override and override.domain and port and not _compose_uses_blue_green(deployment):
             nomad_services.append({
                 "Name": str(svc_name),
                 "PortLabel": label,
@@ -302,8 +310,13 @@ def render_compose_job(
         "MaxClientDisconnect": 3_600_000_000_000,
         "Tasks": tasks,
     }
-    if reserved_ports:
-        group["Networks"] = [{"Mode": "bridge", "ReservedPorts": reserved_ports}]
+    if reserved_ports or dynamic_ports:
+        network: Dict[str, Any] = {"Mode": "bridge"}
+        if reserved_ports:
+            network["ReservedPorts"] = reserved_ports
+        if dynamic_ports:
+            network["DynamicPorts"] = dynamic_ports
+        group["Networks"] = [network]
     if nomad_services:
         group["Services"] = nomad_services
 
@@ -316,6 +329,23 @@ def render_compose_job(
     }
     wrapped = {"Job": job}
     return json.dumps(wrapped, indent=2, ensure_ascii=False) if as_json else wrapped
+
+
+def _compose_uses_blue_green(deployment: Any) -> bool:
+    rollout = getattr(deployment, "rollout", None)
+    mode = str(getattr(rollout, "mode", "") or "").strip()
+    if mode:
+        return mode == "blue-green"
+    compose = getattr(deployment, "compose", {})
+    if isinstance(compose, dict) and compose.get("volumes"):
+        return False
+    if getattr(deployment, "volumes", None):
+        return False
+    services = compose.get("services") if isinstance(compose, dict) and isinstance(compose.get("services"), dict) else {}
+    for body in services.values():
+        if isinstance(body, dict) and body.get("volumes"):
+            return False
+    return any(getattr(service, "exposure", "none") != "none" for service in getattr(deployment, "services", {}).values())
 
 
 def render_control_job(
@@ -510,6 +540,11 @@ def _network(service: ServiceSpec) -> tuple[Dict[str, Any] | None, str | None]:
     Edge services keep a Nomad-managed port for Traefik nomad-provider discovery.
     """
     if service.exposure in HOST_PORT_EXPOSURES:
+        if service.publish_port and _uses_blue_green(service):
+            if not service.port:
+                raise LumaError(f"{service.exposure} requires port")
+            label = "tcp" if service.exposure == "tcp-relay" else "http"
+            return {"Mode": "bridge", "DynamicPorts": [{"Label": label, "To": int(service.port)}]}, label
         if service.publish_port:
             if not service.port:
                 raise LumaError(f"{service.exposure} requires port")
@@ -531,7 +566,7 @@ def _network(service: ServiceSpec) -> tuple[Dict[str, Any] | None, str | None]:
     if service.exposure in EDGE_EXPOSURES:
         if not service.port:
             raise LumaError(f"{service.exposure} requires port")
-        if service.publish_port:
+        if service.publish_port and not _uses_blue_green(service):
             net = {
                 "Mode": "bridge",
                 "ReservedPorts": [
@@ -548,7 +583,7 @@ def _network(service: ServiceSpec) -> tuple[Dict[str, Any] | None, str | None]:
         return net, "http"
     # none / cloudflare-tunnel: only add a port if the manifest declares one.
     if service.port:
-        if service.publish_port:
+        if service.publish_port and not _uses_blue_green(service):
             # Fixed host port for internal services that must be reachable at a
             # known address (e.g. an in-cluster registry pulled by other nodes).
             net = {
@@ -569,24 +604,25 @@ def _network(service: ServiceSpec) -> tuple[Dict[str, Any] | None, str | None]:
 
 
 def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | None) -> Dict[str, Any] | None:
-    if not uses_traefik_tags(service):
-        return None
     if port_label is None:
         return None
+    if not uses_traefik_tags(service) and not _uses_blue_green(service):
+        return None
     name = service.slug
-    tags = [
-        "traefik.enable=true",
-        f"traefik.http.routers.{name}.rule=Host(`{service.domain}`)",
-        f"traefik.http.routers.{name}.entrypoints={config.entrypoint}",
-        f"traefik.http.routers.{name}.tls.certresolver={config.cert_resolver}",
-    ]
-    tags.extend(str(t) for t in service.labels)
     block: Dict[str, Any] = {
         "Name": name,
         "PortLabel": port_label,
         "Provider": "nomad",
-        "Tags": tags,
     }
+    if uses_traefik_tags(service):
+        tags = [
+            "traefik.enable=true",
+            f"traefik.http.routers.{name}.rule=Host(`{service.domain}`)",
+            f"traefik.http.routers.{name}.entrypoints={config.entrypoint}",
+            f"traefik.http.routers.{name}.tls.certresolver={config.cert_resolver}",
+        ]
+        tags.extend(str(t) for t in service.labels)
+        block["Tags"] = tags
     check = _health_check(service, port_label)
     if check is not None:
         block["Checks"] = [check]
@@ -624,7 +660,7 @@ def _health_check(service: ServiceSpec, port_label: str) -> Dict[str, Any] | Non
 
 def _healthcheck_url(args: List[Any]) -> str:
     text = " ".join(str(arg) for arg in args)
-    match = re.search(r"https?://[^'\"\\s)]+", text)
+    match = re.search(r"https?://[^'\"\s)]+", text)
     return match.group(0) if match else ""
 
 

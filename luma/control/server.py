@@ -59,7 +59,7 @@ from ..registry import (
     registry_auth_for_image,
     registry_auth_matches_image,
 )
-from ..render import named_volume_sources, render_tailscale_route, render_tcp_route, route_path, stack_path
+from ..render import named_volume_sources, render_http_route, render_tailscale_route, render_tcp_route, route_path, stack_path
 from ..service import TCP_RELAY_RESERVED_PORTS, VALID_REGIONS, ServiceSpec, load_service, slugify, tcp_entrypoint_name
 from .. import __version__
 from .metrics import load_history, record_samples, sustained_breach
@@ -75,6 +75,7 @@ ALERT_SUSTAINED_SECONDS = int(os.environ.get("LUMA_ALERT_SUSTAINED_SECONDS", "30
 ALERT_NODE_MEMORY_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_MEMORY_PERCENT", "85"))
 ALERT_NODE_CPU_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_CPU_PERCENT", "90"))
 TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS", "300"))
+DEFAULT_BLUE_GREEN_REVISION_RETENTION = 3
 EGRESS_PROXY_URL = os.environ.get("LUMA_EGRESS_PROXY_URL", "http://127.0.0.1:7890")
 EGRESS_NO_PROXY = os.environ.get(
     "LUMA_EGRESS_NO_PROXY",
@@ -1489,6 +1490,8 @@ def _record_tcp_relay_ports(record: Dict[str, Any]) -> list[int]:
 
 def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, manifest: str, source_name: str) -> None:
     deployments = _deployments_state(state)
+    existing = deployments["services"].get(service.slug)
+    active_revision = str(existing.get("activeRevision") or "") if isinstance(existing, dict) else ""
     deployments["services"][service.slug] = {
         "kind": "service",
         "name": service.name,
@@ -1498,6 +1501,8 @@ def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, ma
         "tcpRelayPorts": _service_tcp_relay_ports(service),
         "updatedAt": int(time.time()),
     }
+    if active_revision:
+        deployments["services"][service.slug]["activeRevision"] = active_revision
 
 
 def _mark_service_deployment(
@@ -1508,6 +1513,8 @@ def _mark_service_deployment(
     status: str,
     steps: list[dict[str, str]] | None = None,
     error: str = "",
+    active_revision: str = "",
+    failed_revision: str = "",
 ) -> None:
     def mutate(state: Dict[str, Any]) -> None:
         _register_service_deployment(state, service, manifest, source_name)
@@ -1515,6 +1522,10 @@ def _mark_service_deployment(
         record["status"] = status
         record["lastError"] = error
         record["steps"] = list(steps or [])
+        if active_revision:
+            record["activeRevision"] = active_revision
+        if failed_revision:
+            record["failedRevision"] = failed_revision
         record["updatedAt"] = int(time.time())
 
     mutate_state(mutate)
@@ -1522,6 +1533,7 @@ def _mark_service_deployment(
 
 def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploymentSpec, body: Dict[str, Any], source_name: str) -> None:
     deployments = _deployments_state(state)
+    existing = deployments["compose"].get(deployment.slug)
     record: Dict[str, Any] = {
         "kind": "compose",
         "name": deployment.name,
@@ -1532,6 +1544,8 @@ def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeplo
         "storageBackends": _compose_storage_backend_signatures(deployment),
         "updatedAt": int(time.time()),
     }
+    if isinstance(existing, dict) and existing.get("activeRevision"):
+        record["activeRevision"] = str(existing["activeRevision"])
     compose_content = body.get("composeContent")
     if isinstance(compose_content, str):
         record["composeContent"] = compose_content
@@ -1637,6 +1651,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     service = _load_service_manifest(manifest)
+    previous_record = dict(_service_deployment_record(state, service.slug) or {})
     effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
     _require_nomad_engine(effective_engine)
     _ensure_deployment_slug_available(state, "service", service.slug, service.name)
@@ -1676,6 +1691,23 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             lambda: _prepare_service_managed_storage(service, state),
             progress=progress,
         )
+        if _service_uses_blue_green(service):
+            result = _deploy_blue_green_service(
+                config,
+                config_path,
+                state,
+                service,
+                manifest,
+                source_name,
+                body,
+                registry_auth,
+                image_result,
+                storage_preparation,
+                previous_record,
+                steps,
+                progress=progress,
+            )
+            return result
         target = _resolve_control_path(stack_path(config, service), config_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         stack_text = _deploy_step(
@@ -1737,6 +1769,455 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     return result
 
 
+def _service_uses_blue_green(service: ServiceSpec) -> bool:
+    if service.rollout_mode != "blue-green":
+        return False
+    if service.exposure == "cloudflare-tunnel":
+        raise LumaError("rollout.mode=blue-green is not supported for cloudflare-tunnel yet")
+    if service.exposure == "none":
+        return False
+    return True
+
+
+def _deploy_blue_green_service(
+    config: Any,
+    config_path: Path,
+    state: Dict[str, Any],
+    service: ServiceSpec,
+    manifest: str,
+    source_name: str,
+    body: Dict[str, Any],
+    registry_auth: Dict[str, str] | None,
+    image_result: Any,
+    storage_preparation: Any,
+    previous_record: Dict[str, Any],
+    steps: list[dict[str, str]],
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> Dict[str, Any]:
+    revision = _rollout_revision_slug(service)
+    revision_service = replace(service, name=revision)
+    target = _resolve_control_path(_rollout_stack_path(config, service, revision_service), config_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stack_text = _deploy_step(
+        steps,
+        "Render blue-green revision job",
+        lambda: render_nomad_job(config, revision_service, registry_auth=registry_auth),
+        progress=progress,
+    )
+    _deploy_step(steps, "Write revision job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
+    written = [str(target)]
+    dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
+    orchestrator_result = _deploy_step(
+        steps,
+        "Deploy blue-green revision",
+        lambda: "Orchestrator deploy skipped"
+        if _skip_orchestrator(body)
+        else deploy_to_nomad(config, stack_text, state, slug=revision_service.slug),
+        progress=progress,
+    )
+    endpoints: list[dict[str, str]] = []
+    route_result = "Route skipped: orchestrator deploy skipped"
+    if not _skip_orchestrator(body):
+        endpoints = _deploy_step(
+            steps,
+            "Wait for revision health",
+            lambda: _wait_rollout_revision_healthy(config, state, revision_service, stable_service=service),
+            progress=progress,
+        )
+        route_target = _resolve_control_path(route_path(config, service), config_path)
+        route_target.parent.mkdir(parents=True, exist_ok=True)
+        route_snapshot = _route_snapshot(route_target)
+        route_text = _blue_green_route_text(config, service, endpoints)
+        route_result = _deploy_step(steps, "Switch route to revision", lambda: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
+        written.append(str(route_target))
+    try:
+        probe_result = _deploy_step(
+            steps,
+            "Probe public route",
+            lambda: "Public route probe skipped: orchestrator deploy skipped" if _skip_orchestrator(body) else _probe_public_route(service),
+            progress=progress,
+        )
+    except LumaError:
+        if not _skip_orchestrator(body):
+            _deploy_step(steps, "Restore previous route", lambda: _restore_route_snapshot(route_target, route_snapshot), progress=progress)
+        raise
+    revision_history, retire_candidates = _service_revision_history_update(service, previous_record, revision_service.slug, image_result, endpoints)
+    retired: list[str] = []
+    if not _skip_orchestrator(body):
+        artifact_paths = {
+            retired_revision: _resolve_control_path(_rollout_revision_artifact_path(config, service, retired_revision), config_path)
+            for retired_revision in retire_candidates
+        }
+        retired = _deploy_step(
+            steps,
+            "Retire old revisions",
+            lambda: _retire_previous_revisions(config, state, retire_candidates, keep=revision_service.slug, artifact_paths=artifact_paths),
+            progress=progress,
+        )
+    _mark_service_deployment(service, manifest, source_name, status="active", steps=steps, active_revision=revision_service.slug)
+    _set_service_revision_history(service, revision_history, active_revision=revision_service.slug)
+    return {
+        "clusterId": state["clusterId"],
+        "service": service.name,
+        "sourceName": source_name,
+        "written": written,
+        "image": image_result,
+        "dns": dns_result,
+        "orchestrator": orchestrator_result,
+        "route": route_result,
+        "probe": probe_result,
+        "storagePreparation": storage_preparation,
+        "activeRevision": revision_service.slug,
+        "retiredRevisions": retired,
+        "endpoints": endpoints,
+        "steps": steps,
+    }
+
+
+def _rollout_revision_slug(service: ServiceSpec) -> str:
+    prefix = service.slug[:42].rstrip("-") or "service"
+    return f"{prefix}-r{int(time.time())}"
+
+
+def _rollout_stack_path(config: Any, service: ServiceSpec, revision_service: ServiceSpec) -> Path:
+    if service.stack_path:
+        return service.stack_path.with_name(f"{revision_service.slug}.nomad.json")
+    return config.stack_root / service.region / service.slug / f"{revision_service.slug}.nomad.json"
+
+
+def _rollout_revision_artifact_path(config: Any, service: ServiceSpec, revision: str) -> Path:
+    return _rollout_stack_path(config, service, replace(service, name=revision))
+
+
+def _previous_revision_slugs(record: Dict[str, Any], service: ServiceSpec) -> list[str]:
+    revisions: list[str] = []
+    active = str(record.get("activeRevision") or "").strip()
+    if active:
+        revisions.append(active)
+    elif record:
+        revisions.append(service.slug)
+    return revisions
+
+
+def _blue_green_revision_retention() -> int:
+    raw = os.environ.get("LUMA_BLUE_GREEN_REVISION_RETENTION")
+    if raw is None:
+        return DEFAULT_BLUE_GREEN_REVISION_RETENTION
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_BLUE_GREEN_REVISION_RETENTION
+
+
+def _image_result_value(image_result: Any, fallback: str = "") -> str:
+    if isinstance(image_result, dict):
+        for key in ("deployed", "selected", "requested"):
+            value = image_result.get(key)
+            if value:
+                return str(value)
+    return fallback
+
+
+def _normalize_rollout_endpoints(endpoints: list[dict[str, str]] | None) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in endpoints or []:
+        if not isinstance(item, dict):
+            continue
+        host = str(item.get("host") or "").strip()
+        port = str(item.get("port") or "").strip()
+        if host and port:
+            normalized.append({"host": host, "port": port})
+    return normalized
+
+
+def _normalize_revision_entries(record: Dict[str, Any]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    raw = record.get("revisions") if isinstance(record, dict) else None
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            revision = str(item.get("revision") or item.get("id") or "").strip()
+            if not revision or revision in seen:
+                continue
+            entry = dict(item)
+            entry["revision"] = revision
+            entry["active"] = bool(item.get("active") or item.get("stable"))
+            entry["stable"] = bool(entry["active"])
+            entry["image"] = str(item.get("image") or "")
+            entry["endpoints"] = _normalize_rollout_endpoints(item.get("endpoints") if isinstance(item.get("endpoints"), list) else [])
+            if item.get("createdAt") is not None:
+                try:
+                    entry["createdAt"] = int(item["createdAt"])
+                except (TypeError, ValueError):
+                    pass
+            seen.add(revision)
+            entries.append(entry)
+    active = str(record.get("activeRevision") or "").strip() if isinstance(record, dict) else ""
+    if active and active not in seen:
+        entries.insert(
+            0,
+            {
+                "revision": active,
+                "active": True,
+                "stable": True,
+                "image": "",
+                "endpoints": [],
+                "createdAt": int(record.get("updatedAt") or 0) if isinstance(record, dict) else 0,
+            },
+        )
+    return entries
+
+
+def _service_revision_history_update(
+    service: ServiceSpec,
+    previous_record: Dict[str, Any],
+    revision: str,
+    image_result: Any,
+    endpoints: list[dict[str, str]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    now = int(time.time())
+    current = {
+        "revision": revision,
+        "active": True,
+        "stable": True,
+        "image": _image_result_value(image_result, service.image),
+        "endpoints": _normalize_rollout_endpoints(endpoints),
+        "createdAt": now,
+    }
+    history = [current]
+    seen = {revision}
+    for entry in _normalize_revision_entries(previous_record):
+        old_revision = str(entry.get("revision") or "").strip()
+        if not old_revision or old_revision in seen:
+            continue
+        entry = dict(entry)
+        entry["active"] = False
+        entry["stable"] = False
+        seen.add(old_revision)
+        history.append(entry)
+    retention = _blue_green_revision_retention()
+    kept = history[:retention]
+    kept_revisions = {str(item.get("revision") or "") for item in kept}
+    retire: list[str] = []
+    for entry in history[retention:]:
+        old_revision = str(entry.get("revision") or "").strip()
+        if old_revision:
+            retire.append(old_revision)
+    for old_revision in _previous_revision_slugs(previous_record, service):
+        if old_revision and old_revision not in kept_revisions and old_revision != revision:
+            retire.append(old_revision)
+    return kept, list(dict.fromkeys(retire))
+
+
+def _set_service_revision_history(
+    service: ServiceSpec,
+    revisions: list[dict[str, Any]],
+    *,
+    active_revision: str,
+) -> None:
+    def mutate(state: Dict[str, Any]) -> None:
+        record = _deployments_state(state)["services"].get(service.slug)
+        if isinstance(record, dict):
+            record["activeRevision"] = active_revision
+            record["revisions"] = revisions
+            record["updatedAt"] = int(time.time())
+
+    mutate_state(mutate)
+
+
+def _retire_previous_revisions(
+    config: Any,
+    state: Dict[str, Any],
+    revisions: list[str],
+    *,
+    keep: str,
+    artifact_paths: Dict[str, Path] | None = None,
+) -> list[str]:
+    retired: list[str] = []
+    for revision in revisions:
+        if not revision or revision == keep:
+            continue
+        try:
+            remove_from_nomad(config, state, slug=revision)
+            retired.append(revision)
+        except LumaError as exc:
+            if "404" not in str(exc):
+                raise
+        artifact = (artifact_paths or {}).get(revision)
+        if artifact is not None:
+            _remove_retired_revision_artifact(artifact)
+    return retired
+
+
+def _remove_retired_revision_artifact(path: Path) -> None:
+    if path.exists():
+        _remove_path(path)
+    parent = path.parent
+    try:
+        if parent.exists() and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+    except OSError:
+        pass
+
+
+def _route_snapshot(path: Path) -> tuple[bool, str]:
+    if not path.exists():
+        return False, ""
+    return True, path.read_text(encoding="utf-8")
+
+
+def _restore_route_snapshot(path: Path, snapshot: tuple[bool, str]) -> str:
+    existed, content = snapshot
+    if existed:
+        path.write_text(content, encoding="utf-8")
+        return f"Route restored: {path}"
+    if path.exists():
+        path.unlink()
+        return f"Route removed: {path}"
+    return f"Route restore skipped: {path} was absent"
+
+
+def _restore_route_snapshots(snapshots: dict[Path, tuple[bool, str]]) -> str:
+    messages = [_restore_route_snapshot(path, snapshot) for path, snapshot in snapshots.items()]
+    return "; ".join(messages) if messages else "No routes to restore"
+
+
+def _wait_rollout_revision_healthy(
+    config: Any,
+    state: Dict[str, Any],
+    revision_service: ServiceSpec,
+    *,
+    stable_service: ServiceSpec,
+) -> list[dict[str, str]]:
+    timeout = int(os.environ.get("LUMA_ROLLOUT_WAIT_SECONDS", "180"))
+    interval = float(os.environ.get("LUMA_ROLLOUT_POLL_SECONDS", "2"))
+    deadline = time.monotonic() + max(1, timeout)
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    last = "no allocations"
+    while True:
+        allocations = client.request("GET", f"/v1/job/{urllib.parse.quote(revision_service.slug, safe='')}/allocations")
+        endpoints, last = _rollout_ready_endpoints(allocations if isinstance(allocations, list) else [], revision_service, stable_service)
+        if len(endpoints) >= max(1, stable_service.replicas):
+            return endpoints
+        if time.monotonic() >= deadline:
+            raise LumaError(f"revision {revision_service.slug} did not become healthy: {last}")
+        time.sleep(interval)
+
+
+def _rollout_ready_endpoints(
+    allocations: list[Any],
+    revision_service: ServiceSpec,
+    stable_service: ServiceSpec,
+) -> tuple[list[dict[str, str]], str]:
+    endpoints: list[dict[str, str]] = []
+    last = "no running allocation"
+    port_label = "tcp" if stable_service.exposure == "tcp-relay" else "http"
+    health_path = _rollout_health_path(stable_service)
+    for allocation in allocations:
+        if not isinstance(allocation, dict):
+            continue
+        desired = str(allocation.get("DesiredStatus") or "run").lower()
+        client_status = str(allocation.get("ClientStatus") or "").lower()
+        if desired not in {"run", "running"} or client_status != "running":
+            last = f"allocation {allocation.get('ID') or ''} is {client_status or desired}"
+            continue
+        task_states = allocation.get("TaskStates") if isinstance(allocation.get("TaskStates"), dict) else {}
+        task_state = task_states.get(revision_service.slug) if isinstance(task_states.get(revision_service.slug), dict) else {}
+        if task_state and str(task_state.get("State") or "").lower() != "running":
+            last = f"task {revision_service.slug} is {task_state.get('State')}"
+            continue
+        port = _allocation_port(allocation, port_label)
+        host = str(allocation.get("NodeAddress") or allocation.get("NodeName") or "").strip()
+        if not host or not port:
+            last = f"allocation {allocation.get('ID') or ''} has no {port_label} endpoint"
+            continue
+        endpoint = {"host": host, "port": str(port), "allocId": str(allocation.get("ID") or "")}
+        if health_path and stable_service.exposure != "tcp-relay":
+            ok, message = _probe_rollout_http_endpoint(endpoint, health_path)
+            if not ok:
+                last = message
+                continue
+        elif stable_service.exposure == "tcp-relay":
+            ok, message = _probe_rollout_tcp_endpoint(endpoint)
+            if not ok:
+                last = message
+                continue
+        endpoints.append(endpoint)
+    return endpoints, last
+
+
+def _allocation_port(allocation: Dict[str, Any], label: str) -> int:
+    candidates: list[Any] = []
+    allocated = allocation.get("AllocatedResources") if isinstance(allocation.get("AllocatedResources"), dict) else {}
+    shared = allocated.get("Shared") if isinstance(allocated.get("Shared"), dict) else {}
+    candidates.extend(shared.get("Ports") or [])
+    for network in shared.get("Networks") or []:
+        if isinstance(network, dict):
+            candidates.extend(network.get("DynamicPorts") or [])
+            candidates.extend(network.get("ReservedPorts") or [])
+    resources = allocation.get("Resources") if isinstance(allocation.get("Resources"), dict) else {}
+    for network in resources.get("Networks") or []:
+        if isinstance(network, dict):
+            candidates.extend(network.get("DynamicPorts") or [])
+            candidates.extend(network.get("ReservedPorts") or [])
+    for item in candidates:
+        if not isinstance(item, dict) or str(item.get("Label") or "") != label:
+            continue
+        try:
+            return int(item.get("Value") or item.get("value") or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _rollout_health_path(service: ServiceSpec) -> str:
+    if service.rollout.health_path:
+        return service.rollout.health_path
+    hc = service.healthcheck or {}
+    test = hc.get("test")
+    if isinstance(test, list):
+        text = " ".join(str(item) for item in test)
+        match = re.search(r"https?://[^'\"\s)]+", text)
+        if match:
+            parsed = urllib.parse.urlparse(match.group(0))
+            return parsed.path or "/"
+    return ""
+
+
+def _probe_rollout_http_endpoint(endpoint: dict[str, str], path: str) -> tuple[bool, str]:
+    url = f"http://{endpoint['host']}:{endpoint['port']}{path or '/'}"
+    req = urllib.request.Request(url, method="GET", headers={"User-Agent": "luma-control-rollout-probe"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return int(resp.status) < 500, f"{url} -> HTTP {int(resp.status)}"
+    except urllib.error.HTTPError as exc:
+        return int(exc.code) < 500, f"{url} -> HTTP {int(exc.code)}"
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        return False, f"{url} unavailable: {exc}"
+
+
+def _probe_rollout_tcp_endpoint(endpoint: dict[str, str]) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((endpoint["host"], int(endpoint["port"])), timeout=10):
+            return True, f"{endpoint['host']}:{endpoint['port']} reachable"
+    except OSError as exc:
+        return False, f"{endpoint['host']}:{endpoint['port']} unavailable: {exc}"
+
+
+def _blue_green_route_text(config: Any, service: ServiceSpec, endpoints: list[dict[str, str]]) -> str:
+    if service.exposure in {"cn-edge", "external-edge", "tailscale-relay"}:
+        urls = [f"http://{item['host']}:{item['port']}" for item in endpoints]
+        route_service = replace(service, relay={**service.relay, "urls": urls})
+        return render_tailscale_route(config, route_service) if service.exposure == "tailscale-relay" else render_http_route(config, route_service)
+    if service.exposure == "tcp-relay":
+        addresses = [f"{item['host']}:{item['port']}" for item in endpoints]
+        return render_tcp_route(config, replace(service, tcp={**service.tcp, "addresses": addresses}))
+    raise LumaError(f"blue-green route is not supported for exposure={service.exposure}")
+
+
 def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -1757,20 +2238,30 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
     effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
     _require_nomad_engine(effective_engine)
     service = resolve_service_node_pin(service, state, engine=effective_engine)
+    preview_service = replace(service, name=f"{service.slug}-rpreview") if _service_uses_blue_green(service) else service
     stack_text = render_nomad_job(
         config,
-        service,
+        preview_service,
         registry_auth=_registry_auth_for_service(state, service),
         resolve_secrets=False,
     )
     artifacts = [
         {
             "kind": "job",
-            "path": str(stack_path(config, service)),
+            "path": str(_rollout_stack_path(config, service, preview_service) if _service_uses_blue_green(service) else stack_path(config, service)),
             "content": stack_text,
         }
     ]
-    if service.exposure in {"tailscale-relay", "tcp-relay"}:
+    if _service_uses_blue_green(service) and service.exposure in {"cn-edge", "external-edge"}:
+        route_service = replace(service, relay={**service.relay, "urls": [f"http://<node-address>:<dynamic-{service.port or 'port'}>"]})
+        artifacts.append(
+            {
+                "kind": "route",
+                "path": str(route_path(config, service)),
+                "content": render_http_route(config, route_service),
+            }
+        )
+    elif service.exposure in {"tailscale-relay", "tcp-relay"}:
         route_service = resolve_nomad_static_route_target(service, state)
         artifacts.append(
             {
@@ -1837,6 +2328,10 @@ def handle_service_rollback(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     slug = slugify(name)
+    record = _service_deployment_record(state, slug)
+    if record and _blue_green_history_versions(record):
+        message = _rollback_blue_green_service(config, config_path, state, record, slug, version)
+        return {"clusterId": state["clusterId"], "service": name, "slug": slug, "message": message}
     message = revert_job(config, state, slug=slug, version=version)
     return {"clusterId": state["clusterId"], "service": name, "slug": slug, "message": message}
 
@@ -1852,8 +2347,101 @@ def handle_service_history(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     slug = slugify(name)
+    record = _service_deployment_record(state, slug)
+    versions = _blue_green_history_versions(record or {})
+    if versions:
+        return {"clusterId": state["clusterId"], "service": name, "slug": slug, "versions": versions}
     versions = job_versions(config, state, slug=slug)
     return {"clusterId": state["clusterId"], "service": name, "slug": slug, "versions": versions}
+
+
+def _blue_green_history_versions(record: Dict[str, Any]) -> list[dict[str, Any]]:
+    entries = _normalize_revision_entries(record)
+    if not entries:
+        return []
+    active_revision = str(record.get("activeRevision") or "").strip()
+    if active_revision:
+        entries.sort(key=lambda item: 0 if str(item.get("revision") or "") == active_revision else 1)
+    rows: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        revision = str(entry.get("revision") or "").strip()
+        if not revision:
+            continue
+        active = revision == active_revision if active_revision else bool(entry.get("active"))
+        rows.append(
+            {
+                "version": index,
+                "stable": active,
+                "active": active,
+                "revision": revision,
+                "image": str(entry.get("image") or ""),
+                "createdAt": entry.get("createdAt") or 0,
+                "endpoints": _normalize_rollout_endpoints(entry.get("endpoints") if isinstance(entry.get("endpoints"), list) else []),
+            }
+        )
+    return rows
+
+
+def _select_blue_green_rollback_target(record: Dict[str, Any], version: int | None) -> dict[str, Any]:
+    versions = _blue_green_history_versions(record)
+    if not versions:
+        raise LumaError("no blue-green revision history is available")
+    if version is None:
+        for row in versions:
+            if not row.get("stable"):
+                return row
+        raise LumaError("no previous blue-green revision to roll back to")
+    for row in versions:
+        if int(row.get("version") or 0) == version:
+            return row
+    raise LumaError(f"blue-green revision version not found: {version}")
+
+
+def _rollback_blue_green_service(
+    config: Any,
+    config_path: Path,
+    state: Dict[str, Any],
+    record: Dict[str, Any],
+    slug: str,
+    version: int | None,
+) -> str:
+    service, _source_name = _service_remove_request(record, slug)
+    target = _select_blue_green_rollback_target(record, version)
+    revision = str(target.get("revision") or "").strip()
+    active_revision = str(record.get("activeRevision") or "").strip()
+    if revision == active_revision:
+        return f"Blue-green service {slug} is already on {revision}"
+    endpoints = _normalize_rollout_endpoints(target.get("endpoints") if isinstance(target.get("endpoints"), list) else [])
+    if not endpoints:
+        raise LumaError(f"blue-green revision {revision} has no recorded backend endpoints")
+    route_target = _resolve_control_path(route_path(config, service), config_path)
+    route_target.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = _route_snapshot(route_target)
+    route_target.write_text(_blue_green_route_text(config, service, endpoints), encoding="utf-8")
+    try:
+        _probe_public_route(service)
+    except LumaError:
+        _restore_route_snapshot(route_target, snapshot)
+        raise
+
+    existing = _normalize_revision_entries(record)
+    by_revision = {str(item.get("revision") or ""): dict(item) for item in existing if str(item.get("revision") or "").strip()}
+    selected = by_revision.pop(revision, dict(target))
+    selected["revision"] = revision
+    selected["active"] = True
+    selected["stable"] = True
+    selected["endpoints"] = endpoints
+    history = [selected]
+    for entry in existing:
+        old_revision = str(entry.get("revision") or "").strip()
+        if not old_revision or old_revision == revision:
+            continue
+        entry = dict(entry)
+        entry["active"] = False
+        entry["stable"] = False
+        history.append(entry)
+    _set_service_revision_history(service, history[: _blue_green_revision_retention()], active_revision=revision)
+    return f"Blue-green service {slug} rolled back to {revision}"
 
 
 def _remove_service_deployment(
@@ -1873,8 +2461,13 @@ def _remove_service_deployment(
 
     dry_run = bool(body.get("dryRun"))
     _require_nomad_engine(service.engine or str(config.defaults.get("engine") or "nomad"))
+    active_revision = str((service_record := _service_deployment_record(state, service.slug)) and service_record.get("activeRevision") or "").strip()
     stack_target = _generated_stack_remove_target(config, service, config_path)
-    route_target = _resolve_control_path(route_path(config, service), config_path) if service.exposure in {"tailscale-relay", "tcp-relay"} else None
+    route_target = (
+        _resolve_control_path(route_path(config, service), config_path)
+        if service.exposure in {"tailscale-relay", "tcp-relay"} or (service.rollout_mode == "blue-green" and service.exposure in {"cn-edge", "external-edge"})
+        else None
+    )
     files = [str(stack_target)]
     if route_target:
         files.append(str(route_target))
@@ -1896,7 +2489,7 @@ def _remove_service_deployment(
         else (
             _planned_remove_message("Nomad job would be removed", service.slug)
             if dry_run
-            else remove_from_nomad(config, state, slug=service.slug)
+            else remove_from_nomad(config, state, slug=active_revision or service.slug)
         ),
         progress=progress,
     )
@@ -1952,6 +2545,7 @@ def _remove_compose_deployment(
     _emit_progress(progress, parse_step)
     dry_run = bool(body.get("dryRun"))
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+    active_revision = str((compose_record := _compose_deployment_record(state, deployment.slug)) and compose_record.get("activeRevision") or "").strip()
     stack_target = _resolve_control_path(compose_stack_path(config, deployment), config_path).parent
     route_targets = [
         _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
@@ -1980,7 +2574,7 @@ def _remove_compose_deployment(
         else (
             _planned_remove_message("Nomad job would be removed", deployment.slug)
             if dry_run
-            else remove_from_nomad(config, state, slug=deployment.slug)
+            else remove_from_nomad(config, state, slug=active_revision or deployment.slug)
         ),
         progress=progress,
     )
@@ -2018,6 +2612,253 @@ def _remove_compose_deployment(
         "steps": steps,
     }
     return result
+
+
+def _compose_uses_blue_green(deployment: ComposeDeploymentSpec) -> bool:
+    mode = str(deployment.rollout.mode or "").strip()
+    if mode:
+        return mode == "blue-green"
+    compose = deployment.compose
+    if isinstance(compose, dict) and compose.get("volumes"):
+        return False
+    if deployment.volumes:
+        return False
+    services = compose.get("services") if isinstance(compose, dict) and isinstance(compose.get("services"), dict) else {}
+    for body in services.values():
+        if isinstance(body, dict) and body.get("volumes"):
+            return False
+    return any(service.exposure != "none" for service in deployment.services.values())
+
+
+def _guard_compose_blue_green_storage(deployment: ComposeDeploymentSpec) -> str:
+    declared = []
+    compose_volumes = deployment.compose.get("volumes") if isinstance(deployment.compose.get("volumes"), dict) else {}
+    declared.extend(str(name) for name in compose_volumes)
+    declared.extend(str(name) for name in deployment.volumes)
+    for service_name, body in (deployment.compose.get("services") or {}).items():
+        if not isinstance(body, dict):
+            continue
+        if body.get("volumes"):
+            declared.append(str(service_name))
+    if declared:
+        raise LumaError(
+            "compose rollout.mode=blue-green requires a stateless compose stack; "
+            "split stateful services such as databases into a stable deployment or set rollout.mode: replace"
+        )
+    return "Compose stack is stateless for blue-green rollout"
+
+
+def _deploy_blue_green_compose(
+    config: Any,
+    config_path: Path,
+    state: Dict[str, Any],
+    deployment: ComposeDeploymentSpec,
+    body: Dict[str, Any],
+    source_name: str,
+    storage_preparation: Any,
+    previous_record: Dict[str, Any],
+    steps: list[dict[str, str]],
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> Dict[str, Any]:
+    revision = _compose_revision_slug(deployment)
+    revision_deployment = replace(deployment, name=revision)
+    target = _resolve_control_path(compose_stack_path(config, revision_deployment), config_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stack_text = _deploy_step(
+        steps,
+        "Render compose blue-green revision job",
+        lambda: render_compose_job(
+            config,
+            revision_deployment,
+            registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
+        ),
+        progress=progress,
+    )
+    _deploy_step(steps, "Write compose revision job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
+    written = [str(target)]
+    dns_results: list[str] = []
+    for service in compose_public_services(deployment):
+        service_spec = _compose_service_as_service_spec(deployment, service)
+        dns_results.append(
+            _deploy_step(
+                steps,
+                f"Sync DNS {service.name}",
+                lambda service_spec=service_spec: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service_spec),
+                progress=progress,
+            )
+        )
+    orchestrator_result = _deploy_step(
+        steps,
+        "Deploy compose blue-green revision",
+        lambda: "Orchestrator deploy skipped"
+        if _skip_orchestrator(body)
+        else deploy_to_nomad(config, stack_text, state, slug=revision_deployment.slug),
+        progress=progress,
+    )
+    endpoints: dict[str, list[dict[str, str]]] = {}
+    route_results: list[str] = []
+    route_snapshots: dict[Path, tuple[bool, str]] = {}
+    if not _skip_orchestrator(body):
+        endpoints = _deploy_step(
+            steps,
+            "Wait for compose revision health",
+            lambda: _wait_compose_rollout_revision_healthy(config, state, revision_deployment, stable_deployment=deployment),
+            progress=progress,
+        )
+        for service_name, service in deployment.services.items():
+            if service.exposure not in {"cn-edge", "external-edge", "tailscale-relay", "tcp-relay"} or not service.domain or not service.port:
+                continue
+            route_target = _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
+            route_target.parent.mkdir(parents=True, exist_ok=True)
+            route_snapshots[route_target] = _route_snapshot(route_target)
+            route_text = _blue_green_compose_route_text(config, deployment, service, endpoints.get(service_name, []))
+            route_results.append(
+                _deploy_step(
+                    steps,
+                    f"Switch route {service.name}",
+                    lambda route_target=route_target, route_text=route_text: route_target.write_text(route_text, encoding="utf-8"),
+                    progress=progress,
+                )
+            )
+            written.append(str(route_target))
+    probe_results: list[str] = []
+    for service in compose_public_services(deployment):
+        service_spec = _compose_service_as_service_spec(deployment, service)
+        try:
+            probe_results.append(
+                _deploy_step(
+                    steps,
+                    f"Probe public route {service.name}",
+                    lambda service_spec=service_spec: "Public route probe skipped: orchestrator deploy skipped" if _skip_orchestrator(body) else _probe_public_route(service_spec),
+                    progress=progress,
+                )
+            )
+        except LumaError:
+            if not _skip_orchestrator(body):
+                _deploy_step(steps, "Restore previous compose routes", lambda: _restore_route_snapshots(route_snapshots), progress=progress)
+            raise
+    retired: list[str] = []
+    if not _skip_orchestrator(body):
+        artifact_paths = {
+            revision: _resolve_control_path(compose_stack_path(config, replace(deployment, name=revision)), config_path)
+            for revision in _previous_compose_revision_slugs(previous_record, deployment)
+        }
+        retired = _deploy_step(
+            steps,
+            "Retire previous compose revision",
+            lambda: _retire_previous_revisions(
+                config,
+                state,
+                _previous_compose_revision_slugs(previous_record, deployment),
+                keep=revision_deployment.slug,
+                artifact_paths=artifact_paths,
+            ),
+            progress=progress,
+        )
+    _mark_compose_deployment(deployment, body, source_name, status="active", steps=steps)
+    def set_revision(state: Dict[str, Any]) -> None:
+        record = _deployments_state(state)["compose"].get(deployment.slug)
+        if isinstance(record, dict):
+            record["activeRevision"] = revision_deployment.slug
+            record["updatedAt"] = int(time.time())
+
+    mutate_state(set_revision)
+    return {
+        "clusterId": state["clusterId"],
+        "deployment": deployment.name,
+        "sourceName": source_name,
+        "written": written,
+        "dns": dns_results,
+        "orchestrator": orchestrator_result,
+        "route": route_results,
+        "probe": probe_results,
+        "storagePreparation": storage_preparation,
+        "storage": storage_summary(deployment, node_records=_state_nodes(state)),
+        "activeRevision": revision_deployment.slug,
+        "retiredRevisions": retired,
+        "endpoints": endpoints,
+        "steps": steps,
+    }
+
+
+def _compose_revision_slug(deployment: ComposeDeploymentSpec) -> str:
+    prefix = deployment.slug[:42].rstrip("-") or "compose"
+    return f"{prefix}-r{int(time.time())}"
+
+
+def _previous_compose_revision_slugs(record: Dict[str, Any], deployment: ComposeDeploymentSpec) -> list[str]:
+    active = str(record.get("activeRevision") or "").strip()
+    if active:
+        return [active]
+    return [deployment.slug] if record else []
+
+
+def _wait_compose_rollout_revision_healthy(
+    config: Any,
+    state: Dict[str, Any],
+    revision_deployment: ComposeDeploymentSpec,
+    *,
+    stable_deployment: ComposeDeploymentSpec,
+) -> dict[str, list[dict[str, str]]]:
+    timeout = int(os.environ.get("LUMA_ROLLOUT_WAIT_SECONDS", "180"))
+    interval = float(os.environ.get("LUMA_ROLLOUT_POLL_SECONDS", "2"))
+    deadline = time.monotonic() + max(1, timeout)
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    public_services = [
+        (name, service)
+        for name, service in stable_deployment.services.items()
+        if service.exposure in {"cn-edge", "external-edge", "tailscale-relay", "tcp-relay"} and service.port
+    ]
+    last = "no allocations"
+    while True:
+        allocations = client.request("GET", f"/v1/job/{urllib.parse.quote(revision_deployment.slug, safe='')}/allocations")
+        endpoints, last = _compose_rollout_ready_endpoints(allocations if isinstance(allocations, list) else [], public_services)
+        if all(endpoints.get(name) for name, _service in public_services):
+            return endpoints
+        if time.monotonic() >= deadline:
+            raise LumaError(f"compose revision {revision_deployment.slug} did not become healthy: {last}")
+        time.sleep(interval)
+
+
+def _compose_rollout_ready_endpoints(
+    allocations: list[Any],
+    public_services: list[tuple[str, Any]],
+) -> tuple[dict[str, list[dict[str, str]]], str]:
+    endpoints: dict[str, list[dict[str, str]]] = {name: [] for name, _service in public_services}
+    last = "no running allocation"
+    for allocation in allocations:
+        if not isinstance(allocation, dict):
+            continue
+        if str(allocation.get("DesiredStatus") or "run").lower() not in {"run", "running"}:
+            continue
+        if str(allocation.get("ClientStatus") or "").lower() != "running":
+            last = f"allocation {allocation.get('ID') or ''} is {allocation.get('ClientStatus')}"
+            continue
+        host = str(allocation.get("NodeAddress") or allocation.get("NodeName") or "").strip()
+        if not host:
+            last = f"allocation {allocation.get('ID') or ''} has no node address"
+            continue
+        for service_name, service in public_services:
+            label = re.sub(r"[^a-zA-Z0-9_]", "_", str(service_name))
+            port = _allocation_port(allocation, label)
+            if not port:
+                last = f"allocation {allocation.get('ID') or ''} has no {label} endpoint"
+                continue
+            endpoints.setdefault(service_name, []).append({"host": host, "port": str(port), "allocId": str(allocation.get("ID") or "")})
+    return endpoints, last
+
+
+def _blue_green_compose_route_text(config: Any, deployment: ComposeDeploymentSpec, service: Any, endpoints: list[dict[str, str]]) -> str:
+    service_spec = _compose_service_as_service_spec(deployment, service)
+    if service.exposure in {"cn-edge", "external-edge", "tailscale-relay"}:
+        urls = [f"http://{item['host']}:{item['port']}" for item in endpoints]
+        service_spec = replace(service_spec, relay={**service_spec.relay, "urls": urls})
+        return render_tailscale_route(config, service_spec) if service.exposure == "tailscale-relay" else render_http_route(config, service_spec)
+    if service.exposure == "tcp-relay":
+        addresses = [f"{item['host']}:{item['port']}" for item in endpoints]
+        return render_tcp_route(config, replace(service_spec, tcp={**service_spec.tcp, "addresses": addresses}))
+    raise LumaError(f"blue-green route is not supported for compose service {service.name}")
 
 
 SYSTEM_STACKS = {"traefik", "egress", "luma-control"}
@@ -2253,6 +3094,25 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             lambda: _prepare_compose_managed_storage(deployment, state),
             progress=progress,
         )
+        if _compose_uses_blue_green(deployment):
+            _deploy_step(
+                steps,
+                "Check compose blue-green safety",
+                lambda: _guard_compose_blue_green_storage(deployment),
+                progress=progress,
+            )
+            return _deploy_blue_green_compose(
+                config,
+                config_path,
+                state,
+                deployment,
+                body,
+                source_name,
+                storage_preparation,
+                previous_record,
+                steps,
+                progress=progress,
+            )
         target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
@@ -5147,6 +6007,19 @@ def _resolve_image_on_target_node(state: Dict[str, Any], node_name: str, image: 
             required_capability="docker-image",
         )
     except LumaError as exc:
+        if _target_private_registry_proxy_bypass_applicable(state, node_name, image, exc):
+            _configure_target_private_registry_proxy_bypass(state, node_name, image)
+            try:
+                return _run_node_agent_task(
+                    state,
+                    node_name,
+                    "resolve-docker-image",
+                    payload,
+                    timeout=600,
+                    required_capability="docker-image",
+                )
+            except LumaError as retry_exc:
+                raise LumaError(f"{exc}; retry after target node proxy bypass setup failed: {retry_exc}") from retry_exc
         if not _target_image_pull_proxy_applicable(state, node_name, image, exc):
             raise
         _configure_target_image_pull_proxy(state, node_name, image)
@@ -5161,6 +6034,33 @@ def _resolve_image_on_target_node(state: Dict[str, Any], node_name: str, image: 
             )
         except LumaError as retry_exc:
             raise LumaError(f"{exc}; retry after target node proxy setup failed: {retry_exc}") from retry_exc
+
+
+def _target_private_registry_proxy_bypass_applicable(state: Dict[str, Any], node_name: str, image: str, error: Exception) -> bool:
+    registry = _image_registry_host(image)
+    registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    if not registry_auth_for_image(registries, image):
+        return False
+    if image_pull_requires_egress(image):
+        return False
+    if not _node_agent_has_capability(state, node_name, "docker-egress-proxy"):
+        return False
+    lowered = str(error).lower()
+    markers = ("failed to do request", "eof", "timeout", "context deadline exceeded", "connection reset", "cannot reach the registry")
+    return any(marker in lowered for marker in markers)
+
+
+def _configure_target_private_registry_proxy_bypass(state: Dict[str, Any], node_name: str, image: str) -> None:
+    registry = _image_registry_host(image)
+    no_proxy = _merge_no_proxy(EGRESS_NO_PROXY, *_no_proxy_entries_for_registry(registry))
+    _run_node_agent_task(
+        state,
+        node_name,
+        "configure-docker-egress-proxy",
+        {"proxy": _target_image_pull_proxy_url(state, node_name) or EGRESS_PROXY_URL, "noProxy": no_proxy},
+        timeout=180,
+        required_capability="docker-egress-proxy",
+    )
 
 
 def _target_image_pull_proxy_applicable(state: Dict[str, Any], node_name: str, image: str, error: Exception) -> bool:
