@@ -11,16 +11,20 @@ type StageDefinition = {
   match: string[];
 };
 
+type TimelineStep = OperationStep & {
+  startedTime?: number;
+};
+
 const STANDARD_STAGES: StageDefinition[] = [
   { key: "parse", zh: "Parse manifest", en: "Parse manifest", match: ["parse manifest", "parse compose"] },
   { key: "node", zh: "Resolve node pin", en: "Resolve node pin", match: ["resolve node pin"] },
   { key: "image", zh: "Resolve image", en: "Resolve image", match: ["resolve image", "build image"] },
   { key: "storage", zh: "Prepare storage", en: "Prepare storage", match: ["prepare managed storage"] },
-  { key: "render", zh: "Render job", en: "Render job", match: ["render nomad", "render compose", "render blue-green"] },
+  { key: "render", zh: "Render job", en: "Render job", match: ["render nomad", "render compose", "render blue-green", "render initial"] },
   { key: "dns", zh: "Sync DNS", en: "Sync DNS", match: ["sync dns"] },
-  { key: "deploy", zh: "Deploy Nomad", en: "Deploy Nomad", match: ["deploy nomad", "deploy compose", "deploy blue-green"] },
-  { key: "health", zh: "Wait health", en: "Wait health", match: ["wait for revision health", "wait health"] },
-  { key: "route", zh: "Switch route", en: "Switch route", match: ["switch route", "write route", "resolve relay"] },
+  { key: "deploy", zh: "Deploy Nomad", en: "Deploy Nomad", match: ["deploy nomad", "deploy compose", "deploy blue-green", "deploy initial"] },
+  { key: "health", zh: "Wait health", en: "Wait health", match: ["wait for revision health", "wait for initial health", "wait health"] },
+  { key: "route", zh: "Switch route", en: "Switch route", match: ["switch route", "activate initial route", "write route", "resolve relay"] },
   { key: "probe", zh: "Probe", en: "Probe", match: ["probe public route"] },
   { key: "retire", zh: "Retire old revisions", en: "Retire old revisions", match: ["retire old revisions"] },
 ];
@@ -108,8 +112,10 @@ function stepStatusClass(status?: string) {
 }
 
 function isBlueGreen(operation: DashboardOperation) {
-  if (operation.result?.activeRevision || operation.result?.retiredRevisions) return true;
-  return (operation.steps || []).some((step) => /blue-green|revision|switch route|retire old revisions/i.test(step.name || ""));
+  const rolloutMode = String(operation.result?.rolloutMode || "").toLowerCase();
+  if (rolloutMode === "initial") return false;
+  if (rolloutMode === "blue-green") return true;
+  return (operation.steps || []).some((step) => /blue-green|switch route to revision|retire old revisions|retire previous compose revision/i.test(step.name || ""));
 }
 
 function stageState(stage: StageDefinition, steps: OperationStep[], operation: DashboardOperation) {
@@ -125,6 +131,38 @@ function stageState(stage: StageDefinition, steps: OperationStep[], operation: D
 
 function stageLabel(stage: StageDefinition, lang: Lang) {
   return lang === "zh" ? stage.zh : stage.en;
+}
+
+function compactTimelineSteps(steps: OperationStep[]): TimelineStep[] {
+  const rows: TimelineStep[] = [];
+  const activeByName = new Map<string, TimelineStep>();
+
+  steps.forEach((step) => {
+    const name = step.name || "Operation";
+    const status = stepStatusClass(step.status);
+    if (status === "running") {
+      const row: TimelineStep = { ...step, startedTime: step.time };
+      rows.push(row);
+      activeByName.set(name, row);
+      return;
+    }
+
+    const active = activeByName.get(name);
+    if (active) {
+      active.status = step.status;
+      active.message = step.message || active.message;
+      active.time = step.time || active.time;
+      active.requestId = step.requestId || active.requestId;
+      active.code = step.code || active.code;
+      if (step.detail !== undefined) active.detail = step.detail;
+      activeByName.delete(name);
+      return;
+    }
+
+    rows.push({ ...step });
+  });
+
+  return rows;
 }
 
 function StepIcon({ status }: { status?: string }) {
@@ -153,6 +191,7 @@ export function DeploymentsPage({ lang, vm }: { lang: Lang; vm: DashboardViewMod
   const selected = operations.find((operation) => operation.id === selectedId) || operations[0];
   const failedRecent = vm.operationsFailed.slice(0, 3);
   const stages = selected && isBlueGreen(selected) ? BLUE_GREEN_STAGES : STANDARD_STAGES;
+  const timelineSteps = useMemo(() => compactTimelineSteps(selected?.steps || []), [selected]);
 
   return (
     <>
@@ -261,7 +300,7 @@ export function DeploymentsPage({ lang, vm }: { lang: Lang; vm: DashboardViewMod
               ) : null}
 
               <div className="operation-timeline">
-                {(selected.steps || []).length ? (selected.steps || []).map((step, index) => (
+                {timelineSteps.length ? timelineSteps.map((step, index) => (
                   <div className={`operation-timeline-row ${stepStatusClass(step.status)}`} key={`${step.name || "step"}-${index}`}>
                     <span className="operation-timeline-icon"><StepIcon status={step.status} /></span>
                     <div>

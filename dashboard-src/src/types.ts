@@ -67,6 +67,7 @@ export type OperationStep = {
   time?: number;
   requestId?: string;
   code?: string;
+  detail?: unknown;
 };
 
 export type DashboardOperation = {
@@ -122,6 +123,9 @@ export type DashboardService = {
   domain?: string;
   targetPort?: string;
   routeId?: string;
+  rolloutOwner?: string;
+  rolloutRevision?: string;
+  rolloutActive?: boolean;
   network?: string;
   image?: string;
   status?: string;

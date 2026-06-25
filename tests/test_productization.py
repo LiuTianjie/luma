@@ -59,7 +59,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _prune_operations_locked, _run_deployment_operation, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_operation, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_operations, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _dashboard_nomad_services, _node_record_for_name, _normalize_container_stats_for_engine, _prune_operations_locked, _run_deployment_operation, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_operation, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_operations, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -4505,6 +4505,49 @@ class ControlApiTests(unittest.TestCase):
         self.assertNotIn("old-failed", items)
         self.assertTrue(all(not key.startswith("old-") for key in items))
 
+    def test_dashboard_collapses_blue_green_revisions_under_application(self):
+        manifest = yaml.safe_dump(
+            {
+                "name": "linkshell-gateway",
+                "image": "ghcr.io/acme/linkshell-gateway:latest",
+                "region": "cn",
+                "exposure": "none",
+                "rollout": {"mode": "blue-green"},
+            }
+        )
+        state = {
+            "deployments": {
+                "services": {
+                    "linkshell-gateway": {
+                        "kind": "service",
+                        "name": "linkshell-gateway",
+                        "slug": "linkshell-gateway",
+                        "manifest": manifest,
+                        "sourceName": "linkshell.yaml",
+                        "activeRevision": "linkshell-gateway-r2",
+                        "revisions": [
+                            {"revision": "linkshell-gateway-r2", "active": True, "stable": True},
+                            {"revision": "linkshell-gateway-r1", "active": False, "stable": False},
+                        ],
+                    }
+                },
+                "compose": {},
+            }
+        }
+        nomad_services = [
+            {"jobId": "linkshell-gateway-r1", "status": "running", "region": "cn", "running": 1, "desired": 1},
+            {"jobId": "linkshell-gateway-r2", "status": "running", "region": "cn", "running": 1, "desired": 1},
+        ]
+
+        services = _dashboard_nomad_services(nomad_services, {}, state=state)
+
+        self.assertEqual(len(services), 1)
+        self.assertEqual(services[0]["stack"], "linkshell-gateway")
+        self.assertEqual(services[0]["name"], "linkshell-gateway")
+        self.assertEqual(services[0]["fullName"], "linkshell-gateway-r2")
+        self.assertEqual(services[0]["rolloutRevision"], "linkshell-gateway-r2")
+        self.assertTrue(services[0]["rolloutActive"])
+
     def test_tailscale_relay_public_probe_checks_https_domain(self):
         from luma.control.server import _probe_public_route
 
@@ -5177,6 +5220,68 @@ class ControlApiTests(unittest.TestCase):
                 stack.assert_called_once()
                 self.assertEqual(result["service"], "api")
                 self.assertEqual(result["sourceName"], "console:api")
+                self.assertFalse(stack_dir.exists())
+                self.assertNotIn("api", load_state()["deployments"]["services"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_service_remove_accepts_blue_green_revision_name_and_removes_all_revisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "domain": "api.example.com",
+                        "port": 8080,
+                        "rollout": {"mode": "blue-green"},
+                    }
+                )
+                state["deployments"] = {
+                    "services": {
+                        "api": {
+                            "kind": "service",
+                            "name": "api",
+                            "slug": "api",
+                            "manifest": manifest,
+                            "sourceName": "console:api",
+                            "activeRevision": "api-r-new",
+                            "revisions": [
+                                {"revision": "api-r-new", "active": True, "stable": True},
+                                {"revision": "api-r-old", "active": False, "stable": False},
+                            ],
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
+                stack_dir = root / "stacks" / "cn" / "api"
+                stack_dir.mkdir(parents=True)
+                (stack_dir / "api-r-new.nomad.json").write_text("new", encoding="utf-8")
+                (stack_dir / "api-r-old.nomad.json").write_text("old", encoding="utf-8")
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")}}),
+                    encoding="utf-8",
+                )
+                removed: list[str] = []
+
+                def remove(_config, _state, *, slug):
+                    removed.append(slug)
+                    return f"Nomad job removed: {slug}"
+
+                with patch("luma.control.server.remove_from_nomad", side_effect=remove):
+                    result = handle_service_remove(state["deployToken"], {"name": "api-r-new", "skipDns": True})
+
+                self.assertEqual(removed, ["api-r-new", "api-r-old"])
+                self.assertIn("api-r-new", result["orchestrator"])
+                self.assertIn("api-r-old", result["orchestrator"])
                 self.assertFalse(stack_dir.exists())
                 self.assertNotIn("api", load_state()["deployments"]["services"])
             finally:
@@ -8646,6 +8751,66 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("LUMA_BLUE_GREEN_REVISION_RETENTION", old_retention)
+
+    def test_first_blue_green_deploy_uses_initial_rollout_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "defaults": {
+                                "engine": "nomad",
+                                "stackRoot": str(root / "stacks"),
+                                "routesRoot": str(root / "routes"),
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "ghcr.io/acme/api:latest",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "domain": "api.example.com",
+                        "port": 8080,
+                        "rollout": {"mode": "blue-green"},
+                    }
+                )
+                with patch("luma.control.server.time.time", return_value=1710000010), patch(
+                    "luma.control.server.resolve_service_image",
+                    side_effect=lambda _config, service, **_kwargs: (service, {"requested": service.image, "selected": service.image}),
+                ), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job registered for api-r1710000010"), patch(
+                    "luma.control.server._wait_rollout_revision_healthy",
+                    return_value=[{"host": "10.0.0.5", "port": "32123"}],
+                ), patch("luma.control.server._probe_public_route", return_value="Public route reachable"), patch(
+                    "luma.control.server.remove_from_nomad"
+                ) as remove:
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True},
+                    )
+
+                step_names = [step["name"] for step in result["steps"]]
+                self.assertIn("Render initial job", step_names)
+                self.assertIn("Deploy initial job", step_names)
+                self.assertIn("Wait for initial health", step_names)
+                self.assertIn("Activate initial route", step_names)
+                self.assertNotIn("Render blue-green revision job", step_names)
+                self.assertNotIn("Wait for revision health", step_names)
+                self.assertNotIn("Retire old revisions", step_names)
+                self.assertEqual(result["rolloutMode"], "initial")
+                self.assertEqual(result["activeRevision"], "api-r1710000010")
+                remove.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_public_service_with_volume_deploys_replace_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:

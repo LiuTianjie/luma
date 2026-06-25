@@ -1910,10 +1910,44 @@ def _service_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, An
     return record if isinstance(record, dict) else None
 
 
+def _service_deployment_record_for_name_or_revision(state: Dict[str, Any], name: str) -> Dict[str, Any] | None:
+    record = _service_deployment_record(state, name)
+    if record:
+        return record
+    wanted = slugify(name)
+    services = _deployments_state(state)["services"]
+    for candidate in services.values():
+        if not isinstance(candidate, dict):
+            continue
+        active_revision = slugify(str(candidate.get("activeRevision") or ""))
+        if active_revision and active_revision == wanted:
+            return candidate
+        for revision_entry in _normalize_revision_entries(candidate):
+            revision = slugify(str(revision_entry.get("revision") or ""))
+            if revision and revision == wanted:
+                return candidate
+    return None
+
+
 def _compose_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, Any] | None:
     compose = _deployments_state(state)["compose"]
     record = compose.get(slugify(name))
     return record if isinstance(record, dict) else None
+
+
+def _compose_deployment_record_for_name_or_revision(state: Dict[str, Any], name: str) -> Dict[str, Any] | None:
+    record = _compose_deployment_record(state, name)
+    if record:
+        return record
+    wanted = slugify(name)
+    compose = _deployments_state(state)["compose"]
+    for candidate in compose.values():
+        if not isinstance(candidate, dict):
+            continue
+        active_revision = slugify(str(candidate.get("activeRevision") or ""))
+        if active_revision and active_revision == wanted:
+            return candidate
+    return None
 
 
 def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
@@ -2127,22 +2161,24 @@ def _deploy_blue_green_service(
     *,
     progress: Callable[[dict[str, str]], None] | None = None,
 ) -> Dict[str, Any]:
+    previous_revisions = _previous_revision_slugs(previous_record, service)
+    initial_rollout = not previous_revisions
     revision = _rollout_revision_slug(service)
     revision_service = replace(service, name=revision)
     target = _resolve_control_path(_rollout_stack_path(config, service, revision_service), config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     stack_text = _deploy_step(
         steps,
-        "Render blue-green revision job",
+        "Render initial job" if initial_rollout else "Render blue-green revision job",
         lambda: render_nomad_job(config, revision_service, registry_auth=registry_auth),
         progress=progress,
     )
-    _deploy_step(steps, "Write revision job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
+    _deploy_step(steps, "Write initial job" if initial_rollout else "Write revision job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
     written = [str(target)]
     dns_result = _deploy_step(steps, "Sync DNS", lambda: "DNS skipped: --skip-dns" if body.get("skipDns") else sync_dns(config, service), progress=progress)
     orchestrator_result = _deploy_step(
         steps,
-        "Deploy blue-green revision",
+        "Deploy initial job" if initial_rollout else "Deploy blue-green revision",
         lambda: "Orchestrator deploy skipped"
         if _skip_orchestrator(body)
         else deploy_to_nomad(config, stack_text, state, slug=revision_service.slug),
@@ -2153,7 +2189,7 @@ def _deploy_blue_green_service(
     if not _skip_orchestrator(body):
         endpoints = _deploy_step(
             steps,
-            "Wait for revision health",
+            "Wait for initial health" if initial_rollout else "Wait for revision health",
             lambda: _wait_rollout_revision_healthy(config, state, revision_service, stable_service=service),
             progress=progress,
         )
@@ -2161,7 +2197,7 @@ def _deploy_blue_green_service(
         route_target.parent.mkdir(parents=True, exist_ok=True)
         route_snapshot = _route_snapshot(route_target)
         route_text = _blue_green_route_text(config, service, endpoints)
-        route_result = _deploy_step(steps, "Switch route to revision", lambda: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
+        route_result = _deploy_step(steps, "Activate initial route" if initial_rollout else "Switch route to revision", lambda: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
         written.append(str(route_target))
     try:
         probe_result = _deploy_step(
@@ -2176,7 +2212,7 @@ def _deploy_blue_green_service(
         raise
     revision_history, retire_candidates = _service_revision_history_update(service, previous_record, revision_service.slug, image_result, endpoints)
     retired: list[str] = []
-    if not _skip_orchestrator(body):
+    if not _skip_orchestrator(body) and retire_candidates:
         artifact_paths = {
             retired_revision: _resolve_control_path(_rollout_revision_artifact_path(config, service, retired_revision), config_path)
             for retired_revision in retire_candidates
@@ -2200,6 +2236,7 @@ def _deploy_blue_green_service(
         "route": route_result,
         "probe": probe_result,
         "storagePreparation": storage_preparation,
+        "rolloutMode": "initial" if initial_rollout else "blue-green",
         "activeRevision": revision_service.slug,
         "retiredRevisions": retired,
         "endpoints": endpoints,
@@ -2630,13 +2667,13 @@ def handle_service_remove(token: str, body: Dict[str, Any], *, progress: Callabl
     name = _remove_request_name(body)
     if body.get("deleteStorage") and _skip_orchestrator(body):
         raise LumaError("--delete-storage cannot be combined with skipping the orchestrator")
-    service_record = _service_deployment_record(state, name)
+    service_record = _service_deployment_record_for_name_or_revision(state, name)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     if service_record:
         service, source_name = _service_remove_request(service_record, name)
         return _remove_service_deployment(state, config, config_path, service, source_name, body, progress=progress)
-    compose_record = _compose_deployment_record(state, name)
+    compose_record = _compose_deployment_record_for_name_or_revision(state, name)
     if compose_record:
         deployment, source_name = _compose_remove_request(compose_record, name)
         return _remove_compose_deployment(state, config, config_path, deployment, source_name, body, progress=progress)
@@ -2776,6 +2813,33 @@ def _rollback_blue_green_service(
     return f"Blue-green service {slug} rolled back to {revision}"
 
 
+def _service_remove_nomad_slugs(record: Dict[str, Any], service: ServiceSpec) -> list[str]:
+    slugs: list[str] = []
+    active_revision = str(record.get("activeRevision") or "").strip() if isinstance(record, dict) else ""
+    if active_revision:
+        slugs.append(active_revision)
+    for revision_entry in _normalize_revision_entries(record):
+        revision = str(revision_entry.get("revision") or "").strip()
+        if revision:
+            slugs.append(revision)
+    if not slugs:
+        slugs.append(service.slug)
+    return list(dict.fromkeys(slugs))
+
+
+def _compose_remove_nomad_slugs(record: Dict[str, Any], deployment: ComposeDeploymentSpec) -> list[str]:
+    active_revision = str(record.get("activeRevision") or "").strip() if isinstance(record, dict) else ""
+    return [active_revision] if active_revision else [deployment.slug]
+
+
+def _remove_nomad_jobs(config: Any, state: Dict[str, Any], slugs: list[str]) -> str:
+    messages = []
+    for slug in slugs:
+        if slug:
+            messages.append(remove_from_nomad(config, state, slug=slug))
+    return "; ".join(messages) if messages else "No Nomad jobs to remove"
+
+
 def _remove_service_deployment(
     state: Dict[str, Any],
     config: Any,
@@ -2793,7 +2857,8 @@ def _remove_service_deployment(
 
     dry_run = bool(body.get("dryRun"))
     _require_nomad_engine(service.engine or str(config.defaults.get("engine") or "nomad"))
-    active_revision = str((service_record := _service_deployment_record(state, service.slug)) and service_record.get("activeRevision") or "").strip()
+    service_record = _service_deployment_record_for_name_or_revision(state, service.slug) or {}
+    remove_slugs = _service_remove_nomad_slugs(service_record, service)
     stack_target = _generated_stack_remove_target(config, service, config_path)
     route_target = (
         _resolve_control_path(route_path(config, service), config_path)
@@ -2819,9 +2884,9 @@ def _remove_service_deployment(
         lambda: "Orchestrator remove skipped"
         if _skip_orchestrator(body)
         else (
-            _planned_remove_message("Nomad job would be removed", service.slug)
+            _planned_remove_message("Nomad job would be removed", ", ".join(remove_slugs))
             if dry_run
-            else remove_from_nomad(config, state, slug=active_revision or service.slug)
+            else _remove_nomad_jobs(config, state, remove_slugs)
         ),
         progress=progress,
     )
@@ -2877,7 +2942,8 @@ def _remove_compose_deployment(
     _emit_progress(progress, parse_step)
     dry_run = bool(body.get("dryRun"))
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
-    active_revision = str((compose_record := _compose_deployment_record(state, deployment.slug)) and compose_record.get("activeRevision") or "").strip()
+    compose_record = _compose_deployment_record_for_name_or_revision(state, deployment.slug) or {}
+    remove_slugs = _compose_remove_nomad_slugs(compose_record, deployment)
     stack_target = _resolve_control_path(compose_stack_path(config, deployment), config_path).parent
     route_targets = [
         _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
@@ -2904,9 +2970,9 @@ def _remove_compose_deployment(
         lambda: "Orchestrator remove skipped"
         if _skip_orchestrator(body)
         else (
-            _planned_remove_message("Nomad job would be removed", deployment.slug)
+            _planned_remove_message("Nomad job would be removed", ", ".join(remove_slugs))
             if dry_run
-            else remove_from_nomad(config, state, slug=active_revision or deployment.slug)
+            else _remove_nomad_jobs(config, state, remove_slugs)
         ),
         progress=progress,
     )
@@ -2993,13 +3059,15 @@ def _deploy_blue_green_compose(
     *,
     progress: Callable[[dict[str, str]], None] | None = None,
 ) -> Dict[str, Any]:
+    previous_revisions = _previous_compose_revision_slugs(previous_record, deployment)
+    initial_rollout = not previous_revisions
     revision = _compose_revision_slug(deployment)
     revision_deployment = replace(deployment, name=revision)
     target = _resolve_control_path(compose_stack_path(config, revision_deployment), config_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     stack_text = _deploy_step(
         steps,
-        "Render compose blue-green revision job",
+        "Render initial compose job" if initial_rollout else "Render compose blue-green revision job",
         lambda: render_compose_job(
             config,
             revision_deployment,
@@ -3007,7 +3075,7 @@ def _deploy_blue_green_compose(
         ),
         progress=progress,
     )
-    _deploy_step(steps, "Write compose revision job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
+    _deploy_step(steps, "Write initial compose job" if initial_rollout else "Write compose revision job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
     written = [str(target)]
     dns_results: list[str] = []
     for service in compose_public_services(deployment):
@@ -3022,7 +3090,7 @@ def _deploy_blue_green_compose(
         )
     orchestrator_result = _deploy_step(
         steps,
-        "Deploy compose blue-green revision",
+        "Deploy initial compose job" if initial_rollout else "Deploy compose blue-green revision",
         lambda: "Orchestrator deploy skipped"
         if _skip_orchestrator(body)
         else deploy_to_nomad(config, stack_text, state, slug=revision_deployment.slug),
@@ -3034,7 +3102,7 @@ def _deploy_blue_green_compose(
     if not _skip_orchestrator(body):
         endpoints = _deploy_step(
             steps,
-            "Wait for compose revision health",
+            "Wait for initial compose health" if initial_rollout else "Wait for compose revision health",
             lambda: _wait_compose_rollout_revision_healthy(config, state, revision_deployment, stable_deployment=deployment),
             progress=progress,
         )
@@ -3048,7 +3116,7 @@ def _deploy_blue_green_compose(
             route_results.append(
                 _deploy_step(
                     steps,
-                    f"Switch route {service.name}",
+                    f"Activate initial route {service.name}" if initial_rollout else f"Switch route {service.name}",
                     lambda route_target=route_target, route_text=route_text: route_target.write_text(route_text, encoding="utf-8"),
                     progress=progress,
                 )
@@ -3071,10 +3139,10 @@ def _deploy_blue_green_compose(
                 _deploy_step(steps, "Restore previous compose routes", lambda: _restore_route_snapshots(route_snapshots), progress=progress)
             raise
     retired: list[str] = []
-    if not _skip_orchestrator(body):
+    if not _skip_orchestrator(body) and previous_revisions:
         artifact_paths = {
             revision: _resolve_control_path(compose_stack_path(config, replace(deployment, name=revision)), config_path)
-            for revision in _previous_compose_revision_slugs(previous_record, deployment)
+            for revision in previous_revisions
         }
         retired = _deploy_step(
             steps,
@@ -3082,7 +3150,7 @@ def _deploy_blue_green_compose(
             lambda: _retire_previous_revisions(
                 config,
                 state,
-                _previous_compose_revision_slugs(previous_record, deployment),
+                previous_revisions,
                 keep=revision_deployment.slug,
                 artifact_paths=artifact_paths,
             ),
@@ -3107,6 +3175,7 @@ def _deploy_blue_green_compose(
         "probe": probe_results,
         "storagePreparation": storage_preparation,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
+        "rolloutMode": "initial" if initial_rollout else "blue-green",
         "activeRevision": revision_deployment.slug,
         "retiredRevisions": retired,
         "endpoints": endpoints,
@@ -5529,6 +5598,8 @@ def _dashboard_nomad_services(
                     out.append(item)
             continue
         item = _dashboard_service_from_nomad_job(svc, route_files, deployment_index)
+        if item.get("rolloutRevision") and not item.get("rolloutActive"):
+            continue
         if item:
             out.append(item)
     out.sort(key=lambda s: str(s.get("name") or ""))
@@ -5544,7 +5615,8 @@ def _dashboard_service_from_nomad_job(
     if not name:
         return {}
     config = _dashboard_deployment_config(deployment_index, name, name, name, route_id=name)
-    route = _dashboard_route_for_service(route_files, name, name, name, route_id=name)
+    route_lookup_id = str(config.get("routeId") or name)
+    route = _dashboard_route_for_service(route_files, str(config.get("stack") or name), str(config.get("name") or name), str(config.get("fullName") or name), route_id=route_lookup_id)
     edge = _nomad_edge_route_from_task(svc)
     domain = str(config.get("domain") or route.get("domain") or edge.get("domain") or "")
     exposure = _dashboard_exposure(config, route, edge, region=str(svc.get("region") or ""))
@@ -5556,7 +5628,7 @@ def _dashboard_service_from_nomad_job(
     nodes = task_rollup["nodes"] if task_rollup else [str(node) for node in svc.get("nodes") or [] if node]
     route_id = str(route.get("id") or config.get("routeId") or "")
     item: Dict[str, Any] = {
-        "name": name,
+        "name": str(config.get("name") or name),
         "stack": str(config.get("stack") or name),
         "fullName": str(config.get("fullName") or name),
         "status": str(svc.get("status") or ""),
@@ -5575,6 +5647,10 @@ def _dashboard_service_from_nomad_job(
         "storage": svc.get("storage") if isinstance(svc.get("storage"), list) else [],
         "resources": svc.get("resources") if isinstance(svc.get("resources"), dict) else {},
     }
+    if config.get("rolloutRevision"):
+        item["rolloutOwner"] = str(config.get("rolloutOwner") or config.get("stack") or "")
+        item["rolloutRevision"] = str(config.get("rolloutRevision") or "")
+        item["rolloutActive"] = bool(config.get("rolloutActive"))
     if route:
         item["_routeFile"] = route
     return item
@@ -5682,6 +5758,23 @@ def _dashboard_deployment_service_index(state: Dict[str, Any]) -> tuple[dict[str
             "routeId": name,
         }
         _put_dashboard_deployment_entry(index, entry)
+        active_revision = str(record.get("activeRevision") or "").strip()
+        for revision_entry in _normalize_revision_entries(record):
+            revision = str(revision_entry.get("revision") or "").strip()
+            if not revision:
+                continue
+            revision_config = dict(entry)
+            revision_config.update(
+                {
+                    "fullName": revision,
+                    "jobId": revision,
+                    "rolloutOwner": name,
+                    "rolloutRevision": revision,
+                    "rolloutActive": revision == active_revision,
+                }
+            )
+            index[f"job:{revision}"] = revision_config
+            index[f"full:{revision}"] = revision_config
     for raw_slug, record in (deployments.get("compose") if isinstance(deployments.get("compose"), dict) else {}).items():
         if not isinstance(record, dict):
             continue
@@ -5728,6 +5821,7 @@ def _put_dashboard_deployment_entry(index: dict[str, Dict[str, Any]], entry: Dic
     name = str(entry.get("name") or "")
     full_name = str(entry.get("fullName") or "")
     route_id = str(entry.get("routeId") or "")
+    job_id = str(entry.get("jobId") or "")
     for key in {
         f"{stack}:{name}",
         f"{stack}:{slugify(name)}",
@@ -5737,7 +5831,10 @@ def _put_dashboard_deployment_entry(index: dict[str, Dict[str, Any]], entry: Dic
         if key and not key.endswith(":"):
             index[key] = entry
     if entry.get("kind") == "service":
-        index[f"job:{stack}"] = entry
+        if job_id:
+            index[f"job:{job_id}"] = entry
+        else:
+            index[f"job:{stack}"] = entry
 
 
 def _dashboard_deployment_config(
