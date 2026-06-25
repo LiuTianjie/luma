@@ -28,6 +28,8 @@ function bodyFor(request: DeployRequest) {
     sourceName: request.sourceName,
     skipDns: request.skipDns,
     skipOrchestrator: request.skipOrchestrator,
+    source: "dashboard",
+    client: { name: "luma-dashboard", source: "dashboard" },
   });
 }
 
@@ -72,7 +74,7 @@ export type BuildImportRequest = {
 };
 
 export async function buildImportStream(request: BuildImportRequest, onStep: (step: DeployStep) => void): Promise<unknown> {
-  const body: Record<string, unknown> = { repoUrl: request.repoUrl, buildNode: request.buildNode };
+  const body: Record<string, unknown> = { repoUrl: request.repoUrl, buildNode: request.buildNode, source: "dashboard", client: { name: "luma-dashboard", source: "dashboard" } };
   for (const [src, dst] of [["ref", "ref"], ["region", "region"], ["exposure", "exposure"], ["domain", "domain"], ["platform", "platform"], ["registryHost", "registryHost"]] as const) {
     const value = request[src];
     if (value) body[dst] = value;

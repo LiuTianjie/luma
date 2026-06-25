@@ -1,10 +1,11 @@
 import { DEPLOY_TEMPLATES } from "./deploy/templates";
-import type { DashboardIssue, DashboardNode, DashboardPayload, DashboardService, TrafficPath } from "./types";
+import type { DashboardIssue, DashboardNode, DashboardOperation, DashboardPayload, DashboardService, TrafficPath } from "./types";
 import { groupApplications, isServiceHealthy, type Application } from "./components/applicationModel";
 
 export type PageId =
   | "overview"
   | "applications"
+  | "deployments"
   | "deploy"
   | "topology"
   | "observability"
@@ -30,6 +31,9 @@ export type DashboardViewModel = {
   storageVolumes: NonNullable<NonNullable<DashboardPayload["storage"]>["volumes"]>;
   storageClasses: NonNullable<NonNullable<DashboardPayload["storage"]>["storageClasses"]>;
   storageWarnings: string[];
+  operationsRunning: DashboardOperation[];
+  operationsRecent: DashboardOperation[];
+  operationsFailed: DashboardOperation[];
   activeNodes: number;
   healthyServices: number;
   issueCounts: IssueCounts;
@@ -71,6 +75,9 @@ export function createDashboardViewModel(payload: DashboardPayload | null): Dash
   const storageVolumes = payload?.storage?.volumes || [];
   const storageClasses = payload?.storage?.storageClasses || [];
   const storageWarnings = payload?.storage?.warnings || [];
+  const operationsRunning = payload?.operations?.running || [];
+  const operationsRecent = payload?.operations?.recent || [];
+  const operationsFailed = operationsRecent.filter((operation) => (operation.status || "").toLowerCase() === "failed");
   const activeNodes = nodes.filter(readyNode).length;
   const healthyServices = services.filter(isServiceHealthy).length;
   const counts = issueCounts(issues);
@@ -85,6 +92,9 @@ export function createDashboardViewModel(payload: DashboardPayload | null): Dash
     storageVolumes,
     storageClasses,
     storageWarnings,
+    operationsRunning,
+    operationsRecent,
+    operationsFailed,
     activeNodes,
     healthyServices,
     issueCounts: counts,

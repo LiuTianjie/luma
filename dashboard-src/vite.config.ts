@@ -160,6 +160,100 @@ const devDashboardPayload = {
     ],
     warnings: [],
   },
+  operations: {
+    running: [
+      {
+        id: "dep-1719216000123-a1b2c3",
+        kind: "service-deploy",
+        source: "cli",
+        actor: "codex@home-mac-mini",
+        target: { name: "codex-gitea", sourceName: "deploy/codex-gitea.yaml", region: "home", exposure: "tailscale-relay", domain: "codex-bot.itool.tech" },
+        status: "running",
+        phase: "Switch route to revision",
+        startedAt: Math.floor(Date.now() / 1000) - 126,
+        updatedAt: Math.floor(Date.now() / 1000) - 7,
+        finishedAt: 0,
+        error: "",
+        result: { activeRevision: "codex-gitea-r1719216000", retiredRevisions: [] },
+        steps: [
+          { name: "Parse manifest", status: "ok", message: "codex-gitea -> home/tailscale-relay", time: Math.floor(Date.now() / 1000) - 126 },
+          { name: "Resolve node pin", status: "ok", message: "ok", time: Math.floor(Date.now() / 1000) - 118 },
+          { name: "Resolve image", status: "ok", message: "ghcr.io/liutianjie/codex-gitea@sha256:ade6c617", time: Math.floor(Date.now() / 1000) - 105 },
+          { name: "Prepare managed storage", status: "ok", message: "ok", time: Math.floor(Date.now() / 1000) - 90 },
+          { name: "Render blue-green revision job", status: "ok", message: "generated", time: Math.floor(Date.now() / 1000) - 72 },
+          { name: "Deploy blue-green revision", status: "ok", message: "Nomad job registered", time: Math.floor(Date.now() / 1000) - 51 },
+          { name: "Wait for revision health", status: "ok", message: "1 endpoint ready", time: Math.floor(Date.now() / 1000) - 21 },
+          { name: "Switch route to revision", status: "start", message: "started", time: Math.floor(Date.now() / 1000) - 7 },
+        ],
+      },
+    ],
+    recent: [
+      {
+        id: "dep-1719216000123-a1b2c3",
+        kind: "service-deploy",
+        source: "cli",
+        actor: "codex@home-mac-mini",
+        target: { name: "codex-gitea", sourceName: "deploy/codex-gitea.yaml", region: "home", exposure: "tailscale-relay", domain: "codex-bot.itool.tech" },
+        status: "running",
+        phase: "Switch route to revision",
+        startedAt: Math.floor(Date.now() / 1000) - 126,
+        updatedAt: Math.floor(Date.now() / 1000) - 7,
+        finishedAt: 0,
+        error: "",
+        result: { activeRevision: "codex-gitea-r1719216000", retiredRevisions: [] },
+        steps: [
+          { name: "Parse manifest", status: "ok", message: "codex-gitea -> home/tailscale-relay", time: Math.floor(Date.now() / 1000) - 126 },
+          { name: "Resolve node pin", status: "ok", message: "ok", time: Math.floor(Date.now() / 1000) - 118 },
+          { name: "Resolve image", status: "ok", message: "ghcr.io/liutianjie/codex-gitea@sha256:ade6c617", time: Math.floor(Date.now() / 1000) - 105 },
+          { name: "Prepare managed storage", status: "ok", message: "ok", time: Math.floor(Date.now() / 1000) - 90 },
+          { name: "Render blue-green revision job", status: "ok", message: "generated", time: Math.floor(Date.now() / 1000) - 72 },
+          { name: "Deploy blue-green revision", status: "ok", message: "Nomad job registered", time: Math.floor(Date.now() / 1000) - 51 },
+          { name: "Wait for revision health", status: "ok", message: "1 endpoint ready", time: Math.floor(Date.now() / 1000) - 21 },
+          { name: "Switch route to revision", status: "start", message: "started", time: Math.floor(Date.now() / 1000) - 7 },
+        ],
+      },
+      {
+        id: "dep-1719215700456-d4e5f6",
+        kind: "github-import",
+        source: "dashboard",
+        actor: "dashboard",
+        target: { name: "redbook", repoUrl: "https://github.com/gaojiu/redbook", buildNode: "m4mini", region: "home" },
+        status: "failed",
+        phase: "Failed",
+        startedAt: Math.floor(Date.now() / 1000) - 732,
+        updatedAt: Math.floor(Date.now() / 1000) - 601,
+        finishedAt: Math.floor(Date.now() / 1000) - 601,
+        error: "Build image failed: node agent timed out waiting for docker build",
+        result: {},
+        steps: [
+          { name: "Build image", status: "start", message: "started", time: Math.floor(Date.now() / 1000) - 732 },
+          { name: "Build image", status: "fail", message: "node agent timed out waiting for docker build", time: Math.floor(Date.now() / 1000) - 601 },
+        ],
+      },
+      {
+        id: "dep-1719214800789-a7b8c9",
+        kind: "compose-deploy",
+        source: "api",
+        actor: "gitea-actions",
+        target: { name: "granary", sourceName: "deploy/luma.compose.yml", region: "home", domain: "granary.itool.tech" },
+        status: "succeeded",
+        phase: "Completed",
+        startedAt: Math.floor(Date.now() / 1000) - 1812,
+        updatedAt: Math.floor(Date.now() / 1000) - 1660,
+        finishedAt: Math.floor(Date.now() / 1000) - 1660,
+        error: "",
+        result: { deployment: "granary", operationId: "dep-1719214800789-a7b8c9" },
+        steps: [
+          { name: "Parse compose deployment", status: "ok", message: "granary (2 services)", time: Math.floor(Date.now() / 1000) - 1812 },
+          { name: "Prepare managed storage", status: "ok", message: "ok", time: Math.floor(Date.now() / 1000) - 1770 },
+          { name: "Render compose Nomad job", status: "ok", message: "generated", time: Math.floor(Date.now() / 1000) - 1720 },
+          { name: "Deploy compose Nomad job", status: "ok", message: "Nomad job registered", time: Math.floor(Date.now() / 1000) - 1681 },
+          { name: "Probe public route frontend", status: "ok", message: "HTTP 200", time: Math.floor(Date.now() / 1000) - 1660 },
+        ],
+      },
+    ],
+    total: 3,
+  },
   issues: [
     { severity: "warning", kind: "service-pending", target: "egress_mihomo", message: "Service egress_mihomo has 1 pending task" },
     { severity: "warning", kind: "node-memory", target: "m4mini", message: "Node m4mini memory is 67.9%" },
@@ -510,7 +604,7 @@ export default defineConfig({
           response.write(JSON.stringify({ status: "start", name: "Render Nomad job", message: "started" }) + "\n");
           response.write(JSON.stringify({ status: "ok", name: "Render Nomad job", message: "Nomad job rendered" }) + "\n");
           response.write(JSON.stringify({ status: "ok", name: "Deploy Nomad job", message: "Mock deploy complete" }) + "\n");
-          response.end(JSON.stringify({ status: "done", result: { service: "preview-service" } }) + "\n");
+          response.end(JSON.stringify({ status: "done", result: { service: "preview-service", operationId: "dep-dev-service" } }) + "\n");
         });
         server.middlewares.use("/v1/compose-deployments/stream", async (_request, response) => {
           response.statusCode = 200;
@@ -518,7 +612,7 @@ export default defineConfig({
           response.write(JSON.stringify({ status: "start", name: "Render compose Nomad job", message: "started" }) + "\n");
           response.write(JSON.stringify({ status: "ok", name: "Render compose Nomad job", message: "Compose Nomad job rendered" }) + "\n");
           response.write(JSON.stringify({ status: "ok", name: "Deploy Nomad job", message: "Mock compose deploy complete" }) + "\n");
-          response.end(JSON.stringify({ status: "done", result: { deployment: "preview-compose" } }) + "\n");
+          response.end(JSON.stringify({ status: "done", result: { deployment: "preview-compose", operationId: "dep-dev-compose" } }) + "\n");
         });
         server.middlewares.use("/v1/applications/restart", async (request, response) => {
           if (request.method !== "POST") {

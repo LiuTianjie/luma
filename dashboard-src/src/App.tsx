@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Boxes, GitBranch, HardDrive, KeyRound, LayoutDashboard, Plus, ServerCog } from "lucide-react";
+import { Activity, Boxes, GitBranch, HardDrive, KeyRound, LayoutDashboard, ListChecks, Plus, ServerCog } from "lucide-react";
 import { ErrorBanner } from "./components/ErrorBanner";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
@@ -9,6 +9,7 @@ import { Topbar } from "./components/Topbar";
 import { createDashboardViewModel, type NavPage, type PageId } from "./dashboardViewModel";
 import { ApplicationsPage } from "./pages/ApplicationsPage";
 import { DeployPage, type DeployUpdateContext } from "./pages/DeployPage";
+import { DeploymentsPage } from "./pages/DeploymentsPage";
 import { CredentialsPage } from "./pages/CredentialsPage";
 import { NodesPage } from "./pages/NodesPage";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
@@ -175,6 +176,13 @@ export function App() {
       detail: lang === "zh" ? "生命周期 · 回滚" : "Lifecycle · rollback",
     },
     {
+      id: "deployments" as const,
+      icon: ListChecks,
+      label: lang === "zh" ? "部署" : "Deployments",
+      value: vm.operationsRunning.length || vm.operationsFailed.length,
+      detail: lang === "zh" ? `${vm.operationsRunning.length} 进行中 · ${vm.operationsFailed.length} 失败` : `${vm.operationsRunning.length} running · ${vm.operationsFailed.length} failed`,
+    },
+    {
       id: "deploy" as const,
       icon: Plus,
       label: lang === "zh" ? "创建" : "Create",
@@ -295,6 +303,8 @@ export function App() {
                   onCreateApplication={() => navigate("deploy")}
                   onUpdateApplication={openUpdatePage}
                 />
+              ) : activePage === "deployments" ? (
+                <DeploymentsPage lang={lang} vm={vm} />
               ) : activePage === "deploy" || activePage === "update" ? (
                 <DeployPage
                   lang={lang}

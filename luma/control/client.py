@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import ssl
 import urllib.error
@@ -25,6 +26,15 @@ class ControlClient:
         self.insecure = insecure
         self.resolve_ip = resolve_ip
         self._host_header = parsed.netloc
+
+    @staticmethod
+    def _client_metadata() -> Dict[str, str]:
+        return {
+            "name": "luma-cli",
+            "source": "cli",
+            "host": socket.gethostname(),
+            "user": os.environ.get("USER") or os.environ.get("USERNAME") or "",
+        }
 
     def request(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Dict[str, Any]:
         with self._open(method, path, body, timeout=timeout) as response:
@@ -230,6 +240,8 @@ class ControlClient:
             "sourceName": source_name,
             "skipDns": skip_dns,
             "skipOrchestrator": skip_orchestrator,
+            "source": "cli",
+            "client": self._client_metadata(),
         }
         if env_secrets is not None:
             body["envSecrets"] = env_secrets
@@ -255,6 +267,8 @@ class ControlClient:
             "sourceName": source_name,
             "skipDns": skip_dns,
             "skipOrchestrator": skip_orchestrator,
+            "source": "cli",
+            "client": self._client_metadata(),
         }
         if env_secrets is not None:
             body["envSecrets"] = env_secrets
@@ -282,6 +296,8 @@ class ControlClient:
             "sourceName": source_name,
             "skipDns": skip_dns,
             "skipOrchestrator": skip_orchestrator,
+            "source": "cli",
+            "client": self._client_metadata(),
         }
         if env_secrets is not None:
             body["envSecrets"] = env_secrets
@@ -309,6 +325,8 @@ class ControlClient:
             "sourceName": source_name,
             "skipDns": skip_dns,
             "skipOrchestrator": skip_orchestrator,
+            "source": "cli",
+            "client": self._client_metadata(),
         }
         if env_secrets is not None:
             body["envSecrets"] = env_secrets
@@ -360,6 +378,8 @@ class ControlClient:
         body: Dict[str, Any] = {
             "repoUrl": values["repo_url"],
             "buildNode": values["build_node"],
+            "source": "cli",
+            "client": ControlClient._client_metadata(),
         }
         optional = {
             "ref": values.get("ref"),

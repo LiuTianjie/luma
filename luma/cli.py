@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.125 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.126 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -937,6 +937,12 @@ def _print_deploy_step(step: Dict[str, Any]) -> None:
     message = step.get("message")
     suffix = f": {message}" if message else ""
     print(f"[{status}] {name}{suffix}", flush=True)
+
+
+def _print_operation_id(result: Dict[str, Any]) -> None:
+    operation_id = str(result.get("operationId") or "").strip()
+    if operation_id:
+        print(f"Operation: {operation_id}", flush=True)
 
 
 def cmd_node(args: argparse.Namespace) -> int:
@@ -2371,6 +2377,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         _print_success(args, result)
         return 0
     print(f"[ok] Deploy finished: {result.get('service', service.name)}")
+    _print_operation_id(result)
     if result.get("image"):
         image = result["image"]
         if image.get("fallback"):
@@ -2455,6 +2462,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         _print_success(args, result)
         return 0
     print(f"[ok] Import finished: {result.get('service', args.repo)}")
+    _print_operation_id(result)
     if result.get("image"):
         image = result["image"]
         if isinstance(image, str):
@@ -2610,6 +2618,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
         _print_success(args, result)
         return 0
     print(f"[ok] Compose deploy finished: {result.get('deployment', deployment.name)}")
+    _print_operation_id(result)
     for warning in (result.get("storage") or {}).get("warnings") or []:
         print(f"[warn] {warning}")
     return 0

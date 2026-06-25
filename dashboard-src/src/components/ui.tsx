@@ -22,7 +22,7 @@ export function CodeCell({ value }: { value: string }) {
 }
 
 export function StatePill({ label, value }: { label: string; value?: string }) {
-  const kind = ["ready", "running", "healthy"].includes(value || "")
+  const kind = ["ready", "running", "healthy", "succeeded", "ok", "active"].includes(value || "")
     ? "good"
     : ["failed", "missing", "bad"].includes(value || "")
       ? "danger"

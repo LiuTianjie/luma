@@ -1,9 +1,9 @@
-import { ArrowRight, GitBranch, HardDrive, Plus, Server, TerminalSquare } from "lucide-react";
+import { ArrowRight, GitBranch, HardDrive, ListChecks, Plus, Server, TerminalSquare, XCircle } from "lucide-react";
 import type { CSSProperties } from "react";
 import { Badge, CodeCell, PrimaryCell, StatePill } from "../components/ui";
 import { localizeState, t } from "../i18n";
 import type { Application } from "../components/applicationModel";
-import type { DashboardIssue, DashboardNode, DashboardPayload, Lang } from "../types";
+import type { DashboardIssue, DashboardNode, DashboardOperation, DashboardPayload, Lang } from "../types";
 import type { DashboardViewModel, NavPage } from "../dashboardViewModel";
 
 function accessHref(domain: string) {
@@ -49,6 +49,10 @@ function healthLabel(score: number, lang: Lang) {
 
 function readinessLabel(lang: Lang, ready?: boolean) {
   return ready ? (lang === "zh" ? "健康" : "Healthy") : (lang === "zh" ? "缺失" : "Missing");
+}
+
+function operationTarget(operation: Partial<DashboardOperation>) {
+  return operation.target?.name || operation.target?.slug || operation.target?.repoUrl || operation.target?.sourceName || operation.id || "-";
 }
 
 export function OverviewPage({
@@ -114,6 +118,33 @@ export function OverviewPage({
           <strong className="ok">Nomad</strong>
           <small>{zh ? "控制面直接提交 Nomad job" : "Control submits Nomad jobs directly"}</small>
         </article>
+      </section>
+
+      <section className="overview-deployment-band" aria-label={zh ? "部署流水概览" : "Deployment flow overview"}>
+        <button type="button" onClick={() => onNavigate("deployments")}>
+          <ListChecks size={18} aria-hidden="true" />
+          <span>
+            <strong>{vm.operationsRunning.length}</strong>
+            <small>{zh ? "正在部署" : "running deployments"}</small>
+          </span>
+          <ArrowRight size={16} aria-hidden="true" />
+        </button>
+        <button type="button" onClick={() => onNavigate("deployments")}>
+          <XCircle size={18} aria-hidden="true" />
+          <span>
+            <strong>{vm.operationsFailed.length}</strong>
+            <small>{zh ? "最近失败部署" : "recent failed deployments"}</small>
+          </span>
+          <ArrowRight size={16} aria-hidden="true" />
+        </button>
+        <button type="button" onClick={() => onNavigate("deployments")}>
+          <TerminalSquare size={18} aria-hidden="true" />
+          <span>
+            <strong>{operationTarget(vm.operationsRecent[0] || {})}</strong>
+            <small>{vm.operationsRecent[0]?.phase || (zh ? "暂无部署流水" : "No deployment flow yet")}</small>
+          </span>
+          <ArrowRight size={16} aria-hidden="true" />
+        </button>
       </section>
 
       <section className="overview-workbench" aria-label={zh ? "运维工作台" : "Operations workbench"}>

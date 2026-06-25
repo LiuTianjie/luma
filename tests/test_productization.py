@@ -59,7 +59,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _prune_operations_locked, _run_deployment_operation, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_operation, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_operations, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -4296,6 +4296,214 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_deployment_operation_records_steps_for_dashboard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "defaults": {
+                                "engine": "nomad",
+                                "stackRoot": str(root / "stacks"),
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "none",
+                    }
+                )
+                with patch(
+                    "luma.control.server.resolve_service_image",
+                    side_effect=lambda _config, service, **_kwargs: (service, {"requested": service.image, "selected": service.image}),
+                ):
+                    result = handle_deployment_operation(
+                        state["deployToken"],
+                        {
+                            "manifest": manifest,
+                            "sourceName": "api.yaml",
+                            "source": "cli",
+                            "skipDns": True,
+                            "skipOrchestrator": True,
+                        },
+                    )
+
+                self.assertRegex(result["operationId"], r"^dep-")
+                operation = load_state()["operations"]["items"][result["operationId"]]
+                self.assertEqual(operation["kind"], "service-deploy")
+                self.assertEqual(operation["source"], "cli")
+                self.assertEqual(operation["target"]["name"], "api")
+                self.assertEqual(operation["status"], "succeeded")
+                step_summary = "\n".join(f"{step['name']}={step['status']}" for step in operation["steps"])
+                self.assertIn("Parse manifest=ok", step_summary)
+                self.assertIn("Resolve image=start", step_summary)
+                self.assertIn("Resolve image=ok", step_summary)
+                listed = handle_operations(state["deployToken"])
+                self.assertEqual(listed["operations"]["recent"][0]["id"], result["operationId"])
+                self.assertFalse(listed["operations"]["running"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_failed_deployment_operation_keeps_error_and_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                with self.assertRaisesRegex(LumaError, "manifest is required"):
+                    handle_deployment_operation(state["deployToken"], {"manifest": "", "sourceName": "broken.yaml", "source": "api"})
+
+                operations = load_state()["operations"]["items"]
+                self.assertEqual(len(operations), 1)
+                operation = next(iter(operations.values()))
+                self.assertEqual(operation["status"], "failed")
+                self.assertEqual(operation["target"]["name"], "broken.yaml")
+                self.assertIn("manifest is required", operation["error"])
+                self.assertEqual(operation["steps"][-1]["status"], "fail")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_github_import_operation_uses_same_registry_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+
+                def fake_import(_token, _body, *, progress=None):
+                    if progress:
+                        progress({"name": "Build image", "status": "start", "message": "started"})
+                        progress({"name": "Build image", "status": "ok", "message": "registry.local/acme/api:tag"})
+                    return {"service": "api", "image": "registry.local/acme/api:tag", "steps": []}
+
+                result = _run_deployment_operation(
+                    state["deployToken"],
+                    {
+                        "repoUrl": "https://github.com/acme/api",
+                        "buildNode": "builder",
+                        "source": "dashboard",
+                    },
+                    kind="github-import",
+                    default_source="github-import",
+                    handler=fake_import,
+                )
+
+                operation = load_state()["operations"]["items"][result["operationId"]]
+                self.assertEqual(operation["kind"], "github-import")
+                self.assertEqual(operation["source"], "dashboard")
+                self.assertEqual(operation["target"]["repoUrl"], "https://github.com/acme/api")
+                self.assertEqual(operation["status"], "succeeded")
+                self.assertIn("Build image", [step["name"] for step in operation["steps"]])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_blue_green_operation_records_cutover_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "ghcr.io/acme/api:latest",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "rollout": {"mode": "blue-green"},
+                    }
+                )
+
+                def fake_blue_green(_token, _body, *, progress=None):
+                    if progress:
+                        progress({"name": "Render blue-green revision job", "status": "ok", "message": "generated"})
+                        progress({"name": "Switch route to revision", "status": "ok", "message": "written"})
+                        progress({"name": "Retire old revisions", "status": "ok", "message": "api-r-old"})
+                    return {"service": "api", "activeRevision": "api-r-new", "retiredRevisions": ["api-r-old"], "steps": []}
+
+                result = _run_deployment_operation(
+                    state["deployToken"],
+                    {"manifest": manifest, "sourceName": "api.yaml", "source": "cli"},
+                    kind="service-deploy",
+                    default_source="api",
+                    handler=fake_blue_green,
+                )
+
+                operation = load_state()["operations"]["items"][result["operationId"]]
+                self.assertEqual(operation["result"]["activeRevision"], "api-r-new")
+                self.assertEqual(operation["result"]["retiredRevisions"], ["api-r-old"])
+                names = [step["name"] for step in operation["steps"]]
+                self.assertIn("Switch route to revision", names)
+                self.assertIn("Retire old revisions", names)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_deployment_operation_survives_stream_disconnect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+
+                def fake_deploy(_token, _body, *, progress=None):
+                    if progress:
+                        progress({"name": "Render Nomad job", "status": "start", "message": "started"})
+                        progress({"name": "Render Nomad job", "status": "ok", "message": "generated"})
+                    return {"service": "api", "steps": []}
+
+                def disconnected_emit(_event):
+                    raise OSError("client disconnected")
+
+                result = _run_deployment_operation(
+                    state["deployToken"],
+                    {"manifest": "name: api\nimage: nginx\nregion: cn\n", "sourceName": "api.yaml", "source": "cli"},
+                    kind="service-deploy",
+                    default_source="api",
+                    handler=fake_deploy,
+                    emit=disconnected_emit,
+                )
+
+                operation = load_state()["operations"]["items"][result["operationId"]]
+                self.assertEqual(operation["status"], "succeeded")
+                self.assertEqual([step["status"] for step in operation["steps"][:2]], ["start", "ok"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_operation_pruning_keeps_running_and_recent_failed(self):
+        now = 2_000_000
+        old_completed = {
+            f"old-{index}": {
+                "id": f"old-{index}",
+                "status": "succeeded",
+                "updatedAt": now - 8 * 24 * 3600 - index,
+                "startedAt": now - 8 * 24 * 3600 - index,
+            }
+            for index in range(105)
+        }
+        state = {
+            "operations": {
+                "items": {
+                    **old_completed,
+                    "running": {"id": "running", "status": "running", "updatedAt": now - 10, "startedAt": now - 20},
+                    "failed": {"id": "failed", "status": "failed", "updatedAt": now - 30, "startedAt": now - 60},
+                    "old-failed": {"id": "old-failed", "status": "failed", "updatedAt": now - 8 * 24 * 3600, "startedAt": now - 8 * 24 * 3600},
+                }
+            }
+        }
+
+        _prune_operations_locked(state, now=now)
+
+        items = state["operations"]["items"]
+        self.assertIn("running", items)
+        self.assertIn("failed", items)
+        self.assertNotIn("old-failed", items)
+        self.assertTrue(all(not key.startswith("old-") for key in items))
 
     def test_tailscale_relay_public_probe_checks_https_domain(self):
         from luma.control.server import _probe_public_route

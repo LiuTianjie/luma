@@ -60,6 +60,40 @@ export type DashboardIssue = {
   message?: string;
 };
 
+export type OperationStep = {
+  name?: string;
+  status?: "start" | "ok" | "fail" | "done" | string;
+  message?: string;
+  time?: number;
+  requestId?: string;
+  code?: string;
+};
+
+export type DashboardOperation = {
+  id?: string;
+  kind?: string;
+  source?: "cli" | "dashboard" | "github-import" | "api" | string;
+  actor?: string;
+  target?: {
+    name?: string;
+    slug?: string;
+    sourceName?: string;
+    region?: string;
+    exposure?: string;
+    domain?: string;
+    repoUrl?: string;
+    buildNode?: string;
+  };
+  status?: "running" | "succeeded" | "failed" | string;
+  phase?: string;
+  steps?: OperationStep[];
+  startedAt?: number;
+  updatedAt?: number;
+  finishedAt?: number;
+  error?: string;
+  result?: Record<string, unknown>;
+};
+
 export type DashboardNode = {
   name?: string;
   displayName?: string;
@@ -187,6 +221,11 @@ export type DashboardPayload = {
     storageClasses?: DashboardStorageClass[];
     volumes?: DashboardVolume[];
     warnings?: string[];
+  };
+  operations?: {
+    running?: DashboardOperation[];
+    recent?: DashboardOperation[];
+    total?: number;
   };
   issues?: DashboardIssue[];
   errors?: string[];

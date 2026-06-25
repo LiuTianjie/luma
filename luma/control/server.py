@@ -76,6 +76,8 @@ ALERT_NODE_MEMORY_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_MEMORY_PERCENT
 ALERT_NODE_CPU_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_CPU_PERCENT", "90"))
 TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS", "300"))
 DEFAULT_BLUE_GREEN_REVISION_RETENTION = 3
+OPERATIONS_MAX_COUNT = int(os.environ.get("LUMA_OPERATIONS_MAX_COUNT", "100"))
+OPERATIONS_RETENTION_SECONDS = int(os.environ.get("LUMA_OPERATIONS_RETENTION_SECONDS", str(7 * 24 * 3600)))
 EGRESS_PROXY_URL = os.environ.get("LUMA_EGRESS_PROXY_URL", "http://127.0.0.1:7890")
 EGRESS_NO_PROXY = os.environ.get(
     "LUMA_EGRESS_NO_PROXY",
@@ -814,6 +816,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         "trafficPaths": traffic_paths,
         "storage": storage,
         "issues": issues,
+        "operations": _dashboard_operations_from_state(state),
         "errors": errors,
     }
 
@@ -1378,6 +1381,335 @@ def _deployments_state(state: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(deployments.get(key), dict):
             deployments[key] = {}
     return deployments
+
+
+def _operations_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    operations = state.get("operations")
+    if isinstance(operations, dict) and "items" not in operations and any(isinstance(item, dict) for item in operations.values()):
+        operations = {"items": operations}
+    if not isinstance(operations, dict):
+        operations = {}
+    state["operations"] = operations
+    if not isinstance(operations.get("items"), dict):
+        operations["items"] = {}
+    return operations
+
+
+def _operation_source(body: Dict[str, Any], default: str) -> str:
+    raw = str(body.get("source") or body.get("operationSource") or "").strip().lower()
+    client = body.get("client") if isinstance(body.get("client"), dict) else {}
+    if not raw and isinstance(client, dict):
+        raw = str(client.get("source") or "").strip().lower()
+    aliases = {
+        "web": "dashboard",
+        "console": "dashboard",
+        "import": "github-import",
+        "github": "github-import",
+    }
+    value = aliases.get(raw, raw)
+    if value in {"cli", "dashboard", "github-import", "api"}:
+        return value
+    return default
+
+
+def _operation_actor(body: Dict[str, Any], source: str) -> str:
+    raw = str(body.get("actor") or "").strip()
+    if raw:
+        return raw
+    client = body.get("client") if isinstance(body.get("client"), dict) else {}
+    if isinstance(client, dict):
+        user = str(client.get("user") or "").strip()
+        host = str(client.get("host") or client.get("hostname") or "").strip()
+        if user and host:
+            return f"{user}@{host}"
+        if user or host:
+            return user or host
+        name = str(client.get("name") or "").strip()
+        if name:
+            return name
+    return source
+
+
+def _operation_target(kind: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    source_name = str(body.get("sourceName") or "").strip()
+    target: Dict[str, Any] = {"sourceName": source_name}
+    if kind == "github-import":
+        repo_url = str(body.get("repoUrl") or "").strip()
+        if repo_url:
+            target["repoUrl"] = repo_url
+            target["name"] = repo_url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git") or repo_url
+        build_node = str(body.get("buildNode") or "").strip()
+        if build_node:
+            target["buildNode"] = build_node
+        return {key: value for key, value in target.items() if value}
+    if kind == "compose-deploy":
+        try:
+            deployment = _load_compose_request(body, source_name or "luma.compose.yml")
+            target.update({"name": deployment.name, "slug": deployment.slug, "region": deployment.region})
+        except Exception:
+            target["name"] = source_name or "compose deployment"
+        return {key: value for key, value in target.items() if value}
+    manifest = body.get("manifest")
+    if isinstance(manifest, str):
+        try:
+            data = yaml.safe_load(manifest) or {}
+            if isinstance(data, dict):
+                for key in ("name", "region", "exposure", "domain"):
+                    value = data.get(key)
+                    if value:
+                        target[key] = str(value)
+        except Exception:
+            pass
+    if not target.get("name"):
+        target["name"] = source_name or "service deployment"
+    return {key: value for key, value in target.items() if value}
+
+
+def _operation_id() -> str:
+    return f"dep-{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+
+
+def _operation_timestamp(record: Dict[str, Any]) -> int:
+    for key in ("updatedAt", "finishedAt", "startedAt"):
+        try:
+            value = int(record.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value:
+            return value
+    return 0
+
+
+def _prune_operations_locked(state: Dict[str, Any], *, now: int | None = None) -> None:
+    now = now or int(time.time())
+    items = _operations_state(state)["items"]
+    cutoff = now - OPERATIONS_RETENTION_SECONDS
+    for operation_id, record in list(items.items()):
+        if not isinstance(record, dict):
+            items.pop(operation_id, None)
+            continue
+        status = str(record.get("status") or "").lower()
+        if status in {"succeeded", "completed", "cancelled", "failed", "error"} and _operation_timestamp(record) < cutoff:
+            items.pop(operation_id, None)
+    if len(items) <= OPERATIONS_MAX_COUNT:
+        return
+    removable = []
+    for operation_id, record in items.items():
+        if not isinstance(record, dict):
+            removable.append((0, 0, operation_id))
+            continue
+        status = str(record.get("status") or "").lower()
+        if status == "running":
+            continue
+        timestamp = _operation_timestamp(record)
+        priority = 1 if status in {"succeeded", "completed", "cancelled"} else 2
+        if status in {"failed", "error"} and timestamp >= cutoff:
+            priority = 3
+        removable.append((priority, timestamp, operation_id))
+    for priority, _timestamp, operation_id in sorted(removable):
+        if len(items) <= OPERATIONS_MAX_COUNT:
+            break
+        if priority >= 3:
+            continue
+        items.pop(operation_id, None)
+
+
+def _operation_step_from_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    status = str(event.get("status") or "ok").strip() or "ok"
+    name = str(event.get("name") or event.get("phase") or ("Operation failed" if status == "fail" else "Operation")).strip()
+    step: Dict[str, Any] = {
+        "name": name,
+        "status": status,
+        "message": str(event.get("message") or ""),
+        "time": int(time.time()),
+    }
+    for key in ("requestId", "code"):
+        if event.get(key):
+            step[key] = str(event[key])
+    detail = event.get("detail")
+    if isinstance(detail, (dict, list, str, int, float, bool)):
+        step["detail"] = detail
+    return step
+
+
+def _operation_public(record: Dict[str, Any]) -> Dict[str, Any]:
+    steps = record.get("steps") if isinstance(record.get("steps"), list) else []
+    public: Dict[str, Any] = {
+        "id": str(record.get("id") or ""),
+        "kind": str(record.get("kind") or ""),
+        "source": str(record.get("source") or ""),
+        "actor": str(record.get("actor") or ""),
+        "target": record.get("target") if isinstance(record.get("target"), dict) else {},
+        "status": str(record.get("status") or ""),
+        "phase": str(record.get("phase") or ""),
+        "steps": [step for step in steps if isinstance(step, dict)],
+        "startedAt": record.get("startedAt") or 0,
+        "updatedAt": record.get("updatedAt") or 0,
+        "finishedAt": record.get("finishedAt") or 0,
+        "error": str(record.get("error") or ""),
+        "result": record.get("result") if isinstance(record.get("result"), dict) else {},
+    }
+    return public
+
+
+def _dashboard_operations_from_state(state: Dict[str, Any], *, limit: int = 50) -> Dict[str, Any]:
+    items = _operations_state(state)["items"]
+    records = [_operation_public(record) for record in items.values() if isinstance(record, dict)]
+    records.sort(key=lambda item: int(item.get("updatedAt") or item.get("startedAt") or 0), reverse=True)
+    running = [record for record in records if str(record.get("status") or "").lower() == "running"]
+    return {
+        "running": running,
+        "recent": records[:limit],
+        "total": len(records),
+    }
+
+
+def _create_operation(token: str, kind: str, body: Dict[str, Any], *, default_source: str) -> str:
+    def mutate(state: Dict[str, Any]) -> str:
+        require_token(state, token, token_type="deploy")
+        now = int(time.time())
+        source = _operation_source(body, default_source)
+        operation_id = _operation_id()
+        _operations_state(state)["items"][operation_id] = {
+            "id": operation_id,
+            "kind": kind,
+            "source": source,
+            "actor": _operation_actor(body, source),
+            "target": _operation_target(kind, body),
+            "status": "running",
+            "phase": "Queued",
+            "steps": [],
+            "startedAt": now,
+            "updatedAt": now,
+            "finishedAt": 0,
+            "error": "",
+            "result": {},
+        }
+        _prune_operations_locked(state, now=now)
+        return operation_id
+
+    return mutate_state(mutate)
+
+
+def _append_operation_step(operation_id: str, event: Dict[str, Any]) -> None:
+    if not operation_id:
+        return
+
+    def mutate(state: Dict[str, Any]) -> None:
+        record = _operations_state(state)["items"].get(operation_id)
+        if not isinstance(record, dict):
+            return
+        step = _operation_step_from_event(event)
+        steps = record.get("steps") if isinstance(record.get("steps"), list) else []
+        steps.append(step)
+        record["steps"] = steps[-220:]
+        record["updatedAt"] = step["time"]
+        status = str(step.get("status") or "").lower()
+        name = str(step.get("name") or "").strip()
+        if name:
+            record["phase"] = name
+        if status == "fail":
+            record["status"] = "failed"
+            record["error"] = str(step.get("message") or "")
+            record["finishedAt"] = record.get("finishedAt") or step["time"]
+        elif record.get("status") not in {"failed", "succeeded"}:
+            record["status"] = "running"
+
+    mutate_state(mutate)
+
+
+def _finish_operation(operation_id: str, status: str, *, result: Dict[str, Any] | None = None, error: str = "") -> None:
+    if not operation_id:
+        return
+
+    def mutate(state: Dict[str, Any]) -> None:
+        now = int(time.time())
+        record = _operations_state(state)["items"].get(operation_id)
+        if not isinstance(record, dict):
+            return
+        normalized = "succeeded" if status in {"ok", "done", "succeeded"} else "failed"
+        record["status"] = normalized
+        record["phase"] = "Completed" if normalized == "succeeded" else "Failed"
+        record["updatedAt"] = now
+        record["finishedAt"] = now
+        if result is not None:
+            record["result"] = result
+        if error:
+            record["error"] = error
+            steps = record.get("steps") if isinstance(record.get("steps"), list) else []
+            if not steps or str((steps[-1] if isinstance(steps[-1], dict) else {}).get("status") or "") != "fail":
+                steps.append({"name": str(record.get("phase") or "Failed"), "status": "fail", "message": error, "time": now})
+                record["steps"] = steps[-220:]
+        _prune_operations_locked(state, now=now)
+
+    mutate_state(mutate)
+
+
+def _operation_progress(operation_id: str, emit: Callable[[Dict[str, Any]], None] | None = None) -> Callable[[Dict[str, Any]], None]:
+    stream_alive = True
+
+    def progress(event: Dict[str, Any]) -> None:
+        nonlocal stream_alive
+        _append_operation_step(operation_id, event)
+        if not emit or not stream_alive:
+            return
+        try:
+            emit(event)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            stream_alive = False
+
+    return progress
+
+
+def _operation_result(result: Dict[str, Any], operation_id: str) -> Dict[str, Any]:
+    enriched = dict(result)
+    enriched["operationId"] = operation_id
+    return enriched
+
+
+def _run_deployment_operation(
+    token: str,
+    body: Dict[str, Any],
+    *,
+    kind: str,
+    default_source: str,
+    handler: Callable[..., Dict[str, Any]],
+    emit: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    operation_id = _create_operation(token, kind, body, default_source=default_source)
+    progress = _operation_progress(operation_id, emit)
+    try:
+        result = handler(token, body, progress=progress)
+        result = _operation_result(result, operation_id)
+        _finish_operation(operation_id, "succeeded", result=result)
+        return result
+    except LumaError as exc:
+        _finish_operation(operation_id, "failed", error=str(exc))
+        raise
+    except Exception as exc:
+        _finish_operation(operation_id, "failed", error=str(exc))
+        raise
+
+
+def handle_deployment_operation(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    return _run_deployment_operation(token, body, kind="service-deploy", default_source="api", handler=handle_deployment)
+
+
+def handle_compose_deployment_operation(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    return _run_deployment_operation(token, body, kind="compose-deploy", default_source="api", handler=handle_compose_deployment)
+
+
+def handle_build_deploy_operation(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    return _run_deployment_operation(token, body, kind="github-import", default_source="github-import", handler=handle_build_deploy)
+
+
+def handle_operations(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    return {
+        "clusterId": str(state.get("clusterId") or ""),
+        "operations": _dashboard_operations_from_state(state),
+    }
 
 
 def _ensure_deployment_slug_available(state: Dict[str, Any], kind: str, slug: str, name: str) -> None:
@@ -6619,6 +6951,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if parsed_path == "/v1/dashboard":
                 self._json(200, handle_dashboard(token))
                 return
+            if parsed_path == "/v1/operations":
+                self._json(200, handle_operations(token))
+                return
             if parsed_path == "/v1/dashboard/logs":
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 service = str((query.get("service") or [""])[0])
@@ -6695,7 +7030,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self._json(200, handle_node_unregister(token, body))
                 return
             if self.path == "/v1/deployments":
-                self._json(200, handle_deployment(token, body))
+                self._json(200, handle_deployment_operation(token, body))
                 return
             if self.path == "/v1/deployments/preview":
                 self._json(200, handle_deployment_preview(token, body))
@@ -6704,7 +7039,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self._stream_deployment(token, body)
                 return
             if self.path == "/v1/compose-deployments":
-                self._json(200, handle_compose_deployment(token, body))
+                self._json(200, handle_compose_deployment_operation(token, body))
                 return
             if self.path == "/v1/compose-deployments/preview":
                 self._json(200, handle_compose_deployment_preview(token, body))
@@ -6716,7 +7051,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self._stream_build_deploy(token, body)
                 return
             if self.path == "/v1/builds":
-                self._json(200, handle_build_deploy(token, body))
+                self._json(200, handle_build_deploy_operation(token, body))
                 return
             if self.path == "/v1/registry/serve/stream":
                 self._stream_registry_serve(token, body)
@@ -6777,13 +7112,20 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        stream_alive = True
 
         def emit(event: Dict[str, Any]) -> None:
-            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
-            self.wfile.flush()
+            nonlocal stream_alive
+            if not stream_alive:
+                return
+            try:
+                self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                stream_alive = False
 
         try:
-            result = handle_deployment(token, body, progress=emit)
+            result = _run_deployment_operation(token, body, kind="service-deploy", default_source="api", handler=handle_deployment, emit=emit)
             emit({"status": "done", "result": result})
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -6799,13 +7141,20 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        stream_alive = True
 
         def emit(event: Dict[str, Any]) -> None:
-            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
-            self.wfile.flush()
+            nonlocal stream_alive
+            if not stream_alive:
+                return
+            try:
+                self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                stream_alive = False
 
         try:
-            result = handle_compose_deployment(token, body, progress=emit)
+            result = _run_deployment_operation(token, body, kind="compose-deploy", default_source="api", handler=handle_compose_deployment, emit=emit)
             emit({"status": "done", "result": result})
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -6821,13 +7170,20 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        stream_alive = True
 
         def emit(event: Dict[str, Any]) -> None:
-            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
-            self.wfile.flush()
+            nonlocal stream_alive
+            if not stream_alive:
+                return
+            try:
+                self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                stream_alive = False
 
         try:
-            result = handle_build_deploy(token, body, progress=emit)
+            result = _run_deployment_operation(token, body, kind="github-import", default_source="github-import", handler=handle_build_deploy, emit=emit)
             emit({"status": "done", "result": result})
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -6972,6 +7328,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_control_status, token))
         if parsed_path == "/v1/dashboard":
             return _json_response(200, await run_in_threadpool(handle_dashboard, token))
+        if parsed_path == "/v1/operations":
+            return _json_response(200, await run_in_threadpool(handle_operations, token))
         if parsed_path == "/v1/dashboard/logs":
             service = str(request.query_params.get("service") or "")
             since = str(request.query_params.get("since") or "")
@@ -7030,11 +7388,11 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/node-agent/lease": handle_node_agent_lease,
             "/v1/node-agent/tasks/complete": handle_node_agent_complete,
             "/v1/nodes/unregister": handle_node_unregister,
-            "/v1/deployments": handle_deployment,
+            "/v1/deployments": handle_deployment_operation,
             "/v1/deployments/preview": handle_deployment_preview,
-            "/v1/compose-deployments": handle_compose_deployment,
+            "/v1/compose-deployments": handle_compose_deployment_operation,
             "/v1/compose-deployments/preview": handle_compose_deployment_preview,
-            "/v1/builds": handle_build_deploy,
+            "/v1/builds": handle_build_deploy_operation,
             "/v1/registry/serve": handle_registry_serve,
             "/v1/storage/apply": handle_storage_apply,
             "/v1/storage": handle_storage_set,
@@ -7081,7 +7439,8 @@ def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) 
         def run() -> None:
             try:
                 handler = handle_compose_deployment if compose else handle_deployment
-                result = handler(token, body, progress=emit)
+                kind = "compose-deploy" if compose else "service-deploy"
+                result = _run_deployment_operation(token, body, kind=kind, default_source="api", handler=handler, emit=emit)
                 emit({"status": "done", "result": result})
             except LumaError as exc:
                 emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
@@ -7112,7 +7471,7 @@ def _asgi_stream_build_deploy(token: str, body: Dict[str, Any]) -> StreamingResp
 
         def run() -> None:
             try:
-                result = handle_build_deploy(token, body, progress=emit)
+                result = _run_deployment_operation(token, body, kind="github-import", default_source="github-import", handler=handle_build_deploy, emit=emit)
                 emit({"status": "done", "result": result})
             except LumaError as exc:
                 emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
