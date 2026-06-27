@@ -8559,5 +8559,52 @@ class DeployConcurrencyTests(unittest.TestCase):
         self._assert_serialized("handle_compose_deployment")
 
 
+class MacPublishPortGuardTests(unittest.TestCase):
+    """Mac/OrbStack nodes can't use Nomad bridge port mapping (publishPort binds
+    a Mac host NIC IP absent inside the OrbStack VM -> silent 502). Deploy must
+    fail fast when a service pins to a darwin node with publishPort set, but only
+    then — Linux pins and unpinned (Nomad-scheduled) services stay unaffected."""
+
+    def _spec(self, yaml: str) -> ServiceSpec:
+        f = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+        try:
+            f.write(yaml)
+            f.close()
+            return load_service(Path(f.name))
+        finally:
+            Path(f.name).unlink(missing_ok=True)
+
+    def _mac_state(self):
+        return {"nodes": {"macmini": {"name": "macmini", "region": "home", "platform": "darwin/arm64"}}}
+
+    def _linux_state(self):
+        return {"nodes": {"lab": {"name": "lab", "region": "home", "platform": "linux/amd64"}}}
+
+    def test_mac_node_with_publish_port_raises(self):
+        spec = self._spec(
+            "name: app\nimage: nginx:latest\nregion: home\nnode: macmini\n"
+            "exposure: tailscale-relay\ndomain: a.example.com\nport: 8080\npublishPort: 18080\n"
+        )
+        with self.assertRaises(LumaError) as ctx:
+            resolve_service_node_pin(spec, self._mac_state())
+        self.assertIn("publishPort", str(ctx.exception))
+
+    def test_mac_node_without_publish_port_passes(self):
+        spec = self._spec(
+            "name: app\nimage: nginx:latest\nregion: home\nnode: macmini\n"
+            "exposure: tailscale-relay\ndomain: a.example.com\nport: 8080\n"
+        )
+        resolved = resolve_service_node_pin(spec, self._mac_state())
+        self.assertEqual(resolved.node_platform, "darwin/arm64")
+
+    def test_linux_node_with_publish_port_passes(self):
+        spec = self._spec(
+            "name: app\nimage: nginx:latest\nregion: home\nnode: lab\n"
+            "exposure: tailscale-relay\ndomain: a.example.com\nport: 8080\npublishPort: 18080\n"
+        )
+        resolved = resolve_service_node_pin(spec, self._linux_state())
+        self.assertEqual(resolved.node_platform, "linux/amd64")
+
+
 if __name__ == "__main__":
     unittest.main()

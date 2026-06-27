@@ -3766,6 +3766,19 @@ def resolve_service_node_pin(service: ServiceSpec, state: Dict[str, Any], *, eng
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
     node_id = str(record.get("nodeId") or record.get("nomadNodeId") or labels.get("luma.node.id") or "").strip()
     node_platform = _nomad_node_platform_from_record(record)
+    if service.publish_port and (node_platform or "").split("/")[0] == "darwin":
+        # Nomad bridge port mapping is unreachable on macOS/OrbStack: the
+        # published port binds to a Mac host NIC IP that does not exist inside
+        # the OrbStack VM where the container runs, so the port silently 502s.
+        # Mac nodes must use docker host mode (no publishPort); the route then
+        # targets the container's real port. Fail fast instead of deploying a
+        # job that comes up "healthy" yet is unreachable.
+        raise LumaError(
+            f"service {service.slug} pins to Mac/OrbStack node {service.node} with "
+            f"publishPort {service.publish_port}, but Nomad bridge port mapping is "
+            "unreachable on macOS. Omit publishPort on Mac nodes; the route targets "
+            "the container's real port."
+        )
     return replace(service, node_id=node_id or None, node_platform=node_platform or None)
 
 
