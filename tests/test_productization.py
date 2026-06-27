@@ -60,7 +60,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -8664,6 +8664,41 @@ class DeployTerminalStateTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+
+class TcpIngressRefreshAdvisoryTests(unittest.TestCase):
+    """A deploy that introduces a tcp-relay port Traefik has no static entrypoint
+    for must surface an advisory (the job runs but the port is unreachable until
+    `luma update manager` rebuilds entrypoints). Ports already served by an active
+    deployment — including this slug's own active record on redeploy — must NOT
+    warn, or the advisory becomes noise that erodes trust."""
+
+    def _state(self, deployments):
+        return {"deployments": {"services": deployments.get("services", {}), "compose": deployments.get("compose", {})}}
+
+    def test_brand_new_port_warns(self):
+        state = self._state({})
+        self.assertEqual(_tcp_relay_ports_needing_ingress_refresh(state, [3306]), [3306])
+
+    def test_port_served_by_active_deployment_does_not_warn(self):
+        state = self._state({"services": {"other": {"status": "active", "tcpRelayPorts": [3306]}}})
+        self.assertEqual(_tcp_relay_ports_needing_ingress_refresh(state, [3306]), [])
+
+    def test_port_only_in_failed_deployment_still_warns(self):
+        # A failed deploy never made it into Traefik's entrypoint set.
+        state = self._state({"services": {"other": {"status": "failed_partial", "tcpRelayPorts": [3306]}}})
+        self.assertEqual(_tcp_relay_ports_needing_ingress_refresh(state, [3306]), [3306])
+
+    def test_redeploy_same_port_does_not_warn(self):
+        state = self._state({"services": {"me": {"status": "active", "tcpRelayPorts": [3306]}}})
+        self.assertEqual(_tcp_relay_ports_needing_ingress_refresh(state, [3306]), [])
+
+    def test_mixed_new_and_existing_warns_only_for_new(self):
+        state = self._state({"services": {"other": {"status": "active", "tcpRelayPorts": [3306]}}})
+        self.assertEqual(_tcp_relay_ports_needing_ingress_refresh(state, [3306, 5432]), [5432])
+
+    def test_no_tcp_ports_no_warning(self):
+        self.assertEqual(_tcp_relay_ports_needing_ingress_refresh(self._state({}), []), [])
 
 
 if __name__ == "__main__":

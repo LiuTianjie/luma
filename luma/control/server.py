@@ -1467,6 +1467,63 @@ def _ensure_tcp_relay_ports_available(state: Dict[str, Any], *, kind: str, slug:
         raise LumaError("tcp-relay publishPort conflicts with existing deployment: " + "; ".join(conflicts))
 
 
+def _tcp_relay_ports_needing_ingress_refresh(state: Dict[str, Any], ports: list[int]) -> list[int]:
+    """Return tcp-relay ports this deploy introduces that no active deployment
+    already publishes.
+
+    Traefik TCP entrypoints (and the host firewall) are static: they are only
+    (re)built from Control state by bootstrap / `luma update manager`, never by a
+    plain deploy (file-provider can hot-reload routers/services but NOT
+    entrypoints). So a deploy that introduces a brand-new tcp-relay port writes a
+    route referencing an entrypoint Traefik does not have — the job comes up but
+    the port is unreachable with no error. Surface that as an advisory so the user
+    knows to run `luma update manager`; a port already served by another active
+    deployment needs no refresh.
+    """
+    wanted = {int(port) for port in ports if int(port) > 0}
+    if not wanted:
+        return []
+    deployments = _deployments_state(state)
+    # The set of tcp-relay ports Traefik's static entrypoints were last built from
+    # is every ACTIVE deployment's ports (see bootstrap._state_tcp_relay_ports) —
+    # including this slug's own existing active record, so redeploying an
+    # already-active service on an unchanged port does NOT warn (Traefik already
+    # has that entrypoint).
+    already_served: set[int] = set()
+    for bucket in ("services", "compose"):
+        for record in deployments[bucket].values():
+            if not isinstance(record, dict) or str(record.get("status") or "") != "active":
+                continue
+            already_served.update(_record_tcp_relay_ports(record))
+    return sorted(wanted - already_served)
+
+
+def _emit_tcp_ingress_refresh_advisory(
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None,
+    state: Dict[str, Any],
+    ports: list[int],
+) -> None:
+    """Warn (non-fatally) when a deploy introduces tcp-relay ports Traefik has no
+    static entrypoint for yet. The job will run but the port stays unreachable
+    until `luma update manager` rebuilds Traefik entrypoints + firewall from state.
+    """
+    new_ports = _tcp_relay_ports_needing_ingress_refresh(state, ports)
+    if not new_ports:
+        return
+    port_list = ", ".join(str(port) for port in new_ports)
+    step = {
+        "name": "TCP ingress refresh required",
+        "status": "ok",
+        "message": (
+            f"new tcp-relay port(s) {port_list} need a Traefik entrypoint + firewall opening; "
+            "run `luma update manager` on the manager or the port stays unreachable"
+        ),
+    }
+    steps.append(step)
+    _emit_progress(progress, step)
+
+
 def _record_tcp_relay_ports(record: Dict[str, Any]) -> list[int]:
     ports: set[int] = set()
     for value in record.get("tcpRelayPorts") or []:
@@ -1713,6 +1770,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             lambda: _ensure_tcp_relay_ports_available(state, kind="service", slug=service.slug, ports=_service_tcp_relay_ports(service)) or "TCP relay ports available",
             progress=progress,
         )
+        _emit_tcp_ingress_refresh_advisory(steps, progress, state, _service_tcp_relay_ports(service))
         _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
         storage_preparation = _deploy_step(
             steps,
@@ -2284,6 +2342,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     parse_step = {"name": "Parse compose deployment", "status": "ok", "message": f"{deployment.name} ({len(deployment.compose.get('services', {}))} services)"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
+    _emit_tcp_ingress_refresh_advisory(steps, progress, state, _compose_tcp_relay_ports(deployment))
     compose_content = str(body.get("composeContent") or "")
     secrets, secret_result = _render_secrets(state, scope=deployment.slug, body=body, texts=[str(body.get("manifest") or ""), compose_content])
     if secret_result["scoped"] or body.get("envSecrets") is not None:
