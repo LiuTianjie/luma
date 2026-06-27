@@ -308,6 +308,15 @@ def validate_compose_deployment_data(
             raise LumaError(f"compose service {service_name} region must be one of {sorted(VALID_REGIONS)}")
         if override.exposure not in VALID_EXPOSURES:
             raise LumaError(f"compose service {service_name} exposure must be one of {sorted(VALID_EXPOSURES)}")
+        if override.exposure == "cloudflare-tunnel":
+            # render_compose_job has no cloudflared sidecar path (only native
+            # render_nomad_job does). Without this guard a tunnel compose service
+            # passes validation, deploys "successfully", yet renders no tunnel, no
+            # port, no route — silently unreachable. Fail fast instead.
+            raise LumaError(
+                f"compose service {service_name} exposure=cloudflare-tunnel is not supported "
+                "for compose deployments; deploy it as a native luma manifest"
+            )
         if override.exposure != "none":
             if not override.domain:
                 raise LumaError(f"compose service {service_name} public exposure requires domain")

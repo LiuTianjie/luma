@@ -189,6 +189,28 @@ class ComposeRenderTests(unittest.TestCase):
         with self.assertRaises(LumaError):
             self.render(secrets={})
 
+    def test_cloudflare_tunnel_exposure_rejected_at_load(self):
+        # compose has no cloudflared sidecar path; a tunnel service would deploy
+        # "successfully" yet render unreachable. Must fail fast at load time.
+        compose = """
+services:
+  app:
+    image: registry.example.com/app:latest
+"""
+        sidecar = """
+name: tool
+compose: docker-compose.yml
+region: home
+services:
+  app:
+    exposure: cloudflare-tunnel
+    domain: tool.example.com
+    port: 8080
+"""
+        with self.assertRaises(LumaError) as ctx:
+            write_deployment(sidecar, compose)
+        self.assertIn("cloudflare-tunnel", str(ctx.exception))
+
     def test_conflicting_service_regions_raise(self):
         compose = """
 services:
