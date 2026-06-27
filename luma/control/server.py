@@ -1412,6 +1412,34 @@ def _compose_tcp_relay_ports(deployment: ComposeDeploymentSpec) -> list[int]:
     ]
 
 
+def _ensure_compose_exposure_supported_on_nodes(state: Dict[str, Any], deployment: ComposeDeploymentSpec) -> None:
+    """Reject a compose service pinned to a Mac node with a bridge-port exposure.
+
+    render_compose_job always maps exposed ports via a Nomad bridge ReservedPort
+    (nomad_render.py); it has no docker host-mode path (compose tasks share one
+    netns, which conflicts with host mode). On macOS/OrbStack that bridge mapping
+    binds a Mac host NIC IP absent inside the OrbStack VM, so the port silently
+    502s. Native manifests get host mode on Mac; compose does not, so fail fast
+    and point at the working alternatives instead of deploying an unreachable job.
+    """
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    bridge_exposures = {"tcp-relay", "tailscale-relay", "cn-edge", "external-edge"}
+    for service in deployment.services.values():
+        if not service.node or service.exposure not in bridge_exposures or not service.port:
+            continue
+        record = _node_record_for_name(nodes, service.node)
+        if not record:
+            continue
+        platform = _nomad_node_platform_from_record(record)
+        if (platform or "").split("/")[0] == "darwin":
+            raise LumaError(
+                f"compose service {service.name} exposure={service.exposure} pins to Mac/OrbStack "
+                f"node {service.node}, but compose port mapping uses Nomad bridge mode which is "
+                "unreachable on macOS. Deploy this service on a Linux node, or use a native luma "
+                "manifest (which renders docker host mode on Mac)."
+            )
+
+
 def _ensure_tcp_relay_ports_available(state: Dict[str, Any], *, kind: str, slug: str, ports: list[int]) -> None:
     wanted = [int(port) for port in ports if int(port) > 0]
     duplicates = sorted({port for port in wanted if wanted.count(port) > 1})
@@ -2247,6 +2275,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     previous_record = dict(_compose_deployment_record(state, deployment.slug) or {})
     _ensure_deployment_slug_available(state, "compose", deployment.slug, deployment.name)
     _ensure_tcp_relay_ports_available(state, kind="compose", slug=deployment.slug, ports=_compose_tcp_relay_ports(deployment))
+    _ensure_compose_exposure_supported_on_nodes(state, deployment)
     parse_step = {"name": "Parse compose deployment", "status": "ok", "message": f"{deployment.name} ({len(deployment.compose.get('services', {}))} services)"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
@@ -2380,6 +2409,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     deployment = _load_compose_request(body, source_name)
     target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+    _ensure_compose_exposure_supported_on_nodes(state, deployment)
     stack_text = render_compose_job(
         config,
         deployment,

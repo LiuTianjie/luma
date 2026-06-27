@@ -60,7 +60,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -8604,6 +8604,32 @@ class MacPublishPortGuardTests(unittest.TestCase):
         )
         resolved = resolve_service_node_pin(spec, self._linux_state())
         self.assertEqual(resolved.node_platform, "linux/amd64")
+
+    def _compose_dep(self, node: str, exposure: str = "tailscale-relay"):
+        d = tempfile.mkdtemp()
+        (Path(d) / "docker-compose.yml").write_text("services:\n  app:\n    image: nginx:latest\n")
+        sidecar = (
+            "name: tool\ncompose: docker-compose.yml\nregion: home\nservices:\n"
+            f"  app:\n    node: {node}\n    exposure: {exposure}\n"
+        )
+        if exposure != "none":
+            sidecar += "    domain: a.example.com\n    port: 8080\n"
+        sc = Path(d) / "luma.compose.yml"
+        sc.write_text(sidecar)
+        return load_compose_deployment(sc)
+
+    def test_compose_mac_node_bridge_exposure_raises(self):
+        # compose render has no host-mode path; a bridge exposure on a Mac node
+        # would silently 502. Must fail fast like the native path does.
+        with self.assertRaises(LumaError) as ctx:
+            _ensure_compose_exposure_supported_on_nodes(self._mac_state(), self._compose_dep("macmini"))
+        self.assertIn("macOS", str(ctx.exception))
+
+    def test_compose_linux_node_bridge_exposure_passes(self):
+        _ensure_compose_exposure_supported_on_nodes(self._linux_state(), self._compose_dep("lab"))
+
+    def test_compose_mac_node_none_exposure_passes(self):
+        _ensure_compose_exposure_supported_on_nodes(self._mac_state(), self._compose_dep("macmini", exposure="none"))
 
 
 if __name__ == "__main__":
