@@ -60,7 +60,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _DEPLOY_LOCK, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -8699,6 +8699,46 @@ class TcpIngressRefreshAdvisoryTests(unittest.TestCase):
 
     def test_no_tcp_ports_no_warning(self):
         self.assertEqual(_tcp_relay_ports_needing_ingress_refresh(self._state({}), []), [])
+
+
+class AgentCallbackNoDeployLockTests(unittest.TestCase):
+    """A deploy holds _DEPLOY_LOCK while it dispatches image-pull tasks to a node
+    agent and waits (up to AGENT_TASK_TIMEOUT_SECONDS) for the agent to call back
+    via handle_node_agent_lease / handle_node_agent_complete. If those callback
+    handlers ever grabbed _DEPLOY_LOCK too (e.g. someone adds @_serialize_deploy),
+    every agent-dispatched deploy would self-deadlock until the 300s timeout. Lock
+    this invariant: the callbacks must NOT block on the deploy lock."""
+
+    def _assert_not_blocked_by_deploy_lock(self, handler):
+        result: dict = {}
+
+        def run():
+            try:
+                handler("tok", {})  # empty body -> handler validates and raises fast
+            except LumaError as exc:
+                result["raised"] = str(exc)
+            except Exception as exc:  # pragma: no cover - unexpected
+                result["error"] = repr(exc)
+
+        with _DEPLOY_LOCK:
+            thread = threading.Thread(target=run)
+            thread.start()
+            thread.join(timeout=5)
+            blocked = thread.is_alive()
+        # The handler must have run to completion (raised a validation error)
+        # while the deploy lock was held by this thread.
+        self.assertFalse(blocked, "agent callback blocked on _DEPLOY_LOCK — would deadlock agent-dispatched deploys")
+        self.assertIn("raised", result)
+
+    def test_agent_lease_does_not_block_on_deploy_lock(self):
+        from luma.control.server import handle_node_agent_lease
+
+        self._assert_not_blocked_by_deploy_lock(handle_node_agent_lease)
+
+    def test_agent_complete_does_not_block_on_deploy_lock(self):
+        from luma.control.server import handle_node_agent_complete
+
+        self._assert_not_blocked_by_deploy_lock(handle_node_agent_complete)
 
 
 if __name__ == "__main__":
