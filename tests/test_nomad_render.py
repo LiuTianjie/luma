@@ -1,5 +1,4 @@
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,9 +30,9 @@ class NomadRenderTests(unittest.TestCase):
         finally:
             Path(tmp.name).unlink(missing_ok=True)
 
-    def render(self, content: str):
+    def render(self, content: str, secrets=None):
         service = self.load(content)
-        return render_nomad_job(self.config(), service, as_json=False)["Job"]
+        return render_nomad_job(self.config(), service, as_json=False, secrets=secrets)["Job"]
 
     def test_cn_edge_emits_traefik_nomad_tags_and_dynamic_port(self):
         job = self.render(
@@ -217,7 +216,6 @@ resources:
         self.assertEqual(res["MemoryMaxMB"], 256)
 
     def test_cloudflare_tunnel_adds_sidecar_task(self):
-        os.environ["CLOUDFLARE_TUNNEL_TOKEN"] = "tunnel-secret"
         job = self.render(
             """
 name: home-tool
@@ -228,7 +226,8 @@ domain: tool.example.com
 port: 8080
 tunnel:
   tokenEnv: CLOUDFLARE_TUNNEL_TOKEN
-"""
+""",
+            secrets={"CLOUDFLARE_TUNNEL_TOKEN": "tunnel-secret"},
         )
         tasks = job["TaskGroups"][0]["Tasks"]
         names = {t["Name"] for t in tasks}

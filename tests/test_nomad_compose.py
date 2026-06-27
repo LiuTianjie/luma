@@ -1,5 +1,4 @@
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -130,18 +129,11 @@ services:
 
 
 class ComposeRenderTests(unittest.TestCase):
-    def setUp(self):
-        os.environ["DB_PW"] = "s3cr3t"
-
-    def tearDown(self):
-        os.environ.pop("DB_PW", None)
-        os.environ.pop("GRANARY_MYSQL_ROOT_PASSWORD", None)
-        os.environ.pop("GRANARY_ADMIN_PASSWORD", None)
-        os.environ.pop("GRANARY_JWT_SECRET", None)
-
-    def render(self):
+    def render(self, secrets=None):
         dep = write_deployment(GRANARY_SIDECAR, GRANARY_COMPOSE)
-        return render_compose_job(cfg(), dep, as_json=False)["Job"]
+        if secrets is None:
+            secrets = {"DB_PW": "s3cr3t"}
+        return render_compose_job(cfg(), dep, as_json=False, secrets=secrets)["Job"]
 
     def test_multi_service_single_group(self):
         job = self.render()
@@ -194,9 +186,8 @@ class ComposeRenderTests(unittest.TestCase):
         self.assertIn(("${meta.luma_node_name}", "lab"), cons)
 
     def test_missing_secret_raises(self):
-        os.environ.pop("DB_PW", None)
         with self.assertRaises(LumaError):
-            self.render()
+            self.render(secrets={})
 
     def test_conflicting_service_regions_raise(self):
         compose = """
@@ -248,7 +239,6 @@ services:
             render_compose_job(cfg(), dep, as_json=False)
 
     def test_secret_placeholder_can_be_kept_for_validation(self):
-        os.environ.pop("DB_PW", None)
         dep = write_deployment(GRANARY_SIDECAR, GRANARY_COMPOSE)
         job = render_compose_job(cfg(), dep, as_json=False, resolve_secrets=False)["Job"]
         mysql = next(t for t in job["TaskGroups"][0]["Tasks"] if t["Name"] == "mysql")
@@ -260,9 +250,6 @@ services:
         self.assertEqual(_resolve_env_value("plain-value"), "plain-value")
 
     def test_real_granary_shape_renders_ports_volume_and_private_auth(self):
-        os.environ["GRANARY_MYSQL_ROOT_PASSWORD"] = "mysql-secret"
-        os.environ["GRANARY_ADMIN_PASSWORD"] = "admin-secret"
-        os.environ["GRANARY_JWT_SECRET"] = "jwt-secret"
         dep = write_deployment(REAL_GRANARY_SIDECAR, REAL_GRANARY_COMPOSE)
         auth = {"username": "deploy", "password": "token", "serveraddress": "gcode.gaojiua.com:3000"}
         job = render_compose_job(
@@ -270,6 +257,11 @@ services:
             dep,
             as_json=False,
             registry_auth_resolver=lambda image: auth if image.startswith("gcode.gaojiua.com:3000/") else None,
+            secrets={
+                "GRANARY_MYSQL_ROOT_PASSWORD": "mysql-secret",
+                "GRANARY_ADMIN_PASSWORD": "admin-secret",
+                "GRANARY_JWT_SECRET": "jwt-secret",
+            },
         )["Job"]
 
         group = job["TaskGroups"][0]

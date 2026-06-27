@@ -18,10 +18,9 @@ Exposure mapping:
 """
 
 import json
-import os
 import re
 import urllib.parse
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from .config import LumaConfig
 from .errors import LumaError
@@ -138,20 +137,23 @@ def render_egress_job(
     return json.dumps(wrapped, indent=2, ensure_ascii=False) if as_json else wrapped
 
 
-def _resolve_env_value(value: Any, *, resolve_secrets: bool = True) -> str:
-    """Substitute ${VAR} references from os.environ.
+def _resolve_env_value(value: Any, *, secrets: Mapping[str, str] | None = None, resolve_secrets: bool = True) -> str:
+    """Substitute ${VAR} references from the caller-supplied secrets mapping.
 
     The Nomad job Env block is literal, so there is no deploy-time ${VAR}
-    substitution layer after registration. Luma Control calls
-    _apply_state_secrets() to load stored secrets into os.environ before render,
-    so resolving here injects the real secret values into the jobspec.
+    substitution layer after registration. Secrets are passed in explicitly by
+    the caller (Luma Control builds the merged global+scoped map per deploy);
+    render never reads process state, so it is a pure function and safe under
+    concurrent deploys.
     """
     if not resolve_secrets:
         return str(value)
 
+    available = secrets or {}
+
     def repl(m: "re.Match[str]") -> str:
         name = m.group(1)
-        v = os.environ.get(name)
+        v = available.get(name)
         if v is None:
             raise LumaError(f"missing deployment secret: {name}. Run: luma secret set {name}")
         return v
@@ -165,6 +167,7 @@ def render_compose_job(
     *,
     as_json: bool = True,
     registry_auth_resolver: Any | None = None,
+    secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
 ) -> str | Dict[str, Any]:
     """Render a Luma compose deployment into a single multi-task Nomad job.
@@ -173,7 +176,8 @@ def render_compose_job(
     namespace (bridge mode). Inter-service references like `tcp(mysql:3306)`
     keep working via per-task extra_hosts that map every service name to
     127.0.0.1 — so the user's docker-compose DSNs need no rewrite. Secrets
-    (${VAR}) are resolved from os.environ at render time. Named volumes use
+    (${VAR}) are resolved from the caller-supplied secrets mapping at render
+    time. Named volumes use
     docker mount blocks (never the volumes shorthand). Exposed ports are
     published via group ReservedPorts matching the file-provider routes.
 
@@ -266,11 +270,11 @@ def render_compose_job(
         raw_env = body.get("environment")
         if isinstance(raw_env, dict):
             for k, v in raw_env.items():
-                env[str(k)] = _resolve_env_value(v, resolve_secrets=resolve_secrets)
+                env[str(k)] = _resolve_env_value(v, secrets=secrets, resolve_secrets=resolve_secrets)
         elif isinstance(raw_env, list):
             for item in raw_env:
                 k, _, v = str(item).partition("=")
-                env[k] = _resolve_env_value(v, resolve_secrets=resolve_secrets)
+                env[k] = _resolve_env_value(v, secrets=secrets, resolve_secrets=resolve_secrets)
         if override and override.proxy:
             env.setdefault("HTTP_PROXY", "http://egress.service.consul:7890")
             env.setdefault("HTTPS_PROXY", "http://egress.service.consul:7890")
@@ -389,6 +393,7 @@ def render_nomad_job(
     datacenter: str = "dc1",
     as_json: bool = True,
     registry_auth: Dict[str, str] | None = None,
+    secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
 ) -> str | Dict[str, Any]:
     """Render a ServiceSpec to a Nomad job. Returns JSON text (default) or the dict.
@@ -402,6 +407,7 @@ def render_nomad_job(
         service,
         datacenter=datacenter,
         registry_auth=registry_auth,
+        secrets=secrets,
         resolve_secrets=resolve_secrets,
     )
     wrapped = {"Job": job}
@@ -416,6 +422,7 @@ def _build_job(
     *,
     datacenter: str,
     registry_auth: Dict[str, str] | None = None,
+    secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
 ) -> Dict[str, Any]:
     name = service.slug
@@ -440,8 +447,8 @@ def _build_job(
     if nomad_service is not None:
         group["Services"] = [nomad_service]
 
-    tasks = [_app_task(config, service, port_label, registry_auth=registry_auth, resolve_secrets=resolve_secrets)]
-    sidecar = _cloudflared_task(service, resolve_secrets=resolve_secrets)
+    tasks = [_app_task(config, service, port_label, registry_auth=registry_auth, secrets=secrets, resolve_secrets=resolve_secrets)]
+    sidecar = _cloudflared_task(service, secrets=secrets, resolve_secrets=resolve_secrets)
     if sidecar is not None:
         tasks.append(sidecar)
     group["Tasks"] = tasks
@@ -645,6 +652,7 @@ def _app_task(
     port_label: str | None,
     *,
     registry_auth: Dict[str, str] | None = None,
+    secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
 ) -> Dict[str, Any]:
     docker_config: Dict[str, Any] = {"image": service.image}
@@ -667,7 +675,7 @@ def _app_task(
         docker_config["args"] = _as_args(service.command)
     _apply_volume_mounts(docker_config, service)
 
-    env = {str(k): _resolve_env_value(v, resolve_secrets=resolve_secrets) for k, v in service.environment.items()}
+    env = {str(k): _resolve_env_value(v, secrets=secrets, resolve_secrets=resolve_secrets) for k, v in service.environment.items()}
     if service.proxy:
         # Runtime egress proxy: reach the egress service via Nomad-native
         # discovery.
@@ -685,7 +693,7 @@ def _app_task(
     return task
 
 
-def _cloudflared_task(service: ServiceSpec, *, resolve_secrets: bool = True) -> Dict[str, Any] | None:
+def _cloudflared_task(service: ServiceSpec, *, secrets: Mapping[str, str] | None = None, resolve_secrets: bool = True) -> Dict[str, Any] | None:
     if service.exposure != "cloudflare-tunnel":
         return None
     token_env = service.tunnel.get("tokenEnv", "CLOUDFLARE_TUNNEL_TOKEN")
@@ -696,7 +704,7 @@ def _cloudflared_task(service: ServiceSpec, *, resolve_secrets: bool = True) -> 
             "image": "cloudflare/cloudflared:latest",
             "args": ["tunnel", "--no-autoupdate", "run"],
         },
-        "Env": {"TUNNEL_TOKEN": _resolve_env_value("${" + token_env + "}", resolve_secrets=resolve_secrets)},
+        "Env": {"TUNNEL_TOKEN": _resolve_env_value("${" + token_env + "}", secrets=secrets, resolve_secrets=resolve_secrets)},
         "Resources": {"CPU": DEFAULT_CPU_MHZ, "MemoryMB": 128},
     }
 

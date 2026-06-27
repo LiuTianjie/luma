@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import functools
 import hashlib
 import http.client
 import json
@@ -64,6 +65,37 @@ from ..service import TCP_RELAY_RESERVED_PORTS, VALID_REGIONS, ServiceSpec, load
 from .. import __version__
 from .metrics import load_history, record_samples, sustained_breach
 from .state import init_state, load_state, mutate_state, require_token
+# Re-exported from the secrets leaf module so existing imports of these names
+# from luma.control.server (callers and tests) keep working unchanged.
+from .secrets import (
+    _apply_state_secrets,
+    _render_secrets,
+    _request_env_secrets,
+    _referenced_env_names,
+    _valid_env_name,
+)
+# Re-exported from the resources leaf module (image-ref parsing, registry auth,
+# docker egress-proxy inspection + egress constants). The image-pull
+# orchestration that drives node-agent dispatch stays in server.py and imports
+# these downward.
+from .resources import (
+    EGRESS_PROXY_URL,
+    EGRESS_NO_PROXY,
+    DEFAULT_EGRESS_PULL_REGISTRIES,
+    _docker_info_no_proxy,
+    _docker_info_no_proxy_contains,
+    _docker_info_uses_egress_proxy,
+    _docker_pull_error_message,
+    _egress_pull_registries,
+    _image_registry_host,
+    _image_repo_from_repo_url,
+    _image_repository,
+    _merge_no_proxy,
+    _no_proxy_entries_for_registry,
+    _registry_auth_for_image,
+    _registry_auth_for_service,
+    _split_image_tag,
+)
 
 AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
 AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SECONDS", "300"))
@@ -75,24 +107,6 @@ ALERT_SUSTAINED_SECONDS = int(os.environ.get("LUMA_ALERT_SUSTAINED_SECONDS", "30
 ALERT_NODE_MEMORY_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_MEMORY_PERCENT", "85"))
 ALERT_NODE_CPU_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_CPU_PERCENT", "90"))
 TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS", "300"))
-EGRESS_PROXY_URL = os.environ.get("LUMA_EGRESS_PROXY_URL", "http://127.0.0.1:7890")
-EGRESS_NO_PROXY = os.environ.get(
-    "LUMA_EGRESS_NO_PROXY",
-    "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run",
-)
-DEFAULT_EGRESS_PULL_REGISTRIES = {
-    "docker.io",
-    "index.docker.io",
-    "registry-1.docker.io",
-    "ghcr.io",
-    "quay.io",
-    "gcr.io",
-    "k8s.gcr.io",
-    "registry.k8s.io",
-    "mcr.microsoft.com",
-    "public.ecr.aws",
-    "nvcr.io",
-}
 
 
 def _control_config_path() -> Path:
@@ -1175,25 +1189,6 @@ def _load_service_manifest(manifest: str) -> ServiceSpec:
         service_path.unlink(missing_ok=True)
 
 
-def _image_repo_from_repo_url(url: str) -> str:
-    text = str(url or "").strip()
-    text = re.sub(r"^[a-z]+://", "", text)
-    text = re.sub(r"^[^@/]+@", "", text)  # strip user@ from scp-style urls
-    text = text.split("?", 1)[0].split("#", 1)[0]  # drop query string / fragment
-    text = text.replace(":", "/", 1) if "/" not in text.split(":", 1)[0] else text
-    parts = [p for p in re.split(r"[/]", text) if p]
-    if len(parts) >= 2:
-        owner, name = parts[-2], parts[-1]
-    elif parts:
-        owner, name = "luma", parts[-1]
-    else:
-        raise LumaError(f"cannot derive image name from repo url: {url}")
-    name = re.sub(r"\.git$", "", name)
-    repo = f"{owner}/{name}".lower()
-    repo = re.sub(r"[^a-z0-9._/-]+", "-", repo).strip("-/")
-    if not repo:
-        raise LumaError(f"cannot derive image name from repo url: {url}")
-    return repo
 
 
 def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
@@ -1625,6 +1620,27 @@ def _forget_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploym
     return compose.pop(deployment.slug, None) is not None
 
 
+# Serializes the state-touching deploy handlers. Each does a read-modify-write
+# of control.json (load_state snapshot -> checks -> render -> mutate_state); two
+# concurrent deploys could otherwise interleave on slug-availability checks and
+# scopedSecrets writes (TOCTOU). RLock so a deploy that nests another (none do
+# today) cannot self-deadlock. Read-only paths (preview/dry-run) are NOT wrapped
+# and stay concurrent. Long pre-state work (e.g. docker build in
+# handle_build_deploy) runs OUTSIDE this lock — only the handler below it holds
+# it — so the build of one deploy does not block an unrelated deploy.
+_DEPLOY_LOCK = threading.RLock()
+
+
+def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with _DEPLOY_LOCK:
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+@_serialize_deploy
 def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -1643,7 +1659,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
-    secret_result = _apply_deployment_secrets(state, scope=service.slug, body=body, texts=[manifest])
+    secrets, secret_result = _render_secrets(state, scope=service.slug, body=body, texts=[manifest])
     if secret_result["scoped"] or body.get("envSecrets") is not None:
         secret_step = {
             "name": "Load scoped env",
@@ -1681,7 +1697,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         stack_text = _deploy_step(
             steps,
             "Render Nomad job",
-            lambda: render_nomad_job(config, service, registry_auth=registry_auth),
+            lambda: render_nomad_job(config, service, registry_auth=registry_auth, secrets=secrets),
             progress=progress,
         )
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
@@ -2218,6 +2234,7 @@ def _is_system_stack(stack: str) -> bool:
     return stack in SYSTEM_STACKS or stack.startswith("luma-storage")
 
 
+@_serialize_deploy
 def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -2234,7 +2251,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
     compose_content = str(body.get("composeContent") or "")
-    secret_result = _apply_deployment_secrets(state, scope=deployment.slug, body=body, texts=[str(body.get("manifest") or ""), compose_content])
+    secrets, secret_result = _render_secrets(state, scope=deployment.slug, body=body, texts=[str(body.get("manifest") or ""), compose_content])
     if secret_result["scoped"] or body.get("envSecrets") is not None:
         secret_step = {
             "name": "Load scoped env",
@@ -2263,6 +2280,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 config,
                 deployment,
                 registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
+                secrets=secrets,
             ),
             progress=progress,
         )
@@ -2651,11 +2669,6 @@ def _ensure_host_prep_image(image: str) -> None:
         raise LumaError(f"Docker image pull failed for {image}: {raw}")
 
 
-def _split_image_tag(image: str) -> tuple[str, str]:
-    if ":" in image.rsplit("/", 1)[-1]:
-        repo, tag = image.rsplit(":", 1)
-        return repo, tag
-    return image, "latest"
 
 
 def _docker_container_logs(container_id: str) -> str:
@@ -3487,96 +3500,8 @@ def _resolve_control_path(path: Path, config_path: Path) -> Path:
     return config_path.resolve().parent / path
 
 
-def _apply_state_secrets(state: Dict[str, Any]) -> None:
-    secrets = state.get("secrets") or {}
-    if not isinstance(secrets, dict):
-        return
-    for key, value in secrets.items():
-        if value is None:
-            continue
-        os.environ[str(key)] = str(value)
 
 
-def _apply_deployment_secrets(state: Dict[str, Any], *, scope: str, body: Dict[str, Any], texts: list[str]) -> Dict[str, Any]:
-    referenced = _referenced_env_names(texts)
-    incoming = _request_env_secrets(body)
-    global_secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
-    scoped = state.get("scopedSecrets") if isinstance(state.get("scopedSecrets"), dict) else {}
-    current = scoped.get(scope) if isinstance(scoped.get(scope), dict) else {}
-    scoped_mode = incoming is not None or bool(current)
-    imported: Dict[str, str] = {}
-    if incoming is not None:
-        imported = {key: value for key, value in incoming.items() if key in referenced}
-        if imported:
-            def mutate(persisted: Dict[str, Any]) -> None:
-                persisted_scoped = persisted.setdefault("scopedSecrets", {})
-                if not isinstance(persisted_scoped, dict):
-                    persisted_scoped = {}
-                    persisted["scopedSecrets"] = persisted_scoped
-                persisted_current = persisted_scoped.setdefault(scope, {})
-                if not isinstance(persisted_current, dict):
-                    persisted_current = {}
-                    persisted_scoped[scope] = persisted_current
-                persisted_current.update(imported)
-
-            mutate_state(mutate)
-            if not isinstance(state.get("scopedSecrets"), dict):
-                state["scopedSecrets"] = {}
-            if not isinstance(state["scopedSecrets"].get(scope), dict):
-                state["scopedSecrets"][scope] = {}
-            state["scopedSecrets"][scope].update(imported)
-            scoped = state["scopedSecrets"]
-            current = scoped.get(scope) if isinstance(scoped.get(scope), dict) else {}
-
-    if scoped_mode:
-        missing: list[str] = []
-        for name in sorted(referenced):
-            if name in current:
-                os.environ[name] = str(current[name])
-            else:
-                os.environ.pop(name, None)
-                missing.append(name)
-        if missing:
-            raise LumaError(f"missing scoped deployment secrets for {scope}: {', '.join(missing)}. Add them to --env or run: luma secret set <NAME> --scope {scope}")
-    else:
-        for name in sorted(referenced):
-            if name in global_secrets and global_secrets[name] is not None:
-                os.environ[name] = str(global_secrets[name])
-            else:
-                os.environ.pop(name, None)
-
-    return {"scope": scope, "imported": len(imported), "referenced": sorted(referenced), "scoped": scoped_mode}
-
-
-def _request_env_secrets(body: Dict[str, Any]) -> Dict[str, str] | None:
-    raw = body.get("envSecrets")
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise LumaError("envSecrets must be a mapping")
-    values: Dict[str, str] = {}
-    for key, value in raw.items():
-        name = str(key)
-        if not _valid_env_name(name):
-            raise LumaError(f"env secret name must be a valid environment variable name: {name!r}")
-        values[name] = "" if value is None else str(value)
-    return values
-
-
-def _referenced_env_names(texts: list[str]) -> set[str]:
-    names: set[str] = set()
-    for text in texts:
-        names.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", text))
-    return names
-
-
-def _registry_auth_for_service(state: Dict[str, Any], service: ServiceSpec) -> Dict[str, str] | None:
-    return _registry_auth_for_image(state, service.image)
-
-
-def _registry_auth_for_image(state: Dict[str, Any], image: str) -> Dict[str, str] | None:
-    registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
-    return registry_auth_for_image(registries, image)
 
 
 def image_pull_requires_egress(image: str) -> bool:
@@ -3645,61 +3570,16 @@ def ensure_image_pull_egress_proxy(state: Dict[str, Any], image: str) -> str:
     return str(result.get("message") or f"Image pull egress configured for {registry}")
 
 
-def _egress_pull_registries() -> set[str]:
-    raw = os.environ.get("LUMA_EGRESS_PULL_REGISTRIES")
-    if raw is None:
-        return set(DEFAULT_EGRESS_PULL_REGISTRIES)
-    values = {item.strip().lower() for item in raw.split(",") if item.strip()}
-    if values == {"none"}:
-        return set()
-    return values
 
 
-def _image_registry_host(image: str) -> str:
-    image_ref = image.split("@", 1)[0]
-    if "/" not in image_ref:
-        return "docker.io"
-    first = image_ref.split("/", 1)[0].lower()
-    if "." in first or ":" in first or first == "localhost":
-        return normalize_registry_host(first)
-    return "docker.io"
 
 
-def _no_proxy_entries_for_registry(registry: str) -> tuple[str, ...]:
-    host = normalize_registry_host(public_registry_url(registry))
-    entries = [host]
-    if ":" in host:
-        entries.append(host.rsplit(":", 1)[0])
-    return tuple(entries)
 
 
-def _docker_info_no_proxy(info: Dict[str, Any]) -> str:
-    for key in ("NoProxy", "NOProxy", "NO_PROXY", "No_proxy", "no_proxy"):
-        value = info.get(key)
-        if value:
-            return str(value)
-    return ""
 
 
-def _docker_info_no_proxy_contains(info: Dict[str, Any], required: tuple[str, ...]) -> bool:
-    entries = {item.strip().lower() for item in _docker_info_no_proxy(info).split(",") if item.strip()}
-    return all(item.lower() in entries for item in required)
 
 
-def _merge_no_proxy(*values: str) -> str:
-    merged: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        for item in str(value or "").split(","):
-            entry = item.strip()
-            if not entry:
-                continue
-            key = entry.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(entry)
-    return ",".join(merged)
 
 
 def _require_egress_gateway_running(state: Dict[str, Any]) -> str:
@@ -3752,15 +3632,6 @@ def _docker_info_with_retry() -> Dict[str, Any]:
     raise LumaError(f"Docker daemon unavailable after egress proxy update: {last_error}")
 
 
-def _docker_info_uses_egress_proxy(info: Dict[str, Any]) -> bool:
-    expected = EGRESS_PROXY_URL.rstrip("/")
-    values = [
-        str(info.get("HTTPProxy") or ""),
-        str(info.get("HTTPSProxy") or ""),
-        str(info.get("HttpProxy") or ""),
-        str(info.get("HttpsProxy") or ""),
-    ]
-    return any(value.rstrip("/") == expected for value in values)
 
 
 def _local_control_node_name(state: Dict[str, Any], info: Dict[str, Any]) -> str:
@@ -3865,10 +3736,6 @@ def _redact_url(value: str) -> str:
     if not parsed.netloc:
         return value
     return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
-
-
-def _valid_env_name(name: str) -> bool:
-    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name))
 
 
 def labels_for_region(region: str) -> Dict[str, str]:
@@ -5284,27 +5151,6 @@ def ensure_image_present(
     return None
 
 
-def _docker_pull_error_message(status: int, raw: str, *, registry_auth: Dict[str, str] | None = None, platform: str = "") -> str:
-    detail = raw.strip()
-    if status >= 400:
-        message = f"Docker pull failed with HTTP {status}: {detail}"
-    else:
-        message = f"Docker pull failed: {detail}"
-    lowered = detail.lower()
-    if platform and any(marker in lowered for marker in ("no matching manifest", "no match for platform", "not found")):
-        message += f"; image does not provide a manifest for target platform {platform}. Build and push a multi-arch image before deploying to this node."
-    if status >= 500 and any(marker in lowered for marker in ("failed to do request", "eof", "timeout", "connection reset")):
-        if registry_auth:
-            message += (
-                "; Docker daemon could not reach the private registry. Luma does not route private registry pulls through egress; "
-                "verify the local Docker daemon proxy bypass with `docker info` HTTPProxy/HTTPSProxy/NoProxy."
-            )
-        else:
-            message += (
-                "; Docker daemon could not reach the registry. Verify the local Luma egress gateway and Docker daemon proxy "
-                "with `luma egress setup` and `docker info` HTTPProxy/HTTPSProxy."
-            )
-    return message
 
 
 def _image_pull_repo_digest(image: str, raw: str) -> str:
@@ -5339,13 +5185,6 @@ def _image_repo_digest(image: str) -> str:
     raise LumaError(f"Docker pull succeeded but no repo digest was found for {image}; use a pinned digest or fixed tag")
 
 
-def _image_repository(image: str) -> str:
-    image_ref = image.split("@", 1)[0]
-    slash = image_ref.rfind("/")
-    colon = image_ref.rfind(":")
-    if colon > slash:
-        return image_ref[:colon]
-    return image_ref
 
 
 def _fallback_images(config: Any, image: str) -> list[str]:

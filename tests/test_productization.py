@@ -7824,7 +7824,10 @@ class ControlApiTests(unittest.TestCase):
                             "envSecrets": {"DATABASE_URL": "postgres://api-only"},
                         },
                     )
-                    self.assertEqual(os.environ.get("DATABASE_URL"), "postgres://api-only")
+                    # The scoped secret is persisted under the api scope only.
+                    self.assertEqual(load_state()["scopedSecrets"]["api"]["DATABASE_URL"], "postgres://api-only")
+                    # worker has no scope and no global secret, so its ${DATABASE_URL}
+                    # cannot resolve — the api-scoped value must NOT bleed into it.
                     with self.assertRaisesRegex(LumaError, "missing deployment secret: DATABASE_URL"):
                         handle_deployment(
                             state["deployToken"],
@@ -7835,7 +7838,8 @@ class ControlApiTests(unittest.TestCase):
                                 "skipOrchestrator": True,
                             },
                         )
-                self.assertIsNone(os.environ.get("DATABASE_URL"))
+                # Render is pure: no deploy ever mutates process-global env.
+                self.assertEqual(os.environ.get("DATABASE_URL"), "")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -8430,6 +8434,129 @@ class GithubImportTests(unittest.TestCase):
 
         config = LumaConfig({"defaults": {"nomadServer": "100.64.0.1:4647"}}, None)
         self.assertEqual(_egress_proxy_for_node(config, {"nodes": {}}, "missing"), "")
+
+
+class RenderSecretsIsolationTests(unittest.TestCase):
+    """Two concurrent-style deploys referencing the same secret name with
+    different scoped values must each render their OWN value. Guards the
+    regression where secrets flowed through process-global os.environ, letting
+    one deploy clobber another's value mid-render."""
+
+    def _config(self):
+        return LumaConfig(
+            {"defaults": {"engine": "nomad", "entrypoint": "websecure", "certResolver": "letsencrypt"}},
+            None,
+        )
+
+    def _service(self, name: str):
+        manifest = f"""
+name: {name}
+image: ghcr.io/acme/{name}:latest
+region: cn
+exposure: none
+env:
+  DB_PW: ${{DB_PW}}
+"""
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False)
+        try:
+            tmp.write(manifest)
+            tmp.close()
+            return load_service(Path(tmp.name)), manifest
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+    def test_same_secret_name_resolves_per_scope(self):
+        from luma.control.server import _render_secrets
+        from luma.nomad_render import render_nomad_job
+
+        # body is empty -> no incoming envSecrets, so _render_secrets does NOT
+        # touch the filesystem; it just reads the stored scoped values.
+        state = {
+            "secrets": {},
+            "scopedSecrets": {
+                "svc-a": {"DB_PW": "secret-A"},
+                "svc-b": {"DB_PW": "secret-B"},
+            },
+        }
+        config = self._config()
+
+        service_a, manifest_a = self._service("svc-a")
+        service_b, manifest_b = self._service("svc-b")
+
+        secrets_a, _ = _render_secrets(state, scope="svc-a", body={}, texts=[manifest_a])
+        secrets_b, _ = _render_secrets(state, scope="svc-b", body={}, texts=[manifest_b])
+
+        self.assertEqual(secrets_a["DB_PW"], "secret-A")
+        self.assertEqual(secrets_b["DB_PW"], "secret-B")
+
+        job_a = render_nomad_job(config, service_a, as_json=False, secrets=secrets_a)["Job"]
+        job_b = render_nomad_job(config, service_b, as_json=False, secrets=secrets_b)["Job"]
+
+        self.assertEqual(job_a["TaskGroups"][0]["Tasks"][0]["Env"]["DB_PW"], "secret-A")
+        self.assertEqual(job_b["TaskGroups"][0]["Tasks"][0]["Env"]["DB_PW"], "secret-B")
+
+    def test_global_secret_used_when_no_scope_override(self):
+        from luma.control.server import _render_secrets
+
+        state = {"secrets": {"DB_PW": "global-pw"}, "scopedSecrets": {}}
+        _, manifest = self._service("svc-a")
+        secrets, result = _render_secrets(state, scope="svc-a", body={}, texts=[manifest])
+        self.assertEqual(secrets["DB_PW"], "global-pw")
+        self.assertFalse(result["scoped"])
+
+
+class DeployConcurrencyTests(unittest.TestCase):
+    """The state-touching deploy handlers must be serialized by _DEPLOY_LOCK so
+    two concurrent deploys cannot interleave their read-modify-write of
+    control.json (the slug-availability / scopedSecrets TOCTOU)."""
+
+    def _assert_serialized(self, handler_name: str):
+        from luma.control import server as srv
+
+        active = 0
+        max_active = 0
+        track_lock = threading.Lock()
+
+        def fake_load_state(*a, **k):
+            nonlocal active, max_active
+            with track_lock:
+                active += 1
+                max_active = max(max_active, active)
+            # Widen the critical-section window so an unlocked handler would
+            # show overlapping entries (max_active > 1).
+            time.sleep(0.05)
+            with track_lock:
+                active -= 1
+            # load_state runs as the first line inside the lock; abort the rest
+            # of the handler — we only care that entry is serialized.
+            raise LumaError("stop after entry")
+
+        handler = getattr(srv, handler_name)
+        errors: list[Exception] = []
+
+        def run():
+            try:
+                handler("tok", {"manifest": "x", "composeContent": "x"})
+            except LumaError:
+                pass
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        with patch.object(srv, "load_state", side_effect=fake_load_state):
+            threads = [threading.Thread(target=run) for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(max_active, 1)
+
+    def test_handle_deployment_is_serialized(self):
+        self._assert_serialized("handle_deployment")
+
+    def test_handle_compose_deployment_is_serialized(self):
+        self._assert_serialized("handle_compose_deployment")
 
 
 if __name__ == "__main__":
