@@ -1762,7 +1762,12 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             lambda: "Public route probe skipped: orchestrator deploy skipped" if _skip_orchestrator(body) else _probe_public_route(service),
             progress=progress,
         )
-    except LumaError as exc:
+    except Exception as exc:
+        # Any failure (LumaError, OSError from a full/read-only disk, raw socket
+        # errors from the Nomad/DNS calls) must drive the record to a terminal
+        # state. Leaving it at "pending" strands a ghost deploy that also blocks
+        # later deploys (pending counts as occupying tcp-relay ports). bare raise
+        # preserves the original exception for the caller.
         _mark_service_deployment(service, manifest, source_name, status="failed_partial", steps=steps, error=str(exc))
         raise
     _mark_service_deployment(service, manifest, source_name, status="active", steps=steps)
@@ -2380,7 +2385,10 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                     progress=progress,
                 )
             )
-    except LumaError as exc:
+    except Exception as exc:
+        # See handle_deployment: any failure (not just LumaError — OSError, raw
+        # socket errors) must reach a terminal state so the record never strands
+        # at "pending" and blocks later deploys.
         _mark_compose_deployment(deployment, body, source_name, status="failed_partial", steps=steps, error=str(exc))
         raise
     _mark_compose_deployment(deployment, body, source_name, status="active", steps=steps)

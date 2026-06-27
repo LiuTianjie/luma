@@ -8632,5 +8632,39 @@ class MacPublishPortGuardTests(unittest.TestCase):
         _ensure_compose_exposure_supported_on_nodes(self._mac_state(), self._compose_dep("macmini", exposure="none"))
 
 
+class DeployTerminalStateTests(unittest.TestCase):
+    """A deploy that fails partway must drive the record to a terminal state even
+    when the failure is NOT a LumaError (e.g. OSError from a full/read-only disk,
+    raw socket errors from the Nomad/DNS calls). Leaving it at "pending" strands a
+    ghost deploy that also blocks later deploys (pending counts as occupying
+    tcp-relay ports)."""
+
+    def test_non_luma_error_marks_failed_partial_not_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                manifest = yaml.safe_dump({"name": "api", "image": "registry.local/api:1", "region": "cn", "exposure": "none"})
+                with patch(
+                    "luma.control.server.resolve_service_node_pin",
+                    side_effect=OSError("disk full"),
+                ):
+                    with self.assertRaises(OSError):
+                        handle_deployment(
+                            state["deployToken"],
+                            {"manifest": manifest, "sourceName": "api.yaml", "skipDns": True, "skipOrchestrator": True},
+                        )
+                record = load_state()["deployments"]["services"]["api"]
+                self.assertEqual(record["status"], "failed_partial")
+                self.assertNotEqual(record["status"], "pending")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+
 if __name__ == "__main__":
     unittest.main()
