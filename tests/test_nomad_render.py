@@ -6,7 +6,7 @@ from pathlib import Path
 
 from luma.config import LumaConfig
 from luma.errors import LumaError
-from luma.nomad_render import render_nomad_job, render_control_job, render_traefik_job, render_egress_job
+from luma.nomad_render import render_nomad_job, render_control_job, render_traefik_job, render_egress_job, _healthcheck_url
 from luma.service import load_service
 
 
@@ -280,6 +280,21 @@ exposure: none
         self.assertEqual(cfg["auth"]["password"], "p")
         self.assertEqual(cfg["auth"]["server_address"], "https://gcode.example.com:3000")
 
+    def test_registry_auth_accepts_camelcase_server_address(self):
+        service = self.load(
+            """
+name: priv
+image: gcode.example.com:3000/team/app:latest
+region: home
+node: lab
+exposure: none
+"""
+        )
+        auth = {"username": "u", "password": "p", "serverAddress": "https://gcode.example.com:3000"}
+        job = render_nomad_job(self.config(), service, as_json=False, registry_auth=auth)["Job"]
+        cfg = job["TaskGroups"][0]["Tasks"][0]["Config"]
+        self.assertEqual(cfg["auth"]["server_address"], "https://gcode.example.com:3000")
+
     def test_no_auth_block_when_no_credentials(self):
         service = self.load(
             """
@@ -291,6 +306,12 @@ exposure: none
         )
         job = render_nomad_job(self.config(), service, as_json=False)["Job"]
         self.assertNotIn("auth", job["TaskGroups"][0]["Tasks"][0]["Config"])
+
+    def test_healthcheck_url_preserves_path_containing_letter_s(self):
+        self.assertEqual(
+            _healthcheck_url(["CMD-SHELL", "curl -fsS http://localhost:8080/status || exit 1"]),
+            "http://localhost:8080/status",
+        )
 
     def test_output_is_valid_json(self):
         service = self.load(

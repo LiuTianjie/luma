@@ -198,6 +198,55 @@ class ComposeRenderTests(unittest.TestCase):
         with self.assertRaises(LumaError):
             self.render()
 
+    def test_conflicting_service_regions_raise(self):
+        compose = """
+services:
+  mysql:
+    image: mysql:8.4.9
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PW}
+  app:
+    image: registry.example.com/app:latest
+"""
+        sidecar = """
+name: granary
+compose: docker-compose.yml
+region: home
+services:
+  mysql:
+    region: home
+    exposure: none
+  app:
+    region: cn
+    exposure: none
+"""
+        dep = write_deployment(sidecar, compose)
+        with self.assertRaises(LumaError):
+            render_compose_job(cfg(), dep, as_json=False)
+
+    def test_invalid_volume_spec_raises(self):
+        compose = """
+services:
+  mysql:
+    image: mysql:8.4.9
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PW}
+    volumes:
+      - badvolume
+"""
+        sidecar = """
+name: granary
+compose: docker-compose.yml
+region: home
+services:
+  mysql:
+    node: lab
+    exposure: none
+"""
+        dep = write_deployment(sidecar, compose)
+        with self.assertRaises(LumaError):
+            render_compose_job(cfg(), dep, as_json=False)
+
     def test_secret_placeholder_can_be_kept_for_validation(self):
         os.environ.pop("DB_PW", None)
         dep = write_deployment(GRANARY_SIDECAR, GRANARY_COMPOSE)

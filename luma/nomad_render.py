@@ -187,12 +187,20 @@ def render_compose_job(
     name = deployment.slug
 
     region = deployment.region
+    regions: set[str] = set()
     nodes: set[str] = set()
     for override in deployment.services.values():
         if override.region:
-            region = override.region
+            regions.add(override.region)
         if override.node:
             nodes.add(override.node)
+    if len(regions) > 1:
+        raise LumaError(
+            f"compose deployment {name} pins services to multiple regions {sorted(regions)}; "
+            "a Nomad group runs in one region — use separate deployments"
+        )
+    if regions:
+        region = next(iter(regions))
     if len(nodes) > 1:
         raise LumaError(
             f"compose deployment {name} pins services to multiple nodes {sorted(nodes)}; "
@@ -239,7 +247,10 @@ def render_compose_job(
         for vspec in (body.get("volumes") or []):
             parts = str(vspec).split(":")
             if len(parts) < 2 or not parts[0] or not parts[1]:
-                continue
+                raise LumaError(
+                    f"compose service {svc_name} has an invalid volume spec "
+                    f"(expected source:target): {vspec!r}"
+                )
             src, tgt = parts[0], parts[1]
             is_path = src[0] in ("/", ".", "~")
             mounts.append({
@@ -624,7 +635,7 @@ def _health_check(service: ServiceSpec, port_label: str) -> Dict[str, Any] | Non
 
 def _healthcheck_url(args: List[Any]) -> str:
     text = " ".join(str(arg) for arg in args)
-    match = re.search(r"https?://[^'\"\\s)]+", text)
+    match = re.search(r"https?://[^'\"\s)]+", text)
     return match.group(0) if match else ""
 
 
@@ -642,7 +653,7 @@ def _app_task(
         docker_config["auth"] = {
             "username": str(registry_auth["username"]),
             "password": str(registry_auth["password"]),
-            "server_address": str(registry_auth.get("serveraddress") or ""),
+            "server_address": str(registry_auth.get("serveraddress") or registry_auth.get("serverAddress") or ""),
         }
     if service.exposure in HOST_PORT_EXPOSURES and port_label is None:
         # docker host networking: the container uses the client's network stack

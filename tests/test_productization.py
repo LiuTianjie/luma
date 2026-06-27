@@ -56,6 +56,7 @@ from luma.bootstrap import (
     local_host_name,
     refresh_manager_control_local,
     setup_tailscale,
+    verify_local_nomad_node,
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
@@ -3320,6 +3321,17 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertEqual(state["nodes"]["aly"]["displayName"], "aly")
         self.assertIn("iZ0jl8auywzycory05d9cuZ", state["nodes"]["aly"]["aliases"])
         self.assertNotIn("managerAddr", state)
+
+    def test_verify_nomad_node_accepts_tailscale_http_address(self):
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="ready\n")
+
+        result = verify_local_nomad_node(remote, http_addrs=["100.69.154.50"])
+
+        self.assertEqual(result, "Nomad agent ready")
+        command = remote.run_result.call_args.args[0]
+        self.assertIn("http://127.0.0.1:4646/v1/agent/self", command)
+        self.assertIn("http://100.69.154.50:4646/v1/agent/self", command)
 
     def test_install_docker_repairs_known_bad_apt_mirror(self):
         remote = Mock()

@@ -1234,24 +1234,31 @@ def install_nomad_node(
         return "Nomad agent started"
 
     _step(results, emit, "Start Nomad agent", _start_service)
-    _step(results, emit, "Verify Nomad node", lambda: verify_local_nomad_node(remote))
+    _step(results, emit, "Verify Nomad node", lambda: verify_local_nomad_node(remote, http_addrs=[tailscale_ip]))
     return results
 
 
-def verify_local_nomad_node(remote: Executor | None = None) -> str:
+def verify_local_nomad_node(remote: Executor | None = None, *, http_addrs: list[str] | None = None) -> str:
     remote = remote or LocalExecutor()
+    candidates = ["127.0.0.1"]
+    for addr in http_addrs or []:
+        value = str(addr or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+    probes = " || ".join(
+        f"curl -fsS --connect-timeout 4 http://{shlex.quote(addr)}:4646/v1/agent/self >/dev/null 2>&1"
+        for addr in candidates
+    )
     deadline = time.monotonic() + 30
     while True:
-        result = remote.run_result(
-            "curl -fsS --connect-timeout 4 http://127.0.0.1:4646/v1/agent/self >/dev/null 2>&1 && echo ready || echo waiting"
-        )
+        result = remote.run_result(f"({probes}) && echo ready || echo waiting")
         if "ready" in result.output:
             return "Nomad agent ready"
         if time.monotonic() >= deadline:
             break
         time.sleep(3)
     raise LumaError(
-        "Nomad agent did not become ready within 30s. Check `journalctl -u nomad` "
+        f"Nomad agent did not become ready within 30s on {', '.join(candidates)}. Check `journalctl -u nomad` "
         "(Linux) or /var/log/nomad.log (macOS)."
     )
 
