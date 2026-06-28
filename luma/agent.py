@@ -43,6 +43,12 @@ def node_agent_os() -> str:
     return system or "unknown"
 
 
+def node_agent_arch() -> str:
+    # Reported to Control so it can resolve a node's full os/arch platform.
+    # The Mac/OrbStack deploy guards need os; docker image pulls need os/arch.
+    return platform.machine().strip().lower()
+
+
 def _docker_binary() -> str | None:
     docker = shutil.which("docker")
     if docker:
@@ -123,7 +129,12 @@ def node_agent_metrics() -> Dict[str, Any]:
 
 
 def node_agent_container_stats() -> list[Dict[str, Any]]:
-    docker = shutil.which("docker")
+    # Use _docker_binary() (not a bare shutil.which) so this works on macOS,
+    # where the node agent runs under launchd's minimal PATH
+    # (/usr/bin:/bin:/usr/sbin:/sbin) and the OrbStack/Docker Desktop/Homebrew
+    # docker CLI is not on PATH. A bare which() returns None there and the
+    # dashboard's per-container stats silently stay empty on every Mac node.
+    docker = _docker_binary()
     if not docker:
         return []
     try:
@@ -859,6 +870,7 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                     node_name=node_name,
                     node_id=node_id,
                     os_name=node_agent_os(),
+                    arch=node_agent_arch(),
                     capabilities=node_agent_capabilities(),
                     metrics=node_agent_metrics(),
                     container_stats=container_stats,

@@ -269,6 +269,7 @@ def _update_agent_heartbeat(
             "status": "online",
             "lastSeen": int(time.time()),
             "os": str(body.get("os") or agent.get("os") or ""),
+            "arch": str(body.get("arch") or agent.get("arch") or ""),
             "capabilities": [str(value) for value in capabilities] if isinstance(capabilities, list) else agent.get("capabilities", []),
             "version": str(body.get("version") or agent.get("version") or __version__),
         }
@@ -1758,7 +1759,14 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
-    secrets, secret_result = _render_secrets(state, scope=service.slug, body=body, texts=[manifest])
+    # cloudflared's tunnel token is referenced via the plain manifest field
+    # tunnel.tokenEnv (not a ${...} placeholder), so _render_secrets cannot see
+    # it in the manifest text. Pass it explicitly or the scoped/--env paths drop
+    # it and the deploy fails with "missing deployment secret".
+    extra_secret_names: set[str] = set()
+    if service.exposure == "cloudflare-tunnel":
+        extra_secret_names.add(str(service.tunnel.get("tokenEnv", "CLOUDFLARE_TUNNEL_TOKEN")))
+    secrets, secret_result = _render_secrets(state, scope=service.slug, body=body, texts=[manifest], extra_referenced=extra_secret_names)
     if secret_result["scoped"] or body.get("envSecrets") is not None:
         secret_step = {
             "name": "Load scoped env",
@@ -3018,7 +3026,14 @@ def _cleanup_service_storage(
 
 
 def _service_docker_volume_names(service: ServiceSpec) -> list[str]:
-    return [f"{service.slug}_{source}" for source in named_volume_sources(service.volumes)]
+    # Native render (_apply_volume_mounts) creates the docker named volume under
+    # the RAW source name from the manifest (e.g. "gitea_data:/data" -> docker
+    # volume "gitea_data") — Nomad's docker driver applies no slug/project
+    # prefix to a mount{type=volume,source=...} block. Cleanup MUST delete that
+    # same literal name; prefixing it with "{slug}_" targets a volume that was
+    # never created, so --delete-storage silently orphans the real data while
+    # reporting success. (Compose volumes are cleaned via the compose path.)
+    return list(named_volume_sources(service.volumes))
 
 
 def _cleanup_service_managed_storage(service: ServiceSpec, state: Dict[str, Any], *, dry_run: bool) -> str:
@@ -3912,9 +3927,15 @@ def _nomad_node_platform_from_record(record: Dict[str, Any]) -> str:
     attrs = record.get("nomadAttributes") or record.get("attributes")
     if not isinstance(attrs, dict):
         attrs = {}
+    # The node agent reports os/arch on every heartbeat, stored in the nested
+    # "agent" record. Node join / registration never writes top-level
+    # platform/os/arch, so without this fallback the resolver always returns ""
+    # for a real record and the Mac/OrbStack deploy guards never fire.
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
     os_name = (
         record.get("os")
         or record.get("operatingSystem")
+        or agent.get("os")
         or attrs.get("os.name")
         or attrs.get("kernel.name")
         or attrs.get("driver.docker.os_type")
@@ -3922,6 +3943,7 @@ def _nomad_node_platform_from_record(record: Dict[str, Any]) -> str:
     arch = (
         record.get("arch")
         or record.get("architecture")
+        or agent.get("arch")
         or attrs.get("cpu.arch")
         or attrs.get("unique.platform.arch")
         or attrs.get("driver.docker.arch")

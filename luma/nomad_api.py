@@ -369,6 +369,15 @@ def _task_allocations(
         desired_status = str(allocation.get("DesiredStatus") or "run").lower()
         if desired_status not in {"run", "running"}:
             continue
+        # An allocation that Nomad has rescheduled keeps DesiredStatus="run"
+        # but carries a NextAllocation pointer to its live replacement. Once it
+        # has reached a terminal client status it is a stale corpse, not the
+        # running service — counting it would report a healthy rescheduled
+        # service as "failed" until Nomad GCs the dead alloc (~1h). Skip it.
+        next_alloc = str(allocation.get("NextAllocation") or "").strip()
+        client_status = str(allocation.get("ClientStatus") or "").lower()
+        if next_alloc and client_status in {"failed", "complete", "lost"}:
+            continue
         task_states = allocation.get("TaskStates") if isinstance(allocation.get("TaskStates"), dict) else {}
         task_state = task_states.get(task_name) if isinstance(task_states.get(task_name), dict) else {}
         if task_states and not task_state:

@@ -1225,7 +1225,16 @@ def install_nomad_node(
 
     def _start_service() -> str:
         if install["service_kind"] == "systemd":
-            remote.sudo("systemctl daemon-reload && systemctl enable --now nomad")
+            # Use `restart`, not `enable --now`. `--now` only does enable+start,
+            # and `start` is a no-op on an already-running unit — so re-running
+            # bootstrap/join after _write_config rewrote nomad.hcl (changed
+            # region / ingress / egress meta, or a new HCL layout from a newer
+            # CLI) would leave the live agent serving the OLD config while still
+            # reporting success. `restart` re-reads the config on a running unit
+            # and also starts a stopped one, matching the macOS unload+load path.
+            # A Nomad client restart does not kill running allocations (docker
+            # tasks survive and the agent re-attaches).
+            remote.sudo("systemctl daemon-reload && systemctl enable nomad && systemctl restart nomad")
         else:
             remote.sudo(
                 "launchctl unload /Library/LaunchDaemons/io.luma.nomad.plist 2>/dev/null || true; "

@@ -60,7 +60,12 @@ def list_contexts() -> List[Dict[str, Any]]:
     items = []
     current = current_context_name(required=False)
     for path in sorted(contexts_dir().glob("*.json")):
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            # A truncated/hand-edited context file must not crash `context list`;
+            # skip the unreadable entry rather than aborting the whole listing.
+            continue
         if isinstance(data, dict):
             data = dict(data)
             data["current"] = data.get("clusterId") == current
@@ -87,7 +92,12 @@ def load_current_context() -> Dict[str, Any]:
     path = _context_path(name)
     if not path.exists():
         raise LumaError(f"current context not found: {name}")
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise LumaError(
+            f"invalid context: {name} (file is corrupt — run luma login again)"
+        ) from exc
     if not isinstance(data, dict) or not data.get("endpoint") or not data.get("token"):
         raise LumaError(f"invalid context: {name}")
     return data

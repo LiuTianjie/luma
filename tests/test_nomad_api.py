@@ -175,6 +175,66 @@ class NomadApiTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in tasks["mysql"]["tasks"]], ["alloc-1"])
         self.assertEqual(tasks["granary"]["fullName"], "granary_granary")
 
+    def test_rescheduled_recovered_service_reports_running_not_failed(self):
+        # A failed-then-rescheduled alloc keeps DesiredStatus="run" but carries
+        # a NextAllocation pointer and a terminal ClientStatus. It must NOT be
+        # counted as failed once a healthy replacement is running, otherwise a
+        # recovered service shows "failed" until Nomad GCs the dead alloc (~1h).
+        responses = {
+            "GET /v1/jobs": [
+                {
+                    "ID": "app",
+                    "Name": "app",
+                    "Type": "service",
+                    "Status": "running",
+                    "Meta": {"luma.region": "home"},
+                    "JobSummary": {"Summary": {"app": {"Running": 1}}},
+                }
+            ],
+            "GET /v1/job/app": {
+                "ID": "app",
+                "Meta": {"luma.region": "home"},
+                "TaskGroups": [
+                    {
+                        "Name": "app",
+                        "Count": 1,
+                        "Tasks": [
+                            {"Name": "app", "Config": {"image": "app:latest"}, "Resources": {"CPU": 100, "MemoryMB": 256}},
+                        ],
+                    }
+                ],
+            },
+            "GET /v1/job/app/allocations": [
+                {
+                    "ID": "alloc-dead",
+                    "JobID": "app",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "run",
+                    "ClientStatus": "failed",
+                    "NextAllocation": "alloc-new",
+                    "NodeName": "lab",
+                    "TaskStates": {"app": {"State": "dead", "Failed": True}},
+                },
+                {
+                    "ID": "alloc-new",
+                    "JobID": "app",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "run",
+                    "ClientStatus": "running",
+                    "NodeName": "lab",
+                    "TaskStates": {"app": {"State": "running"}},
+                },
+            ],
+        }
+        fake = _FakeApi(responses)
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            services = nomad_api.nomad_services_summary(cfg(), {})
+        task = services[0]["tasks"][0]
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["failed"], 0)
+        # only the live replacement survives the stale-reschedule filter
+        self.assertEqual([row["id"] for row in task["tasks"]], ["alloc-new"])
+
 
 if __name__ == "__main__":
     unittest.main()

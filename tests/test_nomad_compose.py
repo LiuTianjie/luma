@@ -288,6 +288,72 @@ services:
         # anonymous volume dropped: no mount block referencing it
         self.assertNotIn("mount", mysql["Config"])
 
+    def test_long_form_dict_volume_renders_correct_mount(self):
+        # docker-compose long/expanded syntax (what `docker compose config`
+        # emits). render must honor the dict form, not stringify+split it.
+        compose = """
+services:
+  mysql:
+    image: mysql:8.4.9
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PW}
+    volumes:
+      - type: volume
+        source: mysql_data
+        target: /var/lib/mysql
+      - type: bind
+        source: /srv/conf
+        target: /etc/mysql/conf.d
+        read_only: true
+"""
+        sidecar = """
+name: granary
+compose: docker-compose.yml
+region: home
+services:
+  mysql:
+    node: lab
+    exposure: none
+"""
+        dep = write_deployment(sidecar, compose)
+        job = render_compose_job(cfg(), dep, as_json=False, secrets={"DB_PW": "x"})["Job"]
+        mysql = next(t for t in job["TaskGroups"][0]["Tasks"] if t["Name"] == "mysql")
+        mounts = mysql["Config"]["mount"]
+        named = next(m for m in mounts if m["type"] == "volume")
+        self.assertEqual(named["source"], "mysql_data")
+        self.assertEqual(named["target"], "/var/lib/mysql")
+        self.assertFalse(named["readonly"])
+        bind = next(m for m in mounts if m["type"] == "bind")
+        self.assertEqual(bind["source"], "/srv/conf")
+        self.assertEqual(bind["target"], "/etc/mysql/conf.d")
+        self.assertTrue(bind["readonly"])
+
+    def test_long_form_anonymous_volume_dropped(self):
+        # dict form with no source (anonymous/tmpfs) must drop, not crash
+        compose = """
+services:
+  mysql:
+    image: mysql:8.4.9
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PW}
+    volumes:
+      - type: volume
+        target: /var/lib/mysql
+"""
+        sidecar = """
+name: granary
+compose: docker-compose.yml
+region: home
+services:
+  mysql:
+    node: lab
+    exposure: none
+"""
+        dep = write_deployment(sidecar, compose)
+        job = render_compose_job(cfg(), dep, as_json=False, secrets={"DB_PW": "x"})["Job"]
+        mysql = next(t for t in job["TaskGroups"][0]["Tasks"] if t["Name"] == "mysql")
+        self.assertNotIn("mount", mysql["Config"])
+
 
     def test_secret_placeholder_can_be_kept_for_validation(self):
         dep = write_deployment(GRANARY_SIDECAR, GRANARY_COMPOSE)

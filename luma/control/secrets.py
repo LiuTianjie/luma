@@ -29,7 +29,7 @@ def _apply_state_secrets(state: Dict[str, Any]) -> None:
         os.environ[str(key)] = str(value)
 
 
-def _render_secrets(state: Dict[str, Any], *, scope: str, body: Dict[str, Any], texts: list[str]) -> tuple[Dict[str, str], Dict[str, Any]]:
+def _render_secrets(state: Dict[str, Any], *, scope: str, body: Dict[str, Any], texts: list[str], extra_referenced: set[str] | None = None) -> tuple[Dict[str, str], Dict[str, Any]]:
     """Build the secrets map a render call consumes, WITHOUT touching os.environ.
 
     Returns (secrets, result). `secrets` is the merged global∪scoped view the
@@ -38,11 +38,21 @@ def _render_secrets(state: Dict[str, Any], *, scope: str, body: Dict[str, Any], 
     (e.g. cloudflared `tokenEnv`, which is not a ${...} reference) still resolve.
     `result` carries {scope, imported, referenced, scoped} for progress display.
 
+    `extra_referenced` names secrets the renderer WILL consume but that do not
+    appear as a literal ${VAR} in the manifest text — chiefly cloudflared's
+    tunnel.tokenEnv. Without folding these into `referenced`, the scoped/--env
+    paths would drop them (--env filters incoming to referenced names; the
+    scoped overlay loop only copies referenced names), so a cloudflare-tunnel
+    deploy would fail with "missing deployment secret" unless the token happened
+    to be a GLOBAL secret. They are treated exactly like a ${...} reference.
+
     Returning a per-deploy dict instead of writing process-global os.environ
     keeps render pure and safe under concurrent deploys (no cross-scope secret
     bleed when two deploys reference the same name with different values).
     """
     referenced = _referenced_env_names(texts)
+    if extra_referenced:
+        referenced.update(extra_referenced)
     incoming = _request_env_secrets(body)
     global_secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
     scoped = state.get("scopedSecrets") if isinstance(state.get("scopedSecrets"), dict) else {}

@@ -249,6 +249,35 @@ def render_compose_job(
             docker_config["ports"] = [label]
         mounts: List[Dict[str, Any]] = []
         for vspec in (body.get("volumes") or []):
+            if isinstance(vspec, dict):
+                # docker-compose long/expanded volume syntax, e.g.
+                #   {type: volume, source: data, target: /var/lib/mysql}
+                #   {type: bind, source: /srv/data, target: /etc/app, read_only: true}
+                # This is what `docker compose config` emits when normalizing, so
+                # a user copying a real compose file routinely hits it. Luma's own
+                # compose validation already understands the dict form, so we must
+                # too — stringifying and splitting on ':' would mangle it into a
+                # nonsensical mount (source/target become dict-repr fragments).
+                vtype = str(vspec.get("type") or "").strip().lower()
+                src = str(vspec.get("source") or "").strip()
+                tgt = str(vspec.get("target") or "").strip()
+                if not src:
+                    # anonymous volume / tmpfs: no host source to bind, drop it
+                    continue
+                if not tgt:
+                    raise LumaError(
+                        f"compose service {svc_name} has an invalid volume mapping "
+                        f"(missing target): {vspec!r}"
+                    )
+                if vtype not in ("volume", "bind"):
+                    vtype = "bind" if src[0] in ("/", ".", "~") else "volume"
+                mounts.append({
+                    "type": vtype,
+                    "source": src,
+                    "target": tgt,
+                    "readonly": bool(vspec.get("read_only")),
+                })
+                continue
             parts = str(vspec).split(":")
             if len(parts) == 1:
                 # docker-compose short syntax: a bare container path is an

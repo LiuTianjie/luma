@@ -4979,14 +4979,17 @@ class ControlApiTests(unittest.TestCase):
                 (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
                 with patch("luma.control.server.remove_from_nomad", return_value="Nomad job removed: api"), patch(
                     "luma.control.server._remove_docker_volume_across_nodes",
-                    return_value={"name": "api_api-data", "status": "removed local Docker volume"},
+                    return_value={"name": "api-data", "status": "removed local Docker volume"},
                 ) as remove_volume:
                     result = handle_service_remove(
                         state["deployToken"],
                         {"name": "api", "skipDns": True, "deleteStorage": True},
                     )
                 remove_volume.assert_called_once()
-                self.assertEqual(remove_volume.call_args.args[0], "api_api-data")
+                # native render creates the volume under the RAW source name, so
+                # cleanup must target "api-data" (not the slug-prefixed
+                # "api_api-data", which was never created — that orphaned data).
+                self.assertEqual(remove_volume.call_args.args[0], "api-data")
                 self.assertEqual(remove_volume.call_args.args[1], [])
                 self.assertIn("removed=1", result["storageCleanup"])
                 self.assertNotIn("api", load_state()["deployments"]["services"])
@@ -8504,6 +8507,66 @@ env:
         self.assertEqual(secrets["DB_PW"], "global-pw")
         self.assertFalse(result["scoped"])
 
+    def test_extra_referenced_token_resolves_from_scope(self):
+        # cloudflared tunnel.tokenEnv is a plain field, not a ${...} reference,
+        # so it must be passed as extra_referenced or the scoped/--env paths
+        # silently drop it. Scoped-only token must resolve.
+        from luma.control.server import _render_secrets
+
+        state = {
+            "secrets": {},
+            "scopedSecrets": {"home-tool": {"CLOUDFLARE_TUNNEL_TOKEN": "scoped-tok"}},
+        }
+        secrets, result = _render_secrets(
+            state,
+            scope="home-tool",
+            body={},
+            texts=["name: tool\n"],  # no ${...} in the manifest text
+            extra_referenced={"CLOUDFLARE_TUNNEL_TOKEN"},
+        )
+        self.assertEqual(secrets["CLOUDFLARE_TUNNEL_TOKEN"], "scoped-tok")
+        self.assertTrue(result["scoped"])
+
+    def test_extra_referenced_token_imported_from_env(self):
+        # --env path: the token arrives via envSecrets and must NOT be filtered
+        # out as "unreferenced" just because it isn't a ${...} placeholder.
+        from luma.control.server import _render_secrets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(Path(tmp) / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["secrets"] = {}
+                state["scopedSecrets"] = {}
+                save_state(state)
+                secrets, result = _render_secrets(
+                    state,
+                    scope="home-tool",
+                    body={"envSecrets": {"CLOUDFLARE_TUNNEL_TOKEN": "env-tok"}},
+                    texts=["name: tool\n"],
+                    extra_referenced={"CLOUDFLARE_TUNNEL_TOKEN"},
+                )
+                self.assertEqual(secrets["CLOUDFLARE_TUNNEL_TOKEN"], "env-tok")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_extra_referenced_token_missing_raises(self):
+        # No global, no scope, no --env -> must raise a clear scoped-secret error
+        # rather than render later failing with an opaque missing-secret.
+        from luma.control.server import _render_secrets
+
+        state = {"secrets": {}, "scopedSecrets": {"home-tool": {"OTHER": "x"}}}
+        with self.assertRaises(LumaError):
+            _render_secrets(
+                state,
+                scope="home-tool",
+                body={},
+                texts=["name: tool\n"],
+                extra_referenced={"CLOUDFLARE_TUNNEL_TOKEN"},
+            )
+
 
 class DeployConcurrencyTests(unittest.TestCase):
     """The state-touching deploy handlers must be serialized by _DEPLOY_LOCK so
@@ -8604,6 +8667,30 @@ class MacPublishPortGuardTests(unittest.TestCase):
         )
         resolved = resolve_service_node_pin(spec, self._linux_state())
         self.assertEqual(resolved.node_platform, "linux/amd64")
+
+    def _mac_state_real_shape(self):
+        # The record shape node join + agent heartbeat actually produces: NO
+        # top-level platform/os/arch, os+arch nested under "agent". Before the
+        # fix the guard read only top-level keys and so never fired in
+        # production even though the unit fixtures (with top-level platform)
+        # passed. This locks the guard to the real data shape.
+        return {"nodes": {"macmini": {"name": "macmini", "region": "home", "agent": {"os": "darwin", "arch": "arm64"}}}}
+
+    def test_mac_node_real_record_shape_with_publish_port_raises(self):
+        spec = self._spec(
+            "name: app\nimage: nginx:latest\nregion: home\nnode: macmini\n"
+            "exposure: tailscale-relay\ndomain: a.example.com\nport: 8080\npublishPort: 18080\n"
+        )
+        with self.assertRaises(LumaError) as ctx:
+            resolve_service_node_pin(spec, self._mac_state_real_shape())
+        self.assertIn("publishPort", str(ctx.exception))
+
+    def test_compose_mac_node_real_record_shape_bridge_exposure_raises(self):
+        with self.assertRaises(LumaError) as ctx:
+            _ensure_compose_exposure_supported_on_nodes(
+                self._mac_state_real_shape(), self._compose_dep("macmini")
+            )
+        self.assertIn("macOS", str(ctx.exception))
 
     def _compose_dep(self, node: str, exposure: str = "tailscale-relay"):
         d = tempfile.mkdtemp()

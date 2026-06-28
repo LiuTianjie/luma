@@ -31,7 +31,13 @@ class ControlClient:
             raw = response.read().decode("utf-8")
         if not raw:
             return {}
-        payload = json.loads(raw)
+        try:
+            payload = json.loads(raw)
+        except ValueError as exc:
+            raise LumaError(
+                "control API returned a non-JSON response "
+                "(is the endpoint pointed at the Luma control plane?)"
+            ) from exc
         if not isinstance(payload, dict):
             raise LumaError("control API returned invalid JSON")
         return payload
@@ -43,7 +49,13 @@ class ControlClient:
                 line = raw_line.decode("utf-8").strip()
                 if not line:
                     continue
-                payload = json.loads(line)
+                try:
+                    payload = json.loads(line)
+                except ValueError as exc:
+                    raise LumaError(
+                        "control API returned an invalid stream line "
+                        "(is the endpoint pointed at the Luma control plane?)"
+                    ) from exc
                 if not isinstance(payload, dict):
                     raise LumaError("control API returned invalid stream JSON")
                 yield payload
@@ -156,6 +168,7 @@ class ControlClient:
         node_name: str,
         node_id: str = "",
         os_name: str = "",
+        arch: str = "",
         capabilities: list[str] | None = None,
         metrics: Dict[str, Any] | None = None,
         container_stats: list[Dict[str, Any]] | None = None,
@@ -165,6 +178,7 @@ class ControlClient:
             "nodeName": node_name,
             "nodeId": node_id,
             "os": os_name,
+            "arch": arch,
             "capabilities": capabilities or [],
             "waitSeconds": max(timeout - 5, 1),
         }
