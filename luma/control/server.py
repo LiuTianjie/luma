@@ -1424,19 +1424,33 @@ def _ensure_compose_exposure_supported_on_nodes(state: Dict[str, Any], deploymen
     """
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     bridge_exposures = {"tcp-relay", "tailscale-relay", "cn-edge", "external-edge"}
-    for service in deployment.services.values():
-        if not service.node or service.exposure not in bridge_exposures or not service.port:
-            continue
-        record = _node_record_for_name(nodes, service.node)
+    # A compose deployment renders as ONE Nomad group constrained to a single
+    # node (render_compose_job: the union of every service's node pin, capped at
+    # one distinct node). The exposed service need not be the one carrying the
+    # pin — a sibling (e.g. a DB needing a local volume) can pin the whole group
+    # to a Mac node while the exposed service declares no node of its own. So the
+    # guard keys on the group's resolved node, not each service's own .node.
+    exposed = [
+        service
+        for service in deployment.services.values()
+        if service.exposure in bridge_exposures and service.port
+    ]
+    if not exposed:
+        return
+    pinned_nodes = {service.node for service in deployment.services.values() if service.node}
+    for node_name in pinned_nodes:
+        record = _node_record_for_name(nodes, node_name)
         if not record:
             continue
         platform = _nomad_node_platform_from_record(record)
         if (platform or "").split("/")[0] == "darwin":
+            culprit = exposed[0]
             raise LumaError(
-                f"compose service {service.name} exposure={service.exposure} pins to Mac/OrbStack "
-                f"node {service.node}, but compose port mapping uses Nomad bridge mode which is "
-                "unreachable on macOS. Deploy this service on a Linux node, or use a native luma "
-                "manifest (which renders docker host mode on Mac)."
+                f"compose service {culprit.name} exposure={culprit.exposure} would run on "
+                f"Mac/OrbStack node {node_name} (the deployment group is pinned there), but "
+                "compose port mapping uses Nomad bridge mode which is unreachable on macOS. "
+                "Deploy this group on a Linux node, or use a native luma manifest (which "
+                "renders docker host mode on Mac)."
             )
 
 
