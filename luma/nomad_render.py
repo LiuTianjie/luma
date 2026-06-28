@@ -353,8 +353,19 @@ def render_compose_job(
         "MaxClientDisconnect": 3_600_000_000_000,
         "Tasks": tasks,
     }
-    if reserved_ports:
-        group["Networks"] = [{"Mode": "bridge", "ReservedPorts": reserved_ports}]
+    # A bridge Networks block makes Nomad put every task in the group into one
+    # shared network namespace (via the pause container). That shared netns is
+    # what makes the extra_hosts "service:127.0.0.1" mapping correct — sibling
+    # DSNs like tcp(mysql:3306) resolve to the mysql task's loopback. Emit it
+    # whenever the group has >1 task (siblings must reach each other) OR a
+    # service publishes a port. Without it, an all-exposure:none multi-service
+    # stack renders with no Networks block, each task gets its own loopback, and
+    # inter-service connections silently fail while the deploy reports healthy.
+    if len(tasks) > 1 or reserved_ports:
+        network: Dict[str, Any] = {"Mode": "bridge"}
+        if reserved_ports:
+            network["ReservedPorts"] = reserved_ports
+        group["Networks"] = [network]
     if nomad_services:
         group["Services"] = nomad_services
 

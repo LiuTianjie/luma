@@ -143,6 +143,66 @@ class ComposeRenderTests(unittest.TestCase):
         names = {t["Name"] for t in groups[0]["Tasks"]}
         self.assertEqual(names, {"mysql", "app"})
 
+    def test_all_internal_multi_service_gets_shared_netns_bridge(self):
+        # All services exposure:none (the `compose init` default). The group
+        # MUST still get a bridge Networks block so the tasks share one netns —
+        # otherwise extra_hosts "mysql:127.0.0.1" resolves to the app's OWN
+        # loopback and sibling DSNs silently fail while the deploy reports OK.
+        compose = """
+services:
+  app:
+    image: registry.example.com/app:latest
+    environment:
+      DSN: root:pw@tcp(mysql:3306)/db
+  mysql:
+    image: mysql:8.4.9
+    environment:
+      MYSQL_ROOT_PASSWORD: pw
+"""
+        sidecar = """
+name: tool
+compose: docker-compose.yml
+region: home
+services:
+  app:
+    node: lab
+    exposure: none
+  mysql:
+    node: lab
+    exposure: none
+"""
+        dep = write_deployment(sidecar, compose)
+        group = render_compose_job(cfg(), dep, as_json=False)["Job"]["TaskGroups"][0]
+        self.assertEqual(len(group["Tasks"]), 2)
+        networks = group["Networks"]
+        self.assertEqual(networks[0]["Mode"], "bridge")
+        # no exposed port -> no ReservedPorts, but the bridge block still exists
+        self.assertNotIn("ReservedPorts", networks[0])
+        app = next(t for t in group["Tasks"] if t["Name"] == "app")
+        self.assertIn("mysql:127.0.0.1", app["Config"]["extra_hosts"])
+
+    def test_single_service_internal_needs_no_network_block(self):
+        # A lone service has no sibling to reach, so no shared-netns bridge is
+        # required (and none should be emitted when there's no published port).
+        compose = """
+services:
+  app:
+    image: registry.example.com/app:latest
+"""
+        sidecar = """
+name: tool
+compose: docker-compose.yml
+region: home
+services:
+  app:
+    node: lab
+    exposure: none
+"""
+        dep = write_deployment(sidecar, compose)
+        group = render_compose_job(cfg(), dep, as_json=False)["Job"]["TaskGroups"][0]
+        self.assertEqual(len(group["Tasks"]), 1)
+        self.assertNotIn("Networks", group)
+
     def test_secret_resolved_from_env(self):
         job = self.render()
         mysql = next(t for t in job["TaskGroups"][0]["Tasks"] if t["Name"] == "mysql")
