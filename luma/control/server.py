@@ -1643,8 +1643,24 @@ def _mark_compose_deployment(
     error: str = "",
 ) -> None:
     def mutate(state: Dict[str, Any]) -> None:
+        # storageBackends is the baseline the storage-switch guard compares
+        # against, and it must reflect only what was ACTUALLY APPLIED. Capture
+        # the prior applied signatures BEFORE re-registering (which would
+        # overwrite them with the new — possibly rejected — manifest's
+        # signatures). Only a successful "active" mark means the new backend was
+        # really deployed; for pending/failed_partial we restore the prior
+        # baseline, otherwise a rejected storage switch poisons the baseline and
+        # a retry slips past the guard onto a different backend, orphaning the
+        # old volume's data.
+        prior = _deployments_state(state)["compose"].get(deployment.slug)
+        prior_backends = _compose_storage_backend_signatures_from_record(prior) if isinstance(prior, dict) else None
         _register_compose_deployment(state, deployment, body, source_name)
         record = _deployments_state(state)["compose"][deployment.slug]
+        if status != "active":
+            if prior_backends is not None:
+                record["storageBackends"] = prior_backends
+            else:
+                record.pop("storageBackends", None)
         record["status"] = status
         record["lastError"] = error
         record["steps"] = list(steps or [])

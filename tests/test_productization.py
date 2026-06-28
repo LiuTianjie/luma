@@ -6152,6 +6152,58 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_compose_rejected_storage_switch_does_not_poison_baseline_on_retry(self):
+        # Regression: a rejected storage switch must NOT overwrite the stored
+        # backend baseline. Otherwise retrying the same (rejected) switch sees
+        # new-vs-new, slips past the guard, and orphans the old volume's data.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["storageClasses"] = {
+                    "nfs": {"provider": "nfs", "mode": "external", "endpoint": "nas:/srv/luma", "regions": ["cn"]}
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                compose = yaml.safe_dump({"services": {"app": {"image": "nginx:alpine", "volumes": ["pg-data:/data"]}}, "volumes": {"pg-data": {}}})
+
+                def deploy(path: str):
+                    sidecar = yaml.safe_dump(
+                        {
+                            "name": "app-stack",
+                            "compose": "docker-compose.yml",
+                            "region": "cn",
+                            "volumes": {"pg-data": {"storageClass": "nfs", "path": path}},
+                        }
+                    )
+                    return handle_compose_deployment(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": True},
+                    )
+
+                # 1) first deploy establishes backend baseline at path=pg-data
+                result = deploy("pg-data")
+                self.assertEqual(result["deployment"], "app-stack")
+                record = load_state()["deployments"]["compose"]["app-stack"]
+                self.assertEqual(record["storageBackends"]["pg-data"]["path"], "pg-data")
+
+                # 2) switch to a different path is rejected
+                with self.assertRaisesRegex(LumaError, "storage backend changed"):
+                    deploy("pg-data-v2")
+                # the rejected switch must NOT have poisoned the baseline
+                record = load_state()["deployments"]["compose"]["app-stack"]
+                self.assertEqual(record["status"], "failed_partial")
+                self.assertEqual(record["storageBackends"]["pg-data"]["path"], "pg-data")
+
+                # 3) retrying the same switch is STILL rejected (the bug: it passed)
+                with self.assertRaisesRegex(LumaError, "storage backend changed"):
+                    deploy("pg-data-v2")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_compose_deployment_rejects_sidecar_storage_classes_in_control(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
