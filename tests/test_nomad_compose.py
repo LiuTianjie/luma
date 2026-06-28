@@ -245,7 +245,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PW}
     volumes:
-      - badvolume
+      - "/var/lib/mysql:"
 """
         sidecar = """
 name: granary
@@ -259,6 +259,35 @@ services:
         dep = write_deployment(sidecar, compose)
         with self.assertRaises(LumaError):
             render_compose_job(cfg(), dep, as_json=False)
+
+    def test_anonymous_volume_is_dropped_not_rejected(self):
+        # docker-compose short syntax: a bare container path declares an
+        # anonymous volume. It has no host source, so it cannot become a Nomad
+        # mount, but it must NOT abort the deploy (regression guard).
+        compose = """
+services:
+  mysql:
+    image: mysql:8.4.9
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PW}
+    volumes:
+      - /var/lib/mysql
+"""
+        sidecar = """
+name: granary
+compose: docker-compose.yml
+region: home
+services:
+  mysql:
+    node: lab
+    exposure: none
+"""
+        dep = write_deployment(sidecar, compose)
+        job = render_compose_job(cfg(), dep, as_json=False, secrets={"DB_PW": "x"})["Job"]
+        mysql = next(t for t in job["TaskGroups"][0]["Tasks"] if t["Name"] == "mysql")
+        # anonymous volume dropped: no mount block referencing it
+        self.assertNotIn("mount", mysql["Config"])
+
 
     def test_secret_placeholder_can_be_kept_for_validation(self):
         dep = write_deployment(GRANARY_SIDECAR, GRANARY_COMPOSE)

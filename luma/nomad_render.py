@@ -250,7 +250,14 @@ def render_compose_job(
         mounts: List[Dict[str, Any]] = []
         for vspec in (body.get("volumes") or []):
             parts = str(vspec).split(":")
-            if len(parts) < 2 or not parts[0] or not parts[1]:
+            if len(parts) == 1:
+                # docker-compose short syntax: a bare container path is an
+                # anonymous volume (e.g. "- /var/lib/mysql"). It has no host
+                # source to bind, so it cannot become a Nomad mount; drop it
+                # rather than aborting the whole deploy. Only an explicit
+                # source:target form with a missing half is malformed.
+                continue
+            if not parts[0] or not parts[1]:
                 raise LumaError(
                     f"compose service {svc_name} has an invalid volume spec "
                     f"(expected source:target): {vspec!r}"
