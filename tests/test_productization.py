@@ -1331,6 +1331,43 @@ class CliTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONFIG_HOME", old_home)
 
+    def test_compose_deploy_stream_interrupted_does_not_redeploy(self):
+        # Regression: if the event stream emits steps but ends WITHOUT a `done`
+        # result (connection dropped mid-deploy), the deploy already ran on the
+        # manager. Re-issuing via the non-streaming endpoint would silently
+        # deploy a second time. Must raise instead, like the native path.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            compose_path = root / "docker-compose.yml"
+            sidecar_path = root / "luma.compose.yml"
+            compose_path.write_text(
+                yaml.safe_dump({"services": {"app": {"image": "nginx:alpine"}}}),
+                encoding="utf-8",
+            )
+            sidecar_path.write_text(
+                yaml.safe_dump({"name": "app-stack", "compose": "docker-compose.yml", "region": "cn"}),
+                encoding="utf-8",
+            )
+            old_home = _set_env("LUMA_CONFIG_HOME", str(home))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                # stream yields progress but no {"status": "done", ...} result
+                client.deploy_compose_events.return_value = iter(
+                    [
+                        {"name": "Render compose Nomad job", "status": "start", "message": "started"},
+                        {"name": "Render compose Nomad job", "status": "ok", "message": "rendered"},
+                    ]
+                )
+                with patch("luma.cli.ControlClient", return_value=client):
+                    code = main(["compose", "deploy", str(sidecar_path), "--timeout", "12"])
+                # non-zero exit (LumaError surfaced) and NO silent second deploy
+                self.assertNotEqual(code, 0)
+                client.deploy_compose.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
     def test_deploy_streams_ndjson_with_env_context_without_login(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
@@ -3371,7 +3408,28 @@ class NomadBootstrapTests(unittest.TestCase):
             install_docker(remote)
 
 class ControlApiTests(unittest.TestCase):
-    def test_management_and_join_tokens_can_register_nodes(self):
+    def test_prune_agent_tasks_drops_old_terminal_keeps_active_and_recent(self):
+        from luma.control.server import _prune_agent_tasks, AGENT_TASK_RETENTION_SECONDS
+
+        now = 1_000_000
+        old = now - AGENT_TASK_RETENTION_SECONDS - 10
+        recent = now - 5
+        state = {
+            "agentTasks": {
+                "old-done": {"status": "succeeded", "completedAt": old},
+                "old-failed": {"status": "failed", "completedAt": old},
+                "old-timeout": {"status": "timeout", "updatedAt": old},
+                "recent-done": {"status": "succeeded", "completedAt": recent},
+                "old-queued": {"status": "queued", "createdAt": old},      # active: keep
+                "old-running": {"status": "running", "updatedAt": old},    # active: keep
+            }
+        }
+        _prune_agent_tasks(state, now=now)
+        survivors = set(state["agentTasks"])
+        # old terminal tasks gone; active tasks and recent terminal survive
+        self.assertEqual(survivors, {"recent-done", "old-queued", "old-running"})
+
+
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
             try:

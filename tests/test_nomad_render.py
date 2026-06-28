@@ -34,6 +34,46 @@ class NomadRenderTests(unittest.TestCase):
         service = self.load(content)
         return render_nomad_job(self.config(), service, as_json=False, secrets=secrets)["Job"]
 
+    def test_proxy_injects_real_egress_url_not_consul_name(self):
+        # proxy: true must inject the caller-provided real gateway address, and
+        # NOT a *.service.consul name (Luma runs no Consul -> never resolves).
+        service = self.load(
+            """
+name: app
+image: ghcr.io/acme/app:latest
+region: home
+exposure: tailscale-relay
+domain: app.example.com
+port: 8080
+proxy: true
+"""
+        )
+        job = render_nomad_job(
+            self.config(), service, as_json=False, egress_proxy_url="http://100.64.0.1:7890"
+        )["Job"]
+        env = job["TaskGroups"][0]["Tasks"][0]["Env"]
+        self.assertEqual(env["HTTP_PROXY"], "http://100.64.0.1:7890")
+        self.assertEqual(env["HTTPS_PROXY"], "http://100.64.0.1:7890")
+        self.assertNotIn("consul", json.dumps(job))
+
+    def test_proxy_without_resolved_url_injects_nothing(self):
+        # No resolvable gateway -> inject no proxy env (better than a dead name)
+        service = self.load(
+            """
+name: app
+image: ghcr.io/acme/app:latest
+region: home
+exposure: tailscale-relay
+domain: app.example.com
+port: 8080
+proxy: true
+"""
+        )
+        job = render_nomad_job(self.config(), service, as_json=False)["Job"]
+        env = job["TaskGroups"][0]["Tasks"][0].get("Env") or {}
+        self.assertNotIn("HTTP_PROXY", env)
+        self.assertNotIn("HTTPS_PROXY", env)
+
     def test_cn_edge_emits_traefik_nomad_tags_and_dynamic_port(self):
         job = self.render(
             """

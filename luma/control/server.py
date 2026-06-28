@@ -99,6 +99,11 @@ from .resources import (
 
 AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
 AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SECONDS", "300"))
+# How long a finished (succeeded/failed/timeout) agent task is kept in
+# control.json before it is garbage-collected. Without this, agentTasks grows
+# without bound — every remote-node deploy adds an entry that is never deleted,
+# and the whole file is re-serialized + fsynced on every heartbeat.
+AGENT_TASK_RETENTION_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_RETENTION_SECONDS", str(24 * 3600)))
 TERMINAL_SESSION_LIMIT_PER_NODE = int(os.environ.get("LUMA_TERMINAL_SESSION_LIMIT_PER_NODE", "2"))
 TERMINAL_IDLE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TERMINAL_IDLE_TIMEOUT_SECONDS", "1800"))
 # Sustained-breach alerting: a metric must stay above the threshold for the
@@ -500,6 +505,29 @@ def _agent_tasks(state: Dict[str, Any]) -> Dict[str, Any]:
     return tasks
 
 
+def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None:
+    """Drop finished agent tasks older than the retention window.
+
+    Terminal tasks (succeeded/failed/timeout) are kept only briefly for history;
+    queued/running tasks are never pruned (a deploy may still be polling them).
+    Called from the same mutate that inserts a new task, so it rides an existing
+    state write and adds no extra fsync.
+    """
+    now = int(time.time()) if now is None else now
+    cutoff = now - AGENT_TASK_RETENTION_SECONDS
+    tasks = _agent_tasks(state)
+    terminal = {"succeeded", "failed", "timeout"}
+    stale = [
+        task_id
+        for task_id, task in tasks.items()
+        if isinstance(task, dict)
+        and str(task.get("status") or "") in terminal
+        and int(task.get("completedAt") or task.get("updatedAt") or 0) < cutoff
+    ]
+    for task_id in stale:
+        tasks.pop(task_id, None)
+
+
 def _mutate_control_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
     return mutate_state(mutator)
 
@@ -678,6 +706,7 @@ def _run_node_agent_task(
                 f"capabilities={','.join(str(value) for value in agent.get('capabilities') or []) or '-'}"
             )
         now = int(time.time())
+        _prune_agent_tasks(current, now=now)
         _agent_tasks(current)[task_id] = {
             "id": task_id,
             "nodeName": node_name,
@@ -969,6 +998,20 @@ def _nomad_join_egress_proxy(region: str, server_addr: str) -> str:
         return ""
     host = _host_from_hostport(server_addr)
     return f"http://{host}:7890" if host else ""
+
+
+def _egress_proxy_for_region(config: Any, state: Dict[str, Any], region: str) -> str:
+    # Runtime egress proxy for a deployed service's container. cn/home services
+    # reach the internet through the manager's egress gateway (same address as
+    # image pulls and node join); global services have direct internet -> no
+    # proxy. Returns "" when no gateway is resolvable so render injects nothing.
+    if str(region or "").strip() not in {"cn", "home"}:
+        return ""
+    try:
+        server_addr = _nomad_rpc_addr_for_join(config, state)
+    except LumaError:
+        return ""
+    return _nomad_join_egress_proxy(region, server_addr)
 
 
 def _egress_proxy_for_node(config: Any, state: Dict[str, Any], node_name: str) -> str:
@@ -1821,7 +1864,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         stack_text = _deploy_step(
             steps,
             "Render Nomad job",
-            lambda: render_nomad_job(config, service, registry_auth=registry_auth, secrets=secrets),
+            lambda: render_nomad_job(config, service, registry_auth=registry_auth, secrets=secrets, egress_proxy_url=_egress_proxy_for_region(config, state, service.region)),
             progress=progress,
         )
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
@@ -2412,6 +2455,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 deployment,
                 registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
                 secrets=secrets,
+                egress_proxy_url=_egress_proxy_for_region(config, state, deployment.region),
             ),
             progress=progress,
         )

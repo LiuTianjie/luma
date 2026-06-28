@@ -2554,6 +2554,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     manifest_text, compose_text = _compose_request_text(args.sidecar, deployment)
     env_secrets = _deploy_env_secrets(args.deploy_env_file, [manifest_text, compose_text])
+    streamed = False
     result: Dict[str, Any] | None = None
     try:
         for event in client.deploy_compose_events(
@@ -2578,10 +2579,18 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
                 if not isinstance(payload, dict):
                     raise LumaError("control API stream ended without a compose deploy result")
                 result = payload
+            streamed = True
     except LumaError as exc:
         if "control API error 404" not in str(exc):
             raise
     if result is None:
+        # If the stream produced events but ended without a `done` result, the
+        # deploy already ran (or is running) on the manager — re-issuing it via
+        # the non-streaming endpoint would silently deploy a SECOND time. Only
+        # fall back when nothing streamed (old Control without the stream
+        # endpoint -> 404 swallowed above). Mirrors cmd_deploy's native guard.
+        if streamed:
+            raise LumaError("control API stream ended without a compose deploy result")
         result = _run_with_wait_heartbeat(
             lambda: client.deploy_compose(
                 manifest=manifest_text,

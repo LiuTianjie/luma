@@ -169,6 +169,7 @@ def render_compose_job(
     registry_auth_resolver: Any | None = None,
     secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
+    egress_proxy_url: str | None = None,
 ) -> str | Dict[str, Any]:
     """Render a Luma compose deployment into a single multi-task Nomad job.
 
@@ -311,9 +312,11 @@ def render_compose_job(
             for item in raw_env:
                 k, _, v = str(item).partition("=")
                 env[k] = _resolve_env_value(v, secrets=secrets, resolve_secrets=resolve_secrets)
-        if override and override.proxy:
-            env.setdefault("HTTP_PROXY", "http://egress.service.consul:7890")
-            env.setdefault("HTTPS_PROXY", "http://egress.service.consul:7890")
+        if override and override.proxy and egress_proxy_url:
+            # See _app_task: inject the real egress gateway address, never a
+            # *.service.consul name (Luma runs no Consul → it never resolves).
+            env.setdefault("HTTP_PROXY", egress_proxy_url)
+            env.setdefault("HTTPS_PROXY", egress_proxy_url)
 
         resources = {"CPU": DEFAULT_CPU_MHZ, "MemoryMB": DEFAULT_MEMORY_MB}
         rc = (body.get("deploy") or {}).get("resources") or {}
@@ -442,12 +445,17 @@ def render_nomad_job(
     registry_auth: Dict[str, str] | None = None,
     secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
+    egress_proxy_url: str | None = None,
 ) -> str | Dict[str, Any]:
     """Render a ServiceSpec to a Nomad job. Returns JSON text (default) or the dict.
 
     registry_auth, when provided, is the {username, password, serveraddress} dict
     from Luma's managed credential store (registry_auth_for_image). It is injected
     into the app task's docker auth block so Nomad pulls private images.
+
+    egress_proxy_url, when provided and the service has proxy: true, is injected
+    as HTTP_PROXY/HTTPS_PROXY. The caller resolves the real gateway address; if
+    omitted, no proxy env is set (render has no cluster state to derive it).
     """
     job = _build_job(
         config,
@@ -456,6 +464,7 @@ def render_nomad_job(
         registry_auth=registry_auth,
         secrets=secrets,
         resolve_secrets=resolve_secrets,
+        egress_proxy_url=egress_proxy_url,
     )
     wrapped = {"Job": job}
     if as_json:
@@ -471,6 +480,7 @@ def _build_job(
     registry_auth: Dict[str, str] | None = None,
     secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
+    egress_proxy_url: str | None = None,
 ) -> Dict[str, Any]:
     name = service.slug
 
@@ -494,7 +504,7 @@ def _build_job(
     if nomad_service is not None:
         group["Services"] = [nomad_service]
 
-    tasks = [_app_task(config, service, port_label, registry_auth=registry_auth, secrets=secrets, resolve_secrets=resolve_secrets)]
+    tasks = [_app_task(config, service, port_label, registry_auth=registry_auth, secrets=secrets, resolve_secrets=resolve_secrets, egress_proxy_url=egress_proxy_url)]
     sidecar = _cloudflared_task(service, secrets=secrets, resolve_secrets=resolve_secrets)
     if sidecar is not None:
         tasks.append(sidecar)
@@ -701,6 +711,7 @@ def _app_task(
     registry_auth: Dict[str, str] | None = None,
     secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
+    egress_proxy_url: str | None = None,
 ) -> Dict[str, Any]:
     docker_config: Dict[str, Any] = {"image": service.image}
     if registry_auth and registry_auth.get("username") and registry_auth.get("password"):
@@ -723,11 +734,14 @@ def _app_task(
     _apply_volume_mounts(docker_config, service)
 
     env = {str(k): _resolve_env_value(v, secrets=secrets, resolve_secrets=resolve_secrets) for k, v in service.environment.items()}
-    if service.proxy:
-        # Runtime egress proxy: reach the egress service via Nomad-native
-        # discovery.
-        env.setdefault("HTTP_PROXY", "http://egress.service.consul:7890")
-        env.setdefault("HTTPS_PROXY", "http://egress.service.consul:7890")
+    if service.proxy and egress_proxy_url:
+        # Runtime egress proxy: route the container's outbound HTTP/HTTPS through
+        # the egress (mihomo) gateway. The caller (Control) resolves the real
+        # gateway address (http://<manager>:7890) since render has no cluster
+        # state. We do NOT inject a *.service.consul name — Luma runs no Consul,
+        # so that name never resolves and every proxied request fails silently.
+        env.setdefault("HTTP_PROXY", egress_proxy_url)
+        env.setdefault("HTTPS_PROXY", egress_proxy_url)
 
     task: Dict[str, Any] = {
         "Name": service.slug,
