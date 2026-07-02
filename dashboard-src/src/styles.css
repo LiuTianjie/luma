@@ -1595,7 +1595,7 @@ tbody tr.is-selected {
 }
 
 .app-table {
-  min-width: 1180px;
+  min-width: 1320px;
   table-layout: fixed;
 }
 
@@ -1612,9 +1612,14 @@ tbody tr.is-selected {
 
 .app-table th:nth-child(4),
 .app-table td:nth-child(4),
+.app-table th:nth-child(6),
+.app-table td:nth-child(6) {
+  width: 90px;
+}
+
 .app-table th:nth-child(5),
 .app-table td:nth-child(5) {
-  width: 90px;
+  width: 150px;
 }
 
 .app-table th:first-child .primary-cell strong,
@@ -3338,7 +3343,7 @@ tbody tr.is-selected {
 
 .application-update-context-grid,
 .application-overview-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 /* Details, modals, login */

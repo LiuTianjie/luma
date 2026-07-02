@@ -11,6 +11,7 @@ export type Application = {
   desired: number;
   exposure: string;
   regions: string[];
+  nodes: string[];
 };
 
 const SYSTEM_STACKS = new Set(["traefik", "egress", "luma-control"]);
@@ -39,6 +40,15 @@ function applicationStatus(services: DashboardService[]) {
   return "degraded";
 }
 
+function serviceNodes(service: DashboardService) {
+  return [
+    ...(service.nodes || []),
+    service.node || "",
+    ...((service.tasks || []).map((task) => task.node || "")),
+    ...((service.resources?.actual?.nodes || [])),
+  ].filter(Boolean);
+}
+
 export function groupApplications(services: DashboardService[]): Application[] {
   const groups = new Map<string, DashboardService[]>();
   for (const service of services) {
@@ -53,6 +63,7 @@ export function groupApplications(services: DashboardService[]): Application[] {
     const desired = items.reduce((sum, service) => sum + (service.desired || 0), 0);
     const exposures = [...new Set(items.map((service) => service.exposure || "none"))];
     const regions = [...new Set(items.map((service) => service.region || "-"))];
+    const nodes = [...new Set(items.flatMap(serviceNodes))].sort();
     return {
       stack,
       services: items,
@@ -61,6 +72,7 @@ export function groupApplications(services: DashboardService[]): Application[] {
       desired,
       exposure: exposures.length === 1 ? exposures[0] : "mixed",
       regions,
+      nodes,
       status: applicationStatus(items),
     };
   }).sort((a, b) => a.stack.localeCompare(b.stack));

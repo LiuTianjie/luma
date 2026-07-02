@@ -504,14 +504,20 @@ def setup_tailscale(node: NodeConfig, *, authkey: str | None = None, executor: E
         else:
             results.append("Tailscale installed but not connected on macOS")
         return results
-    remote.sudo(
+    output = remote.sudo(
         "set -euo pipefail; "
         "if ! command -v tailscale >/dev/null 2>&1; then "
         "curl -fsSL https://tailscale.com/install.sh | sh; "
+        "echo luma_tailscale_installed; "
+        "else "
+        "echo luma_tailscale_present; "
         "fi; "
         "systemctl enable --now tailscaled"
     )
-    results.append("Tailscale installed")
+    if "luma_tailscale_present" in output:
+        results.append("Tailscale already installed")
+    else:
+        results.append("Tailscale installed")
     status = remote.sudo_result("tailscale status >/dev/null 2>&1")
     if status.code == 0:
         results.append("Tailscale already logged in")
@@ -1186,11 +1192,21 @@ def install_nomad_node(
 
     def _install_binary() -> str:
         url = install["download_url"]
-        remote.sudo(
-            f"set -e; cd /tmp; {proxy}curl -fsSL {shlex.quote(url)} -o nomad.zip; "
+        version_regex = rf"^Nomad v?{re.escape(nomad_node.NOMAD_VERSION)}([^0-9.]|$)"
+        output = remote.sudo(
+            "set -e; "
+            "if command -v nomad >/dev/null 2>&1 "
+            f"&& nomad version 2>/dev/null | head -n 1 | grep -Eq {shlex.quote(version_regex)}; then "
+            "echo luma_nomad_binary_present; "
+            "else "
+            f"cd /tmp; {proxy}curl -fsSL {shlex.quote(url)} -o nomad.zip; "
             "command -v unzip >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq unzip) || true; "
-            "unzip -o nomad.zip -d /usr/local/bin/ >/dev/null"
+            "unzip -o nomad.zip -d /usr/local/bin/ >/dev/null; "
+            "echo luma_nomad_binary_installed; "
+            "fi"
         )
+        if "luma_nomad_binary_present" in output:
+            return "Nomad binary already installed"
         return "Nomad binary installed"
 
     _step(results, emit, "Install Nomad binary", _install_binary)

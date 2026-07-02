@@ -104,6 +104,7 @@ export function ApplicationManagementPanel({
       const haystack = [
         app.stack,
         ...app.domains,
+        ...app.nodes,
         ...app.services.map((service) => `${service.name || ""} ${service.fullName || ""} ${service.image || ""}`),
       ].join(" ").toLowerCase();
       return matchesStatus && matchesRegion && (!query || haystack.includes(query));
@@ -288,6 +289,7 @@ export function ApplicationManagementPanel({
             <article><span>{t(lang, "status")}</span><strong>{localizeState(lang, selected.status)}</strong></article>
             <article><span>{t(lang, "replicas")}</span><strong>{selected.running}/{selected.desired}</strong></article>
             <article><span>{t(lang, "region")}</span><strong>{selected.regions.join(", ")}</strong></article>
+            <article><span>{t(lang, "nodes")}</span><strong>{selected.nodes.join(", ") || "-"}</strong></article>
             <article><span>{t(lang, "exposure")}</span><strong>{selected.exposure}</strong></article>
           </section>
           <section className="application-detail-section">
@@ -475,6 +477,7 @@ export function ApplicationManagementPanel({
               <th>{t(lang, "status")}</th>
               <th>{t(lang, "accessAddress")}</th>
               <th>{t(lang, "region")}</th>
+              <th>{t(lang, "nodes")}</th>
               <th>{t(lang, "replicas")}</th>
               <th>{t(lang, "actions")}</th>
             </tr>
@@ -503,6 +506,13 @@ export function ApplicationManagementPanel({
                   {app.domains.length ? <CodeCell value={app.domains.join(", ")} /> : <Badge value={t(lang, "internalOnly")} />}
                 </td>
                 <td><BadgeGroup>{app.regions.map((region) => <Badge key={region} value={region} />)}</BadgeGroup></td>
+                <td>
+                  {app.nodes.length ? (
+                    <BadgeGroup>{app.nodes.map((node) => <Badge key={node} value={node} />)}</BadgeGroup>
+                  ) : (
+                    <Badge value="-" />
+                  )}
+                </td>
                 <td><Badge value={`${app.running}/${app.desired}`} /></td>
                 <td>
                   <div className="app-action-row">
@@ -536,7 +546,7 @@ export function ApplicationManagementPanel({
               </tr>
               );
             }) : (
-              <tr><td colSpan={6}>{t(lang, "noApplications")}</td></tr>
+              <tr><td colSpan={7}>{t(lang, "noApplications")}</td></tr>
             )}
           </tbody>
         </table>
@@ -551,6 +561,7 @@ export function ApplicationManagementPanel({
             <dl>
               <div><dt>{t(lang, "accessAddress")}</dt><dd>{app.domains.length ? app.domains.join(", ") : t(lang, "internalOnly")}</dd></div>
               <div><dt>{t(lang, "region")}</dt><dd>{app.regions.join(", ") || "-"}</dd></div>
+              <div><dt>{t(lang, "nodes")}</dt><dd>{app.nodes.join(", ") || "-"}</dd></div>
               <div><dt>{t(lang, "replicas")}</dt><dd>{app.running}/{app.desired}</dd></div>
             </dl>
             <div className="app-card-actions">

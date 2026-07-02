@@ -1200,6 +1200,14 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 break
     if isinstance(removed, dict) and _node_record_is_manager(removed):
         raise LumaError(f"refusing to unregister Nomad manager node: {node_name}")
+    config = load_config(_control_config_path())
+    nomad_node_id = _node_record_nomad_node_id(removed) if isinstance(removed, dict) else ""
+    if not nomad_node_id:
+        nomad_node_id = _find_nomad_node_id_for_unregister(config, state, node_name=node_name)
+    nomad_drained = False
+    if nomad_node_id:
+        _drain_nomad_node_for_unregister(config, state, node_name=node_name, node_id=nomad_node_id)
+        nomad_drained = True
     def mutate(state: Dict[str, Any]) -> None:
         require_control_node_token(state, token)
         nodes = state.get("nodes")
@@ -1213,14 +1221,78 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     mutate_state(mutate)
     registered_removed = bool(removed)
-    message = f"Node removed: {node_name}" if registered_removed else f"Node not registered: {node_name}"
+    removed_any = registered_removed or nomad_drained
+    message = f"Node removed: {node_name}" if removed_any else f"Node not registered: {node_name}"
     return {
         "clusterId": state["clusterId"],
         "nodeName": node_name,
-        "removed": registered_removed,
+        "removed": removed_any,
         "registeredRemoved": registered_removed,
+        "nomadDrained": nomad_drained,
+        "nomadNodeId": nomad_node_id,
         "message": message,
     }
+
+
+def _node_record_nomad_node_id(record: Dict[str, Any]) -> str:
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    return str(record.get("nomadNodeId") or record.get("nodeId") or labels.get("luma.node.id") or "").strip()
+
+
+def _find_nomad_node_id_for_unregister(config: Any, state: Dict[str, Any], *, node_name: str) -> str:
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    try:
+        nodes = client.request("GET", "/v1/nodes")
+    except LumaError:
+        return ""
+    if not isinstance(nodes, list):
+        return ""
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("ID") or "").strip()
+        if not node_id:
+            continue
+        if _nomad_node_name_matches_unregister(node, node_name):
+            return node_id
+        try:
+            detail = client.request("GET", f"/v1/node/{urllib.parse.quote(node_id, safe='')}")
+        except LumaError:
+            continue
+        if isinstance(detail, dict) and _nomad_node_name_matches_unregister(detail, node_name):
+            return node_id
+    return ""
+
+
+def _nomad_node_name_matches_unregister(node: Dict[str, Any], node_name: str) -> bool:
+    meta = node.get("Meta") if isinstance(node.get("Meta"), dict) else {}
+    values = {
+        str(node.get("ID") or "").strip(),
+        str(node.get("Name") or "").strip(),
+        str(node.get("NodeName") or "").strip(),
+        str(node.get("LumaNode") or node.get("lumaNode") or "").strip(),
+        str(meta.get("luma_node_name") or "").strip(),
+        str(meta.get("luma.node.name") or "").strip(),
+    }
+    return node_name in values
+
+
+def _drain_nomad_node_for_unregister(config: Any, state: Dict[str, Any], *, node_name: str, node_id: str) -> None:
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    client.request(
+        "POST",
+        f"/v1/node/{urllib.parse.quote(node_id, safe='')}/drain",
+        {
+            "DrainSpec": {"Deadline": 0, "IgnoreSystemJobs": True},
+            "MarkEligible": False,
+            "Meta": {"message": f"removed by Luma node remove: {node_name}"},
+        },
+    )
+    client.request(
+        "POST",
+        f"/v1/node/{urllib.parse.quote(node_id, safe='')}/eligibility",
+        {"Eligibility": "ineligible"},
+    )
 
 
 def _load_service_manifest(manifest: str) -> ServiceSpec:

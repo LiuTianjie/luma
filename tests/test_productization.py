@@ -53,6 +53,7 @@ from luma.bootstrap import (
     deploy_control_stack,
     install_control_config,
     install_docker,
+    install_nomad_node,
     local_host_name,
     refresh_manager_control_local,
     setup_tailscale,
@@ -2731,6 +2732,56 @@ class CliTests(unittest.TestCase):
         self.assertIn("--reset", commands[2])
         self.assertIn("--accept-routes", commands[2])
 
+    def test_linux_tailscale_reports_already_installed_when_binary_exists(self):
+        node = LumaConfig({"nodes": {"mini": {"host": "localhost", "region": "home"}}}, None).get_node("mini")
+        remote = Mock()
+        remote.run_result.return_value = Mock(code=0, output="Linux\n")
+        remote.sudo.return_value = "luma_tailscale_present\n"
+        remote.sudo_result.return_value = Mock(code=0, output="")
+
+        results = setup_tailscale(node, executor=remote)
+
+        self.assertEqual(results, ["Tailscale already installed", "Tailscale already logged in"])
+        command = remote.sudo.call_args.args[0]
+        self.assertIn("command -v tailscale", command)
+        self.assertIn("curl -fsSL https://tailscale.com/install.sh | sh", command)
+
+    def test_install_nomad_node_skips_binary_download_when_pinned_version_exists(self):
+        node = LumaConfig({"nodes": {"worker": {"host": "localhost", "region": "cn"}}}, None).get_node("worker")
+        remote = Mock()
+        remote.sudo.side_effect = [
+            "luma_nomad_binary_present\n",
+            "",
+            "",
+            "",
+        ]
+        uname = Mock(machine="x86_64")
+        with patch("luma.bootstrap.LocalExecutor", return_value=remote), patch(
+            "luma.bootstrap.setup_tailscale", return_value=["Tailscale already logged in"]
+        ), patch("luma.bootstrap._tailscale_ip", return_value="100.80.0.20"), patch(
+            "luma.nomad_node.detect_os", return_value="linux"
+        ), patch("luma.nomad_node.detect_cpu_total_compute", return_value=None), patch(
+            "luma.bootstrap.os.uname", return_value=uname
+        ), patch(
+            "luma.bootstrap.verify_local_nomad_node", return_value="Nomad agent ready"
+        ):
+            results = install_nomad_node(
+                node,
+                role="client",
+                region="cn",
+                node_name="worker",
+                server_addrs=["100.113.204.125:4647"],
+                install_docker_first=False,
+            )
+
+        self.assertIn("Nomad binary already installed", results)
+        self.assertIn("Nomad config written", results)
+        self.assertIn("Nomad agent started", results)
+        binary_command = remote.sudo.call_args_list[0].args[0]
+        self.assertIn("nomad version", binary_command)
+        self.assertIn("grep -Eq", binary_command)
+        self.assertLess(binary_command.index("nomad version"), binary_command.index("curl -fsSL"))
+
     def test_noninteractive_config_skips_missing_optional_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / ".luma.config.json"
@@ -3848,8 +3899,14 @@ class ControlApiTests(unittest.TestCase):
 
     def test_node_unregister_removes_registered_nomad_node_record(self):
         with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "luma.yaml"
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(config_path))
             try:
+                config_path.write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}),
+                    encoding="utf-8",
+                )
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
                 state["nodes"] = {
                     "m4mini": {
@@ -3862,14 +3919,35 @@ class ControlApiTests(unittest.TestCase):
                     }
                 }
                 save_state(state)
-                with patch("luma.control.server.docker_request") as docker:
+                nomad = Mock()
+                with patch("luma.control.server.docker_request") as docker, patch(
+                    "luma.control.server.NomadApi", return_value=nomad
+                ):
                     result = handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
 
                 self.assertTrue(result["removed"])
                 self.assertTrue(result["registeredRemoved"])
                 docker.assert_not_called()
+                self.assertGreaterEqual(nomad.request.call_count, 2)
+                self.assertEqual(
+                    nomad.request.call_args_list[0].args,
+                    (
+                        "POST",
+                        "/v1/node/node-id-1/drain",
+                        {
+                            "DrainSpec": {"Deadline": 0, "IgnoreSystemJobs": True},
+                            "MarkEligible": False,
+                            "Meta": {"message": "removed by Luma node remove: m4mini"},
+                        },
+                    ),
+                )
+                self.assertEqual(
+                    nomad.request.call_args_list[1].args,
+                    ("POST", "/v1/node/node-id-1/eligibility", {"Eligibility": "ineligible"}),
+                )
                 self.assertNotIn("m4mini", load_state().get("nodes", {}))
             finally:
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
     def test_node_unregister_prefers_saved_luma_record_over_duplicate_hostname(self):
@@ -3897,12 +3975,16 @@ class ControlApiTests(unittest.TestCase):
                     },
                 }
                 save_state(state)
-                with patch("luma.control.server.docker_request") as docker:
+                nomad = Mock()
+                with patch("luma.control.server.docker_request") as docker, patch(
+                    "luma.control.server.NomadApi", return_value=nomad
+                ):
                     result = handle_node_unregister(state["deployToken"], {"nodeName": "m4mini"})
 
                 self.assertTrue(result["removed"])
                 self.assertTrue(result["registeredRemoved"])
                 docker.assert_not_called()
+                self.assertEqual(nomad.request.call_args_list[0].args[1], "/v1/node/stale-node-id/drain")
                 saved_nodes = load_state().get("nodes", {})
                 self.assertNotIn("m4mini", saved_nodes)
                 self.assertIn("home-mac-mini", saved_nodes)
@@ -3922,6 +4004,38 @@ class ControlApiTests(unittest.TestCase):
                 self.assertFalse(result["registeredRemoved"])
                 docker.assert_not_called()
             finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_drains_nomad_node_left_after_prior_state_removal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "luma.yaml"
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(config_path))
+            try:
+                config_path.write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}),
+                    encoding="utf-8",
+                )
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                save_state(state)
+                nomad = Mock()
+                nomad.request.side_effect = [
+                    [{"ID": "node-id-tecent", "Name": "VM-0-10-ubuntu"}],
+                    {"Meta": {"luma_node_name": "tecent"}},
+                    {},
+                    {},
+                ]
+
+                with patch("luma.control.server.NomadApi", return_value=nomad):
+                    result = handle_node_unregister(state["deployToken"], {"nodeName": "tecent"})
+
+                self.assertTrue(result["removed"])
+                self.assertFalse(result["registeredRemoved"])
+                self.assertTrue(result["nomadDrained"])
+                self.assertEqual(result["nomadNodeId"], "node-id-tecent")
+                self.assertEqual(nomad.request.call_args_list[2].args[1], "/v1/node/node-id-tecent/drain")
+            finally:
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
     def test_node_unregister_refuses_to_remove_manager_node(self):
