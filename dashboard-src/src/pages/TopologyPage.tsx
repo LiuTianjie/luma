@@ -7,11 +7,13 @@ import { PageHeader } from "./PageHeader";
 
 export function TopologyPage({
   lang,
+  theme,
   token,
   vm,
   onRefresh,
 }: {
   lang: Lang;
+  theme: "light" | "dark";
   token: string;
   vm: DashboardViewModel;
   onRefresh: () => Promise<void> | void;
@@ -33,8 +35,8 @@ export function TopologyPage({
           ],
         }}
       />
-      <TrafficPaths lang={lang} paths={vm.trafficPaths} theme="dark" token={token} onRefresh={onRefresh} />
-      <NodeTopology lang={lang} nodes={vm.nodes} services={vm.services} theme="dark" />
+      <TrafficPaths lang={lang} paths={vm.trafficPaths} theme={theme} token={token} onRefresh={onRefresh} />
+      <NodeTopology lang={lang} nodes={vm.nodes} services={vm.services} theme={theme} />
     </>
   );
 }

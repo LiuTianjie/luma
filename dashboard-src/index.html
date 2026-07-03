@@ -8,6 +8,17 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
     <title>Luma · 控制台</title>
+    <script>
+      // Resolve theme before first paint to avoid a flash of the wrong mode.
+      (function () {
+        var stored = null;
+        try { stored = localStorage.getItem("luma.dashboard.theme"); } catch (e) {}
+        var theme = stored === "light" || stored === "dark"
+          ? stored
+          : (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

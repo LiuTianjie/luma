@@ -18,6 +18,7 @@ import { TopologyPage } from "./pages/TopologyPage";
 import { t } from "./i18n";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
 import { useDashboardData } from "./useDashboardData";
+import { useTheme } from "./useTheme";
 import lumaLogoMark from "./assets/luma-logo-mark.png";
 
 const LANG_KEY = "luma.dashboard.lang";
@@ -35,15 +36,12 @@ export function App() {
   const [detail, setDetail] = useState<DetailState>(null);
   const [terminalNode, setTerminalNode] = useState<DashboardNode | null>(null);
   const { token, payload, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData();
+  const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   }, [lang]);
-
-  useEffect(() => {
-    localStorage.removeItem("luma.dashboard.theme");
-  }, []);
 
   const setLang = (nextLang: Lang) => {
     setLangState(nextLang);
@@ -262,7 +260,9 @@ export function App() {
             clusterId={vm.clusterId}
             lang={lang}
             lastUpdated={lastUpdated}
+            themeMode={themeMode}
             onLangChange={setLang}
+            onThemeModeChange={setThemeMode}
             onRefresh={() => void loadDashboard()}
             onSignOut={signOut}
             syncStatus={visibleStatus}
@@ -308,7 +308,7 @@ export function App() {
                   onTemplateLandingChange={setDeployTemplateLanding}
                 />
               ) : activePage === "topology" ? (
-                <TopologyPage lang={lang} token={token} vm={vm} onRefresh={loadDashboard} />
+                <TopologyPage lang={lang} theme={theme} token={token} vm={vm} onRefresh={loadDashboard} />
               ) : activePage === "nodes" ? (
                 <NodesPage
                   lang={lang}
