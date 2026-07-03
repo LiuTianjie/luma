@@ -33,8 +33,8 @@ export function TopologyPage({
           ],
         }}
       />
-      <TrafficPaths lang={lang} paths={vm.trafficPaths} theme="light" token={token} onRefresh={onRefresh} />
-      <NodeTopology lang={lang} nodes={vm.nodes} services={vm.services} theme="light" />
+      <TrafficPaths lang={lang} paths={vm.trafficPaths} theme="dark" token={token} onRefresh={onRefresh} />
+      <NodeTopology lang={lang} nodes={vm.nodes} services={vm.services} theme="dark" />
     </>
   );
 }

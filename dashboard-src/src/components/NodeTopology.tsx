@@ -113,17 +113,17 @@ function buildNodeTopology(nodes: DashboardNode[], services: DashboardService[])
 
 function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[] {
   const isDark = theme === "dark";
-  const textColor = isDark ? "#f8fafc" : "#0f172a";
-  const nodeBg = isDark ? "#0f172a" : "#ffffff";
-  const nodeBorder = isDark ? "rgba(125, 211, 252, 0.28)" : "rgba(14, 116, 144, 0.18)";
-  const edgeColor = isDark ? "rgba(148, 163, 184, 0.32)" : "rgba(100, 116, 139, 0.5)";
+  const textColor = isDark ? "#fdfcfc" : "#201d1d";
+  const nodeBg = isDark ? "#302c2c" : "#ffffff";
+  const nodeBorder = isDark ? "rgba(253, 252, 252, 0.16)" : "rgba(15, 0, 0, 0.12)";
+  const edgeColor = isDark ? "rgba(154, 152, 152, 0.4)" : "rgba(110, 110, 115, 0.5)";
   
-  const leaderBorder = "#38bdf8";
-  const hostBg = isDark ? "#111827" : "#f8fafc";
-  const hostBorder = isDark ? "#334155" : "#cbd5e1";
+  const leaderBorder = "#007aff";
+  const hostBg = isDark ? "#201d1d" : "#f8f7f7";
+  const hostBorder = isDark ? "#646262" : "#d3d0d0";
   
-  const serviceBorder = isDark ? "rgba(20, 184, 166, 0.38)" : "rgba(15, 118, 110, 0.2)";
-  const exposedBorder = "#22c55e";
+  const serviceBorder = isDark ? "rgba(48, 209, 88, 0.35)" : "rgba(48, 209, 88, 0.3)";
+  const exposedBorder = "#30d158";
   
   return [
     {
@@ -132,7 +132,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "background-color": nodeBg,
         "border-color": nodeBorder,
         "border-width": 1.5,
-        "font-family": '"IBM Plex Sans", "Aptos", "Segoe UI", sans-serif',
+        "font-family": '"Berkeley Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace',
         "font-size": 12,
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
@@ -152,7 +152,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       style: {
         "border-width": 2.5,
         "border-color": leaderBorder,
-        "background-color": isDark ? "#082f49" : "#ecfeff",
+        "background-color": isDark ? "#1c2733" : "#eaf3ff",
       },
     },
     {
@@ -175,7 +175,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       style: {
         "border-width": 2.5,
         "border-color": exposedBorder,
-        "background-color": isDark ? "#052e2b" : "#ecfdf5",
+        "background-color": isDark ? "#1e2a20" : "#ecfdf0",
       },
     },
     {
@@ -199,16 +199,16 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     {
       selector: "node.highlighted",
       style: {
-        "border-color": "#38bdf8",
+        "border-color": "#007aff",
         "border-width": 3,
-        "background-color": isDark ? "#0c4a6e" : "#e0f2fe",
+        "background-color": isDark ? "#22303f" : "#e0eefe",
       },
     },
     {
       selector: "edge.highlighted",
       style: {
-        "line-color": "#38bdf8",
-        "target-arrow-color": "#38bdf8",
+        "line-color": "#007aff",
+        "target-arrow-color": "#007aff",
         "width": "3px",
       },
     },

@@ -40,13 +40,13 @@ export function TerminalDrawer({
     const term = new Terminal({
       cursorBlink: true,
       convertEol: true,
-      fontFamily: "SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontFamily: '"Berkeley Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       fontSize: 13,
       theme: {
-        background: "#05070b",
-        foreground: "#e6edf3",
-        cursor: "#00c2a8",
-        selectionBackground: "#245b57",
+        background: "#1a1818",
+        foreground: "#fdfcfc",
+        cursor: "#007aff",
+        selectionBackground: "#004085",
       },
     });
     const fit = new FitAddon();

@@ -227,16 +227,16 @@ function buildTopology(paths: TrafficPath[]): {
 
 function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[] {
   const isDark = theme === "dark";
-  const textColor = isDark ? "#f8fafc" : "#0f172a";
-  const nodeBg = isDark ? "#0f172a" : "#ffffff";
-  const nodeBorder = isDark ? "rgba(125, 211, 252, 0.28)" : "rgba(14, 116, 144, 0.18)";
-  const edgeColor = isDark ? "rgba(148, 163, 184, 0.32)" : "rgba(100, 116, 139, 0.5)";
+  const textColor = isDark ? "#fdfcfc" : "#201d1d";
+  const nodeBg = isDark ? "#302c2c" : "#ffffff";
+  const nodeBorder = isDark ? "rgba(253, 252, 252, 0.16)" : "rgba(15, 0, 0, 0.12)";
+  const edgeColor = isDark ? "rgba(154, 152, 152, 0.4)" : "rgba(110, 110, 115, 0.5)";
 
-  const domainBorder = "#22c55e";
-  const proxyBorder = "#38bdf8";
-  const issueBorder = "#fb7185";
-  const targetBorder = isDark ? "#475569" : "#cbd5e1";
-  const destinationBorder = "#f6bd4f";
+  const domainBorder = "#30d158";
+  const proxyBorder = "#007aff";
+  const issueBorder = "#ff3b30";
+  const targetBorder = isDark ? "#646262" : "#d3d0d0";
+  const destinationBorder = "#ff9f0a";
 
   return [
     {
@@ -245,7 +245,7 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "background-color": nodeBg,
         "border-color": nodeBorder,
         "border-width": 1.5,
-        "font-family": '"IBM Plex Sans", "Aptos", "Segoe UI", sans-serif',
+        "font-family": '"Berkeley Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace',
         "font-size": 12,
         "font-weight": 500,
         "height": `${NODE_HEIGHT}px`,
@@ -261,12 +261,12 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
       },
     },
     { selector: "node.edge", style: { "border-color": nodeBorder } },
-    { selector: "node.domain", style: { "border-width": 2.5, "border-color": domainBorder, "background-color": isDark ? "#064e3b" : "#ecfdf5" } },
-    { selector: "node.proxy", style: { "border-width": 2.5, "border-color": proxyBorder, "background-color": isDark ? "#082f49" : "#ecfeff" } },
+    { selector: "node.domain", style: { "border-width": 2.5, "border-color": domainBorder, "background-color": isDark ? "#1e2a20" : "#ecfdf0" } },
+    { selector: "node.proxy", style: { "border-width": 2.5, "border-color": proxyBorder, "background-color": isDark ? "#1c2733" : "#eaf3ff" } },
     { selector: "node.tunnel", style: { "border-color": nodeBorder } },
-    { selector: "node.target", style: { "border-color": targetBorder, "color": isDark ? "#94a3b8" : "#475569" } },
-    { selector: "node.destination", style: { "border-width": 2.5, "border-color": destinationBorder, "background-color": isDark ? "#29200d" : "#fffbeb", "width": `${DESTINATION_WIDTH}px` } },
-    { selector: "node.issue", style: { "border-width": 2.5, "border-color": issueBorder, "background-color": isDark ? "#4c0519" : "#fff1f2" } },
+    { selector: "node.target", style: { "border-color": targetBorder, "color": isDark ? "#9a9898" : "#6e6e73" } },
+    { selector: "node.destination", style: { "border-width": 2.5, "border-color": destinationBorder, "background-color": isDark ? "#2e2717" : "#fff7e8", "width": `${DESTINATION_WIDTH}px` } },
+    { selector: "node.issue", style: { "border-width": 2.5, "border-color": issueBorder, "background-color": isDark ? "#33201f" : "#ffefee" } },
     {
       selector: "edge",
       style: {
@@ -279,8 +279,8 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "width": "1.8px",
       },
     },
-    { selector: "edge.cn-edge, edge.external-edge", style: { "line-color": "#38bdf8", "target-arrow-color": "#38bdf8" } },
-    { selector: "edge.tailscale-relay, edge.tcp-relay, edge.cloudflare-tunnel", style: { "line-color": "#22c55e", "target-arrow-color": "#22c55e" } },
+    { selector: "edge.cn-edge, edge.external-edge", style: { "line-color": "#007aff", "target-arrow-color": "#007aff" } },
+    { selector: "edge.tailscale-relay, edge.tcp-relay, edge.cloudflare-tunnel", style: { "line-color": "#30d158", "target-arrow-color": "#30d158" } },
     {
       selector: ".dimmed",
       style: {
@@ -290,16 +290,16 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
     {
       selector: "node.highlighted",
       style: {
-        "border-color": "#38bdf8",
+        "border-color": "#007aff",
         "border-width": 3,
-        "background-color": isDark ? "#0c4a6e" : "#e0f2fe",
+        "background-color": isDark ? "#22303f" : "#e0eefe",
       },
     },
     {
       selector: "edge.highlighted",
       style: {
-        "line-color": "#38bdf8",
-        "target-arrow-color": "#38bdf8",
+        "line-color": "#007aff",
+        "target-arrow-color": "#007aff",
         "width": "3px",
       },
     },
