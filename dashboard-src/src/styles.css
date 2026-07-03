@@ -157,12 +157,12 @@ button {
     color var(--motion-fast) var(--ease-standard);
 }
 
-button:hover:not(:disabled) {
+button:hover:where(:not(:disabled)) {
   border-color: var(--text-muted);
   background: var(--btn-bg-hover);
 }
 
-button:active:not(:disabled) {
+button:active:where(:not(:disabled)) {
   border-color: var(--text-muted);
   background: var(--btn-bg-active);
 }
