@@ -42,7 +42,6 @@ export function App() {
   }, [lang]);
 
   useEffect(() => {
-    document.documentElement.classList.remove("light");
     localStorage.removeItem("luma.dashboard.theme");
   }, []);
 
