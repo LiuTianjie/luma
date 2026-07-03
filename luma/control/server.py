@@ -57,6 +57,7 @@ from ..registry import (
     public_registry_url,
     image_uses_mutable_latest_tag,
     normalize_registry_host,
+    registry_host_from_image,
     registry_auth_for_image,
     registry_auth_matches_image,
 )
@@ -5238,9 +5239,15 @@ def _resolve_service_image_for_deployment(
     registry_auth: Dict[str, str] | None = None,
 ) -> tuple[ServiceSpec, Dict[str, Any]]:
     if not service.node:
+        resolved = _resolve_mutable_service_image_from_registry(service, registry_auth=registry_auth)
+        if resolved:
+            return resolved
         return _deferred_service_image(config, service, registry_auth=registry_auth, reason="Nomad will pull on the scheduled node")
 
     if not _node_agent_has_capability(state, service.node, "docker-image"):
+        resolved = _resolve_mutable_service_image_from_registry(service, registry_auth=registry_auth, node=service.node)
+        if resolved:
+            return resolved
         return _deferred_service_image(
             config,
             service,
@@ -5279,6 +5286,28 @@ def _resolve_service_image_for_deployment(
         except LumaError as exc:
             errors.append(f"{image}: {exc}")
     raise LumaError(f"unable to pull service image on target node {service.node}; tried " + "; ".join(errors))
+
+
+def _resolve_mutable_service_image_from_registry(
+    service: ServiceSpec,
+    *,
+    registry_auth: Dict[str, str] | None = None,
+    node: str = "",
+) -> tuple[ServiceSpec, Dict[str, Any]] | None:
+    if not image_uses_mutable_latest_tag(service.image):
+        return None
+    digest_image = resolve_registry_image_digest(service.image, registry_auth=registry_auth)
+    return replace(service, image=digest_image), {
+        "requested": service.image,
+        "selected": service.image,
+        "deployed": digest_image,
+        "fallback": False,
+        "registryAuth": bool(registry_auth and registry_auth_matches_image(registry_auth, service.image)),
+        "forcePull": False,
+        "platform": str(service.node_platform or "").strip(),
+        "node": node,
+        "resolvedBy": "registry",
+    }
 
 
 def _resolve_image_on_target_node(state: Dict[str, Any], node_name: str, image: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -5386,6 +5415,110 @@ def _deferred_service_image(
         "deferred": True,
         "reason": reason,
     }
+
+
+REGISTRY_MANIFEST_ACCEPT = ", ".join(
+    [
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    ]
+)
+
+
+def resolve_registry_image_digest(image: str, *, registry_auth: Dict[str, str] | None = None) -> str:
+    if "@" in str(image or ""):
+        return image
+    host = registry_host_from_image(image)
+    registry = public_registry_url(host)
+    repo_path, reference = _registry_manifest_path(image, host)
+    digest = _registry_manifest_digest(registry, repo_path, reference, registry_auth=registry_auth)
+    return f"{_image_repository(image)}@{digest}"
+
+
+def _registry_manifest_path(image: str, host: str) -> tuple[str, str]:
+    repository, reference = _split_image_tag(image)
+    parts = repository.split("/")
+    if parts:
+        first = parts[0]
+        if "." in first or ":" in first or first == "localhost":
+            parts = parts[1:]
+    if host in {"docker.io", "registry-1.docker.io"} and len(parts) == 1:
+        parts = ["library", parts[0]]
+    repo_path = "/".join(parts).strip("/")
+    if not repo_path:
+        raise LumaError(f"cannot resolve registry repository for image: {image}")
+    return repo_path, reference
+
+
+def _registry_manifest_digest(
+    registry: str,
+    repo_path: str,
+    reference: str,
+    *,
+    registry_auth: Dict[str, str] | None = None,
+) -> str:
+    url = f"https://{registry}/v2/{repo_path}/manifests/{urllib.parse.quote(reference, safe='')}"
+    headers = {"Accept": REGISTRY_MANIFEST_ACCEPT, "User-Agent": "luma-control-registry-resolver"}
+    if registry_auth:
+        headers["Authorization"] = _basic_registry_auth(registry_auth)
+    try:
+        return _registry_head_digest(url, headers)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise LumaError(f"registry manifest lookup failed for {repo_path}:{reference}: HTTP {exc.code}: {detail}") from exc
+        token = _registry_bearer_token(exc.headers.get("WWW-Authenticate", ""), registry_auth=registry_auth)
+        retry_headers = dict(headers)
+        retry_headers["Authorization"] = f"Bearer {token}"
+        return _registry_head_digest(url, retry_headers)
+
+
+def _registry_head_digest(url: str, headers: Dict[str, str]) -> str:
+    req = urllib.request.Request(url, method="HEAD", headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        digest = resp.headers.get("Docker-Content-Digest") or resp.headers.get("docker-content-digest")
+    if not digest or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+        raise LumaError(f"registry manifest lookup did not return a sha256 digest: {url}")
+    return digest.lower()
+
+
+def _registry_bearer_token(challenge: str, *, registry_auth: Dict[str, str] | None = None) -> str:
+    params = _parse_www_authenticate_bearer(challenge)
+    realm = params.get("realm", "")
+    if not realm:
+        raise LumaError("registry requested bearer auth without a realm")
+    query = {key: value for key, value in params.items() if key in {"service", "scope"} and value}
+    token_url = realm
+    if query:
+        token_url += ("&" if "?" in token_url else "?") + urllib.parse.urlencode(query)
+    headers = {"Accept": "application/json", "User-Agent": "luma-control-registry-resolver"}
+    if registry_auth:
+        headers["Authorization"] = _basic_registry_auth(registry_auth)
+    req = urllib.request.Request(token_url, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read().decode("utf-8")
+    try:
+        payload = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        raise LumaError("registry token endpoint returned invalid JSON") from exc
+    token = str(payload.get("token") or payload.get("access_token") or "").strip()
+    if not token:
+        raise LumaError("registry token endpoint did not return a token")
+    return token
+
+
+def _parse_www_authenticate_bearer(value: str) -> Dict[str, str]:
+    text = str(value or "").strip()
+    if not text.lower().startswith("bearer "):
+        return {}
+    return {match.group(1): match.group(2) for match in re.finditer(r'([A-Za-z_][A-Za-z0-9_-]*)="([^"]*)"', text[7:])}
+
+
+def _basic_registry_auth(registry_auth: Dict[str, str]) -> str:
+    raw = f"{registry_auth.get('username', '')}:{registry_auth.get('password', '')}".encode("utf-8")
+    return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
 def _node_agent_has_capability(state: Dict[str, Any], node_name: str, capability: str) -> bool:

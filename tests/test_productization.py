@@ -61,7 +61,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _DEPLOY_LOCK, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _DEPLOY_LOCK, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_registry_image_digest, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -7434,7 +7434,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_unpinned_deployment_defers_image_pull_to_scheduled_node(self):
+    def test_unpinned_fixed_tag_deployment_defers_image_pull_to_scheduled_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -7448,7 +7448,7 @@ class ControlApiTests(unittest.TestCase):
                 manifest = yaml.safe_dump(
                     {
                         "name": "api",
-                        "image": "ghcr.io/acme/api:latest",
+                        "image": "ghcr.io/acme/api:1.2.3",
                         "region": "cn",
                         "exposure": "none",
                     }
@@ -7465,7 +7465,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertTrue(result["image"]["deferred"])
                 self.assertEqual(result["image"]["resolvedBy"], "scheduled-node")
                 stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
-                self.assertIn("\"image\": \"ghcr.io/acme/api:latest\"", stack)
+                self.assertIn("\"image\": \"ghcr.io/acme/api:1.2.3\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -8118,7 +8118,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_unpinned_deployment_keeps_latest_tag_for_scheduled_node_pull(self):
+    def test_unpinned_deployment_resolves_latest_to_digest_for_scheduled_node_pull(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -8143,11 +8143,14 @@ class ControlApiTests(unittest.TestCase):
                     }
                 )
 
-                def fail_manager_pull(*_args, **_kwargs):
-                    raise AssertionError("manager Docker image pull should not resolve latest tags for unpinned deployments")
+                digest = "ghcr.io/acme/api@sha256:abc123"
 
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
-                    "luma.control.server.docker_request_raw", side_effect=fail_manager_pull
+                    "luma.control.server.docker_request_raw", side_effect=AssertionError("manager Docker pull should not resolve latest tags")
+                ), patch(
+                    "luma.control.server.resolve_registry_image_digest",
+                    return_value=digest,
+                    create=True,
                 ):
                     result = handle_deployment(
                         state["deployToken"],
@@ -8155,13 +8158,86 @@ class ControlApiTests(unittest.TestCase):
                     )
                 stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
                 self.assertEqual(result["image"]["requested"], "ghcr.io/acme/api:latest")
-                self.assertEqual(result["image"]["deployed"], "ghcr.io/acme/api:latest")
-                self.assertTrue(result["image"]["deferred"])
-                self.assertEqual(result["image"]["resolvedBy"], "scheduled-node")
-                self.assertIn("\"image\": \"ghcr.io/acme/api:latest\"", stack)
+                self.assertEqual(result["image"]["deployed"], digest)
+                self.assertFalse(result["image"].get("deferred", False))
+                self.assertEqual(result["image"]["resolvedBy"], "registry")
+                self.assertIn(f"\"image\": \"{digest}\"", stack)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_pinned_latest_deployment_resolves_digest_when_target_agent_lacks_docker_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "lab": {
+                        "region": "home",
+                        "status": "labeled",
+                        "agent": {"status": "online", "lastSeen": int(time.time()), "capabilities": ["terminal"]},
+                        "labels": {"region": "home", "luma.node.name": "lab", "luma.node.id": "node-lab"},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "codex-gitea",
+                        "image": "ghcr.io/liutianjie/gitea-review-agent:latest",
+                        "region": "home",
+                        "node": "lab",
+                        "exposure": "none",
+                    }
+                )
+                digest = "ghcr.io/liutianjie/gitea-review-agent@sha256:def456"
+
+                with patch("luma.control.server.resolve_registry_image_digest", return_value=digest, create=True), patch(
+                    "luma.control.server._run_node_agent_task",
+                    side_effect=AssertionError("node agent image pull should not be required"),
+                ):
+                    result = handle_deployment(
+                        state["deployToken"],
+                        {"manifest": manifest, "sourceName": "codex-gitea.yaml", "skipDns": True, "skipOrchestrator": True},
+                    )
+                stack = (root / "stacks" / "home" / "codex-gitea" / "codex-gitea.nomad.json").read_text(encoding="utf-8")
+                self.assertEqual(result["image"]["requested"], "ghcr.io/liutianjie/gitea-review-agent:latest")
+                self.assertEqual(result["image"]["deployed"], digest)
+                self.assertEqual(result["image"]["resolvedBy"], "registry")
+                self.assertIn(f"\"image\": \"{digest}\"", stack)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_registry_digest_resolver_handles_bearer_auth_challenge(self):
+        digest = "sha256:" + "a" * 64
+        challenge = 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:acme/api:pull"'
+        unauthorized = urllib.error.HTTPError(
+            "https://ghcr.io/v2/acme/api/manifests/latest",
+            401,
+            "Unauthorized",
+            {"WWW-Authenticate": challenge},
+            io.BytesIO(b""),
+        )
+        token_response = MagicMock()
+        token_response.__enter__.return_value.read.return_value = b'{"token":"registry-token"}'
+        manifest_response = MagicMock()
+        manifest_response.__enter__.return_value.headers = {"Docker-Content-Digest": digest}
+
+        with patch("luma.control.server.urllib.request.urlopen", side_effect=[unauthorized, token_response, manifest_response]) as urlopen:
+            resolved = resolve_registry_image_digest("ghcr.io/acme/api:latest")
+
+        self.assertEqual(resolved, f"ghcr.io/acme/api@{digest}")
+        manifest_retry = urlopen.call_args_list[2].args[0]
+        self.assertEqual(manifest_retry.headers["Authorization"], "Bearer registry-token")
+        self.assertEqual(manifest_retry.headers["Accept"].split(",", 1)[0], "application/vnd.oci.image.index.v1+json")
+        token_request = urlopen.call_args_list[1].args[0]
+        self.assertIn("scope=repository%3Aacme%2Fapi%3Apull", token_request.full_url)
 
     def test_service_image_falls_back_to_domestic_mirror(self):
         with tempfile.TemporaryDirectory() as tmp:
