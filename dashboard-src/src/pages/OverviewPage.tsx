@@ -77,43 +77,41 @@ export function OverviewPage({
           <p className="eyebrow">{t(lang, "controlPlane")}</p>
           <h1 id="overview-title">{zh ? "集群运行中枢" : "Cluster operations hub"}</h1>
           <p>{zh ? "实时状态与风险总览" : "Real-time status and risk overview"}</p>
+          <button type="button" className="ops-hero-action" onClick={() => onNavigate("deploy")}>
+            <Plus size={17} aria-hidden="true" />
+            {t(lang, "createApplication")}
+          </button>
         </div>
-        <div className="ops-hero-score" aria-label={zh ? "健康分" : "Health score"}>
-          <div className="score-ring" style={{ "--score": `${vm.healthScore}%` } as CSSProperties}>
-            <strong>{vm.healthScore}</strong>
+        <div className="ops-hero-status">
+          <div className="ops-hero-score" aria-label={zh ? "健康分" : "Health score"}>
+            <div className="score-ring" style={{ "--score": `${vm.healthScore}%` } as CSSProperties}>
+              <strong>{vm.healthScore}</strong>
+            </div>
+            <span>
+              {zh ? "健康分" : "Health score"}
+              <b>{healthLabel(vm.healthScore, lang)}</b>
+            </span>
           </div>
-          <span>
-            {zh ? "健康分" : "Health score"}
-            <b>{healthLabel(vm.healthScore, lang)}</b>
-          </span>
+          <div className="ops-hero-metrics">
+            <span><strong>{issueTotal}</strong><small>{zh ? "待处理" : "Open issues"}</small></span>
+            <span><strong>{vm.activeNodes}/{vm.nodes.length}</strong><small>{t(lang, "nodes")}</small></span>
+            <span><strong>{vm.applications.length}</strong><small>{t(lang, "applications")}</small></span>
+          </div>
         </div>
-        <div className="ops-hero-metrics">
-          <span><strong>{issueTotal}</strong><small>{zh ? "待处理" : "Open issues"}</small></span>
-          <span><strong>{vm.activeNodes}/{vm.nodes.length}</strong><small>{t(lang, "nodes")}</small></span>
-          <span><strong>{vm.applications.length}</strong><small>{t(lang, "applications")}</small></span>
-        </div>
-        <button type="button" className="ops-hero-action" onClick={() => onNavigate("deploy")}>
-          <Plus size={17} aria-hidden="true" />
-          {t(lang, "createApplication")}
-        </button>
       </section>
 
-      <section className="readiness-band" aria-label={zh ? "控制面就绪状态" : "Control plane readiness"}>
-        <article>
-          <span>DNS</span>
-          <strong className={readiness.dns?.ready ? "ok" : "bad"}>{readinessLabel(lang, readiness.dns?.ready)}</strong>
-          <small>{[readiness.dns?.provider, readiness.dns?.zone, readiness.dns?.target].filter(Boolean).join(" / ") || "-"}</small>
-        </article>
-        <article>
-          <span>Nomad</span>
-          <strong className={readiness.nomad?.available ? "ok" : "bad"}>{readinessLabel(lang, readiness.nomad?.available)}</strong>
-          <small>{readiness.nomad?.leader ? `leader ${readiness.nomad.leader}` : readiness.nomad?.engine || "-"}</small>
-        </article>
-        <article>
-          <span>{zh ? "控制面" : "Control plane"}</span>
-          <strong className="ok">Nomad</strong>
-          <small>{zh ? "控制面直接提交 Nomad job" : "Control submits Nomad jobs directly"}</small>
-        </article>
+      <section className="platform-strip" aria-label={zh ? "平台组件状态" : "Platform components"}>
+        <span className="platform-strip-title">{zh ? "平台组件" : "Platform"}</span>
+        <span className={`platform-item ${readiness.dns?.ready ? "" : "bad"}`} title={zh ? "域名解析（Cloudflare DNS）" : "DNS records (Cloudflare)"}>
+          <i aria-hidden="true" />
+          <b>DNS</b>
+          <small>{readinessLabel(lang, readiness.dns?.ready)}{readiness.dns?.zone ? ` · ${readiness.dns.zone}` : ""}</small>
+        </span>
+        <span className={`platform-item ${readiness.nomad?.available ? "" : "bad"}`} title={zh ? "调度器（Nomad 集群）" : "Scheduler (Nomad cluster)"}>
+          <i aria-hidden="true" />
+          <b>{zh ? "调度器" : "Scheduler"}</b>
+          <small>{readinessLabel(lang, readiness.nomad?.available)}{readiness.nomad?.leader ? ` · ${readiness.nomad.leader}` : ""}</small>
+        </span>
       </section>
 
       <section className="overview-workbench" aria-label={zh ? "运维工作台" : "Operations workbench"}>
@@ -121,7 +119,7 @@ export function OverviewPage({
           <div className="panel-heading">
             <div>
               <p className="eyebrow">{t(lang, "applications")}</p>
-              <h2>{zh ? "关键应用" : "Key applications"}</h2>
+              <h2>{zh ? "应用" : "Applications"}</h2>
             </div>
             <button type="button" className="ghost text-link-button" onClick={() => onNavigate("applications")}>
               {zh ? "查看全部" : "View all"}
@@ -182,11 +180,10 @@ export function OverviewPage({
             <div className="risk-queue-list">
               {vm.issues.length ? vm.issues.slice(0, 5).map((issue, index) => (
                 <div className={`risk-queue-row ${issue.severity || "info"}`} key={`${issue.kind || "issue"}-${index}`}>
-                  <span aria-hidden="true">!</span>
+                  <i aria-hidden="true" />
                   <div>
-                    <b>{severityLabel(issue, lang)}</b>
                     <strong>{issue.message || "-"}</strong>
-                    <small>{[issue.kind, issue.target].filter(Boolean).join(" / ") || "-"}</small>
+                    <small>{severityLabel(issue, lang)} · {[issue.kind, issue.target].filter(Boolean).join(" / ") || "-"}</small>
                   </div>
                   <em>{index ? `${index * 5 + 2}m` : "now"}</em>
                 </div>

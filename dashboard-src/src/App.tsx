@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Boxes, GitBranch, HardDrive, KeyRound, LayoutDashboard, Plus, ServerCog } from "lucide-react";
+import { Activity, Boxes, GitBranch, HardDrive, KeyRound, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Plus, ServerCog } from "lucide-react";
 import { ErrorBanner } from "./components/ErrorBanner";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
@@ -22,6 +22,7 @@ import { useTheme } from "./useTheme";
 import lumaLogoMark from "./assets/luma-logo-mark.png";
 
 const LANG_KEY = "luma.dashboard.lang";
+const SIDEBAR_KEY = "luma.dashboard.sidebar";
 
 type DetailState =
   | { kind: "node"; title: string; items: Record<string, string | number | boolean | undefined> }
@@ -30,6 +31,7 @@ type DetailState =
 
 export function App() {
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === "collapsed");
   const [activePage, setActivePage] = useState<PageId>("overview");
   const [deployTemplateLanding, setDeployTemplateLanding] = useState(true);
   const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
@@ -215,8 +217,20 @@ export function App() {
     },
   ];
 
+  const toggleSidebar = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      if (next) localStorage.setItem(SIDEBAR_KEY, "collapsed");
+      else localStorage.removeItem(SIDEBAR_KEY);
+      return next;
+    });
+  };
+  const sidebarToggleLabel = sidebarCollapsed
+    ? (lang === "zh" ? "展开侧栏" : "Expand sidebar")
+    : (lang === "zh" ? "收起侧栏" : "Collapse sidebar");
+
   return (
-    <div className={`dashboard-shell page-${activeNavPage}`}>
+    <div className={`dashboard-shell page-${activeNavPage}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="sidebar-brand">
           <div className="brand-mark" aria-hidden="true">
@@ -226,6 +240,16 @@ export function App() {
             <span>Luma</span>
             <strong>{t(lang, "title")}</strong>
           </div>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            title={sidebarToggleLabel}
+            aria-label={sidebarToggleLabel}
+            aria-expanded={!sidebarCollapsed}
+            onClick={toggleSidebar}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={16} aria-hidden="true" /> : <PanelLeftClose size={16} aria-hidden="true" />}
+          </button>
         </div>
         <nav aria-label="Dashboard">
           {navItems.map((item) => {
@@ -235,6 +259,7 @@ export function App() {
                 className={activeNavPage === item.id ? "nav-item active" : "nav-item"}
                 type="button"
                 key={item.id}
+                title={sidebarCollapsed ? item.label : undefined}
                 onClick={() => navigate(item.id)}
               >
                 <Icon size={17} aria-hidden="true" />
