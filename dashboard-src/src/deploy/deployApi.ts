@@ -69,6 +69,7 @@ export type BuildImportRequest = {
   exposure?: string;
   domain?: string;
   port?: string;
+  manifest?: string;
   platform?: string;
   registryHost?: string;
   pushHost?: string;
@@ -87,6 +88,7 @@ export async function buildImportStream(request: BuildImportRequest, onStep: (st
     ["region", "region"],
     ["exposure", "exposure"],
     ["domain", "domain"],
+    ["manifest", "manifest"],
     ["platform", "platform"],
     ["registryHost", "registryHost"],
     ["pushHost", "pushHost"],

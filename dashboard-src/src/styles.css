@@ -3312,6 +3312,16 @@ tbody tr.is-selected {
   min-height: 118px;
 }
 
+.deploy-manifest-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.deploy-manifest-field textarea {
+  min-height: 150px;
+}
+
 .deploy-toggle {
   display: flex !important;
   min-height: 42px;

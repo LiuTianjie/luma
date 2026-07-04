@@ -9722,6 +9722,45 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_build_deploy_accepts_manual_manifest_when_repo_has_none(self):
+        from luma.control.server import handle_build_deploy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                state["build"] = {"defaultNode": "builder", "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+                manual_manifest = "name: price\nimage: placeholder\nregion: cn\nexposure: none\n"
+
+                with patch(
+                    "luma.control.server._run_node_agent_task",
+                    return_value={"image": "100.66.177.70:5000/gaojiuatech/price:abc123", "manifest": ""},
+                ), patch("luma.control.server.handle_deployment", return_value={"service": "price", "steps": []}) as deploy:
+                    result = handle_build_deploy(
+                        state["deployToken"],
+                        {"repoUrl": "https://github.com/gaojiuatech/price", "manifest": manual_manifest},
+                    )
+
+                deployed_manifest = deploy.call_args.args[1]["manifest"]
+                self.assertIn("name: price", deployed_manifest)
+                self.assertIn("image: 100.66.177.70:5000/gaojiuatech/price:abc123", deployed_manifest)
+                self.assertEqual(result["image"], "100.66.177.70:5000/gaojiuatech/price:abc123")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_build_image_lease_without_secrets(self):
         from luma.control.server import _agent_task_lease_payload
 
@@ -9757,6 +9796,35 @@ class GithubImportTests(unittest.TestCase):
             self.assertEqual(_safe_repo_subpath(root, "sub"), (root / "sub").resolve())
             with self.assertRaises(LumaError):
                 _safe_repo_subpath(root, "../../etc/passwd")
+
+    def test_build_image_discovers_luma_manifest_outside_repo_root(self):
+        from luma.agent import build_image
+
+        def fake_clone(_url, dest, **_kwargs):
+            (dest / "deploy").mkdir(parents=True)
+            (dest / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
+            (dest / "deploy" / "app.luma.yml").write_text(
+                "name: nested-app\nimage: placeholder\nregion: cn\nexposure: none\n",
+                encoding="utf-8",
+            )
+
+        completed = Mock(returncode=0, stdout="built\n")
+        with patch("luma.gitops.clone", side_effect=fake_clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
+            "luma.agent._docker_binary", return_value="docker"
+        ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
+            "luma.agent._ensure_buildx_builder", return_value="luma-builder"
+        ), patch("luma.agent.subprocess.run", return_value=completed):
+            result = build_image(
+                {
+                    "repoUrl": "https://github.com/acme/app",
+                    "registryHost": "100.66.177.70:5000",
+                    "pushHost": "localhost:5000",
+                    "repo": "acme/app",
+                }
+            )
+
+        self.assertIn("name: nested-app", result["manifest"])
+        self.assertEqual(result["image"], "100.66.177.70:5000/acme/app:abc123")
 
     def test_buildx_capability_advertised_when_present(self):
         import luma.agent as agent

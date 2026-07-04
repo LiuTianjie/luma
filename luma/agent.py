@@ -2056,6 +2056,20 @@ def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") 
     return name
 
 
+def _find_luma_manifest(repo: Path) -> Path | None:
+    for candidate in (".luma.yml", ".luma.yaml", "luma.yml", "luma.yaml"):
+        manifest_path = repo / candidate
+        if manifest_path.is_file():
+            return manifest_path
+    matches: list[Path] = []
+    for pattern in ("*.luma.yml", "*.luma.yaml", "luma.yml", "luma.yaml"):
+        matches.extend(path for path in repo.rglob(pattern) if path.is_file() and ".git" not in path.parts)
+    if not matches:
+        return None
+    ranked = sorted(matches, key=lambda path: (len(path.relative_to(repo).parts), str(path.relative_to(repo))))
+    return ranked[0]
+
+
 def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
     from . import gitops
 
@@ -2081,12 +2095,8 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
         gitops.clone(repo_url, src, ref=ref, proxy=proxy, token=git_token, username=git_username)
         sha = gitops.head_commit(src)
 
-        manifest_text = ""
-        for candidate in (".luma.yml", ".luma.yaml"):
-            manifest_path = src / candidate
-            if manifest_path.is_file():
-                manifest_text = manifest_path.read_text(encoding="utf-8")
-                break
+        manifest_path = _find_luma_manifest(src)
+        manifest_text = manifest_path.read_text(encoding="utf-8") if manifest_path else ""
 
         # Build params: repo's .luma.yml build block is the declarative source of
         # truth; payload values (from CLI flags) act as overrides when provided.

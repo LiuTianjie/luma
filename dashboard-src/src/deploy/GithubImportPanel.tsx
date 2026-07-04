@@ -75,6 +75,7 @@ export function GithubImportPanel({
   const [exposure, setExposure] = useState<Exposure | "">("");
   const [domain, setDomain] = useState("");
   const [port, setPort] = useState("");
+  const [manifest, setManifest] = useState("");
   const [platform, setPlatform] = useState("");
   const [registryHost, setRegistryHost] = useState("");
   const [pushHost, setPushHost] = useState("");
@@ -205,6 +206,7 @@ export function GithubImportPanel({
           exposure: exposure || undefined,
           domain: domain.trim(),
           port: port.trim(),
+          manifest: manifest.trim(),
           platform: platform.trim(),
           registryHost: registryHost.trim(),
           pushHost: pushHost.trim(),
@@ -408,6 +410,20 @@ export function GithubImportPanel({
               <input type="text" value={port} placeholder="8080" onChange={(event) => setPort(event.target.value)} />
             </label>
           </div>
+          <label className="deploy-field-wide deploy-manifest-field">
+            <span>{zh ? "Luma 部署文件（可选）" : "Luma manifest (optional)"}</span>
+            <textarea
+              value={manifest}
+              onChange={(event) => setManifest(event.target.value)}
+              placeholder={"name: app\nimage: placeholder\nregion: cn\nexposure: none"}
+              spellCheck={false}
+            />
+            <small className="deploy-muted">
+              {zh
+                ? "仓库里有 .luma.yml / *.luma.yml 时会自动使用；这里填写后可作为没有部署文件时的手动输入。"
+                : "If the repository has .luma.yml / *.luma.yml, Luma uses it automatically; fill this when the repo has no manifest yet."}
+            </small>
+          </label>
         </section>
 
         <section className="deploy-config-section">
