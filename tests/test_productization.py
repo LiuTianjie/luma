@@ -10373,8 +10373,10 @@ class GithubImportTests(unittest.TestCase):
         agent._BUILDX_AVAILABLE = None
         self.assertNotIn("docker-build", caps)
 
-    def test_buildx_builder_escapes_no_proxy_commas_for_driver_opt(self):
-        from luma.agent import _ensure_buildx_builder
+    def test_buildx_builder_quotes_no_proxy_commas_for_driver_opt(self):
+        from luma.agent import _ensure_buildx_builder, _buildx_driver_opt
+
+        self.assertEqual(_buildx_driver_opt("env.NO_PROXY=localhost,127.0.0.1"), '"env.NO_PROXY=localhost,127.0.0.1"')
 
         calls = []
 
@@ -10393,7 +10395,8 @@ class GithubImportTests(unittest.TestCase):
 
         self.assertEqual(builder, "luma-builder-egress")
         create_cmd = calls[1]
-        self.assertIn("env.NO_PROXY=localhost\\,127.0.0.1\\,100.66.177.70:5000", create_cmd)
+        self.assertIn('"env.NO_PROXY=localhost,127.0.0.1,100.66.177.70:5000"', create_cmd)
+        self.assertNotIn("env.NO_PROXY=localhost\\,127.0.0.1\\,100.66.177.70:5000", create_cmd)
         self.assertNotIn("env.NO_PROXY=localhost,127.0.0.1,100.66.177.70:5000", create_cmd)
 
     def test_registry_serve_configures_insecure_registry_and_docker_no_proxy(self):

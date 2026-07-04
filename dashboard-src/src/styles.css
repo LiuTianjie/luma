@@ -2209,6 +2209,14 @@ tbody tr.is-selected {
   font-weight: 700;
 }
 
+.deploy-page-tabs {
+  margin-bottom: 14px;
+}
+
+.deploy-page-tabs button {
+  gap: 7px;
+}
+
 .credentials-table td:last-child,
 .credentials-table th:last-child {
   text-align: right;

@@ -1,11 +1,11 @@
-import { ArrowLeft, FileCode2, ListChecks, Rocket } from "lucide-react";
+import { ArrowLeft, FileCode2, History, ListChecks, PlusCircle, Rocket } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { DashboardPayload, Lang } from "../types";
 import { ComposeDeployForm } from "./ComposeDeployForm";
 import { deployStream, previewCompose, previewService } from "./deployApi";
 import { DeploySummary } from "./DeploySummary";
 import { DeployTemplates } from "./DeployTemplates";
-import { GithubImportEntryCard, GithubImportPanel } from "./GithubImportPanel";
+import { BuildHistoryPanel, GithubImportEntryCard, GithubImportPanel } from "./GithubImportPanel";
 import { DEPLOY_TEMPLATES } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeployTemplate, ServiceManifestDraft } from "./types";
 import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion } from "./options";
@@ -293,6 +293,7 @@ export function DeployWorkspace({
   const [status, setStatus] = useState<"idle" | "previewing" | "deploying">("idle");
   const [runtimeErrors, setRuntimeErrors] = useState<string[]>([]);
   const [importView, setImportView] = useState(false);
+  const [createTab, setCreateTab] = useState<"create" | "builds">("create");
   const nodes = payload?.nodes || [];
   const storageClasses = payload?.storage?.storageClasses || [];
 
@@ -438,7 +439,21 @@ export function DeployWorkspace({
 
   return (
     <section className={`deploy-workspace-panel ${modalTitle ? "modal-deploy-workspace" : ""}`} id="section-6">
-      {importView ? (
+      {showTemplates ? (
+        <div className="credentials-tabs deploy-page-tabs" role="tablist" aria-label={lang === "zh" ? "创建视图" : "Create views"}>
+          <button type="button" className={createTab === "create" ? "active" : ""} onClick={() => setCreateTab("create")}>
+            <PlusCircle size={15} aria-hidden="true" />
+            {lang === "zh" ? "创建应用" : "Create"}
+          </button>
+          <button type="button" className={createTab === "builds" ? "active" : ""} onClick={() => setCreateTab("builds")}>
+            <History size={15} aria-hidden="true" />
+            {lang === "zh" ? "构建历史" : "Build history"}
+          </button>
+        </div>
+      ) : null}
+      {showTemplates && createTab === "builds" ? (
+        <BuildHistoryPanel lang={lang} token={token} onRefresh={onRefresh} />
+      ) : importView ? (
         <GithubImportPanel
           lang={lang}
           token={token}

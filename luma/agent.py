@@ -2050,11 +2050,10 @@ def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") 
     if inspect.returncode != 0:
         create_cmd = [docker, "buildx", "create", "--name", name, "--driver", "docker-container", "--driver-opt", "network=host"]
         if proxy:
-            driver_no_proxy = no_proxy.replace(",", r"\,")
             create_cmd += [
                 "--driver-opt", f"env.HTTP_PROXY={proxy}",
                 "--driver-opt", f"env.HTTPS_PROXY={proxy}",
-                "--driver-opt", f"env.NO_PROXY={driver_no_proxy}",
+                "--driver-opt", _buildx_driver_opt(f"env.NO_PROXY={no_proxy}"),
             ]
         create_cmd.append("--bootstrap")
         create = subprocess.run(
@@ -2068,6 +2067,15 @@ def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") 
         if create.returncode != 0:
             raise LumaError(f"failed to create buildx builder:\n{create.stdout.strip()}")
     return name
+
+
+def _buildx_driver_opt(value: str) -> str:
+    # buildx parses --driver-opt as CSV. For comma-containing env values, pass
+    # literal CSV quotes through to buildx; backslash-comma is not enough and
+    # gets parsed as separate invalid k=v fragments on some buildx versions.
+    if "," not in value and '"' not in value:
+        return value
+    return '"' + value.replace('"', '""') + '"'
 
 
 def _find_luma_deployment_manifest(repo: Path) -> tuple[str, Path] | None:

@@ -132,31 +132,11 @@ export function GithubImportPanel({
   const [registryStatus, setRegistryStatus] = useState<"idle" | "running">("idle");
   const [registryError, setRegistryError] = useState("");
   const [registryDone, setRegistryDone] = useState("");
-  const [buildRuns, setBuildRuns] = useState<BuildRun[]>([]);
-  const [selectedRun, setSelectedRun] = useState<BuildRun | null>(null);
-  const [runsLoading, setRunsLoading] = useState(false);
-  const [runAction, setRunAction] = useState("");
-
-  const loadBuildRuns = async () => {
-    setRunsLoading(true);
-    try {
-      const payload = await fetchBuildRuns(token);
-      setBuildRuns(payload.runs || []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRunsLoading(false);
-    }
-  };
 
   useEffect(() => {
     if (!buildNode && preferredBuildNode) setBuildNode(preferredBuildNode);
     if (!registryNode && preferredBuildNode) setRegistryNode(preferredBuildNode);
   }, [buildNode, preferredBuildNode, registryNode]);
-
-  useEffect(() => {
-    void loadBuildRuns();
-  }, [token]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -279,41 +259,11 @@ export function GithubImportPanel({
         },
         (step) => setSteps((current) => [...current, step]),
       );
-      await loadBuildRuns();
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setStatus("idle");
-    }
-  };
-
-  const openBuildRun = async (id?: string) => {
-    if (!id) return;
-    setRunAction(id);
-    try {
-      const payload = await fetchBuildRun(token, id);
-      setSelectedRun(payload.run || null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRunAction("");
-    }
-  };
-
-  const retryRun = async (id?: string) => {
-    if (!id) return;
-    setRunAction(id);
-    setError("");
-    try {
-      await retryBuildRun(token, id);
-      await loadBuildRuns();
-      if (selectedRun?.id === id) await openBuildRun(id);
-      await onRefresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setRunAction("");
     }
   };
 
@@ -586,11 +536,104 @@ export function GithubImportPanel({
         ) : null}
       </div>
 
-      <section className="deploy-config-section">
-        <header><span>04</span><h3>{zh ? "最近构建" : "Recent builds"}</h3></header>
+      <div className="deploy-action-bar">
+        <div>
+          <strong>{mode === "provider" ? providerId || (zh ? "Git provider" : "Git provider") : (zh ? "手填仓库" : "Manual repository")}</strong>
+          <span>{mode === "provider" ? repository || (zh ? "选择仓库后即可构建部署" : "Select a repository to build and deploy") : repoUrl || (zh ? "临时仓库 URL" : "Temporary repository URL")}</span>
+        </div>
+        <button type="button" disabled={status !== "idle" || errors.length > 0 || repositoryLoading || refLoading} onClick={() => void run()}>
+          <Rocket size={16} aria-hidden="true" />
+          {status === "running" ? (zh ? "构建并部署中..." : "Building and deploying...") : (zh ? "构建并部署" : "Build and deploy")}
+        </button>
+      </div>
+    </>
+  );
+}
+
+export function BuildHistoryPanel({
+  lang,
+  token,
+  onRefresh,
+}: {
+  lang: Lang;
+  token: string;
+  onRefresh: () => Promise<void> | void;
+}) {
+  const zh = lang === "zh";
+  const [buildRuns, setBuildRuns] = useState<BuildRun[]>([]);
+  const [selectedRun, setSelectedRun] = useState<BuildRun | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [runAction, setRunAction] = useState("");
+  const [error, setError] = useState("");
+
+  const loadBuildRuns = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const payload = await fetchBuildRuns(token);
+      setBuildRuns(payload.runs || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadBuildRuns();
+  }, [token]);
+
+  const openBuildRun = async (id?: string) => {
+    if (!id) return;
+    setRunAction(id);
+    setError("");
+    try {
+      const payload = await fetchBuildRun(token, id);
+      setSelectedRun(payload.run || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunAction("");
+    }
+  };
+
+  const retryRun = async (id?: string) => {
+    if (!id) return;
+    setRunAction(id);
+    setError("");
+    try {
+      await retryBuildRun(token, id);
+      await loadBuildRuns();
+      if (selectedRun?.id === id) await openBuildRun(id);
+      await onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunAction("");
+    }
+  };
+
+  return (
+    <>
+      <div className="panel-heading deploy-heading">
+        <div>
+          <p className="eyebrow">{zh ? "构建任务" : "Build runs"}</p>
+          <h2>{zh ? "构建历史" : "Build history"}</h2>
+          <small className="deploy-context-label">
+            {zh ? "查看仓库导入的构建日志、失败原因，并按原参数重试。" : "Review repository import logs, failure reasons, and retry with the recorded parameters."}
+          </small>
+        </div>
+        <div className="deploy-heading-actions">
+          <button type="button" className="ghost" disabled={loading} onClick={() => void loadBuildRuns()}>
+            {loading ? (zh ? "刷新中..." : "Refreshing...") : (zh ? "刷新" : "Refresh")}
+          </button>
+        </div>
+      </div>
+
+      <section className="deploy-config-section build-history-section">
         <div className="credentials-list">
-          {buildRuns.length ? buildRuns.slice(0, 8).map((run) => (
-            <article key={run.id || run.source} className="credential-row">
+          {buildRuns.length ? buildRuns.map((run) => (
+            <article key={run.id || run.source} className={`credential-row build-run-row build-run-${run.status || "unknown"}`}>
               <div>
                 <strong>{run.repository || run.source || run.id}</strong>
                 <span>{[run.status, run.buildNode, run.ref].filter(Boolean).join(" · ") || "-"}</span>
@@ -607,31 +650,30 @@ export function GithubImportPanel({
               </div>
             </article>
           )) : (
-            <div className="deploy-muted">{runsLoading ? (zh ? "读取构建任务中..." : "Loading build runs...") : (zh ? "暂无构建任务" : "No build runs yet")}</div>
+            <div className="deploy-muted">{loading ? (zh ? "读取构建任务中..." : "Loading build runs...") : (zh ? "暂无构建任务" : "No build runs yet")}</div>
           )}
         </div>
+        {error ? <div className="deploy-muted">{error}</div> : null}
         {selectedRun ? (
-          <ol className="deploy-step-log">
-            {(selectedRun.events || []).filter((step) => step.name).map((step, index) => (
-              <li key={`${selectedRun.id}-${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
-                <strong>{step.name}</strong>
-                {step.message ? <span> - {step.message}</span> : null}
-              </li>
-            ))}
-          </ol>
+          <div className="build-run-log">
+            <div className="selected-template-strip">
+              <div>
+                <span>{zh ? "当前日志" : "Selected log"}</span>
+                <strong>{selectedRun.repository || selectedRun.source || selectedRun.id}</strong>
+                <small>{[selectedRun.status, selectedRun.buildNode].filter(Boolean).join(" · ") || "-"}</small>
+              </div>
+            </div>
+            <ol className="deploy-step-log">
+              {(selectedRun.events || []).filter((step) => step.name).map((step, index) => (
+                <li key={`${selectedRun.id}-${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
+                  <strong>{step.name}</strong>
+                  {step.message ? <span> - {step.message}</span> : null}
+                </li>
+              ))}
+            </ol>
+          </div>
         ) : null}
       </section>
-
-      <div className="deploy-action-bar">
-        <div>
-          <strong>{mode === "provider" ? providerId || (zh ? "Git provider" : "Git provider") : (zh ? "手填仓库" : "Manual repository")}</strong>
-          <span>{mode === "provider" ? repository || (zh ? "选择仓库后即可构建部署" : "Select a repository to build and deploy") : repoUrl || (zh ? "临时仓库 URL" : "Temporary repository URL")}</span>
-        </div>
-        <button type="button" disabled={status !== "idle" || errors.length > 0 || repositoryLoading || refLoading} onClick={() => void run()}>
-          <Rocket size={16} aria-hidden="true" />
-          {status === "running" ? (zh ? "构建并部署中..." : "Building and deploying...") : (zh ? "构建并部署" : "Build and deploy")}
-        </button>
-      </div>
     </>
   );
 }
