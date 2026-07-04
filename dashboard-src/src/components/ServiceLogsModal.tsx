@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Copy, Download, RefreshCw, X } from "lucide-react";
 import { t } from "../i18n";
 import type { DashboardService, Lang } from "../types";
-import { SelectControl } from "./ui";
+import { SelectControl, type SelectOption } from "./ui";
 
 type LogsState = {
   service: string;
@@ -86,7 +86,13 @@ export function ServiceLogsModal({
   const initialService = services.find((service) => service.fullName === initialServiceName);
   const [selectedApp, setSelectedApp] = useState(() => initialService ? appKey(initialService) : applications[0]?.key || "");
   const appServices = applications.find((item) => item.key === selectedApp)?.services || [];
-  const serviceOptions = useMemo(
+  const appOptions = useMemo<SelectOption[]>(
+    () => applications.flatMap((app) => app.key
+      ? [{ value: app.key, label: app.key }]
+      : []),
+    [applications],
+  );
+  const serviceOptions = useMemo<SelectOption[]>(
     () => appServices.flatMap((service) => service.fullName
       ? [{ value: service.fullName, label: service.name || service.fullName }]
       : []),
@@ -377,7 +383,7 @@ export function ServiceLogsModal({
               value={selectedApp}
               onChange={setSelectedApp}
               ariaLabel={lang === "zh" ? "应用" : "Application"}
-              options={applications.map((app) => ({ value: app.key, label: app.key }))}
+              options={appOptions}
             />
             <SelectControl
               value={selectedService}
