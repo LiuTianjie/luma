@@ -2008,6 +2008,20 @@ def _safe_repo_subpath(root: Path, rel: str) -> Path:
     return candidate
 
 
+def _safe_repo_path_from(base: Path, root: Path, rel: str) -> Path:
+    value = str(rel or "").strip()
+    if not value:
+        raise LumaError("repository path is required")
+    path = Path(value)
+    if path.is_absolute():
+        raise LumaError(f"path escapes repository: {rel}")
+    candidate = (base / path).resolve()
+    root_resolved = root.resolve()
+    if candidate != root_resolved and root_resolved not in candidate.parents:
+        raise LumaError(f"path escapes repository: {rel}")
+    return candidate
+
+
 def _auth_for_host(registry_auth: Dict[str, Any] | None, host: str) -> Dict[str, Any] | None:
     if not registry_auth:
         return None
@@ -2056,18 +2070,193 @@ def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") 
     return name
 
 
-def _find_luma_manifest(repo: Path) -> Path | None:
-    for candidate in (".luma.yml", ".luma.yaml", "luma.yml", "luma.yaml"):
-        manifest_path = repo / candidate
-        if manifest_path.is_file():
-            return manifest_path
-    matches: list[Path] = []
-    for pattern in ("*.luma.yml", "*.luma.yaml", "luma.yml", "luma.yaml"):
-        matches.extend(path for path in repo.rglob(pattern) if path.is_file() and ".git" not in path.parts)
+def _find_luma_deployment_manifest(repo: Path) -> tuple[str, Path] | None:
+    repo_root = repo.resolve()
+    service_patterns = (".luma.yml", ".luma.yaml", "luma.yml", "luma.yaml", "*.luma.yml", "*.luma.yaml")
+    compose_patterns = (
+        "luma.compose.yml",
+        "luma.compose.yaml",
+        ".luma.compose.yml",
+        ".luma.compose.yaml",
+        "*.luma.compose.yml",
+        "*.luma.compose.yaml",
+    )
+    matches: dict[Path, str] = {}
+    for kind, patterns in (("service", service_patterns), ("compose", compose_patterns)):
+        for pattern in patterns:
+            for path in repo_root.rglob(pattern):
+                if not path.is_file() or ".git" in path.parts:
+                    continue
+                matches[path.resolve()] = kind
     if not matches:
         return None
-    ranked = sorted(matches, key=lambda path: (len(path.relative_to(repo).parts), str(path.relative_to(repo))))
+
+    def rel(path: Path) -> Path:
+        return path.relative_to(repo_root)
+
+    ranked = sorted(
+        ((kind, path) for path, kind in matches.items()),
+        key=lambda item: (len(rel(item[1]).parts), str(rel(item[1]))),
+    )
+    best_depth = len(rel(ranked[0][1]).parts)
+    best = [item for item in ranked if len(rel(item[1]).parts) == best_depth]
+    if len(best) > 1:
+        names = ", ".join(str(rel(path)) for _, path in best)
+        raise LumaError(f"multiple Luma deployment manifests found at the same priority: {names}")
     return ranked[0]
+
+
+def _docker_buildx_build(
+    *,
+    docker: str,
+    builder: str,
+    docker_config: Path,
+    push_host: str,
+    registry_host: str,
+    repo: str,
+    sha: str,
+    context_dir: Path,
+    dockerfile_path: Path,
+    platform: str,
+    proxy: str,
+    build_timeout: int,
+) -> str:
+    tag_sha = f"{push_host}/{repo}:{sha}"
+    tag_latest = f"{push_host}/{repo}:latest"
+    no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
+    env = dict(os.environ)
+    env["DOCKER_CONFIG"] = str(docker_config)
+    proxy_build_args: list[str] = []
+    if proxy:
+        env["HTTP_PROXY"] = proxy
+        env["HTTPS_PROXY"] = proxy
+        env["NO_PROXY"] = no_proxy
+        proxy_build_args = [
+            "--build-arg", f"HTTP_PROXY={proxy}",
+            "--build-arg", f"HTTPS_PROXY={proxy}",
+            "--build-arg", f"NO_PROXY={no_proxy}",
+        ]
+    command = [
+        docker, "buildx", "build",
+        "--builder", builder,
+        "--platform", platform,
+        *proxy_build_args,
+        "--push",
+        "-t", tag_sha,
+        "-t", tag_latest,
+        "-f", str(dockerfile_path),
+        str(context_dir),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            env=env,
+            timeout=build_timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LumaError(f"docker buildx build timed out after {build_timeout}s") from exc
+    if result.returncode != 0:
+        raise LumaError(f"docker buildx build failed:\n{(result.stdout or '').strip()}")
+    return f"{registry_host}/{repo}:{sha}"
+
+
+def _compose_build_spec(body: Dict[str, Any]) -> Dict[str, Any] | None:
+    raw = body.get("build")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return {"context": raw}
+    if not isinstance(raw, dict):
+        raise LumaError("compose service build must be a string or mapping")
+    return dict(raw)
+
+
+def _build_compose_images(
+    *,
+    src: Path,
+    sidecar_path: Path,
+    docker: str,
+    docker_config: Path,
+    registry_host: str,
+    push_host: str,
+    repo: str,
+    sha: str,
+    proxy: str,
+    build_timeout: int,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    import yaml
+
+    sidecar_text = sidecar_path.read_text(encoding="utf-8")
+    sidecar = yaml.safe_load(sidecar_text) or {}
+    if not isinstance(sidecar, dict):
+        raise LumaError("luma.compose.yml must contain a YAML mapping")
+    compose_value = str(sidecar.get("compose") or "docker-compose.yml").strip() or "docker-compose.yml"
+    compose_path = _safe_repo_path_from(sidecar_path.parent, src, compose_value)
+    if not compose_path.is_file():
+        raise LumaError(f"Compose file not found in repository: {compose_value}")
+    compose_data = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(compose_data, dict):
+        raise LumaError("docker-compose.yml must contain a YAML mapping")
+    services = compose_data.get("services")
+    if not isinstance(services, dict) or not services:
+        raise LumaError("docker-compose.yml requires a non-empty services mapping")
+
+    build_services: list[tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+    for service_name, service_body in services.items():
+        if not isinstance(service_body, dict):
+            raise LumaError(f"compose service {service_name} must be a mapping")
+        spec = _compose_build_spec(service_body)
+        if spec is not None:
+            build_services.append((str(service_name), service_body, spec))
+        elif not isinstance(service_body.get("image"), str) or not service_body.get("image"):
+            raise LumaError(f"compose service {service_name} requires image or build")
+
+    no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
+    builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy)
+    images: Dict[str, str] = {}
+    single_build = len(build_services) == 1
+    for service_name, service_body, spec in build_services:
+        context_rel = str(payload.get("context") or spec.get("context") or ".").strip() or "."
+        context_dir = _safe_repo_path_from(compose_path.parent, src, context_rel)
+        dockerfile_rel = str(payload.get("dockerfile") or spec.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
+        dockerfile_path = _safe_repo_path_from(context_dir, src, dockerfile_rel)
+        if not dockerfile_path.is_file():
+            raise LumaError(f"Dockerfile not found in repository: {dockerfile_rel}")
+        platform = str(payload.get("platform") or spec.get("platform") or service_body.get("platform") or "linux/amd64").strip() or "linux/amd64"
+        repo_override = str(spec.get("repo") or spec.get("x-luma-repo") or "").strip()
+        image_repo = _safe_image_repo(repo_override or (repo if single_build else f"{repo}/{slugify(service_name)}"))
+        image = _docker_buildx_build(
+            docker=docker,
+            builder=builder,
+            docker_config=docker_config,
+            push_host=push_host,
+            registry_host=registry_host,
+            repo=image_repo,
+            sha=sha,
+            context_dir=context_dir,
+            dockerfile_path=dockerfile_path,
+            platform=platform,
+            proxy=proxy,
+            build_timeout=build_timeout,
+        )
+        service_body["image"] = image
+        service_body.pop("build", None)
+        images[service_name] = image
+
+    return {
+        "kind": "compose",
+        "manifest": sidecar_text,
+        "composeContent": yaml.safe_dump(compose_data, sort_keys=False, allow_unicode=False),
+        "images": images,
+        "image": next(iter(images.values()), ""),
+        "sha": sha,
+        "message": f"Built and pushed {len(images)} compose image(s)" if images else "Compose images already declared",
+    }
 
 
 def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -2095,7 +2284,26 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
         gitops.clone(repo_url, src, ref=ref, proxy=proxy, token=git_token, username=git_username)
         sha = gitops.head_commit(src)
 
-        manifest_path = _find_luma_manifest(src)
+        docker_config = Path(workdir) / "docker-config"
+        _write_docker_auth_config(docker_config, _auth_for_host(registry_auth, push_host))
+
+        deployment_manifest = _find_luma_deployment_manifest(src)
+        if deployment_manifest and deployment_manifest[0] == "compose":
+            return _build_compose_images(
+                src=src,
+                sidecar_path=deployment_manifest[1],
+                docker=docker,
+                docker_config=docker_config,
+                registry_host=registry_host,
+                push_host=push_host,
+                repo=repo,
+                sha=sha,
+                proxy=proxy or "",
+                build_timeout=build_timeout,
+                payload=payload,
+            )
+
+        manifest_path = deployment_manifest[1] if deployment_manifest else None
         manifest_text = manifest_path.read_text(encoding="utf-8") if manifest_path else ""
 
         # Build params: repo's .luma.yml build block is the declarative source of
@@ -2110,6 +2318,7 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
                 raise LumaError(f"invalid .luma.yml in repository: {exc}") from exc
             if isinstance(parsed, dict) and isinstance(parsed.get("build"), dict):
                 build_block = parsed["build"]
+        repo = _safe_image_repo(str(build_block.get("repo") or repo))
         context_rel = str(payload.get("context") or build_block.get("context") or ".").strip() or "."
         dockerfile_rel = str(payload.get("dockerfile") or build_block.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
         platform = str(payload.get("platform") or build_block.get("platform") or "linux/amd64").strip() or "linux/amd64"
@@ -2119,13 +2328,6 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not dockerfile_path.is_file():
             raise LumaError(f"Dockerfile not found in repository: {dockerfile_rel}")
 
-        docker_config = Path(workdir) / "docker-config"
-        _write_docker_auth_config(docker_config, _auth_for_host(registry_auth, push_host))
-
-        tag_sha = f"{push_host}/{repo}:{sha}"
-        tag_latest = f"{push_host}/{repo}:latest"
-        env = dict(os.environ)
-        env["DOCKER_CONFIG"] = str(docker_config)
         # cn/home build nodes reach the internet through the egress proxy. The
         # proxy must reach three places: the buildx CLI + FROM pulls (env), the
         # RUN steps inside the build (--build-arg; BuildKit does not inherit the
@@ -2133,45 +2335,24 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
         # creation in _ensure_buildx_builder). Keep the in-cluster registry and
         # localhost out of the proxy so --push stays on the internal network.
         no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-        proxy_build_args: list[str] = []
-        if proxy:
-            env["HTTP_PROXY"] = proxy
-            env["HTTPS_PROXY"] = proxy
-            env["NO_PROXY"] = no_proxy
-            proxy_build_args = [
-                "--build-arg", f"HTTP_PROXY={proxy}",
-                "--build-arg", f"HTTPS_PROXY={proxy}",
-                "--build-arg", f"NO_PROXY={no_proxy}",
-            ]
         builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy)
-        command = [
-            docker, "buildx", "build",
-            "--builder", builder,
-            "--platform", platform,
-            *proxy_build_args,
-            "--push",
-            "-t", tag_sha,
-            "-t", tag_latest,
-            "-f", str(dockerfile_path),
-            str(context_dir),
-        ]
-        try:
-            result = subprocess.run(
-                command,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-                env=env,
-                timeout=build_timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise LumaError(f"docker buildx build timed out after {build_timeout}s") from exc
-        if result.returncode != 0:
-            raise LumaError(f"docker buildx build failed:\n{(result.stdout or '').strip()}")
+        image = _docker_buildx_build(
+            docker=docker,
+            builder=builder,
+            docker_config=docker_config,
+            push_host=push_host,
+            registry_host=registry_host,
+            repo=repo,
+            sha=sha,
+            context_dir=context_dir,
+            dockerfile_path=dockerfile_path,
+            platform=platform,
+            proxy=proxy or "",
+            build_timeout=build_timeout,
+        )
 
-    image = f"{registry_host}/{repo}:{sha}"
     return {
+        "kind": "service",
         "image": image,
         "sha": sha,
         "manifest": manifest_text,

@@ -1567,13 +1567,40 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
         progress=progress,
     )
     built_image = str(build_result.get("image") or "").strip()
-    if not built_image:
+    built_images = build_result.get("images") if isinstance(build_result.get("images"), dict) else {}
+    if not built_image and not built_images:
         raise LumaError("build did not return an image reference")
     repo_manifest = str(build_result.get("manifest") or "").strip()
+    repo_compose_content = str(build_result.get("composeContent") or "").strip()
 
     manifest_text = str(body.get("manifest") or "").strip() or repo_manifest
     if not manifest_text:
         raise LumaError("no .luma.yml found in repository and no manifest provided")
+
+    if str(build_result.get("kind") or "") == "compose" or repo_compose_content or body.get("composeContent"):
+        compose_content = str(body.get("composeContent") or "").strip() or repo_compose_content
+        if not compose_content:
+            raise LumaError("luma.compose.yml found but composeContent is missing")
+
+        def _inject_compose() -> tuple[str, str]:
+            data = yaml.safe_load(manifest_text) or {}
+            if not isinstance(data, dict):
+                raise LumaError("luma.compose.yml must contain a YAML mapping")
+            if body.get("region"):
+                data["region"] = body.get("region")
+            return yaml.safe_dump(data, sort_keys=False, allow_unicode=False), compose_content
+
+        final_manifest, final_compose_content = _deploy_step(steps, "Resolve compose manifest", _inject_compose, progress=progress)
+        deploy_body = dict(body)
+        deploy_body["manifest"] = final_manifest
+        deploy_body["composeContent"] = final_compose_content
+        deploy_body["sourceName"] = repo_url
+        deploy_body.pop("repoUrl", None)
+        result = handle_compose_deployment(token, deploy_body, progress=progress)
+        if isinstance(result, dict):
+            merged_steps = steps + list(result.get("steps") or [])
+            result = {**result, "steps": merged_steps, "image": built_image, "images": built_images}
+        return result
 
     def _inject() -> str:
         data = yaml.safe_load(manifest_text) or {}

@@ -69,6 +69,7 @@ For repository import, builder registry setup, or registry pull/proxy failures, 
 ## Builder Registry Workflow
 
 - Treat `luma import` / Dashboard Repository Import as a build pipeline, not just a manifest deploy: Git provider -> builder node clone/buildx -> internal registry push -> target node pull -> normal Luma deploy.
+- Repository Import must support both single-service manifests and Compose deployments. If the repository has `luma.compose.yml`, build services declared with Compose `build:` blocks, rewrite those services to internal-registry `image:` references, then deploy through the normal Compose deployment path.
 - Prefer a dedicated Luma node named `builder` when available. Confirm it is `ready`, Linux, and advertises `docker-build` in `luma status` before using it.
 - Prefer a builder-hosted registry for internal image distribution. Current expected shape is `registryHost: <builder-tailscale-ip>:5000` for target-node pulls and `pushHost: localhost:5000` for pushes from the builder itself. Re-check the live builder IP before hardcoding it; one known current cluster used `100.66.177.70:5000`.
 - Start or refresh the registry with an explicit storage class. Do not rely on default `storageClass: local` unless the control plane actually has a `local` storage class:
@@ -96,9 +97,11 @@ luma service restart luma-registry --mode recreate
 - If buildx fails with `invalid value "127.0.0.1", expecting k=v`, suspect comma handling in buildx `--driver-opt env.NO_PROXY=...`; update Luma or escape comma-separated `NO_PROXY` before treating the repository or registry as broken.
 - For GitHub/Gitea source imports, manage Git provider PATs with the Git Provider credential flow rather than the old special `GITHUB_TOKEN`. Multiple accounts per provider are expected. Tokens are write-only and injected only into leased build tasks.
 - Repository import should scan for `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, and nested `*.luma.yml` / `*.luma.yaml`; if no manifest exists, support a manually entered single-service manifest first. AI-generated manifests are a later enhancement.
+- Compose repository import should scan for `luma.compose.yml`, `luma.compose.yaml`, `.luma.compose.yml`, and `.luma.compose.yaml`. The sidecar's `compose:` path points to the Docker Compose file inside the repository.
 - Keep the current manifest model: do not add a new image-source field for repository import. In a repository `.luma.yml`, use a `build:` block and omit `image` when the image is produced by Luma. Control resolves the internal image name before build from the builder registry and repository path, then injects the built image into the deploy manifest.
 - The default internal image path is predictable before the build: `registryHost/<owner>/<repo>:latest`, with `<owner>/<repo>` derived from the Git repository URL. The builder also pushes `registryHost/<owner>/<repo>:<git-sha>`, and deployment should use the immutable sha tag that build returns. Use `:latest` as the human-readable rolling alias, not as the preferred deployed reference.
 - If the default `<owner>/<repo>` path is not desired, set `build.repo` in the repository manifest to the internal repository path to push under; keep `registryHost` and `pushHost` owned by Luma build configuration.
+- For Compose imports, services with `build:` but no `image:` are valid. Luma injects `image:` after build. Services that already have only `image:` are not rebuilt. If multiple Compose services are built, default image repos are `registryHost/<owner>/<repo>/<service>:latest` and `:<git-sha>`; a single built service may use `registryHost/<owner>/<repo>:...`. A Compose service may set `build.repo` to override its internal image repository path.
 
 ## Compose And Storage Rules
 

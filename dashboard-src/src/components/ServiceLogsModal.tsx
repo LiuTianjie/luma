@@ -86,6 +86,12 @@ export function ServiceLogsModal({
   const initialService = services.find((service) => service.fullName === initialServiceName);
   const [selectedApp, setSelectedApp] = useState(() => initialService ? appKey(initialService) : applications[0]?.key || "");
   const appServices = applications.find((item) => item.key === selectedApp)?.services || [];
+  const serviceOptions = useMemo(
+    () => appServices.flatMap((service) => service.fullName
+      ? [{ value: service.fullName, label: service.name || service.fullName }]
+      : []),
+    [appServices],
+  );
   const [selectedService, setSelectedService] = useState(() => initialService?.fullName || firstService);
   const [sinceLabel, setSinceLabel] = useState("tail");
   const [keyword, setKeyword] = useState("");
@@ -377,7 +383,7 @@ export function ServiceLogsModal({
               value={selectedService}
               onChange={setSelectedService}
               ariaLabel={lang === "zh" ? "子服务" : "Sub-service"}
-              options={appServices.map((service) => ({ value: service.fullName, label: service.name || service.fullName }))}
+              options={serviceOptions}
             />
             <SelectControl
               value={sinceLabel}

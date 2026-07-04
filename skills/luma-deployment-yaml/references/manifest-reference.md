@@ -198,7 +198,7 @@ Repository import should:
 2. Support multiple accounts per provider. Select provider type first, then account credential, then repository/ref.
 3. Clone/build on the default builder node.
 4. Push to the builder registry using `pushHost: localhost:5000`.
-5. Use the repository's Luma manifest if present. Scan root `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, then nested `*.luma.yml` / `*.luma.yaml`.
+5. Use the repository's Luma manifest if present. For single-service import, scan root `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, then nested `*.luma.yml` / `*.luma.yaml`. For Compose import, scan `luma.compose.yml`, `luma.compose.yaml`, `.luma.compose.yml`, and `.luma.compose.yaml`; the sidecar's `compose:` path points to the Docker Compose file.
 6. If no manifest exists, allow manual single-service manifest input. Do not invent AI-filled manifests unless the user explicitly asks for that future workflow.
 7. Inject the built deploy image after the build succeeds.
 
@@ -243,6 +243,63 @@ build:
 ```
 
 Do not add a second top-level field for this unless the Luma manifest schema changes. `image` remains for prebuilt external images; `build:` marks an image that Luma will produce and inject.
+
+### Compose Repository Import
+
+Compose repositories must be first-class in the same build+registry flow. A repository can contain:
+
+```yaml
+# luma.compose.yml
+name: app-stack
+compose: docker-compose.yml
+region: cn
+services:
+  web:
+    exposure: cn-edge
+    domain: app.example.com
+    port: 3000
+```
+
+```yaml
+# docker-compose.yml
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platform: linux/amd64
+    environment:
+      NODE_ENV: production
+  redis:
+    image: redis:7-alpine
+```
+
+During Repository Import, Luma builds only Compose services with a `build:` block, pushes them to the builder registry, removes their `build:` block from the runtime Compose content, and injects `image:`. Services that already have only `image:` are preserved.
+
+Default image coordinates are:
+
+```text
+# one built compose service
+registryHost/<owner>/<repo>:latest
+registryHost/<owner>/<repo>:<git-sha>
+
+# multiple built compose services
+registryHost/<owner>/<repo>/<service>:latest
+registryHost/<owner>/<repo>/<service>:<git-sha>
+```
+
+Use `build.repo` inside a Compose service to override the internal repository path:
+
+```yaml
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      repo: apps/price-api
+```
+
+The final Compose deployment still follows normal `luma compose deploy` rules: every runtime service must have an `image`, but Repository Import is allowed to produce that image before handing the Compose content to Control.
 
 ## Single-Service Examples
 

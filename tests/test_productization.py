@@ -9761,6 +9761,54 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_build_deploy_routes_compose_import_to_compose_handler(self):
+        from luma.control.server import handle_build_deploy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                state["build"] = {"defaultNode": "builder", "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+                sidecar = "name: app-stack\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n"
+                compose = "services:\n  web:\n    image: 100.66.177.70:5000/acme/app/web:abc123\n"
+
+                with patch(
+                    "luma.control.server._run_node_agent_task",
+                    return_value={
+                        "kind": "compose",
+                        "manifest": sidecar,
+                        "composeContent": compose,
+                        "images": {"web": "100.66.177.70:5000/acme/app/web:abc123"},
+                        "image": "100.66.177.70:5000/acme/app/web:abc123",
+                    },
+                ), patch("luma.control.server.handle_compose_deployment", return_value={"deployment": "app-stack", "steps": []}) as deploy:
+                    result = handle_build_deploy(
+                        state["deployToken"],
+                        {"repoUrl": "https://github.com/acme/app", "ref": "main"},
+                    )
+
+                deploy_body = deploy.call_args.args[1]
+                self.assertEqual(deploy_body["manifest"], sidecar)
+                self.assertEqual(deploy_body["composeContent"].strip(), compose.strip())
+                self.assertEqual(deploy_body["sourceName"], "https://github.com/acme/app")
+                self.assertEqual(result["deployment"], "app-stack")
+                self.assertEqual(result["images"]["web"], "100.66.177.70:5000/acme/app/web:abc123")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_build_image_lease_without_secrets(self):
         from luma.control.server import _agent_task_lease_payload
 
@@ -9825,6 +9873,105 @@ class GithubImportTests(unittest.TestCase):
 
         self.assertIn("name: nested-app", result["manifest"])
         self.assertEqual(result["image"], "100.66.177.70:5000/acme/app:abc123")
+
+    def test_build_image_prefers_root_manifest_over_nested_compose_manifest(self):
+        from luma.agent import build_image
+
+        def fake_clone(_url, dest, **_kwargs):
+            (dest / "examples").mkdir(parents=True)
+            (dest / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
+            (dest / ".luma.yml").write_text(
+                "name: root-app\nimage: placeholder\nregion: cn\nexposure: none\n",
+                encoding="utf-8",
+            )
+            (dest / "examples" / "luma.compose.yml").write_text(
+                "name: example-stack\ncompose: docker-compose.yml\nregion: cn\n",
+                encoding="utf-8",
+            )
+            (dest / "examples" / "docker-compose.yml").write_text(
+                "services:\n  web:\n    image: nginx:alpine\n",
+                encoding="utf-8",
+            )
+
+        completed = Mock(returncode=0, stdout="built\n")
+        with patch("luma.gitops.clone", side_effect=fake_clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
+            "luma.agent._docker_binary", return_value="docker"
+        ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
+            "luma.agent._ensure_buildx_builder", return_value="luma-builder"
+        ), patch("luma.agent.subprocess.run", return_value=completed):
+            result = build_image(
+                {
+                    "repoUrl": "https://github.com/acme/app",
+                    "registryHost": "100.66.177.70:5000",
+                    "pushHost": "localhost:5000",
+                    "repo": "acme/app",
+                }
+            )
+
+        self.assertEqual(result["kind"], "service")
+        self.assertIn("name: root-app", result["manifest"])
+
+    def test_build_image_discovers_nested_compose_manifest_and_rewrites_build_services(self):
+        from luma.agent import build_image
+
+        def fake_clone(_url, dest, **_kwargs):
+            deploy = dest / "deploy"
+            (deploy / "web").mkdir(parents=True)
+            (deploy / "prod.luma.compose.yml").write_text(
+                "name: app-stack\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n",
+                encoding="utf-8",
+            )
+            (deploy / "docker-compose.yml").write_text(
+                "services:\n  web:\n    build:\n      context: ./web\n      dockerfile: Dockerfile\n      platform: linux/amd64\n  redis:\n    image: redis:7-alpine\n",
+                encoding="utf-8",
+            )
+            (deploy / "web" / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
+
+        completed = Mock(returncode=0, stdout="built\n")
+        with patch("luma.gitops.clone", side_effect=fake_clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
+            "luma.agent._docker_binary", return_value="docker"
+        ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
+            "luma.agent._ensure_buildx_builder", return_value="luma-builder"
+        ), patch("luma.agent.subprocess.run", return_value=completed):
+            result = build_image(
+                {
+                    "repoUrl": "https://github.com/acme/app",
+                    "registryHost": "100.66.177.70:5000",
+                    "pushHost": "localhost:5000",
+                    "repo": "acme/app",
+                }
+            )
+
+        compose = yaml.safe_load(result["composeContent"])
+        self.assertEqual(result["kind"], "compose")
+        self.assertIn("name: app-stack", result["manifest"])
+        self.assertEqual(compose["services"]["web"]["image"], "100.66.177.70:5000/acme/app:abc123")
+        self.assertNotIn("build", compose["services"]["web"])
+        self.assertEqual(compose["services"]["redis"]["image"], "redis:7-alpine")
+
+    def test_build_image_rejects_ambiguous_same_priority_luma_manifests(self):
+        from luma.agent import build_image
+        from luma.errors import LumaError
+
+        def fake_clone(_url, dest, **_kwargs):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / ".luma.yml").write_text("name: app\nregion: cn\nbuild: {}\n", encoding="utf-8")
+            (dest / "luma.compose.yml").write_text("name: app-stack\ncompose: docker-compose.yml\nregion: cn\n", encoding="utf-8")
+            (dest / "docker-compose.yml").write_text("services:\n  web:\n    image: nginx:alpine\n", encoding="utf-8")
+            (dest / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
+
+        with patch("luma.gitops.clone", side_effect=fake_clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
+            "luma.agent._docker_binary", return_value="docker"
+        ), patch("luma.agent._docker_buildx_available", return_value=True):
+            with self.assertRaisesRegex(LumaError, "multiple Luma deployment manifests"):
+                build_image(
+                    {
+                        "repoUrl": "https://github.com/acme/app",
+                        "registryHost": "100.66.177.70:5000",
+                        "pushHost": "localhost:5000",
+                        "repo": "acme/app",
+                    }
+                )
 
     def test_buildx_capability_advertised_when_present(self):
         import luma.agent as agent
