@@ -32,6 +32,7 @@ from .service import slugify
 DEFAULT_AGENT_CONFIG = Path("/opt/luma/node-agent/agent.json")
 DEFAULT_AGENT_SERVICE = "luma-node-agent"
 DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS = 30
+DEFAULT_BUSY_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 
 def node_agent_os() -> str:
@@ -100,6 +101,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "docker-egress-proxy",
             "luma-update",
             "nomad-join",
+            "nomad-cni-repair",
             "terminal",
         ]
     elif os_value == "darwin":
@@ -130,17 +132,23 @@ def node_agent_metrics() -> Dict[str, Any]:
 
 def _agent_node_diagnostics(*, executor: LocalExecutor | None = None) -> Dict[str, Any]:
     executor = executor or LocalExecutor()
+    docker_mirrors = _diagnostic_docker_mirrors(executor)
+    docker_proxy = _diagnostic_docker_proxy(executor)
+    pull_activity_timeout = _diagnostic_nomad_pull_activity_timeout(executor)
+    recent_image_pull_errors = _diagnostic_recent_image_pull_errors(executor)
+    cni_hostports = _diagnostic_nomad_cni_hostports(executor)
     return {
         "docker": {
-            "mirrors": _diagnostic_docker_mirrors(executor),
-            "proxy": _diagnostic_docker_proxy(executor),
+            "mirrors": docker_mirrors,
+            "proxy": docker_proxy,
         },
         "nomad": {
             "dockerDriver": {
-                "pullActivityTimeout": _diagnostic_nomad_pull_activity_timeout(executor),
-            }
+                "pullActivityTimeout": pull_activity_timeout,
+            },
+            "cniHostPorts": cni_hostports,
         },
-        "recentImagePullErrors": _diagnostic_recent_image_pull_errors(executor),
+        "recentImagePullErrors": recent_image_pull_errors,
     }
 
 
@@ -262,6 +270,175 @@ def _diagnostic_recent_image_pull_errors(executor: LocalExecutor) -> list[str]:
     if result.code != 0:
         return []
     return [line.strip() for line in (result.output or "").splitlines() if line.strip()]
+
+
+def _diagnostic_nomad_cni_hostports(executor: LocalExecutor) -> Dict[str, Any]:
+    if node_agent_os() != "linux":
+        return {"conflicts": []}
+    result = executor.run_result("iptables -t nat -S CNI-HOSTPORT-DNAT 2>/dev/null || true", timeout=10)
+    if result.code != 0:
+        return {"conflicts": [], "message": (result.output or "iptables unavailable").strip()}
+    return {"conflicts": _parse_cni_hostport_conflicts(result.output or "")}
+
+
+def _parse_cni_hostport_conflicts(output: str) -> list[Dict[str, Any]]:
+    rules_by_port: dict[tuple[str, str], list[Dict[str, str]]] = {}
+    for line in str(output or "").splitlines():
+        rule = _parse_cni_hostport_rule(line)
+        if not rule:
+            continue
+        for port in rule["ports"].split(","):
+            normalized_port = port.strip()
+            if not normalized_port:
+                continue
+            rules_by_port.setdefault((rule["protocol"], normalized_port), []).append(rule)
+    conflicts: list[Dict[str, Any]] = []
+    for (protocol, port), rules in sorted(rules_by_port.items(), key=lambda item: (item[0][0], int(item[0][1]) if item[0][1].isdigit() else item[0][1])):
+        if len(rules) < 2:
+            continue
+        alloc_ids = [rule["allocId"] for rule in rules]
+        conflicts.append(
+            {
+                "protocol": protocol,
+                "port": port,
+                "allocIds": alloc_ids,
+                "shadowedAllocIds": alloc_ids[1:],
+                "ruleCount": len(rules),
+            }
+        )
+    return conflicts
+
+
+def _parse_cni_hostport_rule(line: str) -> Dict[str, str] | None:
+    stripped = line.strip()
+    if not stripped.startswith("-A CNI-HOSTPORT-DNAT "):
+        return None
+    try:
+        parts = shlex.split(stripped)
+    except ValueError:
+        return None
+    protocol = _token_after(parts, "-p")
+    ports = _token_after(parts, "--dports")
+    if not protocol or not ports:
+        return None
+    comment = _token_after(parts, "--comment")
+    alloc_match = re.search(r'id:\s*"([^"]+)"', comment or "")
+    jump = _token_after(parts, "-j")
+    return {
+        "protocol": protocol,
+        "ports": ports,
+        "allocId": alloc_match.group(1) if alloc_match else "",
+        "jump": jump or "",
+    }
+
+
+def repair_nomad_cni_hostports(*, executor: LocalExecutor | None = None, ports: Any = None) -> Dict[str, Any]:
+    if node_agent_os() != "linux":
+        return {"deleted": 0, "staleAllocIds": [], "message": "Nomad CNI hostport repair is only supported on Linux"}
+    executor = executor or LocalExecutor()
+    allowed_ports = _normalize_hostport_filter(ports)
+    if not allowed_ports:
+        return {"deleted": 0, "staleAllocIds": [], "activeAllocIds": [], "hostPorts": [], "message": "No Nomad CNI host ports requested"}
+    active_alloc_ids = _active_nomad_docker_alloc_ids(executor)
+    if not active_alloc_ids:
+        return {"deleted": 0, "staleAllocIds": [], "activeAllocIds": [], "hostPorts": sorted(allowed_ports), "message": "No active Nomad Docker allocations found"}
+    result = executor.run_result("iptables -t nat -S CNI-HOSTPORT-DNAT 2>/dev/null || true", timeout=10)
+    if result.code != 0:
+        raise LumaError((result.output or "failed to inspect Nomad CNI hostports").strip())
+    rules_by_port: dict[tuple[str, str], list[Dict[str, str]]] = {}
+    for line in str(result.output or "").splitlines():
+        rule = _parse_cni_hostport_rule(line)
+        if not rule:
+            continue
+        rule["line"] = line.strip()
+        for port in rule["ports"].split(","):
+            normalized_port = port.strip()
+            if allowed_ports and normalized_port not in allowed_ports:
+                continue
+            if normalized_port:
+                rules_by_port.setdefault((rule["protocol"], normalized_port), []).append(rule)
+    stale_rules_by_line: dict[str, Dict[str, str]] = {}
+    for rules in rules_by_port.values():
+        if len(rules) <= 1:
+            continue
+        active_indexes = [index for index, rule in enumerate(rules) if rule.get("allocId") in active_alloc_ids]
+        if not active_indexes:
+            continue
+        keep_index = max(active_indexes)
+        for rule in rules[:keep_index]:
+            alloc_id = rule.get("allocId") or ""
+            if alloc_id and alloc_id not in active_alloc_ids:
+                stale_rules_by_line.setdefault(rule["line"], rule)
+    stale_rules = list(stale_rules_by_line.values())
+    if not stale_rules:
+        return {
+            "deleted": 0,
+            "staleAllocIds": [],
+            "activeAllocIds": sorted(active_alloc_ids),
+            "hostPorts": sorted(allowed_ports),
+            "message": "No stale duplicate Nomad CNI hostport rules detected",
+        }
+    commands = []
+    stale_alloc_ids = []
+    for rule in stale_rules:
+        stale_alloc_ids.append(rule.get("allocId") or "")
+        commands.append(_iptables_delete_command_from_save_rule(rule["line"]))
+    _run_fixed_host_task("set -euo pipefail\n" + "\n".join(commands))
+    return {
+        "deleted": len(stale_rules),
+        "staleAllocIds": sorted({alloc_id for alloc_id in stale_alloc_ids if alloc_id}),
+        "activeAllocIds": sorted(active_alloc_ids),
+        "hostPorts": sorted(allowed_ports),
+        "message": f"Deleted {len(stale_rules)} stale Nomad CNI hostport rule(s)",
+    }
+
+
+def _normalize_hostport_filter(raw_ports: Any) -> set[str]:
+    if raw_ports is None:
+        return set()
+    values = raw_ports if isinstance(raw_ports, list) else [raw_ports]
+    ports: set[str] = set()
+    for value in values:
+        try:
+            port = int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if port > 0:
+            ports.add(str(port))
+    return ports
+
+
+def _iptables_delete_command_from_save_rule(line: str) -> str:
+    parts = shlex.split(line)
+    if len(parts) < 2 or parts[0] != "-A" or parts[1] != "CNI-HOSTPORT-DNAT":
+        raise LumaError(f"unsupported iptables rule: {line}")
+    return shlex.join(["iptables", "-w", "5", "-t", "nat", "-D", parts[1], *parts[2:]])
+
+
+def _active_nomad_docker_alloc_ids(executor: LocalExecutor) -> set[str]:
+    result = executor.run_result(
+        "set -euo pipefail; "
+        f"{_docker_cli_prelude()}; "
+        '"$docker_cli" ps --format \'{{.Label "com.hashicorp.nomad.alloc_id"}}\' 2>/dev/null || true',
+        timeout=10,
+    )
+    if result.code != 0:
+        return set()
+    return {
+        line.strip()
+        for line in str(result.output or "").splitlines()
+        if line.strip() and line.strip() not in {"<no value>", "-"}
+    }
+
+
+def _token_after(parts: list[str], token: str) -> str:
+    try:
+        index = parts.index(token)
+    except ValueError:
+        return ""
+    if index + 1 >= len(parts):
+        return ""
+    return parts[index + 1]
 
 
 def node_agent_container_stats() -> list[Dict[str, Any]]:
@@ -1055,6 +1232,7 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
         except Exception as exc:
             print(f"luma: node agent task progress failed: {exc}", file=sys.stderr, flush=True)
 
+    heartbeat_stop, heartbeat_thread = _start_agent_task_heartbeat(client, node_name=node_name, node_id=node_id, config_path=config_path)
     try:
         result = execute_agent_task(task, config_path=config_path, progress=progress)
         client.complete_agent_task(
@@ -1076,6 +1254,58 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
             result={},
         )
         return False
+    finally:
+        _stop_agent_task_heartbeat(heartbeat_stop, heartbeat_thread)
+
+
+def _start_agent_task_heartbeat(client: Any, *, node_name: str, node_id: str, config_path: Path) -> tuple[threading.Event, threading.Thread]:
+    stop = threading.Event()
+    interval = _agent_task_heartbeat_interval(config_path)
+
+    def loop() -> None:
+        while not stop.is_set():
+            try:
+                client.heartbeat_agent(
+                    node_name=node_name,
+                    node_id=node_id,
+                    os_name=node_agent_os(),
+                    arch=node_agent_arch(),
+                    capabilities=node_agent_capabilities(),
+                    metrics=node_agent_metrics(),
+                    timeout=_agent_task_heartbeat_timeout(interval),
+                )
+            except Exception as exc:
+                print(f"luma: node agent busy heartbeat failed: {exc}", file=sys.stderr, flush=True)
+            if stop.wait(interval):
+                return
+
+    thread = threading.Thread(target=loop, name=f"luma-agent-task-heartbeat-{node_name}", daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def _stop_agent_task_heartbeat(stop: threading.Event, thread: threading.Thread) -> None:
+    stop.set()
+    thread.join(timeout=1)
+
+
+def _agent_task_heartbeat_interval(config_path: Path) -> float:
+    raw: object = os.environ.get("LUMA_NODE_AGENT_BUSY_HEARTBEAT_SECONDS") or ""
+    if not raw:
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            raw = config.get("busyHeartbeatIntervalSeconds") if isinstance(config, dict) else ""
+        except (OSError, json.JSONDecodeError):
+            raw = ""
+    try:
+        interval = float(raw or DEFAULT_BUSY_HEARTBEAT_INTERVAL_SECONDS)
+    except (TypeError, ValueError):
+        interval = DEFAULT_BUSY_HEARTBEAT_INTERVAL_SECONDS
+    return min(max(interval, 0.01), 300.0)
+
+
+def _agent_task_heartbeat_timeout(interval: float) -> int:
+    return max(2, min(15, int(max(interval, 1))))
 
 
 def run_terminal_supervisor(config_path: Path = DEFAULT_AGENT_CONFIG) -> int:
@@ -1455,6 +1685,8 @@ def execute_agent_task(
             tailscale_authkey=str(payload.get("tailscaleAuthKey") or ""),
             egress_proxy=str(payload.get("egressProxy") or ""),
         )
+    if action == "repair-nomad-cni-hostports":
+        return repair_nomad_cni_hostports(ports=payload.get("ports"))
     raise LumaError(f"unsupported node agent task action: {action}")
 
 
@@ -1804,10 +2036,11 @@ def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") 
     if inspect.returncode != 0:
         create_cmd = [docker, "buildx", "create", "--name", name, "--driver", "docker-container", "--driver-opt", "network=host"]
         if proxy:
+            driver_no_proxy = no_proxy.replace(",", r"\,")
             create_cmd += [
                 "--driver-opt", f"env.HTTP_PROXY={proxy}",
                 "--driver-opt", f"env.HTTPS_PROXY={proxy}",
-                "--driver-opt", f"env.NO_PROXY={no_proxy}",
+                "--driver-opt", f"env.NO_PROXY={driver_no_proxy}",
             ]
         create_cmd.append("--bootstrap")
         create = subprocess.run(
@@ -1830,6 +2063,7 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
     ref = str(payload.get("ref") or "").strip() or None
     proxy = str(payload.get("proxy") or "").strip() or None
     git_token = str(payload.get("gitToken") or "").strip() or None
+    git_username = str(payload.get("gitUsername") or "").strip() or None
     registry_host = _safe_registry_host(_required(payload, "registryHost"))
     push_host = _safe_registry_host(str(payload.get("pushHost") or "localhost:5000"))
     repo = _safe_image_repo(_required(payload, "repo"))
@@ -1844,7 +2078,7 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     with tempfile.TemporaryDirectory(prefix="luma-build-") as workdir:
         src = Path(workdir) / "src"
-        gitops.clone(repo_url, src, ref=ref, proxy=proxy, token=git_token)
+        gitops.clone(repo_url, src, ref=ref, proxy=proxy, token=git_token, username=git_username)
         sha = gitops.head_commit(src)
 
         manifest_text = ""

@@ -23,7 +23,7 @@ EGRESS_PROXY_URL = os.environ.get("LUMA_EGRESS_PROXY_URL", "http://127.0.0.1:789
 
 EGRESS_NO_PROXY = os.environ.get(
     "LUMA_EGRESS_NO_PROXY",
-    "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run",
+    "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run",
 )
 
 

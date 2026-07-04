@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import Any, Dict
 from unittest.mock import MagicMock, Mock, patch
 
 import yaml
@@ -25,6 +26,7 @@ from luma.agent import (
     _install_layout_from_executable,
     _node_tailscale_watchdog_install_command,
     _node_tailscale_watchdog_script,
+    repair_nomad_cni_hostports,
     _systemd_unit,
     execute_agent_task,
     node_agent_container_stats,
@@ -62,7 +64,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _DEPLOY_LOCK, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_pull_diagnostics, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_registry_image_digest, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _DEPLOY_LOCK, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_git_provider_list, handle_git_provider_refs, handle_git_provider_remove, handle_git_provider_repositories, handle_git_provider_set, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_pull_diagnostics, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_registry_image_digest, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -208,6 +210,44 @@ class ProductConfigTests(unittest.TestCase):
             self.assertEqual(client.lease_agent_task.call_count, 2)
             terminal_supervisor.stop.assert_called_once()
             stats_sampler.stop.assert_called_once()
+
+    def test_node_agent_heartbeats_while_task_runs(self):
+        client = Mock()
+        task = {"id": "task-pull", "action": "diagnose-docker-pull", "payload": {"image": "registry.example.com/app:slow"}}
+        heartbeat_seen = threading.Event()
+
+        def fake_heartbeat_agent(**_kwargs):
+            heartbeat_seen.set()
+            return {"ok": True}
+
+        def fake_execute_agent_task(_task, **_kwargs):
+            heartbeat_seen.wait(0.2)
+            return {"message": "pull diagnostic finished"}
+
+        client.heartbeat_agent.side_effect = fake_heartbeat_agent
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "agent.json"
+            config.write_text(json.dumps({"busyHeartbeatIntervalSeconds": 0.01}), encoding="utf-8")
+            with patch("luma.agent.execute_agent_task", side_effect=fake_execute_agent_task), patch(
+                "luma.agent.node_agent_os", return_value="linux"
+            ), patch("luma.agent.node_agent_arch", return_value="x86_64"), patch(
+                "luma.agent.node_agent_capabilities", return_value=["docker-image"]
+            ), patch(
+                "luma.agent.node_agent_metrics", return_value={"cpuPercent": 1.0}
+            ):
+                restart = _complete_agent_task(client, node_name="lab", node_id="node-1", task=task, config_path=config)
+
+        self.assertFalse(restart)
+        self.assertTrue(heartbeat_seen.is_set())
+        client.heartbeat_agent.assert_called()
+        client.complete_agent_task.assert_called_once_with(
+            task_id="task-pull",
+            node_name="lab",
+            node_id="node-1",
+            status="succeeded",
+            message="pull diagnostic finished",
+            result={"message": "pull diagnostic finished"},
+        )
 
     def test_terminal_shell_prefers_zsh_on_macos(self):
         from luma.agent import _terminal_shell
@@ -676,6 +716,8 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("docker-image", node_agent_capabilities("darwin"))
         self.assertIn("nomad-join", node_agent_capabilities("linux"))
         self.assertIn("nomad-join", node_agent_capabilities("darwin"))
+        self.assertIn("nomad-cni-repair", node_agent_capabilities("linux"))
+        self.assertNotIn("nomad-cni-repair", node_agent_capabilities("darwin"))
         self.assertIn("terminal", node_agent_capabilities("linux"))
         self.assertIn("terminal", node_agent_capabilities("darwin"))
 
@@ -688,9 +730,19 @@ class ProductConfigTests(unittest.TestCase):
             Mock(code=0, output="HTTPProxy=http://proxy:7890 HTTPSProxy=http://proxy:7890 NoProxy=localhost,gcode.gaojiua.com\n"),
             Mock(code=0, output='pull_activity_timeout = "30m"\n'),
             Mock(code=0, output="Jul 04 nomad[1]: image pull aborted due to inactivity\nJul 04 nomad[1]: context canceled\n"),
+            Mock(
+                code=0,
+                output=(
+                    '-A CNI-HOSTPORT-DNAT -p tcp -m comment --comment "dnat name: \\"nomad\\" id: \\"old-alloc\\"" '
+                    "-m multiport --dports 14173 -j CNI-DN-old\n"
+                    '-A CNI-HOSTPORT-DNAT -p tcp -m comment --comment "dnat name: \\"nomad\\" id: \\"current-alloc\\"" '
+                    "-m multiport --dports 14173 -j CNI-DN-current\n"
+                ),
+            ),
         ]
 
-        diagnostics = _agent_node_diagnostics(executor=executor)
+        with patch("luma.agent.node_agent_os", return_value="linux"):
+            diagnostics = _agent_node_diagnostics(executor=executor)
 
         self.assertEqual(diagnostics["docker"]["mirrors"][0]["url"], "https://bad.mirror")
         self.assertFalse(diagnostics["docker"]["mirrors"][0]["ok"])
@@ -698,7 +750,118 @@ class ProductConfigTests(unittest.TestCase):
         self.assertTrue(diagnostics["docker"]["mirrors"][1]["ok"])
         self.assertEqual(diagnostics["docker"]["proxy"]["http"], "http://proxy:7890")
         self.assertEqual(diagnostics["nomad"]["dockerDriver"]["pullActivityTimeout"], "30m")
+        self.assertEqual(
+            diagnostics["nomad"]["cniHostPorts"]["conflicts"],
+            [
+                {
+                    "protocol": "tcp",
+                    "port": "14173",
+                    "allocIds": ["old-alloc", "current-alloc"],
+                    "shadowedAllocIds": ["current-alloc"],
+                    "ruleCount": 2,
+                }
+            ],
+        )
         self.assertIn("image pull aborted due to inactivity", diagnostics["recentImagePullErrors"][0])
+
+    def test_doctor_deep_rejects_duplicate_cni_hostport_rules(self):
+        old_home = _set_env("LUMA_CONFIG_HOME", tempfile.mkdtemp())
+        try:
+            save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="token")
+            client = Mock()
+            client.verify.return_value = {"clusterId": "luma-test"}
+            client.status.return_value = {
+                "cluster": {"id": "luma-test"},
+                "nomad": {"available": True},
+                "nodes": {
+                    "items": [
+                        {
+                            "name": "blg",
+                            "agentStatus": "ready",
+                            "diagnostics": {
+                                "docker": {"mirrors": [], "proxy": {}},
+                                "nomad": {
+                                    "dockerDriver": {"pullActivityTimeout": "30m"},
+                                    "cniHostPorts": {
+                                        "conflicts": [
+                                            {
+                                                "protocol": "tcp",
+                                                "port": "8081",
+                                                "allocIds": ["old-granary", "current-granary"],
+                                                "shadowedAllocIds": ["current-granary"],
+                                                "ruleCount": 2,
+                                            }
+                                        ]
+                                    },
+                                },
+                                "recentImagePullErrors": [],
+                            },
+                        }
+                    ]
+                },
+            }
+            with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                code = main(["--no-env", "doctor", "--deep"])
+
+            self.assertEqual(code, 1)
+            output = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+            self.assertIn("Node blg Nomad CNI hostports: fail", output)
+            self.assertIn("tcp/8081 old-granary -> current-granary", output)
+        finally:
+            _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_node_agent_repair_nomad_cni_hostports_deletes_stale_duplicate_rules(self):
+        executor = Mock()
+        executor.run_result.side_effect = [
+            Mock(code=0, output="current-alloc\nother-current\n"),
+            Mock(
+                code=0,
+                output=(
+                    '-A CNI-HOSTPORT-DNAT -p tcp -m comment --comment "dnat name: \\"nomad\\" id: \\"old-alloc\\"" '
+                    "-m multiport --dports 14173 -j CNI-DN-old\n"
+                    '-A CNI-HOSTPORT-DNAT -p tcp -m comment --comment "dnat name: \\"nomad\\" id: \\"current-alloc\\"" '
+                    "-m multiport --dports 14173 -j CNI-DN-current\n"
+                    '-A CNI-HOSTPORT-DNAT -p tcp -m comment --comment "dnat name: \\"nomad\\" id: \\"other-old\\"" '
+                    "-m multiport --dports 8081 -j CNI-DN-other-old\n"
+                    '-A CNI-HOSTPORT-DNAT -p tcp -m comment --comment "dnat name: \\"nomad\\" id: \\"other-current\\"" '
+                    "-m multiport --dports 8081 -j CNI-DN-other-current\n"
+                ),
+            ),
+        ]
+
+        with patch("luma.agent.node_agent_os", return_value="linux"), patch("luma.agent._run_fixed_host_task") as run_host:
+            result = repair_nomad_cni_hostports(executor=executor, ports=[14173])
+
+        self.assertEqual(result["deleted"], 1)
+        self.assertEqual(result["staleAllocIds"], ["old-alloc"])
+        self.assertEqual(result["hostPorts"], ["14173"])
+        command = run_host.call_args.args[0]
+        self.assertIn("-D CNI-HOSTPORT-DNAT", command)
+        self.assertIn("old-alloc", command)
+        self.assertNotIn("current-alloc", command)
+        self.assertNotIn("other-old", command)
+        self.assertNotIn("other-current", command)
+
+    def test_node_agent_repair_nomad_cni_hostports_keeps_rules_without_active_replacement(self):
+        executor = Mock()
+        executor.run_result.side_effect = [
+            Mock(code=0, output="old-alloc\n"),
+            Mock(
+                code=0,
+                output=(
+                    '-A CNI-HOSTPORT-DNAT -p tcp -m comment --comment "dnat name: \\"nomad\\" id: \\"old-alloc\\"" '
+                    "-m multiport --dports 14173 -j CNI-DN-old\n"
+                    '-A CNI-HOSTPORT-DNAT -p tcp -m comment --comment "dnat name: \\"nomad\\" id: \\"new-but-not-running\\"" '
+                    "-m multiport --dports 14173 -j CNI-DN-new\n"
+                ),
+            ),
+        ]
+
+        with patch("luma.agent.node_agent_os", return_value="linux"), patch("luma.agent._run_fixed_host_task") as run_host:
+            result = repair_nomad_cni_hostports(executor=executor)
+
+        self.assertEqual(result["deleted"], 0)
+        run_host.assert_not_called()
 
     def test_doctor_deep_rejects_short_nomad_pull_activity_timeout(self):
         old_home = _set_env("LUMA_CONFIG_HOME", tempfile.mkdtemp())
@@ -4283,6 +4446,58 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_deployment_refreshes_nomad_cni_hostports_after_nomad_deploy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "name": "blg",
+                        "region": "home",
+                        "nodeId": "node-blg",
+                        "labels": {"luma.node.id": "node-blg", "luma.node.name": "blg", "region": "home"},
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["nomad-cni-repair"],
+                        },
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "home",
+                        "node": "blg",
+                        "exposure": "tailscale-relay",
+                        "domain": "api.example.com",
+                        "port": 80,
+                        "publishPort": 18080,
+                    }
+                )
+                with patch("luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})), patch(
+                    "luma.control.server.sync_dns", return_value="DNS skipped"
+                ), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": ["blg"], "results": [{"node": "blg", "deleted": 1}], "skipped": []},
+                    create=True,
+                ) as refresh, patch("luma.control.server._probe_public_route", return_value="Public route reachable"):
+                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+
+                self.assertEqual(result["cniHostports"]["nodes"], ["blg"])
+                refresh.assert_called_once()
+                self.assertEqual(refresh.call_args.args[2], "api")
+                self.assertEqual(refresh.call_args.kwargs["fallback_nodes"], ["blg"])
+                self.assertEqual(refresh.call_args.kwargs["ports"], [18080])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_nomad_node_pin_does_not_require_swarm_node_id(self):
         state = {"nodes": {"lab": {"name": "lab", "region": "home", "status": "ready"}}}
         service = ServiceSpec(
@@ -4929,6 +5144,51 @@ class ControlApiTests(unittest.TestCase):
                 api.request.assert_any_call("GET", "/v1/job/myapp/allocations")
                 api.request.assert_any_call("POST", "/v1/allocation/alloc-api/stop", None)
                 api.request.assert_any_call("POST", "/v1/allocation/alloc-worker/stop", None)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_restart_refreshes_nomad_cni_hostports_after_allocation_recreate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "name": "blg",
+                        "nodeId": "node-blg",
+                        "region": "home",
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["nomad-cni-repair"],
+                        },
+                    }
+                }
+                save_state(state)
+                api = Mock()
+                api.request.side_effect = [
+                    [
+                        {
+                            "ID": "alloc-api",
+                            "ClientStatus": "running",
+                            "TaskStates": {"api": {}},
+                            "NodeID": "node-blg",
+                            "NodeName": "ubuntu-general-1",
+                            "AllocatedResources": {"Shared": {"Ports": [{"Label": "http", "Value": 14173, "To": 4173}]}},
+                        },
+                    ],
+                    {},
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api), patch(
+                    "luma.control.server._queue_node_agent_task",
+                    return_value="task-cni",
+                ) as queue, patch("luma.control.server._wait_node_agent_task", return_value={"deleted": 1, "staleAllocIds": ["old"]}):
+                    result = handle_application_restart(state["deployToken"], {"stack": "myapp"})
+
+                self.assertEqual(result["cniHostports"]["nodes"], ["blg"])
+                queue.assert_called_once()
+                self.assertEqual(queue.call_args.args[2], "repair-nomad-cni-hostports")
+                self.assertEqual(queue.call_args.args[3], {"ports": [14173]})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -7220,6 +7480,51 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_agent_heartbeat_does_not_lease_queued_task(self):
+        from luma.control import server as control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                        "labels": {"luma.node.name": "worker-storage", "luma.node.id": "worker-node-id", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "worker-storage", "nodeId": "worker-node-id"})
+                agent_token = issued["agentToken"]
+                current = load_state()
+                current.setdefault("agentTasks", {})["task-waiting"] = {
+                    "id": "task-waiting",
+                    "nodeName": "worker-storage",
+                    "action": "prepare-managed-nfs-host",
+                    "payload": {"name": "waiting", "path": "/srv/luma"},
+                    "status": "queued",
+                }
+                save_state(current)
+
+                result = control_server.handle_node_agent_heartbeat(
+                    agent_token,
+                    {
+                        "nodeName": "worker-storage",
+                        "nodeId": "worker-node-id",
+                        "os": "linux",
+                        "capabilities": ["nfs-host"],
+                    },
+                )
+
+                self.assertEqual(result["status"], "ready")
+                saved = load_state()
+                self.assertEqual(saved["agentTasks"]["task-waiting"]["status"], "queued")
+                self.assertEqual(saved["nodes"]["worker-storage"]["agent"]["status"], "online")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_node_agent_alias_can_lease_canonical_node_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
@@ -7477,6 +7782,67 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn("100.69.154.50:3306", mysql_route)
                 self.assertIn("http://100.69.154.50:8888", api_route)
                 self.assertIn("http://100.69.154.50:8081", frontend_route)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_compose_deployment_refreshes_nomad_cni_hostports_after_nomad_deploy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "name": "blg",
+                        "region": "home",
+                        "nodeId": "node-blg",
+                        "tailscaleIP": "100.84.163.118",
+                        "labels": {"luma.node.id": "node-blg", "luma.node.name": "blg", "region": "home"},
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "capabilities": ["nomad-cni-repair"],
+                        },
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")}}), encoding="utf-8")
+                compose = yaml.safe_dump({"services": {"web": {"image": "nginx:alpine"}}})
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "web-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "home",
+                        "services": {
+                            "web": {
+                                "node": "blg",
+                                "exposure": "tailscale-relay",
+                                "domain": "web.example.com",
+                                "port": 80,
+                                "publishPort": 18081,
+                            }
+                        },
+                    }
+                )
+                with patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
+                    "luma.control.server.sync_dns", return_value="DNS skipped"
+                ), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": ["blg"], "results": [{"node": "blg", "deleted": 1}], "skipped": []},
+                    create=True,
+                ) as refresh, patch("luma.control.server._probe_public_route", return_value="Public route reachable"):
+                    result = handle_compose_deployment(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True},
+                    )
+
+                self.assertEqual(result["cniHostports"]["nodes"], ["blg"])
+                refresh.assert_called_once()
+                self.assertEqual(refresh.call_args.args[2], "web-stack")
+                self.assertEqual(refresh.call_args.kwargs["fallback_nodes"], ["blg"])
+                self.assertEqual(refresh.call_args.kwargs["ports"], [18081])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -8934,6 +9300,21 @@ def _restore_env(key, value):
         os.environ[key] = value
 
 
+class _JsonResponse:
+    def __init__(self, payload: Any, headers: Dict[str, str] | None = None):
+        self.payload = payload
+        self.headers = headers or {}
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
 def _set_env(key, value):
     import os
 
@@ -8943,6 +9324,135 @@ def _set_env(key, value):
 
 
 class GithubImportTests(unittest.TestCase):
+    def test_git_provider_credentials_support_multiple_accounts_without_returning_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                saved_personal = handle_git_provider_set(
+                    state["deployToken"],
+                    {"type": "github", "account": "personal", "username": "octo", "token": "ghp_personal"},
+                )
+                saved_work = handle_git_provider_set(
+                    state["deployToken"],
+                    {"type": "github", "account": "work", "username": "octo-work", "token": "ghp_work"},
+                )
+                saved_gitea = handle_git_provider_set(
+                    state["deployToken"],
+                    {
+                        "type": "gitea",
+                        "account": "lin",
+                        "baseUrl": "https://gcode.gaojiua.com:3000",
+                        "username": "lin",
+                        "token": "gitea_secret",
+                    },
+                )
+
+                self.assertEqual(saved_personal["id"], "github:personal")
+                self.assertEqual(saved_work["id"], "github:work")
+                self.assertEqual(saved_gitea["id"], "gitea:lin")
+                listed = handle_git_provider_list(state["deployToken"])
+                serialized = json.dumps(listed)
+                self.assertIn("github:personal", serialized)
+                self.assertIn("github:work", serialized)
+                self.assertIn("gitea:lin", serialized)
+                self.assertIn("octo-work", serialized)
+                self.assertNotIn("ghp_personal", serialized)
+                self.assertNotIn("ghp_work", serialized)
+                self.assertNotIn("gitea_secret", serialized)
+                self.assertEqual(load_state()["gitProviders"]["github:work"]["token"], "ghp_work")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_git_provider_remove_deletes_only_selected_account(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_git_provider_set(state["deployToken"], {"type": "github", "account": "personal", "username": "octo", "token": "ghp_personal"})
+                handle_git_provider_set(state["deployToken"], {"type": "github", "account": "work", "username": "octo-work", "token": "ghp_work"})
+
+                removed = handle_git_provider_remove(state["deployToken"], {"id": "github:personal"})
+
+                self.assertTrue(removed["removed"])
+                providers = load_state().get("gitProviders", {})
+                self.assertNotIn("github:personal", providers)
+                self.assertIn("github:work", providers)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_gitea_provider_repository_list_uses_selected_account_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_git_provider_set(
+                    state["deployToken"],
+                    {
+                        "type": "gitea",
+                        "account": "lin",
+                        "baseUrl": "https://gcode.gaojiua.com:3000",
+                        "username": "lin",
+                        "token": "gitea_secret",
+                    },
+                )
+
+                def fake_urlopen(request, **_kwargs):
+                    self.assertEqual(request.full_url, "https://gcode.gaojiua.com:3000/api/v1/user/repos?limit=100&page=1")
+                    self.assertEqual(request.headers.get("Authorization"), "token gitea_secret")
+                    return _JsonResponse(
+                        [
+                            {
+                                "full_name": "gaojiuatech/price",
+                                "clone_url": "https://gcode.gaojiua.com:3000/gaojiuatech/price.git",
+                                "default_branch": "main",
+                                "private": True,
+                            }
+                        ]
+                    )
+
+                with patch("luma.control.server.urllib.request.urlopen", side_effect=fake_urlopen):
+                    result = handle_git_provider_repositories(state["deployToken"], "gitea:lin")
+
+                self.assertEqual(
+                    result["repositories"],
+                    [
+                        {
+                            "fullName": "gaojiuatech/price",
+                            "cloneUrl": "https://gcode.gaojiua.com:3000/gaojiuatech/price.git",
+                            "defaultBranch": "main",
+                            "private": True,
+                        }
+                    ],
+                )
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_github_provider_refs_include_branches_and_tags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_git_provider_set(
+                    state["deployToken"],
+                    {"type": "github", "account": "personal", "username": "octo", "token": "ghp_personal"},
+                )
+
+                def fake_urlopen(request, **_kwargs):
+                    self.assertEqual(request.headers.get("Authorization"), "Bearer ghp_personal")
+                    if request.full_url == "https://api.github.com/repos/acme/app/branches?per_page=100&page=1":
+                        return _JsonResponse([{"name": "main"}])
+                    if request.full_url == "https://api.github.com/repos/acme/app/tags?per_page=100&page=1":
+                        return _JsonResponse([{"name": "v1.2.3"}])
+                    raise AssertionError(f"unexpected URL: {request.full_url}")
+
+                with patch("luma.control.server.urllib.request.urlopen", side_effect=fake_urlopen):
+                    result = handle_git_provider_refs(state["deployToken"], "github:personal", "acme/app")
+
+                self.assertEqual(result["refs"], [{"name": "main", "type": "branch"}, {"name": "v1.2.3", "type": "tag"}])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_clone_builds_shallow_command_with_ref(self):
         from luma import gitops
 
@@ -9003,10 +9513,12 @@ class GithubImportTests(unittest.TestCase):
         from luma.control.server import _agent_task_lease_payload
 
         state = {
-            "secrets": {"GITHUB_TOKEN": "ghp_secret"},
+            "gitProviders": {
+                "github:personal": {"type": "github", "account": "personal", "username": "octo", "token": "ghp_secret"}
+            },
             "registries": {"build-1:5000": {"username": "u", "password": "p", "serverAddress": "build-1:5000"}},
         }
-        stored_payload = {"repoUrl": "https://github.com/acme/app", "pushHost": "build-1:5000", "repo": "acme/app"}
+        stored_payload = {"repoUrl": "https://github.com/acme/app", "gitProviderId": "github:personal", "pushHost": "build-1:5000", "repo": "acme/app"}
         # the stored payload itself carries no credentials
         self.assertNotIn("gitToken", stored_payload)
         self.assertNotIn("registryAuth", stored_payload)
@@ -9016,6 +9528,199 @@ class GithubImportTests(unittest.TestCase):
         # original stored payload is untouched (no mutation back into state)
         self.assertNotIn("gitToken", stored_payload)
         self.assertNotIn("registryAuth", stored_payload)
+
+    def test_build_image_credentials_fall_back_to_legacy_github_token_secret(self):
+        from luma.control.server import _agent_task_lease_payload
+
+        state = {"secrets": {"GITHUB_TOKEN": "ghp_legacy"}}
+        leased = _agent_task_lease_payload(
+            state,
+            {"action": "build-image", "payload": {"repoUrl": "https://github.com/acme/app", "pushHost": "build-1:5000", "repo": "acme/app"}},
+        )
+        self.assertEqual(leased.get("gitToken"), "ghp_legacy")
+
+    def test_build_image_credentials_do_not_fallback_when_provider_selected_but_missing(self):
+        from luma.control.server import _agent_task_lease_payload
+
+        state = {"secrets": {"GITHUB_TOKEN": "ghp_legacy"}}
+        leased = _agent_task_lease_payload(
+            state,
+            {
+                "action": "build-image",
+                "payload": {"repoUrl": "https://github.com/acme/app", "gitProviderId": "github:missing", "pushHost": "build-1:5000", "repo": "acme/app"},
+            },
+        )
+        self.assertNotIn("gitToken", leased)
+
+    def test_build_image_credentials_inject_provider_username(self):
+        from luma.control.server import _agent_task_lease_payload
+
+        state = {"gitProviders": {"gitea:lin": {"type": "gitea", "account": "lin", "username": "lin", "token": "gitea_secret"}}}
+        leased = _agent_task_lease_payload(
+            state,
+            {
+                "action": "build-image",
+                "payload": {"repoUrl": "https://gcode.gaojiua.com:3000/acme/app", "gitProviderId": "gitea:lin", "pushHost": "build-1:5000", "repo": "acme/app"},
+            },
+        )
+        self.assertEqual(leased.get("gitToken"), "gitea_secret")
+        self.assertEqual(leased.get("gitUsername"), "lin")
+
+    def test_clone_uses_configured_git_username_for_https_token(self):
+        from luma import gitops
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env") or {}
+            return Mock(returncode=0, stdout="")
+
+        with patch("luma.gitops.subprocess.run", side_effect=fake_run):
+            gitops.clone("https://gcode.gaojiua.com:3000/acme/app", Path("/tmp/x"), token="gitea_secret", username="lin")
+
+        clone_url = captured["cmd"][-2]
+        self.assertIn("https://lin:gitea_secret@gcode.gaojiua.com:3000/acme/app", clone_url)
+        self.assertNotIn("x-access-token", clone_url)
+
+    def test_git_provider_repositories_fetch_all_pages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_git_provider_set(
+                    state["deployToken"],
+                    {"type": "gitea", "account": "lin", "baseUrl": "https://gcode.gaojiua.com:3000", "username": "lin", "token": "gitea_secret"},
+                )
+                calls = []
+
+                def fake_urlopen(request, **_kwargs):
+                    calls.append(request.full_url)
+                    if request.full_url.endswith("page=1"):
+                        return _JsonResponse(
+                            [
+                                {
+                                    "full_name": f"acme/repo-{index}",
+                                    "clone_url": f"https://gcode.gaojiua.com:3000/acme/repo-{index}.git",
+                                    "default_branch": "main",
+                                    "private": True,
+                                }
+                                for index in range(100)
+                            ]
+                        )
+                    if request.full_url.endswith("page=2"):
+                        return _JsonResponse(
+                            [
+                                {
+                                    "full_name": "acme/repo-100",
+                                    "clone_url": "https://gcode.gaojiua.com:3000/acme/repo-100.git",
+                                    "default_branch": "main",
+                                    "private": True,
+                                }
+                            ]
+                        )
+                    raise AssertionError(f"unexpected URL: {request.full_url}")
+
+                with patch("luma.control.server.urllib.request.urlopen", side_effect=fake_urlopen):
+                    result = handle_git_provider_repositories(state["deployToken"], "gitea:lin")
+
+                self.assertEqual(len(result["repositories"]), 101)
+                self.assertTrue(calls[0].endswith("page=1"))
+                self.assertTrue(calls[1].endswith("page=2"))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_git_provider_refs_fetch_all_pages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_git_provider_set(
+                    state["deployToken"],
+                    {"type": "github", "account": "personal", "username": "octo", "token": "ghp_personal"},
+                )
+                calls = []
+
+                def fake_urlopen(request, **_kwargs):
+                    calls.append(request.full_url)
+                    if request.full_url == "https://api.github.com/repos/acme/app/branches?per_page=100&page=1":
+                        return _JsonResponse([{"name": f"branch-{index}"} for index in range(100)])
+                    if request.full_url == "https://api.github.com/repos/acme/app/branches?per_page=100&page=2":
+                        return _JsonResponse([{"name": "branch-100"}])
+                    if request.full_url == "https://api.github.com/repos/acme/app/tags?per_page=100&page=1":
+                        return _JsonResponse([{"name": "v1"}])
+                    raise AssertionError(f"unexpected URL: {request.full_url}")
+
+                with patch("luma.control.server.urllib.request.urlopen", side_effect=fake_urlopen):
+                    result = handle_git_provider_refs(state["deployToken"], "github:personal", "acme/app")
+
+                self.assertIn("https://api.github.com/repos/acme/app/branches?per_page=100&page=2", calls)
+                self.assertEqual(len([item for item in result["refs"] if item["type"] == "branch"]), 101)
+                self.assertIn({"name": "v1", "type": "tag"}, result["refs"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_build_deploy_accepts_provider_repository_mode(self):
+        from luma.control.server import handle_build_deploy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                state["gitProviders"] = {
+                    "gitea:lin": {
+                        "type": "gitea",
+                        "account": "lin",
+                        "baseUrl": "https://gcode.gaojiua.com:3000",
+                        "cloneBaseUrl": "https://gcode.gaojiua.com:3000",
+                        "username": "lin",
+                        "token": "gitea_secret",
+                    }
+                }
+                state["build"] = {"defaultNode": "builder", "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+                captured = {}
+
+                def fake_run_task(_state, node_name, action, payload, **_kwargs):
+                    captured.update({"node": node_name, "action": action, "payload": payload})
+                    return {
+                        "image": "100.66.177.70:5000/gaojiuatech/price:abc123",
+                        "manifest": "name: price\nimage: placeholder\nregion: cn\nexposure: none\n",
+                    }
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=fake_run_task), patch(
+                    "luma.control.server.handle_deployment", return_value={"service": "price", "steps": []}
+                ) as deploy:
+                    result = handle_build_deploy(
+                        state["deployToken"],
+                        {"providerId": "gitea:lin", "repository": "gaojiuatech/price", "ref": "main"},
+                    )
+
+                self.assertEqual(captured["node"], "builder")
+                self.assertEqual(captured["action"], "build-image")
+                self.assertEqual(captured["payload"]["repoUrl"], "https://gcode.gaojiua.com:3000/gaojiuatech/price.git")
+                self.assertEqual(captured["payload"]["gitProviderId"], "gitea:lin")
+                self.assertEqual(captured["payload"]["registryHost"], "100.66.177.70:5000")
+                self.assertEqual(captured["payload"]["pushHost"], "localhost:5000")
+                self.assertEqual(captured["payload"]["repo"], "gaojiuatech/price")
+                self.assertEqual(captured["payload"]["ref"], "main")
+                deployed_manifest = deploy.call_args.args[1]["manifest"]
+                self.assertIn("image: 100.66.177.70:5000/gaojiuatech/price:abc123", deployed_manifest)
+                self.assertEqual(result["image"], "100.66.177.70:5000/gaojiuatech/price:abc123")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_build_image_lease_without_secrets(self):
         from luma.control.server import _agent_task_lease_payload
@@ -9070,6 +9775,92 @@ class GithubImportTests(unittest.TestCase):
             caps = agent.node_agent_capabilities("linux")
         agent._BUILDX_AVAILABLE = None
         self.assertNotIn("docker-build", caps)
+
+    def test_buildx_builder_escapes_no_proxy_commas_for_driver_opt(self):
+        from luma.agent import _ensure_buildx_builder
+
+        calls = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["docker", "buildx", "inspect"]:
+                return Mock(returncode=1)
+            return Mock(returncode=0, stdout="created\n")
+
+        with patch("luma.agent.subprocess.run", side_effect=fake_run):
+            builder = _ensure_buildx_builder(
+                "docker",
+                proxy="http://127.0.0.1:7890",
+                no_proxy="localhost,127.0.0.1,100.66.177.70:5000",
+            )
+
+        self.assertEqual(builder, "luma-builder-egress")
+        create_cmd = calls[1]
+        self.assertIn("env.NO_PROXY=localhost\\,127.0.0.1\\,100.66.177.70:5000", create_cmd)
+        self.assertNotIn("env.NO_PROXY=localhost,127.0.0.1,100.66.177.70:5000", create_cmd)
+
+    def test_registry_serve_configures_insecure_registry_and_docker_no_proxy(self):
+        from luma.control.server import handle_registry_serve
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                now = int(time.time())
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "cn",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                    },
+                    "tecent": {
+                        "name": "tecent",
+                        "region": "cn",
+                        "tailscaleIP": "100.84.163.118",
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": now,
+                            "os": "linux",
+                            "capabilities": [],
+                            "diagnostics": {"docker": {"proxy": {"http": "http://10.0.0.2:7890", "noProxy": "localhost,127.0.0.1"}}},
+                        },
+                    },
+                }
+                save_state(state)
+                calls = []
+
+                def fake_run_task(_state, node_name, action, payload, **_kwargs):
+                    calls.append((node_name, action, payload))
+                    return {"message": f"{action} ok"}
+
+                with patch("luma.control.server.handle_deployment", return_value={"service": "luma-registry", "steps": []}), patch(
+                    "luma.control.server._run_node_agent_task", side_effect=fake_run_task
+                ):
+                    result = handle_registry_serve(state["deployToken"], {"node": "builder"})
+
+                self.assertEqual(result["registryHost"], "100.66.177.70:5000")
+                tecent_no_proxy = [
+                    payload["noProxy"]
+                    for node_name, action, payload in calls
+                    if node_name == "tecent" and action == "configure-docker-egress-proxy"
+                ][0]
+                self.assertIn("100.66.177.70:5000", tecent_no_proxy)
+                self.assertIn("100.66.177.70", tecent_no_proxy)
+                self.assertIn("100.64.0.0/10", tecent_no_proxy)
+                tecent_proxy = [
+                    payload["proxy"]
+                    for node_name, action, payload in calls
+                    if node_name == "tecent" and action == "configure-docker-egress-proxy"
+                ][0]
+                self.assertEqual(tecent_proxy, "http://10.0.0.2:7890")
+                self.assertIn(("tecent", "configure-insecure-registry", {"registry": "100.66.177.70:5000"}), calls)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_egress_proxy_for_cn_build_node_uses_manager_gateway(self):
         from luma.config import LumaConfig

@@ -1,5 +1,13 @@
-import { ArrowLeft, GitBranch, Rocket, Server } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowLeft, GitBranch, Rocket, Server, Settings2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  fetchGitProviderRefs,
+  fetchGitProviderRepositories,
+  fetchGitProviders,
+  type GitProviderCredential,
+  type GitRef,
+  type GitRepository,
+} from "../controlResourcesApi";
 import type { DashboardNode, Lang } from "../types";
 import { buildImportStream, registryServeStream } from "./deployApi";
 import { isReadyNode } from "./options";
@@ -7,9 +15,27 @@ import type { DeployStep, Exposure, Region } from "./types";
 
 const REGIONS: Region[] = ["cn", "global", "home"];
 const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"];
+const PROVIDER_TYPES = ["github", "gitea"] as const;
 
 function buildNodes(nodes: DashboardNode[]): DashboardNode[] {
   return nodes.filter((node) => node.name && isReadyNode(node) && (node.storageCapabilities || []).includes("docker-build"));
+}
+
+function providerTypeLabel(type: string, lang: Lang) {
+  if (type === "github") return "GitHub";
+  return lang === "zh" ? "Git / Gitea" : "Git / Gitea";
+}
+
+function providerAccountLabel(provider: GitProviderCredential) {
+  const account = provider.account || provider.id || "-";
+  const username = provider.username ? ` (${provider.username})` : "";
+  return `${account}${username}`;
+}
+
+function repoOptionLabel(repo: GitRepository) {
+  const privacy = repo.private ? " private" : "";
+  const branch = repo.defaultBranch ? ` - ${repo.defaultBranch}` : "";
+  return `${repo.fullName}${branch}${privacy}`;
 }
 
 export function GithubImportPanel({
@@ -27,34 +53,139 @@ export function GithubImportPanel({
 }) {
   const zh = lang === "zh";
   const candidates = useMemo(() => buildNodes(nodes), [nodes]);
+  const preferredBuildNode = useMemo(() => candidates.find((node) => node.name === "builder")?.name || candidates[0]?.name || "", [candidates]);
+  const readyNodes = useMemo(() => nodes.filter((node) => node.name && isReadyNode(node)), [nodes]);
+
+  const [mode, setMode] = useState<"provider" | "manual">("provider");
+  const [providerType, setProviderType] = useState<(typeof PROVIDER_TYPES)[number]>("github");
+  const [providers, setProviders] = useState<GitProviderCredential[]>([]);
+  const [providerId, setProviderId] = useState("");
+  const [repositories, setRepositories] = useState<GitRepository[]>([]);
+  const [repository, setRepository] = useState("");
+  const [refs, setRefs] = useState<GitRef[]>([]);
   const [repoUrl, setRepoUrl] = useState("");
-  const [buildNode, setBuildNode] = useState(candidates[0]?.name || "");
+  const [providerLoading, setProviderLoading] = useState(false);
+  const [repositoryLoading, setRepositoryLoading] = useState(false);
+  const [refLoading, setRefLoading] = useState(false);
+  const [sourceError, setSourceError] = useState("");
+
+  const [buildNode, setBuildNode] = useState(preferredBuildNode);
   const [ref, setRef] = useState("");
   const [region, setRegion] = useState<Region | "">("");
   const [exposure, setExposure] = useState<Exposure | "">("");
   const [domain, setDomain] = useState("");
   const [port, setPort] = useState("");
   const [platform, setPlatform] = useState("");
+  const [registryHost, setRegistryHost] = useState("");
+  const [pushHost, setPushHost] = useState("");
+  const [context, setContext] = useState("");
+  const [dockerfile, setDockerfile] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [steps, setSteps] = useState<DeployStep[]>([]);
   const [status, setStatus] = useState<"idle" | "running">("idle");
   const [error, setError] = useState("");
-  // Registry-serve sub-flow: one-time setup of the in-cluster registry.
-  const readyNodes = useMemo(() => nodes.filter((node) => node.name && isReadyNode(node)), [nodes]);
+
   const [showRegistry, setShowRegistry] = useState(false);
-  const [registryNode, setRegistryNode] = useState("");
+  const [registryNode, setRegistryNode] = useState(preferredBuildNode);
   const [registrySteps, setRegistrySteps] = useState<DeployStep[]>([]);
   const [registryStatus, setRegistryStatus] = useState<"idle" | "running">("idle");
   const [registryError, setRegistryError] = useState("");
   const [registryDone, setRegistryDone] = useState("");
 
+  useEffect(() => {
+    if (!buildNode && preferredBuildNode) setBuildNode(preferredBuildNode);
+    if (!registryNode && preferredBuildNode) setRegistryNode(preferredBuildNode);
+  }, [buildNode, preferredBuildNode, registryNode]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setProviderLoading(true);
+    setSourceError("");
+    fetchGitProviders({ token, signal: controller.signal })
+      .then((payload) => {
+        setProviders(payload.providers || []);
+        if (!(payload.providers || []).length) setMode("manual");
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setSourceError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setProviderLoading(false);
+      });
+    return () => controller.abort();
+  }, [token]);
+
+  const accounts = useMemo(() => providers.filter((provider) => provider.type === providerType), [providers, providerType]);
+
+  useEffect(() => {
+    const first = accounts[0]?.id || "";
+    if (!accounts.some((provider) => provider.id === providerId)) {
+      setProviderId(first);
+      setRepository("");
+      setRepositories([]);
+      setRefs([]);
+      setRef("");
+    }
+  }, [accounts, providerId]);
+
+  useEffect(() => {
+    if (!providerId || mode !== "provider") return;
+    const controller = new AbortController();
+    setRepositoryLoading(true);
+    setSourceError("");
+    fetchGitProviderRepositories({ token, providerId, signal: controller.signal })
+      .then((payload) => {
+        const items = payload.repositories || [];
+        setRepositories(items);
+        const selected = items.find((item) => item.fullName === repository) || items[0];
+        setRepository(selected?.fullName || "");
+        setRef(selected?.defaultBranch || "");
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setSourceError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRepositoryLoading(false);
+      });
+    return () => controller.abort();
+  }, [mode, providerId, token]);
+
+  useEffect(() => {
+    if (!providerId || !repository || mode !== "provider") return;
+    const controller = new AbortController();
+    setRefLoading(true);
+    setSourceError("");
+    fetchGitProviderRefs({ token, providerId, repository, signal: controller.signal })
+      .then((payload) => {
+        const items = payload.refs || [];
+        setRefs(items);
+        if (!items.some((item) => item.name === ref)) {
+          const defaultBranch = repositories.find((item) => item.fullName === repository)?.defaultBranch || "";
+          setRef(defaultBranch || items[0]?.name || "");
+        }
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) setSourceError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRefLoading(false);
+      });
+    return () => controller.abort();
+  }, [mode, providerId, ref, repositories, repository, token]);
+
   const errors = useMemo(() => {
     const list: string[] = [];
-    if (!repoUrl.trim()) list.push(zh ? "仓库地址不能为空" : "Repository URL is required");
+    if (mode === "provider") {
+      if (!providerId) list.push(zh ? "请选择 Git 账户凭据" : "Select a Git account credential");
+      if (!repository) list.push(zh ? "请选择仓库" : "Select a repository");
+    } else if (!repoUrl.trim()) {
+      list.push(zh ? "仓库地址不能为空" : "Repository URL is required");
+    }
     if (!buildNode) list.push(zh ? "必须选择一个构建节点（需具备 docker-build 能力）" : "Select a build node (must have docker-build capability)");
     if (exposure && exposure !== "none" && !domain.trim()) list.push(zh ? "公开入口必须填写域名" : "Public exposure requires a domain");
     if (port.trim() && !/^[0-9]+$/.test(port.trim())) list.push(zh ? "端口必须是正整数" : "Port must be a positive integer");
     return list;
-  }, [repoUrl, buildNode, exposure, domain, port, zh]);
+  }, [buildNode, domain, exposure, mode, port, providerId, repoUrl, repository, zh]);
 
   const run = async () => {
     if (errors.length) return;
@@ -65,7 +196,9 @@ export function GithubImportPanel({
       await buildImportStream(
         {
           token,
-          repoUrl: repoUrl.trim(),
+          repoUrl: mode === "manual" ? repoUrl.trim() : undefined,
+          providerId: mode === "provider" ? providerId : undefined,
+          repository: mode === "provider" ? repository : undefined,
           buildNode,
           ref: ref.trim(),
           region: region || undefined,
@@ -73,6 +206,10 @@ export function GithubImportPanel({
           domain: domain.trim(),
           port: port.trim(),
           platform: platform.trim(),
+          registryHost: registryHost.trim(),
+          pushHost: pushHost.trim(),
+          context: context.trim(),
+          dockerfile: dockerfile.trim(),
         },
         (step) => setSteps((current) => [...current, step]),
       );
@@ -108,12 +245,12 @@ export function GithubImportPanel({
     <>
       <div className="panel-heading deploy-heading">
         <div>
-          <p className="eyebrow">{zh ? "从 GitHub 导入" : "Import from GitHub"}</p>
-          <h2>{zh ? "构建并部署一个仓库" : "Build and deploy a repository"}</h2>
+          <p className="eyebrow">{zh ? "仓库导入" : "Repository import"}</p>
+          <h2>{zh ? "从 Git provider 构建并部署" : "Build and deploy from a Git provider"}</h2>
           <small className="deploy-context-label">
             {zh
-              ? "在构建节点上 clone 仓库、按 Dockerfile 构建镜像、推送到集群内 registry，然后部署。仓库需包含 Dockerfile 与 .luma.yml。"
-              : "Clone on a build node, build the Dockerfile, push to the in-cluster registry, then deploy. The repo needs a Dockerfile and a .luma.yml."}
+              ? "选择 GitHub 或 Gitea 账户、仓库和分支，在 builder 节点构建镜像并推送到内部 registry。"
+              : "Choose a GitHub or Gitea account, repository, and ref; build on builder and push to the internal registry."}
           </small>
         </div>
         <div className="deploy-heading-actions">
@@ -128,12 +265,72 @@ export function GithubImportPanel({
 
       <div className="deploy-form-stack">
         <section className="deploy-config-section">
-          <header><span>01</span><h3>{zh ? "仓库与构建节点" : "Repository and build node"}</h3></header>
+          <header><span>01</span><h3>{zh ? "代码来源" : "Source repository"}</h3></header>
+          <div className="credentials-tabs repository-source-tabs" role="tablist" aria-label={zh ? "仓库来源" : "Repository source"}>
+            <button type="button" className={mode === "provider" ? "active" : ""} onClick={() => setMode("provider")} disabled={!providers.length && !providerLoading}>
+              <GitBranch size={15} aria-hidden="true" />
+              {zh ? "已托管凭据" : "Saved providers"}
+            </button>
+            <button type="button" className={mode === "manual" ? "active" : ""} onClick={() => setMode("manual")}>
+              {zh ? "手填 URL" : "Repo URL"}
+            </button>
+          </div>
+
+          {mode === "provider" ? (
+            <div className="deploy-field-grid">
+              <label>
+                <span>{zh ? "Git provider" : "Git provider"}</span>
+                <select value={providerType} onChange={(event) => setProviderType(event.target.value as (typeof PROVIDER_TYPES)[number])}>
+                  {PROVIDER_TYPES.map((type) => <option key={type} value={type}>{providerTypeLabel(type, lang)}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>{zh ? "账户凭据" : "Account credential"}</span>
+                <select value={providerId} onChange={(event) => setProviderId(event.target.value)}>
+                  <option value="">{providerLoading ? (zh ? "读取中..." : "Loading...") : (zh ? "选择账户" : "Select account")}</option>
+                  {accounts.map((provider) => (
+                    <option key={provider.id} value={provider.id}>{providerAccountLabel(provider)}</option>
+                  ))}
+                </select>
+                {!accounts.length && !providerLoading ? <small className="deploy-muted">{zh ? "先在 Credentials / Git Providers 添加这个 provider 的账户 token。" : "Add an account token in Credentials / Git Providers first."}</small> : null}
+              </label>
+              <label className="deploy-field-wide">
+                <span>{zh ? "仓库" : "Repository"}</span>
+                <select value={repository} onChange={(event) => setRepository(event.target.value)} disabled={!providerId || repositoryLoading}>
+                  <option value="">{repositoryLoading ? (zh ? "读取仓库中..." : "Loading repositories...") : (zh ? "选择仓库" : "Select repository")}</option>
+                  {repositories.map((repo) => (
+                    <option key={repo.fullName} value={repo.fullName}>{repoOptionLabel(repo)}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>{zh ? "分支 / Tag" : "Branch / tag"}</span>
+                <select value={ref} onChange={(event) => setRef(event.target.value)} disabled={!repository || refLoading}>
+                  <option value="">{refLoading ? (zh ? "读取 refs 中..." : "Loading refs...") : (zh ? "默认分支" : "Default branch")}</option>
+                  {refs.map((item) => (
+                    <option key={`${item.type}-${item.name}`} value={item.name}>{item.name} ({item.type})</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          ) : (
+            <div className="deploy-field-grid">
+              <label className="deploy-field-wide">
+                <span>{zh ? "仓库 URL" : "Repository URL"}</span>
+                <input type="text" value={repoUrl} placeholder="https://github.com/owner/repo" onChange={(event) => setRepoUrl(event.target.value)} />
+              </label>
+              <label>
+                <span>{zh ? "分支 / Tag（可选）" : "Branch / tag (optional)"}</span>
+                <input type="text" value={ref} placeholder="main" onChange={(event) => setRef(event.target.value)} />
+              </label>
+            </div>
+          )}
+          {sourceError ? <div className="deploy-muted">{sourceError}</div> : null}
+        </section>
+
+        <section className="deploy-config-section">
+          <header><span>02</span><h3>{zh ? "构建目标" : "Build target"}</h3></header>
           <div className="deploy-field-grid">
-            <label className="deploy-field-wide">
-              <span>{zh ? "GitHub 仓库地址" : "GitHub repository URL"}</span>
-              <input type="text" value={repoUrl} placeholder="https://github.com/owner/repo" onChange={(event) => setRepoUrl(event.target.value)} />
-            </label>
             <label>
               <span>{zh ? "构建节点" : "Build node"}</span>
               <select value={buildNode} onChange={(event) => setBuildNode(event.target.value)}>
@@ -142,32 +339,17 @@ export function GithubImportPanel({
                   <option key={node.name} value={node.name}>{node.displayName || node.name}</option>
                 ))}
               </select>
-              {!candidates.length ? (
-                <small className="deploy-muted">
-                  {zh ? "当前没有具备 docker-build 能力的就绪节点。请先在目标节点安装 docker buildx。" : "No ready node advertises docker-build. Install docker buildx on the target node first."}
-                </small>
-              ) : (
-                <small className="deploy-muted">{zh ? "需具备 docker-build 能力（已安装 buildx）。" : "Must advertise docker-build (buildx installed)."}</small>
-              )}
-            </label>
-            <label>
-              <span>{zh ? "分支 / Tag（可选）" : "Branch / tag (optional)"}</span>
-              <input type="text" value={ref} placeholder="main" onChange={(event) => setRef(event.target.value)} />
+              {!candidates.length ? <small className="deploy-muted">{zh ? "当前没有具备 docker-build 能力的就绪节点。" : "No ready node advertises docker-build."}</small> : null}
             </label>
           </div>
           <div className="registry-setup">
             <button type="button" className="ghost registry-setup-toggle" onClick={() => setShowRegistry((current) => !current)}>
               <Server size={15} aria-hidden="true" />
-              {zh ? "集群内 registry 设置（一次性）" : "In-cluster registry setup (one-time)"}
+              {zh ? "内部 registry 设置" : "Internal registry setup"}
               <span>{showRegistry ? "▾" : "▸"}</span>
             </button>
             {showRegistry ? (
               <div className="registry-setup-body">
-                <small className="deploy-muted">
-                  {zh
-                    ? "构建出的镜像需要推送到集群内 registry。若尚未部署，选一个构建节点一键部署，并自动为各节点配置内网拉取。"
-                    : "Built images need an in-cluster registry to push to. If not deployed yet, pick a build node to deploy one and auto-configure pulls across nodes."}
-                </small>
                 <div className="deploy-field-grid">
                   <label>
                     <span>{zh ? "registry 所在节点" : "Registry node"}</span>
@@ -190,7 +372,7 @@ export function GithubImportPanel({
                     {registrySteps.filter((step) => step.name).map((step, index) => (
                       <li key={`${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
                         <strong>{step.name}</strong>
-                        {step.message ? <span> — {step.message}</span> : null}
+                        {step.message ? <span> - {step.message}</span> : null}
                       </li>
                     ))}
                   </ol>
@@ -201,7 +383,7 @@ export function GithubImportPanel({
         </section>
 
         <section className="deploy-config-section">
-          <header><span>02</span><h3>{zh ? "覆盖 .luma.yml（全部可选）" : "Override .luma.yml (all optional)"}</h3></header>
+          <header><span>03</span><h3>{zh ? "部署覆盖项" : "Deploy overrides"}</h3></header>
           <div className="deploy-field-grid">
             <label>
               <span>Region</span>
@@ -225,11 +407,39 @@ export function GithubImportPanel({
               <span>{zh ? "端口" : "Port"}</span>
               <input type="text" value={port} placeholder="8080" onChange={(event) => setPort(event.target.value)} />
             </label>
-            <label>
-              <span>{zh ? "构建平台" : "Build platform"}</span>
-              <input type="text" value={platform} placeholder="linux/amd64" onChange={(event) => setPlatform(event.target.value)} />
-            </label>
           </div>
+        </section>
+
+        <section className="deploy-config-section">
+          <button type="button" className="ghost registry-setup-toggle" onClick={() => setShowAdvanced((current) => !current)}>
+            <Settings2 size={15} aria-hidden="true" />
+            {zh ? "Advanced" : "Advanced"}
+            <span>{showAdvanced ? "▾" : "▸"}</span>
+          </button>
+          {showAdvanced ? (
+            <div className="deploy-field-grid">
+              <label>
+                <span>{zh ? "构建平台" : "Build platform"}</span>
+                <input type="text" value={platform} placeholder="linux/amd64" onChange={(event) => setPlatform(event.target.value)} />
+              </label>
+              <label>
+                <span>{zh ? "Registry host" : "Registry host"}</span>
+                <input type="text" value={registryHost} placeholder="100.66.177.70:5000" onChange={(event) => setRegistryHost(event.target.value)} />
+              </label>
+              <label>
+                <span>{zh ? "Push host" : "Push host"}</span>
+                <input type="text" value={pushHost} placeholder="localhost:5000" onChange={(event) => setPushHost(event.target.value)} />
+              </label>
+              <label>
+                <span>{zh ? "Context" : "Context"}</span>
+                <input type="text" value={context} placeholder="." onChange={(event) => setContext(event.target.value)} />
+              </label>
+              <label>
+                <span>Dockerfile</span>
+                <input type="text" value={dockerfile} placeholder="Dockerfile" onChange={(event) => setDockerfile(event.target.value)} />
+              </label>
+            </div>
+          ) : null}
         </section>
 
         {errors.length ? (
@@ -244,7 +454,7 @@ export function GithubImportPanel({
             {steps.filter((step) => step.name).map((step, index) => (
               <li key={`${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
                 <strong>{step.name}</strong>
-                {step.message ? <span> — {step.message}</span> : null}
+                {step.message ? <span> - {step.message}</span> : null}
               </li>
             ))}
           </ol>
@@ -253,10 +463,10 @@ export function GithubImportPanel({
 
       <div className="deploy-action-bar">
         <div>
-          <strong>GITHUB_TOKEN</strong>
-          <span>{zh ? "私有仓库需先在 Luma Control 设置 GITHUB_TOKEN 密钥。" : "For private repos, set the GITHUB_TOKEN secret in Luma Control first."}</span>
+          <strong>{mode === "provider" ? providerId || (zh ? "Git provider" : "Git provider") : (zh ? "手填仓库" : "Manual repository")}</strong>
+          <span>{mode === "provider" ? repository || (zh ? "选择仓库后即可构建部署" : "Select a repository to build and deploy") : repoUrl || (zh ? "临时仓库 URL" : "Temporary repository URL")}</span>
         </div>
-        <button type="button" disabled={status !== "idle" || errors.length > 0} onClick={() => void run()}>
+        <button type="button" disabled={status !== "idle" || errors.length > 0 || repositoryLoading || refLoading} onClick={() => void run()}>
           <Rocket size={16} aria-hidden="true" />
           {status === "running" ? (zh ? "构建并部署中..." : "Building and deploying...") : (zh ? "构建并部署" : "Build and deploy")}
         </button>
@@ -271,10 +481,10 @@ export function GithubImportEntryCard({ lang, onOpen }: { lang: Lang; onOpen: ()
     <button type="button" className="github-import-entry" onClick={onOpen}>
       <GitBranch size={18} aria-hidden="true" />
       <div>
-        <strong>{zh ? "从 GitHub 导入" : "Import from GitHub"}</strong>
-        <span>{zh ? "提供仓库地址，自动构建 Dockerfile 并部署" : "Point at a repo, build its Dockerfile, and deploy"}</span>
+        <strong>{zh ? "仓库导入" : "Repository import"}</strong>
+        <span>{zh ? "选择 Git provider 账户和仓库，自动构建并部署" : "Choose a Git provider account and repo, then build and deploy"}</span>
       </div>
-      <span className="github-import-entry-action">{zh ? "打开" : "Open"} →</span>
+      <span className="github-import-entry-action">{zh ? "打开" : "Open"} -&gt;</span>
     </button>
   );
 }

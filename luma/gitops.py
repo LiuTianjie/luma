@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 from .errors import LumaError
@@ -19,6 +20,7 @@ def clone(
     ref: str | None = None,
     proxy: str | None = None,
     token: str | None = None,
+    username: str | None = None,
 ) -> str:
     safe_url = str(url or "").strip()
     if not safe_url:
@@ -28,7 +30,9 @@ def clone(
         safe_url = f"https://{safe_url.lstrip('/')}"
     clone_url = safe_url
     if token and clone_url.startswith("https://"):
-        clone_url = clone_url.replace("https://", f"https://x-access-token:{token}@", 1)
+        auth_username = urllib.parse.quote(str(username or "x-access-token"), safe="")
+        auth_token = urllib.parse.quote(str(token), safe="")
+        clone_url = clone_url.replace("https://", f"https://{auth_username}:{auth_token}@", 1)
 
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"

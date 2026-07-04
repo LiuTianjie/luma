@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { KeyRound, LockKeyhole, PackageCheck, ShieldCheck } from "lucide-react";
-import { fetchRegistries, fetchSecrets, fetchStorageClasses, removeRegistry, setRegistry, setSecret, type RegistryCredential } from "../controlResourcesApi";
+import { GitBranch, KeyRound, LockKeyhole, PackageCheck, ShieldCheck } from "lucide-react";
+import {
+  fetchGitProviders,
+  fetchRegistries,
+  fetchSecrets,
+  fetchStorageClasses,
+  removeGitProvider,
+  removeRegistry,
+  setGitProvider,
+  setRegistry,
+  setSecret,
+  type GitProviderCredential,
+  type RegistryCredential,
+} from "../controlResourcesApi";
 import { Badge, CodeCell, PrimaryCell, StatePill } from "../components/ui";
 import type { DashboardStorageClass, Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
@@ -9,6 +21,7 @@ import { PageHeader } from "./PageHeader";
 type CredentialsState = {
   secrets: string[];
   registries: RegistryCredential[];
+  gitProviders: GitProviderCredential[];
   storageClasses: DashboardStorageClass[];
   loading: boolean;
   error: string;
@@ -27,6 +40,14 @@ function registryUser(item: RegistryCredential) {
   return item.username ? item.username : "-";
 }
 
+function gitProviderLabel(item: GitProviderCredential) {
+  return item.id || `${item.type || "git"}:${item.account || "-"}`;
+}
+
+function gitProviderTypeLabel(item: GitProviderCredential) {
+  return item.type === "github" ? "GitHub" : "Git / Gitea";
+}
+
 function secretScopeLabel(scope: string, lang: Lang) {
   if (scope === "global") return lang === "zh" ? "全局" : "global";
   return scope;
@@ -42,10 +63,11 @@ export function CredentialsPage({
   vm: DashboardViewModel;
 }) {
   const zh = lang === "zh";
-  const [activeTab, setActiveTab] = useState<"secrets" | "registries" | "storage">("secrets");
+  const [activeTab, setActiveTab] = useState<"secrets" | "registries" | "git" | "storage">("secrets");
   const [state, setState] = useState<CredentialsState>({
     secrets: [],
     registries: [],
+    gitProviders: [],
     storageClasses: vm.storageClasses,
     loading: true,
     error: "",
@@ -56,6 +78,7 @@ export function CredentialsPage({
   // read state and never rendered back.
   const [secretForm, setSecretForm] = useState({ name: "", scope: "", value: "" });
   const [registryForm, setRegistryForm] = useState({ host: "", username: "", password: "" });
+  const [gitProviderForm, setGitProviderForm] = useState({ type: "github", account: "", baseUrl: "", cloneBaseUrl: "", username: "", token: "" });
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [writeError, setWriteError] = useState("");
@@ -63,14 +86,16 @@ export function CredentialsPage({
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const [secrets, registries, storage] = await Promise.all([
+      const [secrets, registries, gitProviders, storage] = await Promise.all([
         fetchSecrets({ token, signal }),
         fetchRegistries({ token, signal }),
+        fetchGitProviders({ token, signal }),
         fetchStorageClasses({ token, signal }),
       ]);
       setState({
         secrets: secrets.secrets || [],
         registries: registries.registries || [],
+        gitProviders: gitProviders.providers || [],
         storageClasses: storage.storageClasses || vm.storageClasses,
         loading: false,
         error: "",
@@ -90,6 +115,7 @@ export function CredentialsPage({
   const parsedSecrets = useMemo(() => state.secrets.map(parseSecretName), [state.secrets]);
   const scopedSecrets = parsedSecrets.filter((item) => item.scope !== "global").length;
   const configuredRegistries = state.registries.filter((item) => item.configured).length;
+  const configuredGitProviders = state.gitProviders.filter((item) => item.configured).length;
 
   const submitSecret = async () => {
     if (!secretForm.name.trim() || !secretForm.value) return;
@@ -142,6 +168,50 @@ export function CredentialsPage({
     }
   };
 
+  const submitGitProvider = async () => {
+    if (!gitProviderForm.account.trim() || !gitProviderForm.token) return;
+    if (gitProviderForm.type === "gitea" && !gitProviderForm.baseUrl.trim()) return;
+    setBusy("git-provider");
+    setNotice("");
+    setWriteError("");
+    try {
+      await setGitProvider({
+        token,
+        providerType: gitProviderForm.type,
+        account: gitProviderForm.account.trim(),
+        baseUrl: gitProviderForm.baseUrl.trim(),
+        cloneBaseUrl: gitProviderForm.cloneBaseUrl.trim(),
+        username: gitProviderForm.username.trim(),
+        gitToken: gitProviderForm.token,
+      });
+      const savedId = `${gitProviderForm.type}:${gitProviderForm.account.trim()}`;
+      setGitProviderForm({ type: gitProviderForm.type, account: "", baseUrl: gitProviderForm.type === "gitea" ? gitProviderForm.baseUrl : "", cloneBaseUrl: "", username: "", token: "" });
+      setNotice(zh ? `Git 凭据已保存：${savedId}` : `Git credential saved: ${savedId}`);
+      await refresh();
+    } catch (error) {
+      setWriteError(String(error instanceof Error ? error.message : error));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const deleteGitProvider = async (id: string) => {
+    if (!id || id === "-") return;
+    if (!window.confirm(zh ? `删除 ${id} 的 Git 凭据？` : `Remove Git credential for ${id}?`)) return;
+    setBusy(`remove-git-${id}`);
+    setNotice("");
+    setWriteError("");
+    try {
+      await removeGitProvider({ token, id });
+      setNotice(zh ? `Git 凭据已删除：${id}` : `Git credential removed: ${id}`);
+      await refresh();
+    } catch (error) {
+      setWriteError(String(error instanceof Error ? error.message : error));
+    } finally {
+      setBusy("");
+    }
+  };
+
   return (
     <>
       <PageHeader
@@ -155,6 +225,7 @@ export function CredentialsPage({
             { label: zh ? "Secrets" : "Secrets", value: state.secrets.length },
             { label: zh ? "Scoped" : "Scoped", value: scopedSecrets },
             { label: zh ? "Registries" : "Registries", value: configuredRegistries },
+            { label: zh ? "Git accounts" : "Git accounts", value: configuredGitProviders },
             { label: "storageClass", value: state.storageClasses.length },
           ],
         }}
@@ -186,6 +257,10 @@ export function CredentialsPage({
             <button type="button" className={activeTab === "registries" ? "active" : ""} onClick={() => setActiveTab("registries")}>
               <PackageCheck size={15} aria-hidden="true" />
               Registries
+            </button>
+            <button type="button" className={activeTab === "git" ? "active" : ""} onClick={() => setActiveTab("git")}>
+              <GitBranch size={15} aria-hidden="true" />
+              Git Providers
             </button>
             <button type="button" className={activeTab === "storage" ? "active" : ""} onClick={() => setActiveTab("storage")}>
               storageClass
@@ -255,6 +330,44 @@ export function CredentialsPage({
             </div>
           ) : null}
 
+          {activeTab === "git" ? (
+            <div className="table-wrap">
+              <table className="credentials-table">
+                <thead>
+                  <tr>
+                    <th>{zh ? "Provider" : "Provider"}</th>
+                    <th>{zh ? "账户" : "Account"}</th>
+                    <th>{zh ? "Host" : "Host"}</th>
+                    <th>{zh ? "状态" : "Status"}</th>
+                    <th>{zh ? "操作" : "Actions"}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {state.gitProviders.length ? state.gitProviders.map((item) => (
+                    <tr key={gitProviderLabel(item)}>
+                      <td><Badge value={gitProviderTypeLabel(item)} /></td>
+                      <td><PrimaryCell title={item.account || "-"} meta={item.username || item.id} /></td>
+                      <td><CodeCell value={item.cloneBaseUrl || item.baseUrl || "-"} /></td>
+                      <td><StatePill label={item.configured ? (zh ? "已配置" : "configured") : (zh ? "缺失" : "missing")} value={item.configured ? "ready" : "missing"} /></td>
+                      <td>
+                        <button
+                          className="ghost"
+                          type="button"
+                          disabled={busy !== ""}
+                          onClick={() => void deleteGitProvider(gitProviderLabel(item))}
+                        >
+                          {busy === `remove-git-${gitProviderLabel(item)}` ? (zh ? "删除中..." : "Removing...") : (zh ? "删除" : "Remove")}
+                        </button>
+                      </td>
+                    </tr>
+                  )) : (
+                    <tr><td colSpan={5}>{state.loading ? (zh ? "读取中..." : "Loading...") : (zh ? "暂无 Git provider 凭据" : "No Git provider credentials")}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
           {activeTab === "storage" ? (
             <div className="table-wrap">
               <table className="credentials-table">
@@ -313,6 +426,63 @@ export function CredentialsPage({
                   {busy === "registry" ? (zh ? "保存中..." : "Saving...") : (zh ? "保存凭据" : "Save credential")}
                 </button>
                 <p className="credential-hint">{zh ? "用于拉取私有镜像。值保存后不回显。等价于 luma registry login。" : "Used to pull private images. The value is not echoed back. Equivalent to luma registry login."}</p>
+              </div>
+            </>
+          ) : activeTab === "git" ? (
+            <>
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">{zh ? "Git provider" : "Git provider"}</p>
+                  <h2>{zh ? "保存仓库访问 token" : "Save repository token"}</h2>
+                </div>
+                <GitBranch size={18} aria-hidden="true" />
+              </div>
+              <div className="credential-form">
+                <label className="field">
+                  <span>{zh ? "Provider" : "Provider"}</span>
+                  <select value={gitProviderForm.type} onChange={(event) => setGitProviderForm((current) => ({ ...current, type: event.target.value }))}>
+                    <option value="github">GitHub</option>
+                    <option value="gitea">{zh ? "Git / Gitea" : "Git / Gitea"}</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>{zh ? "账户名称" : "Account name"}</span>
+                  <input type="text" value={gitProviderForm.account} placeholder={gitProviderForm.type === "github" ? "personal" : "work"} autoComplete="off" onChange={(event) => setGitProviderForm((current) => ({ ...current, account: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>{zh ? "用户名（可选）" : "Username (optional)"}</span>
+                  <input type="text" value={gitProviderForm.username} autoComplete="off" onChange={(event) => setGitProviderForm((current) => ({ ...current, username: event.target.value }))} />
+                </label>
+                {gitProviderForm.type === "gitea" ? (
+                  <>
+                    <label className="field">
+                      <span>Base URL</span>
+                      <input type="text" value={gitProviderForm.baseUrl} placeholder="https://gcode.example.com" onChange={(event) => setGitProviderForm((current) => ({ ...current, baseUrl: event.target.value }))} />
+                    </label>
+                    <label className="field">
+                      <span>Clone base URL</span>
+                      <input type="text" value={gitProviderForm.cloneBaseUrl} placeholder={zh ? "留空同 Base URL" : "blank = Base URL"} onChange={(event) => setGitProviderForm((current) => ({ ...current, cloneBaseUrl: event.target.value }))} />
+                    </label>
+                  </>
+                ) : null}
+                <label className="field">
+                  <span>{zh ? "Token / PAT" : "Token / PAT"}</span>
+                  <input type="password" autoComplete="new-password" value={gitProviderForm.token} onChange={(event) => setGitProviderForm((current) => ({ ...current, token: event.target.value }))} />
+                </label>
+                <button
+                  type="button"
+                  disabled={
+                    busy !== "" ||
+                    !gitProviderForm.account.trim() ||
+                    !gitProviderForm.token ||
+                    (gitProviderForm.type === "gitea" && !gitProviderForm.baseUrl.trim())
+                  }
+                  onClick={() => void submitGitProvider()}
+                >
+                  <ShieldCheck size={16} aria-hidden="true" />
+                  {busy === "git-provider" ? (zh ? "保存中..." : "Saving...") : (zh ? "保存 Git 凭据" : "Save Git credential")}
+                </button>
+                <p className="credential-hint">{zh ? "同一 provider 可保存多个账户。Token 只写不回显，导入仓库时按账户选择注入。" : "You can save multiple accounts per provider. Tokens are write-only and injected only for the selected import account."}</p>
               </div>
             </>
           ) : (

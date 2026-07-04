@@ -200,6 +200,39 @@ class ControlClient:
             timeout=timeout,
         )
 
+    def heartbeat_agent(
+        self,
+        *,
+        node_name: str,
+        node_id: str = "",
+        os_name: str = "",
+        arch: str = "",
+        capabilities: list[str] | None = None,
+        metrics: Dict[str, Any] | None = None,
+        container_stats: list[Dict[str, Any]] | None = None,
+        diagnostics: Dict[str, Any] | None = None,
+        timeout: int = 15,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "nodeName": node_name,
+            "nodeId": node_id,
+            "os": os_name,
+            "arch": arch,
+            "capabilities": capabilities or [],
+        }
+        if metrics:
+            body["metrics"] = metrics
+        if container_stats is not None:
+            body["containerStats"] = container_stats
+        if diagnostics is not None:
+            body["diagnostics"] = diagnostics
+        return self.request(
+            "POST",
+            "/v1/node-agent/heartbeat",
+            body,
+            timeout=timeout,
+        )
+
     def complete_agent_task(
         self,
         *,
@@ -362,8 +395,10 @@ class ControlClient:
     def build_deploy(
         self,
         *,
-        repo_url: str,
-        build_node: str,
+        repo_url: str = "",
+        build_node: str = "",
+        provider_id: str = "",
+        repository: str = "",
         ref: str = "",
         region: str = "",
         exposure: str = "",
@@ -380,8 +415,10 @@ class ControlClient:
     def build_deploy_events(
         self,
         *,
-        repo_url: str,
-        build_node: str,
+        repo_url: str = "",
+        build_node: str = "",
+        provider_id: str = "",
+        repository: str = "",
         ref: str = "",
         region: str = "",
         exposure: str = "",
@@ -397,10 +434,15 @@ class ControlClient:
 
     @staticmethod
     def _build_body(values: Dict[str, Any]) -> Dict[str, Any]:
-        body: Dict[str, Any] = {
-            "repoUrl": values["repo_url"],
-            "buildNode": values["build_node"],
-        }
+        body: Dict[str, Any] = {}
+        if values.get("repo_url"):
+            body["repoUrl"] = values["repo_url"]
+        if values.get("build_node"):
+            body["buildNode"] = values["build_node"]
+        if values.get("provider_id"):
+            body["providerId"] = values["provider_id"]
+        if values.get("repository"):
+            body["repository"] = values["repository"]
         optional = {
             "ref": values.get("ref"),
             "region": values.get("region"),
@@ -516,6 +558,43 @@ class ControlClient:
 
     def remove_registry(self, *, host: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/registries/remove", {"host": host})
+
+    def list_git_providers(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/git-providers")
+
+    def set_git_provider(
+        self,
+        *,
+        provider_type: str,
+        account: str,
+        token: str,
+        base_url: str = "",
+        clone_base_url: str = "",
+        username: str = "",
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"type": provider_type, "account": account, "token": token}
+        if base_url:
+            body["baseUrl"] = base_url
+        if clone_base_url:
+            body["cloneBaseUrl"] = clone_base_url
+        if username:
+            body["username"] = username
+        return self.request("POST", "/v1/git-providers", body)
+
+    def remove_git_provider(self, *, provider_id: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/git-providers/remove", {"id": provider_id})
+
+    def list_git_provider_repositories(self, *, provider_id: str) -> Dict[str, Any]:
+        return self.request("GET", f"/v1/git-providers/{urllib.parse.quote(provider_id, safe='')}/repositories")
+
+    def list_git_provider_refs(self, *, provider_id: str, repository: str) -> Dict[str, Any]:
+        owner, _, repo = repository.partition("/")
+        if not owner or not repo:
+            raise LumaError("repository must be owner/repo")
+        return self.request(
+            "GET",
+            f"/v1/git-providers/{urllib.parse.quote(provider_id, safe='')}/repositories/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(repo, safe='')}/refs",
+        )
 
     def list_storage(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/storage")

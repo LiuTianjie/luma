@@ -60,8 +60,10 @@ export async function deployStream(request: DeployRequest, mode: "service" | "co
 
 export type BuildImportRequest = {
   token: string;
-  repoUrl: string;
-  buildNode: string;
+  repoUrl?: string;
+  providerId?: string;
+  repository?: string;
+  buildNode?: string;
   ref?: string;
   region?: string;
   exposure?: string;
@@ -69,11 +71,28 @@ export type BuildImportRequest = {
   port?: string;
   platform?: string;
   registryHost?: string;
+  pushHost?: string;
+  context?: string;
+  dockerfile?: string;
 };
 
 export async function buildImportStream(request: BuildImportRequest, onStep: (step: DeployStep) => void): Promise<unknown> {
-  const body: Record<string, unknown> = { repoUrl: request.repoUrl, buildNode: request.buildNode };
-  for (const [src, dst] of [["ref", "ref"], ["region", "region"], ["exposure", "exposure"], ["domain", "domain"], ["platform", "platform"], ["registryHost", "registryHost"]] as const) {
+  const body: Record<string, unknown> = {};
+  for (const [src, dst] of [
+    ["repoUrl", "repoUrl"],
+    ["providerId", "providerId"],
+    ["repository", "repository"],
+    ["buildNode", "buildNode"],
+    ["ref", "ref"],
+    ["region", "region"],
+    ["exposure", "exposure"],
+    ["domain", "domain"],
+    ["platform", "platform"],
+    ["registryHost", "registryHost"],
+    ["pushHost", "pushHost"],
+    ["context", "context"],
+    ["dockerfile", "dockerfile"],
+  ] as const) {
     const value = request[src];
     if (value) body[dst] = value;
   }

@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import replace
@@ -46,7 +47,7 @@ from ..compose import (
     render_compose_routes,
     storage_summary,
 )
-from ..config import load_config
+from ..config import LumaConfig, load_config
 from ..errors import LumaError
 from ..io import load_yaml
 from ..local import LocalExecutor
@@ -612,6 +613,31 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     return {"task": leased}
 
 
+def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    node_name = str(body.get("nodeName") or "").strip()
+    node_id = str(body.get("nodeId") or "").strip()
+    if not node_name:
+        raise LumaError("nodeName is required")
+    canonical_node_name = node_name
+    normalized_container_stats: list[Dict[str, Any]] = []
+    config = load_config(_control_config_path())
+
+    def mutate(state: Dict[str, Any]) -> None:
+        nonlocal canonical_node_name, normalized_container_stats
+        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
+        canonical_node_name = entry[0] if entry else node_name
+        record = _require_node_agent_token(state, token, node_name, node_id=node_id)
+        normalized_container_stats = _update_agent_heartbeat(record, body, config=config, state=state)
+
+    _mutate_control_state(mutate)
+    state = load_state()
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, canonical_node_name) or {}
+    _record_metrics_history(canonical_node_name, body, container_stats=normalized_container_stats, config=config, state=state)
+    return {"nodeName": canonical_node_name, "status": _node_agent_status(record)}
+
+
 def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(task.get("payload") if isinstance(task.get("payload"), dict) else {})
     if task.get("action") in {"resolve-docker-image", "diagnose-docker-pull"} and not payload.get("registryAuth"):
@@ -629,8 +655,19 @@ def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Di
         # Inject credentials at lease time so they are never persisted in
         # agentTasks state (see also resolve-docker-image / join-nomad above).
         if not payload.get("gitToken"):
-            secrets_state = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
-            git_token = str(secrets_state.get("GITHUB_TOKEN") or "") or os.environ.get("GITHUB_TOKEN") or ""
+            git_token = ""
+            provider_id = str(payload.get("gitProviderId") or "").strip()
+            if provider_id:
+                git_providers = state.get("gitProviders") if isinstance(state.get("gitProviders"), dict) else {}
+                provider = git_providers.get(provider_id)
+                if isinstance(provider, dict):
+                    git_token = str(provider.get("token") or "")
+                    git_username = str(provider.get("username") or "").strip()
+                    if git_username and not payload.get("gitUsername"):
+                        payload["gitUsername"] = git_username
+            elif not git_token:
+                secrets_state = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+                git_token = str(secrets_state.get("GITHUB_TOKEN") or "") or os.environ.get("GITHUB_TOKEN") or ""
             if git_token:
                 payload["gitToken"] = git_token
         if not payload.get("registryAuth"):
@@ -1185,6 +1222,17 @@ def _egress_proxy_for_node(config: Any, state: Dict[str, Any], node_name: str) -
     return _nomad_join_egress_proxy(region, server_addr)
 
 
+def _docker_daemon_proxy_for_node(config: Any, state: Dict[str, Any], node_name: str, node_record: Dict[str, Any]) -> str:
+    agent = node_record.get("agent") if isinstance(node_record.get("agent"), dict) else {}
+    diagnostics = agent.get("diagnostics") if isinstance(agent.get("diagnostics"), dict) else {}
+    docker = diagnostics.get("docker") if isinstance(diagnostics.get("docker"), dict) else {}
+    proxy = docker.get("proxy") if isinstance(docker.get("proxy"), dict) else {}
+    configured_proxy = str(proxy.get("http") or proxy.get("https") or "").strip()
+    if configured_proxy:
+        return configured_proxy
+    return _egress_proxy_for_node(config, state, node_name)
+
+
 def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     node_name = str(body.get("nodeName") or "").strip()
     registered_name = str(body.get("registeredName") or "").strip()
@@ -1463,10 +1511,16 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
     state = load_state()
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
+    build_config = state.get("build") if isinstance(state.get("build"), dict) else {}
+    provider_id = str(body.get("providerId") or "").strip()
+    repository = str(body.get("repository") or "").strip()
     repo_url = str(body.get("repoUrl") or "").strip()
     if not repo_url:
-        raise LumaError("repoUrl is required")
-    build_node = str(body.get("buildNode") or "").strip()
+        if not provider_id or not repository:
+            raise LumaError("repoUrl or providerId + repository is required")
+        provider = _require_git_provider(state, provider_id)
+        repo_url = _git_provider_clone_url(provider, repository)
+    build_node = str(body.get("buildNode") or build_config.get("defaultNode") or "builder").strip()
     if not build_node:
         raise LumaError("buildNode is required")
     ref = str(body.get("ref") or "").strip()
@@ -1474,7 +1528,7 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
 
     registry_host = str(body.get("registryHost") or "").strip()
     if not registry_host:
-        registry_host = f"{_nomad_route_host_for_node(state, build_node)}:5000"
+        registry_host = str(build_config.get("registryHost") or "").strip() or f"{_nomad_route_host_for_node(state, build_node)}:5000"
     repo = _image_repo_from_repo_url(repo_url)
 
     # git clone runs on the build node's host; cn/home nodes reach GitHub through
@@ -1488,11 +1542,13 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
         "repoUrl": repo_url,
         "ref": ref,
         "registryHost": registry_host,
-        "pushHost": str(body.get("pushHost") or "localhost:5000"),
+        "pushHost": str(body.get("pushHost") or build_config.get("pushHost") or "localhost:5000"),
         "repo": repo,
         "proxy": proxy,
         "buildTimeout": int(body.get("buildTimeout") or 1800),
     }
+    if provider_id:
+        build_payload["gitProviderId"] = provider_id
     for key in ("context", "dockerfile", "platform"):
         if body.get(key):
             build_payload[key] = str(body.get(key))
@@ -1590,6 +1646,8 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
     # must be configured out-of-band if it also runs pulled workloads.
     configured: list[str] = []
     skipped: list[str] = []
+    registry_no_proxy = _merge_no_proxy(EGRESS_NO_PROXY, *_no_proxy_entries_for_registry(registry_host))
+    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
     for node_name in sorted(str(n) for n in nodes):
         node_record = nodes.get(node_name)
         if not isinstance(node_record, dict):
@@ -1610,6 +1668,16 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
                 timeout=240,
                 required_capability=None,
             )
+            daemon_proxy = _docker_daemon_proxy_for_node(config, state, node_name, node_record)
+            if daemon_proxy:
+                _run_node_agent_task(
+                    state,
+                    node_name,
+                    "configure-docker-egress-proxy",
+                    {"proxy": daemon_proxy, "noProxy": registry_no_proxy},
+                    timeout=240,
+                    required_capability=None,
+                )
             configured.append(node_name)
         except LumaError as exc:
             skipped.append(f"{node_name} ({exc})")
@@ -2102,6 +2170,22 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             else deploy_to_nomad(config, stack_text, state, slug=service.slug),
             progress=progress,
         )
+        cni_hostports = (
+            {}
+            if _skip_orchestrator(body)
+            else _deploy_step(
+                steps,
+                "Refresh Nomad CNI hostports",
+                lambda: _refresh_nomad_cni_hostports_for_job(
+                    config,
+                    state,
+                    service.slug,
+                    fallback_nodes=_service_cni_fallback_nodes(service),
+                    ports=_service_cni_host_ports(service),
+                ),
+                progress=progress,
+            )
+        )
         if service.exposure in {"tailscale-relay", "tcp-relay"}:
             route_target = _resolve_control_path(route_path(config, service), config_path)
             route_target.parent.mkdir(parents=True, exist_ok=True)
@@ -2143,6 +2227,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         "dns": dns_result,
         "orchestrator": orchestrator_result,
         "probe": probe_result,
+        "cniHostports": cni_hostports,
         "storagePreparation": storage_preparation,
         "steps": steps,
     }
@@ -2452,6 +2537,8 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
     if not isinstance(allocations, list):
         raise LumaError(f"Nomad returned invalid allocations for job: {stack}")
     restarted = []
+    recreated_node_names: set[str] = set()
+    recreated_host_ports: set[int] = set()
     for alloc in allocations:
         if not isinstance(alloc, dict):
             continue
@@ -2467,6 +2554,10 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
                 continue
             api.request("POST", f"/v1/allocation/{urllib.parse.quote(alloc_id, safe='')}/stop", None)
             restarted.append({"allocId": alloc_id, "task": service_name or "*", "mode": mode})
+            node_name = _luma_node_name_for_nomad_allocation(state, alloc)
+            if node_name:
+                recreated_node_names.add(node_name)
+            recreated_host_ports.update(_nomad_allocation_host_ports(alloc))
             continue
         task_names = [service_name] if service_name else [str(name) for name in task_states] or [""]
         for task_name in task_names:
@@ -2476,13 +2567,17 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
     if not restarted:
         suffix = f"/{service_name}" if service_name else ""
         raise LumaError(f"application allocation not found: {stack}{suffix}")
-    return {
+    result = {
         "clusterId": state["clusterId"],
         "stack": stack,
         "service": service_name,
         "mode": mode,
         "restarted": restarted,
     }
+    cni_hostports = _refresh_nomad_cni_hostports_for_nodes(state, recreated_node_names, ports=sorted(recreated_host_ports))
+    if recreated_node_names or cni_hostports.get("results") or cni_hostports.get("skipped"):
+        result["cniHostports"] = cni_hostports
+    return result
 
 
 def _application_restart_mode(value: Any, *, service_name: str = "") -> str:
@@ -2494,6 +2589,181 @@ def _application_restart_mode(value: Any, *, service_name: str = "") -> str:
     if raw in {"task", "restart", "in-place", "inplace"}:
         return "task"
     raise LumaError("restart mode must be one of: recreate, task")
+
+
+def _luma_node_name_for_nomad_allocation(state: Dict[str, Any], alloc: Dict[str, Any]) -> str:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    node_id = str(alloc.get("NodeID") or alloc.get("node_id") or "").strip()
+    if node_id:
+        for name, record in nodes.items():
+            if isinstance(record, dict) and node_id in _node_record_identity_ids(record):
+                return str(name)
+    node_name = str(alloc.get("NodeName") or alloc.get("node_name") or "").strip()
+    if node_name:
+        entry = _node_record_entry_for_name_or_id(nodes, node_name)
+        if entry:
+            return entry[0]
+    return ""
+
+
+def _service_cni_fallback_nodes(service: ServiceSpec) -> list[str]:
+    if not service.node or not service.port:
+        return []
+    if service.exposure in {"tailscale-relay", "tcp-relay"} and not service.publish_port:
+        return []
+    return [service.node]
+
+
+def _service_cni_host_ports(service: ServiceSpec) -> list[int]:
+    if service.publish_port:
+        return [int(service.publish_port)]
+    return []
+
+
+def _compose_cni_fallback_nodes(deployment: ComposeDeploymentSpec) -> list[str]:
+    exposed = [
+        service
+        for service in deployment.services.values()
+        if service.port and service.exposure in {"tailscale-relay", "tcp-relay", "cn-edge", "external-edge"}
+    ]
+    if not exposed:
+        return []
+    return sorted({str(service.node) for service in deployment.services.values() if service.node})
+
+
+def _compose_cni_host_ports(deployment: ComposeDeploymentSpec) -> list[int]:
+    ports: set[int] = set()
+    for service in deployment.services.values():
+        if not service.port:
+            continue
+        if service.publish_port:
+            ports.add(int(service.publish_port))
+            continue
+        if service.exposure in {"tailscale-relay", "tcp-relay"}:
+            ports.add(int(service.port))
+    return sorted(ports)
+
+
+def _refresh_nomad_cni_hostports_for_job(
+    config: LumaConfig,
+    state: Dict[str, Any],
+    job_id: str,
+    *,
+    fallback_nodes: list[str] | None = None,
+    ports: list[int] | None = None,
+) -> Dict[str, Any]:
+    node_names = {str(node).strip() for node in (fallback_nodes or []) if str(node).strip()}
+    host_ports = {int(port) for port in (ports or []) if int(port) > 0}
+    lookup_error = ""
+    if job_id:
+        try:
+            allocations = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or "")).request(
+                "GET",
+                f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations",
+            )
+            if isinstance(allocations, list):
+                for allocation in allocations:
+                    if not _nomad_allocation_is_current(allocation):
+                        continue
+                    node_name = _luma_node_name_for_nomad_allocation(state, allocation)
+                    if node_name:
+                        node_names.add(node_name)
+                    host_ports.update(_nomad_allocation_host_ports(allocation))
+            else:
+                lookup_error = f"Nomad returned invalid allocations for job: {job_id}"
+        except Exception as exc:
+            lookup_error = str(exc)
+    result = _refresh_nomad_cni_hostports_for_nodes(state, node_names, ports=sorted(host_ports))
+    if lookup_error:
+        result["lookupError"] = lookup_error
+        if not node_names:
+            result.setdefault("skipped", []).append({"node": "", "reason": lookup_error})
+    return result
+
+
+def _nomad_allocation_is_current(allocation: Any) -> bool:
+    if not isinstance(allocation, dict):
+        return False
+    desired_status = str(allocation.get("DesiredStatus") or allocation.get("desired_status") or "run").lower()
+    if desired_status and desired_status not in {"run", "running"}:
+        return False
+    client_status = str(allocation.get("ClientStatus") or allocation.get("client_status") or "").lower()
+    return not client_status or client_status in {"running", "pending"}
+
+
+def _nomad_allocation_host_ports(allocation: Dict[str, Any]) -> set[int]:
+    ports: set[int] = set()
+    allocated = allocation.get("AllocatedResources") if isinstance(allocation.get("AllocatedResources"), dict) else {}
+    shared = allocated.get("Shared") if isinstance(allocated.get("Shared"), dict) else {}
+    ports.update(_nomad_port_values(shared.get("Ports")))
+    tasks = allocated.get("Tasks") if isinstance(allocated.get("Tasks"), dict) else {}
+    for task in tasks.values():
+        if not isinstance(task, dict):
+            continue
+        networks = task.get("Networks") if isinstance(task.get("Networks"), list) else []
+        for network in networks:
+            if isinstance(network, dict):
+                ports.update(_nomad_port_values(network.get("ReservedPorts")))
+                ports.update(_nomad_port_values(network.get("DynamicPorts")))
+                ports.update(_nomad_port_values(network.get("Ports")))
+    resources = allocation.get("Resources") if isinstance(allocation.get("Resources"), dict) else {}
+    networks = resources.get("Networks") if isinstance(resources.get("Networks"), list) else []
+    for network in networks:
+        if isinstance(network, dict):
+            ports.update(_nomad_port_values(network.get("ReservedPorts")))
+            ports.update(_nomad_port_values(network.get("DynamicPorts")))
+            ports.update(_nomad_port_values(network.get("Ports")))
+    return ports
+
+
+def _nomad_port_values(raw_ports: Any) -> set[int]:
+    ports: set[int] = set()
+    if not isinstance(raw_ports, list):
+        return ports
+    for item in raw_ports:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("Value") or item.get("HostPort") or item.get("host_port") or item.get("port")
+        try:
+            port = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if port > 0:
+            ports.add(port)
+    return ports
+
+
+def _refresh_nomad_cni_hostports_for_nodes(state: Dict[str, Any], node_names: set[str] | list[str], *, ports: list[int] | None = None) -> Dict[str, Any]:
+    results: list[Dict[str, Any]] = []
+    skipped: list[Dict[str, str]] = []
+    host_ports = sorted({int(port) for port in (ports or []) if int(port) > 0})
+    normalized_nodes = sorted({str(node).strip() for node in node_names if str(node).strip()})
+    if not host_ports:
+        return {
+            "nodes": [],
+            "results": [],
+            "skipped": [{"node": node_name, "reason": "no Nomad CNI host ports discovered for this job"} for node_name in normalized_nodes],
+            "hostPorts": [],
+        }
+    for node_name in normalized_nodes:
+        if not _node_agent_has_capability(state, node_name, "nomad-cni-repair"):
+            skipped.append({"node": node_name, "reason": "node agent is not ready for nomad-cni-repair"})
+            continue
+        try:
+            task_id = _queue_node_agent_task(
+                state,
+                node_name,
+                "repair-nomad-cni-hostports",
+                {"ports": host_ports},
+                required_capability="nomad-cni-repair",
+            )
+            repair = _wait_node_agent_task(task_id, node_name, "repair-nomad-cni-hostports", timeout=120)
+            item = {"node": node_name}
+            item.update(repair)
+            results.append(item)
+        except LumaError as exc:
+            skipped.append({"node": node_name, "reason": str(exc)})
+    return {"nodes": [str(item.get("node") or "") for item in results if item.get("node")], "results": results, "skipped": skipped, "hostPorts": host_ports}
 
 
 def handle_certificate_retry(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -2712,6 +2982,22 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             else deploy_to_nomad(config, stack_text, state, slug=deployment.slug),
             progress=progress,
         )
+        cni_hostports = (
+            {}
+            if _skip_orchestrator(body)
+            else _deploy_step(
+                steps,
+                "Refresh Nomad CNI hostports",
+                lambda: _refresh_nomad_cni_hostports_for_job(
+                    config,
+                    state,
+                    deployment.slug,
+                    fallback_nodes=_compose_cni_fallback_nodes(deployment),
+                    ports=_compose_cni_host_ports(deployment),
+                ),
+                progress=progress,
+            )
+        )
 
         for service_name, service in deployment.services.items():
             if service.exposure not in {"tailscale-relay", "tcp-relay"} or not service.domain or not service.port:
@@ -2765,6 +3051,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         "dns": dns_results,
         "orchestrator": orchestrator_result,
         "probe": probe_results,
+        "cniHostports": cni_hostports,
         "storagePreparation": storage_preparation,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
         "steps": steps,
@@ -3855,6 +4142,253 @@ def handle_registry_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
     mutate_state(mutate)
     return {"host": host, "removed": removed}
+
+
+def _normalize_git_provider_type(provider_type: str) -> str:
+    normalized = str(provider_type or "").strip().lower()
+    if normalized in {"git", "gitea"}:
+        return "gitea"
+    if normalized == "github":
+        return "github"
+    raise LumaError("git provider type must be github or gitea")
+
+
+def _normalize_git_provider_account(account: str) -> str:
+    normalized = str(account or "").strip()
+    if not normalized:
+        raise LumaError("git provider account is required")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", normalized):
+        raise LumaError("git provider account may contain only letters, numbers, dots, underscores, and dashes")
+    return normalized
+
+
+def _git_provider_id(provider_type: str, account: str) -> str:
+    return f"{_normalize_git_provider_type(provider_type)}:{_normalize_git_provider_account(account)}"
+
+
+def _git_provider_public_item(provider_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
+    provider_type = _normalize_git_provider_type(str(item.get("type") or ""))
+    account = str(item.get("account") or provider_id.split(":", 1)[-1])
+    return {
+        "id": provider_id,
+        "type": provider_type,
+        "account": account,
+        "baseUrl": str(item.get("baseUrl") or ""),
+        "cloneBaseUrl": str(item.get("cloneBaseUrl") or ""),
+        "username": str(item.get("username") or ""),
+        "configured": bool(item.get("token")),
+        "updatedAt": int(item.get("updatedAt") or 0),
+    }
+
+
+def _git_providers_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    providers = state.get("gitProviders")
+    if not isinstance(providers, dict):
+        providers = {}
+        state["gitProviders"] = providers
+    return providers
+
+
+def _require_git_provider(state: Dict[str, Any], provider_id: str) -> Dict[str, Any]:
+    provider_id = str(provider_id or "").strip()
+    if not provider_id:
+        raise LumaError("git provider id is required")
+    providers = state.get("gitProviders") if isinstance(state.get("gitProviders"), dict) else {}
+    provider = providers.get(provider_id)
+    if not isinstance(provider, dict):
+        raise LumaError(f"git provider not found: {provider_id}")
+    return provider
+
+
+def _git_provider_api_base(provider: Dict[str, Any]) -> str:
+    provider_type = _normalize_git_provider_type(str(provider.get("type") or ""))
+    base = str(provider.get("baseUrl") or "").strip().rstrip("/")
+    if provider_type == "github":
+        return base or "https://api.github.com"
+    if not base:
+        raise LumaError("gitea provider baseUrl is required")
+    return base
+
+
+def _git_provider_clone_base(provider: Dict[str, Any]) -> str:
+    provider_type = _normalize_git_provider_type(str(provider.get("type") or ""))
+    clone_base = str(provider.get("cloneBaseUrl") or "").strip().rstrip("/")
+    if clone_base:
+        return clone_base
+    if provider_type == "github":
+        return "https://github.com"
+    return _git_provider_api_base(provider)
+
+
+def _git_provider_auth_headers(provider: Dict[str, Any]) -> Dict[str, str]:
+    token = str(provider.get("token") or "").strip()
+    if not token:
+        raise LumaError("git provider token is not configured")
+    provider_type = _normalize_git_provider_type(str(provider.get("type") or ""))
+    if provider_type == "github":
+        return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    return {"Authorization": f"token {token}", "Accept": "application/json"}
+
+
+def _git_provider_json(provider: Dict[str, Any], url: str) -> Any:
+    request = urllib.request.Request(url, headers=_git_provider_auth_headers(provider))
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8") or "null")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise LumaError(f"git provider API error {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise LumaError(f"git provider API unavailable: {exc}") from exc
+
+
+def _git_provider_json_pages(provider: Dict[str, Any], url_for_page: Callable[[int], str], *, page_size: int = 100) -> list[Dict[str, Any]]:
+    items: list[Dict[str, Any]] = []
+    for page in range(1, 101):
+        payload = _git_provider_json(provider, url_for_page(page))
+        if not isinstance(payload, list):
+            raise LumaError("git provider paged response must be a list")
+        page_items = [item for item in payload if isinstance(item, dict)]
+        items.extend(page_items)
+        if len(payload) < page_size:
+            break
+    return items
+
+
+def _normalize_repository_full_name(repository: str) -> str:
+    repo = str(repository or "").strip().strip("/")
+    repo = repo[:-4] if repo.lower().endswith(".git") else repo
+    parts = [urllib.parse.unquote(part) for part in repo.split("/") if part]
+    if len(parts) != 2:
+        raise LumaError("repository must be owner/repo")
+    if any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
+        raise LumaError("repository owner and name may contain only letters, numbers, dots, underscores, and dashes")
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _git_provider_clone_url(provider: Dict[str, Any], repository: str) -> str:
+    full_name = _normalize_repository_full_name(repository)
+    return f"{_git_provider_clone_base(provider)}/{full_name}.git"
+
+
+def _github_repo_api_base(provider: Dict[str, Any], repository: str) -> str:
+    return f"{_git_provider_api_base(provider)}/repos/{urllib.parse.quote(_normalize_repository_full_name(repository), safe='/')}"
+
+
+def _gitea_repo_api_base(provider: Dict[str, Any], repository: str) -> str:
+    return f"{_git_provider_api_base(provider)}/api/v1/repos/{urllib.parse.quote(_normalize_repository_full_name(repository), safe='/')}"
+
+
+def _normalized_repository_item(provider: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
+    full_name = str(raw.get("full_name") or raw.get("fullName") or "")
+    if not full_name and isinstance(raw.get("owner"), dict):
+        full_name = f"{raw['owner'].get('login') or raw['owner'].get('username')}/{raw.get('name') or ''}"
+    full_name = _normalize_repository_full_name(full_name)
+    clone_url = str(raw.get("clone_url") or raw.get("cloneUrl") or "").strip() or _git_provider_clone_url(provider, full_name)
+    return {
+        "fullName": full_name,
+        "cloneUrl": clone_url,
+        "defaultBranch": str(raw.get("default_branch") or raw.get("defaultBranch") or ""),
+        "private": bool(raw.get("private")),
+    }
+
+
+def handle_git_provider_list(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    providers = state.get("gitProviders") if isinstance(state.get("gitProviders"), dict) else {}
+    items = []
+    for provider_id, item in sorted(providers.items()):
+        if isinstance(item, dict):
+            items.append(_git_provider_public_item(str(provider_id), item))
+    return {"providers": items}
+
+
+def handle_git_provider_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    provider_type = _normalize_git_provider_type(str(body.get("type") or ""))
+    account = _normalize_git_provider_account(str(body.get("account") or ""))
+    provider_id = _git_provider_id(provider_type, account)
+    username = str(body.get("username") or "").strip()
+    token_value = str(body.get("token") or "").strip()
+    if not token_value:
+        raise LumaError("git provider token is required")
+    base_url = str(body.get("baseUrl") or "").strip().rstrip("/")
+    clone_base_url = str(body.get("cloneBaseUrl") or "").strip().rstrip("/")
+    if provider_type == "github":
+        base_url = base_url or "https://api.github.com"
+        clone_base_url = clone_base_url or "https://github.com"
+    elif not base_url:
+        raise LumaError("gitea provider baseUrl is required")
+    if provider_type == "gitea":
+        clone_base_url = clone_base_url or base_url
+
+    def mutate(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        providers = _git_providers_state(state)
+        providers[provider_id] = {
+            "type": provider_type,
+            "account": account,
+            "baseUrl": base_url,
+            "cloneBaseUrl": clone_base_url,
+            "username": username,
+            "token": token_value,
+            "updatedAt": int(time.time()),
+        }
+
+    mutate_state(mutate)
+    return {"id": provider_id, "type": provider_type, "account": account, "username": username, "saved": True}
+
+
+def handle_git_provider_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    provider_id = str(body.get("id") or "").strip()
+    if not provider_id:
+        provider_id = _git_provider_id(str(body.get("type") or ""), str(body.get("account") or ""))
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    providers = state.get("gitProviders") if isinstance(state.get("gitProviders"), dict) else {}
+    removed = bool(providers.get(provider_id))
+
+    def mutate(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        providers = _git_providers_state(state)
+        providers.pop(provider_id, None)
+
+    mutate_state(mutate)
+    return {"id": provider_id, "removed": removed}
+
+
+def handle_git_provider_repositories(token: str, provider_id: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    provider = _require_git_provider(state, provider_id)
+    provider_type = _normalize_git_provider_type(str(provider.get("type") or ""))
+    if provider_type == "github":
+        url_for_page = lambda page: f"{_git_provider_api_base(provider)}/user/repos?per_page=100&sort=updated&page={page}"
+    else:
+        url_for_page = lambda page: f"{_git_provider_api_base(provider)}/api/v1/user/repos?limit=100&page={page}"
+    payload = _git_provider_json_pages(provider, url_for_page)
+    return {"repositories": [_normalized_repository_item(provider, item) for item in payload]}
+
+
+def handle_git_provider_refs(token: str, provider_id: str, repository: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    provider = _require_git_provider(state, provider_id)
+    provider_type = _normalize_git_provider_type(str(provider.get("type") or ""))
+    if provider_type == "github":
+        base = _github_repo_api_base(provider, repository)
+        branches_url_for_page = lambda page: f"{base}/branches?per_page=100&page={page}"
+        tags_url_for_page = lambda page: f"{base}/tags?per_page=100&page={page}"
+    else:
+        base = _gitea_repo_api_base(provider, repository)
+        branches_url_for_page = lambda page: f"{base}/branches?limit=100&page={page}"
+        tags_url_for_page = lambda page: f"{base}/tags?limit=100&page={page}"
+    branches = _git_provider_json_pages(provider, branches_url_for_page)
+    tags = _git_provider_json_pages(provider, tags_url_for_page)
+    refs: list[Dict[str, str]] = []
+    refs.extend({"name": str(item.get("name") or ""), "type": "branch"} for item in branches if item.get("name"))
+    refs.extend({"name": str(item.get("name") or ""), "type": "tag"} for item in tags if item.get("name"))
+    return {"refs": refs}
 
 
 def _planned_remove_message(prefix: str, target: str) -> str:
@@ -6234,6 +6768,20 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         try:
             token = bearer_token(self.headers)
+            if parsed_path == "/v1/git-providers":
+                self._json(200, handle_git_provider_list(token))
+                return
+            git_repos_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories", parsed_path)
+            if git_repos_match:
+                provider_id = urllib.parse.unquote(git_repos_match.group(1))
+                self._json(200, handle_git_provider_repositories(token, provider_id))
+                return
+            git_refs_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories/([^/]+)/([^/]+)/refs", parsed_path)
+            if git_refs_match:
+                provider_id = urllib.parse.unquote(git_refs_match.group(1))
+                repository = f"{urllib.parse.unquote(git_refs_match.group(2))}/{urllib.parse.unquote(git_refs_match.group(3))}"
+                self._json(200, handle_git_provider_refs(token, provider_id, repository))
+                return
             if parsed_path == "/v1/registries":
                 self._json(200, handle_registry_list(token))
                 return
@@ -6318,6 +6866,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/node-agent/lease":
                 self._json(200, handle_node_agent_lease(token, body))
                 return
+            if self.path == "/v1/node-agent/heartbeat":
+                self._json(200, handle_node_agent_heartbeat(token, body))
+                return
             if self.path == "/v1/node-agent/tasks/complete":
                 self._json(200, handle_node_agent_complete(token, body))
                 return
@@ -6394,6 +6945,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/secrets":
                 self._json(200, handle_secret_set(token, body))
+                return
+            if self.path == "/v1/git-providers":
+                self._json(200, handle_git_provider_set(token, body))
+                return
+            if self.path == "/v1/git-providers/remove":
+                self._json(200, handle_git_provider_remove(token, body))
                 return
             if self.path == "/v1/registries":
                 self._json(200, handle_registry_set(token, body))
@@ -6641,6 +7198,17 @@ async def _asgi_authenticated_get(request: Request) -> Response:
     parsed_path = request.url.path
     try:
         token = bearer_token(request.headers)
+        if parsed_path == "/v1/git-providers":
+            return _json_response(200, await run_in_threadpool(handle_git_provider_list, token))
+        git_repos_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories", parsed_path)
+        if git_repos_match:
+            provider_id = urllib.parse.unquote(git_repos_match.group(1))
+            return _json_response(200, await run_in_threadpool(handle_git_provider_repositories, token, provider_id))
+        git_refs_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories/([^/]+)/([^/]+)/refs", parsed_path)
+        if git_refs_match:
+            provider_id = urllib.parse.unquote(git_refs_match.group(1))
+            repository = f"{urllib.parse.unquote(git_refs_match.group(2))}/{urllib.parse.unquote(git_refs_match.group(3))}"
+            return _json_response(200, await run_in_threadpool(handle_git_provider_refs, token, provider_id, repository))
         if parsed_path == "/v1/registries":
             return _json_response(200, await run_in_threadpool(handle_registry_list, token))
         if parsed_path == "/v1/secrets":
@@ -6707,6 +7275,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/nodes/nomad-join": handle_node_nomad_join,
             "/v1/nodes/agent-token": handle_node_agent_token,
             "/v1/node-agent/lease": handle_node_agent_lease,
+            "/v1/node-agent/heartbeat": handle_node_agent_heartbeat,
             "/v1/node-agent/tasks/complete": handle_node_agent_complete,
             "/v1/node-agent/tasks/progress": handle_node_agent_progress,
             "/v1/nodes/unregister": handle_node_unregister,
@@ -6726,6 +7295,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/certificates/retry": handle_certificate_retry,
             "/v1/fleet/update": handle_fleet_update,
             "/v1/secrets": handle_secret_set,
+            "/v1/git-providers": handle_git_provider_set,
+            "/v1/git-providers/remove": handle_git_provider_remove,
             "/v1/registries": handle_registry_set,
             "/v1/registries/remove": handle_registry_remove,
         }

@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.133 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.134 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -2974,6 +2974,15 @@ def _append_deep_node_checks(checks: list[tuple[str, bool, str]], node_items: li
                 f"Set Nomad Docker driver pull_activity_timeout = \"30m\" and restart nomad (current: {timeout_value or 'missing'})",
             )
         )
+        cni = nomad.get("cniHostPorts") if isinstance(nomad.get("cniHostPorts"), dict) else {}
+        cni_fix = _cni_hostport_fix(cni.get("conflicts"))
+        checks.append(
+            (
+                f"Node {node_name} Nomad CNI hostports",
+                not cni_fix,
+                cni_fix or "No duplicated CNI hostport DNAT rules detected",
+            )
+        )
         pull_errors = diagnostics.get("recentImagePullErrors") if isinstance(diagnostics.get("recentImagePullErrors"), list) else []
         checks.append(
             (
@@ -2982,6 +2991,24 @@ def _append_deep_node_checks(checks: list[tuple[str, bool, str]], node_items: li
                 _image_pull_fix(pull_errors),
             )
         )
+
+
+def _cni_hostport_fix(raw_conflicts: Any) -> str:
+    if not isinstance(raw_conflicts, list) or not raw_conflicts:
+        return ""
+    details: list[str] = []
+    for item in raw_conflicts:
+        if not isinstance(item, dict):
+            continue
+        protocol = str(item.get("protocol") or "tcp").strip() or "tcp"
+        port = str(item.get("port") or "").strip()
+        alloc_ids = item.get("allocIds") if isinstance(item.get("allocIds"), list) else []
+        alloc_text = " -> ".join(str(alloc_id) for alloc_id in alloc_ids if str(alloc_id or "").strip())
+        if port:
+            details.append(f"{protocol}/{port}" + (f" {alloc_text}" if alloc_text else ""))
+    if not details:
+        return ""
+    return "Clear stale CNI-HOSTPORT-DNAT rules or recreate the affected allocation after cleaning CNI state; duplicated hostports: " + "; ".join(details[:6])
 
 
 def _docker_mirror_fix(raw_mirrors: Any) -> str:
