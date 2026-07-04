@@ -1,4 +1,4 @@
-import { ArrowLeft, GitBranch, Rocket, RotateCcw, Server, Settings2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Clock3, GitBranch, Loader2, Rocket, RotateCcw, Server, Settings2, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   fetchGitProviderRefs,
@@ -9,7 +9,7 @@ import {
   type GitRepository,
 } from "../controlResourcesApi";
 import type { DashboardBuildNode, DashboardNode, Lang } from "../types";
-import { buildImportStream, fetchBuildRun, fetchBuildRuns, registryServeStream, retryBuildRun, type BuildRun } from "./deployApi";
+import { buildImportStream, fetchBuildRun, fetchBuildRuns, registryServeStream, retryBuildRunStream, type BuildRun } from "./deployApi";
 import { isReadyNode } from "./options";
 import type { DeployStep, Exposure, Region } from "./types";
 
@@ -41,6 +41,31 @@ function repoOptionLabel(repo: GitRepository) {
   const privacy = repo.private ? " private" : "";
   const branch = repo.defaultBranch ? ` - ${repo.defaultBranch}` : "";
   return `${repo.fullName}${branch}${privacy}`;
+}
+
+function buildRunTitle(run: BuildRun) {
+  return run.repository || run.source || run.id || "-";
+}
+
+function buildRunTime(value?: number) {
+  if (!value) return "-";
+  return new Date(value * 1000).toLocaleString();
+}
+
+function buildRunStatusLabel(status?: string, lang: Lang = "zh") {
+  const value = String(status || "unknown");
+  if (lang !== "zh") return value;
+  if (value === "succeeded") return "成功";
+  if (value === "failed") return "失败";
+  if (value === "running") return "运行中";
+  return value;
+}
+
+function buildRunStatusIcon(status?: string) {
+  if (status === "succeeded") return CheckCircle2;
+  if (status === "failed") return XCircle;
+  if (status === "running") return Loader2;
+  return Clock3;
 }
 
 function parseEnvText(text: string): { values: Record<string, string>; errors: string[] } {
@@ -562,8 +587,10 @@ export function BuildHistoryPanel({
   const zh = lang === "zh";
   const [buildRuns, setBuildRuns] = useState<BuildRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<BuildRun | null>(null);
+  const [liveSteps, setLiveSteps] = useState<DeployStep[]>([]);
   const [loading, setLoading] = useState(false);
-  const [runAction, setRunAction] = useState("");
+  const [loadingLogId, setLoadingLogId] = useState("");
+  const [retryingId, setRetryingId] = useState("");
   const [error, setError] = useState("");
 
   const loadBuildRuns = async () => {
@@ -585,33 +612,40 @@ export function BuildHistoryPanel({
 
   const openBuildRun = async (id?: string) => {
     if (!id) return;
-    setRunAction(id);
+    setLoadingLogId(id);
     setError("");
+    setLiveSteps([]);
     try {
       const payload = await fetchBuildRun(token, id);
       setSelectedRun(payload.run || null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(err instanceof Error && err.name === "AbortError" ? (zh ? "读取日志超时，请刷新后重试。" : "Loading logs timed out. Refresh and try again.") : err instanceof Error ? err.message : String(err));
     } finally {
-      setRunAction("");
+      setLoadingLogId("");
     }
   };
 
   const retryRun = async (id?: string) => {
     if (!id) return;
-    setRunAction(id);
+    setRetryingId(id);
     setError("");
+    setLiveSteps([]);
     try {
-      await retryBuildRun(token, id);
+      const payload = await fetchBuildRun(token, id);
+      const run = payload.run;
+      setSelectedRun(run || null);
+      await retryBuildRunStream(token, id, (step) => setLiveSteps((current) => [...current, step]));
       await loadBuildRuns();
-      if (selectedRun?.id === id) await openBuildRun(id);
       await onRefresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(err instanceof Error && err.name === "AbortError" ? (zh ? "读取重试参数超时，请刷新后重试。" : "Loading retry parameters timed out. Refresh and try again.") : err instanceof Error ? err.message : String(err));
     } finally {
-      setRunAction("");
+      setRetryingId("");
     }
   };
+
+  const displayedSteps = liveSteps.length ? liveSteps : selectedRun?.events || [];
+  const logBusy = Boolean(loadingLogId || retryingId);
 
   return (
     <>
@@ -630,49 +664,71 @@ export function BuildHistoryPanel({
         </div>
       </div>
 
-      <section className="deploy-config-section build-history-section">
-        <div className="credentials-list">
-          {buildRuns.length ? buildRuns.map((run) => (
-            <article key={run.id || run.source} className={`credential-row build-run-row build-run-${run.status || "unknown"}`}>
-              <div>
-                <strong>{run.repository || run.source || run.id}</strong>
-                <span>{[run.status, run.buildNode, run.ref].filter(Boolean).join(" · ") || "-"}</span>
-                {run.message ? <small className="deploy-muted">{run.message}</small> : null}
-              </div>
-              <div className="credential-actions">
-                <button type="button" className="ghost" disabled={runAction === run.id} onClick={() => void openBuildRun(run.id)}>
-                  {runAction === run.id ? (zh ? "读取中..." : "Loading...") : (zh ? "日志" : "Logs")}
+      <section className="build-history-layout">
+        <div className="build-run-list" aria-busy={loading}>
+          {loading && !buildRuns.length ? (
+            <div className="build-history-empty">
+              <Loader2 size={18} aria-hidden="true" className="spin" />
+              <strong>{zh ? "正在读取构建任务" : "Loading build runs"}</strong>
+            </div>
+          ) : buildRuns.length ? buildRuns.map((run) => {
+            const StatusIcon = buildRunStatusIcon(run.status);
+            const active = selectedRun?.id === run.id || loadingLogId === run.id || retryingId === run.id;
+            return (
+              <article key={run.id || run.source} className={`build-run-row build-run-${run.status || "unknown"}${active ? " active" : ""}`}>
+                <button type="button" className="build-run-main" onClick={() => void openBuildRun(run.id)}>
+                  <span className="build-run-status" data-status={run.status || "unknown"}>
+                    <StatusIcon size={15} aria-hidden="true" className={run.status === "running" ? "spin" : ""} />
+                    {buildRunStatusLabel(run.status, lang)}
+                  </span>
+                  <strong>{buildRunTitle(run)}</strong>
+                  <small>{[run.buildNode, run.ref || "default", buildRunTime(run.updatedAt || run.createdAt)].filter(Boolean).join(" · ")}</small>
+                  {run.message ? <span className="build-run-message">{run.message}</span> : null}
                 </button>
-                <button type="button" className="ghost" disabled={runAction === run.id || !run.id} onClick={() => void retryRun(run.id)}>
-                  <RotateCcw size={14} aria-hidden="true" />
-                  {zh ? "重试" : "Retry"}
-                </button>
-              </div>
-            </article>
-          )) : (
-            <div className="deploy-muted">{loading ? (zh ? "读取构建任务中..." : "Loading build runs...") : (zh ? "暂无构建任务" : "No build runs yet")}</div>
+                <div className="build-run-actions">
+                  <button type="button" className="ghost" disabled={Boolean(loadingLogId || retryingId)} onClick={() => void openBuildRun(run.id)}>
+                    {loadingLogId === run.id ? (
+                      <><Loader2 size={14} aria-hidden="true" className="spin" />{zh ? "加载日志" : "Loading"}</>
+                    ) : (zh ? "日志" : "Logs")}
+                  </button>
+                  <button type="button" className="ghost" disabled={Boolean(loadingLogId || retryingId) || !run.id} onClick={() => void retryRun(run.id)}>
+                    {retryingId === run.id ? <Loader2 size={14} aria-hidden="true" className="spin" /> : <RotateCcw size={14} aria-hidden="true" />}
+                    {retryingId === run.id ? (zh ? "重试中" : "Retrying") : (zh ? "重试" : "Retry")}
+                  </button>
+                </div>
+              </article>
+            );
+          }) : (
+            <div className="build-history-empty">
+              <Clock3 size={18} aria-hidden="true" />
+              <strong>{zh ? "暂无构建任务" : "No build runs yet"}</strong>
+            </div>
           )}
         </div>
-        {error ? <div className="deploy-muted">{error}</div> : null}
-        {selectedRun ? (
-          <div className="build-run-log">
-            <div className="selected-template-strip">
-              <div>
-                <span>{zh ? "当前日志" : "Selected log"}</span>
-                <strong>{selectedRun.repository || selectedRun.source || selectedRun.id}</strong>
-                <small>{[selectedRun.status, selectedRun.buildNode].filter(Boolean).join(" · ") || "-"}</small>
-              </div>
+
+        <aside className="build-run-log-panel" aria-live="polite" aria-busy={logBusy}>
+          <div className="build-run-log-heading">
+            <div>
+              <span>{zh ? "任务日志" : "Run log"}</span>
+              <strong>{selectedRun ? buildRunTitle(selectedRun) : (zh ? "选择一条构建记录" : "Select a build run")}</strong>
             </div>
-            <ol className="deploy-step-log">
-              {(selectedRun.events || []).filter((step) => step.name).map((step, index) => (
-                <li key={`${selectedRun.id}-${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
+            {logBusy ? <span className="build-log-progress"><Loader2 size={14} aria-hidden="true" className="spin" />{retryingId ? (zh ? "重试执行中" : "Retry running") : (zh ? "日志加载中" : "Loading log")}</span> : null}
+          </div>
+          {error ? <div className="build-log-error">{error}</div> : null}
+          {selectedRun || liveSteps.length ? (
+            <ol className="deploy-step-log build-step-log">
+              {displayedSteps.filter((step) => step.name).map((step, index) => (
+                <li key={`${selectedRun?.id || "live"}-${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
                   <strong>{step.name}</strong>
                   {step.message ? <span> - {step.message}</span> : null}
                 </li>
               ))}
+              {!displayedSteps.length ? <li className="step-start"><strong>{zh ? "等待日志事件" : "Waiting for events"}</strong></li> : null}
             </ol>
-          </div>
-        ) : null}
+          ) : (
+            <div className="build-log-placeholder">{zh ? "点击左侧构建任务查看详细步骤。" : "Choose a build run on the left to inspect its steps."}</div>
+          )}
+        </aside>
       </section>
     </>
   );

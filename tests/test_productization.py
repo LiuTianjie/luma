@@ -9978,6 +9978,58 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_build_run_retry_reuses_existing_record(self):
+        from luma.control.server import handle_build_deploy, handle_build_run_get, handle_build_run_list, handle_build_run_retry
+        from luma.errors import LumaError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                now = int(time.time())
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+
+                def fail_task(*_args, **_kwargs):
+                    raise LumaError("docker buildx build failed")
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=fail_task):
+                    with self.assertRaisesRegex(LumaError, "docker buildx build failed"):
+                        handle_build_deploy(state["deployToken"], {"repoUrl": "https://github.com/acme/app"})
+
+                failed = handle_build_run_list(state["deployToken"])["runs"][0]
+
+                with patch(
+                    "luma.control.server._run_node_agent_task",
+                    return_value={
+                        "image": "100.66.177.70:5000/acme/app:abc123",
+                        "manifest": "name: app\nimage: placeholder\nregion: cn\nexposure: none\n",
+                    },
+                ), patch("luma.control.server.handle_deployment", return_value={"service": "app", "steps": []}):
+                    result = handle_build_run_retry(state["deployToken"], failed["id"])
+
+                listed = handle_build_run_list(state["deployToken"])["runs"]
+                self.assertEqual(len(listed), 1)
+                self.assertEqual(listed[0]["id"], failed["id"])
+                self.assertEqual(listed[0]["status"], "succeeded")
+                self.assertEqual(result["buildRunId"], failed["id"])
+                detail = handle_build_run_get(state["deployToken"], failed["id"])["run"]
+                self.assertEqual(detail["events"][0]["name"], "Build image")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_build_deploy_expands_owner_repo_shortcut_to_github_url(self):
         from luma.control.server import handle_build_deploy
 
@@ -10379,11 +10431,14 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual(_buildx_driver_opt("env.NO_PROXY=localhost,127.0.0.1"), '"env.NO_PROXY=localhost,127.0.0.1"')
 
         calls = []
+        inspect_count = 0
 
         def fake_run(cmd, **_kwargs):
+            nonlocal inspect_count
             calls.append(cmd)
             if cmd[:3] == ["docker", "buildx", "inspect"]:
-                return Mock(returncode=1)
+                inspect_count += 1
+                return Mock(returncode=1 if inspect_count == 1 else 0, stdout="")
             return Mock(returncode=0, stdout="created\n")
 
         with patch("luma.agent.subprocess.run", side_effect=fake_run):

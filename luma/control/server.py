@@ -680,6 +680,26 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
     _mutate_control_state(mutate)
 
 
+def _restart_build_run(run_id: str, body: Dict[str, Any], *, source: str, build_node: str) -> None:
+    now = int(time.time())
+
+    def mutate(state: Dict[str, Any]) -> None:
+        run = _build_runs(state).get(run_id)
+        if not isinstance(run, dict):
+            raise LumaError(f"build run not found: {run_id}")
+        run["status"] = "running"
+        run["source"] = source
+        run["buildNode"] = build_node
+        run["request"] = _redact_build_request(body)
+        run["events"] = []
+        run["message"] = ""
+        run.pop("result", None)
+        run.pop("completedAt", None)
+        run["updatedAt"] = now
+
+    _mutate_control_state(mutate)
+
+
 def _build_run_result_summary(result: Dict[str, Any]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {}
     for key in ("service", "deployment", "image", "images", "dns", "orchestrator"):
@@ -1211,7 +1231,7 @@ def handle_build_run_retry(token: str, build_id: str, *, progress: Callable[[dic
     body = {key: value for key, value in request.items() if key != "envSecretNames"}
     if not body:
         raise LumaError(f"build run cannot be retried: {build_id}")
-    return handle_build_deploy(token, body, progress=progress)
+    return handle_build_deploy(token, body, progress=progress, build_run_id=build_id)
 
 
 def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1795,7 +1815,13 @@ def _load_service_manifest(manifest: str) -> ServiceSpec:
 
 
 
-def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+def handle_build_deploy(
+    token: str,
+    body: Dict[str, Any],
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+    build_run_id: str = "",
+) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
@@ -1848,7 +1874,10 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
     run_body["buildNode"] = build_node
     if provider_id:
         run_body["providerId"] = provider_id
-    build_run_id = _create_build_run(run_body, source=repo_url, build_node=build_node)
+    if build_run_id:
+        _restart_build_run(build_run_id, run_body, source=repo_url, build_node=build_node)
+    else:
+        build_run_id = _create_build_run(run_body, source=repo_url, build_node=build_node)
 
     def run_progress(event: dict[str, str]) -> None:
         _append_build_run_event(build_run_id, event)
@@ -7283,6 +7312,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             if build_retry_match:
                 self._json(200, handle_build_run_retry(token, urllib.parse.unquote(build_retry_match.group(1))))
                 return
+            build_retry_stream_match = re.fullmatch(r"/v1/builds/([^/]+)/retry/stream", self.path)
+            if build_retry_stream_match:
+                self._stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)))
+                return
             if self.path == "/v1/builds/config":
                 self._json(200, handle_build_config_set(token, body))
                 return
@@ -7424,6 +7457,28 @@ class ControlHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             request_id = _request_id()
             print(f"requestId={request_id} stream build deploy internal error: {exc}", file=sys.stderr, flush=True)
+            emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+
+    def _stream_build_run_retry(self, token: str, build_id: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        def emit(event: Dict[str, Any]) -> None:
+            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+
+        try:
+            result = handle_build_run_retry(token, build_id, progress=emit)
+            emit({"status": "done", "result": result})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except LumaError as exc:
+            emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+        except Exception as exc:
+            request_id = _request_id()
+            print(f"requestId={request_id} stream build retry internal error: {exc}", file=sys.stderr, flush=True)
             emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
 
     def _stream_registry_serve(self, token: str, body: Dict[str, Any]) -> None:
@@ -7702,6 +7757,9 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         build_retry_match = re.fullmatch(r"/v1/builds/([^/]+)/retry", path)
         if build_retry_match:
             return _json_response(200, await run_in_threadpool(handle_build_run_retry, token, urllib.parse.unquote(build_retry_match.group(1))))
+        build_retry_stream_match = re.fullmatch(r"/v1/builds/([^/]+)/retry/stream", path)
+        if build_retry_stream_match:
+            return _asgi_stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)))
         if path == "/v1/builds/config":
             return _json_response(200, await run_in_threadpool(handle_build_config_set, token, body))
         if path == "/v1/builds/stream":
@@ -7776,6 +7834,37 @@ def _asgi_stream_build_deploy(token: str, body: Dict[str, Any]) -> StreamingResp
             except Exception as exc:
                 request_id = _request_id()
                 print(f"requestId={request_id} stream build deploy internal error: {exc}", file=sys.stderr, flush=True)
+                emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        threading.Thread(target=run, daemon=True).start()
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _asgi_stream_build_run_retry(token: str, build_id: str) -> StreamingResponse:
+    async def generate() -> AsyncIterator[bytes]:
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def emit(event: Dict[str, Any]) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+
+        def run() -> None:
+            try:
+                result = handle_build_run_retry(token, build_id, progress=emit)
+                emit({"status": "done", "result": result})
+            except LumaError as exc:
+                emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+            except Exception as exc:
+                request_id = _request_id()
+                print(f"requestId={request_id} stream build retry internal error: {exc}", file=sys.stderr, flush=True)
                 emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)

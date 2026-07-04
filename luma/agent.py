@@ -2066,6 +2066,17 @@ def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") 
         )
         if create.returncode != 0:
             raise LumaError(f"failed to create buildx builder:\n{create.stdout.strip()}")
+        verify = subprocess.run(
+            [docker, "buildx", "inspect", name],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=60,
+        )
+        if verify.returncode != 0:
+            details = "\n".join(part for part in (create.stdout.strip(), verify.stdout.strip()) if part)
+            raise LumaError(f"failed to create buildx builder:\n{details}")
     return name
 
 

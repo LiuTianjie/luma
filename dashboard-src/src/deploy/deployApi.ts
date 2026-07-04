@@ -89,6 +89,7 @@ export type BuildRun = {
   message?: string;
   createdAt?: number;
   updatedAt?: number;
+  request?: Partial<BuildImportRequest> & Record<string, unknown>;
   events?: DeployStep[];
 };
 
@@ -131,10 +132,17 @@ export async function fetchBuildRuns(token: string): Promise<{ runs?: BuildRun[]
 }
 
 export async function fetchBuildRun(token: string, id: string): Promise<{ run?: BuildRun }> {
-  const response = await fetch(`/v1/builds/${encodeURIComponent(id)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  return readJson(response) as Promise<{ run?: BuildRun }>;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 20000);
+  try {
+    const response = await fetch(`/v1/builds/${encodeURIComponent(id)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    return await readJson(response) as { run?: BuildRun };
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 export async function retryBuildRun(token: string, id: string): Promise<unknown> {
@@ -144,6 +152,15 @@ export async function retryBuildRun(token: string, id: string): Promise<unknown>
     body: "{}",
   });
   return readJson(response);
+}
+
+export async function retryBuildRunStream(token: string, id: string, onStep: (step: DeployStep) => void): Promise<unknown> {
+  const response = await fetch(`/v1/builds/${encodeURIComponent(id)}/retry/stream`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return consumeStream(response, onStep);
 }
 
 export async function registryServeStream(
