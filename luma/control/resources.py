@@ -63,6 +63,16 @@ def _image_repo_from_repo_url(url: str) -> str:
     return repo
 
 
+def normalize_import_repo_url(url: str) -> str:
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+(?:\.git)?", text):
+        suffix = "" if text.endswith(".git") else ".git"
+        return f"https://github.com/{text}{suffix}"
+    return text
+
+
 def _split_image_tag(image: str) -> tuple[str, str]:
     if ":" in image.rsplit("/", 1)[-1]:
         repo, tag = image.rsplit(":", 1)

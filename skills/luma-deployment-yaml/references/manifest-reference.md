@@ -198,11 +198,50 @@ Repository import should:
 2. Support multiple accounts per provider. Select provider type first, then account credential, then repository/ref.
 3. Clone/build on the default builder node.
 4. Push to the builder registry using `pushHost: localhost:5000`.
-5. Use the repository's Luma manifest if present. For single-service import, scan root `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, then nested `*.luma.yml` / `*.luma.yaml`. For Compose import, scan `luma.compose.yml`, `luma.compose.yaml`, `.luma.compose.yml`, and `.luma.compose.yaml`; the sidecar's `compose:` path points to the Docker Compose file.
+5. Use the repository's Luma manifest if present. For single-service import, scan root `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, then nested `*.luma.yml` / `*.luma.yaml`, excluding Compose sidecar names such as `*.compose.luma.yml`, `*.luma.compose.yml`, and `docker-compose.luma.yml`. For Compose import, scan `luma.compose.yml`, `luma.compose.yaml`, `.luma.compose.yml`, `.luma.compose.yaml`, `*.luma.compose.yml`, `*.compose.luma.yml`, and `docker-compose.luma.yml`; the sidecar's `compose:` path points to the Docker Compose file.
 6. If no manifest exists, allow manual single-service manifest input. Do not invent AI-filled manifests unless the user explicitly asks for that future workflow.
 7. Inject the built deploy image after the build succeeds.
+8. Accept runtime environment values through Dashboard's Environment input or CLI `--env .env`. These values are not build-time env and are not exposed to the builder. They are passed to the final deploy request as scoped deployment secrets, filtered by the resolved `.luma.yml` / `luma.compose.yml` plus Compose content, and saved under the service or stack scope.
 
 Git provider tokens are write-only credentials. Do not store or echo PAT values in manifests, logs, or `agentTasks`; inject them only when the build task is leased by the builder node-agent.
+
+Before using Dashboard's repository dropdown, verify the selected provider account can see the repository and refs:
+
+```bash
+luma git-provider repos github:personal
+luma git-provider refs github:personal owner/repo
+```
+
+If refs return GitHub/Gitea `404`, treat it as a provider credential or repository-ownership problem, not a Luma manifest problem. Fine-grained GitHub tokens must include that private repository.
+
+CLI import should be equivalent to Dashboard import:
+
+```bash
+luma import --provider-id gitea:lin --repository acme/app --ref main --build-node builder --env .env
+```
+
+For an unregistered source, use the positional URL:
+
+```bash
+luma import https://github.com/acme/app --build-node builder --env .env
+```
+
+For GitHub repositories only, the positional source also accepts `owner/repo`:
+
+```bash
+luma import acme/app --build-node builder --env .env
+```
+
+Luma expands that shortcut to `https://github.com/acme/app.git`. For Gitea or another self-hosted Git server, use `--provider-id ... --repository ...` or a full clone URL.
+
+If the repository has no deployment file yet, provide one explicitly:
+
+```bash
+luma import --provider-id github:personal --repository acme/app \
+  --build-node builder \
+  --manifest deploy/app.luma.yml \
+  --env .env
+```
 
 ### Repository Manifest Image Semantics
 
@@ -300,6 +339,14 @@ services:
 ```
 
 The final Compose deployment still follows normal `luma compose deploy` rules: every runtime service must have an `image`, but Repository Import is allowed to produce that image before handing the Compose content to Control.
+
+Use import-mode validation when checking a repository Compose sidecar before the image exists:
+
+```bash
+luma compose validate --import-mode luma.compose.yml
+```
+
+Plain `luma compose validate` and `luma compose deploy` do not build images. They require the runtime Compose content to already contain `image:` for every service.
 
 ## Single-Service Examples
 

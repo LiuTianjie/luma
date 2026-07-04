@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", type=Path, default=Path(".env"), help="Path to local env file")
     parser.add_argument("--no-env", action="store_true", help="Do not load .env")
     visible_commands = (
-        "init,version,status,preflight,configure,login,context,secret,registry,"
+        "init,version,status,preflight,configure,login,context,secret,registry,git-provider,"
         "bootstrap,update,doctor,node,cloudflare,egress,tailscale,"
         "service,validate,render,dns-sync,deploy,import,rollback,history,compose,storage"
     )
@@ -122,6 +122,32 @@ def build_parser() -> argparse.ArgumentParser:
     _add_control_arguments(registry_serve)
     _add_output_arguments(registry_serve)
     registry_serve.add_argument("--timeout", type=int, default=1800)
+    git_provider = sub.add_parser("git-provider")
+    git_provider_sub = git_provider.add_subparsers(dest="git_provider_command", required=True)
+    git_provider_list = git_provider_sub.add_parser("list")
+    _add_control_arguments(git_provider_list)
+    _add_output_arguments(git_provider_list)
+    git_provider_set = git_provider_sub.add_parser("set")
+    git_provider_set.add_argument("type", choices=("github", "gitea"))
+    git_provider_set.add_argument("account", help="Account label, for example personal or work")
+    git_provider_set.add_argument("--base-url", default="", help="API base URL; required for Gitea, defaults to GitHub API for github")
+    git_provider_set.add_argument("--clone-base-url", default="", help="Clone URL base; defaults to GitHub/Gitea base URL")
+    git_provider_set.add_argument("--username", default="", help="Git username for HTTPS token clone")
+    git_provider_set.add_argument("--git-token", dest="provider_token", default="", help="Provider PAT/token; prefer --token-stdin")
+    git_provider_set.add_argument("--token-stdin", action="store_true", help="Read provider PAT/token from stdin")
+    _add_control_arguments(git_provider_set)
+    git_provider_remove = git_provider_sub.add_parser("remove")
+    git_provider_remove.add_argument("id", help="Provider credential id, for example github:personal")
+    _add_control_arguments(git_provider_remove)
+    git_provider_repos = git_provider_sub.add_parser("repos", help="List repositories visible to a saved provider credential")
+    git_provider_repos.add_argument("id")
+    _add_control_arguments(git_provider_repos)
+    _add_output_arguments(git_provider_repos)
+    git_provider_refs = git_provider_sub.add_parser("refs", help="List branches and tags for a repository")
+    git_provider_refs.add_argument("id")
+    git_provider_refs.add_argument("repository", help="Repository full name, for example owner/name")
+    _add_control_arguments(git_provider_refs)
+    _add_output_arguments(git_provider_refs)
     bootstrap = sub.add_parser("bootstrap")
     bootstrap_sub = bootstrap.add_subparsers(dest="bootstrap_command", required=True)
     manager = bootstrap_sub.add_parser("manager")
@@ -139,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.138 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.139 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -263,14 +289,33 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
 
-    import_cmd = sub.add_parser("import", help="Build a GitHub repository's Dockerfile and deploy it")
-    import_cmd.add_argument("repo", help="GitHub repository URL or owner/name")
+    import_cmd = sub.add_parser(
+        "import",
+        help="Build and deploy a Git repository; auto-discovers .luma.yml or luma.compose.yml",
+        description=(
+            "Build and deploy from Git. Luma scans for single-service .luma.yml manifests "
+            "and Compose sidecars such as luma.compose.yml. For Compose imports, services "
+            "with build: are built on the builder node, pushed to the internal registry, "
+            "and rewritten to image: before compose deploy."
+        ),
+    )
+    import_cmd.add_argument(
+        "repo",
+        nargs="?",
+        default="",
+        help="Git repository URL or owner/name (owner/name expands to https://github.com/owner/name.git); omit when using --provider-id + --repository",
+    )
+    import_cmd.add_argument("--provider-id", default="", help="Saved Git provider credential id to use for clone/list-backed imports")
+    import_cmd.add_argument("--repository", default="", help="Repository full name for --provider-id, for example owner/name")
     import_cmd.add_argument("--build-node", dest="build_node", required=True, help="Luma node (docker-build capable) that clones and builds the image")
     import_cmd.add_argument("--ref", default="", help="Git branch or tag to build (default: repository default branch)")
-    import_cmd.add_argument("--region", default="", help="Override region from the repo's .luma.yml")
-    import_cmd.add_argument("--exposure", default="", help="Override exposure from the repo's .luma.yml")
-    import_cmd.add_argument("--domain", default="", help="Override domain from the repo's .luma.yml")
-    import_cmd.add_argument("--port", type=int, default=None, help="Override container port from the repo's .luma.yml")
+    import_cmd.add_argument("--region", default="", help="Override region from the repo's service manifest or Compose sidecar")
+    import_cmd.add_argument("--exposure", default="", help="Override exposure from the repo's .luma.yml for single-service imports")
+    import_cmd.add_argument("--domain", default="", help="Override domain from the repo's .luma.yml for single-service imports")
+    import_cmd.add_argument("--port", type=int, default=None, help="Override container port from the repo's .luma.yml for single-service imports")
+    import_cmd.add_argument("--manifest", type=Path, help="Use this Luma manifest when the repository does not contain one")
+    import_cmd.add_argument("--env", dest="deploy_env_file", type=Path, help="Import this .env file as scoped deployment secrets for the imported app/stack")
+    import_cmd.add_argument("--secrets-env-file", dest="deploy_env_file", type=Path, help=argparse.SUPPRESS)
     import_cmd.add_argument("--platform", default="", help="Build platform (default: linux/amd64 or the repo's build.platform)")
     import_cmd.add_argument("--context", dest="build_context", default="", help="Docker build context within the repo (default: .)")
     import_cmd.add_argument("--dockerfile", default="", help="Dockerfile path within the repo (default: Dockerfile)")
@@ -298,6 +343,7 @@ def build_parser() -> argparse.ArgumentParser:
     compose_validate = compose_sub.add_parser("validate")
     compose_validate.add_argument("sidecar", type=Path)
     compose_validate.add_argument("--engine", choices=("nomad",), metavar="{nomad}", help="Orchestrator to validate for; Nomad is the only supported engine")
+    compose_validate.add_argument("--import-mode", action="store_true", help="Allow Compose services with build: for luma import validation")
     _add_control_arguments(compose_validate)
     _add_output_arguments(compose_validate)
     compose_render = compose_sub.add_parser("render")
@@ -642,6 +688,8 @@ def _command_name(args: argparse.Namespace) -> str:
         return f"secret {getattr(args, 'secret_command', '')}".strip()
     if command == "registry":
         return f"registry {getattr(args, 'registry_command', '')}".strip()
+    if command == "git-provider":
+        return f"git-provider {getattr(args, 'git_provider_command', '')}".strip()
     return command
 
 
@@ -1340,6 +1388,78 @@ def cmd_registry(args: argparse.Namespace) -> int:
             print(f"Skipped nodes: {', '.join(str(n) for n in result['skippedNodes'])}")
         return 0
     raise LumaError(f"unknown registry command: {args.registry_command}")
+
+
+def cmd_git_provider(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    output_format = _output_format(args)
+    if args.git_provider_command == "list":
+        result = client.list_git_providers()
+        items = result.get("providers") if isinstance(result.get("providers"), list) else []
+        if output_format != "text":
+            _print_success(args, {"providers": items})
+            return 0
+        if not items:
+            print("No Git provider credentials configured")
+            return 0
+        rows = [
+            [
+                str(item.get("id") or ""),
+                str(item.get("type") or ""),
+                str(item.get("account") or ""),
+                str(item.get("username") or ""),
+                _configured_label(bool(item.get("configured"))),
+            ]
+            for item in items
+            if isinstance(item, dict)
+        ]
+        _print_table(["id", "type", "account", "username", "configured"], rows)
+        return 0
+    if args.git_provider_command == "set":
+        if args.provider_token and args.token_stdin:
+            raise LumaError("--git-token and --token-stdin cannot be used together")
+        provider_token = sys.stdin.read().strip() if args.token_stdin else args.provider_token
+        if not provider_token:
+            provider_token = getpass.getpass(f"{args.type}:{args.account} token: ")
+        result = client.set_git_provider(
+            provider_type=args.type,
+            account=args.account,
+            token=provider_token,
+            base_url=args.base_url,
+            clone_base_url=args.clone_base_url,
+            username=args.username,
+        )
+        print(f"Git provider saved: {result.get('id')}")
+        return 0
+    if args.git_provider_command == "remove":
+        result = client.remove_git_provider(provider_id=args.id)
+        status = "removed" if result.get("removed") else "not configured"
+        print(f"Git provider {status}: {result.get('id', args.id)}")
+        return 0
+    if args.git_provider_command == "repos":
+        result = client.list_git_provider_repositories(provider_id=args.id)
+        items = result.get("repositories") if isinstance(result.get("repositories"), list) else []
+        if output_format != "text":
+            _print_success(args, {"repositories": items})
+            return 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            private = "private" if item.get("private") else "public"
+            print(f"{item.get('fullName')}\t{item.get('defaultBranch') or ''}\t{private}")
+        return 0
+    if args.git_provider_command == "refs":
+        result = client.list_git_provider_refs(provider_id=args.id, repository=args.repository)
+        items = result.get("refs") if isinstance(result.get("refs"), list) else []
+        if output_format != "text":
+            _print_success(args, {"refs": items})
+            return 0
+        for item in items:
+            if isinstance(item, dict):
+                print(f"{item.get('name')}\t{item.get('type')}")
+        return 0
+    raise LumaError(f"unknown git-provider command: {args.git_provider_command}")
 
 
 def cmd_bootstrap(args: argparse.Namespace) -> int:
@@ -2294,6 +2414,14 @@ def _deploy_env_secrets(path: Path | None, texts: list[str]) -> Dict[str, str] |
     return {key: value for key, value in values.items() if key in referenced}
 
 
+def _import_env_secrets(path: Path | None) -> Dict[str, str] | None:
+    if not path:
+        return None
+    if not path.exists():
+        raise LumaError(f"deployment env file not found: {path}")
+    return parse_env_file(path)
+
+
 def cmd_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
@@ -2422,21 +2550,32 @@ def cmd_import(args: argparse.Namespace) -> int:
     quiet = _quiet(args) or output_format != "text"
     if args.timeout < 1:
         raise LumaError("--timeout must be at least 1 second")
+    if not args.repo and not (args.provider_id and args.repository):
+        raise LumaError("repo is required unless --provider-id and --repository are provided")
+    if args.repo and (args.provider_id or args.repository):
+        raise LumaError("use either repo URL/owner-name or --provider-id + --repository, not both")
 
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    source_label = args.repo or f"{args.provider_id}:{args.repository}"
     if not quiet:
         print(f"[ok] Control endpoint: {endpoint}", flush=True)
-        print(f"[start] Import: {args.repo} (build on {args.build_node})", flush=True)
+        print(f"[start] Import: {source_label} (build on {args.build_node})", flush=True)
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    manifest_text = args.manifest.read_text(encoding="utf-8") if args.manifest else ""
+    env_secrets = _import_env_secrets(args.deploy_env_file)
 
     build_kwargs: Dict[str, Any] = dict(
         repo_url=args.repo,
+        provider_id=args.provider_id,
+        repository=args.repository,
         build_node=args.build_node,
         ref=args.ref,
         region=args.region,
         exposure=args.exposure,
         domain=args.domain,
         port=args.port,
+        manifest=manifest_text,
+        env_secrets=env_secrets,
         platform=args.platform,
         context=args.build_context,
         dockerfile=args.dockerfile,
@@ -2486,7 +2625,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     if output_format != "text":
         _print_success(args, result)
         return 0
-    print(f"[ok] Import finished: {result.get('service', args.repo)}")
+    print(f"[ok] Import finished: {result.get('service') or result.get('deployment') or source_label}")
     if result.get("image"):
         image = result["image"]
         if isinstance(image, str):
@@ -2514,7 +2653,13 @@ def cmd_compose(args: argparse.Namespace) -> int:
 
 def cmd_compose_validate(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
+    deployment = load_compose_deployment(
+        args.sidecar,
+        storage_classes=_control_storage_classes_for_local(args),
+        allow_build_services=bool(args.import_mode),
+    )
+    if args.import_mode:
+        _inject_import_mode_placeholder_images(deployment)
     node_records = _control_node_records_for_local(args)
     _require_nomad_engine(_compose_engine(config, args))
     from .nomad_render import render_compose_job
@@ -2535,6 +2680,17 @@ def cmd_compose_validate(args: argparse.Namespace) -> int:
     for warning in deployment.warnings:
         print(f"[warn] {warning}")
     return 0
+
+
+def _inject_import_mode_placeholder_images(deployment: Any) -> None:
+    services = deployment.compose.get("services") if isinstance(deployment.compose.get("services"), dict) else {}
+    for service_name, service in services.items():
+        if not isinstance(service, dict):
+            continue
+        if service.get("image"):
+            continue
+        if service.get("build") is not None:
+            service["image"] = f"luma-import-preview/{slugify(str(service_name))}:latest"
 
 
 def cmd_compose_render(args: argparse.Namespace) -> int:
@@ -3134,6 +3290,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_secret(args)
         if args.command == "registry":
             return cmd_registry(args)
+        if args.command == "git-provider":
+            return cmd_git_provider(args)
         if args.command == "bootstrap":
             return cmd_bootstrap(args)
         if args.command == "update":

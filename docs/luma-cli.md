@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.138"
+python -m pip install "luma-infra==0.1.139"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.138 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.139 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.138"
+python -m pip install "luma-infra==0.1.139"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.138"
+python -m pip install "luma-infra==0.1.139"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -92,6 +92,35 @@ The control context priority is CLI flags, then environment variables, then the 
 - `LUMA_RESOLVE_IP`
 
 `LUMA_RESOLVE_IP` keeps the control hostname in the `Host` header and requires insecure TLS mode.
+
+## Git Provider Credentials
+
+Repository import can use saved GitHub/Gitea credentials instead of a one-off repo URL token. Tokens are write-only and are injected only into the builder's leased clone task.
+
+```bash
+printf '%s' "$GITHUB_TOKEN" | luma git-provider set github personal --username octo --token-stdin
+
+printf '%s' "$GITEA_TOKEN" | luma git-provider set gitea lin \
+  --base-url https://gcode.example.com \
+  --username lin \
+  --token-stdin
+```
+
+List accounts and discover repositories:
+
+```bash
+luma git-provider list
+luma git-provider repos gitea:lin
+luma git-provider refs gitea:lin acme/app
+```
+
+Use the selected provider account with import:
+
+```bash
+luma import --provider-id gitea:lin --repository acme/app --build-node builder --env .env
+```
+
+For public GitHub repositories, the positional source can also be `owner/repo`; Luma expands it to `https://github.com/owner/repo.git`. Use a full URL or `--provider-id ... --repository ...` for Gitea/self-hosted Git.
 
 ## Configuration
 
@@ -246,7 +275,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.138 --timeout 900
+luma update fleet --install-ref v0.1.139 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -426,6 +455,38 @@ The client prints local progress before submitting the request, while waiting fo
 Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Nomad job (the job id is the service slug) instead of creating a duplicate. The update uses the current rendered jobspec as the source of truth, and Nomad keeps the previous version so `luma rollback` or the dashboard's Applications -> Versions action can return to it.
 
 Use `luma deploy service.yaml --env .env` when the project already has a deployment env file. Scoped env secrets are isolated by service name, so `api/DATABASE_URL` and `worker/DATABASE_URL` are distinct values. Legacy global `luma secret set NAME` values are still used only for applications that have no scoped secrets.
+
+For source-to-image deploys, `luma import` uses the same scoped secret model:
+
+```bash
+luma import https://github.com/acme/app --build-node builder --env .env
+luma import acme/app --build-node builder --env .env   # GitHub owner/repo shortcut
+```
+
+or, with a saved Git provider account:
+
+```bash
+luma import --provider-id gitea:lin --repository acme/app --ref main --build-node builder --env .env
+```
+
+Import auto-discovers single-service Luma manifests (`.luma.yml`, `luma.yml`, nested `*.luma.yml`) and Compose sidecars (`luma.compose.yml`, `.luma.compose.yml`, `*.luma.compose.yml`, `*.compose.luma.yml`, `docker-compose.luma.yml`). Compose sidecar filenames are excluded from single-service manifest matching so `docker-compose.luma.yml` is treated as Compose, not as a service manifest.
+
+If the repository does not contain a deployment file yet, provide the deployment file from the CLI:
+
+```bash
+luma import --provider-id github:personal --repository acme/app \
+  --build-node builder \
+  --manifest deploy/app.luma.yml \
+  --env .env
+```
+
+Unlike plain `luma deploy`, import may discover the final deployment manifest on the builder after cloning the repository. Therefore the CLI sends the `.env` values to Luma Control, and the control plane keeps only values referenced by the resolved manifest or Compose content under the final service/stack scope.
+
+For Compose repositories, `luma import` builds services that still have `build:` and injects the resulting `image:` before deployment. Plain `luma compose validate` and `luma compose deploy` do not build, so use import-mode validation when checking that path locally:
+
+```bash
+luma compose validate --import-mode luma.compose.yml
+```
 
 `--dry-run` renders locally and does not submit a deployment. When local rendering cannot read optional cluster context such as node or storage metadata, JSON output includes `validationMode: "degraded"` plus warnings; text output prints `[warn]` lines. `--skip-dns` and `--skip-orchestrator` are sent to the control API. `--commit` and `--push` are deprecated in control-plane deploy mode.
 

@@ -24,6 +24,14 @@ def write_deployment(sidecar: str, compose: str):
     return load_compose_deployment(sc)
 
 
+def write_deployment_import_mode(sidecar: str, compose: str):
+    d = tempfile.mkdtemp()
+    (Path(d) / "docker-compose.yml").write_text(compose)
+    sc = Path(d) / "luma.compose.yml"
+    sc.write_text(sidecar)
+    return load_compose_deployment(sc, allow_build_services=True)
+
+
 GRANARY_COMPOSE = """
 services:
   mysql:
@@ -134,6 +142,42 @@ class ComposeRenderTests(unittest.TestCase):
         if secrets is None:
             secrets = {"DB_PW": "s3cr3t"}
         return render_compose_job(cfg(), dep, as_json=False, secrets=secrets)["Job"]
+
+    def test_compose_validate_rejects_build_only_services_by_default(self):
+        compose = """
+services:
+  web:
+    build:
+      context: .
+"""
+        sidecar = """
+name: tool
+compose: docker-compose.yml
+region: cn
+services:
+  web:
+    exposure: none
+"""
+        with self.assertRaisesRegex(LumaError, "Use luma compose validate --import-mode"):
+            write_deployment(sidecar, compose)
+
+    def test_compose_import_mode_allows_build_only_services_with_warning(self):
+        compose = """
+services:
+  web:
+    build:
+      context: .
+"""
+        sidecar = """
+name: tool
+compose: docker-compose.yml
+region: cn
+services:
+  web:
+    exposure: none
+"""
+        dep = write_deployment_import_mode(sidecar, compose)
+        self.assertIn("compose service web uses build; luma import will build it", dep.warnings[0])
 
     def test_multi_service_single_group(self):
         job = self.render()

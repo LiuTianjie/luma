@@ -1366,6 +1366,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "compose")
         self.assertEqual(args.compose_command, "deploy")
         self.assertTrue(args.dry_run)
+        args = build_parser().parse_args(["compose", "validate", "luma.compose.yml", "--import-mode"])
+        self.assertEqual(args.compose_command, "validate")
+        self.assertTrue(args.import_mode)
         args = build_parser().parse_args(
             [
                 "secret",
@@ -1722,6 +1725,126 @@ class CliTests(unittest.TestCase):
             self.assertEqual(lines[-1]["type"], "result")
             self.assertTrue(lines[-1]["ok"])
             self.assertEqual(lines[-1]["result"]["service"], "api")
+
+    def test_import_cli_supports_provider_repository_manifest_and_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            manifest_path = root / "service.luma.yml"
+            env_path = root / "service.env"
+            manifest_path.write_text(
+                "name: api\nregion: cn\nexposure: none\nenv:\n  DATABASE_URL: ${DATABASE_URL}\n",
+                encoding="utf-8",
+            )
+            env_path.write_text("DATABASE_URL=postgres://secret\nUNUSED=value\n", encoding="utf-8")
+            old_home = _set_env("LUMA_CONFIG_HOME", str(home))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.build_deploy_events.side_effect = LumaError("control API error 404: not found")
+                client.build_deploy.return_value = {"service": "api", "image": "100.66.177.70:5000/acme/app:abc123", "steps": []}
+                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print"):
+                    code = main(
+                        [
+                            "import",
+                            "--provider-id",
+                            "gitea:lin",
+                            "--repository",
+                            "acme/app",
+                            "--build-node",
+                            "builder",
+                            "--manifest",
+                            str(manifest_path),
+                            "--env",
+                            str(env_path),
+                        ]
+                    )
+
+                self.assertEqual(code, 0)
+                kwargs = client.build_deploy.call_args.kwargs
+                self.assertEqual(kwargs["provider_id"], "gitea:lin")
+                self.assertEqual(kwargs["repository"], "acme/app")
+                self.assertEqual(kwargs["repo_url"], "")
+                self.assertIn("DATABASE_URL", kwargs["manifest"])
+                self.assertEqual(kwargs["env_secrets"], {"DATABASE_URL": "postgres://secret", "UNUSED": "value"})
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_compose_validate_import_mode_accepts_build_only_services(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            compose_path = root / "docker-compose.yml"
+            sidecar_path = root / "luma.compose.yml"
+            compose_path.write_text(
+                "services:\n  web:\n    build:\n      context: .\n      dockerfile: Dockerfile\n",
+                encoding="utf-8",
+            )
+            sidecar_path.write_text(
+                "name: app-stack\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n",
+                encoding="utf-8",
+            )
+            (root / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
+            old_home = _set_env("LUMA_CONFIG_HOME", str(home))
+            try:
+                with patch("builtins.print"):
+                    code = main(["compose", "validate", str(sidecar_path), "--import-mode"])
+                self.assertEqual(code, 0)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_git_provider_cli_set_reads_token_from_stdin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.set_git_provider.return_value = {"id": "gitea:lin", "saved": True}
+                with patch("luma.cli.ControlClient", return_value=client), patch("sys.stdin", io.StringIO("gitea-secret\n")), patch("builtins.print"):
+                    code = main(
+                        [
+                            "git-provider",
+                            "set",
+                            "gitea",
+                            "lin",
+                            "--base-url",
+                            "https://gcode.example.com",
+                            "--username",
+                            "lin",
+                            "--token-stdin",
+                        ]
+                    )
+
+                self.assertEqual(code, 0)
+                client.set_git_provider.assert_called_once_with(
+                    provider_type="gitea",
+                    account="lin",
+                    token="gitea-secret",
+                    base_url="https://gcode.example.com",
+                    clone_base_url="",
+                    username="lin",
+                )
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_git_provider_cli_lists_repositories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_home = _set_env("LUMA_CONFIG_HOME", str(Path(tmp) / "home"))
+            try:
+                save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
+                client = Mock()
+                client.list_git_provider_repositories.return_value = {
+                    "repositories": [{"fullName": "acme/app", "defaultBranch": "main", "private": True}]
+                }
+                with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                    code = main(["git-provider", "repos", "gitea:lin"])
+
+                self.assertEqual(code, 0)
+                client.list_git_provider_repositories.assert_called_once_with(provider_id="gitea:lin")
+                printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+                self.assertIn("acme/app", printed_text)
+            finally:
+                _restore_env("LUMA_CONFIG_HOME", old_home)
 
     def test_deploy_dry_run_json_does_not_create_control_client(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3269,6 +3392,28 @@ class CliTests(unittest.TestCase):
         self.assertIn("control API timed out after 42s", str(raised.exception))
         self.assertIn("/v1/deployments", str(raised.exception))
         self.assertIn("manager may still be applying", str(raised.exception))
+
+    def test_control_client_build_deploy_sends_provider_manifest_and_env(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        response = MagicMock()
+        response.read.return_value = b'{"ok": true}'
+        response.__enter__.return_value = response
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            client.build_deploy(
+                provider_id="gitea:lin",
+                repository="acme/app",
+                build_node="builder",
+                manifest="name: api\nregion: cn\nexposure: none\n",
+                env_secrets={"DATABASE_URL": "postgres://secret"},
+            )
+
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(request.full_url, "https://luma.example.com/v1/builds")
+        self.assertEqual(body["providerId"], "gitea:lin")
+        self.assertEqual(body["repository"], "acme/app")
+        self.assertEqual(body["manifest"], "name: api\nregion: cn\nexposure: none\n")
+        self.assertEqual(body["envSecrets"], {"DATABASE_URL": "postgres://secret"})
 
     def test_node_label_waits_longer_than_manager_node_discovery(self):
         client = ControlClient("https://luma.example.com", "secret")
@@ -9496,7 +9641,7 @@ class GithubImportTests(unittest.TestCase):
         self.assertIn("***@", str(ctx.exception))
 
     def test_image_repo_from_repo_url(self):
-        from luma.control.server import _image_repo_from_repo_url
+        from luma.control.server import _image_repo_from_repo_url, normalize_import_repo_url
 
         self.assertEqual(_image_repo_from_repo_url("https://github.com/Acme/App"), "acme/app")
         self.assertEqual(_image_repo_from_repo_url("https://github.com/acme/app.git"), "acme/app")
@@ -9506,6 +9651,10 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual(_image_repo_from_repo_url("https://github.com/acme/app?token=x"), "acme/app")
         self.assertEqual(_image_repo_from_repo_url("https://github.com/acme/app#readme"), "acme/app")
         self.assertEqual(_image_repo_from_repo_url("https://github.com/acme/app/"), "acme/app")
+        self.assertEqual(normalize_import_repo_url("LiuTianjie/luxe-monitor"), "https://github.com/LiuTianjie/luxe-monitor.git")
+        self.assertEqual(normalize_import_repo_url("LiuTianjie/luxe-monitor.git"), "https://github.com/LiuTianjie/luxe-monitor.git")
+        self.assertEqual(normalize_import_repo_url("https://gcode.example.com/acme/app.git"), "https://gcode.example.com/acme/app.git")
+        self.assertEqual(normalize_import_repo_url("github.com/acme"), "github.com/acme")
 
     def test_build_image_credentials_injected_at_lease_not_stored(self):
         # Security: gitToken / registryAuth must never be persisted in the build
@@ -9722,6 +9871,48 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_build_deploy_expands_owner_repo_shortcut_to_github_url(self):
+        from luma.control.server import handle_build_deploy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                state["build"] = {"defaultNode": "builder", "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+                captured = {}
+
+                def fake_run_task(_state, node_name, action, payload, **_kwargs):
+                    captured.update({"node": node_name, "action": action, "payload": payload})
+                    return {
+                        "image": "100.66.177.70:5000/liutianjie/luxe-monitor:abc123",
+                        "manifest": "name: luxe-monitor\nimage: placeholder\nregion: cn\nexposure: none\n",
+                    }
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=fake_run_task), patch(
+                    "luma.control.server.handle_deployment", return_value={"service": "luxe-monitor", "steps": []}
+                ) as deploy:
+                    result = handle_build_deploy(state["deployToken"], {"repoUrl": "LiuTianjie/luxe-monitor"})
+
+                self.assertEqual(captured["payload"]["repoUrl"], "https://github.com/LiuTianjie/luxe-monitor.git")
+                self.assertEqual(captured["payload"]["repo"], "liutianjie/luxe-monitor")
+                self.assertEqual(deploy.call_args.args[1]["sourceName"], "https://github.com/LiuTianjie/luxe-monitor.git")
+                self.assertEqual(result["image"], "100.66.177.70:5000/liutianjie/luxe-monitor:abc123")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_build_deploy_accepts_manual_manifest_when_repo_has_none(self):
         from luma.control.server import handle_build_deploy
 
@@ -9796,15 +9987,63 @@ class GithubImportTests(unittest.TestCase):
                 ), patch("luma.control.server.handle_compose_deployment", return_value={"deployment": "app-stack", "steps": []}) as deploy:
                     result = handle_build_deploy(
                         state["deployToken"],
-                        {"repoUrl": "https://github.com/acme/app", "ref": "main"},
+                        {"repoUrl": "https://github.com/acme/app", "ref": "main", "domain": "ignored.example.com", "exposure": "cn-edge", "port": 3000},
                     )
 
                 deploy_body = deploy.call_args.args[1]
                 self.assertEqual(deploy_body["manifest"], sidecar)
                 self.assertEqual(deploy_body["composeContent"].strip(), compose.strip())
                 self.assertEqual(deploy_body["sourceName"], "https://github.com/acme/app")
+                self.assertNotIn("envSecrets", deploy_body)
                 self.assertEqual(result["deployment"], "app-stack")
                 self.assertEqual(result["images"]["web"], "100.66.177.70:5000/acme/app/web:abc123")
+                self.assertIn("Compose import ignores service-level override(s): exposure, domain, port", result["steps"][1]["message"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_build_deploy_passes_env_secrets_to_final_service_deploy(self):
+        from luma.control.server import handle_build_deploy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "ready", "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                state["build"] = {"defaultNode": "builder", "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+                repo_manifest = "name: api\nregion: cn\nexposure: none\nenv:\n  DATABASE_URL: ${DATABASE_URL}\n"
+
+                with patch(
+                    "luma.control.server._run_node_agent_task",
+                    return_value={
+                        "kind": "service",
+                        "manifest": repo_manifest,
+                        "image": "100.66.177.70:5000/acme/app:abc123",
+                    },
+                ), patch("luma.control.server.handle_deployment", return_value={"service": "api", "steps": []}) as deploy:
+                    result = handle_build_deploy(
+                        state["deployToken"],
+                        {
+                            "repoUrl": "https://github.com/acme/app",
+                            "envSecrets": {"DATABASE_URL": "postgres://secret"},
+                        },
+                    )
+
+                deploy_body = deploy.call_args.args[1]
+                self.assertEqual(deploy_body["envSecrets"], {"DATABASE_URL": "postgres://secret"})
+                self.assertIn("image: 100.66.177.70:5000/acme/app:abc123", deploy_body["manifest"])
+                self.assertEqual(result["service"], "api")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -9948,6 +10187,42 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual(compose["services"]["web"]["image"], "100.66.177.70:5000/acme/app:abc123")
         self.assertNotIn("build", compose["services"]["web"])
         self.assertEqual(compose["services"]["redis"]["image"], "redis:7-alpine")
+
+    def test_build_image_treats_docker_compose_luma_yml_as_compose_manifest(self):
+        from luma.agent import build_image
+
+        def fake_clone(_url, dest, **_kwargs):
+            (dest / "web").mkdir(parents=True)
+            (dest / "docker-compose.luma.yml").write_text(
+                "name: app-stack\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n",
+                encoding="utf-8",
+            )
+            (dest / "docker-compose.yml").write_text(
+                "services:\n  web:\n    build:\n      context: ./web\n      dockerfile: Dockerfile\n",
+                encoding="utf-8",
+            )
+            (dest / "web" / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
+
+        completed = Mock(returncode=0, stdout="built\n")
+        with patch("luma.gitops.clone", side_effect=fake_clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
+            "luma.agent._docker_binary", return_value="docker"
+        ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
+            "luma.agent._ensure_buildx_builder", return_value="luma-builder"
+        ), patch("luma.agent.subprocess.run", return_value=completed):
+            result = build_image(
+                {
+                    "repoUrl": "https://github.com/acme/app",
+                    "registryHost": "100.66.177.70:5000",
+                    "pushHost": "localhost:5000",
+                    "repo": "acme/app",
+                }
+            )
+
+        compose = yaml.safe_load(result["composeContent"])
+        self.assertEqual(result["kind"], "compose")
+        self.assertIn("name: app-stack", result["manifest"])
+        self.assertEqual(compose["services"]["web"]["image"], "100.66.177.70:5000/acme/app:abc123")
+        self.assertNotIn("build", compose["services"]["web"])
 
     def test_build_image_rejects_ambiguous_same_priority_luma_manifests(self):
         from luma.agent import build_image

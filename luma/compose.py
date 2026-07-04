@@ -91,6 +91,7 @@ def load_compose_deployment(
     *,
     storage_classes: Dict[str, Any] | None = None,
     allow_sidecar_storage_classes: bool = True,
+    allow_build_services: bool = False,
 ) -> ComposeDeploymentSpec:
     sidecar = load_yaml(path)
     name = sidecar.get("name")
@@ -128,7 +129,14 @@ def load_compose_deployment(
         if name in storage_classes_loaded
     }
     services = _load_compose_services(sidecar.get("services") or {})
-    warnings = validate_compose_deployment_data(compose, storage_classes_loaded, volumes, services, default_region=str(region))
+    warnings = validate_compose_deployment_data(
+        compose,
+        storage_classes_loaded,
+        volumes,
+        services,
+        default_region=str(region),
+        allow_build_services=allow_build_services,
+    )
     return ComposeDeploymentSpec(
         source=path,
         compose_path=compose_path,
@@ -273,6 +281,7 @@ def validate_compose_deployment_data(
     services: Dict[str, ComposeServiceSpec],
     *,
     default_region: str,
+    allow_build_services: bool = False,
 ) -> List[str]:
     warnings: List[str] = []
     compose_services = compose.get("services") if isinstance(compose.get("services"), dict) else {}
@@ -280,7 +289,15 @@ def validate_compose_deployment_data(
         if not isinstance(service, dict):
             raise LumaError(f"compose service {service_name} must be a mapping")
         if not isinstance(service.get("image"), str) or not service.get("image"):
-            raise LumaError(f"compose service {service_name} requires image; remote compose deploy does not build images")
+            if service.get("build") is not None and allow_build_services:
+                warnings.append(
+                    f"compose service {service_name} uses build; luma import will build it, but direct compose deploy requires an image"
+                )
+            else:
+                raise LumaError(
+                    f"compose service {service_name} requires image; direct compose deploy does not build images. "
+                    "Use luma compose validate --import-mode for repository import checks."
+                )
     for service_name in services:
         if service_name not in compose_services:
             raise LumaError(f"luma.compose.yml references unknown compose service: {service_name}")

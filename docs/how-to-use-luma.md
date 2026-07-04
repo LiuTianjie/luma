@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.138 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.139 sh
 ```
 
 For local development from a checkout:
@@ -370,13 +370,13 @@ curl -I https://whoami.example.com
 
 Rotate any token or subscription URL that has been pasted into chat or logs before open-sourcing the repository.
 
-## 11. Build And Deploy From GitHub (可插拔)
+## 11. Build And Deploy From Repository (可插拔)
 
-默认的 `luma deploy` 只部署已经构建好的镜像。如果想直接从一个 GitHub 仓库的源码构建并上线，用 `luma import`：它在集群里的**构建节点**上 clone 仓库、按 Dockerfile 构建镜像、推送到集群内自托管 registry，再走正常部署链路。这一整套是**可插拔的**——不用它，集群和现有部署不受任何影响；用它，只需下面这套一次性接入。
+默认的 `luma deploy` 只部署已经构建好的镜像。如果想直接从 GitHub/Gitea 仓库的源码构建并上线，用 `luma import`：它在集群里的**构建节点**上 clone 仓库、自动发现 `.luma.yml` 或 `luma.compose.yml` 这类部署文件、按 Dockerfile/Compose `build:` 构建镜像、推送到集群内自托管 registry，再走正常部署链路。这一整套是**可插拔的**——不用它，集群和现有部署不受任何影响；用它，只需下面这套一次性接入。
 
 ### 接入 SOP（已部署好 Luma 的前提下）
 
-假设你已经走完上面 1–10 节，集群里 manager 正常、至少有一个 worker 节点、`luma login` 能用。接入「从 GitHub 构建部署」分四步：
+假设你已经走完上面 1–10 节，集群里 manager 正常、至少有一个 worker 节点、`luma login` 能用。接入「从 Git 仓库构建部署」分四步：
 
 **Step 1 — 选一个构建节点并装好 buildx。** 构建在某个 Luma 节点上跑，需要 `docker buildx`（Linux 节点通常随 Docker 一起就有；跨架构构建还需要 `qemu`/`binfmt`）。节点 agent 会自动 advertise `docker-build` 能力，可以这样确认：
 
@@ -396,15 +396,20 @@ luma registry serve --node build-1
 
 > manager 节点会被跳过：Control 跑在 manager 的容器里，重启它的 docker 会杀掉 Control 自己。如果 manager 也要跑从该 registry 拉取的服务，手动在 manager 的 `/etc/docker/daemon.json` 加 `insecure-registries` 并重启 docker。
 
-**Step 3 —（私有仓库才需要）设置 GitHub Token。** 公开仓库跳过这步。私有仓库：
+**Step 3 —（私有仓库才需要）保存 Git provider token。** 公开仓库跳过这步。私有 GitHub/Gitea 仓库：
 
 ```bash
-luma secret set GITHUB_TOKEN <github-personal-access-token>
+printf '%s' "$GITEA_TOKEN" | luma git-provider set gitea lin \
+  --base-url https://gcode.example.com \
+  --username lin \
+  --token-stdin
+
+luma git-provider repos gitea:lin
 ```
 
-Token 只存在控制面 secret store，构建时注入 `git clone`，不落盘、不回显。
+同一个 provider 可以保存多个账户，例如 `github:personal`、`github:work`、`gitea:lin`。Token 只写不回显，构建任务被 builder node-agent lease 时才注入 `git clone`，不写入部署文件或 agent task state。
 
-**Step 4 — 在仓库根目录放一个 `.luma.yml`。** 就是普通的 service manifest，用 `build` 块代替 `image`：
+**Step 4 — 在仓库里放 Luma 部署文件。** 单服务用普通 `.luma.yml` / `luma.yml` service manifest，并用 `build` 块代替 `image`：
 
 ```yaml
 name: myapp
@@ -418,13 +423,47 @@ build:
   platform: linux/amd64
 ```
 
+Compose 仓库用 `luma.compose.yml` 指向标准 `docker-compose.yml`。Repository Import 会构建 Compose 里带 `build:` 的服务，推送到 builder registry，然后把这些服务改写成 `image:` 再部署：
+
+```yaml
+# luma.compose.yml
+name: my-stack
+compose: docker-compose.yml
+region: cn
+services:
+  web:
+    exposure: cn-edge
+    domain: myapp.example.com
+    port: 8080
+```
+
+支持的 Compose sidecar 文件名包括 `luma.compose.yml`、`.luma.compose.yml`、`*.luma.compose.yml`、`*.compose.luma.yml`、`docker-compose.luma.yml`。如果本地 Compose 还只有 `build:`、没有最终 `image:`，用 import 模式校验：
+
+```bash
+luma compose validate --import-mode luma.compose.yml
+```
+
 ### 导入并部署
 
 ```bash
 luma import https://github.com/acme/myapp --build-node build-1
 ```
 
-CLI 流式回传 clone → build → push → deploy 每一步。命令行可覆盖 `.luma.yml`：
+GitHub 仓库也可以用短写：
+
+```bash
+luma import acme/myapp --build-node build-1
+```
+
+短写会展开成 `https://github.com/acme/myapp.git`。Gitea/self-hosted Git 用保存的 provider 账户或完整 clone URL。
+
+使用保存的 Git provider 账户：
+
+```bash
+luma import --provider-id gitea:lin --repository acme/myapp --build-node build-1 --env .env
+```
+
+CLI 流式回传 clone → build → push → deploy 每一步。命令行可覆盖单服务 `.luma.yml`：
 
 ```bash
 luma import https://github.com/acme/myapp \
@@ -433,7 +472,9 @@ luma import https://github.com/acme/myapp \
   --region cn --exposure cn-edge --domain myapp.example.com --port 8080
 ```
 
-dashboard 的「创建应用」页顶部也有「从 GitHub 导入」入口：填仓库地址、选构建节点（下拉只列出有 `docker-build` 能力的就绪节点），进度实时显示。
+对 Compose import，`--region` 会覆盖 sidecar 的 region；`--exposure`、`--domain`、`--port` 是单服务覆盖项，会被忽略并打印 warning。Compose 的服务级路由请写在 `luma.compose.yml` 的 `services:` 里。
+
+dashboard 的「创建应用」页顶部也有「仓库导入」入口：选择 Git provider、账户、仓库和 ref；或手填 URL。进度实时显示。
 
 > CN 节点的 `git clone` 会自动走 manager 的 egress 网关（`http://<manager-host>:7890`），和镜像拉取、节点 join 用的是同一个出口；`global` 节点直连不走代理。需要时可用 `--proxy <url>` 显式覆盖。
 

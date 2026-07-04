@@ -97,6 +97,7 @@ from .resources import (
     _registry_auth_for_image,
     _registry_auth_for_service,
     _split_image_tag,
+    normalize_import_repo_url,
 )
 
 AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
@@ -1514,7 +1515,7 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
     build_config = state.get("build") if isinstance(state.get("build"), dict) else {}
     provider_id = str(body.get("providerId") or "").strip()
     repository = str(body.get("repository") or "").strip()
-    repo_url = str(body.get("repoUrl") or "").strip()
+    repo_url = normalize_import_repo_url(str(body.get("repoUrl") or "").strip())
     if not repo_url:
         if not provider_id or not repository:
             raise LumaError("repoUrl or providerId + repository is required")
@@ -1575,12 +1576,23 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
 
     manifest_text = str(body.get("manifest") or "").strip() or repo_manifest
     if not manifest_text:
-        raise LumaError("no .luma.yml found in repository and no manifest provided")
+        raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
 
     if str(build_result.get("kind") or "") == "compose" or repo_compose_content or body.get("composeContent"):
         compose_content = str(body.get("composeContent") or "").strip() or repo_compose_content
         if not compose_content:
             raise LumaError("luma.compose.yml found but composeContent is missing")
+        ignored_overrides = [key for key in ("exposure", "domain", "port") if body.get(key)]
+        if ignored_overrides:
+            step = {
+                "name": "Import warning",
+                "status": "ok",
+                "message": "Compose import ignores service-level override(s): "
+                + ", ".join(ignored_overrides)
+                + ". Set them in luma.compose.yml services instead.",
+            }
+            steps.append(step)
+            _emit_progress(progress, step)
 
         def _inject_compose() -> tuple[str, str]:
             data = yaml.safe_load(manifest_text) or {}

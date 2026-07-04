@@ -38,6 +38,31 @@ function repoOptionLabel(repo: GitRepository) {
   return `${repo.fullName}${branch}${privacy}`;
 }
 
+function parseEnvText(text: string): { values: Record<string, string>; errors: string[] } {
+  const values: Record<string, string> = {};
+  const errors: string[] = [];
+  text.split(/\r?\n/).forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) return;
+    const eq = line.indexOf("=");
+    if (eq <= 0) {
+      errors.push(`line ${index + 1}: expected KEY=VALUE`);
+      return;
+    }
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      errors.push(`line ${index + 1}: invalid env name`);
+      return;
+    }
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    values[key] = value;
+  });
+  return { values, errors };
+}
+
 export function GithubImportPanel({
   lang,
   token,
@@ -76,6 +101,7 @@ export function GithubImportPanel({
   const [domain, setDomain] = useState("");
   const [port, setPort] = useState("");
   const [manifest, setManifest] = useState("");
+  const [envText, setEnvText] = useState("");
   const [platform, setPlatform] = useState("");
   const [registryHost, setRegistryHost] = useState("");
   const [pushHost, setPushHost] = useState("");
@@ -176,6 +202,7 @@ export function GithubImportPanel({
 
   const errors = useMemo(() => {
     const list: string[] = [];
+    const parsedEnv = parseEnvText(envText);
     if (mode === "provider") {
       if (!providerId) list.push(zh ? "请选择 Git 账户凭据" : "Select a Git account credential");
       if (!repository) list.push(zh ? "请选择仓库" : "Select a repository");
@@ -185,11 +212,13 @@ export function GithubImportPanel({
     if (!buildNode) list.push(zh ? "必须选择一个构建节点（需具备 docker-build 能力）" : "Select a build node (must have docker-build capability)");
     if (exposure && exposure !== "none" && !domain.trim()) list.push(zh ? "公开入口必须填写域名" : "Public exposure requires a domain");
     if (port.trim() && !/^[0-9]+$/.test(port.trim())) list.push(zh ? "端口必须是正整数" : "Port must be a positive integer");
+    for (const message of parsedEnv.errors) list.push(zh ? `环境变量 ${message}` : `Environment ${message}`);
     return list;
-  }, [buildNode, domain, exposure, mode, port, providerId, repoUrl, repository, zh]);
+  }, [buildNode, domain, envText, exposure, mode, port, providerId, repoUrl, repository, zh]);
 
   const run = async () => {
     if (errors.length) return;
+    const parsedEnv = parseEnvText(envText);
     setStatus("running");
     setSteps([]);
     setError("");
@@ -212,6 +241,7 @@ export function GithubImportPanel({
           pushHost: pushHost.trim(),
           context: context.trim(),
           dockerfile: dockerfile.trim(),
+          envSecrets: Object.keys(parsedEnv.values).length ? parsedEnv.values : undefined,
         },
         (step) => setSteps((current) => [...current, step]),
       );
@@ -420,8 +450,22 @@ export function GithubImportPanel({
             />
             <small className="deploy-muted">
               {zh
-                ? "仓库里有 .luma.yml / *.luma.yml 时会自动使用；这里填写后可作为没有部署文件时的手动输入。"
-                : "If the repository has .luma.yml / *.luma.yml, Luma uses it automatically; fill this when the repo has no manifest yet."}
+                ? "仓库里有 Luma service 或 Compose 部署文件时会自动使用；这里填写后可作为没有部署文件时的手动输入。"
+                : "If the repository has a Luma service or Compose deployment file, Luma uses it automatically; fill this when the repo has no manifest yet."}
+            </small>
+          </label>
+          <label className="deploy-field-wide deploy-manifest-field">
+            <span>{zh ? "环境变量（可选）" : "Environment (.env optional)"}</span>
+            <textarea
+              value={envText}
+              onChange={(event) => setEnvText(event.target.value)}
+              placeholder={"DATABASE_URL=postgres://...\nAPI_KEY=..."}
+              spellCheck={false}
+            />
+            <small className="deploy-muted">
+              {zh
+                ? "写入控制面的 scoped secrets；部署文件或 Compose 中引用 ${DATABASE_URL} 即可。"
+                : "Saved as scoped control-plane secrets; reference them as ${DATABASE_URL} in the manifest or Compose file."}
             </small>
           </label>
         </section>

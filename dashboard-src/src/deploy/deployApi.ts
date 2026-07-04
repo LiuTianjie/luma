@@ -75,6 +75,7 @@ export type BuildImportRequest = {
   pushHost?: string;
   context?: string;
   dockerfile?: string;
+  envSecrets?: Record<string, string>;
 };
 
 export async function buildImportStream(request: BuildImportRequest, onStep: (step: DeployStep) => void): Promise<unknown> {
@@ -99,6 +100,7 @@ export async function buildImportStream(request: BuildImportRequest, onStep: (st
     if (value) body[dst] = value;
   }
   if (request.port && request.port.trim()) body.port = Number(request.port);
+  if (request.envSecrets) body.envSecrets = request.envSecrets;
   const response = await fetch("/v1/builds/stream", {
     method: "POST",
     headers: { Authorization: `Bearer ${request.token}`, "Content-Type": "application/json" },

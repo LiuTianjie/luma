@@ -408,6 +408,8 @@ class ControlClient:
         context: str = "",
         dockerfile: str = "",
         registry_host: str = "",
+        manifest: str = "",
+        env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Dict[str, Any]:
         return self.request("POST", "/v1/builds", self._build_body(locals()), timeout=timeout)
@@ -428,6 +430,8 @@ class ControlClient:
         context: str = "",
         dockerfile: str = "",
         registry_host: str = "",
+        manifest: str = "",
+        env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Iterator[Dict[str, Any]]:
         return self.stream("POST", "/v1/builds/stream", self._build_body(locals()), timeout=timeout)
@@ -452,12 +456,15 @@ class ControlClient:
             "context": values.get("context"),
             "dockerfile": values.get("dockerfile"),
             "registryHost": values.get("registry_host"),
+            "manifest": values.get("manifest"),
         }
         for key, value in optional.items():
             if value:
                 body[key] = value
         if values.get("port"):
             body["port"] = int(values["port"])
+        if values.get("env_secrets") is not None:
+            body["envSecrets"] = values["env_secrets"]
         return body
 
     def registry_serve(

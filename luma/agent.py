@@ -2080,12 +2080,18 @@ def _find_luma_deployment_manifest(repo: Path) -> tuple[str, Path] | None:
         ".luma.compose.yaml",
         "*.luma.compose.yml",
         "*.luma.compose.yaml",
+        "*.compose.luma.yml",
+        "*.compose.luma.yaml",
+        "docker-compose.luma.yml",
+        "docker-compose.luma.yaml",
     )
     matches: dict[Path, str] = {}
     for kind, patterns in (("service", service_patterns), ("compose", compose_patterns)):
         for pattern in patterns:
             for path in repo_root.rglob(pattern):
                 if not path.is_file() or ".git" in path.parts:
+                    continue
+                if kind == "service" and _looks_like_compose_luma_manifest(path):
                     continue
                 matches[path.resolve()] = kind
     if not matches:
@@ -2104,6 +2110,15 @@ def _find_luma_deployment_manifest(repo: Path) -> tuple[str, Path] | None:
         names = ", ".join(str(rel(path)) for _, path in best)
         raise LumaError(f"multiple Luma deployment manifests found at the same priority: {names}")
     return ranked[0]
+
+
+def _looks_like_compose_luma_manifest(path: Path) -> bool:
+    name = path.name.lower()
+    return bool(
+        re.fullmatch(r".+\.compose\.luma\.ya?ml", name)
+        or re.fullmatch(r"docker-compose\.luma\.ya?ml", name)
+        or re.fullmatch(r".+\.luma\.compose\.ya?ml", name)
+    )
 
 
 def _docker_buildx_build(
@@ -2306,8 +2321,8 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
         manifest_path = deployment_manifest[1] if deployment_manifest else None
         manifest_text = manifest_path.read_text(encoding="utf-8") if manifest_path else ""
 
-        # Build params: repo's .luma.yml build block is the declarative source of
-        # truth; payload values (from CLI flags) act as overrides when provided.
+        # For single-service imports, the repo manifest's build block is the
+        # declarative source of truth; payload values act as overrides.
         build_block: Dict[str, Any] = {}
         if manifest_text.strip():
             import yaml
@@ -2315,7 +2330,7 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
             try:
                 parsed = yaml.safe_load(manifest_text) or {}
             except yaml.YAMLError as exc:
-                raise LumaError(f"invalid .luma.yml in repository: {exc}") from exc
+                raise LumaError(f"invalid Luma deployment manifest in repository: {exc}") from exc
             if isinstance(parsed, dict) and isinstance(parsed.get("build"), dict):
                 build_block = parsed["build"]
         repo = _safe_image_repo(str(build_block.get("repo") or repo))
