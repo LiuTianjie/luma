@@ -681,9 +681,9 @@ export function BuildHistoryPanel({
                     <StatusIcon size={15} aria-hidden="true" className={run.status === "running" ? "spin" : ""} />
                     {buildRunStatusLabel(run.status, lang)}
                   </span>
-                  <strong>{buildRunTitle(run)}</strong>
+                  <strong title={buildRunTitle(run)}>{buildRunTitle(run)}</strong>
                   <small>{[run.buildNode, run.ref || "default", buildRunTime(run.updatedAt || run.createdAt)].filter(Boolean).join(" · ")}</small>
-                  {run.message ? <span className="build-run-message">{run.message}</span> : null}
+                  {run.message ? <span className="build-run-message" title={run.message}>{run.message}</span> : null}
                 </button>
                 <div className="build-run-actions">
                   <button type="button" className="ghost" disabled={Boolean(loadingLogId || retryingId)} onClick={() => void openBuildRun(run.id)}>
@@ -720,7 +720,7 @@ export function BuildHistoryPanel({
               {displayedSteps.filter((step) => step.name).map((step, index) => (
                 <li key={`${selectedRun?.id || "live"}-${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
                   <strong>{step.name}</strong>
-                  {step.message ? <span> - {step.message}</span> : null}
+                  {step.message ? <span>{step.message}</span> : null}
                 </li>
               ))}
               {!displayedSteps.length ? <li className="step-start"><strong>{zh ? "等待日志事件" : "Waiting for events"}</strong></li> : null}

@@ -988,9 +988,10 @@ def _run_node_agent_task(
     *,
     timeout: int | None = None,
     required_capability: str | None = "nfs-host",
+    progress: Callable[[dict[str, str]], None] | None = None,
 ) -> Dict[str, Any]:
     task_id = _queue_node_agent_task(state, node_name, action, payload, required_capability=required_capability)
-    return _wait_node_agent_task(task_id, node_name, action, timeout=timeout)
+    return _wait_node_agent_task(task_id, node_name, action, timeout=timeout, progress=progress)
 
 
 def _queue_node_agent_task(
@@ -1038,12 +1039,21 @@ def _wait_node_agent_task(
     action: str,
     *,
     timeout: int | None = None,
+    progress: Callable[[dict[str, str]], None] | None = None,
 ) -> Dict[str, Any]:
     deadline = time.time() + float(timeout or AGENT_TASK_TIMEOUT_SECONDS)
+    cursor = 0
     while time.time() < deadline:
         current = load_state()
         task = (current.get("agentTasks") if isinstance(current.get("agentTasks"), dict) else {}).get(task_id)
         if isinstance(task, dict):
+            task_progress = task.get("progress") if isinstance(task.get("progress"), list) else []
+            safe_cursor = min(max(cursor, 0), len(task_progress))
+            for event in [item for item in task_progress[safe_cursor:] if isinstance(item, dict)]:
+                line = str(event.get("line") or event.get("message") or "").strip()
+                if line:
+                    _emit_progress(progress, {"name": _agent_task_progress_step_name(action), "status": "progress", "message": line})
+            cursor = len(task_progress)
             status = str(task.get("status") or "")
             if status == "succeeded":
                 result = task.get("result") if isinstance(task.get("result"), dict) else {}
@@ -1061,6 +1071,14 @@ def _wait_node_agent_task(
 
     mutate_state(mark_timeout)
     raise LumaError(f"node agent task timed out on {node_name}: {action}")
+
+
+def _agent_task_progress_step_name(action: str) -> str:
+    if action == "build-image":
+        return "Build image"
+    if action == "diagnose-docker-pull":
+        return "Docker pull"
+    return "Agent task"
 
 
 def handle_control_status(token: str) -> Dict[str, Any]:
@@ -1894,6 +1912,7 @@ def handle_build_deploy(
                 build_payload,
                 timeout=int(body.get("buildTimeout") or 1800) + 120,
                 required_capability="docker-build",
+                progress=run_progress,
             ),
             progress=run_progress,
         )

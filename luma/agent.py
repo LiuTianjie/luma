@@ -23,7 +23,7 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Mapping
 
 from .errors import LumaError
 from .local import LocalExecutor, LocalResult
@@ -1674,7 +1674,7 @@ def execute_agent_task(
     if action == "update-luma":
         return update_luma_install(install_ref=str(payload.get("installRef") or ""), config_path=config_path)
     if action == "build-image":
-        return build_image(payload)
+        return build_image(payload, progress=progress)
     if action == "configure-insecure-registry":
         return configure_insecure_registry(registry=_required(payload, "registry"))
     if action == "join-nomad":
@@ -2032,19 +2032,37 @@ def _auth_for_host(registry_auth: Dict[str, Any] | None, host: str) -> Dict[str,
     }
 
 
-def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") -> str:
+def _ensure_buildx_builder(
+    docker: str,
+    *,
+    proxy: str = "",
+    no_proxy: str = "",
+    recreate: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> str:
     # docker-container driver runs BuildKit in its own container/daemon. It does
     # NOT inherit the host dockerd proxy nor the CLI env, so FROM base-image pulls
     # need the proxy baked into the BuildKit container env at creation. Use a
     # distinct builder name per proxy state so a build never reuses a builder that
     # lacks the proxy it needs.
     name = "luma-builder-egress" if proxy else "luma-builder"
+    if recreate:
+        subprocess.run(
+            [docker, "buildx", "rm", "-f", name],
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            env=env,
+            timeout=60,
+        )
     inspect = subprocess.run(
         [docker, "buildx", "inspect", name],
         text=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
+        env=env,
         timeout=30,
     )
     if inspect.returncode != 0:
@@ -2062,6 +2080,7 @@ def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") 
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
+            env=env,
             timeout=180,
         )
         if create.returncode != 0:
@@ -2072,6 +2091,7 @@ def _ensure_buildx_builder(docker: str, *, proxy: str = "", no_proxy: str = "") 
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
+            env=env,
             timeout=60,
         )
         if verify.returncode != 0:
@@ -2154,6 +2174,7 @@ def _docker_buildx_build(
     platform: str,
     proxy: str,
     build_timeout: int,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
 ) -> str:
     tag_sha = f"{push_host}/{repo}:{sha}"
     tag_latest = f"{push_host}/{repo}:latest"
@@ -2181,8 +2202,8 @@ def _docker_buildx_build(
         "-f", str(dockerfile_path),
         str(context_dir),
     ]
-    try:
-        result = subprocess.run(
+    def run_build() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
             command,
             text=True,
             stdout=subprocess.PIPE,
@@ -2191,11 +2212,36 @@ def _docker_buildx_build(
             env=env,
             timeout=build_timeout,
         )
+
+    try:
+        result = run_build()
     except subprocess.TimeoutExpired as exc:
         raise LumaError(f"docker buildx build timed out after {build_timeout}s") from exc
+    if result.returncode != 0 and _buildx_missing_builder_error(result.stdout or "", builder):
+        if progress:
+            progress({"type": "output", "line": "Buildx builder is missing on the build node; recreating it and retrying once."})
+        _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, recreate=True, env=env)
+        try:
+            result = run_build()
+        except subprocess.TimeoutExpired as exc:
+            raise LumaError(f"docker buildx build timed out after {build_timeout}s") from exc
     if result.returncode != 0:
-        raise LumaError(f"docker buildx build failed:\n{(result.stdout or '').strip()}")
+        output = (result.stdout or "").strip()
+        if _buildx_missing_builder_error(output, builder):
+            raise LumaError(
+                "docker buildx builder could not be initialized on the build node. "
+                "Luma tried to recreate it automatically, but Docker still reports it missing. "
+                f"Original output:\n{output}"
+            )
+        raise LumaError(f"docker buildx build failed:\n{output}")
     return f"{registry_host}/{repo}:{sha}"
+
+
+def _buildx_missing_builder_error(output: str, builder: str) -> bool:
+    lowered = output.lower()
+    if "no builder" not in lowered:
+        return False
+    return not builder or builder.lower() in lowered
 
 
 def _compose_build_spec(body: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -2222,6 +2268,7 @@ def _build_compose_images(
     proxy: str,
     build_timeout: int,
     payload: Dict[str, Any],
+    progress: Callable[[Dict[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     import yaml
 
@@ -2251,7 +2298,9 @@ def _build_compose_images(
             raise LumaError(f"compose service {service_name} requires image or build")
 
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-    builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy)
+    buildx_env = dict(os.environ)
+    buildx_env["DOCKER_CONFIG"] = str(docker_config)
+    builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, env=buildx_env)
     images: Dict[str, str] = {}
     single_build = len(build_services) == 1
     for service_name, service_body, spec in build_services:
@@ -2277,6 +2326,7 @@ def _build_compose_images(
             platform=platform,
             proxy=proxy,
             build_timeout=build_timeout,
+            progress=progress,
         )
         service_body["image"] = image
         service_body.pop("build", None)
@@ -2293,7 +2343,7 @@ def _build_compose_images(
     }
 
 
-def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
+def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]], None] | None = None) -> Dict[str, Any]:
     from . import gitops
 
     repo_url = _required(payload, "repoUrl")
@@ -2335,6 +2385,7 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
                 proxy=proxy or "",
                 build_timeout=build_timeout,
                 payload=payload,
+                progress=progress,
             )
 
         manifest_path = deployment_manifest[1] if deployment_manifest else None
@@ -2369,7 +2420,9 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
         # creation in _ensure_buildx_builder). Keep the in-cluster registry and
         # localhost out of the proxy so --push stays on the internal network.
         no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-        builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy)
+        buildx_env = dict(os.environ)
+        buildx_env["DOCKER_CONFIG"] = str(docker_config)
+        builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, env=buildx_env)
         image = _docker_buildx_build(
             docker=docker,
             builder=builder,
@@ -2383,6 +2436,7 @@ def build_image(payload: Dict[str, Any]) -> Dict[str, Any]:
             platform=platform,
             proxy=proxy or "",
             build_timeout=build_timeout,
+            progress=progress,
         )
 
     return {
