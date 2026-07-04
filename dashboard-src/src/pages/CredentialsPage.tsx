@@ -13,7 +13,7 @@ import {
   type GitProviderCredential,
   type RegistryCredential,
 } from "../controlResourcesApi";
-import { Badge, CodeCell, PrimaryCell, StatePill } from "../components/ui";
+import { Badge, CodeCell, PrimaryCell, SelectControl, StatePill } from "../components/ui";
 import type { DashboardStorageClass, Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
@@ -440,10 +440,14 @@ export function CredentialsPage({
               <div className="credential-form">
                 <label className="field">
                   <span>{zh ? "Provider" : "Provider"}</span>
-                  <select value={gitProviderForm.type} onChange={(event) => setGitProviderForm((current) => ({ ...current, type: event.target.value }))}>
-                    <option value="github">GitHub</option>
-                    <option value="gitea">{zh ? "Git / Gitea" : "Git / Gitea"}</option>
-                  </select>
+                  <SelectControl
+                    value={gitProviderForm.type}
+                    onChange={(value) => setGitProviderForm((current) => ({ ...current, type: value }))}
+                    options={[
+                      { value: "github", label: "GitHub" },
+                      { value: "gitea", label: zh ? "Git / Gitea" : "Git / Gitea" },
+                    ]}
+                  />
                 </label>
                 <label className="field">
                   <span>{zh ? "账户名称" : "Account name"}</span>

@@ -1,6 +1,6 @@
 ---
 name: luma-deployment-yaml
-description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, region/exposure choices, the optional engine field, the build block / luma import (build from GitHub source), luma registry serve (in-cluster registry), routing domains to workloads, storageClass volumes, manager-managed storage, private registry credentials, service removal, rollback/version history, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
+description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, repository import/build from GitHub or Gitea, builder nodes, in-cluster registry setup with luma registry serve, Docker/buildx/NO_PROXY issues, region/exposure choices, storageClass volumes, private registry credentials, service removal, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
 ---
 
 # Luma Deployment YAML
@@ -15,6 +15,8 @@ Single-service manifests are not Docker Compose. They describe one service: imag
 Compose files stay standard for local development. Put Luma-specific deployment semantics in `luma.compose.yml`: region, exposure, routing, service node pins, local storage pins, and references to manager-managed storage classes.
 
 For complete field tables and examples, read `references/manifest-reference.md`.
+
+For repository import, builder registry setup, or registry pull/proxy failures, read the "Builder Registry And Repository Import" section in `references/manifest-reference.md`.
 
 ## Token Vocabulary
 
@@ -43,7 +45,9 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 
 ## Single-Service Rules
 
-- Required: `name`, `image`, `region`.
+- Required: `name`, `region`, and either `image` or a `build` block.
+- For ordinary prebuilt-image deploys, set `image` explicitly.
+- For repository import builds, prefer omitting `image` and adding `build:`. Luma builds and pushes to the configured builder registry, removes the `build` block from the runtime deploy payload, and injects the built image reference.
 - Valid regions: `cn`, `global`, `home`.
 - Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
 - Public exposures require `domain` and integer `port`.
@@ -60,45 +64,41 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 - `healthcheck` is passed to the running container's health check. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
 - `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
 - Single-service `storage` can map named volumes from `volumes` to manager storage classes.
-- `image` is optional when a `build` block is present. `build` is for source-to-image builds via `luma import`, not `luma deploy`. Subfields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`). A manifest must have either `image` or `build`.
+- `build` is for source-to-image builds via `luma import` / Dashboard Repository Import, not plain `luma deploy`. Subfields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`), and optional `repo` to override the internal image repository path.
 
-## Build From GitHub Source
+## Builder Registry Workflow
 
-`luma deploy` only deploys prebuilt images. `luma import` adds a build step: it clones a GitHub repo on a build node, builds the repo's Dockerfile, pushes to an in-cluster registry, then deploys. Use it when the user wants source-to-deploy from a GitHub repo without external CI.
-
-Prerequisites (one-time):
-
-- A Luma node with `docker buildx` (the agent auto-advertises the `docker-build` capability). Cross-arch builds also need `qemu`/`binfmt`.
-- An in-cluster registry started with `luma registry serve --node <build-node>`. This deploys `registry:2` (fixed port 5000, persistent volume, Tailscale-internal, `exposure: none`) and configures `insecure-registries` on every non-manager ready Linux node so any node can pull over the Tailscale network. The manager is skipped (restarting its Docker would kill Control); configure the manager's daemon out-of-band if it also runs pulled workloads.
-- For private repos: `luma secret set GITHUB_TOKEN <token>`. Public repos need nothing.
-
-The repo must contain a Dockerfile and a `.luma.yml` (a normal service manifest using a `build` block instead of `image`):
-
-```yaml
-name: myapp
-region: cn
-exposure: cn-edge
-domain: myapp.example.com
-port: 8080
-build:
-  context: .
-  dockerfile: Dockerfile
-  platform: linux/amd64
-```
-
-Import and deploy (streams clone -> build -> push -> deploy):
+- Treat `luma import` / Dashboard Repository Import as a build pipeline, not just a manifest deploy: Git provider -> builder node clone/buildx -> internal registry push -> target node pull -> normal Luma deploy.
+- Prefer a dedicated Luma node named `builder` when available. Confirm it is `ready`, Linux, and advertises `docker-build` in `luma status` before using it.
+- Prefer a builder-hosted registry for internal image distribution. Current expected shape is `registryHost: <builder-tailscale-ip>:5000` for target-node pulls and `pushHost: localhost:5000` for pushes from the builder itself. Re-check the live builder IP before hardcoding it; one known current cluster used `100.66.177.70:5000`.
+- Start or refresh the registry with an explicit storage class. Do not rely on default `storageClass: local` unless the control plane actually has a `local` storage class:
 
 ```bash
-luma import https://github.com/acme/myapp --build-node build-1
+luma registry serve --node builder --storage-class builder-registry-nfs --port 5000
 ```
 
-CLI flags override `.luma.yml`: `--ref`, `--region`, `--exposure`, `--domain`, `--port`, `--platform`, `--registry-host`. The built image is tagged `<build-node-tailscale-host>:5000/<owner>/<repo>:<git-sha>`. The dashboard's Create application page also has a "Import from GitHub" entry that lists only `docker-build`-capable ready nodes.
+- If `builder-registry-nfs` is unavailable, inspect `luma status` / `luma storage list` and use an existing working class such as `cn-nfs`, or register/fix storage first.
+- Verify registry health before importing:
 
-The build node's `git clone` reaches GitHub through the manager egress gateway for `cn`/`home` build nodes (resolved automatically, same gateway as image pulls and node join); `global` build nodes go direct. Override with `--proxy <url>` if needed.
+```bash
+curl -I http://<builder-tailscale-ip>:5000/v2/
+```
 
-Upgrade and rollback: re-running the same `luma import` is the upgrade path. Each build tags the image by git SHA (`...:<git-sha>`) and injects that immutable tag; the Nomad job id is the `.luma.yml` `name`, so same name + new SHA is a rolling update of the same job (identical to `luma deploy`'s same-name-is-update behavior). Because each version pins its own `:<git-sha>` and the registry keeps old images, `luma history <name>` / `luma rollback <name>` reliably revert to a prior image. Changing `name` creates a new app instead of upgrading.
+- Also verify from at least one target Linux node when diagnosing pull failures. A healthy `/v2/` from the manager alone does not prove Docker pulls on every target node are bypassing proxies.
+- If the registry allocation is `running` and port `5000` is listening but `/v2/` returns `No route to host`, suspect stale Nomad CNI hostport state; recreate the registry allocation:
 
-Cross-arch caveat: when the build node is arm64 (e.g. a Mac mini) and target nodes are amd64, the image must be built for `linux/amd64` (the default). Ensure the build node has `qemu`/`binfmt`.
+```bash
+luma service restart luma-registry --mode recreate
+```
+
+- `luma registry serve` should configure `insecure-registries` on ready Linux worker nodes and add the registry host plus Tailscale/private ranges to Docker daemon `NO_PROXY`. It skips manager nodes to avoid killing Luma Control by restarting the manager Docker daemon.
+- If target-node pulls fail with `502 Bad Gateway`, do not blame the registry first. Check target-node Docker daemon proxy and `NO_PROXY`; it must include the registry host, `host:port`, and Tailscale range (`100.64.0.0/10`).
+- If buildx fails with `invalid value "127.0.0.1", expecting k=v`, suspect comma handling in buildx `--driver-opt env.NO_PROXY=...`; update Luma or escape comma-separated `NO_PROXY` before treating the repository or registry as broken.
+- For GitHub/Gitea source imports, manage Git provider PATs with the Git Provider credential flow rather than the old special `GITHUB_TOKEN`. Multiple accounts per provider are expected. Tokens are write-only and injected only into leased build tasks.
+- Repository import should scan for `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, and nested `*.luma.yml` / `*.luma.yaml`; if no manifest exists, support a manually entered single-service manifest first. AI-generated manifests are a later enhancement.
+- Keep the current manifest model: do not add a new image-source field for repository import. In a repository `.luma.yml`, use a `build:` block and omit `image` when the image is produced by Luma. Control resolves the internal image name before build from the builder registry and repository path, then injects the built image into the deploy manifest.
+- The default internal image path is predictable before the build: `registryHost/<owner>/<repo>:latest`, with `<owner>/<repo>` derived from the Git repository URL. The builder also pushes `registryHost/<owner>/<repo>:<git-sha>`, and deployment should use the immutable sha tag that build returns. Use `:latest` as the human-readable rolling alias, not as the preferred deployed reference.
+- If the default `<owner>/<repo>` path is not desired, set `build.repo` in the repository manifest to the internal repository path to push under; keep `registryHost` and `pushHost` owned by Luma build configuration.
 
 ## Compose And Storage Rules
 

@@ -229,6 +229,116 @@ textarea:focus-visible {
   outline: none;
 }
 
+.luma-select {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.luma-select-trigger {
+  width: 100%;
+  min-height: 36px;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 10px 0 12px;
+  border-color: var(--line);
+  border-radius: var(--radius-input);
+  background: var(--recess);
+  color: var(--text);
+  text-align: left;
+}
+
+.luma-select-trigger:hover:not(:disabled),
+.luma-select.open .luma-select-trigger {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+.luma-select-trigger:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.luma-select-trigger svg {
+  flex: 0 0 auto;
+  color: var(--text-subtle);
+  transition: transform var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
+}
+
+.luma-select.open .luma-select-trigger svg {
+  color: var(--accent);
+  transform: rotate(180deg);
+}
+
+.luma-select-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.luma-select-value.placeholder {
+  color: var(--text-subtle);
+}
+
+.luma-select-menu {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  display: grid;
+  max-height: min(360px, 45vh);
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-input);
+  background: color-mix(in srgb, var(--recess) 92%, var(--surface-raised));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+}
+
+.luma-select-option {
+  display: grid;
+  min-height: 30px;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  justify-items: stretch;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 500;
+  text-align: left;
+}
+
+.luma-select-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.luma-select-option:hover:not(:disabled),
+.luma-select-option.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.luma-select-option:disabled {
+  color: var(--text-subtle);
+  opacity: 0.48;
+}
+
+.luma-select-option svg {
+  justify-self: end;
+}
+
+.luma-select-empty {
+  padding: 8px;
+  color: var(--text-subtle);
+}
+
 button:focus-visible,
 a:focus-visible,
 [role="button"]:focus-visible {

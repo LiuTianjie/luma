@@ -7,7 +7,7 @@ import { fetchServiceHistory, restartApplication, rollbackService } from "../lif
 import type { DashboardPayload, DashboardService, Lang, ServiceVersion } from "../types";
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
 import { ServiceLogsModal } from "./ServiceLogsModal";
-import { Badge, BadgeGroup, CodeCell, PrimaryCell, StatePill } from "./ui";
+import { Badge, BadgeGroup, CodeCell, PrimaryCell, SelectControl, StatePill } from "./ui";
 
 export type ApplicationUpdateRequest = {
   app: Application;
@@ -452,17 +452,25 @@ export function ApplicationManagementPanel({
         </label>
         <label>
           <span>{t(lang, "status")}</span>
-          <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
-            <option value="all">{lang === "zh" ? "全部状态" : "All statuses"}</option>
-            {statusOptions.map((status) => <option value={status} key={status}>{localizeState(lang, status)}</option>)}
-          </select>
+          <SelectControl
+            value={filters.status}
+            onChange={(value) => setFilters((current) => ({ ...current, status: value }))}
+            options={[
+              { value: "all", label: lang === "zh" ? "全部状态" : "All statuses" },
+              ...statusOptions.map((status) => ({ value: status, label: localizeState(lang, status) })),
+            ]}
+          />
         </label>
         <label>
           <span>{t(lang, "region")}</span>
-          <select value={filters.region} onChange={(event) => setFilters((current) => ({ ...current, region: event.target.value }))}>
-            <option value="all">{lang === "zh" ? "全部区域" : "All regions"}</option>
-            {regionOptions.map((region) => <option value={region} key={region}>{region}</option>)}
-          </select>
+          <SelectControl
+            value={filters.region}
+            onChange={(value) => setFilters((current) => ({ ...current, region: value }))}
+            options={[
+              { value: "all", label: lang === "zh" ? "全部区域" : "All regions" },
+              ...regionOptions.map((region) => ({ value: region, label: region })),
+            ]}
+          />
         </label>
         <div className="application-filter-count">
           <strong>{filteredApplications.length}</strong>

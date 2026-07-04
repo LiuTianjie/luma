@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Copy, Download, RefreshCw, X } from "lucide-react";
 import { t } from "../i18n";
 import type { DashboardService, Lang } from "../types";
+import { SelectControl } from "./ui";
 
 type LogsState = {
   service: string;
@@ -366,19 +367,24 @@ export function ServiceLogsModal({
         </header>
         <div className="logs-modal-toolbar">
           <div className="logs-filter-grid">
-            <select value={selectedApp} onChange={(event) => setSelectedApp(event.target.value)} aria-label={lang === "zh" ? "应用" : "Application"}>
-              {applications.map((app) => (
-                <option key={app.key} value={app.key}>{app.key}</option>
-              ))}
-            </select>
-            <select value={selectedService} onChange={(event) => setSelectedService(event.target.value)} aria-label={lang === "zh" ? "子服务" : "Sub-service"}>
-              {appServices.map((service) => (
-                <option key={service.fullName} value={service.fullName}>{service.name || service.fullName}</option>
-              ))}
-            </select>
-            <select value={sinceLabel} onChange={(event) => setSinceLabel(event.target.value)} aria-label="since">
-              {SINCE_OPTIONS.map((option) => <option key={option.label} value={option.label}>since {option.label}</option>)}
-            </select>
+            <SelectControl
+              value={selectedApp}
+              onChange={setSelectedApp}
+              ariaLabel={lang === "zh" ? "应用" : "Application"}
+              options={applications.map((app) => ({ value: app.key, label: app.key }))}
+            />
+            <SelectControl
+              value={selectedService}
+              onChange={setSelectedService}
+              ariaLabel={lang === "zh" ? "子服务" : "Sub-service"}
+              options={appServices.map((service) => ({ value: service.fullName, label: service.name || service.fullName }))}
+            />
+            <SelectControl
+              value={sinceLabel}
+              onChange={setSinceLabel}
+              ariaLabel="since"
+              options={SINCE_OPTIONS.map((option) => ({ value: option.label, label: `since ${option.label}` }))}
+            />
             <input
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
