@@ -4783,6 +4783,9 @@ dd {
 }
 .deploy-step-log li.step-fail { color: var(--red); }
 .deploy-step-log li.step-ok { color: var(--green); }
+.deploy-step-log li.step-progress {
+  color: var(--accent-strong);
+}
 .deploy-step-log li span { color: var(--text-muted); }
 
 @media (max-width: 900px) {

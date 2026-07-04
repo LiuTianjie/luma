@@ -10030,6 +10030,36 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_node_agent_build_progress_is_forwarded(self):
+        from luma.control.server import _wait_node_agent_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["agentTasks"] = {
+                    "task-1": {
+                        "id": "task-1",
+                        "nodeName": "builder",
+                        "action": "build-image",
+                        "status": "succeeded",
+                        "progress": [{"type": "output", "line": "Buildx builder is missing; recreating it"}],
+                        "result": {"image": "100.66.177.70:5000/acme/app:abc123"},
+                    }
+                }
+                save_state(state)
+                events: list[dict[str, str]] = []
+
+                result = _wait_node_agent_task("task-1", "builder", "build-image", timeout=1, progress=lambda event: events.append(event))
+
+                self.assertEqual(result["image"], "100.66.177.70:5000/acme/app:abc123")
+                self.assertEqual(events[0]["name"], "Build image")
+                self.assertEqual(events[0]["status"], "progress")
+                self.assertIn("recreating", events[0]["message"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_build_deploy_expands_owner_repo_shortcut_to_github_url(self):
         from luma.control.server import handle_build_deploy
 
@@ -10453,6 +10483,52 @@ class GithubImportTests(unittest.TestCase):
         self.assertIn('"env.NO_PROXY=localhost,127.0.0.1,100.66.177.70:5000"', create_cmd)
         self.assertNotIn("env.NO_PROXY=localhost\\,127.0.0.1\\,100.66.177.70:5000", create_cmd)
         self.assertNotIn("env.NO_PROXY=localhost,127.0.0.1,100.66.177.70:5000", create_cmd)
+
+    def test_buildx_build_recreates_missing_builder_and_retries(self):
+        from luma.agent import _docker_buildx_build
+
+        progress: list[dict[str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docker_config = root / "docker-config"
+            docker_config.mkdir()
+            context_dir = root / "src"
+            context_dir.mkdir()
+            dockerfile = context_dir / "Dockerfile"
+            dockerfile.write_text("FROM busybox\n", encoding="utf-8")
+
+            with patch(
+                "luma.agent.subprocess.run",
+                side_effect=[
+                    Mock(returncode=1, stdout='ERROR: no builder "luma-builder-egress" found\n'),
+                    Mock(returncode=0, stdout="pushed\n"),
+                ],
+            ) as run, patch("luma.agent._ensure_buildx_builder", return_value="luma-builder-egress") as ensure:
+                image = _docker_buildx_build(
+                    docker="docker",
+                    builder="luma-builder-egress",
+                    docker_config=docker_config,
+                    push_host="localhost:5000",
+                    registry_host="100.66.177.70:5000",
+                    repo="acme/app",
+                    sha="abc123",
+                    context_dir=context_dir,
+                    dockerfile_path=dockerfile,
+                    platform="linux/amd64",
+                    proxy="http://127.0.0.1:7890",
+                    build_timeout=1800,
+                    progress=lambda event: progress.append(event),
+                )
+
+        self.assertEqual(image, "100.66.177.70:5000/acme/app:abc123")
+        self.assertEqual(run.call_count, 2)
+        ensure.assert_called_once_with(
+            "docker",
+            proxy="http://127.0.0.1:7890",
+            no_proxy="localhost,127.0.0.1,::1,localhost:5000,100.66.177.70:5000",
+            recreate=True,
+        )
+        self.assertIn("recreating it and retrying once", progress[0]["line"])
 
     def test_registry_serve_configures_insecure_registry_and_docker_no_proxy(self):
         from luma.control.server import handle_registry_serve
