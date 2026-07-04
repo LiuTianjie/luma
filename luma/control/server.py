@@ -269,6 +269,7 @@ def _update_agent_heartbeat(
     capabilities = body.get("capabilities")
     metrics = body.get("metrics")
     container_stats = body.get("containerStats")
+    diagnostics = body.get("diagnostics")
     normalized_container_stats: list[Dict[str, Any]] = []
     agent.update(
         {
@@ -285,6 +286,8 @@ def _update_agent_heartbeat(
     if isinstance(container_stats, list):
         normalized_container_stats = _container_stats(container_stats)
         agent["containerStats"] = normalized_container_stats
+    if isinstance(diagnostics, dict):
+        agent["diagnostics"] = diagnostics
     return normalized_container_stats
 
 
@@ -611,7 +614,7 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(task.get("payload") if isinstance(task.get("payload"), dict) else {})
-    if task.get("action") == "resolve-docker-image" and not payload.get("registryAuth"):
+    if task.get("action") in {"resolve-docker-image", "diagnose-docker-pull"} and not payload.get("registryAuth"):
         image = str(payload.get("image") or "")
         registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
         registry_auth = registry_auth_for_image(registries, image)
@@ -683,6 +686,49 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
     return {"taskId": task_id, "status": status}
 
 
+def handle_node_agent_progress(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    node_name = str(body.get("nodeName") or "").strip()
+    node_id = str(body.get("nodeId") or "").strip()
+    task_id = str(body.get("taskId") or "").strip()
+    if not node_name or not task_id:
+        raise LumaError("nodeName and taskId are required")
+    raw_events = body.get("events") if isinstance(body.get("events"), list) else []
+    events = _agent_progress_events(raw_events)
+    if not events:
+        return {"taskId": task_id, "events": 0}
+
+    def mutate(state: Dict[str, Any]) -> None:
+        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
+        canonical_node_name = entry[0] if entry else node_name
+        _require_node_agent_token(state, token, node_name, node_id=node_id)
+        tasks = _agent_tasks(state)
+        task = tasks.get(task_id)
+        if not isinstance(task, dict) or task.get("nodeName") != canonical_node_name:
+            raise LumaError(f"agent task not found: {task_id}")
+        progress = task.get("progress") if isinstance(task.get("progress"), list) else []
+        progress.extend(events)
+        task["progress"] = progress[-300:]
+        task["updatedAt"] = int(time.time())
+
+    _mutate_control_state(mutate)
+    return {"taskId": task_id, "events": len(events)}
+
+
+def _agent_progress_events(raw_events: list[Any]) -> list[Dict[str, Any]]:
+    now = int(time.time())
+    events: list[Dict[str, Any]] = []
+    for raw in raw_events[:50]:
+        if not isinstance(raw, dict):
+            continue
+        kind = str(raw.get("type") or "output").strip() or "output"
+        line = str(raw.get("line") or raw.get("message") or "")
+        if not line.strip():
+            continue
+        events.append({"type": kind[:40], "line": line[:4000], "ts": int(raw.get("ts") or now)})
+    return events
+
+
 def _run_node_agent_task(
     state: Dict[str, Any],
     node_name: str,
@@ -692,6 +738,18 @@ def _run_node_agent_task(
     timeout: int | None = None,
     required_capability: str | None = "nfs-host",
 ) -> Dict[str, Any]:
+    task_id = _queue_node_agent_task(state, node_name, action, payload, required_capability=required_capability)
+    return _wait_node_agent_task(task_id, node_name, action, timeout=timeout)
+
+
+def _queue_node_agent_task(
+    state: Dict[str, Any],
+    node_name: str,
+    action: str,
+    payload: Dict[str, Any],
+    *,
+    required_capability: str | None = "nfs-host",
+) -> str:
     task_id = f"task-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
 
     def mutate(current: Dict[str, Any]) -> None:
@@ -713,12 +771,23 @@ def _run_node_agent_task(
             "nodeName": node_name,
             "action": action,
             "payload": dict(payload),
+            "progress": [],
             "status": "queued",
             "createdAt": now,
             "updatedAt": now,
         }
 
     _mutate_control_state(mutate)
+    return task_id
+
+
+def _wait_node_agent_task(
+    task_id: str,
+    node_name: str,
+    action: str,
+    *,
+    timeout: int | None = None,
+) -> Dict[str, Any]:
     deadline = time.time() + float(timeout or AGENT_TASK_TIMEOUT_SECONDS)
     while time.time() < deadline:
         current = load_state()
@@ -879,6 +948,88 @@ def handle_dashboard_logs(token: str, service_name: str, *, tail: int = 120, sin
         "since": since,
         "updatedAt": int(time.time()),
     }
+
+
+def handle_service_pull_diagnostics(token: str, service_name: str, *, timeout: int = 600) -> Dict[str, Any]:
+    started = _start_service_pull_diagnostics(token, service_name, timeout=timeout)
+    result = _wait_node_agent_task(
+        str(started["taskId"]),
+        str(started["node"]),
+        "diagnose-docker-pull",
+        timeout=int(started["timeout"]) + 30,
+    )
+    return _service_pull_diagnostics_result(started, result)
+
+
+def _start_service_pull_diagnostics(token: str, service_name: str, *, timeout: int = 600) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    service = service_name.strip()
+    if not service:
+        raise LumaError("service is required")
+    timeout = min(max(int(timeout or 600), 30), 1800)
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+    target = _nomad_pull_diagnostic_target(config, state, service)
+    registry_auth = registry_auth_for_image(
+        state.get("registries") if isinstance(state.get("registries"), dict) else {},
+        target["image"],
+    )
+    payload: Dict[str, Any] = {"image": target["image"], "timeout": timeout}
+    if target.get("platform"):
+        payload["platform"] = str(target["platform"])
+    task_id = _queue_node_agent_task(
+        state,
+        str(target["node"]),
+        "diagnose-docker-pull",
+        payload,
+        required_capability="docker-image",
+    )
+    return {
+        "service": service,
+        "job": target["job"],
+        "task": target["task"],
+        "allocId": target["allocId"],
+        "node": target["node"],
+        "image": target["image"],
+        "registryAuth": bool(registry_auth),
+        "taskId": task_id,
+        "timeout": timeout,
+        "updatedAt": int(time.time()),
+    }
+
+
+def _service_pull_diagnostics_result(started: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    lines = result.get("lines") if isinstance(result.get("lines"), list) else []
+    return {
+        "service": str(started.get("service") or ""),
+        "job": str(started.get("job") or ""),
+        "task": str(started.get("task") or ""),
+        "allocId": str(started.get("allocId") or ""),
+        "node": str(started.get("node") or ""),
+        "image": str(started.get("image") or ""),
+        "registryAuth": bool(started.get("registryAuth")),
+        "ok": bool(result.get("ok")),
+        "exitCode": int(result.get("exitCode") or 0),
+        "output": str(result.get("output") or ""),
+        "lines": [str(line) for line in lines],
+        "taskId": str(started.get("taskId") or result.get("taskId") or ""),
+        "updatedAt": int(time.time()),
+    }
+
+
+def _agent_task_progress_snapshot(task_id: str, cursor: int) -> tuple[list[Dict[str, Any]], int, str, Dict[str, Any], str]:
+    state = load_state()
+    task = (state.get("agentTasks") if isinstance(state.get("agentTasks"), dict) else {}).get(task_id)
+    if not isinstance(task, dict):
+        return [], cursor, "missing", {}, "agent task not found"
+    progress = task.get("progress") if isinstance(task.get("progress"), list) else []
+    safe_cursor = min(max(int(cursor or 0), 0), len(progress))
+    events = [event for event in progress[safe_cursor:] if isinstance(event, dict)]
+    result = task.get("result") if isinstance(task.get("result"), dict) else {}
+    return events, len(progress), str(task.get("status") or ""), result, str(task.get("message") or "")
 
 
 def handle_metrics_history(token: str, kind: str, name: str, *, window: int = 3600) -> Dict[str, Any]:
@@ -4192,6 +4343,7 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
         agent = raw.get("agent") if isinstance(raw.get("agent"), dict) else {}
         metrics = agent.get("metrics") if isinstance(agent.get("metrics"), dict) else {}
         container_stats = agent.get("containerStats") if isinstance(agent.get("containerStats"), list) else []
+        diagnostics = agent.get("diagnostics") if isinstance(agent.get("diagnostics"), dict) else {}
         item = {
             "name": name,
             "displayName": str(raw.get("displayName") or name),
@@ -4209,6 +4361,7 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
             "storageCapabilities": [str(value) for value in agent.get("capabilities") or []],
             "metrics": _agent_metrics(metrics),
             "containerStats": _container_stats(container_stats),
+            "diagnostics": diagnostics,
         }
         items.append(item)
     return items
@@ -5016,6 +5169,105 @@ def _nomad_log_target_from_state(state: Dict[str, Any], service: str) -> tuple[s
     return service, ""
 
 
+def _nomad_pull_diagnostic_target(config: Any, state: Dict[str, Any], service: str) -> Dict[str, str]:
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    job_id, task_filter = _nomad_log_target_from_state(state, service)
+    if not job_id:
+        raise LumaError("service is required")
+    try:
+        job = client.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}")
+        allocations = client.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
+    except LumaError as exc:
+        raise LumaError(f"pull diagnostics unavailable for {service}: {exc}") from exc
+    if not isinstance(job, dict):
+        raise LumaError(f"pull diagnostics unavailable for {service}: invalid job detail")
+    if not isinstance(allocations, list):
+        raise LumaError(f"pull diagnostics unavailable for {service}: invalid allocation list")
+    image, task_name = _nomad_job_task_image(job, task_filter or job_id)
+    if not image and not task_filter:
+        image, task_name = _nomad_job_task_image(job, "")
+    if not image:
+        raise LumaError(f"pull diagnostics unavailable for {service}: image not found in Nomad job")
+    allocation = _latest_nomad_allocation_for_task(allocations, task_name)
+    if not allocation:
+        raise LumaError(f"pull diagnostics unavailable for {service}: no allocation found")
+    node_name = _luma_node_name_for_allocation(state, allocation)
+    if not node_name:
+        node_id = str(allocation.get("NodeID") or allocation.get("NodeName") or "")
+        raise LumaError(f"pull diagnostics unavailable for {service}: allocation node is not a ready Luma node ({node_id or 'unknown'})")
+    return {
+        "job": job_id,
+        "task": task_name,
+        "allocId": str(allocation.get("ID") or ""),
+        "node": node_name,
+        "image": image,
+        "platform": "",
+    }
+
+
+def _nomad_job_task_image(job: Dict[str, Any], task_name: str) -> tuple[str, str]:
+    groups = job.get("TaskGroups") if isinstance(job.get("TaskGroups"), list) else []
+    fallback: tuple[str, str] = ("", "")
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        tasks = group.get("Tasks") if isinstance(group.get("Tasks"), list) else []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            name = str(task.get("Name") or "")
+            config = task.get("Config") if isinstance(task.get("Config"), dict) else {}
+            image = str(config.get("image") or "")
+            if image and not fallback[0]:
+                fallback = (image, name)
+            if image and task_name and name == task_name:
+                return image, name
+    return fallback if not task_name else ("", task_name)
+
+
+def _latest_nomad_allocation_for_task(allocations: list[Any], task_name: str) -> Dict[str, Any] | None:
+    candidates: list[Dict[str, Any]] = []
+    for allocation in allocations:
+        if not isinstance(allocation, dict):
+            continue
+        task_states = allocation.get("TaskStates") if isinstance(allocation.get("TaskStates"), dict) else {}
+        if task_name and task_states and task_name not in task_states:
+            continue
+        candidates.append(allocation)
+    if not candidates:
+        return None
+    running = [
+        item for item in candidates
+        if item.get("DesiredStatus") == "run" and str(item.get("ClientStatus") or "") in {"running", "pending"}
+    ]
+    selected = running or candidates
+    selected.sort(key=lambda item: int(item.get("CreateTime") or item.get("CreateIndex") or 0), reverse=True)
+    return selected[0]
+
+
+def _luma_node_name_for_allocation(state: Dict[str, Any], allocation: Dict[str, Any]) -> str:
+    node_id = str(allocation.get("NodeID") or "").strip()
+    node_name = str(allocation.get("NodeName") or "").strip()
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    for name, record in nodes.items():
+        if not isinstance(record, dict):
+            continue
+        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+        candidates = {
+            str(name),
+            str(record.get("name") or ""),
+            str(record.get("displayName") or ""),
+            str(record.get("hostname") or ""),
+            str(record.get("nodeId") or ""),
+            str(labels.get("luma.node.id") or ""),
+            str(labels.get("luma.node.name") or ""),
+        }
+        candidates.update(str(alias) for alias in (record.get("aliases") or []) if alias)
+        if (node_id and node_id in candidates) or (node_name and node_name in candidates):
+            return str(name)
+    return ""
+
+
 class DockerSocketConnection(http.client.HTTPConnection):
     def __init__(self, socket_path: str = "/var/run/docker.sock"):
         super().__init__("localhost")
@@ -5261,16 +5513,22 @@ def _resolve_service_image_for_deployment(
     for image in images:
         image_registry_auth = registry_auth if registry_auth_matches_image(registry_auth, image) else None
         force_pull = image_uses_mutable_latest_tag(image)
+        node_image = image
+        resolved_by = "target-node"
+        if force_pull:
+            node_image = resolve_registry_image_digest(image, registry_auth=image_registry_auth)
+            resolved_by = "registry"
+            force_pull = False
         payload: Dict[str, Any] = {
-            "image": image,
+            "image": node_image,
             "forcePull": force_pull,
             "platform": platform,
         }
         if image_registry_auth:
             payload["registryAuth"] = image_registry_auth
         try:
-            result = _resolve_image_on_target_node(state, service.node, image, payload)
-            deploy_image = str(result.get("deployed") or result.get("digest") or image)
+            result = _resolve_image_on_target_node(state, service.node, node_image, payload)
+            deploy_image = str(result.get("deployed") or result.get("digest") or node_image)
             image_result = {
                 "requested": service.image,
                 "selected": image,
@@ -5280,7 +5538,7 @@ def _resolve_service_image_for_deployment(
                 "forcePull": force_pull,
                 "platform": platform,
                 "node": service.node,
-                "resolvedBy": "target-node",
+                "resolvedBy": resolved_by,
             }
             return replace(service, image=deploy_image), image_result
         except LumaError as exc:
@@ -5540,6 +5798,15 @@ def ensure_image_present(
 ) -> str | None:
     encoded = urllib.parse.quote(image, safe="")
     platform = str(platform or "").strip()
+    expected_digest = ""
+    if force_pull and not platform and image_uses_mutable_latest_tag(image):
+        expected_digest = resolve_registry_image_digest(image, registry_auth=registry_auth)
+        status, raw = docker_request_raw("GET", f"/images/{urllib.parse.quote(expected_digest, safe='')}/json")
+        if status == 200:
+            return expected_digest
+        status, raw = docker_request_raw("GET", f"/images/{encoded}/json")
+        if status == 200 and _image_details_has_repo_digest(raw, expected_digest):
+            return expected_digest
     if not force_pull and not platform:
         status, _ = docker_request_raw("GET", f"/images/{encoded}/json")
         if status == 200:
@@ -5558,10 +5825,23 @@ def ensure_image_present(
     if '"error"' in raw:
         raise LumaError(_docker_pull_error_message(status, raw, registry_auth=registry_auth, platform=platform))
     if force_pull or platform:
-        return _image_pull_repo_digest(image, raw) or _image_repo_digest(image)
+        return _image_pull_repo_digest(image, raw) or expected_digest or _image_repo_digest(image)
     return None
 
 
+
+
+def _image_details_has_repo_digest(raw: str, expected_digest: str) -> bool:
+    if not expected_digest:
+        return False
+    try:
+        details = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return False
+    digests = details.get("RepoDigests")
+    if not isinstance(digests, list):
+        return False
+    return any(str(item) == expected_digest for item in digests)
 
 
 def _image_pull_repo_digest(image: str, raw: str) -> str:
@@ -6041,6 +6321,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/node-agent/tasks/complete":
                 self._json(200, handle_node_agent_complete(token, body))
                 return
+            if self.path == "/v1/node-agent/tasks/progress":
+                self._json(200, handle_node_agent_progress(token, body))
+                return
             if self.path == "/v1/nodes/unregister":
                 self._json(200, handle_node_unregister(token, body))
                 return
@@ -6094,6 +6377,14 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/applications/restart":
                 self._json(200, handle_application_restart(token, body))
+                return
+            if self.path == "/v1/dashboard/pull-diagnostics":
+                service = str(body.get("service") or "")
+                timeout = int(body.get("timeout") or 600)
+                self._json(200, handle_service_pull_diagnostics(token, service, timeout=timeout))
+                return
+            if self.path == "/v1/dashboard/pull-diagnostics/stream":
+                self._stream_pull_diagnostics(token, body)
                 return
             if self.path == "/v1/certificates/retry":
                 self._json(200, handle_certificate_retry(token, body))
@@ -6208,6 +6499,44 @@ class ControlHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             request_id = _request_id()
             print(f"requestId={request_id} stream registry serve internal error: {exc}", file=sys.stderr, flush=True)
+            emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+
+    def _stream_pull_diagnostics(self, token: str, body: Dict[str, Any]) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        def emit(event: Dict[str, Any]) -> None:
+            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+
+        try:
+            service = str(body.get("service") or "")
+            timeout = int(body.get("timeout") or 600)
+            started = _start_service_pull_diagnostics(token, service, timeout=timeout)
+            emit({"status": "start", **started})
+            cursor = 0
+            deadline = time.time() + int(started["timeout"]) + 45
+            while time.time() < deadline:
+                events, cursor, status, result, message = _agent_task_progress_snapshot(str(started["taskId"]), cursor)
+                for event in events:
+                    emit({"status": "progress", **event})
+                if status == "succeeded":
+                    emit({"status": "done", "result": _service_pull_diagnostics_result(started, result)})
+                    return
+                if status in {"failed", "timeout"}:
+                    emit({"status": "fail", "message": message or f"agent task {status}"})
+                    return
+                time.sleep(1)
+            emit({"status": "fail", "message": "Docker pull diagnostic timed out"})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except LumaError as exc:
+            emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+        except Exception as exc:
+            request_id = _request_id()
+            print(f"requestId={request_id} stream pull diagnostics internal error: {exc}", file=sys.stderr, flush=True)
             emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
 
     def _stream_service_logs(self, token: str, service: str, since: str, tail: int) -> None:
@@ -6379,6 +6708,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/nodes/agent-token": handle_node_agent_token,
             "/v1/node-agent/lease": handle_node_agent_lease,
             "/v1/node-agent/tasks/complete": handle_node_agent_complete,
+            "/v1/node-agent/tasks/progress": handle_node_agent_progress,
             "/v1/nodes/unregister": handle_node_unregister,
             "/v1/deployments": handle_deployment,
             "/v1/deployments/preview": handle_deployment_preview,
@@ -6407,8 +6737,14 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             return _asgi_stream_build_deploy(token, body)
         if path == "/v1/registry/serve/stream":
             return _asgi_stream_registry_serve(token, body)
+        if path == "/v1/dashboard/pull-diagnostics/stream":
+            return _asgi_stream_pull_diagnostics(token, body)
         if path == "/v1/auth/login/verify":
             return _json_response(200, await run_in_threadpool(handle_login_verify, token))
+        if path == "/v1/dashboard/pull-diagnostics":
+            service = str(body.get("service") or "")
+            timeout = int(body.get("timeout") or 600)
+            return _json_response(200, await run_in_threadpool(handle_service_pull_diagnostics, token, service, timeout=timeout))
         handler = routes.get(path)
         if handler:
             return _json_response(200, await run_in_threadpool(handler, token, body))
@@ -6510,6 +6846,38 @@ def _asgi_stream_registry_serve(token: str, body: Dict[str, Any]) -> StreamingRe
             if event is None:
                 break
             yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _asgi_stream_pull_diagnostics(token: str, body: Dict[str, Any]) -> StreamingResponse:
+    async def generate() -> AsyncIterator[bytes]:
+        try:
+            service = str(body.get("service") or "")
+            timeout = int(body.get("timeout") or 600)
+            started = await run_in_threadpool(_start_service_pull_diagnostics, token, service, timeout=timeout)
+            yield json.dumps({"status": "start", **started}, separators=(",", ":")).encode("utf-8") + b"\n"
+            cursor = 0
+            deadline = time.time() + int(started["timeout"]) + 45
+            while time.time() < deadline:
+                events, cursor, status, result, message = await run_in_threadpool(_agent_task_progress_snapshot, str(started["taskId"]), cursor)
+                for event in events:
+                    yield json.dumps({"status": "progress", **event}, separators=(",", ":")).encode("utf-8") + b"\n"
+                if status == "succeeded":
+                    final = _service_pull_diagnostics_result(started, result)
+                    yield json.dumps({"status": "done", "result": final}, separators=(",", ":")).encode("utf-8") + b"\n"
+                    return
+                if status in {"failed", "timeout", "missing"}:
+                    yield json.dumps({"status": "fail", "message": message or f"agent task {status}"}, separators=(",", ":")).encode("utf-8") + b"\n"
+                    return
+                await asyncio.sleep(1)
+            yield json.dumps({"status": "fail", "message": "Docker pull diagnostic timed out"}, separators=(",", ":")).encode("utf-8") + b"\n"
+        except LumaError as exc:
+            yield json.dumps({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)}, separators=(",", ":")).encode("utf-8") + b"\n"
+        except Exception as exc:
+            request_id = _request_id()
+            print(f"requestId={request_id} stream pull diagnostics internal error: {exc}", file=sys.stderr, flush=True)
+            yield json.dumps({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)}, separators=(",", ":")).encode("utf-8") + b"\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

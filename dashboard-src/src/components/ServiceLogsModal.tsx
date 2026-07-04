@@ -11,6 +11,16 @@ type LogsState = {
   updatedAt?: number;
 };
 
+type PullDiagnosticState = {
+  status: "idle" | "running" | "done" | "fail";
+  node?: string;
+  image?: string;
+  taskId?: string;
+  ok?: boolean;
+  exitCode?: number;
+  lines: string[];
+};
+
 const SINCE_OPTIONS = [
   { label: "tail", seconds: 0 },
   { label: "5m", seconds: 5 * 60 },
@@ -84,6 +94,8 @@ export function ServiceLogsModal({
   const [logsState, setLogsState] = useState<LogsState | null>(null);
   const [logsError, setLogsError] = useState("");
   const [logsLoading, setLogsLoading] = useState(false);
+  const [pullDiagnostic, setPullDiagnostic] = useState<PullDiagnosticState | null>(null);
+  const [pullLoading, setPullLoading] = useState(false);
 
   useEffect(() => {
     const next = services.find((service) => service.fullName === initialServiceName);
@@ -111,6 +123,10 @@ export function ServiceLogsModal({
       setSelectedService(appServices[0].fullName || "");
     }
   }, [appServices, selectedService]);
+
+  useEffect(() => {
+    setPullDiagnostic(null);
+  }, [selectedService]);
 
   const selected = services.find((service) => service.fullName === selectedService);
   const filteredLogs = useMemo(() => {
@@ -246,6 +262,92 @@ export function ServiceLogsModal({
     }
   };
 
+  const diagnosePull = async () => {
+    if (!selectedService) return;
+    setPullLoading(true);
+    setLogsError("");
+    setPullDiagnostic({ status: "running", lines: [] });
+    try {
+      const response = await fetch("/v1/dashboard/pull-diagnostics/stream", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ service: selectedService, timeout: 600 }),
+      });
+      if (!response.ok || !response.body) {
+        const text = await response.text();
+        throw new Error(text || `HTTP ${response.status}`);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const applyEvent = (event: Record<string, unknown>) => {
+        const status = String(event.status || "");
+        if (status === "start") {
+          setPullDiagnostic((prev) => ({
+            status: "running",
+            lines: prev?.lines || [],
+            node: String(event.node || ""),
+            image: String(event.image || ""),
+            taskId: String(event.taskId || ""),
+          }));
+          return;
+        }
+        if (status === "progress") {
+          const line = String(event.line || "");
+          if (!line) return;
+          setPullDiagnostic((prev) => {
+            const nextLines = [...(prev?.lines || []), line];
+            return { ...(prev || { status: "running" as const, lines: [] }), status: "running", lines: nextLines.slice(-300) };
+          });
+          return;
+        }
+        if (status === "done") {
+          const result = event.result && typeof event.result === "object" ? event.result as Record<string, unknown> : {};
+          setPullDiagnostic((prev) => {
+            const resultLines = Array.isArray(result.lines) ? result.lines.map(String) : [];
+            return {
+              status: "done",
+              node: String(result.node || prev?.node || ""),
+              image: String(result.image || prev?.image || ""),
+              taskId: String(result.taskId || prev?.taskId || ""),
+              ok: Boolean(result.ok),
+              exitCode: Number(result.exitCode ?? 0),
+              lines: (prev?.lines?.length ? prev.lines : resultLines).slice(-300),
+            };
+          });
+          return;
+        }
+        if (status === "fail") {
+          const message = String(event.message || "Docker pull diagnostic failed");
+          setPullDiagnostic((prev) => ({
+            ...(prev || { lines: [] }),
+            status: "fail",
+            ok: false,
+            lines: [...(prev?.lines || []), message].slice(-300),
+          }));
+        }
+      };
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n");
+        buffer = parts.pop() || "";
+        for (const part of parts) {
+          if (!part.trim()) continue;
+          applyEvent(JSON.parse(part));
+        }
+      }
+      if (buffer.trim()) applyEvent(JSON.parse(buffer));
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error);
+      setLogsError(message);
+      setPullDiagnostic((prev) => ({ ...(prev || { lines: [] }), status: "fail", ok: false, lines: [...(prev?.lines || []), message].slice(-300) }));
+    } finally {
+      setPullLoading(false);
+    }
+  };
+
   if (!LOGS_MODAL_ROOT) return null;
 
   return createPortal(
@@ -292,6 +394,10 @@ export function ServiceLogsModal({
               <RefreshCw size={14} aria-hidden="true" />
               {logsLoading ? t(lang, "refreshing") : t(lang, "refresh")}
             </button>
+            <button type="button" className="logs-tool-button" disabled={pullLoading || !selectedService} onClick={() => void diagnosePull()}>
+              <RefreshCw size={14} aria-hidden="true" />
+              {pullLoading ? (lang === "zh" ? "诊断中" : "Diagnosing") : (lang === "zh" ? "诊断拉取" : "Pull diag")}
+            </button>
             <button type="button" className="logs-tool-button" onClick={() => void copyLogs()}>
               <Copy size={14} aria-hidden="true" />
               {copyState || (lang === "zh" ? "复制" : "Copy")}
@@ -306,6 +412,15 @@ export function ServiceLogsModal({
           <span>{selected ? serviceTitle(selected) : "-"}</span>
           <span>{logsState?.updatedAt ? new Date(logsState.updatedAt * 1000).toLocaleTimeString() : "-"}</span>
         </div>
+        {pullDiagnostic ? (
+          <div className={pullDiagnostic.status === "done" && pullDiagnostic.ok ? "logs-pull-diagnostics ok" : pullDiagnostic.status === "fail" || pullDiagnostic.ok === false ? "logs-pull-diagnostics bad" : "logs-pull-diagnostics"}>
+            <div className="logs-pull-summary">
+              <strong>{lang === "zh" ? "镜像拉取诊断" : "Image pull diagnostic"}</strong>
+              <span>{pullDiagnostic.node || "-"} · {pullDiagnostic.image || "-"} · {pullDiagnostic.status}{pullDiagnostic.exitCode !== undefined ? ` · exit ${pullDiagnostic.exitCode}` : ""}</span>
+            </div>
+            <pre>{pullDiagnostic.lines.join("\n") || (lang === "zh" ? "等待节点输出..." : "Waiting for node output...")}</pre>
+          </div>
+        ) : null}
         {logsError ? <div className="logs-error">{logsError}</div> : null}
         <pre className="logs-tail logs-modal-tail">{filteredLogs.join("\n") || "-"}</pre>
       </section>

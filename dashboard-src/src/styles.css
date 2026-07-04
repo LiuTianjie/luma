@@ -2571,6 +2571,69 @@ tbody tr.is-selected {
   color: var(--text);
 }
 
+.logs-pull-diagnostics {
+  display: grid;
+  gap: 8px;
+  margin: 0 18px 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--well);
+}
+
+.logs-pull-diagnostics.ok {
+  border-color: var(--green-line);
+  background: var(--green-soft);
+}
+
+.logs-pull-diagnostics.bad {
+  border-color: var(--red-line);
+  background: var(--red-soft);
+}
+
+.logs-pull-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text);
+}
+
+.logs-pull-summary strong {
+  font-weight: 700;
+}
+
+.logs-pull-summary span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logs-pull-diagnostics pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.logs-pull-diagnostics.ok pre {
+  border-color: var(--green-line);
+}
+
+.logs-pull-diagnostics.bad pre {
+  border-color: var(--red-line);
+}
+
 .logs-toggle {
   white-space: nowrap;
 }
@@ -4116,8 +4179,14 @@ dd {
   }
 
   .logs-modal .logs-context,
-  .logs-modal .logs-error {
+  .logs-modal .logs-error,
+  .logs-modal .logs-pull-diagnostics {
     margin-inline: 12px;
+  }
+
+  .logs-pull-summary {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .logs-modal-tail {

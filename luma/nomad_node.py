@@ -143,6 +143,7 @@ def render_agent_config(
     # host paths, so always enable.
     lines.append('plugin "docker" {')
     lines.append("  config {")
+    lines.append('    pull_activity_timeout = "30m"')
     lines.append("    volumes {")
     lines.append("      enabled = true")
     lines.append("    }")
@@ -205,13 +206,15 @@ def _systemd_unit() -> str:
     return (
         "[Unit]\n"
         "Description=Nomad\n"
-        "Wants=network-online.target\n"
-        "After=network-online.target\n\n"
+        "Wants=network-online.target docker.service tailscaled.service\n"
+        "After=network-online.target docker.service tailscaled.service\n"
+        "StartLimitIntervalSec=0\n\n"
         "[Service]\n"
         "ExecStart=/usr/local/bin/nomad agent -config /etc/nomad.d\n"
         "ExecReload=/bin/kill -HUP $MAINPID\n"
         "KillMode=process\n"
-        "Restart=on-failure\n"
+        "Restart=always\n"
+        "RestartSec=5\n"
         "LimitNOFILE=65536\n\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n"

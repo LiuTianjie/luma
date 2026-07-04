@@ -241,7 +241,7 @@ def _job_task_summaries(
             config = task.get("Config") if isinstance(task.get("Config"), dict) else {}
             port_label = _task_port_label(task, group_services)
             port = reserved_ports.get(port_label, {}) if port_label else {}
-            alloc_rows = _task_allocations(job_id, group_name, task_name, allocations, region=region)
+            alloc_rows = _task_allocations(job_id, group_name, task_name, allocations, region=region, desired=desired)
             running = len([row for row in alloc_rows if str(row.get("state") or "") == "running"])
             if not alloc_rows:
                 running = int(group_summary.get("Running") or job_item.get("running") or 0)
@@ -357,6 +357,7 @@ def _task_allocations(
     allocations: List[Any],
     *,
     region: str,
+    desired: int = 1,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for allocation in allocations:
@@ -396,6 +397,14 @@ def _task_allocations(
                 "error": str(task_state.get("Failed") or ""),
             }
         )
+    running_count = sum(1 for row in rows if str(row.get("state") or "").lower() == "running")
+    if running_count >= max(int(desired or 1), 1):
+        terminal_states = {"dead", "failed", "lost", "complete"}
+        rows = [
+            row
+            for row in rows
+            if str(row.get("state") or "").lower() not in terminal_states and str(row.get("error") or "").lower() != "true"
+        ]
     rows.sort(key=lambda row: row.get("id") or "")
     return rows
 

@@ -59,6 +59,16 @@ luma deploy status.yaml
 | `stackPath` | 否 | string | 覆盖生成 jobspec 路径。通常不用。 |
 | `routePath` | 否 | string | 覆盖 tailscale route 文件路径。通常不用。 |
 
+## 更新策略
+
+Luma 渲染 Nomad `update` 策略时默认启用 `auto_revert`、`max_parallel = 1` 和健康窗口，失败发布会自动回滚到上一版。多副本服务按 Nomad rolling update 逐个替换。
+
+单副本的 `cn-edge` / `external-edge` 服务如果使用动态端口（未设置 `publishPort`），Luma 会渲染 Nomad canary + auto-promote：先启动一个新 allocation，等它健康后再提升为正式版本并停掉旧 allocation。建议公开 HTTP 服务都配置 `healthcheck`，这样 Nomad 会等 service check 稳定；没有 `healthcheck` 时只能按 task running 判断健康。
+
+显式 `publishPort`、`tailscale-relay` 默认 host network、`tcp-relay`、内部服务和有本地状态的服务不会默认启用 canary，因为新旧 allocation 同时存在可能撞宿主机端口或本地数据。它们仍然使用 `auto_revert` 和 `max_parallel = 1`，但无法保证单副本完全无中断。
+
+Compose 部署也渲染同样的 Nomad `update` 基线策略。对没有 `publishPort` 的 `cn-edge` / `external-edge` compose 服务，Luma 使用 Nomad dynamic port，并在整组没有固定宿主机端口、`tailscale-relay` / `tcp-relay`、持久卷时启用 canary + auto-promote：先起新 compose allocation，健康后再切换。只要 compose 里任一服务需要固定宿主机端口或声明持久卷，就跳过 canary，避免新旧整组同时存在导致端口冲突或状态数据风险。
+
 ## exposure 选择
 
 | exposure | region | 是否需要 domain/port | 适合场景 |

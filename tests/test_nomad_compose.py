@@ -239,6 +239,64 @@ services:
         self.assertEqual(mysql["Resources"]["MemoryMB"], 256)        # reservation
         self.assertEqual(mysql["Resources"]["MemoryMaxMB"], 512)     # limit
 
+    def test_dynamic_edge_compose_uses_canary_before_promoting(self):
+        compose = """
+services:
+  web:
+    image: registry.example.com/web:latest
+"""
+        sidecar = """
+name: web-stack
+compose: docker-compose.yml
+region: cn
+services:
+  web:
+    exposure: cn-edge
+    domain: web.example.com
+    port: 3000
+"""
+        dep = write_deployment(sidecar, compose)
+        job = render_compose_job(cfg(), dep, as_json=False)["Job"]
+
+        update = job["Update"]
+        self.assertEqual(update["Canary"], 1)
+        self.assertTrue(update["AutoPromote"])
+        self.assertTrue(update["AutoRevert"])
+        self.assertEqual(update["MaxParallel"], 1)
+        network = job["TaskGroups"][0]["Networks"][0]
+        self.assertEqual(network["DynamicPorts"][0]["Label"], "web")
+        self.assertEqual(network["DynamicPorts"][0]["To"], 3000)
+        self.assertNotIn("ReservedPorts", network)
+
+    def test_compose_publish_port_skips_canary_to_avoid_port_conflict(self):
+        compose = """
+services:
+  web:
+    image: registry.example.com/web:latest
+"""
+        sidecar = """
+name: web-stack
+compose: docker-compose.yml
+region: cn
+services:
+  web:
+    exposure: cn-edge
+    domain: web.example.com
+    port: 3000
+    publishPort: 18080
+"""
+        dep = write_deployment(sidecar, compose)
+        job = render_compose_job(cfg(), dep, as_json=False)["Job"]
+
+        update = job["Update"]
+        self.assertNotIn("Canary", update)
+        self.assertNotIn("AutoPromote", update)
+        network = job["TaskGroups"][0]["Networks"][0]
+        self.assertEqual(network["ReservedPorts"][0]["Label"], "web")
+        self.assertEqual(network["ReservedPorts"][0]["Value"], 18080)
+        self.assertEqual(network["ReservedPorts"][0]["To"], 3000)
+        self.assertNotIn("DynamicPorts", network)
+
     def test_node_pin_and_region_constraints(self):
         job = self.render()
         cons = {(c["LTarget"], c["RTarget"]) for c in job["Constraints"]}

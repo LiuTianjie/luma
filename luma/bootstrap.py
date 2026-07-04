@@ -1217,6 +1217,12 @@ def install_nomad_node(
         cmds = "set -e; mkdir -p /etc/nomad.d /opt/nomad/data; "
         cmds += f"echo {cfg_b64} | base64 -d > /etc/nomad.d/nomad.hcl; "
         if install["service_kind"] == "systemd":
+            cmds += (
+                "if [ -f /etc/systemd/system/nomad.service ]; then "
+                "cp -a /etc/systemd/system/nomad.service "
+                "/etc/systemd/system/nomad.service.luma-backup-$(date +%Y%m%d%H%M%S); "
+                "fi; "
+            )
             cmds += f"echo {unit_b64} | base64 -d > /etc/systemd/system/nomad.service"
         else:
             cmds += f"echo {unit_b64} | base64 -d > /Library/LaunchDaemons/io.luma.nomad.plist"
@@ -1250,7 +1256,10 @@ def install_nomad_node(
             # and also starts a stopped one, matching the macOS unload+load path.
             # A Nomad client restart does not kill running allocations (docker
             # tasks survive and the agent re-attaches).
-            remote.sudo("systemctl daemon-reload && systemctl enable nomad && systemctl restart nomad")
+            remote.sudo(
+                "systemctl daemon-reload && systemctl enable nomad && "
+                "(systemctl reset-failed nomad || true) && systemctl restart nomad"
+            )
         else:
             remote.sudo(
                 "launchctl unload /Library/LaunchDaemons/io.luma.nomad.plist 2>/dev/null || true; "

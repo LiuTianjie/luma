@@ -101,6 +101,28 @@ class InstallCommandTests(unittest.TestCase):
         self.assertIn(f"nomad_{nn.NOMAD_VERSION}_linux_amd64.zip", out["download_url"])
         self.assertIn("ExecStart=/usr/local/bin/nomad agent", out["service_unit"])
 
+    def test_linux_systemd_unit_survives_reboot_races(self):
+        unit = nn.install_nomad_commands(os_name="linux", arch="x86_64", config_hcl="x")["service_unit"]
+
+        self.assertIn("Wants=network-online.target docker.service tailscaled.service", unit)
+        self.assertIn("After=network-online.target docker.service tailscaled.service", unit)
+        self.assertIn("StartLimitIntervalSec=0", unit)
+        self.assertIn("Restart=always", unit)
+        self.assertIn("RestartSec=5", unit)
+
+    def test_docker_driver_allows_large_cold_image_pulls(self):
+        config = nn.render_agent_config(
+            os_name="linux",
+            role="client",
+            tailscale_ip="100.1.1.1",
+            region="home",
+            node_name="blg",
+            server_addrs=["100.2.2.2:4647"],
+        )
+
+        self.assertIn('plugin "docker"', config)
+        self.assertIn('pull_activity_timeout = "30m"', config)
+
     def test_darwin_uses_launchd_and_arm64(self):
         out = nn.install_nomad_commands(os_name="darwin", arch="arm64", config_hcl="x")
         self.assertEqual(out["service_kind"], "launchd")

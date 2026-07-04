@@ -1,0 +1,7 @@
+name: luma-registry-smoke-tecent
+image: 100.66.177.70:5000/luma/registry-smoke:20260704
+region: cn
+node: tecent
+port: 5000
+publishPort: 15001
+exposure: none

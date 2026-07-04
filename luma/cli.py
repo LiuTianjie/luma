@@ -139,7 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.132 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.133 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -233,6 +233,11 @@ def build_parser() -> argparse.ArgumentParser:
     service_remove.add_argument("--delete-storage", action="store_true", help="Delete removable storage referenced by the recorded deployment")
     service_remove.add_argument("--dry-run", action="store_true", help="Show what would be removed without changing the manager")
     service_remove.add_argument("--timeout", type=int, default=300, help="Seconds to wait for the control-plane remove response")
+    service_restart = service_sub.add_parser("restart")
+    service_restart.add_argument("stack", help="Deployed service or Compose application name")
+    service_restart.add_argument("--service", default="", help="Task/service name inside a Compose application")
+    service_restart.add_argument("--mode", choices=("recreate", "task"), default="", help="recreate stops the allocation; task restarts in place")
+    service_restart.add_argument("--timeout", type=int, default=120, help="Seconds to wait for the control-plane restart response")
 
     validate = sub.add_parser("validate")
     validate.add_argument("service", type=Path)
@@ -1971,7 +1976,15 @@ def _tailscale_logout(remote: LocalExecutor) -> str:
 
 def _prune_local_docker(remote: LocalExecutor) -> str:
     result = remote.sudo_result(
-        "if command -v docker >/dev/null 2>&1; then docker system prune -af --volumes >/dev/null; echo done; else echo skipped; fi"
+        "if command -v docker >/dev/null 2>&1; then "
+        "mkdir -p /opt/luma/events; "
+        "ts=$(date -u +%Y-%m-%dT%H:%M:%SZ); "
+        "printf '{\"ts\":\"%s\",\"event\":\"docker-prune\",\"source\":\"luma node exit --prune-docker\"}\\n' \"$ts\" "
+        ">> /opt/luma/events/node-exit.jsonl; "
+        "logger -t luma 'Docker prune requested by luma node exit --prune-docker'; "
+        "docker system prune -af --volumes >/dev/null; "
+        "echo done; "
+        "else echo skipped; fi"
     )
     if result.code != 0:
         raise LumaError(f"failed to prune Docker:\n{result.output.strip()}")
@@ -2047,6 +2060,8 @@ def cmd_service(args: argparse.Namespace) -> int:
         return cmd_service_new(args)
     if args.service_command == "remove":
         return cmd_service_remove(args)
+    if args.service_command == "restart":
+        return cmd_service_restart(args)
     raise LumaError(f"unknown service command: {args.service_command}")
 
 
@@ -2123,6 +2138,31 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
         print(result["generatedFiles"])
     if result.get("storageCleanup"):
         print(result["storageCleanup"])
+    return 0
+
+
+def cmd_service_restart(args: argparse.Namespace) -> int:
+    if args.timeout < 1:
+        raise LumaError("--timeout must be at least 1 second")
+    stack = str(args.stack).strip()
+    service_name = str(args.service or "").strip()
+    if not stack:
+        raise LumaError("stack is required")
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    mode = str(args.mode or "").strip()
+    result = _run_with_wait_heartbeat(
+        lambda: client.restart_application(stack=stack, service=service_name, mode=mode, timeout=args.timeout),
+        timeout=args.timeout,
+    )
+    actual_mode = str(result.get("mode") or mode or ("task" if service_name else "recreate"))
+    suffix = f"/{service_name}" if service_name else ""
+    print(f"[ok] Restart finished: {stack}{suffix} ({actual_mode})")
+    for item in result.get("restarted") or []:
+        if isinstance(item, dict):
+            task = str(item.get("task") or "*")
+            alloc = str(item.get("allocId") or "")
+            print(f"  {task} {alloc}".rstrip())
     return 0
 
 
@@ -2854,7 +2894,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         control_ok = bool(verified.get("clusterId"))
         checks.append(("Control API", control_ok, "Check the control URL, token, DNS, and HTTPS route"))
         if control_ok:
-            _append_control_status_checks(checks, client)
+            _append_control_status_checks(checks, client, deep=bool(getattr(args, "deep", False)))
     except LumaError as exc:
         checks.append(("Control API", False, str(exc)))
 
@@ -2865,7 +2905,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if all(ok for _, ok, _ in checks) else 1
 
 
-def _append_control_status_checks(checks: list[tuple[str, bool, str]], client: ControlClient) -> None:
+def _append_control_status_checks(checks: list[tuple[str, bool, str]], client: ControlClient, *, deep: bool = False) -> None:
     try:
         status = client.status()
     except LumaError as exc:
@@ -2905,6 +2945,108 @@ def _append_control_status_checks(checks: list[tuple[str, bool, str]], client: C
             not pending_agents,
             "Restart or reinstall Luma node agent on: " + ", ".join(name for name in pending_agents if name),
         )
+    )
+    if deep:
+        _append_deep_node_checks(checks, node_items)
+
+
+def _append_deep_node_checks(checks: list[tuple[str, bool, str]], node_items: list[Any]) -> None:
+    for item in node_items:
+        if not isinstance(item, dict):
+            continue
+        node_name = str(item.get("name") or "node")
+        diagnostics = item.get("diagnostics") if isinstance(item.get("diagnostics"), dict) else {}
+        docker = diagnostics.get("docker") if isinstance(diagnostics.get("docker"), dict) else {}
+        nomad = diagnostics.get("nomad") if isinstance(diagnostics.get("nomad"), dict) else {}
+        mirror_fix = _docker_mirror_fix(docker.get("mirrors"))
+        checks.append((f"Node {node_name} docker mirrors", not mirror_fix, mirror_fix or "Docker registry mirrors look reachable or are not configured"))
+        proxy = docker.get("proxy") if isinstance(docker.get("proxy"), dict) else {}
+        no_proxy_fix = _docker_proxy_no_proxy_fix(proxy)
+        checks.append((f"Node {node_name} Docker NO_PROXY", not no_proxy_fix, no_proxy_fix or "Docker daemon proxy bypass includes local registries"))
+        driver = nomad.get("dockerDriver") if isinstance(nomad.get("dockerDriver"), dict) else {}
+        timeout_value = str(driver.get("pullActivityTimeout") or "").strip()
+        timeout_seconds = _duration_seconds(timeout_value)
+        timeout_ok = timeout_seconds >= 30 * 60
+        checks.append(
+            (
+                f"Node {node_name} Nomad Docker pull timeout",
+                timeout_ok,
+                f"Set Nomad Docker driver pull_activity_timeout = \"30m\" and restart nomad (current: {timeout_value or 'missing'})",
+            )
+        )
+        pull_errors = diagnostics.get("recentImagePullErrors") if isinstance(diagnostics.get("recentImagePullErrors"), list) else []
+        checks.append(
+            (
+                f"Node {node_name} recent image pulls",
+                not pull_errors,
+                _image_pull_fix(pull_errors),
+            )
+        )
+
+
+def _docker_mirror_fix(raw_mirrors: Any) -> str:
+    if not isinstance(raw_mirrors, list):
+        return ""
+    failures: list[str] = []
+    for mirror in raw_mirrors:
+        if isinstance(mirror, dict):
+            ok = bool(mirror.get("ok", True))
+            if not ok:
+                url = str(mirror.get("url") or mirror.get("mirror") or "").strip()
+                message = str(mirror.get("message") or mirror.get("error") or "unreachable").strip()
+                failures.append(f"bad mirror {url}: {message}".strip())
+    return "; ".join(failures)
+
+
+def _duration_seconds(value: str) -> int:
+    text = str(value or "").strip().lower()
+    if not text:
+        return 0
+    total = 0.0
+    matched = False
+    for amount, unit in re.findall(r"(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)", text):
+        matched = True
+        number = float(amount)
+        if unit == "h":
+            total += number * 3600
+        elif unit == "m":
+            total += number * 60
+        elif unit == "s":
+            total += number
+        elif unit == "ms":
+            total += number / 1000
+        elif unit in {"us", "µs"}:
+            total += number / 1_000_000
+        elif unit == "ns":
+            total += number / 1_000_000_000
+    if matched:
+        return int(total)
+    if text.isdigit():
+        return int(text)
+    return 0
+
+
+def _docker_proxy_no_proxy_fix(proxy: Dict[str, Any]) -> str:
+    http_proxy = str(proxy.get("http") or proxy.get("HTTPProxy") or "").strip()
+    https_proxy = str(proxy.get("https") or proxy.get("HTTPSProxy") or "").strip()
+    if not http_proxy and not https_proxy:
+        return ""
+    no_proxy = str(proxy.get("noProxy") or proxy.get("NoProxy") or "").lower()
+    expected = ["localhost", "127.0.0.1", "gcode.gaojiua.com"]
+    missing = [item for item in expected if item not in no_proxy]
+    if not missing:
+        return ""
+    return "Docker daemon image-pull proxy is active; add to NO_PROXY: " + ", ".join(missing)
+
+
+def _image_pull_fix(raw_errors: list[Any]) -> str:
+    errors = [str(item).strip() for item in raw_errors if str(item).strip()]
+    if not errors:
+        return "No recent image pull errors"
+    return (
+        errors[0]
+        + " — check Docker daemon registry mirrors/proxy/NO_PROXY. "
+        "Runtime `proxy: true` does not affect Docker image pulls."
     )
 
 

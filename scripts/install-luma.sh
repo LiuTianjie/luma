@@ -238,8 +238,9 @@ EOF
         cat > "$tmp_unit" <<EOF
 [Unit]
 Description=Luma node agent
-After=network-online.target docker.service
-Wants=network-online.target
+After=network-online.target docker.service nomad.service
+Wants=network-online.target docker.service nomad.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -250,10 +251,14 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+        if run_sudo test -f /etc/systemd/system/luma-node-agent.service; then
+          run_sudo cp -a /etc/systemd/system/luma-node-agent.service "/etc/systemd/system/luma-node-agent.service.luma-backup-$(date +%Y%m%d%H%M%S)"
+        fi
         run_sudo install -m 0644 "$tmp_unit" /etc/systemd/system/luma-node-agent.service
         rm -f "$tmp_unit"
         run_sudo systemctl daemon-reload
         run_sudo systemctl enable luma-node-agent.service >/dev/null
+        run_sudo systemctl reset-failed luma-node-agent.service >/dev/null 2>&1 || true
         run_sudo sh -c "( sleep ${LUMA_AGENT_RELOAD_DELAY_SECONDS:-20}; systemctl restart luma-node-agent.service ) >/tmp/luma-node-agent-reload.log 2>&1 &"
         echo "Luma node agent systemd restart scheduled"
       fi

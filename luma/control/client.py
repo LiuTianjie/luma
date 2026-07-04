@@ -110,6 +110,10 @@ class ControlClient:
     def status(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/status")
 
+    def restart_application(self, *, stack: str, service: str = "", mode: str = "", timeout: int = 120) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"stack": stack, "service": service, "mode": mode}
+        return self.request("POST", "/v1/applications/restart", body, timeout=timeout)
+
     def register_node(self, *, node_name: str, region: str) -> Dict[str, Any]:
         return self.request(
             "POST",
@@ -172,6 +176,7 @@ class ControlClient:
         capabilities: list[str] | None = None,
         metrics: Dict[str, Any] | None = None,
         container_stats: list[Dict[str, Any]] | None = None,
+        diagnostics: Dict[str, Any] | None = None,
         timeout: int = 30,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {
@@ -186,6 +191,8 @@ class ControlClient:
             body["metrics"] = metrics
         if container_stats is not None:
             body["containerStats"] = container_stats
+        if diagnostics is not None:
+            body["diagnostics"] = diagnostics
         return self.request(
             "POST",
             "/v1/node-agent/lease",
@@ -213,6 +220,25 @@ class ControlClient:
                 "status": status,
                 "message": message,
                 "result": result or {},
+            },
+        )
+
+    def progress_agent_task(
+        self,
+        *,
+        task_id: str,
+        node_name: str,
+        node_id: str = "",
+        events: list[Dict[str, Any]] | None = None,
+    ) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/node-agent/tasks/progress",
+            {
+                "taskId": task_id,
+                "nodeName": node_name,
+                "nodeId": node_id,
+                "events": events or [],
             },
         )
 

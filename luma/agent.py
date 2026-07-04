@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict
 
 from .errors import LumaError
-from .local import LocalExecutor
+from .local import LocalExecutor, LocalResult
 from .service import slugify
 
 DEFAULT_AGENT_CONFIG = Path("/opt/luma/node-agent/agent.json")
@@ -126,6 +126,142 @@ def node_agent_metrics() -> Dict[str, Any]:
     elif os_value == "darwin":
         metrics.update(_darwin_host_metrics(metrics.get("loadPercent")))
     return {key: value for key, value in metrics.items() if value not in ("", None)}
+
+
+def _agent_node_diagnostics(*, executor: LocalExecutor | None = None) -> Dict[str, Any]:
+    executor = executor or LocalExecutor()
+    return {
+        "docker": {
+            "mirrors": _diagnostic_docker_mirrors(executor),
+            "proxy": _diagnostic_docker_proxy(executor),
+        },
+        "nomad": {
+            "dockerDriver": {
+                "pullActivityTimeout": _diagnostic_nomad_pull_activity_timeout(executor),
+            }
+        },
+        "recentImagePullErrors": _diagnostic_recent_image_pull_errors(executor),
+    }
+
+
+def _diagnostic_docker_mirrors(executor: LocalExecutor) -> list[Dict[str, Any]]:
+    script = (
+        "python3 - <<'PY'\n"
+        "import json\n"
+        "from pathlib import Path\n"
+        "path = Path('/etc/docker/daemon.json')\n"
+        "try:\n"
+        "    data = json.loads(path.read_text()) if path.exists() else {}\n"
+        "except Exception:\n"
+        "    data = {}\n"
+        "mirrors = data.get('registry-mirrors') or []\n"
+        "print(json.dumps(mirrors if isinstance(mirrors, list) else []))\n"
+        "PY"
+    )
+    result = executor.run_result(script, timeout=10)
+    if result.code != 0:
+        return []
+    try:
+        raw = json.loads(result.output.strip() or "[]")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    mirrors = [str(item).strip() for item in raw if str(item or "").strip()]
+    return [_diagnostic_docker_mirror_health(executor, mirror) for mirror in mirrors]
+
+
+def _diagnostic_docker_mirror_health(executor: LocalExecutor, mirror: str) -> Dict[str, Any]:
+    script = (
+        "python3 - "
+        f"{shlex.quote(mirror)}"
+        " <<'PY'\n"
+        "import json, socket, sys, urllib.error, urllib.parse, urllib.request\n"
+        "url = sys.argv[1].rstrip('/')\n"
+        "parsed = urllib.parse.urlparse(url)\n"
+        "host = parsed.hostname or ''\n"
+        "result = {'url': url, 'ok': False, 'message': 'unreachable'}\n"
+        "try:\n"
+        "    socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == 'https' else 80))\n"
+        "except Exception as exc:\n"
+        "    result['message'] = 'DNS lookup failed: ' + str(exc)\n"
+        "    print(json.dumps(result))\n"
+        "    raise SystemExit(0)\n"
+        "try:\n"
+        "    req = urllib.request.Request(url + '/v2/', method='GET')\n"
+        "    with urllib.request.urlopen(req, timeout=5) as resp:\n"
+        "        code = getattr(resp, 'status', 200)\n"
+        "    result['ok'] = code < 400\n"
+        "    result['message'] = 'reachable' if result['ok'] else 'HTTP ' + str(code)\n"
+        "except urllib.error.HTTPError as exc:\n"
+        "    result['ok'] = exc.code in (200, 401)\n"
+        "    result['message'] = 'reachable' if result['ok'] else 'HTTP ' + str(exc.code)\n"
+        "except Exception as exc:\n"
+        "    result['message'] = str(exc)\n"
+        "print(json.dumps(result))\n"
+        "PY"
+    )
+    result = executor.run_result(script, timeout=8)
+    if result.code != 0:
+        return {"url": mirror, "ok": False, "message": (result.output or "health check failed").strip()}
+    try:
+        parsed = json.loads(result.output.strip() or "{}")
+    except json.JSONDecodeError:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    return {
+        "url": str(parsed.get("url") or mirror),
+        "ok": bool(parsed.get("ok")),
+        "message": str(parsed.get("message") or ""),
+    }
+
+
+def _diagnostic_docker_proxy(executor: LocalExecutor) -> Dict[str, str]:
+    result = executor.run_result(
+        "set -euo pipefail; "
+        f"{_docker_cli_prelude()}; "
+        "\"$docker_cli\" info --format 'HTTPProxy={{.HTTPProxy}} HTTPSProxy={{.HTTPSProxy}} NoProxy={{.NoProxy}}'",
+        timeout=10,
+    )
+    if result.code != 0:
+        return {}
+    values: Dict[str, str] = {}
+    key_map = {"HTTPProxy": "http", "HTTPSProxy": "https", "NoProxy": "noProxy"}
+    for token in (result.output or "").strip().split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        mapped = key_map.get(key)
+        if mapped:
+            values[mapped] = value
+    return values
+
+
+def _diagnostic_nomad_pull_activity_timeout(executor: LocalExecutor) -> str:
+    result = executor.run_result('grep -R "pull_activity_timeout" /etc/nomad.d 2>/dev/null || true', timeout=10)
+    if result.code != 0:
+        return ""
+    for line in (result.output or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "//")):
+            continue
+        match = re.search(r"pull_activity_timeout\s*=\s*\"?([^\"\n#]+)\"?", stripped)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _diagnostic_recent_image_pull_errors(executor: LocalExecutor) -> list[str]:
+    result = executor.run_result(
+        "journalctl -u nomad --since '30 minutes ago' --no-pager 2>/dev/null "
+        "| grep -Ei 'image pull|pull.*image|inactivity|context canceled|tls|eof|proxyconnect|registry' "
+        "| tail -n 20 || true",
+        timeout=10,
+    )
+    if result.code != 0:
+        return []
+    return [line.strip() for line in (result.output or "").splitlines() if line.strip()]
 
 
 def node_agent_container_stats() -> list[Dict[str, Any]]:
@@ -458,10 +594,17 @@ def _agent_service_command(config_path: Path, *, executable: str | None = None, 
             f"{_node_tailscale_watchdog_install_command(os_value)}"
         )
     unit = f"/etc/systemd/system/{DEFAULT_AGENT_SERVICE}.service"
+    backup = (
+        f"if [ -f {unit} ]; then "
+        f"cp -a {unit} {unit}.luma-backup-$(date +%Y%m%d%H%M%S); "
+        "fi"
+    )
     command = (
+        f"{backup}; "
         f"printf '%s' {shlex.quote(_systemd_unit(config_path, executable=executable))} > {unit}; "
         "systemctl daemon-reload; "
-        f"systemctl enable {DEFAULT_AGENT_SERVICE}.service >/dev/null"
+        f"systemctl enable {DEFAULT_AGENT_SERVICE}.service >/dev/null; "
+        f"systemctl reset-failed {DEFAULT_AGENT_SERVICE}.service >/dev/null 2>&1 || true"
     )
     if not restart:
         return command
@@ -783,8 +926,9 @@ def _systemd_unit(config_path: Path, *, executable: str | None = None) -> str:
         [
             "[Unit]",
             "Description=Luma node agent",
-            "After=network-online.target docker.service",
-            "Wants=network-online.target",
+            "After=network-online.target docker.service nomad.service",
+            "Wants=network-online.target docker.service nomad.service",
+            "StartLimitIntervalSec=0",
             "",
             "[Service]",
             "Type=simple",
@@ -851,6 +995,9 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
         or config.get("statsIntervalSeconds")
         or DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS
     )
+    diagnostics_interval = int(os.environ.get("LUMA_NODE_AGENT_DIAGNOSTICS_INTERVAL_SECONDS") or config.get("diagnosticsIntervalSeconds") or 60)
+    diagnostics: Dict[str, Any] = {}
+    diagnostics_at = 0.0
     stats_sampler = None if once else _ContainerStatsSampler(stats_interval)
     terminal_supervisor = None if once else _TerminalSupervisorProcess(config_path)
     if stats_sampler:
@@ -865,6 +1012,10 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                 container_stats = node_agent_container_stats()
             else:
                 container_stats = stats_sampler.snapshot() if stats_sampler else []
+            now = time.time()
+            if once or now - diagnostics_at >= max(diagnostics_interval, 1):
+                diagnostics = _agent_node_diagnostics()
+                diagnostics_at = now
             try:
                 task = client.lease_agent_task(
                     node_name=node_name,
@@ -874,6 +1025,7 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                     capabilities=node_agent_capabilities(),
                     metrics=node_agent_metrics(),
                     container_stats=container_stats,
+                    diagnostics=diagnostics,
                     timeout=max(interval + 5, 15),
                 ).get("task")
             except Exception as exc:
@@ -897,8 +1049,14 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
 
 def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dict[str, Any], config_path: Path = DEFAULT_AGENT_CONFIG) -> bool:
     task_id = str(task.get("id") or "")
+    def progress(event: Dict[str, Any]) -> None:
+        try:
+            client.progress_agent_task(task_id=task_id, node_name=node_name, node_id=node_id, events=[event])
+        except Exception as exc:
+            print(f"luma: node agent task progress failed: {exc}", file=sys.stderr, flush=True)
+
     try:
-        result = execute_agent_task(task, config_path=config_path)
+        result = execute_agent_task(task, config_path=config_path, progress=progress)
         client.complete_agent_task(
             task_id=task_id,
             node_name=node_name,
@@ -1226,7 +1384,12 @@ def _set_pty_size(fd: int, *, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", safe_rows, safe_cols, 0, 0))
 
 
-def execute_agent_task(task: Dict[str, Any], *, config_path: Path = DEFAULT_AGENT_CONFIG) -> Dict[str, Any]:
+def execute_agent_task(
+    task: Dict[str, Any],
+    *,
+    config_path: Path = DEFAULT_AGENT_CONFIG,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
     action = str(task.get("action") or "")
     payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
     if action == "prepare-managed-nfs-host":
@@ -1267,6 +1430,16 @@ def execute_agent_task(task: Dict[str, Any], *, config_path: Path = DEFAULT_AGEN
             registry_auth=registry_auth,
             force_pull=bool(payload.get("forcePull")),
             platform=str(payload.get("platform") or ""),
+        )
+    if action == "diagnose-docker-pull":
+        image = _safe_docker_image_ref(_required(payload, "image"))
+        registry_auth = payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None
+        return diagnose_docker_pull(
+            image=image,
+            registry_auth=registry_auth,
+            platform=str(payload.get("platform") or ""),
+            timeout=int(payload.get("timeout") or 600),
+            progress=progress,
         )
     if action == "update-luma":
         return update_luma_install(install_ref=str(payload.get("installRef") or ""), config_path=config_path)
@@ -1423,6 +1596,117 @@ def resolve_docker_image(
             "platform": platform,
             "message": "Target node image pull ready",
         }
+
+
+def diagnose_docker_pull(
+    *,
+    image: str,
+    registry_auth: Dict[str, Any] | None = None,
+    platform: str = "",
+    timeout: int = 600,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    image = _safe_docker_image_ref(image)
+    platform = str(platform or "").strip()
+    timeout = min(max(int(timeout or 600), 30), 1800)
+    with tempfile.TemporaryDirectory(prefix="luma-docker-config-") as docker_config:
+        _write_docker_auth_config(Path(docker_config), registry_auth)
+        command = f"set -euo pipefail; {_docker_cli_prelude()}; DOCKER_CONFIG={shlex.quote(docker_config)} \"$docker_cli\" pull"
+        if platform:
+            command += f" --platform {shlex.quote(platform)}"
+        command += f" {shlex.quote(image)}"
+        def on_line(line: str) -> None:
+            if progress:
+                progress({"type": "output", "line": line})
+
+        result = _run_command_streaming(command, timeout=timeout, on_line=on_line)
+    output = str(result.output or "")
+    lines = _diagnostic_output_lines(output)
+    return {
+        "image": image,
+        "platform": platform,
+        "ok": result.code == 0,
+        "exitCode": result.code,
+        "output": output,
+        "lines": lines,
+        "message": "Docker pull diagnostic finished" if result.code == 0 else "Docker pull diagnostic failed",
+    }
+
+
+def _diagnostic_output_lines(output: str, *, limit: int = 200) -> list[str]:
+    normalized = str(output or "").replace("\r", "\n")
+    lines = [line.rstrip() for line in normalized.splitlines() if line.strip()]
+    return lines[-limit:]
+
+
+def _run_command_streaming(
+    command: str,
+    *,
+    timeout: int | None = None,
+    on_line: Callable[[str], None] | None = None,
+) -> LocalResult:
+    process = subprocess.Popen(
+        ["bash", "-lc", command],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        bufsize=1,
+    )
+    output_parts: list[str] = []
+    line_buffer: list[str] = []
+    deadline = time.monotonic() + timeout if timeout else None
+
+    def flush_line() -> None:
+        text = "".join(line_buffer).strip()
+        line_buffer.clear()
+        if text and on_line:
+            on_line(text)
+
+    try:
+        while True:
+            if deadline and time.monotonic() > deadline:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                flush_line()
+                message = f"command timed out after {timeout}s"
+                output_parts.append("\n" + message)
+                return LocalResult(code=124, output="".join(output_parts).strip())
+            stream = process.stdout
+            if stream is None:
+                break
+            ready, _, _ = select.select([stream], [], [], 0.2)
+            if ready:
+                chunk = stream.read(1)
+                if not chunk:
+                    if process.poll() is not None:
+                        break
+                    continue
+                output_parts.append(chunk)
+                if chunk in {"\n", "\r"}:
+                    flush_line()
+                else:
+                    line_buffer.append(chunk)
+                continue
+            if process.poll() is not None:
+                rest = stream.read() or ""
+                output_parts.append(rest)
+                for char in rest:
+                    if char in {"\n", "\r"}:
+                        flush_line()
+                    else:
+                        line_buffer.append(char)
+                break
+        flush_line()
+        return LocalResult(code=process.wait(), output="".join(output_parts))
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def _docker_image_inspect_command(image: str, *, docker_config: str) -> str:

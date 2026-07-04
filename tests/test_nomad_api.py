@@ -235,6 +235,115 @@ class NomadApiTests(unittest.TestCase):
         # only the live replacement survives the stale-reschedule filter
         self.assertEqual([row["id"] for row in task["tasks"]], ["alloc-new"])
 
+    def test_old_failed_allocation_does_not_pollute_new_running_allocation(self):
+        responses = {
+            "GET /v1/jobs": [
+                {
+                    "ID": "app",
+                    "Name": "app",
+                    "Type": "service",
+                    "Status": "running",
+                    "Meta": {"luma.region": "home"},
+                    "JobSummary": {"Summary": {"app": {"Running": 1, "Failed": 1}}},
+                }
+            ],
+            "GET /v1/job/app": {
+                "ID": "app",
+                "Meta": {"luma.region": "home"},
+                "TaskGroups": [
+                    {
+                        "Name": "app",
+                        "Count": 1,
+                        "Tasks": [
+                            {"Name": "app", "Config": {"image": "app:latest"}, "Resources": {"CPU": 100, "MemoryMB": 256}},
+                        ],
+                    }
+                ],
+            },
+            "GET /v1/job/app/allocations": [
+                {
+                    "ID": "alloc-old",
+                    "JobID": "app",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "run",
+                    "ClientStatus": "failed",
+                    "NodeName": "lab",
+                    "TaskStates": {"app": {"State": "dead", "Failed": True}},
+                },
+                {
+                    "ID": "alloc-new",
+                    "JobID": "app",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "run",
+                    "ClientStatus": "running",
+                    "NodeName": "lab",
+                    "TaskStates": {"app": {"State": "running"}},
+                },
+            ],
+        }
+        fake = _FakeApi(responses)
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            services = nomad_api.nomad_services_summary(cfg(), {})
+        task = services[0]["tasks"][0]
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["failed"], 0)
+        self.assertEqual([row["id"] for row in task["tasks"]], ["alloc-new"])
+
+    def test_partial_replica_failure_is_not_hidden_by_one_running_allocation(self):
+        responses = {
+            "GET /v1/jobs": [
+                {
+                    "ID": "app",
+                    "Name": "app",
+                    "Type": "service",
+                    "Status": "running",
+                    "Meta": {"luma.region": "home"},
+                    "JobSummary": {"Summary": {"app": {"Running": 1, "Failed": 1}}},
+                }
+            ],
+            "GET /v1/job/app": {
+                "ID": "app",
+                "Meta": {"luma.region": "home"},
+                "TaskGroups": [
+                    {
+                        "Name": "app",
+                        "Count": 2,
+                        "Tasks": [
+                            {"Name": "app", "Config": {"image": "app:latest"}, "Resources": {"CPU": 100, "MemoryMB": 256}},
+                        ],
+                    }
+                ],
+            },
+            "GET /v1/job/app/allocations": [
+                {
+                    "ID": "alloc-ok",
+                    "JobID": "app",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "run",
+                    "ClientStatus": "running",
+                    "NodeName": "lab",
+                    "TaskStates": {"app": {"State": "running"}},
+                },
+                {
+                    "ID": "alloc-bad",
+                    "JobID": "app",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "run",
+                    "ClientStatus": "failed",
+                    "NodeName": "lab",
+                    "TaskStates": {"app": {"State": "dead", "Failed": True}},
+                },
+            ],
+        }
+        fake = _FakeApi(responses)
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            services = nomad_api.nomad_services_summary(cfg(), {})
+        task = services[0]["tasks"][0]
+        self.assertEqual(task["status"], "failed")
+        self.assertEqual(task["running"], 1)
+        self.assertEqual(task["failed"], 1)
+        self.assertEqual([row["id"] for row in task["tasks"]], ["alloc-bad", "alloc-ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

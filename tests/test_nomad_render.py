@@ -107,6 +107,48 @@ replicas: 2
         self.assertTrue(job["Update"]["AutoRevert"])
         self.assertEqual(job["Update"]["MaxParallel"], 1)
 
+    def test_single_replica_dynamic_edge_uses_canary_before_promoting(self):
+        job = self.render(
+            """
+name: app
+image: ghcr.io/acme/app:latest
+region: cn
+exposure: cn-edge
+domain: app.example.com
+port: 3000
+healthcheck:
+  test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/healthz || exit 1"]
+  interval: 10s
+  timeout: 2s
+"""
+        )
+
+        self.assertEqual(job["TaskGroups"][0]["Count"], 1)
+        update = job["Update"]
+        self.assertEqual(update["Canary"], 1)
+        self.assertEqual(update["MaxParallel"], 1)
+        self.assertTrue(update["AutoPromote"])
+        self.assertTrue(update["AutoRevert"])
+        self.assertEqual(update["HealthCheck"], "checks")
+
+    def test_single_replica_fixed_port_skips_canary_to_avoid_port_conflict(self):
+        job = self.render(
+            """
+name: gateway
+image: ghcr.io/acme/gateway:latest
+region: cn
+exposure: cn-edge
+domain: gateway.example.com
+port: 8787
+publishPort: 8787
+"""
+        )
+
+        update = job["Update"]
+        self.assertNotIn("Canary", update)
+        self.assertNotIn("AutoPromote", update)
+        self.assertEqual(update["MaxParallel"], 1)
+
     def test_cn_edge_publish_port_uses_static_reserved_port(self):
         job = self.render(
             """

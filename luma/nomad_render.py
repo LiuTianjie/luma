@@ -220,6 +220,7 @@ def render_compose_job(
     extra_hosts = [f"{svc}:127.0.0.1" for svc in services.keys()]
 
     reserved_ports: List[Dict[str, Any]] = []
+    dynamic_ports: List[Dict[str, Any]] = []
     nomad_services: List[Dict[str, Any]] = []
     tasks: List[Dict[str, Any]] = []
 
@@ -233,7 +234,8 @@ def render_compose_job(
         label = re.sub(r"[^a-zA-Z0-9_]", "_", str(svc_name))
         exposure = override.exposure if override else "none"
         port = override.port if override else None
-        publish = (override.publish_port if override else None) or port
+        publish_port = override.publish_port if override else None
+        publish = publish_port or port
 
         docker_config: Dict[str, Any] = {"image": image, "extra_hosts": list(extra_hosts)}
         registry_auth = registry_auth_resolver(image) if callable(registry_auth_resolver) else None
@@ -246,7 +248,10 @@ def render_compose_job(
         if body.get("command") is not None:
             docker_config["args"] = _as_args(body["command"])
         if port and exposure in {"tcp-relay", "tailscale-relay", "cn-edge", "external-edge"}:
-            reserved_ports.append({"Label": label, "Value": int(publish), "To": int(port), "HostNetwork": "default"})
+            if exposure in EDGE_EXPOSURES and publish_port is None:
+                dynamic_ports.append({"Label": label, "To": int(port), "HostNetwork": "default"})
+            else:
+                reserved_ports.append({"Label": label, "Value": int(publish), "To": int(port), "HostNetwork": "default"})
             docker_config["ports"] = [label]
         mounts: List[Dict[str, Any]] = []
         for vspec in (body.get("volumes") or []):
@@ -364,10 +369,12 @@ def render_compose_job(
     # service publishes a port. Without it, an all-exposure:none multi-service
     # stack renders with no Networks block, each task gets its own loopback, and
     # inter-service connections silently fail while the deploy reports healthy.
-    if len(tasks) > 1 or reserved_ports:
+    if len(tasks) > 1 or reserved_ports or dynamic_ports:
         network: Dict[str, Any] = {"Mode": "bridge"}
         if reserved_ports:
             network["ReservedPorts"] = reserved_ports
+        if dynamic_ports:
+            network["DynamicPorts"] = dynamic_ports
         group["Networks"] = [network]
     if nomad_services:
         group["Services"] = nomad_services
@@ -375,7 +382,7 @@ def render_compose_job(
     job = {
         "ID": name, "Name": name, "Type": "service", "Datacenters": ["dc1"],
         "Constraints": constraints,
-        "Update": {"AutoRevert": True, "MinHealthyTime": 6_000_000_000, "HealthyDeadline": 180_000_000_000},
+        "Update": _compose_update_stanza(deployment),
         "TaskGroups": [group],
         "Meta": {"luma.managed": "true", "luma.region": region, "luma.compose": "true"},
     }
@@ -510,28 +517,73 @@ def _build_job(
         tasks.append(sidecar)
     group["Tasks"] = tasks
 
-    # auto_revert is the headline new capability: a failed deploy rolls back to
-    # the last healthy version on its own.
-    update = {
-        "AutoRevert": True,
-        "MinHealthyTime": 5_000_000_000,   # 5s in ns
-        "HealthyDeadline": 120_000_000_000,  # 2m in ns
-    }
-    if service.replicas > 1:
-        update["MaxParallel"] = 1
-
     job: Dict[str, Any] = {
         "ID": name,
         "Name": name,
         "Type": "service",
         "Datacenters": [datacenter],
-        "Update": update,
+        "Update": _update_stanza(service, has_service_check=bool(nomad_service and nomad_service.get("Checks"))),
         "TaskGroups": [group],
         "Meta": {"luma.managed": "true", "luma.region": service.region},
     }
     if constraints:
         job["Constraints"] = constraints
     return job
+
+
+def _update_stanza(service: ServiceSpec, *, has_service_check: bool = False) -> Dict[str, Any]:
+    update = {
+        "AutoRevert": True,
+        "MaxParallel": 1,
+        "MinHealthyTime": 5_000_000_000,  # 5s in ns
+        "HealthyDeadline": 120_000_000_000,  # 2m in ns
+        "HealthCheck": "checks" if has_service_check else "task_states",
+    }
+    if _canary_before_promote(service):
+        update["Canary"] = 1
+        update["AutoPromote"] = True
+    return update
+
+
+def _compose_update_stanza(deployment: Any) -> Dict[str, Any]:
+    update = {
+        "AutoRevert": True,
+        "MaxParallel": 1,
+        "MinHealthyTime": 6_000_000_000,  # 6s in ns
+        "HealthyDeadline": 180_000_000_000,  # 3m in ns
+        "HealthCheck": "task_states",
+    }
+    if _compose_canary_before_promote(deployment):
+        update["Canary"] = 1
+        update["AutoPromote"] = True
+    return update
+
+
+def _canary_before_promote(service: ServiceSpec) -> bool:
+    if service.replicas != 1:
+        return False
+    if service.exposure not in EDGE_EXPOSURES:
+        return False
+    return service.publish_port is None
+
+
+def _compose_canary_before_promote(deployment: Any) -> bool:
+    has_dynamic_edge = False
+    for override in deployment.services.values():
+        if override.publish_port is not None:
+            return False
+        if override.exposure in HOST_PORT_EXPOSURES:
+            return False
+        if override.exposure in EDGE_EXPOSURES and override.port:
+            has_dynamic_edge = True
+    if not has_dynamic_edge:
+        return False
+
+    services = deployment.compose.get("services") if isinstance(deployment.compose.get("services"), dict) else {}
+    for body in services.values():
+        if isinstance(body, dict) and body.get("volumes"):
+            return False
+    return True
 
 
 def _constraints(service: ServiceSpec) -> List[Dict[str, str]]:
