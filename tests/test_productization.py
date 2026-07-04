@@ -9871,6 +9871,113 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_build_deploy_requires_declared_builder_node(self):
+        from luma.control.server import handle_build_deploy
+        from luma.errors import LumaError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                now = int(time.time())
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                    },
+                    "blg": {
+                        "name": "blg",
+                        "region": "cn",
+                        "tailscaleIP": "100.84.163.118",
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                    },
+                }
+                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+
+                with self.assertRaisesRegex(LumaError, "declared, ready builder node"):
+                    handle_build_deploy(state["deployToken"], {"repoUrl": "https://github.com/acme/app", "buildNode": "blg"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_build_config_declares_builder_nodes(self):
+        from luma.control.server import handle_build_config_set, handle_control_status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                now = int(time.time())
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                save_state(state)
+
+                result = handle_build_config_set(
+                    state["deployToken"],
+                    {"nodes": ["builder"], "defaultNode": "builder", "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"},
+                )
+
+                self.assertEqual(result["build"]["defaultNode"], "builder")
+                self.assertEqual(result["build"]["nodes"][0]["name"], "builder")
+                status = handle_control_status(state["deployToken"])
+                self.assertEqual(status["build"]["registryHost"], "100.66.177.70:5000")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_build_run_records_failed_import_events(self):
+        from luma.control.server import handle_build_deploy, handle_build_run_list, handle_build_run_get
+        from luma.errors import LumaError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                now = int(time.time())
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+
+                def fake_run_task(*_args, **_kwargs):
+                    raise LumaError("git clone failed: 403")
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=fake_run_task):
+                    with self.assertRaisesRegex(LumaError, "git clone failed"):
+                        handle_build_deploy(state["deployToken"], {"repoUrl": "https://github.com/acme/app"})
+
+                listed = handle_build_run_list(state["deployToken"])["runs"]
+                self.assertEqual(len(listed), 1)
+                self.assertEqual(listed[0]["status"], "failed")
+                detail = handle_build_run_get(state["deployToken"], listed[0]["id"])["run"]
+                self.assertEqual(detail["request"]["buildNode"], "builder")
+                self.assertNotIn("envSecrets", detail["request"])
+                self.assertIn("git clone failed: 403", detail["events"][-1]["message"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_build_deploy_expands_owner_repo_shortcut_to_github_url(self):
         from luma.control.server import handle_build_deploy
 
@@ -10348,6 +10455,41 @@ class GithubImportTests(unittest.TestCase):
                 ][0]
                 self.assertEqual(tecent_proxy, "http://10.0.0.2:7890")
                 self.assertIn(("tecent", "configure-insecure-registry", {"registry": "100.66.177.70:5000"}), calls)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_registry_serve_requires_declared_builder_node(self):
+        from luma.control.server import handle_registry_serve
+        from luma.errors import LumaError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                now = int(time.time())
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "cn",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                    },
+                    "blg": {
+                        "name": "blg",
+                        "region": "cn",
+                        "tailscaleIP": "100.84.163.118",
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                    },
+                }
+                state["build"] = {"defaultNode": "builder", "nodes": ["builder"]}
+                save_state(state)
+
+                with self.assertRaisesRegex(LumaError, "declared, ready builder node"):
+                    handle_registry_serve(state["deployToken"], {"node": "blg"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

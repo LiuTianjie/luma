@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.139 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.140 sh
 ```
 
 For local development from a checkout:
@@ -467,12 +467,13 @@ CLI 流式回传 clone → build → push → deploy 每一步。命令行可覆
 
 ```bash
 luma import https://github.com/acme/myapp \
-  --build-node build-1 \
   --ref release \
   --region cn --exposure cn-edge --domain myapp.example.com --port 8080
 ```
 
-对 Compose import，`--region` 会覆盖 sidecar 的 region；`--exposure`、`--domain`、`--port` 是单服务覆盖项，会被忽略并打印 warning。Compose 的服务级路由请写在 `luma.compose.yml` 的 `services:` 里。
+构建节点来自控制面声明的 builder 节点；通常不用传 `--build-node`，只有需要临时覆盖到另一个已声明 builder 时才传。对 Compose import，`--region` 会覆盖 sidecar 的 region；`--exposure`、`--domain`、`--port` 是单服务覆盖项，会被忽略并打印 warning。Compose 的服务级路由请写在 `luma.compose.yml` 的 `services:` 里。
+
+构建历史和失败日志可以用 CLI 查看：`luma build list`、`luma build logs <id>`、`luma build retry <id>`。
 
 dashboard 的「创建应用」页顶部也有「仓库导入」入口：选择 Git provider、账户、仓库和 ref；或手填 URL。进度实时显示。
 

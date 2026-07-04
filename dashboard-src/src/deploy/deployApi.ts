@@ -78,6 +78,20 @@ export type BuildImportRequest = {
   envSecrets?: Record<string, string>;
 };
 
+export type BuildRun = {
+  id?: string;
+  status?: string;
+  source?: string;
+  buildNode?: string;
+  providerId?: string;
+  repository?: string;
+  ref?: string;
+  message?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  events?: DeployStep[];
+};
+
 export async function buildImportStream(request: BuildImportRequest, onStep: (step: DeployStep) => void): Promise<unknown> {
   const body: Record<string, unknown> = {};
   for (const [src, dst] of [
@@ -107,6 +121,29 @@ export async function buildImportStream(request: BuildImportRequest, onStep: (st
     body: JSON.stringify(body),
   });
   return consumeStream(response, onStep);
+}
+
+export async function fetchBuildRuns(token: string): Promise<{ runs?: BuildRun[] }> {
+  const response = await fetch("/v1/builds", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return readJson(response) as Promise<{ runs?: BuildRun[] }>;
+}
+
+export async function fetchBuildRun(token: string, id: string): Promise<{ run?: BuildRun }> {
+  const response = await fetch(`/v1/builds/${encodeURIComponent(id)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return readJson(response) as Promise<{ run?: BuildRun }>;
+}
+
+export async function retryBuildRun(token: string, id: string): Promise<unknown> {
+  const response = await fetch(`/v1/builds/${encodeURIComponent(id)}/retry`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return readJson(response);
 }
 
 export async function registryServeStream(

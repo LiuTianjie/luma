@@ -78,6 +78,15 @@ export type DashboardNode = {
   capacity?: ResourceValues;
 };
 
+export type DashboardBuildNode = {
+  name?: string;
+  region?: string;
+  agentStatus?: string;
+  agentOs?: string;
+  storageCapabilities?: string[];
+  ready?: boolean;
+};
+
 export type DashboardService = {
   name?: string;
   fullName?: string;
@@ -187,6 +196,12 @@ export type DashboardPayload = {
     storageClasses?: DashboardStorageClass[];
     volumes?: DashboardVolume[];
     warnings?: string[];
+  };
+  build?: {
+    defaultNode?: string;
+    registryHost?: string;
+    pushHost?: string;
+    nodes?: DashboardBuildNode[];
   };
   issues?: DashboardIssue[];
   errors?: string[];

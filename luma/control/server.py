@@ -115,6 +115,7 @@ ALERT_SUSTAINED_SECONDS = int(os.environ.get("LUMA_ALERT_SUSTAINED_SECONDS", "30
 ALERT_NODE_MEMORY_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_MEMORY_PERCENT", "85"))
 ALERT_NODE_CPU_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_CPU_PERCENT", "90"))
 TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS", "300"))
+DEFAULT_BUILD_NODE_NAME = "builder"
 
 
 def _control_config_path() -> Path:
@@ -479,6 +480,8 @@ def _container_stats(raw_items: list[Any]) -> list[Dict[str, Any]]:
 def _node_agent_status(record: Dict[str, Any]) -> str:
     agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
     status = str(agent.get("status") or "")
+    if status == "ready":
+        return "ready"
     last_seen = int(agent.get("lastSeen") or 0)
     if status == "online" and last_seen and int(time.time()) - last_seen <= AGENT_STALE_SECONDS:
         return "ready"
@@ -503,12 +506,202 @@ def _node_agent_is_ready(record: Dict[str, Any], *, required_capability: str | N
     return required_capability is None or required_capability in capabilities
 
 
+def _build_config(state: Dict[str, Any]) -> Dict[str, Any]:
+    return state.get("build") if isinstance(state.get("build"), dict) else {}
+
+
+def _declared_build_node_names(state: Dict[str, Any]) -> list[str]:
+    config = _build_config(state)
+    raw_nodes = config.get("nodes")
+    names: list[str] = []
+    if isinstance(raw_nodes, list):
+        names.extend(str(value).strip() for value in raw_nodes)
+    elif isinstance(raw_nodes, dict):
+        names.extend(str(name).strip() for name, enabled in raw_nodes.items() if enabled)
+
+    default_node = str(config.get("defaultNode") or "").strip()
+    if default_node:
+        names.append(default_node)
+
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    for name, record in nodes.items():
+        if isinstance(record, dict) and _node_record_is_declared_builder(record):
+            names.append(str(name).strip())
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for name in names:
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
+def _node_record_is_declared_builder(record: Dict[str, Any]) -> bool:
+    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    roles = {str(value).strip().lower() for value in record.get("roles") or []}
+    role_values = {
+        str(record.get("role") or "").strip().lower(),
+        str(labels.get("role") or "").strip().lower(),
+        str(labels.get("luma.role") or "").strip().lower(),
+        str(labels.get("luma.node.role") or "").strip().lower(),
+    }
+    return (
+        "builder" in roles
+        or "build" in roles
+        or "builder" in role_values
+        or "build" in role_values
+        or str(labels.get("role.builder") or "").strip().lower() == "true"
+        or str(labels.get("luma.builder") or "").strip().lower() == "true"
+    )
+
+
+def _build_node_records(state: Dict[str, Any], *, require_ready: bool = True) -> list[Dict[str, Any]]:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    declared = _declared_build_node_names(state)
+    if not declared and DEFAULT_BUILD_NODE_NAME in nodes:
+        declared = [DEFAULT_BUILD_NODE_NAME]
+    records: list[Dict[str, Any]] = []
+    for name in declared:
+        record = _node_record_for_name(nodes, name)
+        if not isinstance(record, dict):
+            continue
+        if require_ready and not _node_agent_is_ready(record, required_capability="docker-build"):
+            continue
+        item = dict(record)
+        item["name"] = name
+        records.append(item)
+    return records
+
+
+def _require_build_node(state: Dict[str, Any], node_name: str, *, purpose: str) -> str:
+    value = str(node_name or "").strip()
+    if not value:
+        raise LumaError("buildNode is required")
+    allowed = {str(record.get("name") or "").strip() for record in _build_node_records(state, require_ready=True)}
+    if value not in allowed:
+        declared = _declared_build_node_names(state)
+        suffix = f" Declared build nodes: {', '.join(declared)}." if declared else " No build nodes are declared."
+        raise LumaError(f"{purpose} must target a declared, ready builder node with docker-build capability: {value}.{suffix}")
+    return value
+
+
 def _agent_tasks(state: Dict[str, Any]) -> Dict[str, Any]:
     tasks = state.setdefault("agentTasks", {})
     if not isinstance(tasks, dict):
         tasks = {}
         state["agentTasks"] = tasks
     return tasks
+
+
+def _build_runs(state: Dict[str, Any]) -> Dict[str, Any]:
+    runs = state.setdefault("buildRuns", {})
+    if not isinstance(runs, dict):
+        runs = {}
+        state["buildRuns"] = runs
+    return runs
+
+
+def _redact_build_request(body: Dict[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, value in body.items():
+        if key == "envSecrets" and isinstance(value, dict):
+            result["envSecretNames"] = sorted(str(name) for name in value)
+            continue
+        if key in {"gitToken", "registryAuth", "token", "password"}:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            result[key] = value
+        elif isinstance(value, list):
+            result[key] = [item for item in value if isinstance(item, (str, int, float, bool))]
+        elif isinstance(value, dict):
+            result[key] = {str(k): v for k, v in value.items() if isinstance(v, (str, int, float, bool))}
+    return result
+
+
+def _create_build_run(body: Dict[str, Any], *, source: str, build_node: str) -> str:
+    run_id = f"build-{secrets.token_hex(8)}"
+    now = int(time.time())
+
+    def mutate(state: Dict[str, Any]) -> None:
+        runs = _build_runs(state)
+        runs[run_id] = {
+            "id": run_id,
+            "status": "running",
+            "source": source,
+            "buildNode": build_node,
+            "request": _redact_build_request(body),
+            "events": [],
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        _prune_build_runs(state)
+
+    _mutate_control_state(mutate)
+    return run_id
+
+
+def _append_build_run_event(run_id: str, event: Dict[str, Any]) -> None:
+    safe_event = {str(key): str(value) for key, value in event.items() if value is not None}
+
+    def mutate(state: Dict[str, Any]) -> None:
+        run = _build_runs(state).get(run_id)
+        if not isinstance(run, dict):
+            return
+        events = run.get("events")
+        if not isinstance(events, list):
+            events = []
+            run["events"] = events
+        events.append({**safe_event, "ts": int(time.time())})
+        run["updatedAt"] = int(time.time())
+        status = str(safe_event.get("status") or "")
+        if status == "fail":
+            run["status"] = "failed"
+            run["message"] = str(safe_event.get("message") or "")
+
+    _mutate_control_state(mutate)
+
+
+def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | None = None, message: str = "") -> None:
+    now = int(time.time())
+
+    def mutate(state: Dict[str, Any]) -> None:
+        run = _build_runs(state).get(run_id)
+        if not isinstance(run, dict):
+            return
+        run["status"] = status
+        run["updatedAt"] = now
+        run["completedAt"] = now
+        if message:
+            run["message"] = message
+        if isinstance(result, dict):
+            run["result"] = _build_run_result_summary(result)
+
+    _mutate_control_state(mutate)
+
+
+def _build_run_result_summary(result: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    for key in ("service", "deployment", "image", "images", "dns", "orchestrator"):
+        value = result.get(key)
+        if value not in (None, "", [], {}):
+            summary[key] = value
+    return summary
+
+
+def _prune_build_runs(state: Dict[str, Any], *, limit: int = 100) -> None:
+    runs = _build_runs(state)
+    if len(runs) <= limit:
+        return
+    ordered = sorted(
+        ((str(run_id), run) for run_id, run in runs.items() if isinstance(run, dict)),
+        key=lambda item: int(item[1].get("updatedAt") or item[1].get("createdAt") or 0),
+        reverse=True,
+    )
+    keep = {run_id for run_id, _run in ordered[:limit]}
+    for run_id in list(runs):
+        if run_id not in keep:
+            runs.pop(run_id, None)
 
 
 def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None:
@@ -897,6 +1090,7 @@ def handle_control_status(token: str) -> Dict[str, Any]:
         "storage": {
             "storageClasses": _storage_classes_summary(state),
         },
+        "build": _build_summary(state),
     }
     return result
 
@@ -964,6 +1158,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         "services": public_services,
         "trafficPaths": traffic_paths,
         "storage": storage,
+        "build": _build_summary(state),
         "issues": issues,
         "errors": errors,
     }
@@ -986,6 +1181,98 @@ def handle_dashboard_logs(token: str, service_name: str, *, tail: int = 120, sin
         "since": since,
         "updatedAt": int(time.time()),
     }
+
+
+def handle_build_run_list(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    runs = state.get("buildRuns") if isinstance(state.get("buildRuns"), dict) else {}
+    items = [_build_run_public_summary(run) for run in runs.values() if isinstance(run, dict)]
+    items.sort(key=lambda item: int(item.get("updatedAt") or item.get("createdAt") or 0), reverse=True)
+    return {"runs": items}
+
+
+def handle_build_run_get(token: str, build_id: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    run = (state.get("buildRuns") if isinstance(state.get("buildRuns"), dict) else {}).get(build_id)
+    if not isinstance(run, dict):
+        raise LumaError(f"build run not found: {build_id}")
+    return {"run": _build_run_public(run)}
+
+
+def handle_build_run_retry(token: str, build_id: str, *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    run = (state.get("buildRuns") if isinstance(state.get("buildRuns"), dict) else {}).get(build_id)
+    if not isinstance(run, dict):
+        raise LumaError(f"build run not found: {build_id}")
+    request = run.get("request") if isinstance(run.get("request"), dict) else {}
+    body = {key: value for key, value in request.items() if key != "envSecretNames"}
+    if not body:
+        raise LumaError(f"build run cannot be retried: {build_id}")
+    return handle_build_deploy(token, body, progress=progress)
+
+
+def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    nodes_raw = body.get("nodes")
+    node = str(body.get("node") or "").strip()
+    nodes = [str(value).strip() for value in nodes_raw] if isinstance(nodes_raw, list) else []
+    if node:
+        nodes = [node]
+    nodes = [value for value in nodes if value]
+    default_node = str(body.get("defaultNode") or (nodes[0] if nodes else "")).strip()
+
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
+        require_token(state, token, token_type="deploy")
+        registered = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        for name in nodes:
+            if _node_record_for_name(registered, name) is None:
+                raise LumaError(f"unknown Luma node: {name}")
+        if default_node and default_node not in nodes:
+            nodes.insert(0, default_node)
+        build = state.get("build") if isinstance(state.get("build"), dict) else {}
+        build = dict(build)
+        if nodes:
+            build["nodes"] = nodes
+        if default_node:
+            build["defaultNode"] = default_node
+        for key in ("registryHost", "pushHost"):
+            if body.get(key) is not None:
+                value = str(body.get(key) or "").strip()
+                if value:
+                    build[key] = value
+                else:
+                    build.pop(key, None)
+        state["build"] = build
+        return _build_summary(state)
+
+    return {"build": _mutate_control_state(mutate)}
+
+
+def _build_run_public_summary(run: Dict[str, Any]) -> Dict[str, Any]:
+    request = run.get("request") if isinstance(run.get("request"), dict) else {}
+    return {
+        "id": str(run.get("id") or ""),
+        "status": str(run.get("status") or ""),
+        "source": str(run.get("source") or request.get("repoUrl") or request.get("repository") or ""),
+        "buildNode": str(run.get("buildNode") or request.get("buildNode") or ""),
+        "providerId": str(request.get("providerId") or ""),
+        "repository": str(request.get("repository") or ""),
+        "ref": str(request.get("ref") or ""),
+        "message": str(run.get("message") or ""),
+        "createdAt": int(run.get("createdAt") or 0),
+        "updatedAt": int(run.get("updatedAt") or 0),
+        "completedAt": int(run.get("completedAt") or 0),
+    }
+
+
+def _build_run_public(run: Dict[str, Any]) -> Dict[str, Any]:
+    result = _build_run_public_summary(run)
+    result["request"] = run.get("request") if isinstance(run.get("request"), dict) else {}
+    result["events"] = [event for event in run.get("events") or [] if isinstance(event, dict)]
+    result["result"] = run.get("result") if isinstance(run.get("result"), dict) else {}
+    return result
 
 
 def handle_service_pull_diagnostics(token: str, service_name: str, *, timeout: int = 600) -> Dict[str, Any]:
@@ -1512,7 +1799,7 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
     state = load_state()
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
-    build_config = state.get("build") if isinstance(state.get("build"), dict) else {}
+    build_config = _build_config(state)
     provider_id = str(body.get("providerId") or "").strip()
     repository = str(body.get("repository") or "").strip()
     repo_url = normalize_import_repo_url(str(body.get("repoUrl") or "").strip())
@@ -1521,9 +1808,11 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
             raise LumaError("repoUrl or providerId + repository is required")
         provider = _require_git_provider(state, provider_id)
         repo_url = _git_provider_clone_url(provider, repository)
-    build_node = str(body.get("buildNode") or build_config.get("defaultNode") or "builder").strip()
-    if not build_node:
-        raise LumaError("buildNode is required")
+    build_node = _require_build_node(
+        state,
+        str(body.get("buildNode") or build_config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME).strip(),
+        purpose="repository build",
+    )
     ref = str(body.get("ref") or "").strip()
     steps: list[dict[str, str]] = []
 
@@ -1554,90 +1843,110 @@ def handle_build_deploy(token: str, body: Dict[str, Any], *, progress: Callable[
         if body.get(key):
             build_payload[key] = str(body.get(key))
 
-    build_result = _deploy_step(
-        steps,
-        "Build image",
-        lambda: _run_node_agent_task(
-            state,
-            build_node,
-            "build-image",
-            build_payload,
-            timeout=int(body.get("buildTimeout") or 1800) + 120,
-            required_capability="docker-build",
-        ),
-        progress=progress,
-    )
-    built_image = str(build_result.get("image") or "").strip()
-    built_images = build_result.get("images") if isinstance(build_result.get("images"), dict) else {}
-    if not built_image and not built_images:
-        raise LumaError("build did not return an image reference")
-    repo_manifest = str(build_result.get("manifest") or "").strip()
-    repo_compose_content = str(build_result.get("composeContent") or "").strip()
+    run_body = dict(body)
+    run_body["repoUrl"] = repo_url
+    run_body["buildNode"] = build_node
+    if provider_id:
+        run_body["providerId"] = provider_id
+    build_run_id = _create_build_run(run_body, source=repo_url, build_node=build_node)
 
-    manifest_text = str(body.get("manifest") or "").strip() or repo_manifest
-    if not manifest_text:
-        raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
+    def run_progress(event: dict[str, str]) -> None:
+        _append_build_run_event(build_run_id, event)
+        _emit_progress(progress, event)
 
-    if str(build_result.get("kind") or "") == "compose" or repo_compose_content or body.get("composeContent"):
-        compose_content = str(body.get("composeContent") or "").strip() or repo_compose_content
-        if not compose_content:
-            raise LumaError("luma.compose.yml found but composeContent is missing")
-        ignored_overrides = [key for key in ("exposure", "domain", "port") if body.get(key)]
-        if ignored_overrides:
-            step = {
-                "name": "Import warning",
-                "status": "ok",
-                "message": "Compose import ignores service-level override(s): "
-                + ", ".join(ignored_overrides)
-                + ". Set them in luma.compose.yml services instead.",
-            }
-            steps.append(step)
-            _emit_progress(progress, step)
+    try:
+        build_result = _deploy_step(
+            steps,
+            "Build image",
+            lambda: _run_node_agent_task(
+                state,
+                build_node,
+                "build-image",
+                build_payload,
+                timeout=int(body.get("buildTimeout") or 1800) + 120,
+                required_capability="docker-build",
+            ),
+            progress=run_progress,
+        )
+        built_image = str(build_result.get("image") or "").strip()
+        built_images = build_result.get("images") if isinstance(build_result.get("images"), dict) else {}
+        if not built_image and not built_images:
+            raise LumaError("build did not return an image reference")
+        repo_manifest = str(build_result.get("manifest") or "").strip()
+        repo_compose_content = str(build_result.get("composeContent") or "").strip()
 
-        def _inject_compose() -> tuple[str, str]:
+        manifest_text = str(body.get("manifest") or "").strip() or repo_manifest
+        if not manifest_text:
+            raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
+
+        if str(build_result.get("kind") or "") == "compose" or repo_compose_content or body.get("composeContent"):
+            compose_content = str(body.get("composeContent") or "").strip() or repo_compose_content
+            if not compose_content:
+                raise LumaError("luma.compose.yml found but composeContent is missing")
+            ignored_overrides = [key for key in ("exposure", "domain", "port") if body.get(key)]
+            if ignored_overrides:
+                step = {
+                    "name": "Import warning",
+                    "status": "ok",
+                    "message": "Compose import ignores service-level override(s): "
+                    + ", ".join(ignored_overrides)
+                    + ". Set them in luma.compose.yml services instead.",
+                }
+                steps.append(step)
+                run_progress(step)
+
+            def _inject_compose() -> tuple[str, str]:
+                data = yaml.safe_load(manifest_text) or {}
+                if not isinstance(data, dict):
+                    raise LumaError("luma.compose.yml must contain a YAML mapping")
+                if body.get("region"):
+                    data["region"] = body.get("region")
+                return yaml.safe_dump(data, sort_keys=False, allow_unicode=False), compose_content
+
+            final_manifest, final_compose_content = _deploy_step(steps, "Resolve compose manifest", _inject_compose, progress=run_progress)
+            deploy_body = dict(body)
+            deploy_body["manifest"] = final_manifest
+            deploy_body["composeContent"] = final_compose_content
+            deploy_body["sourceName"] = repo_url
+            deploy_body.pop("repoUrl", None)
+            result = handle_compose_deployment(token, deploy_body, progress=run_progress)
+            if isinstance(result, dict):
+                merged_steps = steps + list(result.get("steps") or [])
+                result = {**result, "steps": merged_steps, "image": built_image, "images": built_images, "buildRunId": build_run_id}
+            _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
+            return result
+
+        def _inject() -> str:
             data = yaml.safe_load(manifest_text) or {}
             if not isinstance(data, dict):
-                raise LumaError("luma.compose.yml must contain a YAML mapping")
-            if body.get("region"):
-                data["region"] = body.get("region")
-            return yaml.safe_dump(data, sort_keys=False, allow_unicode=False), compose_content
+                raise LumaError(".luma.yml must contain a YAML mapping")
+            data.pop("build", None)
+            data["image"] = built_image
+            for key in ("region", "exposure", "domain"):
+                if body.get(key):
+                    data[key] = body.get(key)
+            if body.get("port"):
+                data["port"] = int(body["port"])
+            return yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
 
-        final_manifest, final_compose_content = _deploy_step(steps, "Resolve compose manifest", _inject_compose, progress=progress)
+        final_manifest = _deploy_step(steps, "Resolve manifest", _inject, progress=run_progress)
+
         deploy_body = dict(body)
         deploy_body["manifest"] = final_manifest
-        deploy_body["composeContent"] = final_compose_content
         deploy_body["sourceName"] = repo_url
         deploy_body.pop("repoUrl", None)
-        result = handle_compose_deployment(token, deploy_body, progress=progress)
+        result = handle_deployment(token, deploy_body, progress=run_progress)
         if isinstance(result, dict):
             merged_steps = steps + list(result.get("steps") or [])
-            result = {**result, "steps": merged_steps, "image": built_image, "images": built_images}
+            result = {**result, "steps": merged_steps, "image": built_image, "buildRunId": build_run_id}
+        _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
         return result
-
-    def _inject() -> str:
-        data = yaml.safe_load(manifest_text) or {}
-        if not isinstance(data, dict):
-            raise LumaError(".luma.yml must contain a YAML mapping")
-        data.pop("build", None)
-        data["image"] = built_image
-        for key in ("region", "exposure", "domain"):
-            if body.get(key):
-                data[key] = body.get(key)
-        if body.get("port"):
-            data["port"] = int(body["port"])
-        return yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
-
-    final_manifest = _deploy_step(steps, "Resolve manifest", _inject, progress=progress)
-
-    deploy_body = dict(body)
-    deploy_body["manifest"] = final_manifest
-    deploy_body["sourceName"] = repo_url
-    deploy_body.pop("repoUrl", None)
-    result = handle_deployment(token, deploy_body, progress=progress)
-    if isinstance(result, dict):
-        merged_steps = steps + list(result.get("steps") or [])
-        result = {**result, "steps": merged_steps, "image": built_image}
-    return result
+    except LumaError as exc:
+        _complete_build_run(build_run_id, "failed", message=str(exc))
+        raise
+    except Exception as exc:
+        _complete_build_run(build_run_id, "failed", message=str(exc))
+        raise
 
 
 def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
@@ -1647,6 +1956,7 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
     build_node = str(body.get("node") or body.get("buildNode") or "").strip()
     if not build_node:
         raise LumaError("node is required (the docker-build node that hosts the registry)")
+    build_node = _require_build_node(state, build_node, purpose="registry serve")
     port = int(body.get("port") or 5000)
     image = str(body.get("image") or "registry:2").strip()
     name = str(body.get("name") or "luma-registry").strip()
@@ -4695,6 +5005,10 @@ def _emit_progress(progress: Callable[[dict[str, str]], None] | None, event: dic
 
 
 def _step_message(result: Any) -> str:
+    if isinstance(result, dict):
+        message = result.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
     if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
         image = result[1]
         selected = image.get("selected")
@@ -4938,6 +5252,29 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
         }
         items.append(item)
     return items
+
+
+def _build_summary(state: Dict[str, Any]) -> Dict[str, Any]:
+    config = _build_config(state)
+    nodes: list[Dict[str, Any]] = []
+    for record in _build_node_records(state, require_ready=False):
+        agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+        nodes.append(
+            {
+                "name": str(record.get("name") or ""),
+                "region": str(record.get("region") or ""),
+                "agentStatus": _node_agent_status(record),
+                "agentOs": str(agent.get("os") or ""),
+                "storageCapabilities": [str(value) for value in agent.get("capabilities") or []],
+                "ready": _node_agent_is_ready(record, required_capability="docker-build"),
+            }
+        )
+    return {
+        "defaultNode": str(config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
+        "registryHost": str(config.get("registryHost") or ""),
+        "pushHost": str(config.get("pushHost") or "localhost:5000"),
+        "nodes": nodes,
+    }
 
 
 def _service_stats_by_name(
@@ -6833,6 +7170,13 @@ class ControlHandler(BaseHTTPRequestHandler):
             if parsed_path == "/v1/status":
                 self._json(200, handle_control_status(token))
                 return
+            if parsed_path == "/v1/builds":
+                self._json(200, handle_build_run_list(token))
+                return
+            build_match = re.fullmatch(r"/v1/builds/([^/]+)", parsed_path)
+            if build_match:
+                self._json(200, handle_build_run_get(token, urllib.parse.unquote(build_match.group(1))))
+                return
             if parsed_path == "/v1/dashboard":
                 self._json(200, handle_dashboard(token))
                 return
@@ -6934,6 +7278,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/compose-deployments/stream":
                 self._stream_compose_deployment(token, body)
+                return
+            build_retry_match = re.fullmatch(r"/v1/builds/([^/]+)/retry", self.path)
+            if build_retry_match:
+                self._json(200, handle_build_run_retry(token, urllib.parse.unquote(build_retry_match.group(1))))
+                return
+            if self.path == "/v1/builds/config":
+                self._json(200, handle_build_config_set(token, body))
                 return
             if self.path == "/v1/builds/stream":
                 self._stream_build_deploy(token, body)
@@ -7256,6 +7607,11 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_storage_list, token))
         if parsed_path == "/v1/status":
             return _json_response(200, await run_in_threadpool(handle_control_status, token))
+        if parsed_path == "/v1/builds":
+            return _json_response(200, await run_in_threadpool(handle_build_run_list, token))
+        build_match = re.fullmatch(r"/v1/builds/([^/]+)", parsed_path)
+        if build_match:
+            return _json_response(200, await run_in_threadpool(handle_build_run_get, token, urllib.parse.unquote(build_match.group(1))))
         if parsed_path == "/v1/dashboard":
             return _json_response(200, await run_in_threadpool(handle_dashboard, token))
         if parsed_path == "/v1/dashboard/logs":
@@ -7343,6 +7699,11 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             return _asgi_stream_deployment(token, body, compose=False)
         if path == "/v1/compose-deployments/stream":
             return _asgi_stream_deployment(token, body, compose=True)
+        build_retry_match = re.fullmatch(r"/v1/builds/([^/]+)/retry", path)
+        if build_retry_match:
+            return _json_response(200, await run_in_threadpool(handle_build_run_retry, token, urllib.parse.unquote(build_retry_match.group(1))))
+        if path == "/v1/builds/config":
+            return _json_response(200, await run_in_threadpool(handle_build_config_set, token, body))
         if path == "/v1/builds/stream":
             return _asgi_stream_build_deploy(token, body)
         if path == "/v1/registry/serve/stream":

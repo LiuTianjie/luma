@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     visible_commands = (
         "init,version,status,preflight,configure,login,context,secret,registry,git-provider,"
         "bootstrap,update,doctor,node,cloudflare,egress,tailscale,"
-        "service,validate,render,dns-sync,deploy,import,rollback,history,compose,storage"
+        "service,validate,render,dns-sync,deploy,import,build,rollback,history,compose,storage"
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="{" + visible_commands + "}")
 
@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.139 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.140 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -307,7 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_cmd.add_argument("--provider-id", default="", help="Saved Git provider credential id to use for clone/list-backed imports")
     import_cmd.add_argument("--repository", default="", help="Repository full name for --provider-id, for example owner/name")
-    import_cmd.add_argument("--build-node", dest="build_node", required=True, help="Luma node (docker-build capable) that clones and builds the image")
+    import_cmd.add_argument("--build-node", dest="build_node", default="", help="Override the declared builder node used to clone and build the image")
     import_cmd.add_argument("--ref", default="", help="Git branch or tag to build (default: repository default branch)")
     import_cmd.add_argument("--region", default="", help="Override region from the repo's service manifest or Compose sidecar")
     import_cmd.add_argument("--exposure", default="", help="Override exposure from the repo's .luma.yml for single-service imports")
@@ -323,6 +323,28 @@ def build_parser() -> argparse.ArgumentParser:
     _add_control_arguments(import_cmd)
     _add_output_arguments(import_cmd)
     import_cmd.add_argument("--timeout", type=int, default=2400, help="Seconds to wait for the build+deploy response")
+
+    build = sub.add_parser("build", help="Inspect and retry repository import build runs")
+    build_sub = build.add_subparsers(dest="build_command", required=True)
+    build_list = build_sub.add_parser("list", help="List recent repository import build runs")
+    _add_control_arguments(build_list)
+    _add_output_arguments(build_list)
+    build_logs = build_sub.add_parser("logs", help="Show a build run's recorded step log")
+    build_logs.add_argument("id")
+    _add_control_arguments(build_logs)
+    _add_output_arguments(build_logs)
+    build_retry = build_sub.add_parser("retry", help="Retry a recorded build run")
+    build_retry.add_argument("id")
+    _add_control_arguments(build_retry)
+    _add_output_arguments(build_retry)
+    build_retry.add_argument("--timeout", type=int, default=2400)
+    build_config = build_sub.add_parser("config", help="Declare builder nodes and internal registry defaults")
+    build_config.add_argument("--node", action="append", dest="nodes", default=[], help="Declared builder node; repeat for multiple builders")
+    build_config.add_argument("--default-node", default="", help="Default builder node for luma import")
+    build_config.add_argument("--registry-host", default="", help="Registry host that target nodes pull from, for example 100.66.177.70:5000")
+    build_config.add_argument("--push-host", default="", help="Registry host used from the builder itself, usually localhost:5000")
+    _add_control_arguments(build_config)
+    _add_output_arguments(build_config)
 
     rollback = sub.add_parser("rollback", help="Roll a Nomad-engine service back to a previous version")
     rollback.add_argument("name")
@@ -591,12 +613,16 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("  Registered: " + ", ".join(str(name) for name in nodes["names"]))
     else:
         print("  No nodes reported")
-    build_nodes = [item for item in registered_items if isinstance(item, dict) and "docker-build" in (item.get("storageCapabilities") or [])]
+    build = payload.get("build") if isinstance(payload.get("build"), dict) else {}
+    build_nodes = [item for item in build.get("nodes") or [] if isinstance(item, dict) and item.get("ready")]
     services = payload.get("services") if isinstance(payload.get("services"), list) else []
     registry_services = [svc for svc in services if isinstance(svc, dict) and "registry" in str(svc.get("name") or "").lower()]
     print()
     print("Build (luma import)")
-    print(f"  Summary: build-capable nodes={len(build_nodes)}, in-cluster registries={len(registry_services)}")
+    default_build_node = str(build.get("defaultNode") or "").strip()
+    print(f"  Summary: declared build nodes={len(build_nodes)}, in-cluster registries={len(registry_services)}")
+    if default_build_node:
+        print(f"  Default: {default_build_node}")
     if build_nodes:
         _print_table(
             ["NAME", "REGION", "OS", "AGENT"],
@@ -611,7 +637,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             ],
         )
     else:
-        print("  No docker-build capable nodes (install docker buildx on a node to enable luma import)")
+        print("  No declared ready builder nodes (declare a builder node and make sure it advertises docker-build)")
     if registry_services:
         for svc in registry_services:
             print(f"  Registry service: {svc.get('name')} (region={_status_value(svc.get('region'))})")
@@ -2557,9 +2583,10 @@ def cmd_import(args: argparse.Namespace) -> int:
 
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     source_label = args.repo or f"{args.provider_id}:{args.repository}"
+    build_node_label = args.build_node or "control default"
     if not quiet:
         print(f"[ok] Control endpoint: {endpoint}", flush=True)
-        print(f"[start] Import: {source_label} (build on {args.build_node})", flush=True)
+        print(f"[start] Import: {source_label} (build on {build_node_label})", flush=True)
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     manifest_text = args.manifest.read_text(encoding="utf-8") if args.manifest else ""
     env_secrets = _import_env_secrets(args.deploy_env_file)
@@ -2635,6 +2662,93 @@ def cmd_import(args: argparse.Namespace) -> int:
     if result.get("dns"):
         print(result["dns"])
     return 0
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    output_format = _output_format(args)
+    if args.build_command == "list":
+        result = client.list_builds()
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        rows = []
+        for run in result.get("runs") or []:
+            if not isinstance(run, dict):
+                continue
+            rows.append(
+                [
+                    str(run.get("id") or ""),
+                    str(run.get("status") or ""),
+                    str(run.get("buildNode") or ""),
+                    str(run.get("providerId") or ""),
+                    str(run.get("repository") or run.get("source") or ""),
+                    str(run.get("ref") or "-"),
+                    str(run.get("message") or "")[:80],
+                ]
+            )
+        if rows:
+            _print_table(["ID", "STATUS", "NODE", "PROVIDER", "REPOSITORY/SOURCE", "REF", "MESSAGE"], rows)
+        else:
+            print("No build runs recorded")
+        return 0
+    if args.build_command == "logs":
+        result = client.get_build(args.id)
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        run = result.get("run") if isinstance(result.get("run"), dict) else {}
+        print(f"Build run: {run.get('id') or args.id}")
+        print(f"Status: {run.get('status') or '-'}")
+        print(f"Source: {run.get('source') or '-'}")
+        for event in run.get("events") or []:
+            if isinstance(event, dict):
+                _print_deploy_step(event)
+        return 0
+    if args.build_command == "retry":
+        result = client.retry_build(args.id, timeout=args.timeout)
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        print(f"[ok] Build retry finished: {result.get('service') or result.get('deployment') or args.id}")
+        if result.get("buildRunId"):
+            print(f"Build run: {result.get('buildRunId')}")
+        if result.get("image"):
+            print(f"Image built: {result.get('image')}")
+        return 0
+    if args.build_command == "config":
+        nodes = [str(value).strip() for value in args.nodes if str(value).strip()]
+        default_node = str(args.default_node or (nodes[0] if nodes else "")).strip()
+        if not nodes and not default_node and not args.registry_host and not args.push_host:
+            raise LumaError("build config requires --node, --default-node, --registry-host, or --push-host")
+        result = client.configure_build(
+            nodes=nodes or None,
+            default_node=default_node,
+            registry_host=args.registry_host,
+            push_host=args.push_host,
+        )
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        build = result.get("build") if isinstance(result.get("build"), dict) else {}
+        print("Build config saved")
+        print(f"  Default node: {build.get('defaultNode') or '-'}")
+        print(f"  Registry host: {build.get('registryHost') or '-'}")
+        print(f"  Push host: {build.get('pushHost') or '-'}")
+        rows = []
+        for node in build.get("nodes") or []:
+            if isinstance(node, dict):
+                rows.append([
+                    str(node.get("name") or ""),
+                    str(node.get("region") or ""),
+                    "yes" if node.get("ready") else "no",
+                    ",".join(str(value) for value in node.get("storageCapabilities") or []) or "-",
+                ])
+        if rows:
+            _print_table(["NODE", "REGION", "READY", "CAPABILITIES"], rows)
+        return 0
+    raise LumaError(f"unknown build command: {args.build_command}")
 
 
 def cmd_compose(args: argparse.Namespace) -> int:
@@ -3324,6 +3438,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_deploy(args)
         if args.command == "import":
             return cmd_import(args)
+        if args.command == "build":
+            return cmd_build(args)
         if args.command == "rollback":
             return cmd_rollback(args)
         if args.command == "history":

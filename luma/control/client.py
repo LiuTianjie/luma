@@ -467,6 +467,37 @@ class ControlClient:
             body["envSecrets"] = values["env_secrets"]
         return body
 
+    def list_builds(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/builds")
+
+    def get_build(self, build_id: str) -> Dict[str, Any]:
+        return self.request("GET", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}")
+
+    def retry_build(self, build_id: str, *, timeout: int = 2400) -> Dict[str, Any]:
+        return self.request("POST", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}/retry", {}, timeout=timeout)
+
+    def configure_build(
+        self,
+        *,
+        node: str = "",
+        nodes: list[str] | None = None,
+        default_node: str = "",
+        registry_host: str = "",
+        push_host: str = "",
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        if node:
+            body["node"] = node
+        if nodes is not None:
+            body["nodes"] = nodes
+        if default_node:
+            body["defaultNode"] = default_node
+        if registry_host:
+            body["registryHost"] = registry_host
+        if push_host:
+            body["pushHost"] = push_host
+        return self.request("POST", "/v1/builds/config", body)
+
     def registry_serve(
         self,
         *,

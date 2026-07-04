@@ -1,4 +1,4 @@
-import { ArrowLeft, GitBranch, Rocket, Server, Settings2 } from "lucide-react";
+import { ArrowLeft, GitBranch, Rocket, RotateCcw, Server, Settings2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   fetchGitProviderRefs,
@@ -8,8 +8,8 @@ import {
   type GitRef,
   type GitRepository,
 } from "../controlResourcesApi";
-import type { DashboardNode, Lang } from "../types";
-import { buildImportStream, registryServeStream } from "./deployApi";
+import type { DashboardBuildNode, DashboardNode, Lang } from "../types";
+import { buildImportStream, fetchBuildRun, fetchBuildRuns, registryServeStream, retryBuildRun, type BuildRun } from "./deployApi";
 import { isReadyNode } from "./options";
 import type { DeployStep, Exposure, Region } from "./types";
 
@@ -17,8 +17,13 @@ const REGIONS: Region[] = ["cn", "global", "home"];
 const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"];
 const PROVIDER_TYPES = ["github", "gitea"] as const;
 
-function buildNodes(nodes: DashboardNode[]): DashboardNode[] {
-  return nodes.filter((node) => node.name && isReadyNode(node) && (node.storageCapabilities || []).includes("docker-build"));
+function buildNodes(nodes: DashboardNode[], declared: DashboardBuildNode[] = []): DashboardNode[] {
+  const declaredNames = declared.filter((node) => node.ready && node.name).map((node) => node.name as string);
+  if (declaredNames.length) {
+    const byName = new Map(nodes.map((node) => [node.name, node]));
+    return declaredNames.map((name) => byName.get(name) || { name }).filter((node) => Boolean(node.name));
+  }
+  return nodes.filter((node) => isReadyNode(node) && (node.storageCapabilities || []).includes("docker-build"));
 }
 
 function providerTypeLabel(type: string, lang: Lang) {
@@ -67,19 +72,28 @@ export function GithubImportPanel({
   lang,
   token,
   nodes,
+  build,
   onBack,
   onRefresh,
 }: {
   lang: Lang;
   token: string;
   nodes: DashboardNode[];
+  build?: {
+    defaultNode?: string;
+    registryHost?: string;
+    pushHost?: string;
+    nodes?: DashboardBuildNode[];
+  };
   onBack?: () => void;
   onRefresh: () => Promise<void> | void;
 }) {
   const zh = lang === "zh";
-  const candidates = useMemo(() => buildNodes(nodes), [nodes]);
-  const preferredBuildNode = useMemo(() => candidates.find((node) => node.name === "builder")?.name || candidates[0]?.name || "", [candidates]);
-  const readyNodes = useMemo(() => nodes.filter((node) => node.name && isReadyNode(node)), [nodes]);
+  const candidates = useMemo(() => buildNodes(nodes, build?.nodes || []), [build?.nodes, nodes]);
+  const preferredBuildNode = useMemo(() => {
+    const defaultNode = build?.defaultNode || "";
+    return candidates.some((node) => node.name === defaultNode) ? defaultNode : candidates[0]?.name || "";
+  }, [build?.defaultNode, candidates]);
 
   const [mode, setMode] = useState<"provider" | "manual">("provider");
   const [providerType, setProviderType] = useState<(typeof PROVIDER_TYPES)[number]>("github");
@@ -118,11 +132,31 @@ export function GithubImportPanel({
   const [registryStatus, setRegistryStatus] = useState<"idle" | "running">("idle");
   const [registryError, setRegistryError] = useState("");
   const [registryDone, setRegistryDone] = useState("");
+  const [buildRuns, setBuildRuns] = useState<BuildRun[]>([]);
+  const [selectedRun, setSelectedRun] = useState<BuildRun | null>(null);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runAction, setRunAction] = useState("");
+
+  const loadBuildRuns = async () => {
+    setRunsLoading(true);
+    try {
+      const payload = await fetchBuildRuns(token);
+      setBuildRuns(payload.runs || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunsLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!buildNode && preferredBuildNode) setBuildNode(preferredBuildNode);
     if (!registryNode && preferredBuildNode) setRegistryNode(preferredBuildNode);
   }, [buildNode, preferredBuildNode, registryNode]);
+
+  useEffect(() => {
+    void loadBuildRuns();
+  }, [token]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -245,11 +279,41 @@ export function GithubImportPanel({
         },
         (step) => setSteps((current) => [...current, step]),
       );
+      await loadBuildRuns();
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setStatus("idle");
+    }
+  };
+
+  const openBuildRun = async (id?: string) => {
+    if (!id) return;
+    setRunAction(id);
+    try {
+      const payload = await fetchBuildRun(token, id);
+      setSelectedRun(payload.run || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunAction("");
+    }
+  };
+
+  const retryRun = async (id?: string) => {
+    if (!id) return;
+    setRunAction(id);
+    setError("");
+    try {
+      await retryBuildRun(token, id);
+      await loadBuildRuns();
+      if (selectedRun?.id === id) await openBuildRun(id);
+      await onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunAction("");
     }
   };
 
@@ -281,8 +345,8 @@ export function GithubImportPanel({
           <h2>{zh ? "从 Git provider 构建并部署" : "Build and deploy from a Git provider"}</h2>
           <small className="deploy-context-label">
             {zh
-              ? "选择 GitHub 或 Gitea 账户、仓库和分支，在 builder 节点构建镜像并推送到内部 registry。"
-              : "Choose a GitHub or Gitea account, repository, and ref; build on builder and push to the internal registry."}
+              ? "选择 GitHub 或 Gitea 账户、仓库和分支，在声明的构建节点构建镜像并推送到内部 registry。"
+              : "Choose a GitHub or Gitea account, repository, and ref; build on a declared builder node and push to the internal registry."}
           </small>
         </div>
         <div className="deploy-heading-actions">
@@ -371,7 +435,7 @@ export function GithubImportPanel({
                   <option key={node.name} value={node.name}>{node.displayName || node.name}</option>
                 ))}
               </select>
-              {!candidates.length ? <small className="deploy-muted">{zh ? "当前没有具备 docker-build 能力的就绪节点。" : "No ready node advertises docker-build."}</small> : null}
+              {!candidates.length ? <small className="deploy-muted">{zh ? "当前没有可用的声明构建节点，节点需具备 docker-build 能力。" : "No declared builder node is currently available; the node must advertise docker-build."}</small> : null}
             </label>
           </div>
           <div className="registry-setup">
@@ -387,10 +451,11 @@ export function GithubImportPanel({
                     <span>{zh ? "registry 所在节点" : "Registry node"}</span>
                     <select value={registryNode} onChange={(event) => setRegistryNode(event.target.value)}>
                       <option value="">{zh ? "选择节点" : "Select node"}</option>
-                      {readyNodes.map((node) => (
+                      {candidates.map((node) => (
                         <option key={node.name} value={node.name}>{node.displayName || node.name}</option>
                       ))}
                     </select>
+                    {!candidates.length ? <small className="deploy-muted">{zh ? "内部 registry 需要部署到已声明且可用的构建节点。" : "Internal registry setup needs a declared, available builder node."}</small> : null}
                   </label>
                   <button type="button" disabled={registryStatus !== "idle" || !registryNode} onClick={() => void runRegistry()}>
                     <Server size={15} aria-hidden="true" />
@@ -520,6 +585,42 @@ export function GithubImportPanel({
           </ol>
         ) : null}
       </div>
+
+      <section className="deploy-config-section">
+        <header><span>04</span><h3>{zh ? "最近构建" : "Recent builds"}</h3></header>
+        <div className="credentials-list">
+          {buildRuns.length ? buildRuns.slice(0, 8).map((run) => (
+            <article key={run.id || run.source} className="credential-row">
+              <div>
+                <strong>{run.repository || run.source || run.id}</strong>
+                <span>{[run.status, run.buildNode, run.ref].filter(Boolean).join(" · ") || "-"}</span>
+                {run.message ? <small className="deploy-muted">{run.message}</small> : null}
+              </div>
+              <div className="credential-actions">
+                <button type="button" className="ghost" disabled={runAction === run.id} onClick={() => void openBuildRun(run.id)}>
+                  {runAction === run.id ? (zh ? "读取中..." : "Loading...") : (zh ? "日志" : "Logs")}
+                </button>
+                <button type="button" className="ghost" disabled={runAction === run.id || !run.id} onClick={() => void retryRun(run.id)}>
+                  <RotateCcw size={14} aria-hidden="true" />
+                  {zh ? "重试" : "Retry"}
+                </button>
+              </div>
+            </article>
+          )) : (
+            <div className="deploy-muted">{runsLoading ? (zh ? "读取构建任务中..." : "Loading build runs...") : (zh ? "暂无构建任务" : "No build runs yet")}</div>
+          )}
+        </div>
+        {selectedRun ? (
+          <ol className="deploy-step-log">
+            {(selectedRun.events || []).filter((step) => step.name).map((step, index) => (
+              <li key={`${selectedRun.id}-${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
+                <strong>{step.name}</strong>
+                {step.message ? <span> - {step.message}</span> : null}
+              </li>
+            ))}
+          </ol>
+        ) : null}
+      </section>
 
       <div className="deploy-action-bar">
         <div>

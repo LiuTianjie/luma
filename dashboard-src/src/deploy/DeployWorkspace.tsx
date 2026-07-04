@@ -443,6 +443,7 @@ export function DeployWorkspace({
           lang={lang}
           token={token}
           nodes={nodes}
+          build={payload?.build}
           onBack={showTemplates ? () => setImportView(false) : undefined}
           onRefresh={onRefresh}
         />
