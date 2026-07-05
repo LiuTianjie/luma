@@ -959,7 +959,7 @@ def handle_node_agent_progress(token: str, body: Dict[str, Any]) -> Dict[str, An
             raise LumaError(f"agent task not found: {task_id}")
         progress = task.get("progress") if isinstance(task.get("progress"), list) else []
         progress.extend(events)
-        task["progress"] = progress[-300:]
+        task["progress"] = progress[-5000:]
         task["updatedAt"] = int(time.time())
 
     _mutate_control_state(mutate)

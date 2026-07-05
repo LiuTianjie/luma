@@ -1941,6 +1941,78 @@ def _run_command_streaming(
                 pass
 
 
+def _run_process_streaming(
+    command: list[str],
+    *,
+    env: Dict[str, str] | None = None,
+    timeout: int | None = None,
+    on_line: Callable[[str], None] | None = None,
+) -> LocalResult:
+    process = subprocess.Popen(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        start_new_session=True,
+        bufsize=1,
+    )
+    output_parts: list[str] = []
+    line_buffer: list[str] = []
+    deadline = time.monotonic() + timeout if timeout else None
+
+    def flush_line() -> None:
+        text = "".join(line_buffer).strip()
+        line_buffer.clear()
+        if text and on_line:
+            on_line(text)
+
+    try:
+        while True:
+            if deadline and time.monotonic() > deadline:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                flush_line()
+                message = f"process timed out after {timeout}s"
+                output_parts.append("\n" + message)
+                return LocalResult(code=124, output="".join(output_parts).strip())
+            stream = process.stdout
+            if stream is None:
+                break
+            ready, _, _ = select.select([stream], [], [], 0.2)
+            if ready:
+                chunk = stream.read(1)
+                if not chunk:
+                    if process.poll() is not None:
+                        break
+                    continue
+                output_parts.append(chunk)
+                if chunk in {"\n", "\r"}:
+                    flush_line()
+                else:
+                    line_buffer.append(chunk)
+                continue
+            if process.poll() is not None:
+                rest = stream.read() or ""
+                output_parts.append(rest)
+                for char in rest:
+                    if char in {"\n", "\r"}:
+                        flush_line()
+                    else:
+                        line_buffer.append(char)
+                break
+        flush_line()
+        return LocalResult(code=process.wait(), output="".join(output_parts))
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def _docker_image_inspect_command(image: str, *, docker_config: str) -> str:
     return (
         f"set -euo pipefail; {_docker_cli_prelude()}; "
@@ -2202,31 +2274,30 @@ def _docker_buildx_build(
         "-f", str(dockerfile_path),
         str(context_dir),
     ]
-    def run_build() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+    def on_build_line(line: str) -> None:
+        if progress:
+            progress({"type": "output", "line": line})
+
+    def run_build() -> LocalResult:
+        return _run_process_streaming(
             command,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
             env=env,
             timeout=build_timeout,
+            on_line=on_build_line,
         )
 
-    try:
-        result = run_build()
-    except subprocess.TimeoutExpired as exc:
-        raise LumaError(f"docker buildx build timed out after {build_timeout}s") from exc
-    if result.returncode != 0 and _buildx_missing_builder_error(result.stdout or "", builder):
+    result = run_build()
+    if result.code == 124:
+        raise LumaError(f"docker buildx build timed out after {build_timeout}s")
+    if result.code != 0 and _buildx_missing_builder_error(result.output or "", builder):
         if progress:
             progress({"type": "output", "line": "Buildx builder is missing on the build node; recreating it and retrying once."})
         _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, recreate=True, env=env)
-        try:
-            result = run_build()
-        except subprocess.TimeoutExpired as exc:
-            raise LumaError(f"docker buildx build timed out after {build_timeout}s") from exc
-    if result.returncode != 0:
-        output = (result.stdout or "").strip()
+        result = run_build()
+        if result.code == 124:
+            raise LumaError(f"docker buildx build timed out after {build_timeout}s")
+    if result.code != 0:
+        output = (result.output or "").strip()
         if _buildx_missing_builder_error(output, builder):
             raise LumaError(
                 "docker buildx builder could not be initialized on the build node. "

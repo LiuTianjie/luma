@@ -1,4 +1,4 @@
-import { ArrowLeft, CheckCircle2, Clock3, GitBranch, Loader2, Rocket, RotateCcw, Server, Settings2, XCircle } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Clock3, GitBranch, Loader2, Rocket, RotateCcw, ScrollText, Server, Settings2, XCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   fetchGitProviderRefs,
@@ -627,18 +627,28 @@ export function BuildHistoryPanel({
 
   const retryRun = async (id?: string) => {
     if (!id) return;
+    const now = Math.floor(Date.now() / 1000);
+    const previousRun = buildRuns.find((run) => run.id === id) || selectedRun || { id };
+    const retryingRun: BuildRun = {
+      ...previousRun,
+      id,
+      status: "running",
+      message: zh ? "重试已开始" : "Retry started",
+      updatedAt: now,
+      events: [],
+    };
     setRetryingId(id);
     setError("");
-    setLiveSteps([]);
+    setBuildRuns((current) => current.map((run) => run.id === id ? retryingRun : run));
+    setSelectedRun(retryingRun);
+    setLiveSteps([{ name: "Build image", status: "progress", message: zh ? "重试已开始" : "Retry started" }]);
     try {
-      const payload = await fetchBuildRun(token, id);
-      const run = payload.run;
-      setSelectedRun(run || null);
       await retryBuildRunStream(token, id, (step) => setLiveSteps((current) => [...current, step]));
       await loadBuildRuns();
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error && err.name === "AbortError" ? (zh ? "读取重试参数超时，请刷新后重试。" : "Loading retry parameters timed out. Refresh and try again.") : err instanceof Error ? err.message : String(err));
+      await loadBuildRuns();
     } finally {
       setRetryingId("");
     }
@@ -686,14 +696,27 @@ export function BuildHistoryPanel({
                   {run.message ? <span className="build-run-message" title={run.message}>{run.message}</span> : null}
                 </button>
                 <div className="build-run-actions">
-                  <button type="button" className="ghost" disabled={Boolean(loadingLogId || retryingId)} onClick={() => void openBuildRun(run.id)}>
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={Boolean(loadingLogId || retryingId)}
+                    title={zh ? "查看日志" : "View logs"}
+                    aria-label={zh ? "查看日志" : "View logs"}
+                    onClick={() => void openBuildRun(run.id)}
+                  >
                     {loadingLogId === run.id ? (
-                      <><Loader2 size={14} aria-hidden="true" className="spin" />{zh ? "加载日志" : "Loading"}</>
-                    ) : (zh ? "日志" : "Logs")}
+                      <Loader2 size={14} aria-hidden="true" className="spin" />
+                    ) : <ScrollText size={14} aria-hidden="true" />}
                   </button>
-                  <button type="button" className="ghost" disabled={Boolean(loadingLogId || retryingId) || !run.id} onClick={() => void retryRun(run.id)}>
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={Boolean(loadingLogId || retryingId) || !run.id}
+                    title={retryingId === run.id ? (zh ? "重试中" : "Retrying") : (zh ? "重试" : "Retry")}
+                    aria-label={retryingId === run.id ? (zh ? "重试中" : "Retrying") : (zh ? "重试" : "Retry")}
+                    onClick={() => void retryRun(run.id)}
+                  >
                     {retryingId === run.id ? <Loader2 size={14} aria-hidden="true" className="spin" /> : <RotateCcw size={14} aria-hidden="true" />}
-                    {retryingId === run.id ? (zh ? "重试中" : "Retrying") : (zh ? "重试" : "Retry")}
                   </button>
                 </div>
               </article>

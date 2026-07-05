@@ -10507,6 +10507,7 @@ class GithubImportTests(unittest.TestCase):
 
     def test_buildx_build_recreates_missing_builder_and_retries(self):
         from luma.agent import _docker_buildx_build
+        from luma.local import LocalResult
 
         progress: list[dict[str, str]] = []
         with tempfile.TemporaryDirectory() as tmp:
@@ -10519,10 +10520,10 @@ class GithubImportTests(unittest.TestCase):
             dockerfile.write_text("FROM busybox\n", encoding="utf-8")
 
             with patch(
-                "luma.agent.subprocess.run",
+                "luma.agent._run_process_streaming",
                 side_effect=[
-                    Mock(returncode=1, stdout='ERROR: no builder "luma-builder-egress" found\n'),
-                    Mock(returncode=0, stdout="pushed\n"),
+                    LocalResult(code=1, output='ERROR: no builder "luma-builder-egress" found\n'),
+                    LocalResult(code=0, output="pushed\n"),
                 ],
             ) as run, patch("luma.agent._ensure_buildx_builder", return_value="luma-builder-egress") as ensure:
                 image = _docker_buildx_build(
@@ -10549,6 +10550,45 @@ class GithubImportTests(unittest.TestCase):
         self.assertTrue(ensure.call_args.kwargs["recreate"])
         self.assertEqual(ensure.call_args.kwargs["env"]["DOCKER_CONFIG"], str(docker_config))
         self.assertIn("recreating it and retrying once", progress[0]["line"])
+
+    def test_buildx_build_streams_output_to_progress(self):
+        from luma.agent import _docker_buildx_build
+        from luma.local import LocalResult
+
+        progress: list[dict[str, str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docker_config = root / "docker-config"
+            docker_config.mkdir()
+            context_dir = root / "src"
+            context_dir.mkdir()
+            dockerfile = context_dir / "Dockerfile"
+            dockerfile.write_text("FROM busybox\n", encoding="utf-8")
+
+            def fake_stream(_command, **kwargs):
+                kwargs["on_line"]("#1 [internal] load build definition")
+                kwargs["on_line"]("#2 pushing layers")
+                return LocalResult(code=0, output="#1 [internal] load build definition\n#2 pushing layers\n")
+
+            with patch("luma.agent._run_process_streaming", side_effect=fake_stream):
+                image = _docker_buildx_build(
+                    docker="docker",
+                    builder="luma-builder",
+                    docker_config=docker_config,
+                    push_host="localhost:5000",
+                    registry_host="100.66.177.70:5000",
+                    repo="acme/app",
+                    sha="abc123",
+                    context_dir=context_dir,
+                    dockerfile_path=dockerfile,
+                    platform="linux/amd64",
+                    proxy="",
+                    build_timeout=1800,
+                    progress=lambda event: progress.append(event),
+                )
+
+        self.assertEqual(image, "100.66.177.70:5000/acme/app:abc123")
+        self.assertEqual([event["line"] for event in progress], ["#1 [internal] load build definition", "#2 pushing layers"])
 
     def test_registry_serve_configures_insecure_registry_and_docker_no_proxy(self):
         from luma.control.server import handle_registry_serve
