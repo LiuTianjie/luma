@@ -619,6 +619,50 @@ def _redact_build_request(body: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _git_source_from_build_body(body: Dict[str, Any], *, repo_url: str, build_node: str, build_run_id: str) -> Dict[str, Any]:
+    source = _redact_build_request(body)
+    source["repoUrl"] = repo_url
+    source["buildNode"] = build_node
+    source["buildRunId"] = build_run_id
+    return _sanitize_git_source(source)
+
+
+def _deployment_git_source_from_body(body: Dict[str, Any]) -> Dict[str, Any] | None:
+    source = body.get("gitSource")
+    if not isinstance(source, dict):
+        return None
+    cleaned = _sanitize_git_source(source)
+    return cleaned or None
+
+
+def _sanitize_git_source(source: Dict[str, Any]) -> Dict[str, Any]:
+    allowed = {
+        "repoUrl",
+        "providerId",
+        "repository",
+        "ref",
+        "buildNode",
+        "context",
+        "dockerfile",
+        "platform",
+        "registryHost",
+        "pushHost",
+        "manifest",
+        "composeContent",
+        "buildRunId",
+    }
+    cleaned: Dict[str, Any] = {}
+    for key in allowed:
+        value = source.get(key)
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                cleaned[key] = text
+        elif isinstance(value, (int, float, bool)):
+            cleaned[key] = value
+    return cleaned
+
+
 def _create_build_run(body: Dict[str, Any], *, source: str, build_node: str) -> str:
     run_id = f"build-{secrets.token_hex(8)}"
     now = int(time.time())
@@ -1314,6 +1358,35 @@ def handle_build_run_retry(
     return handle_build_deploy(token, retry_body, progress=progress, build_run_id=build_id)
 
 
+def handle_application_update(
+    token: str,
+    body: Dict[str, Any],
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    name = str(body.get("name") or body.get("stack") or "").strip()
+    if not name:
+        raise LumaError("application name is required")
+    record = _service_deployment_record(state, name) or _compose_deployment_record(state, name)
+    if not isinstance(record, dict):
+        raise LumaError(f"deployment not found: {name}")
+    git_source = record.get("gitSource") if isinstance(record.get("gitSource"), dict) else {}
+    if not git_source:
+        raise LumaError(f"application {name} was not deployed from Git; open the editor to update it")
+    update_body = {
+        key: value
+        for key, value in _sanitize_git_source(git_source).items()
+        if key != "buildRunId"
+    }
+    if body.get("envSecrets") is not None:
+        update_body["envSecrets"] = _request_env_secrets(body)
+    if not (update_body.get("repoUrl") or (update_body.get("providerId") and update_body.get("repository"))):
+        raise LumaError(f"application {name} has an incomplete Git source; open the editor to update it")
+    return handle_build_deploy(token, update_body, progress=progress)
+
+
 def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     nodes_raw = body.get("nodes")
     node = str(body.get("node") or "").strip()
@@ -1958,6 +2031,7 @@ def handle_build_deploy(
         _restart_build_run(build_run_id, run_body, source=repo_url, build_node=build_node)
     else:
         build_run_id = _create_build_run(run_body, source=repo_url, build_node=build_node)
+    git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
 
     def run_progress(event: dict[str, str]) -> None:
         _append_build_run_event(build_run_id, event)
@@ -2018,6 +2092,7 @@ def handle_build_deploy(
             deploy_body["manifest"] = final_manifest
             deploy_body["composeContent"] = final_compose_content
             deploy_body["sourceName"] = repo_url
+            deploy_body["gitSource"] = git_source
             deploy_body.pop("repoUrl", None)
             result = handle_compose_deployment(token, deploy_body, progress=run_progress)
             if isinstance(result, dict):
@@ -2044,6 +2119,7 @@ def handle_build_deploy(
         deploy_body = dict(body)
         deploy_body["manifest"] = final_manifest
         deploy_body["sourceName"] = repo_url
+        deploy_body["gitSource"] = git_source
         deploy_body.pop("repoUrl", None)
         result = handle_deployment(token, deploy_body, progress=run_progress)
         if isinstance(result, dict):
@@ -2376,9 +2452,9 @@ def _record_tcp_relay_ports(record: Dict[str, Any]) -> list[int]:
     return sorted(ports)
 
 
-def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, manifest: str, source_name: str) -> None:
+def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, manifest: str, source_name: str, *, git_source: Dict[str, Any] | None = None) -> None:
     deployments = _deployments_state(state)
-    deployments["services"][service.slug] = {
+    record: Dict[str, Any] = {
         "kind": "service",
         "name": service.name,
         "slug": service.slug,
@@ -2387,6 +2463,9 @@ def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, ma
         "tcpRelayPorts": _service_tcp_relay_ports(service),
         "updatedAt": int(time.time()),
     }
+    if git_source:
+        record["gitSource"] = _sanitize_git_source(git_source)
+    deployments["services"][service.slug] = record
 
 
 def _mark_service_deployment(
@@ -2397,9 +2476,10 @@ def _mark_service_deployment(
     status: str,
     steps: list[dict[str, str]] | None = None,
     error: str = "",
+    git_source: Dict[str, Any] | None = None,
 ) -> None:
     def mutate(state: Dict[str, Any]) -> None:
-        _register_service_deployment(state, service, manifest, source_name)
+        _register_service_deployment(state, service, manifest, source_name, git_source=git_source)
         record = _deployments_state(state)["services"][service.slug]
         record["status"] = status
         record["lastError"] = error
@@ -2424,6 +2504,9 @@ def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeplo
     compose_content = body.get("composeContent")
     if isinstance(compose_content, str):
         record["composeContent"] = compose_content
+    git_source = _deployment_git_source_from_body(body)
+    if git_source:
+        record["gitSource"] = git_source
     deployments["compose"][deployment.slug] = record
 
 
@@ -2492,6 +2575,7 @@ def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
         "updatedAt": record.get("updatedAt") or 0,
         "manifest": str(record.get("manifest") or ""),
         "composeContent": str(record.get("composeContent") or ""),
+        "gitSource": record.get("gitSource") if isinstance(record.get("gitSource"), dict) else None,
     }
 
 
@@ -2560,6 +2644,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     source_name = str(body.get("sourceName") or "service.yaml")
     if not isinstance(manifest, str) or not manifest.strip():
         raise LumaError("manifest is required")
+    git_source = _deployment_git_source_from_body(body)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
     service = _load_service_manifest(manifest)
@@ -2585,7 +2670,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         }
         steps.append(secret_step)
         _emit_progress(progress, secret_step)
-    _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
+    _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps, git_source=git_source)
 
     try:
         service = _deploy_step(steps, "Resolve node pin", lambda: resolve_service_node_pin(service, state, engine=effective_engine), progress=progress)
@@ -2603,7 +2688,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
             progress=progress,
         )
         _emit_tcp_ingress_refresh_advisory(steps, progress, state, _service_tcp_relay_ports(service))
-        _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps)
+        _mark_service_deployment(service, manifest, source_name, status="pending", steps=steps, git_source=git_source)
         storage_preparation = _deploy_step(
             steps,
             "Prepare managed storage",
@@ -2674,9 +2759,9 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         # state. Leaving it at "pending" strands a ghost deploy that also blocks
         # later deploys (pending counts as occupying tcp-relay ports). bare raise
         # preserves the original exception for the caller.
-        _mark_service_deployment(service, manifest, source_name, status="failed_partial", steps=steps, error=str(exc))
+        _mark_service_deployment(service, manifest, source_name, status="failed_partial", steps=steps, error=str(exc), git_source=git_source)
         raise
-    _mark_service_deployment(service, manifest, source_name, status="active", steps=steps)
+    _mark_service_deployment(service, manifest, source_name, status="active", steps=steps, git_source=git_source)
     result = {
         "clusterId": state["clusterId"],
         "service": service.name,
@@ -7548,6 +7633,12 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/builds":
                 self._json(200, handle_build_deploy(token, body))
                 return
+            if self.path == "/v1/applications/update/stream":
+                self._stream_application_update(token, body)
+                return
+            if self.path == "/v1/applications/update":
+                self._json(200, handle_application_update(token, body))
+                return
             if self.path == "/v1/registry/serve/stream":
                 self._stream_registry_serve(token, body)
                 return
@@ -7702,6 +7793,28 @@ class ControlHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             request_id = _request_id()
             print(f"requestId={request_id} stream build retry internal error: {exc}", file=sys.stderr, flush=True)
+            emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+
+    def _stream_application_update(self, token: str, body: Dict[str, Any]) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        def emit(event: Dict[str, Any]) -> None:
+            self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.flush()
+
+        try:
+            result = handle_application_update(token, body, progress=emit)
+            emit({"status": "done", "result": result})
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except LumaError as exc:
+            emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+        except Exception as exc:
+            request_id = _request_id()
+            print(f"requestId={request_id} stream application update internal error: {exc}", file=sys.stderr, flush=True)
             emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
 
     def _stream_registry_serve(self, token: str, body: Dict[str, Any]) -> None:
@@ -7968,6 +8081,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/services/rollback": handle_service_rollback,
             "/v1/services/history": handle_service_history,
             "/v1/applications/restart": handle_application_restart,
+            "/v1/applications/update": handle_application_update,
             "/v1/certificates/retry": handle_certificate_retry,
             "/v1/fleet/update": handle_fleet_update,
             "/v1/secrets": handle_secret_set,
@@ -7990,6 +8104,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_build_config_set, token, body))
         if path == "/v1/builds/stream":
             return _asgi_stream_build_deploy(token, body)
+        if path == "/v1/applications/update/stream":
+            return _asgi_stream_application_update(token, body)
         if path == "/v1/registry/serve/stream":
             return _asgi_stream_registry_serve(token, body)
         if path == "/v1/dashboard/pull-diagnostics/stream":
@@ -8091,6 +8207,37 @@ def _asgi_stream_build_run_retry(token: str, build_id: str, body: Dict[str, Any]
             except Exception as exc:
                 request_id = _request_id()
                 print(f"requestId={request_id} stream build retry internal error: {exc}", file=sys.stderr, flush=True)
+                emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        threading.Thread(target=run, daemon=True).start()
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _asgi_stream_application_update(token: str, body: Dict[str, Any]) -> StreamingResponse:
+    async def generate() -> AsyncIterator[bytes]:
+        queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        def emit(event: Dict[str, Any]) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, dict(event))
+
+        def run() -> None:
+            try:
+                result = handle_application_update(token, body, progress=emit)
+                emit({"status": "done", "result": result})
+            except LumaError as exc:
+                emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+            except Exception as exc:
+                request_id = _request_id()
+                print(f"requestId={request_id} stream application update internal error: {exc}", file=sys.stderr, flush=True)
                 emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)

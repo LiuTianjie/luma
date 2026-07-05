@@ -10110,6 +10110,77 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_git_import_records_source_and_application_update_rebuilds_it(self):
+        from luma.control.server import handle_application_update, handle_build_deploy, handle_deployment_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "online", "lastSeen": int(time.time()), "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+
+                build_images = iter([
+                    "100.66.177.70:5000/acme/app:first",
+                    "100.66.177.70:5000/acme/app:second",
+                ])
+
+                def fake_build(*_args, **_kwargs):
+                    return {
+                        "image": next(build_images),
+                        "manifest": "name: app\nimage: placeholder\nregion: cn\nexposure: none\n",
+                    }
+
+                def fake_deploy(token, body, **_kwargs):
+                    from luma.control.server import _load_service_manifest, _mark_service_deployment
+
+                    service = _load_service_manifest(body["manifest"])
+                    _mark_service_deployment(
+                        service,
+                        body["manifest"],
+                        str(body.get("sourceName") or ""),
+                        status="active",
+                        steps=[],
+                        git_source=body.get("gitSource"),
+                    )
+                    return {"service": service.name, "steps": []}
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=fake_build), patch("luma.control.server.handle_deployment", side_effect=fake_deploy):
+                    result = handle_build_deploy(
+                        state["deployToken"],
+                        {"repoUrl": "https://github.com/acme/app", "ref": "main", "buildNode": "builder"},
+                    )
+
+                config = handle_deployment_config(state["deployToken"], "app")
+                self.assertEqual(config["gitSource"]["repoUrl"], "https://github.com/acme/app")
+                self.assertEqual(config["gitSource"]["ref"], "main")
+                self.assertEqual(config["gitSource"]["buildNode"], "builder")
+                self.assertEqual(config["gitSource"]["buildRunId"], result["buildRunId"])
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=fake_build), patch("luma.control.server.handle_deployment", side_effect=fake_deploy) as deploy:
+                    update = handle_application_update(state["deployToken"], {"name": "app"})
+
+                self.assertEqual(update["service"], "app")
+                self.assertNotEqual(update["buildRunId"], result["buildRunId"])
+                update_body = deploy.call_args.args[1]
+                self.assertEqual(update_body["gitSource"]["repoUrl"], "https://github.com/acme/app")
+                self.assertEqual(update_body["gitSource"]["ref"], "main")
+                self.assertIn("image: 100.66.177.70:5000/acme/app:second", update_body["manifest"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_build_run_retry_accepts_env_secret_overrides_without_storing_values(self):
         from luma.control.server import handle_build_deploy, handle_build_run_get, handle_build_run_list, handle_build_run_retry
         from luma.errors import LumaError
@@ -10416,12 +10487,12 @@ class GithubImportTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-        completed = Mock(returncode=0, stdout="built\n")
+        completed = Mock(code=0, output="built\n")
         with patch("luma.gitops.clone", side_effect=fake_clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
             "luma.agent._docker_binary", return_value="docker"
         ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
             "luma.agent._ensure_buildx_builder", return_value="luma-builder"
-        ), patch("luma.agent.subprocess.run", return_value=completed):
+        ), patch("luma.agent._run_process_streaming", return_value=completed):
             result = build_image(
                 {
                     "repoUrl": "https://github.com/acme/app",
@@ -10453,12 +10524,12 @@ class GithubImportTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-        completed = Mock(returncode=0, stdout="built\n")
+        completed = Mock(code=0, output="built\n")
         with patch("luma.gitops.clone", side_effect=fake_clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
             "luma.agent._docker_binary", return_value="docker"
         ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
             "luma.agent._ensure_buildx_builder", return_value="luma-builder"
-        ), patch("luma.agent.subprocess.run", return_value=completed):
+        ), patch("luma.agent._run_process_streaming", return_value=completed):
             result = build_image(
                 {
                     "repoUrl": "https://github.com/acme/app",
@@ -10487,12 +10558,12 @@ class GithubImportTests(unittest.TestCase):
             )
             (deploy / "web" / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
 
-        completed = Mock(returncode=0, stdout="built\n")
+        completed = Mock(code=0, output="built\n")
         with patch("luma.gitops.clone", side_effect=fake_clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
             "luma.agent._docker_binary", return_value="docker"
         ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
             "luma.agent._ensure_buildx_builder", return_value="luma-builder"
-        ), patch("luma.agent.subprocess.run", return_value=completed):
+        ), patch("luma.agent._run_process_streaming", return_value=completed):
             result = build_image(
                 {
                     "repoUrl": "https://github.com/acme/app",
@@ -10524,12 +10595,12 @@ class GithubImportTests(unittest.TestCase):
             )
             (dest / "web" / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
 
-        completed = Mock(returncode=0, stdout="built\n")
+        completed = Mock(code=0, output="built\n")
         with patch("luma.gitops.clone", side_effect=fake_clone), patch("luma.gitops.head_commit", return_value="abc123"), patch(
             "luma.agent._docker_binary", return_value="docker"
         ), patch("luma.agent._docker_buildx_available", return_value=True), patch(
             "luma.agent._ensure_buildx_builder", return_value="luma-builder"
-        ), patch("luma.agent.subprocess.run", return_value=completed):
+        ), patch("luma.agent._run_process_streaming", return_value=completed):
             result = build_image(
                 {
                     "repoUrl": "https://github.com/acme/app",

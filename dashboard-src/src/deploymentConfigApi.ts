@@ -6,6 +6,14 @@ export type DeploymentConfig = {
   updatedAt?: number;
   manifest?: string;
   composeContent?: string;
+  gitSource?: {
+    repoUrl?: string;
+    providerId?: string;
+    repository?: string;
+    ref?: string;
+    buildNode?: string;
+    buildRunId?: string;
+  } | null;
 };
 
 export async function fetchDeploymentConfig({ token, name }: { token: string; name: string }): Promise<DeploymentConfig> {

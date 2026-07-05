@@ -211,9 +211,11 @@ def render_compose_job(
             f"compose deployment {name} pins services to multiple nodes {sorted(nodes)}; "
             "a Nomad group runs on one node — use separate deployments"
         )
+    pinned_node = next(iter(nodes), "")
+    service_address = _node_service_address(config, pinned_node) if pinned_node else ""
     constraints = [{"LTarget": "${meta.region}", "RTarget": region, "Operand": "="}]
     if nodes:
-        constraints.append({"LTarget": "${meta.luma_node_name}", "RTarget": next(iter(nodes)), "Operand": "="})
+        constraints.append({"LTarget": "${meta.luma_node_name}", "RTarget": pinned_node, "Operand": "="})
 
     # service name -> 127.0.0.1 so DSNs referencing sibling service names resolve
     # over the shared group loopback.
@@ -343,7 +345,7 @@ def render_compose_job(
         tasks.append(task)
 
         if exposure in {"cn-edge", "external-edge"} and override and override.domain and port:
-            nomad_services.append({
+            service_block = {
                 "Name": str(svc_name),
                 "PortLabel": label,
                 "Provider": "nomad",
@@ -353,7 +355,9 @@ def render_compose_job(
                     f"traefik.http.routers.{label}.entrypoints={config.entrypoint}",
                     f"traefik.http.routers.{label}.tls.certresolver={config.cert_resolver}",
                 ],
-            })
+            }
+            _set_edge_service_address(service_block, service_address)
+            nomad_services.append(service_block)
 
     group: Dict[str, Any] = {
         "Name": name,
@@ -714,10 +718,48 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
         "Provider": "nomad",
         "Tags": tags,
     }
+    _set_edge_service_address(block, _node_service_address(config, service.node or ""))
     check = _health_check(service, port_label)
     if check is not None:
         block["Checks"] = [check]
     return block
+
+
+def _set_edge_service_address(block: Dict[str, Any], address: str) -> None:
+    if address:
+        block["Address"] = address
+    else:
+        block["AddressMode"] = "host"
+
+
+def _node_service_address(config: LumaConfig, node_name: str) -> str:
+    if not node_name:
+        return ""
+    node = config.nodes.get(node_name)
+    if node is None:
+        return ""
+    raw = node.raw or {}
+    for key in ("tailscaleIP", "tailscaleIp", "tailscaleName", "advertiseAddr"):
+        value = _clean_service_address(raw.get(key))
+        if value:
+            return value
+    return _clean_service_address(node.public_ip)
+
+
+def _clean_service_address(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "://" in text:
+        parsed = urllib.parse.urlparse(text)
+        text = parsed.netloc or parsed.path
+    if text.startswith("[") and "]" in text:
+        return text[1:text.index("]")]
+    if text.count(":") == 1:
+        host, port = text.rsplit(":", 1)
+        if port.isdigit():
+            return host
+    return text
 
 
 def _health_check(service: ServiceSpec, port_label: str) -> Dict[str, Any] | None:

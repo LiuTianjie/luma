@@ -9,11 +9,11 @@ from luma.compose import load_compose_deployment
 from luma.nomad_render import render_compose_job, _resolve_env_value
 
 
-def cfg():
-    return LumaConfig(
-        {"defaults": {"engine": "nomad", "entrypoint": "websecure", "certResolver": "letsencrypt"}},
-        None,
-    )
+def cfg(raw=None):
+    data = {"defaults": {"engine": "nomad", "entrypoint": "websecure", "certResolver": "letsencrypt"}}
+    if raw:
+        data.update(raw)
+    return LumaConfig(data, None)
 
 
 def write_deployment(sidecar: str, compose: str):
@@ -295,12 +295,17 @@ compose: docker-compose.yml
 region: cn
 services:
   web:
+    node: tecent
     exposure: cn-edge
     domain: web.example.com
     port: 3000
 """
         dep = write_deployment(sidecar, compose)
-        job = render_compose_job(cfg(), dep, as_json=False)["Job"]
+        job = render_compose_job(
+            cfg({"nodes": {"tecent": {"host": "tecent", "tailscaleIP": "100.64.29.91"}}}),
+            dep,
+            as_json=False,
+        )["Job"]
 
         update = job["Update"]
         self.assertEqual(update["Canary"], 1)
@@ -311,6 +316,9 @@ services:
         self.assertEqual(network["DynamicPorts"][0]["Label"], "web")
         self.assertEqual(network["DynamicPorts"][0]["To"], 3000)
         self.assertNotIn("ReservedPorts", network)
+        svc = job["TaskGroups"][0]["Services"][0]
+        self.assertEqual(svc["Address"], "100.64.29.91")
+        self.assertNotIn("AddressMode", svc)
 
     def test_compose_publish_port_skips_canary_to_avoid_port_conflict(self):
         compose = """

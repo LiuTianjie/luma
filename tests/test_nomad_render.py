@@ -99,10 +99,43 @@ replicas: 2
         # traefik nomad-provider service
         svc = group["Services"][0]
         self.assertEqual(svc["Provider"], "nomad")
+        self.assertEqual(svc["AddressMode"], "host")
         self.assertIn("traefik.enable=true", svc["Tags"])
         self.assertIn(
             "traefik.http.routers.app.rule=Host(`app.example.com`)", svc["Tags"]
         )
+
+    def test_cn_edge_with_pinned_node_advertises_tailscale_address(self):
+        service = self.load(
+            """
+name: app
+image: ghcr.io/acme/app:latest
+region: cn
+node: tecent
+exposure: cn-edge
+domain: app.example.com
+port: 3000
+"""
+        )
+        config = LumaConfig(
+            {
+                "defaults": {
+                    "entrypoint": "websecure",
+                    "certResolver": "letsencrypt",
+                },
+                "nodes": {
+                    "tecent": {
+                        "host": "tecent",
+                        "tailscaleIP": "100.64.29.91",
+                    }
+                },
+            },
+            None,
+        )
+        job = render_nomad_job(config, service, as_json=False)["Job"]
+        svc = job["TaskGroups"][0]["Services"][0]
+        self.assertEqual(svc["Address"], "100.64.29.91")
+        self.assertNotIn("AddressMode", svc)
         # auto_revert is on (the new capability)
         self.assertTrue(job["Update"]["AutoRevert"])
         self.assertEqual(job["Update"]["MaxParallel"], 1)

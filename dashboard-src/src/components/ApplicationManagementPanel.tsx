@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { FileText, History, Pencil, Plus, RotateCw, Search, Settings2 } from "lucide-react";
+import { FileText, History, Loader2, Pencil, Plus, RotateCw, Search, Settings2 } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
-import { fetchServiceHistory, restartApplication, rollbackService } from "../lifecycleApi";
+import { fetchServiceHistory, restartApplication, rollbackService, updateApplicationStream } from "../lifecycleApi";
+import type { DeployStep } from "../deploy/types";
 import type { DashboardPayload, DashboardService, Lang, ServiceVersion } from "../types";
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
 import { ServiceLogsModal } from "./ServiceLogsModal";
@@ -89,6 +90,8 @@ export function ApplicationManagementPanel({
   const [configTab, setConfigTab] = useState<ConfigTab>("manifest");
   const [actionError, setActionError] = useState("");
   const [actionBusy, setActionBusy] = useState("");
+  const [updatingApp, setUpdatingApp] = useState("");
+  const [actionSteps, setActionSteps] = useState<DeployStep[]>([]);
   const [configBusy, setConfigBusy] = useState("");
   const [rollbackState, setRollbackState] = useState<RollbackState | null>(null);
   const [logsTarget, setLogsTarget] = useState<LogsTarget | null>(null);
@@ -139,25 +142,45 @@ export function ApplicationManagementPanel({
   };
   const openUpdate = async (app: Application) => {
     setActionError("");
-    if (!onUpdateApplication) {
-      setActionError(lang === "zh" ? "当前页面未配置更新应用入口。" : "This page does not have an update-application entry configured.");
-      return;
-    }
+    setActionSteps([]);
     setConfigBusy(app.stack);
     setSelected(null);
+    let gitUpdateStarted = false;
     try {
       const config = await fetchDeploymentConfig({ token, name: app.stack });
+      if (config.gitSource) {
+        const source = config.gitSource.repository || config.gitSource.repoUrl || config.sourceName || app.stack;
+        const prompt = lang === "zh"
+          ? `确认从 Git 更新 ${app.stack}？\n${source}${config.gitSource.ref ? ` @ ${config.gitSource.ref}` : ""}`
+          : `Update ${app.stack} from Git?\n${source}${config.gitSource.ref ? ` @ ${config.gitSource.ref}` : ""}`;
+        if (!window.confirm(prompt)) return;
+        setConfigBusy("");
+        setUpdatingApp(app.stack);
+        gitUpdateStarted = true;
+        await updateApplicationStream({ token, name: app.stack }, (step) => setActionSteps((current) => [...current, step]));
+        await onRefresh();
+        return;
+      }
+      if (!onUpdateApplication) {
+        setActionError(lang === "zh" ? "当前页面未配置更新应用入口。" : "This page does not have an update-application entry configured.");
+        return;
+      }
       onUpdateApplication({ app, deploymentConfig: config });
     } catch (error) {
       const message = String(error instanceof Error ? error.message : error);
-      onUpdateApplication({
-        app,
-        configWarning: lang === "zh"
-          ? `未读取到已登记部署配置，已从当前运行状态反推；提交前请重点核对 YAML。${message ? ` (${message})` : ""}`
-          : `Could not load a registered deployment config, so the form was inferred from current runtime state. Review the YAML carefully before submitting.${message ? ` (${message})` : ""}`,
-      });
+      if (gitUpdateStarted || !onUpdateApplication) {
+        setActionError(message);
+      } else {
+        onUpdateApplication({
+          app,
+          configWarning: lang === "zh"
+            ? `未读取到已登记部署配置，已从当前运行状态反推；提交前请重点核对 YAML。${message ? ` (${message})` : ""}`
+            : `Could not load a registered deployment config, so the form was inferred from current runtime state. Review the YAML carefully before submitting.${message ? ` (${message})` : ""}`,
+        });
+      }
     } finally {
       setConfigBusy("");
+      setUpdatingApp("");
     }
   };
   const openConfig = async (app: Application) => {
@@ -280,7 +303,9 @@ export function ApplicationManagementPanel({
             <button type="button" className="ghost" disabled={Boolean(selectedRollback?.loading || selectedRollbackBusy)} onClick={() => void openVersions(selected)}>{selectedRollback?.loading ? t(lang, "loadingHistory") : t(lang, "versions")}</button>
             <button type="button" className="ghost" disabled={Boolean(configBusy)} onClick={() => void openConfig(selected)}>{configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "viewConfig")}</button>
             <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(selected)}>{actionBusy === selected.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
-            <button type="button" disabled={Boolean(configBusy)} onClick={() => void openUpdate(selected)}>{configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}</button>
+            <button type="button" disabled={Boolean(configBusy || updatingApp)} onClick={() => void openUpdate(selected)}>
+              {updatingApp === selected.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
+            </button>
             <button type="button" className="icon-button" onClick={() => setSelected(null)}>{t(lang, "close")}</button>
           </div>
         </header>
@@ -440,6 +465,16 @@ export function ApplicationManagementPanel({
         </button>
       </div>
       {actionError ? <div className="storage-warnings"><span>{actionError}</span></div> : null}
+      {actionSteps.length ? (
+        <ol className="deploy-step-log application-update-log">
+          {actionSteps.filter((step) => step.name).map((step, index) => (
+            <li key={`${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
+              <strong>{step.name}</strong>
+              {step.message ? <span> - {step.message}</span> : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
       <div className="application-filter-bar" aria-label={lang === "zh" ? "应用筛选" : "Application filters"}>
         <label className="application-search-field">
           <Search size={16} aria-hidden="true" />
@@ -545,9 +580,9 @@ export function ApplicationManagementPanel({
                       <RotateCw size={15} aria-hidden="true" />
                       {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
                     </button>
-                    <button type="button" disabled={Boolean(configBusy)} onClick={(event) => { event.stopPropagation(); void openUpdate(app); }}>
-                      <Pencil size={15} aria-hidden="true" />
-                      {configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
+                    <button type="button" disabled={Boolean(configBusy || updatingApp)} onClick={(event) => { event.stopPropagation(); void openUpdate(app); }}>
+                      {updatingApp === app.stack ? <Loader2 size={15} aria-hidden="true" className="spin" /> : <Pencil size={15} aria-hidden="true" />}
+                      {updatingApp === app.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
                     </button>
                   </div>
                 </td>
@@ -589,9 +624,9 @@ export function ApplicationManagementPanel({
                 <RotateCw size={15} aria-hidden="true" />
                 {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
               </button>
-              <button type="button" disabled={Boolean(configBusy)} onClick={() => void openUpdate(app)}>
-                <Pencil size={15} aria-hidden="true" />
-                {configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
+              <button type="button" disabled={Boolean(configBusy || updatingApp)} onClick={() => void openUpdate(app)}>
+                {updatingApp === app.stack ? <Loader2 size={15} aria-hidden="true" className="spin" /> : <Pencil size={15} aria-hidden="true" />}
+                {updatingApp === app.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
               </button>
             </div>
           </article>
