@@ -6400,6 +6400,86 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_dashboard_runtime_events_include_pending_allocation_pull_progress(self):
+        from luma.control.server import handle_dashboard_runtime_events
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "tecent": {
+                        "nodeId": "nomad-node-1",
+                        "hostname": "VM-0-10-ubuntu",
+                        "agent": {
+                            "status": "ready",
+                            "diagnostics": {
+                                "recentImagePullErrors": [
+                                    'Task event: alloc_id=alloc-1 task=app type=Driver msg="Docker image pull progress: Pulled 9/14 layers" failed=false'
+                                ]
+                            },
+                        },
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}), encoding="utf-8")
+
+                def request(_self, method, path, body=None):
+                    if path == "/v1/job/luxe-monitor":
+                        return {
+                            "ID": "luxe-monitor",
+                            "Meta": {"luma.compose": "true"},
+                            "TaskGroups": [
+                                {
+                                    "Name": "luxe-monitor",
+                                    "Tasks": [
+                                        {"Name": "app", "Config": {"image": "100.66.177.70:5000/liutianjie/luxe-monitor:a494e7f"}},
+                                    ],
+                                }
+                            ],
+                        }
+                    if path == "/v1/job/luxe-monitor/allocations":
+                        return [
+                            {
+                                "ID": "alloc-1",
+                                "DesiredStatus": "run",
+                                "ClientStatus": "pending",
+                                "TaskGroup": "luxe-monitor",
+                                "CreateTime": 10,
+                                "NodeID": "nomad-node-1",
+                                "NodeName": "VM-0-10-ubuntu",
+                                "TaskStates": {
+                                    "app": {
+                                        "State": "pending",
+                                        "Events": [
+                                            {"Type": "Driver", "DisplayMessage": "Downloading image", "Message": "Docker image pull progress: Pulled 9/14 layers", "Time": 123}
+                                        ],
+                                    }
+                                },
+                            }
+                        ]
+                    if path == "/v1/allocation/alloc-1":
+                        return request(_self, method, "/v1/job/luxe-monitor/allocations", body)[0]
+                    raise AssertionError(path)
+
+                with patch("luma.control.server.NomadApi.request", request):
+                    result = handle_dashboard_runtime_events(state["deployToken"], "luxe-monitor_app")
+
+                self.assertEqual(result["service"], "luxe-monitor_app")
+                self.assertEqual(result["job"], "luxe-monitor")
+                self.assertEqual(result["task"], "app")
+                self.assertEqual(result["allocId"], "alloc-1")
+                self.assertEqual(result["node"], "tecent")
+                self.assertEqual(result["status"], "pending")
+                self.assertEqual(result["image"], "100.66.177.70:5000/liutianjie/luxe-monitor:a494e7f")
+                self.assertTrue(any("Downloading image" in event["message"] for event in result["events"]))
+                self.assertTrue(any("Pulled 9/14" in event["message"] for event in result["events"]))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_service_pull_diagnostics_runs_on_latest_allocation_node(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -10026,6 +10106,58 @@ class GithubImportTests(unittest.TestCase):
                 self.assertEqual(result["buildRunId"], failed["id"])
                 detail = handle_build_run_get(state["deployToken"], failed["id"])["run"]
                 self.assertEqual(detail["events"][0]["name"], "Build image")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_build_run_retry_accepts_env_secret_overrides_without_storing_values(self):
+        from luma.control.server import handle_build_deploy, handle_build_run_get, handle_build_run_list, handle_build_run_retry
+        from luma.errors import LumaError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                now = int(time.time())
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "tailscaleIP": "100.66.177.70",
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                    }
+                }
+                state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
+                save_state(state)
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=LumaError("missing deployment secret")):
+                    with self.assertRaisesRegex(LumaError, "missing deployment secret"):
+                        handle_build_deploy(state["deployToken"], {"repoUrl": "https://github.com/acme/app"})
+
+                failed = handle_build_run_list(state["deployToken"])["runs"][0]
+
+                with patch(
+                    "luma.control.server._run_node_agent_task",
+                    return_value={
+                        "image": "100.66.177.70:5000/acme/app:abc123",
+                        "manifest": "name: app\nimage: placeholder\nregion: cn\nexposure: none\nenv:\n  DATABASE_URL: ${DATABASE_URL}\n",
+                    },
+                ), patch("luma.control.server.handle_deployment", return_value={"service": "app", "steps": []}) as deploy:
+                    result = handle_build_run_retry(
+                        state["deployToken"],
+                        failed["id"],
+                        {"envSecrets": {"DATABASE_URL": "postgres://secret"}},
+                    )
+
+                deploy_body = deploy.call_args.args[1]
+                self.assertEqual(deploy_body["envSecrets"], {"DATABASE_URL": "postgres://secret"})
+                self.assertEqual(result["buildRunId"], failed["id"])
+                detail = handle_build_run_get(state["deployToken"], failed["id"])["run"]
+                self.assertEqual(detail["request"]["envSecretNames"], ["DATABASE_URL"])
+                self.assertNotIn("postgres://secret", json.dumps(detail))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

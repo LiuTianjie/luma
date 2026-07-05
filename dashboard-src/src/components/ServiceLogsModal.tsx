@@ -22,6 +22,27 @@ type PullDiagnosticState = {
   lines: string[];
 };
 
+type RuntimeEvent = {
+  source?: string;
+  type?: string;
+  task?: string;
+  message?: string;
+  time?: number;
+  failed?: boolean;
+};
+
+type RuntimeEventsState = {
+  service?: string;
+  job?: string;
+  task?: string;
+  allocId?: string;
+  node?: string;
+  image?: string;
+  status?: string;
+  events?: RuntimeEvent[];
+  updatedAt?: number;
+};
+
 const SINCE_OPTIONS = [
   { label: "tail", seconds: 0 },
   { label: "5m", seconds: 5 * 60 },
@@ -56,6 +77,11 @@ function logParams(service: string, sinceLabel: string, tail: string) {
 function serviceLogFilename(service: string) {
   const safeName = service.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
   return `${safeName || "service"}.log`;
+}
+
+function runtimeEventLabel(event: RuntimeEvent) {
+  const parts = [event.source, event.type, event.task].filter(Boolean);
+  return parts.length ? `[${parts.join(" · ")}] ${event.message || ""}` : event.message || "";
 }
 
 export function ServiceLogsModal({
@@ -107,6 +133,9 @@ export function ServiceLogsModal({
   const [logsState, setLogsState] = useState<LogsState | null>(null);
   const [logsError, setLogsError] = useState("");
   const [logsLoading, setLogsLoading] = useState(false);
+  const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEventsState | null>(null);
+  const [runtimeError, setRuntimeError] = useState("");
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
   const [pullDiagnostic, setPullDiagnostic] = useState<PullDiagnosticState | null>(null);
   const [pullLoading, setPullLoading] = useState(false);
 
@@ -139,6 +168,8 @@ export function ServiceLogsModal({
 
   useEffect(() => {
     setPullDiagnostic(null);
+    setRuntimeEvents(null);
+    setRuntimeError("");
   }, [selectedService]);
 
   const selected = services.find((service) => service.fullName === selectedService);
@@ -169,6 +200,38 @@ export function ServiceLogsModal({
       setLogsLoading(false);
     }
   }, [selectedService, sinceLabel, token]);
+
+  const loadRuntimeEvents = useCallback(async (signal?: AbortSignal) => {
+    if (!selectedService) return;
+    setRuntimeLoading(true);
+    try {
+      const params = new URLSearchParams({ service: selectedService });
+      const response = await fetch(`/v1/dashboard/runtime-events?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal,
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      setRuntimeEvents(payload as RuntimeEventsState);
+      setRuntimeError("");
+    } catch (error) {
+      if ((error as Error)?.name === "AbortError") return;
+      setRuntimeError(String(error instanceof Error ? error.message : error));
+    } finally {
+      setRuntimeLoading(false);
+    }
+  }, [selectedService, token]);
+
+  useEffect(() => {
+    if (!selectedService) return;
+    const controller = new AbortController();
+    void loadRuntimeEvents(controller.signal);
+    const timer = window.setInterval(() => void loadRuntimeEvents(controller.signal), 5000);
+    return () => {
+      window.clearInterval(timer);
+      controller.abort();
+    };
+  }, [selectedService, loadRuntimeEvents]);
 
   // Live tail: one long-lived NDJSON stream per selected service.
   useEffect(() => {
@@ -318,6 +381,10 @@ export function ServiceLogsModal({
           const result = event.result && typeof event.result === "object" ? event.result as Record<string, unknown> : {};
           setPullDiagnostic((prev) => {
             const resultLines = Array.isArray(result.lines) ? result.lines.map(String) : [];
+            const combined = [...(prev?.lines || [])];
+            for (const line of resultLines) {
+              if (line && !combined.includes(line)) combined.push(line);
+            }
             return {
               status: "done",
               node: String(result.node || prev?.node || ""),
@@ -325,7 +392,7 @@ export function ServiceLogsModal({
               taskId: String(result.taskId || prev?.taskId || ""),
               ok: Boolean(result.ok),
               exitCode: Number(result.exitCode ?? 0),
-              lines: (prev?.lines?.length ? prev.lines : resultLines).slice(-300),
+              lines: combined.slice(-300),
             };
           });
           return;
@@ -408,9 +475,9 @@ export function ServiceLogsModal({
               <span className={paused ? "logs-live-icon play" : "logs-live-icon pause"} aria-hidden="true" />
               {paused ? (lang === "zh" ? "继续" : "Resume") : (lang === "zh" ? "暂停" : "Pause")}
             </button>
-            <button type="button" className="logs-tool-button" onClick={() => void loadLogs()}>
+            <button type="button" className="logs-tool-button" onClick={() => { void loadLogs(); void loadRuntimeEvents(); }}>
               <RefreshCw size={14} aria-hidden="true" />
-              {logsLoading ? t(lang, "refreshing") : t(lang, "refresh")}
+              {logsLoading || runtimeLoading ? t(lang, "refreshing") : t(lang, "refresh")}
             </button>
             <button type="button" className="logs-tool-button" disabled={pullLoading || !selectedService} onClick={() => void diagnosePull()}>
               <RefreshCw size={14} aria-hidden="true" />
@@ -430,17 +497,29 @@ export function ServiceLogsModal({
           <span>{selected ? serviceTitle(selected) : "-"}</span>
           <span>{logsState?.updatedAt ? new Date(logsState.updatedAt * 1000).toLocaleTimeString() : "-"}</span>
         </div>
+        {runtimeEvents ? (
+          <div className={runtimeEvents.status === "running" ? "logs-runtime-events running" : "logs-runtime-events"}>
+            <div className="logs-pull-summary">
+              <strong>{lang === "zh" ? "运行事件" : "Runtime events"}</strong>
+              <span>
+                {[runtimeEvents.status, runtimeEvents.allocId, runtimeEvents.node, runtimeEvents.image].filter(Boolean).join(" · ") || "-"}
+              </span>
+            </div>
+            <pre>{(runtimeEvents.events || []).map(runtimeEventLabel).filter(Boolean).join("\n") || (lang === "zh" ? "暂无运行事件" : "No runtime events yet")}</pre>
+          </div>
+        ) : null}
         {pullDiagnostic ? (
           <div className={pullDiagnostic.status === "done" && pullDiagnostic.ok ? "logs-pull-diagnostics ok" : pullDiagnostic.status === "fail" || pullDiagnostic.ok === false ? "logs-pull-diagnostics bad" : "logs-pull-diagnostics"}>
             <div className="logs-pull-summary">
               <strong>{lang === "zh" ? "镜像拉取诊断" : "Image pull diagnostic"}</strong>
               <span>{pullDiagnostic.node || "-"} · {pullDiagnostic.image || "-"} · {pullDiagnostic.status}{pullDiagnostic.exitCode !== undefined ? ` · exit ${pullDiagnostic.exitCode}` : ""}</span>
             </div>
-            <pre>{pullDiagnostic.lines.join("\n") || (lang === "zh" ? "等待节点输出..." : "Waiting for node output...")}</pre>
+            <pre>{pullDiagnostic.lines.join("\n") || (lang === "zh" ? "已下发到节点，等待 docker pull 输出..." : "Task queued on node, waiting for docker pull output...")}</pre>
           </div>
         ) : null}
+        {runtimeError ? <div className="logs-error">{runtimeError}</div> : null}
         {logsError ? <div className="logs-error">{logsError}</div> : null}
-        <pre className="logs-tail logs-modal-tail">{filteredLogs.join("\n") || "-"}</pre>
+        <pre className="logs-tail logs-modal-tail">{filteredLogs.join("\n") || (runtimeEvents?.status && runtimeEvents.status !== "running" ? (lang === "zh" ? "容器尚未启动或尚未输出日志，见上方运行事件。" : "Container has not started or has not emitted logs yet. See runtime events above.") : "-")}</pre>
       </section>
     </div>,
     LOGS_MODAL_ROOT,

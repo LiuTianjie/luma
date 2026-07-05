@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.145 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.146 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -338,6 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_control_arguments(build_retry)
     _add_output_arguments(build_retry)
     build_retry.add_argument("--timeout", type=int, default=2400)
+    build_retry.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for the retried import")
     build_config = build_sub.add_parser("config", help="Declare builder nodes and internal registry defaults")
     build_config.add_argument("--node", action="append", dest="nodes", default=[], help="Declared builder node; repeat for multiple builders")
     build_config.add_argument("--default-node", default="", help="Default builder node for luma import")
@@ -2707,7 +2708,8 @@ def cmd_build(args: argparse.Namespace) -> int:
                 _print_deploy_step(event)
         return 0
     if args.build_command == "retry":
-        result = client.retry_build(args.id, timeout=args.timeout)
+        env_secrets = _import_env_secrets(args.deploy_env_file)
+        result = client.retry_build(args.id, timeout=args.timeout, env_secrets=env_secrets)
         if output_format != "text":
             _print_success(args, result)
             return 0

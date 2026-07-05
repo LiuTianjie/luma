@@ -1221,6 +1221,52 @@ def handle_dashboard_logs(token: str, service_name: str, *, tail: int = 120, sin
     }
 
 
+def handle_dashboard_runtime_events(token: str, service_name: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    service = service_name.strip()
+    if not service:
+        raise LumaError("service is required")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    job_id, task_filter = _nomad_log_target_from_state(state, service)
+    job, allocations, job_id, task_filter = _runtime_job_and_allocations(client, job_id, task_filter, service)
+    image, task_name = _nomad_job_task_image(job, task_filter or job_id)
+    if not image and not task_filter:
+        image, task_name = _nomad_job_task_image(job, "")
+    allocation = _latest_nomad_allocation_for_task(allocations, task_name)
+    if not allocation:
+        return {
+            "service": service,
+            "job": job_id,
+            "task": task_name,
+            "image": image,
+            "status": "unknown",
+            "events": [],
+            "updatedAt": int(time.time()),
+        }
+    alloc_id = str(allocation.get("ID") or "")
+    allocation_detail = _nomad_allocation_detail(client, alloc_id) or allocation
+    task_state = _allocation_task_state(allocation_detail, task_name)
+    node_name = _luma_node_name_for_allocation(state, allocation_detail) or _luma_node_name_for_allocation(state, allocation)
+    status = str(task_state.get("State") or allocation_detail.get("ClientStatus") or allocation.get("ClientStatus") or "")
+    events = _runtime_task_events(task_state, allocation_detail, task_name)
+    events.extend(_node_recent_pull_events(state, node_name, alloc_id=alloc_id, task_name=task_name, image=image))
+    return {
+        "service": service,
+        "job": job_id,
+        "task": task_name,
+        "allocId": alloc_id,
+        "node": node_name or str(allocation_detail.get("NodeName") or allocation.get("NodeName") or ""),
+        "image": image,
+        "status": status or "unknown",
+        "events": _dedupe_runtime_events(events)[-80:],
+        "updatedAt": int(time.time()),
+    }
+
+
 def handle_build_run_list(token: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -1239,17 +1285,33 @@ def handle_build_run_get(token: str, build_id: str) -> Dict[str, Any]:
     return {"run": _build_run_public(run)}
 
 
-def handle_build_run_retry(token: str, build_id: str, *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
+def _build_run_retry_overrides(body: Dict[str, Any] | None) -> Dict[str, Any]:
+    if not isinstance(body, dict):
+        return {}
+    overrides: Dict[str, Any] = {}
+    if body.get("envSecrets") is not None:
+        overrides["envSecrets"] = _request_env_secrets(body)
+    return overrides
+
+
+def handle_build_run_retry(
+    token: str,
+    build_id: str,
+    body: Dict[str, Any] | None = None,
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     run = (state.get("buildRuns") if isinstance(state.get("buildRuns"), dict) else {}).get(build_id)
     if not isinstance(run, dict):
         raise LumaError(f"build run not found: {build_id}")
     request = run.get("request") if isinstance(run.get("request"), dict) else {}
-    body = {key: value for key, value in request.items() if key != "envSecretNames"}
-    if not body:
+    retry_body = {key: value for key, value in request.items() if key != "envSecretNames"}
+    retry_body.update(_build_run_retry_overrides(body))
+    if not retry_body:
         raise LumaError(f"build run cannot be retried: {build_id}")
-    return handle_build_deploy(token, body, progress=progress, build_run_id=build_id)
+    return handle_build_deploy(token, retry_body, progress=progress, build_run_id=build_id)
 
 
 def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -6127,6 +6189,143 @@ def _nomad_log_target_from_state(state: Dict[str, Any], service: str) -> tuple[s
     return service, ""
 
 
+def _runtime_job_and_allocations(
+    client: NomadApi,
+    job_id: str,
+    task_filter: str,
+    service: str,
+) -> tuple[Dict[str, Any], list[Any], str, str]:
+    candidates: list[tuple[str, str]] = []
+    if "_" in service:
+        stack, task = service.split("_", 1)
+        candidates.append((stack, task))
+    if "/" in service:
+        stack, task = service.split("/", 1)
+        candidates.append((stack, task))
+    if job_id:
+        candidates.append((job_id, task_filter))
+    seen: set[tuple[str, str]] = set()
+    last_error = ""
+    for candidate_job, candidate_task in candidates:
+        key = (candidate_job, candidate_task)
+        if not candidate_job or key in seen:
+            continue
+        seen.add(key)
+        try:
+            job = client.request("GET", f"/v1/job/{urllib.parse.quote(candidate_job, safe='')}")
+            allocations = client.request("GET", f"/v1/job/{urllib.parse.quote(candidate_job, safe='')}/allocations")
+        except LumaError as exc:
+            last_error = str(exc)
+            continue
+        if not isinstance(job, dict):
+            last_error = f"Nomad returned invalid job detail for {candidate_job}"
+            continue
+        if not isinstance(allocations, list):
+            last_error = f"Nomad returned invalid allocations for {candidate_job}"
+            continue
+        return job, allocations, candidate_job, candidate_task
+    raise LumaError(f"runtime events unavailable for {service}: {last_error or 'job not found'}")
+
+
+def _nomad_allocation_detail(client: NomadApi, alloc_id: str) -> Dict[str, Any] | None:
+    if not alloc_id:
+        return None
+    try:
+        detail = client.request("GET", f"/v1/allocation/{urllib.parse.quote(alloc_id, safe='')}")
+    except LumaError:
+        return None
+    return detail if isinstance(detail, dict) else None
+
+
+def _allocation_task_state(allocation: Dict[str, Any], task_name: str) -> Dict[str, Any]:
+    task_states = allocation.get("TaskStates") if isinstance(allocation.get("TaskStates"), dict) else {}
+    if task_name and isinstance(task_states.get(task_name), dict):
+        return task_states[task_name]
+    for value in task_states.values():
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _runtime_task_events(task_state: Dict[str, Any], allocation: Dict[str, Any], task_name: str) -> list[Dict[str, Any]]:
+    events: list[Dict[str, Any]] = []
+    raw_events = task_state.get("Events") if isinstance(task_state.get("Events"), list) else []
+    for raw in raw_events:
+        if not isinstance(raw, dict):
+            continue
+        display = str(raw.get("DisplayMessage") or raw.get("Message") or raw.get("Type") or "").strip()
+        message = str(raw.get("Message") or "").strip()
+        if display and message and message not in display:
+            text = f"{display}: {message}"
+        else:
+            text = display or message
+        if not text:
+            continue
+        events.append(
+            {
+                "source": "nomad",
+                "type": str(raw.get("Type") or ""),
+                "task": task_name,
+                "message": text,
+                "time": int(raw.get("Time") or 0),
+                "failed": bool(raw.get("FailsTask") or raw.get("Failed")),
+            }
+        )
+    alloc_message = str(allocation.get("StatusDescription") or "").strip()
+    if alloc_message:
+        events.append({"source": "nomad", "type": "allocation", "task": task_name, "message": alloc_message, "time": 0, "failed": False})
+    task_message = str(task_state.get("Message") or "").strip()
+    if task_message:
+        events.append({"source": "nomad", "type": "task", "task": task_name, "message": task_message, "time": 0, "failed": bool(task_state.get("Failed"))})
+    events.sort(key=lambda item: int(item.get("time") or 0))
+    return events
+
+
+def _node_recent_pull_events(
+    state: Dict[str, Any],
+    node_name: str,
+    *,
+    alloc_id: str,
+    task_name: str,
+    image: str,
+) -> list[Dict[str, Any]]:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = nodes.get(node_name) if node_name else None
+    if not isinstance(record, dict):
+        return []
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    diagnostics = agent.get("diagnostics") if isinstance(agent.get("diagnostics"), dict) else {}
+    lines = diagnostics.get("recentImagePullErrors") if isinstance(diagnostics.get("recentImagePullErrors"), list) else []
+    result: list[Dict[str, Any]] = []
+    for raw in lines:
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        if alloc_id and alloc_id not in line:
+            continue
+        if task_name and f"task={task_name}" not in line and image and image not in line:
+            continue
+        result.append({"source": "node-agent", "type": "docker-pull", "task": task_name, "message": line, "time": 0, "failed": "failed=true" in line})
+    return result
+
+
+def _dedupe_runtime_events(events: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    result: list[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for event in events:
+        message = str(event.get("message") or "").strip()
+        if not message:
+            continue
+        key = (str(event.get("source") or ""), str(event.get("type") or ""), message)
+        if key in seen:
+            continue
+        seen.add(key)
+        item = dict(event)
+        item["message"] = message
+        result.append(item)
+    return result
+
+
 def _nomad_pull_diagnostic_target(config: Any, state: Dict[str, Any], service: str) -> Dict[str, str]:
     client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
     job_id, task_filter = _nomad_log_target_from_state(state, service)
@@ -7244,6 +7443,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                 else:
                     self._json(200, logs)
                 return
+            if parsed_path == "/v1/dashboard/runtime-events":
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                service = str((query.get("service") or [""])[0])
+                self._json(200, handle_dashboard_runtime_events(token, service))
+                return
             if parsed_path == "/v1/dashboard/metrics/history":
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 kind = str((query.get("kind") or ["node"])[0])
@@ -7329,11 +7533,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             build_retry_match = re.fullmatch(r"/v1/builds/([^/]+)/retry", self.path)
             if build_retry_match:
-                self._json(200, handle_build_run_retry(token, urllib.parse.unquote(build_retry_match.group(1))))
+                self._json(200, handle_build_run_retry(token, urllib.parse.unquote(build_retry_match.group(1)), body))
                 return
             build_retry_stream_match = re.fullmatch(r"/v1/builds/([^/]+)/retry/stream", self.path)
             if build_retry_stream_match:
-                self._stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)))
+                self._stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)), body)
                 return
             if self.path == "/v1/builds/config":
                 self._json(200, handle_build_config_set(token, body))
@@ -7478,7 +7682,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             print(f"requestId={request_id} stream build deploy internal error: {exc}", file=sys.stderr, flush=True)
             emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
 
-    def _stream_build_run_retry(self, token: str, build_id: str) -> None:
+    def _stream_build_run_retry(self, token: str, build_id: str, body: Dict[str, Any] | None = None) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-cache")
@@ -7489,7 +7693,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         try:
-            result = handle_build_run_retry(token, build_id, progress=emit)
+            result = handle_build_run_retry(token, build_id, body, progress=emit)
             emit({"status": "done", "result": result})
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -7704,6 +7908,9 @@ async def _asgi_authenticated_get(request: Request) -> Response:
                     headers={"Content-Disposition": f"attachment; filename={filename}.log", "Cache-Control": "no-store"},
                 )
             return _json_response(200, logs)
+        if parsed_path == "/v1/dashboard/runtime-events":
+            service = str(request.query_params.get("service") or "")
+            return _json_response(200, await run_in_threadpool(handle_dashboard_runtime_events, token, service))
         if parsed_path == "/v1/dashboard/metrics/history":
             kind = str(request.query_params.get("kind") or "node")
             name = str(request.query_params.get("name") or "")
@@ -7775,10 +7982,10 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             return _asgi_stream_deployment(token, body, compose=True)
         build_retry_match = re.fullmatch(r"/v1/builds/([^/]+)/retry", path)
         if build_retry_match:
-            return _json_response(200, await run_in_threadpool(handle_build_run_retry, token, urllib.parse.unquote(build_retry_match.group(1))))
+            return _json_response(200, await run_in_threadpool(handle_build_run_retry, token, urllib.parse.unquote(build_retry_match.group(1)), body))
         build_retry_stream_match = re.fullmatch(r"/v1/builds/([^/]+)/retry/stream", path)
         if build_retry_stream_match:
-            return _asgi_stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)))
+            return _asgi_stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)), body)
         if path == "/v1/builds/config":
             return _json_response(200, await run_in_threadpool(handle_build_config_set, token, body))
         if path == "/v1/builds/stream":
@@ -7867,7 +8074,7 @@ def _asgi_stream_build_deploy(token: str, body: Dict[str, Any]) -> StreamingResp
     return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-def _asgi_stream_build_run_retry(token: str, build_id: str) -> StreamingResponse:
+def _asgi_stream_build_run_retry(token: str, build_id: str, body: Dict[str, Any] | None = None) -> StreamingResponse:
     async def generate() -> AsyncIterator[bytes]:
         queue: asyncio.Queue[Dict[str, Any] | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -7877,7 +8084,7 @@ def _asgi_stream_build_run_retry(token: str, build_id: str) -> StreamingResponse
 
         def run() -> None:
             try:
-                result = handle_build_run_retry(token, build_id, progress=emit)
+                result = handle_build_run_retry(token, build_id, body, progress=emit)
                 emit({"status": "done", "result": result})
             except LumaError as exc:
                 emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})

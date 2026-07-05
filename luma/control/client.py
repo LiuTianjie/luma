@@ -473,8 +473,11 @@ class ControlClient:
     def get_build(self, build_id: str) -> Dict[str, Any]:
         return self.request("GET", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}")
 
-    def retry_build(self, build_id: str, *, timeout: int = 2400) -> Dict[str, Any]:
-        return self.request("POST", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}/retry", {}, timeout=timeout)
+    def retry_build(self, build_id: str, *, timeout: int = 2400, env_secrets: Dict[str, str] | None = None) -> Dict[str, Any]:
+        body: Dict[str, Any] = {}
+        if env_secrets is not None:
+            body["envSecrets"] = env_secrets
+        return self.request("POST", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}/retry", body, timeout=timeout)
 
     def configure_build(
         self,

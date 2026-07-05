@@ -2726,6 +2726,21 @@ tbody tr.is-selected {
   background: var(--well);
 }
 
+.logs-runtime-events {
+  display: grid;
+  gap: 8px;
+  margin: 0 18px 12px;
+  padding: 12px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-md);
+  background: var(--amber-soft);
+}
+
+.logs-runtime-events.running {
+  border-color: var(--green-line);
+  background: var(--green-soft);
+}
+
 .logs-pull-diagnostics.ok {
   border-color: var(--green-line);
   background: var(--green-soft);
@@ -2759,6 +2774,20 @@ tbody tr.is-selected {
 
 .logs-pull-diagnostics pre {
   max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.logs-runtime-events pre {
+  max-height: 180px;
   margin: 0;
   overflow: auto;
   padding: 10px;
@@ -4617,6 +4646,29 @@ dd {
   align-items: start;
 }
 
+.build-retry-env {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 16px;
+  max-width: 760px;
+}
+
+.build-retry-env span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.build-retry-env textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.build-retry-env small {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
 .build-run-list {
   display: flex;
   flex-direction: column;
@@ -4810,6 +4862,16 @@ dd {
 
 .build-run-log-heading strong {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-run-log-heading small {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.76rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

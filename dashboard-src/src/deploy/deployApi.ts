@@ -145,20 +145,24 @@ export async function fetchBuildRun(token: string, id: string): Promise<{ run?: 
   }
 }
 
-export async function retryBuildRun(token: string, id: string): Promise<unknown> {
+export async function retryBuildRun(token: string, id: string, overrides?: { envSecrets?: Record<string, string> }): Promise<unknown> {
+  const body: Record<string, unknown> = {};
+  if (overrides?.envSecrets) body.envSecrets = overrides.envSecrets;
   const response = await fetch(`/v1/builds/${encodeURIComponent(id)}/retry`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: "{}",
+    body: JSON.stringify(body),
   });
   return readJson(response);
 }
 
-export async function retryBuildRunStream(token: string, id: string, onStep: (step: DeployStep) => void): Promise<unknown> {
+export async function retryBuildRunStream(token: string, id: string, onStep: (step: DeployStep) => void, overrides?: { envSecrets?: Record<string, string> }): Promise<unknown> {
+  const body: Record<string, unknown> = {};
+  if (overrides?.envSecrets) body.envSecrets = overrides.envSecrets;
   const response = await fetch(`/v1/builds/${encodeURIComponent(id)}/retry/stream`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: "{}",
+    body: JSON.stringify(body),
   });
   return consumeStream(response, onStep);
 }
