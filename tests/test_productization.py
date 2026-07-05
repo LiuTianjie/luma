@@ -4643,6 +4643,62 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_deployment_recovers_public_route_after_gateway_probe_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "name": "blg",
+                        "region": "home",
+                        "nodeId": "node-blg",
+                        "labels": {"luma.node.id": "node-blg", "luma.node.name": "blg", "region": "home"},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "home",
+                        "node": "blg",
+                        "exposure": "tailscale-relay",
+                        "domain": "api.example.com",
+                        "port": 80,
+                        "publishPort": 18080,
+                    }
+                )
+                with patch("luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})), patch(
+                    "luma.control.server.sync_dns", return_value="DNS skipped"
+                ), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": ["blg"], "results": [], "skipped": []},
+                ), patch("luma.control.server.resolve_nomad_static_route_target", side_effect=lambda service, _state, **_kwargs: service), patch(
+                    "luma.control.server._probe_public_route",
+                    side_effect=[
+                        LumaError("Public route unhealthy: https://api.example.com/ -> HTTP 504"),
+                        "Public route reachable: https://api.example.com/ -> HTTP 200",
+                    ],
+                ) as probe, patch(
+                    "luma.control.server.handle_application_restart",
+                    return_value={"mode": "recreate", "restarted": [{"allocId": "alloc-api", "task": "*", "mode": "recreate"}]},
+                ) as restart:
+                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+
+                self.assertEqual(probe.call_count, 2)
+                restart.assert_called_once_with(state["deployToken"], {"stack": "api", "mode": "recreate"})
+                self.assertIn("Recovered public route after allocation recreate", result["probe"])
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Recover public route=ok:allocation recreate requested", steps)
+                self.assertIn("Probe public route=ok:Recovered public route after allocation recreate", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_nomad_node_pin_does_not_require_swarm_node_id(self):
         state = {"nodes": {"lab": {"name": "lab", "region": "home", "status": "ready"}}}
         service = ServiceSpec(
@@ -5026,6 +5082,23 @@ class ControlApiTests(unittest.TestCase):
 
         self.assertEqual(result, "Public route reachable: https://panel.example.com/ -> HTTP 200")
         self.assertEqual(urlopen.call_args.args[0].full_url, "https://panel.example.com/")
+
+    def test_public_probe_rejects_gateway_statuses(self):
+        from luma.control.server import _probe_public_route
+
+        service = ServiceSpec(
+            source=Path("home-panel.yaml"),
+            name="home-panel",
+            image="nginx:alpine",
+            region="home",
+            exposure="tailscale-relay",
+            domain="panel.example.com",
+            port=8080,
+        )
+        probe_error = urllib.error.HTTPError("https://panel.example.com/", 504, "gateway timeout", {}, None)
+        with patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
+            with self.assertRaisesRegex(LumaError, "Public route unhealthy: https://panel.example.com/ -> HTTP 504"):
+                _probe_public_route(service)
 
     def test_deployment_failure_after_manager_work_leaves_failed_partial_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -6134,6 +6207,80 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(service["desired"], 1)
                 self.assertEqual(service["pending"], 1)
                 self.assertEqual(service["nodes"], ["lab"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_dashboard_flags_failed_route_probe_even_when_nomad_is_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "home",
+                        "exposure": "tailscale-relay",
+                        "domain": "api.example.com",
+                        "port": 80,
+                    }
+                )
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["deployments"] = {
+                    "services": {
+                        "api": {
+                            "kind": "service",
+                            "name": "api",
+                            "slug": "api",
+                            "manifest": manifest,
+                            "status": "failed_partial",
+                            "lastError": "Probe public route failed: Public route unhealthy: https://api.example.com/ -> HTTP 504",
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad"}}),
+                    encoding="utf-8",
+                )
+                nomad_services = [
+                    {
+                        "name": "api",
+                        "jobId": "api",
+                        "status": "running",
+                        "running": 1,
+                        "region": "home",
+                        "compose": False,
+                        "tasks": [
+                            {
+                                "name": "api",
+                                "stack": "api",
+                                "fullName": "api",
+                                "status": "running",
+                                "region": "home",
+                                "running": 1,
+                                "desired": 1,
+                                "nodes": ["blg"],
+                            }
+                        ],
+                    }
+                ]
+                with patch(
+                    "luma.control.server.nomad_status_summary",
+                    return_value={"available": True, "leader": "127.0.0.1:4647", "nodes": []},
+                ), patch("luma.control.server.nomad_services_summary", return_value=nomad_services), patch(
+                    "luma.control.server._service_stats_by_name", return_value={}
+                ):
+                    result = handle_dashboard(state["deployToken"])
+
+                service = result["services"][0]
+                self.assertEqual(service["deploymentStatus"], "failed_partial")
+                self.assertTrue(any("Public route unhealthy" in item for item in service["diagnostics"]))
+                issue_messages = [issue["message"] for issue in result["issues"]]
+                self.assertTrue(any("Public route unhealthy" in message for message in issue_messages))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -8741,6 +8888,59 @@ class ControlApiTests(unittest.TestCase):
                 self.assertIn("http://100.64.0.2:1997", route)
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Resolve relay=ok", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_compose_cn_edge_uses_registered_node_address_for_nomad_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "tecent": {
+                        "name": "tecent",
+                        "region": "cn",
+                        "status": "ready",
+                        "nodeId": "node-tecent",
+                        "tailscaleIP": "100.64.29.91",
+                        "labels": {"luma.node.name": "tecent", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                compose = yaml.safe_dump({"services": {"app": {"image": "nginx:alpine"}}})
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "price",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "services": {
+                            "app": {
+                                "node": "tecent",
+                                "exposure": "cn-edge",
+                                "domain": "price.example.com",
+                                "port": 8000,
+                            }
+                        },
+                    }
+                )
+                with patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed") as deploy, patch(
+                    "luma.control.server.sync_dns", return_value="DNS skipped"
+                ), patch("luma.control.server._probe_public_route", return_value="Public route reachable"):
+                    handle_compose_deployment(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True},
+                    )
+
+                stack_text = deploy.call_args.args[1]
+                self.assertIn('"Address": "100.64.29.91"', stack_text)
+                self.assertNotIn('"AddressMode": "host"', stack_text)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

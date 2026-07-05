@@ -116,6 +116,7 @@ ALERT_NODE_MEMORY_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_MEMORY_PERCENT
 ALERT_NODE_CPU_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_CPU_PERCENT", "90"))
 TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS", "300"))
 DEFAULT_BUILD_NODE_NAME = "builder"
+RECOVERABLE_ROUTE_HTTP_STATUSES = {502, 503, 504}
 
 
 def _control_config_path() -> Path:
@@ -1131,6 +1132,7 @@ def handle_control_status(token: str) -> Dict[str, Any]:
     _apply_state_secrets(state)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
+    runtime_config = _config_with_state_nodes(config, state)
     dns = config.dns
     dns_provider = str(dns.get("provider") or "not configured")
     token_env = str(dns.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
@@ -2647,6 +2649,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     git_source = _deployment_git_source_from_body(body)
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
+    runtime_config = _config_with_state_nodes(config, state)
     service = _load_service_manifest(manifest)
     effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
     _require_nomad_engine(effective_engine)
@@ -2700,7 +2703,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         stack_text = _deploy_step(
             steps,
             "Render Nomad job",
-            lambda: render_nomad_job(config, service, registry_auth=registry_auth, secrets=secrets, egress_proxy_url=_egress_proxy_for_region(config, state, service.region)),
+            lambda: render_nomad_job(runtime_config, service, registry_auth=registry_auth, secrets=secrets, egress_proxy_url=_egress_proxy_for_region(config, state, service.region)),
             progress=progress,
         )
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
@@ -2750,7 +2753,14 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         probe_result = _deploy_step(
             steps,
             "Probe public route",
-            lambda: "Public route probe skipped: orchestrator deploy skipped" if _skip_orchestrator(body) else _probe_public_route(service),
+            lambda: _probe_public_route_with_recovery(
+                token,
+                service,
+                stack=service.slug,
+                skip_orchestrator=_skip_orchestrator(body),
+                steps=steps,
+                progress=progress,
+            ),
             progress=progress,
         )
     except Exception as exc:
@@ -2788,6 +2798,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
         raise LumaError("manifest is required")
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
+    runtime_config = _config_with_state_nodes(config, state)
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", encoding="utf-8", delete=False) as fh:
         fh.write(manifest)
         service_path = Path(fh.name)
@@ -2799,7 +2810,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
     _require_nomad_engine(effective_engine)
     service = resolve_service_node_pin(service, state, engine=effective_engine)
     stack_text = render_nomad_job(
-        config,
+        runtime_config,
         service,
         registry_auth=_registry_auth_for_service(state, service),
         resolve_secrets=False,
@@ -3453,6 +3464,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     source_name = str(body.get("sourceName") or "luma.compose.yml")
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
+    runtime_config = _config_with_state_nodes(config, state)
     deployment = _load_compose_request(body, source_name)
     previous_record = dict(_compose_deployment_record(state, deployment.slug) or {})
     _ensure_deployment_slug_available(state, "compose", deployment.slug, deployment.name)
@@ -3489,7 +3501,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             steps,
             "Render compose Nomad job",
             lambda: render_compose_job(
-                config,
+                runtime_config,
                 deployment,
                 registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
                 secrets=secrets,
@@ -3576,7 +3588,14 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 _deploy_step(
                     steps,
                     f"Probe public route {service.name}",
-                    lambda service_spec=service_spec: "Public route probe skipped: orchestrator deploy skipped" if _skip_orchestrator(body) else _probe_public_route(service_spec),
+                    lambda service_spec=service_spec: _probe_public_route_with_recovery(
+                        token,
+                        service_spec,
+                        stack=deployment.slug,
+                        skip_orchestrator=_skip_orchestrator(body),
+                        steps=steps,
+                        progress=progress,
+                    ),
                     progress=progress,
                 )
             )
@@ -3610,12 +3629,13 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     source_name = str(body.get("sourceName") or "luma.compose.yml")
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
     config = load_config(config_path)
+    runtime_config = _config_with_state_nodes(config, state)
     deployment = _load_compose_request(body, source_name)
     target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     _ensure_compose_exposure_supported_on_nodes(state, deployment)
     stack_text = render_compose_job(
-        config,
+        runtime_config,
         deployment,
         registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
         resolve_secrets=False,
@@ -4385,6 +4405,32 @@ def _state_nodes(state: Dict[str, Any]) -> Dict[str, Any]:
         for alias in _node_record_names(key, record):
             expanded.setdefault(alias, record)
     return expanded
+
+
+def _config_with_state_nodes(config: LumaConfig, state: Dict[str, Any]) -> LumaConfig:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    if not nodes:
+        return config
+    raw = dict(config.raw)
+    raw_nodes = dict(raw.get("nodes") or {})
+    for node_name, record in nodes.items():
+        if not isinstance(record, dict):
+            continue
+        key = str(node_name)
+        labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+        merged = dict(raw_nodes.get(key) or {})
+        host = str(record.get("hostname") or record.get("displayName") or labels.get("luma.node.name") or key)
+        merged.setdefault("host", host)
+        region = str(record.get("region") or labels.get("region") or "")
+        if region:
+            merged["region"] = region
+        for field in ("tailscaleIP", "tailscaleIp", "tailscaleName", "advertiseAddr", "publicIp", "public_ip"):
+            value = str(record.get(field) or "").strip()
+            if value:
+                merged[field] = value
+        raw_nodes[key] = merged
+    raw["nodes"] = raw_nodes
+    return LumaConfig(raw, config.path)
 
 
 def _compose_service_as_service_spec(deployment: ComposeDeploymentSpec, service: Any) -> ServiceSpec:
@@ -5172,7 +5218,49 @@ def _probe_public_route(service: ServiceSpec) -> str:
         return f"Public route probe inconclusive: {url} ({exc})"
 
 
+def _probe_public_route_with_recovery(
+    token: str,
+    service: ServiceSpec,
+    *,
+    stack: str,
+    skip_orchestrator: bool,
+    steps: list[dict[str, str]],
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> str:
+    if skip_orchestrator:
+        return "Public route probe skipped: orchestrator deploy skipped"
+    try:
+        return _probe_public_route(service)
+    except LumaError as exc:
+        if not _public_route_error_is_recoverable(exc):
+            raise
+        _deploy_step(
+            steps,
+            "Recover public route",
+            lambda: _recover_public_route_allocation(token, stack),
+            progress=progress,
+        )
+        retry = _probe_public_route(service)
+        return f"Recovered public route after allocation recreate: {retry}"
+
+
+def _public_route_error_is_recoverable(exc: LumaError) -> bool:
+    message = str(exc)
+    if "Public route unhealthy:" not in message:
+        return False
+    return any(f"HTTP {status}" in message for status in RECOVERABLE_ROUTE_HTTP_STATUSES)
+
+
+def _recover_public_route_allocation(token: str, stack: str) -> str:
+    result = handle_application_restart(token, {"stack": stack, "mode": "recreate"})
+    restarted = result.get("restarted") if isinstance(result, dict) else []
+    count = len(restarted) if isinstance(restarted, list) else 0
+    return f"allocation recreate requested ({count} allocation(s))"
+
+
 def _probe_status_message(url: str, status: int) -> str:
+    if status in RECOVERABLE_ROUTE_HTTP_STATUSES:
+        raise LumaError(f"Public route unhealthy: {url} -> HTTP {status}")
     if status == 404:
         return f"Public route reachable: {url} -> HTTP 404 (the app may not serve /)"
     return f"Public route reachable: {url} -> HTTP {status}"
@@ -5573,6 +5661,11 @@ def _dashboard_issues(nodes: list[Dict[str, Any]], services: list[Dict[str, Any]
             issues.append({"severity": "critical", "kind": "service-running", "target": full_name, "message": f"Service {full_name} has no running tasks"})
         if failed > 0:
             issues.append({"severity": "critical", "kind": "service-failed", "target": full_name, "message": f"Service {full_name} has {failed} failed task(s)"})
+        deployment_status = str(service.get("deploymentStatus") or "")
+        if deployment_status in {"failed", "failed_partial"}:
+            last_error = str(service.get("lastError") or "").strip()
+            message = last_error or f"deployment status is {deployment_status}"
+            issues.append({"severity": "critical", "kind": "deployment", "target": full_name, "message": f"Service {full_name}: {message}"})
         if pending > 0:
             issues.append({"severity": "warning", "kind": "service-pending", "target": full_name, "message": f"Service {full_name} has {pending} pending task(s)"})
         memory_percent = float(actual.get("memoryPercent") or 0)
@@ -5772,6 +5865,8 @@ def _dashboard_service_from_nomad_job(
         "stack": str(config.get("stack") or name),
         "fullName": str(config.get("fullName") or name),
         "status": str(svc.get("status") or ""),
+        "deploymentStatus": str(config.get("deploymentStatus") or ""),
+        "lastError": str(config.get("lastError") or ""),
         "region": str(config.get("region") or svc.get("region") or ""),
         "exposure": exposure,
         "domain": domain,
@@ -5787,6 +5882,11 @@ def _dashboard_service_from_nomad_job(
         "storage": svc.get("storage") if isinstance(svc.get("storage"), list) else [],
         "resources": svc.get("resources") if isinstance(svc.get("resources"), dict) else {},
     }
+    item["diagnostics"] = _service_diagnostics(
+        int(item["desired"] or 0),
+        {"running": int(item["running"] or 0), "failed": int(item["failed"] or 0), "pending": int(item["pending"] or 0)},
+        {},
+    ) + _deployment_diagnostics(config)
     if route:
         item["_routeFile"] = route
     return item
@@ -5844,6 +5944,8 @@ def _dashboard_service_from_nomad_task(
         "stack": str(config.get("stack") or stack),
         "fullName": str(config.get("fullName") or full_name),
         "status": str(task.get("status") or job.get("status") or ""),
+        "deploymentStatus": str(config.get("deploymentStatus") or ""),
+        "lastError": str(config.get("lastError") or ""),
         "region": str(config.get("region") or task.get("region") or job.get("region") or ""),
         "node": str(config.get("node") or ""),
         "exposure": exposure,
@@ -5866,7 +5968,7 @@ def _dashboard_service_from_nomad_task(
         int(item["desired"] or 0),
         {"running": int(item["running"] or 0), "failed": int(item["failed"] or 0), "pending": int(item["pending"] or 0)},
         {},
-    )
+    ) + _deployment_diagnostics(config)
     if route:
         item["_routeFile"] = route
     return item
@@ -5892,6 +5994,8 @@ def _dashboard_deployment_service_index(state: Dict[str, Any]) -> tuple[dict[str
             "targetPort": _string_port(data.get("port")),
             "node": str(data.get("node") or ""),
             "routeId": name,
+            "deploymentStatus": str(record.get("status") or ""),
+            "lastError": str(record.get("lastError") or ""),
         }
         _put_dashboard_deployment_entry(index, entry)
     for raw_slug, record in (deployments.get("compose") if isinstance(deployments.get("compose"), dict) else {}).items():
@@ -5920,6 +6024,8 @@ def _dashboard_deployment_service_index(state: Dict[str, Any]) -> tuple[dict[str
                 "targetPort": _string_port(config.get("port")),
                 "publishPort": _string_port(config.get("publishPort") or config.get("publish_port")),
                 "routeId": route_id,
+                "deploymentStatus": str(record.get("status") or ""),
+                "lastError": str(record.get("lastError") or ""),
             }
             _put_dashboard_deployment_entry(index, entry)
     return index, compose_stacks
@@ -6077,6 +6183,14 @@ def _service_diagnostics(desired: int, counts: Dict[str, int], labels: Dict[str,
         if volume.get("kind") == "unmanaged":
             diagnostics.append(f"Volume {volume['name']} is unmanaged by Luma storage")
     return diagnostics
+
+
+def _deployment_diagnostics(config: Dict[str, Any]) -> list[str]:
+    status = str(config.get("deploymentStatus") or "")
+    if status not in {"failed", "failed_partial"}:
+        return []
+    last_error = str(config.get("lastError") or "").strip()
+    return [last_error or f"Deployment status is {status}"]
 
 
 def _dashboard_storage(services: list[Dict[str, Any]], storage_classes: list[Dict[str, Any]] | None = None) -> Dict[str, Any]:
