@@ -1,38 +1,30 @@
-import { useEffect, useMemo, useState } from "react";
-import { Activity, Boxes, GitBranch, HardDrive, KeyRound, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Plus, ServerCog } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorBanner } from "./components/ErrorBanner";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
 import { LoginPanel } from "./components/LoginPanel";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { Topbar } from "./components/Topbar";
-import { createDashboardViewModel, type NavPage, type PageId } from "./dashboardViewModel";
-import { ApplicationsPage } from "./pages/ApplicationsPage";
-import { DeployPage, type DeployUpdateContext } from "./pages/DeployPage";
-import { CredentialsPage } from "./pages/CredentialsPage";
-import { NodesPage } from "./pages/NodesPage";
-import { ObservabilityPage } from "./pages/ObservabilityPage";
-import { OverviewPage } from "./pages/OverviewPage";
-import { StoragePage } from "./pages/StoragePage";
-import { TopologyPage } from "./pages/TopologyPage";
+import { AppRoutes } from "./AppRoutes";
+import { Sidebar } from "./Sidebar";
+import { DetailDrawer } from "./DetailDrawer";
+import { nodeDetail, serviceDetail, type DetailState } from "./detailRecords";
+import { useRouter } from "./router";
+import { pageForPath, ROUTE_BY_PAGE } from "./routes";
+import type { DeployUpdateContext } from "./pages/DeployPage";
+import { createDashboardViewModel, type NavPage } from "./dashboardViewModel";
 import { t } from "./i18n";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
 import { useDashboardData } from "./useDashboardData";
 import { useTheme } from "./useTheme";
-import lumaLogoMark from "./assets/luma-logo-mark.png";
 
 const LANG_KEY = "luma.dashboard.lang";
 const SIDEBAR_KEY = "luma.dashboard.sidebar";
 
-type DetailState =
-  | { kind: "node"; title: string; items: Record<string, string | number | boolean | undefined> }
-  | { kind: "service"; title: string; items: Record<string, string | number | boolean | undefined> }
-  | null;
-
 export function App() {
+  const router = useRouter();
   const [lang, setLangState] = useState<Lang>(() => (localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === "collapsed");
-  const [activePage, setActivePage] = useState<PageId>("overview");
   const [deployTemplateLanding, setDeployTemplateLanding] = useState(true);
   const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
   const [detail, setDetail] = useState<DetailState>(null);
@@ -40,6 +32,9 @@ export function App() {
   const { token, payload, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData();
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
+
+  const resolvedPage = pageForPath(router.path);
+  const activeNavPage: NavPage = resolvedPage === "notfound" ? "overview" : resolvedPage;
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
@@ -50,21 +45,24 @@ export function App() {
     localStorage.setItem(LANG_KEY, nextLang);
   };
 
-  const navigate = (page: NavPage) => {
-    setUpdateRequest(null);
-    setActivePage(page);
-    if (page === "deploy") setDeployTemplateLanding(true);
-  };
+  const navigate = useCallback(
+    (page: NavPage) => {
+      setUpdateRequest(null);
+      if (page === "deploy") setDeployTemplateLanding(true);
+      router.navigate(ROUTE_BY_PAGE[page]);
+    },
+    [router],
+  );
 
   const openUpdatePage = (request: ApplicationUpdateRequest) => {
     setUpdateRequest(request);
     setDeployTemplateLanding(false);
-    setActivePage("update");
+    router.navigate(ROUTE_BY_PAGE.deploy);
   };
 
   const closeUpdatePage = () => {
     setUpdateRequest(null);
-    setActivePage("applications");
+    router.navigate(ROUTE_BY_PAGE.applications);
   };
 
   const updateContext = useMemo<DeployUpdateContext | null>(() => {
@@ -105,117 +103,10 @@ export function App() {
     </section>
   ) : null;
 
-  const openNodeDetail = (node: DashboardNode) => {
-    setDetail({
-      kind: "node",
-      title: node.name || "-",
-      items: {
-        displayName: node.displayName,
-        region: node.region,
-        role: node.role,
-        state: node.state,
-        availability: node.availability,
-        leader: node.leader,
-        agent: [node.agentStatus, node.agentOs, node.terminalStatus ? `terminal: ${node.terminalStatus}` : ""].filter(Boolean).join(" / "),
-        cpu: node.metrics?.cpuPercent ?? node.metrics?.loadPercent,
-        load1: node.metrics?.load1,
-        memory: node.metrics?.memoryUsedPercent,
-        memoryTotal: node.metrics?.memoryTotalBytes,
-        cpuCapacity: node.capacity?.cpus,
-        memoryCapacity: node.capacity?.memoryBytes,
-      },
-    });
-  };
-
-  const openServiceDetail = (service: DashboardService) => {
-    setDetail({
-      kind: "service",
-      title: service.stack ? `${service.stack}/${service.name || "-"}` : service.name || "-",
-      items: {
-        fullName: service.fullName,
-        region: service.region,
-        exposure: service.exposure,
-        image: service.image,
-        replicas: `${service.running ?? 0}/${service.desired ?? 0}`,
-        pending: service.pending,
-        failed: service.failed,
-        health: service.health,
-        nodes: (service.nodes || []).join(", "),
-        limits: [
-          service.resources?.limits?.cpus ? `${service.resources.limits.cpus} CPU` : "",
-          service.resources?.limits?.memoryBytes ? `${service.resources.limits.memoryBytes} bytes` : "",
-        ].filter(Boolean).join(" / "),
-        reservations: [
-          service.resources?.reservations?.cpus ? `${service.resources.reservations.cpus} CPU` : "",
-          service.resources?.reservations?.memoryBytes ? `${service.resources.reservations.memoryBytes} bytes` : "",
-        ].filter(Boolean).join(" / "),
-        tasks: (service.tasks || []).map((task) => `${task.node || "-"}:${task.state || "-"}`).join(", "),
-        storage: (service.storage || []).map((item) => `${item.name || "-"}:${item.kind || "unmanaged"}`).join(", "),
-        diagnostics: (service.diagnostics || []).join("; "),
-      },
-    });
-  };
+  const openNodeDetail = (node: DashboardNode) => setDetail(nodeDetail(node));
+  const openServiceDetail = (service: DashboardService) => setDetail(serviceDetail(service));
 
   const visibleStatus: SyncStatus = token ? syncStatus : "notConnected";
-  const activeNavPage: NavPage = activePage === "update" ? "applications" : activePage;
-  const navItems = [
-    {
-      id: "overview" as const,
-      icon: LayoutDashboard,
-      label: lang === "zh" ? "总览" : "Overview",
-      value: vm.issueCounts.critical + vm.issueCounts.warning || vm.healthyServices,
-      detail: lang === "zh" ? `${vm.healthyServices}/${vm.services.length} 服务正常` : `${vm.healthyServices}/${vm.services.length} services ok`,
-    },
-    {
-      id: "applications" as const,
-      icon: Boxes,
-      label: lang === "zh" ? "应用" : "Apps",
-      value: vm.applications.length,
-      detail: lang === "zh" ? "生命周期 · 回滚" : "Lifecycle · rollback",
-    },
-    {
-      id: "deploy" as const,
-      icon: Plus,
-      label: lang === "zh" ? "创建" : "Create",
-      value: vm.templateCount,
-      detail: lang === "zh" ? "模板、表单、YAML" : "Templates, form, YAML",
-    },
-    {
-      id: "topology" as const,
-      icon: GitBranch,
-      label: lang === "zh" ? "拓扑" : "Topology",
-      value: vm.trafficPaths.length,
-      detail: lang === "zh" ? `${vm.nodes.length} 节点 · ${vm.trafficPaths.length} 路径` : `${vm.nodes.length} nodes · ${vm.trafficPaths.length} paths`,
-    },
-    {
-      id: "nodes" as const,
-      icon: ServerCog,
-      label: lang === "zh" ? "节点" : "Fleet",
-      value: vm.nodes.length,
-      detail: lang === "zh" ? `${vm.activeNodes}/${vm.nodes.length} ready · agent` : `${vm.activeNodes}/${vm.nodes.length} ready · agent`,
-    },
-    {
-      id: "observability" as const,
-      icon: Activity,
-      label: lang === "zh" ? "观察" : "Observe",
-      value: vm.metricNodes,
-      detail: lang === "zh" ? "节点资源 · 日志" : "Resources · logs",
-    },
-    {
-      id: "storage" as const,
-      icon: HardDrive,
-      label: lang === "zh" ? "存储" : "Storage",
-      value: vm.storageVolumes.length + vm.storageClasses.length,
-      detail: lang === "zh" ? `${vm.storageClasses.length} 类 · ${vm.storageVolumes.length} 卷` : `${vm.storageClasses.length} classes · ${vm.storageVolumes.length} volumes`,
-    },
-    {
-      id: "credentials" as const,
-      icon: KeyRound,
-      label: lang === "zh" ? "凭据" : "Credentials",
-      value: vm.storageClasses.length,
-      detail: lang === "zh" ? "Secret · Registry" : "Secrets · registry",
-    },
-  ];
 
   const toggleSidebar = () => {
     setSidebarCollapsed((prev) => {
@@ -225,59 +116,17 @@ export function App() {
       return next;
     });
   };
-  const sidebarToggleLabel = sidebarCollapsed
-    ? (lang === "zh" ? "展开侧栏" : "Expand sidebar")
-    : (lang === "zh" ? "收起侧栏" : "Collapse sidebar");
 
   return (
     <div className={`dashboard-shell page-${activeNavPage}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          <div className="brand-mark" aria-hidden="true">
-            <img src={lumaLogoMark} alt="" />
-          </div>
-          <div className="sidebar-title">
-            <span>Luma</span>
-            <strong>{t(lang, "title")}</strong>
-          </div>
-          <button
-            type="button"
-            className="sidebar-toggle"
-            title={sidebarToggleLabel}
-            aria-label={sidebarToggleLabel}
-            aria-expanded={!sidebarCollapsed}
-            onClick={toggleSidebar}
-          >
-            {sidebarCollapsed ? <PanelLeftOpen size={16} aria-hidden="true" /> : <PanelLeftClose size={16} aria-hidden="true" />}
-          </button>
-        </div>
-        <nav aria-label="Dashboard">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                className={activeNavPage === item.id ? "nav-item active" : "nav-item"}
-                type="button"
-                key={item.id}
-                title={sidebarCollapsed ? item.label : undefined}
-                onClick={() => navigate(item.id)}
-              >
-                <Icon size={17} aria-hidden="true" />
-                <span>
-                  <b>{item.label}</b>
-                  <small>{item.detail}</small>
-                </span>
-                <strong>{item.value}</strong>
-              </button>
-            );
-          })}
-        </nav>
-        <div className="sidebar-status" aria-label={lang === "zh" ? "当前运行状态" : "Current runtime status"}>
-          <span>{lang === "zh" ? "健康分" : "Health score"}</span>
-          <strong>{vm.healthScore}%</strong>
-          <small>{vm.activeNodes}/{vm.nodes.length || 0} {lang === "zh" ? "节点在线" : "nodes online"}</small>
-        </div>
-      </aside>
+      <Sidebar
+        lang={lang}
+        vm={vm}
+        activeNavPage={activeNavPage}
+        sidebarCollapsed={sidebarCollapsed}
+        onNavigate={navigate}
+        onToggle={toggleSidebar}
+      />
 
       <main className="workspace">
         <div className="topbar-wrapper">
@@ -302,52 +151,26 @@ export function App() {
           <>
             <ErrorBanner errors={errors} />
             {payload ? (
-              activePage === "overview" ? (
-                <OverviewPage
-                  lang={lang}
-                  payload={payload}
-                  vm={vm}
-                  onNavigate={navigate}
-                  onSelectNode={openNodeDetail}
-                />
-              ) : activePage === "applications" ? (
-                <ApplicationsPage
-                  lang={lang}
-                  token={token}
-                  payload={payload}
-                  onRefresh={loadDashboard}
-                  onCreateApplication={() => navigate("deploy")}
-                  onUpdateApplication={openUpdatePage}
-                />
-              ) : activePage === "deploy" || activePage === "update" ? (
-                <DeployPage
-                  lang={lang}
-                  token={token}
-                  payload={payload}
-                  vm={vm}
-                  updateContext={updateContext}
-                  updateContextNode={updateContextNode}
-                  deployTemplateLanding={deployTemplateLanding}
-                  onRefresh={loadDashboard}
-                  onCloseUpdate={closeUpdatePage}
-                  onTemplateLandingChange={setDeployTemplateLanding}
-                />
-              ) : activePage === "topology" ? (
-                <TopologyPage lang={lang} theme={theme} token={token} vm={vm} onRefresh={loadDashboard} />
-              ) : activePage === "nodes" ? (
-                <NodesPage
-                  lang={lang}
-                  vm={vm}
-                  onSelectNode={openNodeDetail}
-                  onTerminal={setTerminalNode}
-                />
-              ) : activePage === "observability" ? (
-                <ObservabilityPage lang={lang} token={token} vm={vm} />
-              ) : activePage === "credentials" ? (
-                <CredentialsPage lang={lang} token={token} vm={vm} />
-              ) : (
-                <StoragePage lang={lang} vm={vm} />
-              )
+              <AppRoutes
+                page={resolvedPage}
+                lang={lang}
+                token={token}
+                theme={theme}
+                payload={payload}
+                vm={vm}
+                updateContext={updateContext}
+                updateContextNode={updateContextNode}
+                deployTemplateLanding={deployTemplateLanding}
+                onNavigate={navigate}
+                onSelectNode={openNodeDetail}
+                onSelectService={openServiceDetail}
+                onTerminal={setTerminalNode}
+                onRefresh={loadDashboard}
+                onCreateApplication={() => navigate("deploy")}
+                onUpdateApplication={openUpdatePage}
+                onCloseUpdate={closeUpdatePage}
+                onTemplateLandingChange={setDeployTemplateLanding}
+              />
             ) : (
               <section className="empty-state">
                 <p>{t(lang, visibleStatus)}</p>
@@ -357,29 +180,7 @@ export function App() {
         )}
       </main>
 
-      {detail ? (
-        <div className="detail-backdrop" onClick={() => setDetail(null)}>
-          <aside className="detail-drawer" onClick={(event) => event.stopPropagation()}>
-            <header>
-              <div>
-                <p className="eyebrow">{t(lang, "details")}</p>
-                <h2>{detail.title}</h2>
-              </div>
-              <button type="button" className="icon-button" onClick={() => setDetail(null)}>
-                {t(lang, "close")}
-              </button>
-            </header>
-            <dl>
-              {Object.entries(detail.items).map(([key, value]) => (
-                <div key={key}>
-                  <dt>{key}</dt>
-                  <dd>{String(value || "-")}</dd>
-                </div>
-              ))}
-            </dl>
-          </aside>
-        </div>
-      ) : null}
+      <DetailDrawer lang={lang} detail={detail} onClose={() => setDetail(null)} />
       {terminalNode ? (
         <TerminalDrawer lang={lang} node={terminalNode} token={token} onClose={() => setTerminalNode(null)} />
       ) : null}

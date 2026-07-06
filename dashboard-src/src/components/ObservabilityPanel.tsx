@@ -4,7 +4,7 @@ import { localizeState, t } from "../i18n";
 import { fetchMetricsHistory } from "../metricsApi";
 import type { ActualResourceValues, DashboardNode, DashboardService, Lang, MetricSeries, ResourceValues } from "../types";
 import { Badge, BadgeGroup, CodeCell, StatePill } from "./ui";
-import { Sparkline, TrendChart } from "./charts";
+import { Sparkline } from "./charts";
 import { ServiceLogsModal } from "./ServiceLogsModal";
 
 const HISTORY_WINDOW_SECONDS = 3600;
@@ -158,16 +158,12 @@ export function ObservabilityPanel({
   }, [appServices, selectedService]);
 
   const historyTargets = useMemo<HistoryTarget[]>(() => {
-    const items: HistoryTarget[] = nodes
+    return nodes
       .map((node) => node.name)
       .filter((name): name is string => Boolean(name))
       .map((name) => ({ kind: "node" as const, name }));
-    if (selectedService) items.push({ kind: "service", name: selectedService });
-    return items;
-  }, [nodes, selectedService]);
+  }, [nodes]);
   const histories = useMetricsHistories(token, historyTargets);
-
-  const selected = services.find((service) => service.fullName === selectedService);
 
   const openServiceLogs = (service: DashboardService) => {
     const fullName = service.fullName || "";
@@ -313,34 +309,6 @@ export function ObservabilityPanel({
               </tbody>
             </table>
           </div>
-          {selected ? (
-            <div className="service-trends">
-              <div className="service-trend">
-                <div className="service-trend-head">
-                  <span>{serviceTitle(selected)} · CPU</span>
-                  <span>{formatPercent(selected.resources?.actual?.cpuPercent)}</span>
-                </div>
-                <TrendChart
-                  points={histories[historyKey("service", selectedService)]?.cpuPercent || []}
-                  color="var(--blue)"
-                  format={(v) => `${v.toFixed(0)}%`}
-                  emptyLabel={lang === "zh" ? "暂无趋势数据" : "no trend data"}
-                />
-              </div>
-              <div className="service-trend">
-                <div className="service-trend-head">
-                  <span>{serviceTitle(selected)} · {lang === "zh" ? "内存" : "Memory"}</span>
-                  <span>{formatBytes(selected.resources?.actual?.memoryUsageBytes)}</span>
-                </div>
-                <TrendChart
-                  points={histories[historyKey("service", selectedService)]?.memoryUsageBytes || []}
-                  color="var(--orange)"
-                  format={(v) => formatBytes(v)}
-                  emptyLabel={lang === "zh" ? "暂无趋势数据" : "no trend data"}
-                />
-              </div>
-            </div>
-          ) : null}
         </article>
       </section>
       {logsModalService ? (

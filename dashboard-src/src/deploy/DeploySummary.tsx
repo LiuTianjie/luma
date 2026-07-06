@@ -53,10 +53,6 @@ export function DeploySummary({
           <div><dt>{zh ? "存储" : "Storage"}</dt><dd>{storage.length ? storage.join(", ") : (zh ? "无托管卷" : "No managed volumes")}</dd></div>
         </dl>
       </div>
-      <div className="deploy-summary-card warning">
-        <h3>{zh ? "部署动作" : "Deploy action"}</h3>
-        <p>{zh ? "部署会写入生成的 Nomad job，按配置同步 DNS，并通过 Luma Control 提交到 Nomad。" : "Deploy writes the generated Nomad job, syncs DNS according to the config, and submits it to Nomad through Luma Control."}</p>
-      </div>
       {preview ? (
         <div className="deploy-summary-card">
           <h3>{zh ? "预览结果" : "Preview result"}</h3>

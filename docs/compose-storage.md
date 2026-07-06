@@ -42,7 +42,9 @@ luma storage set cn-nfs \
 - `cn-nfs` is the stable storage class name deployments reference.
 - `--node <manager-node-name>` identifies the host that owns and exports the storage path.
 - `--path /srv/luma` is the host export directory.
-- `--region cn` restricts which service regions can use this storage class.
+- `--region cn` restricts which service regions can use this storage class. Repeat `--region` for multiple regions.
+- `--eligible-node <node>` (repeatable) pins which nodes may mount this class, tightening placement beyond the region restriction. This is the only way to set the node allow-list that `storage check` validates against.
+- `--provider` selects the storage provider. It defaults to `nfs`, which is currently the only supported provider.
 
 When `--mount-options` is omitted, Luma uses bounded soft NFS options:
 
@@ -63,6 +65,17 @@ luma storage set home-nfs \
   --region cn \
   --region home
 ```
+
+### List Storage Classes
+
+Print the storage classes registered in Luma Control state:
+
+```bash
+luma storage list
+luma storage list --format json
+```
+
+The output shows each class name, provider, node/endpoint, path, and the regions and eligible nodes it is restricted to. Add `--quiet` to print only the final result or an error (useful in CI). The dashboard's Storage page shows the same registered classes.
 
 ### Register an External Independent NFS Server
 
@@ -164,6 +177,11 @@ Sidecar fields:
 | `services.<name>.publishPort` | relay only | Host-mode published port for `tailscale-relay` or `tcp-relay`. |
 | `services.<name>.replicas` | no | Nomad group count, must be at least `1`. |
 | `services.<name>.proxy` | no | Adds Luma egress proxy env/network for runtime outbound HTTP/HTTPS traffic. |
+| `services.<name>.relay` | tailscale-relay only | Advanced Tailscale relay upstream override. Normally omitted; the upstream is derived from the running allocation's home node. |
+| `services.<name>.tcp` | tcp-relay only | Advanced TCP relay upstream override. Normally omitted; the entrypoint is derived from `publishPort`/`port`. |
+| `services.<name>.tunnel` | cloudflare-tunnel only | Cloudflare Tunnel token env and related settings. |
+
+The sidecar only carries Luma's placement, routing, and storage semantics. Everything else about the container — `image`, `environment`, `command`, `healthcheck`, resource limits, `labels` — stays in the standard `docker-compose.yml`; the sidecar never restates it. A service block's `region` and `exposure` follow the same matching rules as native manifests (for example an `external-edge` service must land in a region whose nodes carry that exposure); see the exposure/region rules in [deployment-yaml.md](deployment-yaml.md).
 
 ## ⚠️ Critical Storage Mounting Caveats
 
@@ -216,7 +234,7 @@ luma storage apply luma.compose.yml --dry-run
 luma storage apply luma.compose.yml
 ```
 
-`storage apply` resolves the manager storage classes and creates the concrete volume subdirectories referenced by the sidecar, for example `/srv/luma/app-stack/pg-data`. Compose deployments also run the same preparation step before deploying the application stack.
+`storage apply` resolves the manager storage classes and creates the concrete volume subdirectories referenced by the sidecar, for example `/srv/luma/app-stack/pg-data`. Compose deployments also run the same preparation step before deploying the application stack. Use `--timeout <seconds>` (default `300`) to bound the control-plane response wait.
 
 Managed NFS is a storage service. Luma treats each referenced named volume the same way: it prepares the configured subdirectory and renders Docker local volume driver options so the workload node mounts the storage service at task start.
 

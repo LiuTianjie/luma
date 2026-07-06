@@ -1,10 +1,11 @@
-import { ArrowRight, GitBranch, HardDrive, Plus, Server, TerminalSquare } from "lucide-react";
-import type { CSSProperties } from "react";
+import { ArrowRight, GitBranch, HardDrive, Plus, Server, TerminalSquare, X } from "lucide-react";
+import { useMemo, type CSSProperties } from "react";
 import { Badge, CodeCell, PrimaryCell, StatePill } from "../components/ui";
 import { localizeState, t } from "../i18n";
 import type { Application } from "../components/applicationModel";
 import type { DashboardIssue, DashboardNode, DashboardPayload, Lang } from "../types";
 import type { DashboardViewModel, NavPage } from "../dashboardViewModel";
+import { issueKey, useDismissedIssues } from "../useDismissedIssues";
 
 function accessHref(domain: string) {
   return domain.startsWith("http://") || domain.startsWith("https://") ? domain : `https://${domain}`;
@@ -69,6 +70,10 @@ export function OverviewPage({
   const issueTotal = vm.issueCounts.critical + vm.issueCounts.warning + vm.issueCounts.info;
   const readiness = payload.readiness || {};
   const nodeCards = vm.nodes.slice().sort((a, b) => nodePressure(b) - nodePressure(a)).slice(0, 4);
+
+  const { dismiss, clear, isDismissed } = useDismissedIssues();
+  const visibleIssues = useMemo(() => vm.issues.filter((issue) => !isDismissed(issueKey(issue))), [vm.issues, isDismissed]);
+  const hiddenCount = vm.issues.length - visibleIssues.length;
 
   return (
     <>
@@ -178,19 +183,36 @@ export function OverviewPage({
               </div>
             </div>
             <div className="risk-queue-list">
-              {vm.issues.length ? vm.issues.slice(0, 5).map((issue, index) => (
-                <div className={`risk-queue-row ${issue.severity || "info"}`} key={`${issue.kind || "issue"}-${index}`}>
-                  <i aria-hidden="true" />
-                  <div>
-                    <strong>{issue.message || "-"}</strong>
-                    <small>{severityLabel(issue, lang)} · {[issue.kind, issue.target].filter(Boolean).join(" / ") || "-"}</small>
+              {visibleIssues.length ? visibleIssues.slice(0, 5).map((issue, index) => {
+                const key = issueKey(issue);
+                return (
+                  <div className={`risk-queue-row ${issue.severity || "info"}`} key={key}>
+                    <i aria-hidden="true" />
+                    <div>
+                      <strong>{issue.message || "-"}</strong>
+                      <small>{severityLabel(issue, lang)} · {[issue.kind, issue.target].filter(Boolean).join(" / ") || "-"}</small>
+                    </div>
+                    <em>{index ? `${index * 5 + 2}m` : "now"}</em>
+                    <button
+                      type="button"
+                      className="risk-queue-dismiss"
+                      title={zh ? "标记为已处理" : "Mark as handled"}
+                      aria-label={zh ? "标记为已处理" : "Mark as handled"}
+                      onClick={() => dismiss(key)}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
                   </div>
-                  <em>{index ? `${index * 5 + 2}m` : "now"}</em>
-                </div>
-              )) : (
+                );
+              }) : (
                 <div className="empty-inline">{zh ? "暂无风险" : "No open risk"}</div>
               )}
             </div>
+            {hiddenCount ? (
+              <button type="button" className="ghost text-link-button risk-queue-restore" onClick={clear}>
+                {zh ? `已隐藏 ${hiddenCount} 条 · 全部恢复` : `${hiddenCount} hidden · restore all`}
+              </button>
+            ) : null}
           </article>
 
           <article className="panel overview-node-panel">
@@ -230,10 +252,10 @@ export function OverviewPage({
       </section>
 
       <section className="overview-action-dock" aria-label={zh ? "快捷入口" : "Shortcuts"}>
-        <button type="button" onClick={() => onNavigate("topology")}>
+        <button type="button" onClick={() => onNavigate("nodes")}>
           <GitBranch size={20} aria-hidden="true" />
           <span>{t(lang, "trafficPaths")}</span>
-          <small>{zh ? "检查路由和入口" : "Inspect routes and entrypoints"}</small>
+          <small>{zh ? "节点、拓扑与流量路径" : "Nodes, topology, and traffic paths"}</small>
           <ArrowRight size={18} aria-hidden="true" />
         </button>
         <button type="button" onClick={() => onNavigate("observability")}>

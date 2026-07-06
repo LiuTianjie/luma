@@ -489,6 +489,33 @@ pre,
   gap: 2px;
 }
 
+.nav-group {
+  display: grid;
+  gap: 2px;
+}
+
+.nav-group + .nav-group {
+  margin-top: 10px;
+}
+
+.nav-section {
+  margin: 0;
+  padding: 4px 10px 2px;
+  color: var(--text-subtle);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sidebar-collapsed .nav-section {
+  display: none;
+}
+
+.sidebar-collapsed .nav-group + .nav-group {
+  margin-top: 6px;
+}
+
 .nav-item {
   position: relative;
   display: grid;
@@ -837,6 +864,13 @@ pre,
   justify-content: flex-end;
 }
 
+.page-toolbar-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
 .page-hero-copy {
   display: grid;
   align-content: center;
@@ -973,7 +1007,6 @@ pre,
 .observability-grid,
 .application-overview-grid,
 .application-update-context-grid,
-.service-trends,
 .deploy-field-grid,
 .deploy-switch-grid,
 .deploy-yaml-grid {
@@ -1383,13 +1416,39 @@ tbody tr.is-selected {
 
 .risk-queue-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: center;
   padding: 8px 12px;
   border: 1px solid var(--amber-line);
   border-radius: var(--radius-sm);
   background: var(--amber-soft);
+}
+
+.risk-queue-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-subtle);
+  opacity: 0.7;
+}
+
+.risk-queue-dismiss:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  opacity: 1;
+}
+
+.risk-queue-restore {
+  margin-top: 10px;
+  font-size: 0.8rem;
 }
 
 .risk-queue-row.critical {
@@ -1836,7 +1895,7 @@ tbody tr.is-selected {
 
 .app-table th:nth-child(2),
 .app-table td:nth-child(2) {
-  width: 90px;
+  width: 132px;
 }
 
 .app-table th:nth-child(4),
@@ -2107,7 +2166,6 @@ tbody tr.is-selected {
   padding: 4px 2px;
 }
 
-.fleet-ops-grid,
 .credentials-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.34fr);
@@ -2116,7 +2174,6 @@ tbody tr.is-selected {
 }
 
 .fleet-command-panel,
-.fleet-action-panel,
 .credentials-aside {
   display: grid;
   gap: 12px;
@@ -2145,26 +2202,10 @@ tbody tr.is-selected {
 }
 
 .fleet-command-panel p,
-.fleet-action-panel p,
 .credentials-aside p {
   margin: 0;
   color: var(--text-muted);
   line-height: 1.52;
-}
-
-.disabled-action-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  padding: 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--well);
-}
-
-.disabled-action-list button {
-  min-width: 0;
-  color: var(--text-muted);
 }
 
 .credentials-warning {
@@ -2360,12 +2401,9 @@ tbody tr.is-selected {
 .node-metric-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(210px, 0.72fr) minmax(220px, 1fr) minmax(190px, 0.82fr);
   gap: 12px;
-  align-items: stretch;
   width: 100%;
   min-width: 0;
-  min-height: 104px;
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -2439,7 +2477,10 @@ tbody tr.is-selected {
 }
 
 .node-resource-grid {
-  display: contents;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
 }
 
 .metric-pair {
@@ -2484,7 +2525,6 @@ tbody tr.is-selected {
 }
 
 .metric-pair small,
-.service-trend-head span,
 .logs-context {
   color: var(--text-subtle);
   font-size: 0.875rem;
@@ -2537,27 +2577,6 @@ tbody tr.is-selected {
   min-height: 30px;
   padding: 0 9px;
   white-space: nowrap;
-}
-
-.service-trends {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 14px;
-}
-
-.service-trend {
-  display: grid;
-  gap: 8px;
-  min-height: 156px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-}
-
-.service-trend-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
 }
 
 .trend-chart-empty,
@@ -2986,15 +3005,10 @@ tbody tr.is-selected {
 .deploy-mode-switch-block {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--well);
+  gap: 10px;
 }
 
 .deploy-mode-switch-block > span {
-  padding-left: 8px;
   color: var(--text-subtle);
   font-size: 0.75rem;
   font-weight: 500;
@@ -3216,11 +3230,16 @@ tbody tr.is-selected {
 .deploy-gallery-card.active,
 .template-feature-card:hover,
 .template-feature-card.active {
+  /* These cards are <button>s; keep the surface background instead of falling through
+     to the dark primary-button hover style. Only the border reacts. */
+  background: var(--surface);
+  color: var(--text);
   border-color: color-mix(in srgb, var(--template-accent, #007aff) 45%, var(--line));
 }
 
-.deploy-gallery-card.active,
-.template-feature-card.active {
+.deploy-gallery-card:hover,
+.template-feature-card:hover {
+  background: var(--well);
 }
 
 .template-card-top {
@@ -3258,9 +3277,6 @@ tbody tr.is-selected {
 .template-gallery-footer,
 .selected-template-strip,
 .deploy-action-bar,
-.deploy-config-section,
-.compose-service-card,
-.service-volume-row,
 .application-update-context {
   display: flex;
   align-items: center;
@@ -3305,12 +3321,14 @@ tbody tr.is-selected {
 }
 
 .selected-template-facts small {
-  min-height: 26px;
-  padding: 5px 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-xs);
-  background: var(--well);
-  color: var(--text-muted);
+  color: var(--text-subtle);
+}
+
+.selected-template-strip {
+  padding: 0 0 4px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
 .deploy-step-rail {
@@ -3419,8 +3437,11 @@ tbody tr.is-selected {
 .deploy-config-section {
   grid-template-columns: minmax(0, 1fr);
   gap: 14px;
-  padding: 16px;
-  overflow: hidden;
+  padding: 18px 0 4px;
+}
+
+.deploy-config-section + .deploy-config-section {
+  border-top: 1px solid var(--line-soft);
 }
 
 .deploy-config-section > header {
@@ -3428,20 +3449,15 @@ tbody tr.is-selected {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: center;
-  margin: -16px -16px 0;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--well);
 }
 
 .deploy-config-section > header > span {
   display: grid;
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   place-items: center;
-  border: 1px solid var(--line);
   border-radius: var(--radius-xs);
-  background: var(--surface);
+  background: var(--accent-soft);
   color: var(--accent-strong);
   font-size: 0.75rem;
   font-weight: 700;
@@ -3457,7 +3473,7 @@ tbody tr.is-selected {
 
 .deploy-field-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: end;
+  align-items: start;
 }
 
 .deploy-field-grid.compact,
@@ -3498,13 +3514,9 @@ tbody tr.is-selected {
 
 .deploy-toggle {
   display: flex !important;
-  min-height: 42px;
+  min-height: 36px;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
   color: var(--text-muted);
 }
 
@@ -3516,6 +3528,71 @@ tbody tr.is-selected {
 .deploy-muted {
   color: var(--text-subtle);
   line-height: 1.5;
+}
+
+.node-topology-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.deployments-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.deployments-filter-count {
+  margin-left: 6px;
+  color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.deployments-timeline {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.deployments-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+}
+
+.deployments-row + .deployments-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.deployments-row.is-clickable {
+  cursor: pointer;
+}
+
+.deployments-row:hover {
+  background: var(--well);
+}
+
+.deployments-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.deployments-main small {
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+}
+
+.deployments-time {
+  color: var(--text-subtle);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .deploy-env-row,
@@ -3531,6 +3608,12 @@ tbody tr.is-selected {
   gap: 8px;
 }
 
+.compose-service-card + .compose-service-card,
+.service-volume-row + .service-volume-row {
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
 .compose-yaml-shortcut,
 .compose-env-header {
   display: flex;
@@ -3540,11 +3623,8 @@ tbody tr.is-selected {
 }
 
 .compose-yaml-shortcut {
-  min-height: 68px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--well);
+  min-height: 0;
+  align-self: end;
 }
 
 .compose-yaml-shortcut > span,
@@ -4009,6 +4089,16 @@ dd {
     padding-bottom: 2px;
   }
 
+  /* Flatten the section groups into the horizontal scroll row; section labels
+     only make sense in the vertical rail. */
+  .nav-group {
+    display: contents;
+  }
+
+  .nav-section {
+    display: none;
+  }
+
   .nav-item {
     min-width: 154px;
     border: 1px solid var(--line);
@@ -4067,8 +4157,8 @@ dd {
   .overview-command-grid,
   .observability-grid,
   .topology-layout,
+  .node-topology-split,
   .deploy-workspace-grid,
-  .fleet-ops-grid,
   .credentials-layout {
     grid-template-columns: 1fr;
   }
@@ -4139,21 +4229,12 @@ dd {
     grid-template-columns: 1fr 1fr;
   }
 
-  .node-metric-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .node-identity {
-    grid-column: 1 / -1;
-  }
-
   .application-filter-count {
     justify-content: flex-start;
   }
 
   .overview-resource-strip,
-  .overview-action-dock,
-  .service-trends {
+  .overview-action-dock {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -4178,12 +4259,8 @@ dd {
 }
 
 @media (max-width: 760px) {
-  .node-metric-row {
+  .node-resource-grid {
     grid-template-columns: 1fr;
-  }
-
-  .node-identity {
-    grid-column: auto;
   }
 
   .workspace {
@@ -4312,8 +4389,6 @@ dd {
   .deploy-env-row,
   .compose-env-row,
   .service-volume-row,
-  .disabled-action-list,
-  .service-trends,
   .overview-node-grid,
   .template-feature-facts {
     grid-template-columns: 1fr;
@@ -4643,7 +4718,11 @@ dd {
   display: grid;
   grid-template-columns: minmax(340px, 0.36fr) minmax(0, 1fr);
   gap: 18px;
-  align-items: start;
+  /* Cap the whole region so a long log never pushes the page tall; each column
+     scrolls internally instead. */
+  height: min(640px, calc(100vh - 260px));
+  min-height: 360px;
+  align-items: stretch;
 }
 
 .build-retry-env {
@@ -4674,6 +4753,9 @@ dd {
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .build-history-empty,
@@ -4830,16 +4912,24 @@ dd {
 }
 
 .build-run-log-panel {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
-  min-height: 320px;
+  min-height: 0;
   padding: 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface);
 }
 
+.build-run-log-panel .build-log-placeholder {
+  flex: 1 1 auto;
+  margin-top: 12px;
+}
+
 .build-run-log-heading {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
@@ -4902,6 +4992,9 @@ dd {
 
 .build-step-log {
   margin-top: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .build-step-log li {
@@ -4969,6 +5062,17 @@ dd {
 @media (max-width: 900px) {
   .build-history-layout {
     grid-template-columns: 1fr;
+    /* Stacked single column: let the page flow instead of a capped split-pane. */
+    height: auto;
+    min-height: 0;
+  }
+
+  .build-run-list {
+    overflow-y: visible;
+  }
+
+  .build-step-log {
+    max-height: 420px;
   }
 
   .build-run-row {

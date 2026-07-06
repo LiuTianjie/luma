@@ -769,6 +769,69 @@ def _prune_build_runs(state: Dict[str, Any], *, limit: int = 100) -> None:
             runs.pop(run_id, None)
 
 
+def _deployment_events(state: Dict[str, Any]) -> list:
+    events = state.get("deploymentEvents")
+    if not isinstance(events, list):
+        events = []
+        state["deploymentEvents"] = events
+    return events
+
+
+def _record_deployment_event(
+    *,
+    kind: str,
+    name: str,
+    slug: str,
+    source_name: str,
+    origin: str,
+    status: str,
+    error: str = "",
+    steps: list[dict[str, str]] | None = None,
+    git_source: Dict[str, Any] | None = None,
+) -> None:
+    """Append an immutable deployment-history entry (CLI or dashboard `luma deploy` /
+    `compose deploy`). This is a separate append-only log from the single latest-state
+    record in state["deployments"], so the Deployments timeline can show every attempt
+    with its origin. Pruned to the most recent 200. Mirrors the buildRuns pattern."""
+    now = int(time.time())
+    safe_steps = [
+        {str(k): str(v) for k, v in step.items() if v is not None}
+        for step in (steps or [])
+        if isinstance(step, dict)
+    ]
+    entry = {
+        "id": f"deploy-{secrets.token_hex(8)}",
+        "kind": kind,
+        "name": name,
+        "slug": slug,
+        "sourceName": source_name,
+        "origin": origin or "cli",
+        "status": status,
+        "stepCount": len(safe_steps),
+        "steps": safe_steps,
+        "createdAt": now,
+    }
+    if error:
+        entry["error"] = error
+    if git_source:
+        entry["gitSource"] = _sanitize_git_source(git_source)
+
+    def mutate(state: Dict[str, Any]) -> None:
+        events = _deployment_events(state)
+        events.append(entry)
+        if len(events) > 200:
+            del events[: len(events) - 200]
+
+    mutate_state(mutate)
+
+
+def _deployment_origin(body: Dict[str, Any] | None) -> str:
+    """Where a deploy came from. Dashboard sends origin=dashboard explicitly; the CLI
+    omits it, so anything else defaults to cli."""
+    origin = str((body or {}).get("origin") or "").strip().lower()
+    return "dashboard" if origin == "dashboard" else "cli"
+
+
 def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None:
     """Drop finished agent tasks older than the retention window.
 
@@ -1329,6 +1392,31 @@ def handle_build_run_get(token: str, build_id: str) -> Dict[str, Any]:
     if not isinstance(run, dict):
         raise LumaError(f"build run not found: {build_id}")
     return {"run": _build_run_public(run)}
+
+
+def handle_deployment_history(token: str) -> Dict[str, Any]:
+    """Return the append-only deployment-event log (native + compose deploys, CLI and
+    dashboard), most recent first, for the Deployments timeline. Steps are omitted from
+    the list to keep it lean; fetch a single entry for full step detail."""
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    events = state.get("deploymentEvents") if isinstance(state.get("deploymentEvents"), list) else []
+    # Stored in append (chronological) order. Reverse first so that same-second events
+    # tie-break to insertion order (last appended = newest), then stable-sort by ts desc.
+    items = [{k: v for k, v in event.items() if k != "steps"} for event in reversed(events) if isinstance(event, dict)]
+    items.sort(key=lambda item: int(item.get("createdAt") or 0), reverse=True)
+    return {"events": items}
+
+
+def handle_deployment_history_get(token: str, event_id: str) -> Dict[str, Any]:
+    """Return one deployment-event entry with its full step log."""
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    events = state.get("deploymentEvents") if isinstance(state.get("deploymentEvents"), list) else []
+    for event in events:
+        if isinstance(event, dict) and str(event.get("id")) == event_id:
+            return {"event": dict(event)}
+    raise LumaError(f"deployment event not found: {event_id}")
 
 
 def _build_run_retry_overrides(body: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -2748,7 +2836,8 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
                     progress=progress,
                 )
                 route_text = render_tailscale_route(config, route_service) if service.exposure == "tailscale-relay" else render_tcp_route(config, route_service)
-                _deploy_step(steps, "Write route", lambda: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
+                routes_root = _resolve_control_path(config.routes_root, config_path)
+                _deploy_step(steps, "Write route", lambda: _write_route_file(route_target, route_text, routes_root=routes_root), progress=progress)
                 written.append(str(route_target))
         probe_result = _deploy_step(
             steps,
@@ -2770,8 +2859,10 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         # later deploys (pending counts as occupying tcp-relay ports). bare raise
         # preserves the original exception for the caller.
         _mark_service_deployment(service, manifest, source_name, status="failed_partial", steps=steps, error=str(exc), git_source=git_source)
+        _record_deployment_event(kind="service", name=service.name, slug=service.slug, source_name=source_name, origin=_deployment_origin(body), status="failed_partial", error=str(exc), steps=steps, git_source=git_source)
         raise
     _mark_service_deployment(service, manifest, source_name, status="active", steps=steps, git_source=git_source)
+    _record_deployment_event(kind="service", name=service.name, slug=service.slug, source_name=source_name, origin=_deployment_origin(body), status="active", steps=steps, git_source=git_source)
     result = {
         "clusterId": state["clusterId"],
         "service": service.name,
@@ -3358,14 +3449,9 @@ def handle_certificate_retry(token: str, body: Dict[str, Any]) -> Dict[str, Any]
         raise LumaError(f"route has no TLS certResolver: {domain}")
 
     original = path.read_text(encoding="utf-8")
-    tmp = path.with_name(f".{path.name}.retry.tmp")
-    tmp.write_text(original, encoding="utf-8")
-    try:
-        shutil.copymode(path, tmp)
-    except OSError:
-        pass
-    tmp.replace(path)
-    os.utime(path, None)
+    # Rewrite the file's own bytes to trigger a Traefik reload; do not re-validate an
+    # unchanged, already-live route file (it may predate the current renderer shape).
+    _write_route_file(path, original, routes_root=routes_root, validate=False)
     return {
         "clusterId": state["clusterId"],
         "domain": domain,
@@ -3555,6 +3641,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             )
         )
 
+        routes_root = _resolve_control_path(config.routes_root, config_path)
         for service_name, service in deployment.services.items():
             if service.exposure not in {"tailscale-relay", "tcp-relay"} or not service.domain or not service.port:
                 continue
@@ -3578,7 +3665,12 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                     progress=progress,
                 )
             route_text = render_tailscale_route(config, service_spec) if service.exposure == "tailscale-relay" else render_tcp_route(config, service_spec)
-            _deploy_step(steps, f"Write route {service_name}", lambda route_target=route_target, route_text=route_text: route_target.write_text(route_text, encoding="utf-8"), progress=progress)
+            _deploy_step(
+                steps,
+                f"Write route {service_name}",
+                lambda route_target=route_target, route_text=route_text, routes_root=routes_root: _write_route_file(route_target, route_text, routes_root=routes_root),
+                progress=progress,
+            )
             written.append(str(route_target))
 
         probe_results: list[str] = []
@@ -3604,8 +3696,10 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         # socket errors) must reach a terminal state so the record never strands
         # at "pending" and blocks later deploys.
         _mark_compose_deployment(deployment, body, source_name, status="failed_partial", steps=steps, error=str(exc))
+        _record_deployment_event(kind="compose", name=deployment.name, slug=deployment.slug, source_name=source_name, origin=_deployment_origin(body), status="failed_partial", error=str(exc), steps=steps)
         raise
     _mark_compose_deployment(deployment, body, source_name, status="active", steps=steps)
+    _record_deployment_event(kind="compose", name=deployment.name, slug=deployment.slug, source_name=source_name, origin=_deployment_origin(body), status="active", steps=steps)
     result = {
         "clusterId": state["clusterId"],
         "deployment": deployment.name,
@@ -5018,6 +5112,86 @@ def _remove_generated_files(stack_target: Path, *route_targets: Path | None) -> 
     return f"Generated files not found: {', '.join(missing)}"
 
 
+def _write_route_file(path: Path, text: str, *, routes_root: Path, validate: bool = True) -> str:
+    # Freshly rendered route text is validated to catch a truncated/garbled write
+    # before it reaches Traefik. Rewriting a file's own unchanged bytes (e.g. a cert
+    # retry that just touches the file to trigger a reload) skips validation: the
+    # on-disk content may predate the current renderer's shape, and re-validating it
+    # would newly reject an untouched, working route file.
+    if validate:
+        _validate_route_file_text(path, text)
+    return _atomic_write_text(path, text, temp_dir=_route_staging_dir(path, routes_root))
+
+
+def _validate_route_file_text(path: Path, text: str) -> None:
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise LumaError(f"invalid route file {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise LumaError(f"invalid route file {path}: expected mapping")
+    http = data.get("http")
+    tcp = data.get("tcp")
+    if _route_section_has_router_and_service(http) or _route_section_has_router_and_service(tcp):
+        return
+    raise LumaError(f"invalid route file {path}: expected http/tcp routers and services")
+
+
+def _route_section_has_router_and_service(section: Any) -> bool:
+    if not isinstance(section, dict):
+        return False
+    routers = section.get("routers")
+    services = section.get("services")
+    return isinstance(routers, dict) and bool(routers) and isinstance(services, dict) and bool(services)
+
+
+def _route_staging_dir(path: Path, routes_root: Path) -> Path:
+    route_root = routes_root.resolve()
+    target_parent = path.parent.resolve()
+    if target_parent == route_root or route_root in target_parent.parents:
+        return route_root.parent / ".luma-route-staging"
+    return target_parent.parent / ".luma-route-staging"
+
+
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8", temp_dir: Path | None = None) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = temp_dir or path.parent
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    tmp = staging_dir / f".{path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
+    try:
+        with tmp.open("w", encoding=encoding) as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            shutil.copymode(path, tmp)
+        except OSError:
+            pass
+        _fsync_directory(tmp.parent)
+        os.replace(tmp, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+    return f"File written atomically: {path}"
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _remove_path(path: Path) -> bool:
     if path.is_dir():
         shutil.rmtree(path)
@@ -5211,9 +5385,13 @@ def _probe_public_route(service: ServiceSpec) -> str:
     req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "luma-control-route-probe"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return _probe_status_message(url, int(resp.status))
+            return _probe_status_message(url, int(resp.status), headers=resp.headers)
     except urllib.error.HTTPError as exc:
-        return _probe_status_message(url, int(exc.code))
+        body_sample = _read_probe_error_sample(exc)
+        headers = exc.headers
+        if int(exc.code) == 404 and not body_sample:
+            headers, body_sample = _fetch_probe_body_sample(url, fallback_headers=headers)
+        return _probe_status_message(url, int(exc.code), headers=headers, body_sample=body_sample)
     except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError) as exc:
         return f"Public route probe inconclusive: {url} ({exc})"
 
@@ -5248,6 +5426,8 @@ def _public_route_error_is_recoverable(exc: LumaError) -> bool:
     message = str(exc)
     if "Public route unhealthy:" not in message:
         return False
+    if "Traefik router not found" in message:
+        return True
     return any(f"HTTP {status}" in message for status in RECOVERABLE_ROUTE_HTTP_STATUSES)
 
 
@@ -5258,12 +5438,45 @@ def _recover_public_route_allocation(token: str, stack: str) -> str:
     return f"allocation recreate requested ({count} allocation(s))"
 
 
-def _probe_status_message(url: str, status: int) -> str:
+def _read_probe_error_sample(exc: urllib.error.HTTPError) -> bytes:
+    try:
+        return exc.read(1024)
+    except Exception:
+        return b""
+
+
+def _fetch_probe_body_sample(url: str, *, fallback_headers: Any | None = None) -> tuple[Any | None, bytes]:
+    req = urllib.request.Request(url, method="GET", headers={"User-Agent": "luma-control-route-probe", "Range": "bytes=0-512"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.headers, resp.read(1024)
+    except urllib.error.HTTPError as exc:
+        body_sample = _read_probe_error_sample(exc)
+        return exc.headers or fallback_headers, body_sample
+    except Exception:
+        return fallback_headers, b""
+
+
+def _probe_status_message(url: str, status: int, *, headers: Any | None = None, body_sample: bytes = b"") -> str:
     if status in RECOVERABLE_ROUTE_HTTP_STATUSES:
         raise LumaError(f"Public route unhealthy: {url} -> HTTP {status}")
     if status == 404:
+        if _is_traefik_route_miss(headers, body_sample):
+            raise LumaError(f"Public route unhealthy: {url} -> HTTP 404 (Traefik router not found)")
         return f"Public route reachable: {url} -> HTTP 404 (the app may not serve /)"
     return f"Public route reachable: {url} -> HTTP {status}"
+
+
+def _is_traefik_route_miss(headers: Any | None, body_sample: bytes) -> bool:
+    body = body_sample.decode("utf-8", errors="ignore").strip().lower()
+    if body != "404 page not found":
+        return False
+    server = ""
+    if headers is not None:
+        getter = getattr(headers, "get", None)
+        if callable(getter):
+            server = str(getter("Server") or getter("server") or "")
+    return "traefik" in server.lower()
 
 
 def _deploy_step(steps: list[dict[str, str]], name: str, action: Any, *, progress: Callable[[dict[str, str]], None] | None = None) -> Any:
@@ -7265,10 +7478,27 @@ DASHBOARD_ASSETS = {
 }
 
 
+# Any path whose last segment has a file extension is treated as a static asset:
+# if it is not in the allowlist it is a genuine miss (404), never the HTML index.
+# Extensionless paths are SPA client routes and fall back to index.html.
+def _dashboard_path_looks_like_asset(path: str) -> bool:
+    last_segment = path.rsplit("/", 1)[-1]
+    return "." in last_segment
+
+
 def _dashboard_asset(path: str) -> tuple[bytes, str]:
-    if path not in DASHBOARD_ASSETS:
+    entry = DASHBOARD_ASSETS.get(path)
+    if entry is not None:
+        relative_path, content_type = entry
+        return asset_path(relative_path).read_bytes(), content_type
+    # A request that looks like a static asset (has a file extension) but is not in the
+    # allowlist is a genuine miss -> let the caller 404 (do not return HTML for it).
+    if _dashboard_path_looks_like_asset(path):
         raise LumaError("dashboard asset not found")
-    relative_path, content_type = DASHBOARD_ASSETS[path]
+    # Otherwise this is a client-side route (e.g. /dashboard/apps/foo) served by the SPA
+    # router -> fall back to index.html. index.html references assets with absolute
+    # /dashboard/* URLs, so deep routes still load app.js/styles.css correctly.
+    relative_path, content_type = DASHBOARD_ASSETS["/dashboard/"]
     return asset_path(relative_path).read_bytes(), content_type
 
 
@@ -7618,6 +7848,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if parsed_path == "/v1/builds":
                 self._json(200, handle_build_run_list(token))
+                return
+            if parsed_path == "/v1/deployments/history":
+                self._json(200, handle_deployment_history(token))
+                return
+            deploy_event_match = re.fullmatch(r"/v1/deployments/history/([^/]+)", parsed_path)
+            if deploy_event_match:
+                self._json(200, handle_deployment_history_get(token, urllib.parse.unquote(deploy_event_match.group(1))))
                 return
             build_match = re.fullmatch(r"/v1/builds/([^/]+)", parsed_path)
             if build_match:
@@ -8114,6 +8351,11 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_control_status, token))
         if parsed_path == "/v1/builds":
             return _json_response(200, await run_in_threadpool(handle_build_run_list, token))
+        if parsed_path == "/v1/deployments/history":
+            return _json_response(200, await run_in_threadpool(handle_deployment_history, token))
+        deploy_event_match = re.fullmatch(r"/v1/deployments/history/([^/]+)", parsed_path)
+        if deploy_event_match:
+            return _json_response(200, await run_in_threadpool(handle_deployment_history_get, token, urllib.parse.unquote(deploy_event_match.group(1))))
         build_match = re.fullmatch(r"/v1/builds/([^/]+)", parsed_path)
         if build_match:
             return _json_response(200, await run_in_threadpool(handle_build_run_get, token, urllib.parse.unquote(build_match.group(1))))

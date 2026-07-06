@@ -406,6 +406,78 @@ export default defineConfig({
           response.setHeader("Cache-Control", "no-store");
           response.end(JSON.stringify({ storageClasses: devDashboardPayload.storage.storageClasses }));
         });
+        server.middlewares.use("/v1/builds", (request, response, next) => {
+          if (request.method !== "GET") {
+            next();
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({ runs: [] }));
+        });
+        server.middlewares.use("/v1/deployments/history", (request, response, next) => {
+          if (request.method !== "GET") {
+            next();
+            return;
+          }
+          const auth = request.headers.authorization || "";
+          if (!auth.startsWith("Bearer ")) {
+            response.statusCode = 401;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+          }
+          const nowSec = Math.floor(Date.now() / 1000);
+          const devSteps: Record<string, Array<{ name: string; status: string; message?: string }>> = {
+            "deploy-1": [
+              { name: "Parse manifest", status: "ok", message: "linkshell-gateway -> cn/cn-edge" },
+              { name: "Resolve image", status: "ok" },
+              { name: "Write route file", status: "ok" },
+              { name: "Submit Nomad job", status: "ok" },
+              { name: "Probe public route", status: "ok", message: "HTTP 200" },
+            ],
+            "deploy-2": [
+              { name: "Parse sidecar", status: "ok", message: "granary -> home" },
+              { name: "Prepare managed storage", status: "ok" },
+              { name: "Submit Nomad job", status: "ok" },
+            ],
+            "deploy-3": [
+              { name: "Parse manifest", status: "ok" },
+              { name: "Resolve image", status: "ok" },
+              { name: "Probe public route", status: "fail", message: "Public route unhealthy: HTTP 404 (Traefik router not found)" },
+            ],
+          };
+          const detailMatch = /^\/([^/?]+)/.exec(request.url || "");
+          if (detailMatch) {
+            const id = detailMatch[1];
+            const steps = devSteps[id];
+            response.statusCode = steps ? 200 : 404;
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            response.setHeader("Cache-Control", "no-store");
+            response.end(steps
+              ? JSON.stringify({ event: { id, steps } })
+              : JSON.stringify({ error: `deployment event not found: ${id}` }));
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify({
+            events: [
+              { id: "deploy-1", kind: "service", name: "linkshell-gateway", slug: "linkshell-gateway", sourceName: "service.yaml", origin: "cli", status: "active", stepCount: 5, createdAt: nowSec - 120 },
+              { id: "deploy-2", kind: "compose", name: "granary", slug: "granary", sourceName: "luma.compose.yml", origin: "dashboard", status: "active", stepCount: 3, createdAt: nowSec - 900 },
+              { id: "deploy-3", kind: "service", name: "codex-gitea", slug: "codex-gitea", sourceName: "service.yaml", origin: "cli", status: "failed_partial", stepCount: 3, createdAt: nowSec - 3600 },
+            ],
+          }));
+        });
         server.middlewares.use("/v1/dashboard", (request, response) => {
           if (request.method !== "GET") {
             response.statusCode = 405;
@@ -530,6 +602,27 @@ export default defineConfig({
           response.statusCode = 200;
           response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.end(JSON.stringify({ stack: body.stack, restarted: [{ name: `${body.stack}_app`, forceUpdate: 1 }] }));
+        });
+        // SPA fallback: rewrite deep client routes under the /dashboard/ base to the
+        // index so a hard refresh at /dashboard/apps/foo serves the app (mirrors the
+        // Control server's index.html fallback). Registered LAST so it never shadows the
+        // /v1/* API mocks above. Assets (with an extension) and Vite's dev-only internals
+        // (/@vite, /@react-refresh, /@fs, /src, /node_modules) are left untouched.
+        server.middlewares.use((request, response, next) => {
+          const url = request.url || "";
+          if (request.method !== "GET" || !url.startsWith("/dashboard/")) {
+            next();
+            return;
+          }
+          const pathname = url.split("?")[0];
+          const rest = pathname.slice("/dashboard/".length);
+          const isViteInternal = rest.startsWith("@") || rest.startsWith("src/") || rest.startsWith("node_modules/");
+          if (pathname === "/dashboard/" || /\.[a-z0-9]+$/i.test(pathname) || isViteInternal) {
+            next();
+            return;
+          }
+          request.url = "/dashboard/";
+          next();
         });
       },
     },

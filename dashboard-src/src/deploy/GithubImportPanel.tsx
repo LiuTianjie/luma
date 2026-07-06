@@ -11,6 +11,8 @@ import {
 import type { DashboardBuildNode, DashboardNode, Lang } from "../types";
 import { buildImportStream, fetchBuildRun, fetchBuildRuns, registryServeStream, retryBuildRunStream, type BuildRun } from "./deployApi";
 import { isReadyNode } from "./options";
+import { StepLog } from "./StepLog";
+import { formatTimestamp } from "../format";
 import type { DeployStep, Exposure, Region } from "./types";
 
 const REGIONS: Region[] = ["cn", "global", "home"];
@@ -60,10 +62,6 @@ function buildRunRequestSummary(run: BuildRun, lang: Lang) {
   return values.map(String).join(" · ");
 }
 
-function buildRunTime(value?: number) {
-  if (!value) return "-";
-  return new Date(value * 1000).toLocaleString();
-}
 
 function buildRunStatusLabel(status?: string, lang: Lang = "zh") {
   const value = String(status || "unknown");
@@ -113,6 +111,7 @@ export function GithubImportPanel({
   build,
   onBack,
   onRefresh,
+  onImported,
 }: {
   lang: Lang;
   token: string;
@@ -125,6 +124,7 @@ export function GithubImportPanel({
   };
   onBack?: () => void;
   onRefresh: () => Promise<void> | void;
+  onImported?: () => void;
 }) {
   const zh = lang === "zh";
   const candidates = useMemo(() => buildNodes(nodes, build?.nodes || []), [build?.nodes, nodes]);
@@ -298,6 +298,7 @@ export function GithubImportPanel({
         (step) => setSteps((current) => [...current, step]),
       );
       await onRefresh();
+      onImported?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -452,16 +453,7 @@ export function GithubImportPanel({
                 </div>
                 {registryDone ? <small className="deploy-muted registry-done">{registryDone}</small> : null}
                 {registryError ? <div className="deploy-muted registry-error">{registryError}</div> : null}
-                {registrySteps.length ? (
-                  <ol className="deploy-step-log">
-                    {registrySteps.filter((step) => step.name).map((step, index) => (
-                      <li key={`${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
-                        <strong>{step.name}</strong>
-                        {step.message ? <span> - {step.message}</span> : null}
-                      </li>
-                    ))}
-                  </ol>
-                ) : null}
+                {registrySteps.length ? <StepLog steps={registrySteps} lang={lang} /> : null}
               </div>
             ) : null}
           </div>
@@ -562,16 +554,7 @@ export function GithubImportPanel({
         ) : null}
         {error ? <div className="deploy-muted">{error}</div> : null}
 
-        {steps.length ? (
-          <ol className="deploy-step-log">
-            {steps.filter((step) => step.name).map((step, index) => (
-              <li key={`${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
-                <strong>{step.name}</strong>
-                {step.message ? <span> - {step.message}</span> : null}
-              </li>
-            ))}
-          </ol>
-        ) : null}
+        {steps.length ? <StepLog steps={steps} lang={lang} /> : null}
       </div>
 
       <div className="deploy-action-bar">
@@ -727,7 +710,7 @@ export function BuildHistoryPanel({
                     {buildRunStatusLabel(run.status, lang)}
                   </span>
                   <strong title={buildRunTitle(run)}>{buildRunTitle(run)}</strong>
-                  <small>{[run.buildNode, run.ref || "default", buildRunTime(run.updatedAt || run.createdAt)].filter(Boolean).join(" · ")}</small>
+                  <small>{[run.buildNode, run.ref || "default", formatTimestamp(run.updatedAt || run.createdAt)].filter(Boolean).join(" · ")}</small>
                   {run.message ? <span className="build-run-message" title={run.message}>{run.message}</span> : null}
                 </button>
                 <div className="build-run-actions">
@@ -775,15 +758,13 @@ export function BuildHistoryPanel({
           </div>
           {error ? <div className="build-log-error">{error}</div> : null}
           {selectedRun || liveSteps.length ? (
-            <ol className="deploy-step-log build-step-log">
-              {displayedSteps.filter((step) => step.name).map((step, index) => (
-                <li key={`${selectedRun?.id || "live"}-${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
-                  <strong>{step.name}</strong>
-                  {step.message ? <span>{step.message}</span> : null}
-                </li>
-              ))}
-              {!displayedSteps.length ? <li className="step-start"><strong>{zh ? "等待日志事件" : "Waiting for events"}</strong></li> : null}
-            </ol>
+            <StepLog
+              steps={displayedSteps}
+              lang={lang}
+              variant="plain"
+              keyPrefix={`${selectedRun?.id || "live"}-`}
+              waitingLabel={zh ? "等待日志事件" : "Waiting for events"}
+            />
           ) : (
             <div className="build-log-placeholder">{zh ? "点击左侧构建任务查看详细步骤。" : "Choose a build run on the left to inspect its steps."}</div>
           )}

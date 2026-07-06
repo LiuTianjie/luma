@@ -1,3 +1,4 @@
+import { Plus } from "lucide-react";
 import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "../components/ApplicationManagementPanel";
 import { groupApplications } from "../components/applicationModel";
 import { t } from "../i18n";
@@ -39,6 +40,12 @@ export function ApplicationsPage({
             { label: zh ? "Degraded" : "Degraded", value: degraded },
             { label: zh ? "Failed" : "Failed", value: failed },
           ],
+          action: (
+            <button type="button" className="page-toolbar-cta" onClick={onCreateApplication}>
+              <Plus size={16} aria-hidden="true" />
+              {t(lang, "createApplication")}
+            </button>
+          ),
         }}
       />
       <ApplicationManagementPanel
@@ -46,7 +53,6 @@ export function ApplicationsPage({
         token={token}
         payload={payload}
         onRefresh={onRefresh}
-        onCreateApplication={onCreateApplication}
         onUpdateApplication={onUpdateApplication}
       />
     </>

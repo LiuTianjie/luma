@@ -1,4 +1,5 @@
 import type { DeployPreviewResult, DeployStep } from "./types";
+import { authHeaders, consumeNdjson, readJson } from "../apiClient";
 
 type DeployRequest = {
   token: string;
@@ -9,18 +10,6 @@ type DeployRequest = {
   skipOrchestrator: boolean;
 };
 
-async function readJson(response: Response) {
-  const text = await response.text();
-  let payload: Record<string, unknown> = {};
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error(`Invalid response format (HTTP ${response.status}): ${text.slice(0, 100)}`);
-  }
-  if (!response.ok) throw new Error(String(payload.error || `HTTP ${response.status}`));
-  return payload;
-}
-
 function bodyFor(request: DeployRequest) {
   return JSON.stringify({
     manifest: request.manifest,
@@ -28,13 +17,16 @@ function bodyFor(request: DeployRequest) {
     sourceName: request.sourceName,
     skipDns: request.skipDns,
     skipOrchestrator: request.skipOrchestrator,
+    // Tag the deploy origin so the Deployments timeline can distinguish dashboard
+    // deploys from CLI ones. The CLI omits this and defaults to "cli" server-side.
+    origin: "dashboard",
   });
 }
 
 export async function previewService(request: DeployRequest): Promise<DeployPreviewResult> {
   const response = await fetch("/v1/deployments/preview", {
     method: "POST",
-    headers: { Authorization: `Bearer ${request.token}`, "Content-Type": "application/json" },
+    headers: authHeaders(request.token, true),
     body: bodyFor(request),
   });
   return readJson(response) as Promise<DeployPreviewResult>;
@@ -43,7 +35,7 @@ export async function previewService(request: DeployRequest): Promise<DeployPrev
 export async function previewCompose(request: DeployRequest): Promise<DeployPreviewResult> {
   const response = await fetch("/v1/compose-deployments/preview", {
     method: "POST",
-    headers: { Authorization: `Bearer ${request.token}`, "Content-Type": "application/json" },
+    headers: authHeaders(request.token, true),
     body: bodyFor(request),
   });
   return readJson(response) as Promise<DeployPreviewResult>;
@@ -52,7 +44,7 @@ export async function previewCompose(request: DeployRequest): Promise<DeployPrev
 export async function deployStream(request: DeployRequest, mode: "service" | "compose", onStep: (step: DeployStep) => void): Promise<unknown> {
   const response = await fetch(mode === "service" ? "/v1/deployments/stream" : "/v1/compose-deployments/stream", {
     method: "POST",
-    headers: { Authorization: `Bearer ${request.token}`, "Content-Type": "application/json" },
+    headers: authHeaders(request.token, true),
     body: bodyFor(request),
   });
   return consumeStream(response, onStep);
@@ -118,17 +110,40 @@ export async function buildImportStream(request: BuildImportRequest, onStep: (st
   if (request.envSecrets) body.envSecrets = request.envSecrets;
   const response = await fetch("/v1/builds/stream", {
     method: "POST",
-    headers: { Authorization: `Bearer ${request.token}`, "Content-Type": "application/json" },
+    headers: authHeaders(request.token, true),
     body: JSON.stringify(body),
   });
   return consumeStream(response, onStep);
 }
 
 export async function fetchBuildRuns(token: string): Promise<{ runs?: BuildRun[] }> {
-  const response = await fetch("/v1/builds", {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const response = await fetch("/v1/builds", { headers: authHeaders(token) });
   return readJson(response) as Promise<{ runs?: BuildRun[] }>;
+}
+
+export type DeploymentEvent = {
+  id?: string;
+  kind?: "service" | "compose" | string;
+  name?: string;
+  slug?: string;
+  sourceName?: string;
+  origin?: "cli" | "dashboard" | string;
+  status?: string;
+  stepCount?: number;
+  steps?: DeployStep[];
+  createdAt?: number;
+  error?: string;
+  gitSource?: { repoUrl?: string; providerId?: string; repository?: string; ref?: string } | null;
+};
+
+export async function fetchDeploymentHistory(token: string): Promise<{ events?: DeploymentEvent[] }> {
+  const response = await fetch("/v1/deployments/history", { headers: authHeaders(token) });
+  return readJson(response) as Promise<{ events?: DeploymentEvent[] }>;
+}
+
+export async function fetchDeploymentEvent(token: string, id: string): Promise<{ event?: DeploymentEvent }> {
+  const response = await fetch(`/v1/deployments/history/${encodeURIComponent(id)}`, { headers: authHeaders(token) });
+  return readJson(response) as Promise<{ event?: DeploymentEvent }>;
 }
 
 export async function fetchBuildRun(token: string, id: string): Promise<{ run?: BuildRun }> {
@@ -136,7 +151,7 @@ export async function fetchBuildRun(token: string, id: string): Promise<{ run?: 
   const timeout = window.setTimeout(() => controller.abort(), 20000);
   try {
     const response = await fetch(`/v1/builds/${encodeURIComponent(id)}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: authHeaders(token),
       signal: controller.signal,
     });
     return await readJson(response) as { run?: BuildRun };
@@ -150,7 +165,7 @@ export async function retryBuildRun(token: string, id: string, overrides?: { env
   if (overrides?.envSecrets) body.envSecrets = overrides.envSecrets;
   const response = await fetch(`/v1/builds/${encodeURIComponent(id)}/retry`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: authHeaders(token, true),
     body: JSON.stringify(body),
   });
   return readJson(response);
@@ -161,7 +176,7 @@ export async function retryBuildRunStream(token: string, id: string, onStep: (st
   if (overrides?.envSecrets) body.envSecrets = overrides.envSecrets;
   const response = await fetch(`/v1/builds/${encodeURIComponent(id)}/retry/stream`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: authHeaders(token, true),
     body: JSON.stringify(body),
   });
   return consumeStream(response, onStep);
@@ -179,38 +194,15 @@ export async function registryServeStream(
   }
   const response = await fetch("/v1/registry/serve/stream", {
     method: "POST",
-    headers: { Authorization: `Bearer ${request.token}`, "Content-Type": "application/json" },
+    headers: authHeaders(request.token, true),
     body: JSON.stringify(body),
   });
   return consumeStream(response, onStep);
 }
 
-async function consumeStream(response: Response, onStep: (step: DeployStep) => void): Promise<unknown> {
-  if (!response.ok) {
-    const payload = await readJson(response);
-    throw new Error(String(payload.error || `HTTP ${response.status}`));
-  }
-  if (!response.body) throw new Error("deployment stream is unavailable");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let result: unknown = null;
-  const handleLine = (line: string) => {
-    if (!line.trim()) return;
-    const event = JSON.parse(line) as DeployStep;
-    onStep(event);
-    if (event.status === "fail") throw new Error(event.message || "deployment failed");
-    if (event.status === "done") result = event.result;
-  };
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    for (const line of lines) handleLine(line);
-  }
-  buffer += decoder.decode();
-  handleLine(buffer);
-  return result;
+// Thin wrapper over the shared NDJSON consumer for deploy/build step streams.
+function consumeStream(response: Response, onStep: (step: DeployStep) => void): Promise<unknown> {
+  return consumeNdjson(response, (event) => onStep(event as DeployStep), {
+    unavailableMessage: "deployment stream is unavailable",
+  });
 }

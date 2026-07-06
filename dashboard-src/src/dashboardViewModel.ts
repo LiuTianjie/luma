@@ -6,7 +6,8 @@ export type PageId =
   | "overview"
   | "applications"
   | "deploy"
-  | "topology"
+  | "builder"
+  | "deployments"
   | "observability"
   | "storage"
   | "nodes"
@@ -34,6 +35,7 @@ export type DashboardViewModel = {
   healthyServices: number;
   issueCounts: IssueCounts;
   metricNodes: number;
+  builderNodes: number;
   templateCount: number;
   deployServiceTemplates: number;
   deployComposeTemplates: number;
@@ -89,6 +91,7 @@ export function createDashboardViewModel(payload: DashboardPayload | null): Dash
     healthyServices,
     issueCounts: counts,
     metricNodes: nodes.filter((node) => node.metrics?.cpuPercent || node.metrics?.memoryUsedPercent).length,
+    builderNodes: (payload?.build?.nodes || []).length,
     templateCount: DEPLOY_TEMPLATES.length,
     deployServiceTemplates: DEPLOY_TEMPLATES.filter((template) => template.mode === "service").length,
     deployComposeTemplates: DEPLOY_TEMPLATES.filter((template) => template.mode === "compose").length,

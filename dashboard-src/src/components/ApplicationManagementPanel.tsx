@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { FileText, History, Loader2, Pencil, Plus, RotateCw, Search, Settings2 } from "lucide-react";
+import { FileText, History, Loader2, Pencil, RotateCw, Search, Settings2 } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
 import { fetchServiceHistory, restartApplication, rollbackService, updateApplicationStream } from "../lifecycleApi";
+import { formatTimestamp } from "../format";
 import type { DeployStep } from "../deploy/types";
 import type { DashboardPayload, DashboardService, Lang, ServiceVersion } from "../types";
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
@@ -44,11 +45,6 @@ function accessHref(domain: string) {
   return domain.startsWith("http://") || domain.startsWith("https://") ? domain : `https://${domain}`;
 }
 
-function configUpdatedLabel(updatedAt?: number) {
-  if (!updatedAt) return "-";
-  return new Date(updatedAt * 1000).toLocaleString();
-}
-
 function versionNumber(version: ServiceVersion["version"]) {
   const value = Number(version);
   return Number.isInteger(value) ? value : null;
@@ -74,14 +70,12 @@ export function ApplicationManagementPanel({
   token,
   payload,
   onRefresh,
-  onCreateApplication,
   onUpdateApplication,
 }: {
   lang: Lang;
   token: string;
   payload: DashboardPayload | null;
   onRefresh: () => Promise<void> | void;
-  onCreateApplication?: () => void;
   onUpdateApplication?: (request: ApplicationUpdateRequest) => void;
 }) {
   const [selected, setSelected] = useState<Application | null>(null);
@@ -128,13 +122,6 @@ export function ApplicationManagementPanel({
     }
   };
 
-  const openCreate = () => {
-    if (onCreateApplication) {
-      onCreateApplication();
-      return;
-    }
-    setActionError(lang === "zh" ? "当前页面未配置创建应用入口。" : "This page does not have a create-application entry configured.");
-  };
   const openDetails = (app: Application) => {
     setDeploymentConfig(null);
     setDeploymentConfigFor("");
@@ -376,7 +363,7 @@ export function ApplicationManagementPanel({
               <div className="deployment-config-heading">
                 <div>
                   <h3>{t(lang, "deploymentConfig")}</h3>
-                  <span>{t(lang, "source")}: {selectedConfig.sourceName || "-"} · {t(lang, "lastUpdated")}: {configUpdatedLabel(selectedConfig.updatedAt)}</span>
+                  <span>{t(lang, "source")}: {selectedConfig.sourceName || "-"} · {t(lang, "lastUpdated")}: {formatTimestamp(selectedConfig.updatedAt)}</span>
                 </div>
                 <div className="deployment-config-tabs">
                   {selectedConfigTabs.map((tab) => (
@@ -454,16 +441,6 @@ export function ApplicationManagementPanel({
 
   return (
     <article className="panel app-management-panel" id="section-1">
-      <div className="panel-heading app-management-heading">
-        <div>
-          <p className="eyebrow">{lang === "zh" ? "应用管理" : "Applications"}</p>
-          <h2>{t(lang, "applications")}</h2>
-        </div>
-        <button type="button" onClick={openCreate}>
-          <Plus size={16} aria-hidden="true" />
-          {t(lang, "createApplication")}
-        </button>
-      </div>
       {actionError ? <div className="storage-warnings"><span>{actionError}</span></div> : null}
       {actionSteps.length ? (
         <ol className="deploy-step-log application-update-log">

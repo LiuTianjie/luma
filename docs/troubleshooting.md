@@ -244,6 +244,27 @@ nomad server members        # all servers alive, one leader
 
 A wedged `4647/tcp` path makes clients drop to `disconnected` even though `docker info` on the node still works.
 
+## Public route unhealthy / Traefik router not found
+
+A deploy of a `cn-edge` or `external-edge` service can finish placing the Nomad allocation but then fail the public-route probe with:
+
+```text
+Public route unhealthy: https://myapp.example.com/ -> HTTP 404 (Traefik router not found)
+```
+
+This means the probe reached the edge but Traefik returned its own default `404 page not found` — Traefik has no router matching that host yet, as opposed to your application returning a `404` from a real route (an application `404` is reported as reachable, not as a failed route). It usually appears when Traefik has not yet picked up the freshly published file-provider route, or the route file's host/labels do not match the requested domain.
+
+Luma writes the generated route file atomically: it validates the rendered Traefik file-provider route, stages it outside the watched routes directory, then publishes the final file in one move, so Traefik never observes a half-written route. On an unhealthy public route (Traefik router not found, or a transient `502`/`503`/`504`), Control runs a **Recover public route** step once — it recreates the service's allocation and re-probes — before failing the deploy. If it still fails after that automatic retry, check:
+
+```bash
+# on the manager
+ls /opt/luma/routes/                      # the <service>.yml route file exists
+cat /opt/luma/routes/<service>.yml        # host rule matches the requested domain
+nomad job status <service>                # allocation is running/healthy
+```
+
+Confirm the manifest's `region` and `exposure` actually produce an edge route (only `cn-edge`/`external-edge` get a public Traefik router), that the `domain` matches the DNS record, and that Traefik itself is running. Re-running `luma deploy` republishes the route file.
+
 ## macOS node join fails at Docker
 
 macOS workers and home nodes must have Docker Desktop installed and running before `luma node join`.

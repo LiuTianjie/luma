@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.149"
+python -m pip install "luma-infra==0.1.150"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.149 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.150 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.149"
+python -m pip install "luma-infra==0.1.150"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.149"
+python -m pip install "luma-infra==0.1.150"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -202,6 +202,14 @@ luma registry list
 luma registry remove ghcr.io
 ```
 
+Deploy an in-cluster registry for source-to-image builds:
+
+```bash
+luma registry serve --node build-1
+```
+
+`luma registry serve` deploys a `registry:2` service on a `docker-build`-capable node and wires `insecure-registries` into every non-manager ready Linux node so they can pull built images over the Tailscale network. The builder pushes via `localhost:5000`; other nodes pull via `<build-node-tailscale-host>:5000`. Optional flags: `--port` (default `5000`), `--storage-class` (data volume storageClass, default `local`), `--image` (default `registry:2`), `--name` (default `luma-registry`), `--timeout` (default `1800`). See the repository-import walkthrough in [how-to-use-luma.md](how-to-use-luma.md) for the full source-to-image flow.
+
 The same control plane also serves a read-only Web status panel:
 
 ```text
@@ -275,7 +283,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.149 --timeout 900
+luma update fleet --install-ref v0.1.150 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -349,6 +357,15 @@ luma rollback public-cn-service --to-version 3
 `luma history` lists prior versions of the Nomad job (`GET /v1/job/<id>/versions`). `luma rollback` reverts to the previous version, or to the version given by `--to-version N` (`POST /v1/job/<id>/revert`). The web dashboard exposes the same operation from Applications -> Versions. Jobspecs also render `update { auto_revert = true }`, so a new version that fails its health checks rolls back automatically.
 
 Rollback changes the running Nomad job only. It does not rewrite Git, update the stored manifest in Luma Control, roll back databases, or restore volumes. For predictable production rollback, deploy immutable image tags or digests rather than `latest`.
+
+Restart a running service without redeploying:
+
+```bash
+luma service restart public-cn-service
+luma service restart my-stack --service web --mode task
+```
+
+`--mode recreate` reschedules the allocation; `--mode task` restarts the task in place. Omitting `--mode` uses `recreate` for a whole stack and `task` when `--service` targets one task. Restart refuses the system stacks `traefik`, `egress`, and `luma-control`. See [operations.md](operations.md) for details.
 
 Remove a deployed service:
 
@@ -450,7 +467,7 @@ For `luma deploy service.yaml`, Luma does:
 9. submit the job to Nomad through `PUT /v1/jobs` (create or update);
 10. probe the public route for `cn-edge` and `external-edge` services.
 
-The client prints local progress before submitting the request, while waiting for the control plane, and for each control-plane step. A public route probe reports the HTTP status from `/`; `404` means the route is reachable but the application may not serve a root page. The default deploy response timeout is 1800 seconds because first deploys may pull large images on the target node; use `--timeout <seconds>` to override it.
+The client prints local progress before submitting the request, while waiting for the control plane, and for each control-plane step. Luma validates generated Traefik file-provider routes, stages them outside the watched routes directory, then atomically publishes the final route file. A public route probe reports the HTTP status from `/`; an application-level `404` means the route is reachable but the application may not serve a root page, while Traefik's default `404 page not found` is treated as a missing router and a failed public route. When the probe reports the route unhealthy (Traefik router not found, or a transient `502`/`503`/`504`), Control recreates the service's allocation once and re-probes before failing the deploy. The default deploy response timeout is 1800 seconds because first deploys may pull large images on the target node; use `--timeout <seconds>` to override it.
 
 Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Nomad job (the job id is the service slug) instead of creating a duplicate. The update uses the current rendered jobspec as the source of truth, and Nomad keeps the previous version so `luma rollback` or the dashboard's Applications -> Versions action can return to it.
 

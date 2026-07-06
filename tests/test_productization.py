@@ -4643,6 +4643,175 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_deployment_does_not_truncate_live_route_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "name": "blg",
+                        "region": "home",
+                        "nodeId": "node-blg",
+                        "tailscaleIP": "100.64.0.3",
+                        "labels": {"luma.node.id": "node-blg", "luma.node.name": "blg", "region": "home"},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(root / "routes")}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "home",
+                        "node": "blg",
+                        "exposure": "tailscale-relay",
+                        "domain": "api.example.com",
+                        "port": 80,
+                        "publishPort": 18080,
+                    }
+                )
+                route_target = root / "routes" / "api.yml"
+                original_write_text = Path.write_text
+
+                def guarded_write_text(path, *args, **kwargs):
+                    if Path(path) == route_target:
+                        raise AssertionError("route file was overwritten directly")
+                    return original_write_text(path, *args, **kwargs)
+
+                with patch.object(Path, "write_text", autospec=True, side_effect=guarded_write_text), patch(
+                    "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})
+                ), patch("luma.control.server.sync_dns", return_value="DNS skipped"), patch(
+                    "luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"
+                ), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": ["blg"], "results": [], "skipped": []},
+                ), patch("luma.control.server._probe_public_route", return_value="Public route reachable"):
+                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+
+                self.assertEqual(result["service"], "api")
+                self.assertIn("http://100.64.0.3:18080", route_target.read_text(encoding="utf-8"))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_deployment_stages_route_write_outside_watched_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "name": "blg",
+                        "region": "home",
+                        "nodeId": "node-blg",
+                        "tailscaleIP": "100.64.0.3",
+                        "labels": {"luma.node.id": "node-blg", "luma.node.name": "blg", "region": "home"},
+                    }
+                }
+                save_state(state)
+                routes_root = root / "routes"
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(routes_root)}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "home",
+                        "node": "blg",
+                        "exposure": "tailscale-relay",
+                        "domain": "api.example.com",
+                        "port": 80,
+                        "publishPort": 18080,
+                    }
+                )
+                route_target = routes_root / "api.yml"
+                replaced_sources: list[Path] = []
+                real_replace = os.replace
+
+                def record_replace(src, dst):
+                    if Path(dst) == route_target:
+                        replaced_sources.append(Path(src))
+                    return real_replace(src, dst)
+
+                with patch("luma.control.server.os.replace", side_effect=record_replace), patch(
+                    "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})
+                ), patch("luma.control.server.sync_dns", return_value="DNS skipped"), patch(
+                    "luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"
+                ), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": ["blg"], "results": [], "skipped": []},
+                ), patch("luma.control.server._probe_public_route", return_value="Public route reachable"):
+                    handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+
+                self.assertTrue(replaced_sources)
+                self.assertNotEqual(replaced_sources[0].parent, routes_root)
+                self.assertNotIn(routes_root, replaced_sources[0].parents)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_deployment_validates_route_before_publishing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "name": "blg",
+                        "region": "home",
+                        "nodeId": "node-blg",
+                        "tailscaleIP": "100.64.0.3",
+                        "labels": {"luma.node.id": "node-blg", "luma.node.name": "blg", "region": "home"},
+                    }
+                }
+                save_state(state)
+                routes_root = root / "routes"
+                routes_root.mkdir()
+                route_target = routes_root / "api.yml"
+                previous_route = "http:\n  routers:\n    api:\n      rule: Host(`api.example.com`)\n"
+                route_target.write_text(previous_route, encoding="utf-8")
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(routes_root)}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "home",
+                        "node": "blg",
+                        "exposure": "tailscale-relay",
+                        "domain": "api.example.com",
+                        "port": 80,
+                        "publishPort": 18080,
+                    }
+                )
+                with patch("luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})), patch(
+                    "luma.control.server.sync_dns", return_value="DNS skipped"
+                ), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": ["blg"], "results": [], "skipped": []},
+                ), patch("luma.control.server.render_tailscale_route", return_value="not: a-traefik-route\n"):
+                    with self.assertRaisesRegex(LumaError, "invalid route file"):
+                        handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+
+                self.assertEqual(route_target.read_text(encoding="utf-8"), previous_route)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_deployment_recovers_public_route_after_gateway_probe_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4695,6 +4864,48 @@ class ControlApiTests(unittest.TestCase):
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
                 self.assertIn("Recover public route=ok:allocation recreate requested", steps)
                 self.assertIn("Probe public route=ok:Recovered public route after allocation recreate", steps)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_deployment_recovers_public_route_after_traefik_404(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "domain": "api.example.com",
+                        "port": 80,
+                    }
+                )
+                with patch("luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})), patch(
+                    "luma.control.server.sync_dns", return_value="DNS skipped"
+                ), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": [], "results": [], "skipped": []},
+                ), patch(
+                    "luma.control.server._probe_public_route",
+                    side_effect=[
+                        LumaError("Public route unhealthy: https://api.example.com/ -> HTTP 404 (Traefik router not found)"),
+                        "Public route reachable: https://api.example.com/ -> HTTP 200",
+                    ],
+                ) as probe, patch(
+                    "luma.control.server.handle_application_restart",
+                    return_value={"mode": "recreate", "restarted": [{"allocId": "alloc-api", "task": "*", "mode": "recreate"}]},
+                ) as restart:
+                    result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+
+                self.assertEqual(probe.call_count, 2)
+                restart.assert_called_once_with(state["deployToken"], {"stack": "api", "mode": "recreate"})
+                self.assertIn("Recovered public route after allocation recreate", result["probe"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -5082,6 +5293,7 @@ class ControlApiTests(unittest.TestCase):
 
         self.assertEqual(result, "Public route reachable: https://panel.example.com/ -> HTTP 200")
         self.assertEqual(urlopen.call_args.args[0].full_url, "https://panel.example.com/")
+        self.assertEqual(urlopen.call_args.args[0].get_method(), "HEAD")
 
     def test_public_probe_rejects_gateway_statuses(self):
         from luma.control.server import _probe_public_route
@@ -5099,6 +5311,53 @@ class ControlApiTests(unittest.TestCase):
         with patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
             with self.assertRaisesRegex(LumaError, "Public route unhealthy: https://panel.example.com/ -> HTTP 504"):
                 _probe_public_route(service)
+
+    def test_public_probe_rejects_traefik_route_miss_404(self):
+        from luma.control.server import _probe_public_route
+
+        service = ServiceSpec(
+            source=Path("panel.yaml"),
+            name="panel",
+            image="nginx:alpine",
+            region="cn",
+            exposure="cn-edge",
+            domain="panel.example.com",
+            port=80,
+        )
+        probe_error = urllib.error.HTTPError(
+            "https://panel.example.com/",
+            404,
+            "not found",
+            {"Server": "Traefik", "Content-Type": "text/plain; charset=utf-8"},
+            io.BytesIO(b"404 page not found\n"),
+        )
+        with patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
+            with self.assertRaisesRegex(LumaError, "Traefik router not found"):
+                _probe_public_route(service)
+
+    def test_public_probe_allows_app_default_404_body_without_traefik_header(self):
+        from luma.control.server import _probe_public_route
+
+        service = ServiceSpec(
+            source=Path("panel.yaml"),
+            name="panel",
+            image="nginx:alpine",
+            region="cn",
+            exposure="cn-edge",
+            domain="panel.example.com",
+            port=80,
+        )
+        probe_error = urllib.error.HTTPError(
+            "https://panel.example.com/",
+            404,
+            "not found",
+            {"Content-Type": "text/plain; charset=utf-8"},
+            io.BytesIO(b"404 page not found\n"),
+        )
+        with patch("luma.control.server.urllib.request.urlopen", side_effect=probe_error):
+            result = _probe_public_route(service)
+
+        self.assertEqual(result, "Public route reachable: https://panel.example.com/ -> HTTP 404 (the app may not serve /)")
 
     def test_deployment_failure_after_manager_work_leaves_failed_partial_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -5483,6 +5742,53 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result["certResolver"], "letsencrypt")
                 self.assertEqual(route_file.read_text(encoding="utf-8"), route_text)
                 self.assertGreaterEqual(route_file.stat().st_mtime_ns, old_mtime)
+                nomad_api.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_certificate_retry_does_not_revalidate_atypical_route_file(self):
+        # Cert retry rewrites a file's own bytes to trigger a reload; it must NOT
+        # re-validate the (unchanged, already-live) file, whose on-disk shape may
+        # predate the current renderer (e.g. an inline provider backend with no
+        # sibling `services` map). Re-validating would newly reject a working file.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                routes = root / "routes"
+                routes.mkdir()
+                route_file = routes / "legacy.yml"
+                # HTTP router with a certResolver but no `services` map — would fail
+                # _validate_route_file_text, which requires non-empty routers AND services.
+                route_text = yaml.safe_dump(
+                    {
+                        "http": {
+                            "routers": {
+                                "legacy": {
+                                    "rule": "Host(`legacy.itool.tech`)",
+                                    "entryPoints": ["websecure"],
+                                    "tls": {"certResolver": "letsencrypt"},
+                                    "service": "legacy@file",
+                                }
+                            }
+                        }
+                    }
+                )
+                route_file.write_text(route_text, encoding="utf-8")
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"routesRoot": str(routes)}}),
+                    encoding="utf-8",
+                )
+                with patch("luma.control.server.NomadApi") as nomad_api:
+                    result = handle_certificate_retry(
+                        state["deployToken"],
+                        {"domain": "legacy.itool.tech", "routeId": "legacy"},
+                    )
+                self.assertEqual(result["mode"], "route-file-reload")
+                self.assertEqual(route_file.read_text(encoding="utf-8"), route_text)
                 nomad_api.assert_not_called()
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -6801,6 +7107,18 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers.get_content_type(), "image/png")
                 self.assertGreater(len(response.read()), 0)
+            # A deep client-side route falls back to index.html (SPA routing) with 200.
+            with urllib.request.urlopen(base + "/dashboard/apps/granary", timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers.get_content_type(), "text/html")
+                self.assertIn("Luma · 控制台".encode("utf-8"), response.read())
+            # An unknown asset path still 404s as JSON, not HTML.
+            with self.assertRaises(urllib.error.HTTPError) as missing_asset:
+                urllib.request.urlopen(base + "/dashboard/does-not-exist.js", timeout=5)
+            self.assertEqual(missing_asset.exception.code, 404)
+            missing_asset_body = missing_asset.exception.read()
+            self.assertNotIn("Luma · 控制台".encode("utf-8"), missing_asset_body)
+            self.assertEqual(json.loads(missing_asset_body.decode("utf-8"))["error"], "not found")
             with self.assertRaises(urllib.error.HTTPError) as raised:
                 urllib.request.urlopen(base + "/v1/dashboard", timeout=5)
             self.assertEqual(raised.exception.code, 401)
@@ -6838,6 +7156,16 @@ class ControlApiTests(unittest.TestCase):
                     response = client.get("/dashboard/")
                     self.assertEqual(response.status_code, 200)
                     self.assertIn("Luma · 控制台", response.text)
+                    # A deep client-side route falls back to index.html (SPA routing).
+                    deep = client.get("/dashboard/apps/granary/logs")
+                    self.assertEqual(deep.status_code, 200)
+                    self.assertIn("Luma · 控制台", deep.text)
+                    self.assertEqual(deep.headers["content-type"], "text/html; charset=utf-8")
+                    # An unknown asset path still 404s as JSON, not HTML.
+                    missing_asset = client.get("/dashboard/does-not-exist.js")
+                    self.assertEqual(missing_asset.status_code, 404)
+                    self.assertNotIn("Luma · 控制台", missing_asset.text)
+                    self.assertEqual(missing_asset.json()["error"], "not found")
                     health = client.get("/v1/health")
                     self.assertEqual(health.status_code, 200)
                     self.assertIn("terminal", health.json()["capabilities"])
@@ -6847,6 +7175,9 @@ class ControlApiTests(unittest.TestCase):
                     rejected = client.get("/v1/dashboard")
                     self.assertEqual(rejected.status_code, 401)
                     self.assertEqual(rejected.json()["error"], "missing bearer token")
+                    # The dashboard fallback never intercepts unknown /v1 GETs.
+                    rejected_v1 = client.get("/v1/nope")
+                    self.assertEqual(rejected_v1.status_code, 401)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -10257,6 +10588,44 @@ class GithubImportTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_deployment_history_records_events_with_origin(self):
+        from luma.control.server import _record_deployment_event, _deployment_origin, handle_deployment_history, handle_deployment_history_get
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                token = state["deployToken"]
+
+                # origin defaults to cli when unspecified, dashboard when tagged.
+                self.assertEqual(_deployment_origin(None), "cli")
+                self.assertEqual(_deployment_origin({}), "cli")
+                self.assertEqual(_deployment_origin({"origin": "dashboard"}), "dashboard")
+                self.assertEqual(_deployment_origin({"origin": "anything-else"}), "cli")
+
+                _record_deployment_event(kind="service", name="web", slug="web", source_name="service.yaml", origin="cli", status="active", steps=[{"name": "x", "status": "ok"}])
+                _record_deployment_event(kind="compose", name="stack", slug="stack", source_name="luma.compose.yml", origin="dashboard", status="failed_partial", error="boom")
+
+                events = handle_deployment_history(token)["events"]
+                self.assertEqual(len(events), 2)
+                # newest first
+                self.assertEqual(events[0]["name"], "stack")
+                self.assertEqual(events[0]["origin"], "dashboard")
+                self.assertEqual(events[0]["status"], "failed_partial")
+                self.assertEqual(events[0]["error"], "boom")
+                self.assertEqual(events[1]["name"], "web")
+                self.assertEqual(events[1]["origin"], "cli")
+                self.assertEqual(events[1]["stepCount"], 1)
+                # list omits the heavy steps array; detail endpoint returns it
+                self.assertNotIn("steps", events[1])
+                detail = handle_deployment_history_get(token, events[1]["id"])["event"]
+                self.assertEqual(detail["steps"], [{"name": "x", "status": "ok"}])
+                from luma.errors import LumaError
+                with self.assertRaises(LumaError):
+                    handle_deployment_history_get(token, "deploy-missing")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
     def test_build_run_retry_reuses_existing_record(self):
         from luma.control.server import handle_build_deploy, handle_build_run_get, handle_build_run_list, handle_build_run_retry

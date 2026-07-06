@@ -26,49 +26,75 @@ function serviceTitle(service: DashboardService) {
   return service.stack ? `${service.stack}/${service.name || "-"}` : service.name || "-";
 }
 
-function buildNodeTopology(nodes: DashboardNode[], services: DashboardService[]) {
+function buildNodeTopology(nodes: DashboardNode[], services: DashboardService[], lang: Lang) {
+  const zh = lang === "zh";
   const graphNodes = new Map<string, Omit<GraphNode, "x" | "y">>();
   const edges: GraphEdge[] = [];
+  const edgeKeys = new Set<string>();
 
+  const addEdge = (source: string, target: string) => {
+    const key = `${source}->${target}`;
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+    edges.push({ id: `e-${edgeKeys.size}`, source, target });
+  };
+
+  // Root cluster anchor so every branch shares one connected tree.
+  const rootId = "cluster:root";
+  graphNodes.set(rootId, { id: rootId, label: zh ? "集群\nCluster" : "Cluster", kind: "cluster" });
+
+  const regionId = (region: string) => `region:${region || "unknown"}`;
+  const ensureRegion = (region: string) => {
+    const id = regionId(region);
+    if (!graphNodes.has(id)) {
+      graphNodes.set(id, { id, label: `Region\n${region || (zh ? "未知" : "unknown")}`, kind: "region" });
+      addEdge(rootId, id);
+    }
+    return id;
+  };
+
+  // Hosts hang under their region; region hangs under the cluster root.
+  const hostRegion = new Map<string, string>();
   nodes.forEach((node) => {
     const name = node.name || node.displayName;
     if (!name) return;
+    const region = node.region || "";
+    hostRegion.set(name, region);
     const isLeader = node.leader;
-    const labelText = isLeader ? `Leader\n${name}` : `Worker\n${name}`;
     graphNodes.set(`node:${name}`, {
       id: `node:${name}`,
-      label: labelText,
+      label: isLeader ? `Leader\n${name}` : `Worker\n${name}`,
       kind: isLeader ? "leader" : "host",
     });
+    addEdge(ensureRegion(region), `node:${name}`);
   });
 
   services.forEach((service, serviceIndex) => {
     const title = serviceTitle(service);
     const serviceId = `service:${service.fullName || title || serviceIndex}`;
     const isExposed = service.exposure && service.exposure !== "none";
-    const labelText = isExposed ? `Public\n${title}` : `Nomad\n${title}`;
-    
     graphNodes.set(serviceId, {
       id: serviceId,
-      label: labelText,
+      label: isExposed ? `Public\n${title}` : `Nomad\n${title}`,
       kind: isExposed ? "exposedService" : "service",
     });
 
-    (service.nodes || []).forEach((nodeName, nodeIndex) => {
-      const hostId = `node:${nodeName}`;
-      if (!graphNodes.has(hostId)) {
-        graphNodes.set(hostId, {
-          id: hostId,
-          label: `Worker\n${nodeName}`,
-          kind: "host",
-        });
-      }
-      edges.push({
-        id: `runs-${serviceIndex}-${nodeIndex}`,
-        source: hostId,
-        target: serviceId,
+    const placedNodes = (service.nodes || []).filter(Boolean);
+    if (placedNodes.length) {
+      // A placed service connects to each host it runs on.
+      placedNodes.forEach((nodeName) => {
+        const hostId = `node:${nodeName}`;
+        if (!graphNodes.has(hostId)) {
+          graphNodes.set(hostId, { id: hostId, label: `Worker\n${nodeName}`, kind: "host" });
+          addEdge(ensureRegion(hostRegion.get(nodeName) || service.region || ""), hostId);
+        }
+        addEdge(hostId, serviceId);
       });
-    });
+    } else {
+      // Unplaced/pending services still connect — anchored to their region so they
+      // never float as orphans.
+      addEdge(ensureRegion(service.region || ""), serviceId);
+    }
   });
 
   const layout = new dagre.graphlib.Graph();
@@ -145,6 +171,24 @@ function getStylesheet(theme: "light" | "dark"): cytoscape.StylesheetJsonBlock[]
         "text-wrap": "wrap",
         "width": `${NODE_WIDTH}px`,
         "color": textColor,
+      },
+    },
+    {
+      selector: "node.cluster",
+      style: {
+        "border-width": 2,
+        "border-color": leaderBorder,
+        "background-color": isDark ? "#26221f" : "#f5f1ea",
+        "font-weight": 700,
+      },
+    },
+    {
+      selector: "node.region",
+      style: {
+        "border-width": 1.5,
+        "border-color": isDark ? "rgba(253,252,252,0.28)" : "rgba(15,0,0,0.2)",
+        "background-color": isDark ? "#242020" : "#f2efef",
+        "shape": "round-rectangle",
       },
     },
     {
@@ -228,7 +272,7 @@ export function NodeTopology({
 }) {
   const [cyRef, setCyRef] = useState<cytoscape.Core | null>(null);
 
-  const topology = useMemo(() => buildNodeTopology(nodes, services), [nodes, services]);
+  const topology = useMemo(() => buildNodeTopology(nodes, services, lang), [nodes, services, lang]);
   const stylesheet = useMemo(() => getStylesheet(theme), [theme]);
 
   useEffect(() => {

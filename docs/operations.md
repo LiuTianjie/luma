@@ -135,6 +135,25 @@ git revert <deploy-commit>
 luma deploy <service>.yaml
 ```
 
+## Restart A Service
+
+Restart a running deployment without redeploying its manifest. This does not pull a new image or change the jobspec — it only cycles the running allocations.
+
+```bash
+luma service restart <stack>
+luma service restart <stack> --service <task>
+luma service restart <stack> --mode task
+```
+
+There are two restart modes:
+
+- `recreate` — stops the allocation so Nomad reschedules a fresh one (picks up placement/rescheduling). This is the default for a whole stack.
+- `task` — restarts the task in place inside the existing allocation. This is the default when `--service` targets one task.
+
+Omitting `--mode` uses `recreate` for the whole stack and `task` when `--service` is set; pass `--mode` explicitly to override. For a Compose application, `luma service restart <app> --service <svc>` restarts one service's task in place, while `luma service restart <app>` recreates every allocation in the stack. Use `--timeout <seconds>` (default `120`) to bound the control-plane response wait.
+
+Restart refuses the system stacks `traefik`, `egress`, and `luma-control` (Control runs inside the `luma-control` allocation, so cycling it from application management would kill Control itself).
+
 ## Remove A Deployment
 
 Use the deployed service or Compose application name:
