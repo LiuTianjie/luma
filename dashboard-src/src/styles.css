@@ -2635,8 +2635,12 @@ tbody tr.is-selected {
 }
 
 .logs-modal {
-  display: grid;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  /* Flex column so a variable number of sections (header, toolbar, context,
+     runtime-events, pull-diagnostics, tail) stack cleanly and the tail fills the
+     remaining height. A fixed grid-row count mismatched the optional sections and
+     let the tail overflow the modal, clipping its bottom. */
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   width: min(1180px, 100%);
   height: min(820px, calc(100vh - 36px));
@@ -2645,6 +2649,23 @@ tbody tr.is-selected {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface);
+}
+
+/* Inside the modal the tail fills leftover height and scrolls internally, instead
+   of the standalone clamp() height it uses outside a flex modal. */
+.logs-modal .logs-modal-tail {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 120px;
+}
+
+/* Optional sections keep their intrinsic height and never shrink away. */
+.logs-modal-header,
+.logs-modal-toolbar,
+.logs-modal .logs-context,
+.logs-modal .logs-runtime-events,
+.logs-modal .logs-pull-diagnostics {
+  flex: 0 0 auto;
 }
 
 .logs-modal-header {
@@ -4465,8 +4486,6 @@ dd {
   }
 
   .logs-modal-tail {
-    height: max(260px, calc(100vh - 430px));
-    min-height: 0;
     margin: 0 12px 12px;
   }
 

@@ -88,7 +88,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
         />
       );
     case "builder":
-      return <BuilderPage lang={lang} token={token} payload={payload} vm={vm} onRefresh={props.onRefresh} />;
+      return <BuilderPage lang={lang} token={token} payload={payload} vm={vm} onRefresh={props.onRefresh} onNavigate={props.onNavigate} />;
     case "deployments":
       return <DeploymentsPage lang={lang} token={token} />;
     case "nodes":

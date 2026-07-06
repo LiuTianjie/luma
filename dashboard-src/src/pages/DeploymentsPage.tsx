@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw } from "lucide-react";
-import { fetchBuildRun, fetchBuildRuns, fetchDeploymentEvent, fetchDeploymentHistory, type BuildRun, type DeploymentEvent } from "../deploy/deployApi";
+import { RefreshCw, RotateCcw } from "lucide-react";
+import { fetchBuildRun, fetchBuildRuns, fetchDeploymentEvent, fetchDeploymentHistory, retryBuildRunStream, type BuildRun, type DeploymentEvent } from "../deploy/deployApi";
 import type { DeployStep } from "../deploy/types";
 import { StepLog } from "../deploy/StepLog";
 import { Badge, CodeCell, StatePill } from "../components/ui";
@@ -24,7 +24,14 @@ type DetailState = {
   loading: boolean;
   steps: DeployStep[];
   error: string;
+  retrying: boolean;
 };
+
+function isRetryableBuild(item: TimelineItem): boolean {
+  // Only build runs can be retried (by their recorded parameters), and only when
+  // they are not currently running.
+  return item.origin === "build" && !["running", "succeeded", "active"].includes(item.status.toLowerCase());
+}
 
 const REFRESH_MS = 20000;
 
@@ -78,17 +85,35 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
 
   // Open the detail drawer for a row and lazily fetch its step log.
   const openDetail = async (item: TimelineItem) => {
-    setDetail({ item, loading: true, steps: [], error: "" });
+    setDetail({ item, loading: true, steps: [], error: "", retrying: false });
     try {
       if (item.origin === "build") {
         const { run } = await fetchBuildRun(token, item.id);
-        setDetail({ item, loading: false, steps: (run?.events as DeployStep[]) || [], error: "" });
+        setDetail({ item, loading: false, steps: (run?.events as DeployStep[]) || [], error: "", retrying: false });
       } else {
         const { event } = await fetchDeploymentEvent(token, item.id);
-        setDetail({ item, loading: false, steps: event?.steps || [], error: "" });
+        setDetail({ item, loading: false, steps: event?.steps || [], error: "", retrying: false });
       }
     } catch (err) {
-      setDetail({ item, loading: false, steps: [], error: err instanceof Error ? err.message : String(err) });
+      setDetail({ item, loading: false, steps: [], error: err instanceof Error ? err.message : String(err), retrying: false });
+    }
+  };
+
+  // Retry a failed build run by its recorded parameters, streaming live steps into
+  // the open drawer. Refreshes the timeline when done.
+  const retryBuild = async () => {
+    setDetail((prev) => (prev ? { ...prev, retrying: true, error: "", steps: [{ name: "Build image", status: "progress", message: zh ? "重试已开始" : "Retry started" }] } : prev));
+    const item = detail?.item;
+    if (!item) return;
+    try {
+      await retryBuildRunStream(token, item.id, (step) =>
+        setDetail((prev) => (prev && prev.item.id === item.id ? { ...prev, steps: [...prev.steps, step] } : prev)),
+      );
+      await load();
+    } catch (err) {
+      setDetail((prev) => (prev && prev.item.id === item.id ? { ...prev, error: err instanceof Error ? err.message : String(err) } : prev));
+    } finally {
+      setDetail((prev) => (prev && prev.item.id === item.id ? { ...prev, retrying: false } : prev));
     }
   };
 
@@ -222,6 +247,12 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
               <div><dt>{zh ? "时间" : "Time"}</dt><dd>{formatTimestamp(detail.item.ts, lang)}</dd></div>
               {detail.item.subtitle ? <div><dt>{zh ? "详情" : "Detail"}</dt><dd>{detail.item.subtitle}</dd></div> : null}
             </dl>
+            {isRetryableBuild(detail.item) ? (
+              <button type="button" className="ghost" disabled={detail.retrying} onClick={() => void retryBuild()}>
+                <RotateCcw size={15} aria-hidden="true" />
+                {detail.retrying ? (zh ? "重试中…" : "Retrying…") : (zh ? "按原参数重试" : "Retry build")}
+              </button>
+            ) : null}
             <h3>{zh ? "步骤日志" : "Step log"}</h3>
             {detail.loading ? (
               <p className="deployment-config-empty">{zh ? "加载中…" : "Loading…"}</p>
