@@ -54,12 +54,11 @@ jobs:
       - name: Validate image sources
         run: |
           python scripts/bump-version.py --check
-          python -m unittest discover -s tests -p 'test_render.py'
-          python -m unittest discover -s tests -p 'test_productization.py'
           npm run typecheck:dashboard
           npm run build:dashboard
+          python -m unittest discover -s tests -p 'test_render.py'
+          python -m unittest discover -s tests -p 'test_productization.py'
           git diff --check
-          git diff --exit-code -- luma/assets/dashboard
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

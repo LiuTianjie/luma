@@ -42,12 +42,11 @@ jobs:
       - name: Validate release sources
         run: |
           python scripts/bump-version.py --check
-          python -m unittest discover -s tests -p 'test_render.py'
-          python -m unittest discover -s tests -p 'test_productization.py'
           npm run typecheck:dashboard
           npm run build:dashboard
+          python -m unittest discover -s tests -p 'test_render.py'
+          python -m unittest discover -s tests -p 'test_productization.py'
           git diff --check
-          git diff --exit-code -- luma/assets/dashboard
 
       - name: Build distributions
         run: python -m build

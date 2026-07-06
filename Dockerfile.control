@@ -1,10 +1,25 @@
 ARG PYTHON_IMAGE=python:3.11-slim
+
+# Build the dashboard bundle from source so the committed repo does not need to carry
+# generated assets. vite writes into luma/assets/dashboard (see dashboard-src/vite.config.ts).
+FROM node:22-slim AS dashboard
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY dashboard-src ./dashboard-src
+# Needs the luma package dir to exist as the vite outDir parent.
+COPY luma ./luma
+RUN npm run build:dashboard
+
 FROM ${PYTHON_IMAGE}
 
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY luma ./luma
+# Overlay the freshly built dashboard assets (index.html/app.js/styles.css/png) so
+# pip's package-data ("assets/dashboard/*") bundles them into the installed package.
+COPY --from=dashboard /app/luma/assets/dashboard ./luma/assets/dashboard
 
 RUN pip install --no-cache-dir .
 
