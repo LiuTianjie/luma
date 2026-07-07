@@ -43,12 +43,12 @@ type RuntimeEventsState = {
   updatedAt?: number;
 };
 
-const SINCE_OPTIONS = [
-  { label: "tail", seconds: 0 },
-  { label: "5m", seconds: 5 * 60 },
-  { label: "15m", seconds: 15 * 60 },
-  { label: "1h", seconds: 60 * 60 },
-  { label: "24h", seconds: 24 * 60 * 60 },
+const SINCE_OPTIONS: { label: string; seconds: number; zh: string; en: string }[] = [
+  { label: "tail", seconds: 0, zh: "最新", en: "Latest" },
+  { label: "5m", seconds: 5 * 60, zh: "近 5 分钟", en: "Last 5m" },
+  { label: "15m", seconds: 15 * 60, zh: "近 15 分钟", en: "Last 15m" },
+  { label: "1h", seconds: 60 * 60, zh: "近 1 小时", en: "Last 1h" },
+  { label: "24h", seconds: 24 * 60 * 60, zh: "近 24 小时", en: "Last 24h" },
 ];
 
 const LOGS_MODAL_ROOT = typeof document === "undefined" ? null : document.body;
@@ -461,8 +461,8 @@ export function ServiceLogsModal({
             <SelectControl
               value={sinceLabel}
               onChange={setSinceLabel}
-              ariaLabel="since"
-              options={SINCE_OPTIONS.map((option) => ({ value: option.label, label: `since ${option.label}` }))}
+              ariaLabel={lang === "zh" ? "时间范围" : "Time range"}
+              options={SINCE_OPTIONS.map((option) => ({ value: option.label, label: lang === "zh" ? option.zh : option.en }))}
             />
             <input
               value={keyword}

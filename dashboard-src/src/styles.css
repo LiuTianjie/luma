@@ -286,9 +286,14 @@ textarea:focus-visible {
   position: absolute;
   z-index: 80;
   top: calc(100% + 6px);
-  right: 0;
   left: 0;
   display: grid;
+  /* Size to the widest option (so labels like "since 24h" are never clipped),
+     while staying at least as wide as the trigger. Capped so a stray long option
+     cannot overflow the viewport. */
+  min-width: 100%;
+  width: max-content;
+  max-width: min(320px, 80vw);
   max-height: min(360px, 45vh);
   padding: 6px;
   overflow-y: auto;
@@ -314,8 +319,8 @@ textarea:focus-visible {
 
 .luma-select-option span {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Menu sizes to content (max-content), so option labels show in full rather than
+     clipping to "sinc…". Keep single-line; the menu's max-width caps extreme cases. */
   white-space: nowrap;
 }
 
@@ -2715,7 +2720,7 @@ tbody tr.is-selected {
 
 .logs-filter-grid {
   display: grid;
-  grid-template-columns: minmax(150px, 0.82fr) minmax(150px, 0.72fr) minmax(108px, 0.34fr) minmax(190px, 1fr);
+  grid-template-columns: minmax(150px, 0.82fr) minmax(150px, 0.72fr) minmax(128px, 0.4fr) minmax(190px, 1fr);
   gap: 8px;
   min-width: 0;
 }
