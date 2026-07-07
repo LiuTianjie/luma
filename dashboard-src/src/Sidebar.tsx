@@ -60,7 +60,7 @@ export function Sidebar({
                   title={sidebarCollapsed ? item.label : undefined}
                   onClick={() => onNavigate(item.id)}
                 >
-                  <Icon size={17} aria-hidden="true" />
+                  <Icon size={16} aria-hidden="true" />
                   <span>
                     <b>{item.label}</b>
                     <small>{item.detail}</small>

@@ -59,7 +59,7 @@ export function Topbar({
               aria-pressed={themeMode === mode}
               onClick={() => onThemeModeChange(mode)}
             >
-              <Icon size={15} aria-hidden="true" />
+              <Icon size={16} aria-hidden="true" />
             </button>
           ))}
         </div>

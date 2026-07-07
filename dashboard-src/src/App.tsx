@@ -162,6 +162,7 @@ export function App() {
                 updateContextNode={updateContextNode}
                 deployTemplateLanding={deployTemplateLanding}
                 onNavigate={navigate}
+                onNavigateToDeployments={() => navigate("deployments")}
                 onSelectNode={openNodeDetail}
                 onSelectService={openServiceDetail}
                 onTerminal={setTerminalNode}

@@ -83,7 +83,7 @@ export function OverviewPage({
           <h1 id="overview-title">{zh ? "集群运行中枢" : "Cluster operations hub"}</h1>
           <p>{zh ? "实时状态与风险总览" : "Real-time status and risk overview"}</p>
           <button type="button" className="ops-hero-action" onClick={() => onNavigate("deploy")}>
-            <Plus size={17} aria-hidden="true" />
+            <Plus size={16} aria-hidden="true" />
             {t(lang, "createApplication")}
           </button>
         </div>
@@ -256,25 +256,25 @@ export function OverviewPage({
           <GitBranch size={20} aria-hidden="true" />
           <span>{t(lang, "trafficPaths")}</span>
           <small>{zh ? "节点、拓扑与流量路径" : "Nodes, topology, and traffic paths"}</small>
-          <ArrowRight size={18} aria-hidden="true" />
+          <ArrowRight size={16} aria-hidden="true" />
         </button>
         <button type="button" onClick={() => onNavigate("observability")}>
           <TerminalSquare size={20} aria-hidden="true" />
           <span>{zh ? "日志" : "Logs"}</span>
           <small>{zh ? "搜索并 tail 日志" : "Search and tail logs"}</small>
-          <ArrowRight size={18} aria-hidden="true" />
+          <ArrowRight size={16} aria-hidden="true" />
         </button>
         <button type="button" onClick={() => onNavigate("storage")}>
           <HardDrive size={20} aria-hidden="true" />
           <span>{t(lang, "storage")}</span>
           <small>{zh ? "卷和分配关系" : "Volumes and allocations"}</small>
-          <ArrowRight size={18} aria-hidden="true" />
+          <ArrowRight size={16} aria-hidden="true" />
         </button>
         <button type="button" onClick={() => onNavigate("applications")}>
           <Server size={20} aria-hidden="true" />
           <span>{t(lang, "applications")}</span>
           <small>{zh ? "浏览全部应用" : "Browse all applications"}</small>
-          <ArrowRight size={18} aria-hidden="true" />
+          <ArrowRight size={16} aria-hidden="true" />
         </button>
       </section>
     </>

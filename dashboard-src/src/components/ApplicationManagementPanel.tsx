@@ -71,12 +71,14 @@ export function ApplicationManagementPanel({
   payload,
   onRefresh,
   onUpdateApplication,
+  onNavigateToDeployments,
 }: {
   lang: Lang;
   token: string;
   payload: DashboardPayload | null;
   onRefresh: () => Promise<void> | void;
   onUpdateApplication?: (request: ApplicationUpdateRequest) => void;
+  onNavigateToDeployments?: () => void;
 }) {
   const [selected, setSelected] = useState<Application | null>(null);
   const [deploymentConfig, setDeploymentConfig] = useState<DeploymentConfig | null>(null);
@@ -142,9 +144,11 @@ export function ApplicationManagementPanel({
           : `Update ${app.stack} from Git?\n${source}${config.gitSource.ref ? ` @ ${config.gitSource.ref}` : ""}`;
         if (!window.confirm(prompt)) return;
         setConfigBusy("");
-        setUpdatingApp(app.stack);
         gitUpdateStarted = true;
-        await updateApplicationStream({ token, name: app.stack }, (step) => setActionSteps((current) => [...current, step]));
+        // Navigate to deployments page before starting the update
+        onNavigateToDeployments?.();
+        // Run the update stream in the background without local UI
+        await updateApplicationStream({ token, name: app.stack }, () => {});
         await onRefresh();
         return;
       }
@@ -442,16 +446,6 @@ export function ApplicationManagementPanel({
   return (
     <article className="panel app-management-panel" id="section-1">
       {actionError ? <div className="storage-warnings"><span>{actionError}</span></div> : null}
-      {actionSteps.length ? (
-        <ol className="deploy-step-log application-update-log">
-          {actionSteps.filter((step) => step.name).map((step, index) => (
-            <li key={`${step.name}-${index}`} className={`step-${step.status || "ok"}`}>
-              <strong>{step.name}</strong>
-              {step.message ? <span> - {step.message}</span> : null}
-            </li>
-          ))}
-        </ol>
-      ) : null}
       <div className="application-filter-bar" aria-label={lang === "zh" ? "应用筛选" : "Application filters"}>
         <label className="application-search-field">
           <Search size={16} aria-hidden="true" />

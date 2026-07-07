@@ -99,6 +99,24 @@
   box-sizing: border-box;
 }
 
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--surface);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
 html {
   min-width: 320px;
   min-height: 100%;
@@ -226,7 +244,9 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
   border-color: var(--accent);
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--accent-soft);
 }
 
 .luma-select {
@@ -347,8 +367,9 @@ textarea:focus-visible {
 button:focus-visible,
 a:focus-visible,
 [role="button"]:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--accent-soft);
 }
 
 code,

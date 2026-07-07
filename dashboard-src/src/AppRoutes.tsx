@@ -26,6 +26,7 @@ export type AppRoutesProps = {
   updateContextNode: ReactNode;
   deployTemplateLanding: boolean;
   onNavigate: (page: NavPage) => void;
+  onNavigateToDeployments: () => void;
   onSelectNode: (node: DashboardNode) => void;
   onSelectService: (service: DashboardService) => void;
   onTerminal: (node: DashboardNode) => void;
@@ -70,6 +71,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
           onRefresh={props.onRefresh}
           onCreateApplication={props.onCreateApplication}
           onUpdateApplication={props.onUpdateApplication}
+          onNavigateToDeployments={props.onNavigateToDeployments}
         />
       );
     case "deploy":

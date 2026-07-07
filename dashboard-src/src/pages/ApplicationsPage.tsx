@@ -4,6 +4,7 @@ import { groupApplications } from "../components/applicationModel";
 import { t } from "../i18n";
 import type { DashboardPayload, Lang } from "../types";
 import { PageHeader } from "./PageHeader";
+import type { NavPage } from "../dashboardViewModel";
 
 export function ApplicationsPage({
   lang,
@@ -12,6 +13,7 @@ export function ApplicationsPage({
   onRefresh,
   onCreateApplication,
   onUpdateApplication,
+  onNavigateToDeployments,
 }: {
   lang: Lang;
   token: string;
@@ -19,6 +21,7 @@ export function ApplicationsPage({
   onRefresh: () => Promise<void> | void;
   onCreateApplication: () => void;
   onUpdateApplication: (request: ApplicationUpdateRequest) => void;
+  onNavigateToDeployments?: () => void;
 }) {
   const zh = lang === "zh";
   const applications = groupApplications(payload.services || []);
@@ -54,6 +57,7 @@ export function ApplicationsPage({
         payload={payload}
         onRefresh={onRefresh}
         onUpdateApplication={onUpdateApplication}
+        onNavigateToDeployments={onNavigateToDeployments}
       />
     </>
   );
