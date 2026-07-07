@@ -5,6 +5,7 @@ import { t } from "../i18n";
 import type { DashboardPayload, Lang } from "../types";
 import { PageHeader } from "./PageHeader";
 import type { NavPage } from "../dashboardViewModel";
+import { useSearchParams } from "../router";
 
 export function ApplicationsPage({
   lang,
@@ -23,6 +24,8 @@ export function ApplicationsPage({
   onUpdateApplication: (request: ApplicationUpdateRequest) => void;
   onNavigateToDeployments?: () => void;
 }) {
+  const searchParams = useSearchParams();
+  const selectApp = searchParams.get("select");
   const zh = lang === "zh";
   const applications = groupApplications(payload.services || []);
   const healthy = applications.filter((app) => app.status === "healthy" || app.status === "running").length;
@@ -58,6 +61,7 @@ export function ApplicationsPage({
         onRefresh={onRefresh}
         onUpdateApplication={onUpdateApplication}
         onNavigateToDeployments={onNavigateToDeployments}
+        initialSelect={selectApp}
       />
     </>
   );

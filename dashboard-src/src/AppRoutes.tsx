@@ -25,7 +25,7 @@ export type AppRoutesProps = {
   updateContext: DeployUpdateContext | null;
   updateContextNode: ReactNode;
   deployTemplateLanding: boolean;
-  onNavigate: (page: NavPage) => void;
+  onNavigate: (page: NavPage, opts?: { selectApp?: string }) => void;
   onNavigateToDeployments: () => void;
   onSelectNode: (node: DashboardNode) => void;
   onSelectService: (service: DashboardService) => void;

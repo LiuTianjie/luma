@@ -62,7 +62,7 @@ export function OverviewPage({
   lang: Lang;
   payload: DashboardPayload;
   vm: DashboardViewModel;
-  onNavigate: (page: NavPage) => void;
+  onNavigate: (page: NavPage, opts?: { selectApp?: string }) => void;
   onSelectNode: (node: DashboardNode) => void;
 }) {
   const zh = lang === "zh";
@@ -144,14 +144,28 @@ export function OverviewPage({
                 </tr>
               </thead>
               <tbody>
-                {visibleApps.length ? visibleApps.map((app) => (
-                  <tr key={app.stack}>
+                {visibleApps.length ? visibleApps.map((app) => {
+                  const openApp = () => onNavigate("applications", { selectApp: app.stack });
+                  return (
+                  <tr
+                    aria-label={`${t(lang, "details")}: ${app.stack}`}
+                    key={app.stack}
+                    onClick={openApp}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openApp();
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
                     <td><PrimaryCell title={app.stack} meta={app.services[0]?.image?.split(":").pop()} /></td>
                     <td>{app.services.length}</td>
                     <td><StatePill label={localizeState(lang, app.status)} value={app.status} /></td>
                     <td>{app.regions.join(", ") || "-"}</td>
                     <td>{app.running}/{app.desired}</td>
-                    <td>
+                    <td onClick={(e) => e.stopPropagation()}>
                       {app.domains.length ? (
                         <a href={accessHref(app.domains[0])} target="_blank" rel="noreferrer">
                           <CodeCell value={app.domains[0]} />
@@ -161,7 +175,8 @@ export function OverviewPage({
                       )}
                     </td>
                   </tr>
-                )) : (
+                  );
+                }) : (
                   <tr><td colSpan={6}>{t(lang, "noApplications")}</td></tr>
                 )}
               </tbody>

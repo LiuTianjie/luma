@@ -46,10 +46,14 @@ export function App() {
   };
 
   const navigate = useCallback(
-    (page: NavPage) => {
+    (page: NavPage, opts?: { selectApp?: string }) => {
       setUpdateRequest(null);
       if (page === "deploy") setDeployTemplateLanding(true);
-      router.navigate(ROUTE_BY_PAGE[page]);
+      let route = ROUTE_BY_PAGE[page];
+      if (opts?.selectApp) {
+        route += `?select=${encodeURIComponent(opts.selectApp)}`;
+      }
+      router.navigate(route);
     },
     [router],
   );

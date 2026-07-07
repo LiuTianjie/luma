@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import errno
 import functools
 import hashlib
 import http.client
@@ -5168,7 +5169,23 @@ def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8", temp_d
         except OSError:
             pass
         _fsync_directory(tmp.parent)
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            same_device_tmp = path.parent / f".{path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
+            try:
+                shutil.copy2(tmp, same_device_tmp)
+                with same_device_tmp.open("rb") as handle:
+                    os.fsync(handle.fileno())
+                _fsync_directory(same_device_tmp.parent)
+                os.replace(same_device_tmp, path)
+            finally:
+                try:
+                    same_device_tmp.unlink()
+                except FileNotFoundError:
+                    pass
         _fsync_directory(path.parent)
     finally:
         try:

@@ -41,19 +41,23 @@
   --red-line: rgba(255, 59, 48, 0.32);
   --blue: #007aff;
   --violet: #007aff;
-  --shadow: none;
-  --shadow-heavy: none;
-  --radius-xs: 4px;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-heavy: 0 10px 20px rgba(0, 0, 0, 0.19), 0 6px 6px rgba(0, 0, 0, 0.23);
+  --shadow-soft: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --radius-xs: 3px;
   --radius-sm: 4px;
-  --radius-md: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
   --radius-input: 6px;
   --sidebar-width: 264px;
   --topbar-height: 68px;
-  --ease-standard: linear;
-  --ease-emphasized: linear;
-  --motion-fast: 100ms;
-  --motion-standard: 150ms;
-  --motion-slow: 150ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-fast: 120ms;
+  --motion-standard: 180ms;
+  --motion-slow: 250ms;
 
   /* fixed dark surfaces for code/logs/terminal — terminals stay dark in both themes */
   --code-bg: #1a1818;
@@ -169,20 +173,27 @@ button {
   letter-spacing: 0;
   line-height: 1.1;
   cursor: pointer;
+  position: relative;
+  transform: translateY(0);
   transition:
-    border-color var(--motion-fast) var(--ease-standard),
-    background var(--motion-fast) var(--ease-standard),
-    color var(--motion-fast) var(--ease-standard);
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out);
 }
 
 button:hover:where(:not(:disabled)) {
   border-color: var(--text-muted);
   background: var(--btn-bg-hover);
+  transform: translateY(-0.5px);
 }
 
 button:active:where(:not(:disabled)) {
   border-color: var(--text-muted);
   background: var(--btn-bg-active);
+  transform: translateY(0.5px);
+  transition-duration: 60ms;
 }
 
 button:disabled {
@@ -197,6 +208,11 @@ button.ghost,
   border-color: var(--line);
   background: transparent;
   color: var(--text-muted);
+  transition:
+    border-color var(--motion-fast) var(--ease-out),
+    background var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
 }
 
 button.ghost:hover:not(:disabled),
@@ -204,6 +220,13 @@ button.ghost:hover:not(:disabled),
   border-color: var(--line-strong);
   background: var(--well);
   color: var(--text);
+  transform: translateY(-0.5px);
+}
+
+button.ghost:active:not(:disabled),
+.ghost:active:not(:disabled) {
+  transform: translateY(0.5px);
+  transition-duration: 60ms;
 }
 
 input,
@@ -391,13 +414,45 @@ pre,
   border: 0;
 }
 
+/* Enhanced interaction states */
+input:disabled,
+select:disabled,
+textarea:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: color-mix(in srgb, var(--recess) 80%, var(--well));
+}
+
+/* Clickable elements cursor */
+tbody tr,
+.application-mobile-card,
+.overview-node-card,
+.node-tile,
+.deploy-gallery-card,
+.template-feature-card,
+.build-run-row .build-run-main {
+  cursor: pointer;
+}
+
+/* Card hover enhancements */
+.deploy-gallery-card,
+.template-feature-card,
+.overview-node-card,
+.node-tile {
+  transition:
+    transform var(--motion-standard) var(--ease-out),
+    box-shadow var(--motion-standard) var(--ease-out),
+    border-color var(--motion-standard) var(--ease-out),
+    background var(--motion-standard) var(--ease-out);
+}
+
 /* Shell */
 .dashboard-shell {
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   min-height: 100vh;
   isolation: isolate;
-  transition: grid-template-columns 220ms cubic-bezier(0.2, 0, 0, 1);
+  transition: grid-template-columns var(--motion-slow) var(--ease-out);
 }
 
 .dashboard-shell.sidebar-collapsed {
@@ -1357,6 +1412,13 @@ tbody tr.is-selected {
   align-items: stretch;
 }
 
+.overview-side-stack {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 14px;
+  max-width: 520px;
+}
+
 .overview-apps-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1413,12 +1475,6 @@ tbody tr.is-selected {
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
-}
-
-.overview-side-stack {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 14px;
 }
 
 @media (max-width: 1360px) {
@@ -1515,6 +1571,12 @@ tbody tr.is-selected {
   font-style: normal;
 }
 
+.risk-queue-row em {
+  text-align: right;
+  min-width: 48px;
+  font-variant-numeric: tabular-nums;
+}
+
 .risk-queue-row small {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1544,6 +1606,8 @@ tbody tr.is-selected {
 .overview-node-card:hover:not(:disabled) {
   border-color: var(--line-strong);
   background: var(--well);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-soft);
 }
 
 .overview-node-title {
@@ -2082,11 +2146,18 @@ tbody tr.is-selected {
   border-radius: var(--radius-md);
   background: var(--surface);
   cursor: pointer;
-  transition: border-color var(--motion-fast) var(--ease-standard);
+  transition:
+    border-color var(--motion-standard) var(--ease-out),
+    transform var(--motion-standard) var(--ease-out),
+    box-shadow var(--motion-standard) var(--ease-out),
+    background var(--motion-standard) var(--ease-out);
 }
 
 .node-tile:hover {
   border-color: var(--line-strong);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-soft);
+  background: var(--well);
 }
 
 .node-tile.good {
@@ -3270,7 +3341,11 @@ tbody tr.is-selected {
   padding: 16px;
   overflow: hidden;
   cursor: pointer;
-  transition: border-color var(--motion-fast) var(--ease-standard);
+  transition:
+    border-color var(--motion-standard) var(--ease-out),
+    transform var(--motion-standard) var(--ease-out),
+    box-shadow var(--motion-standard) var(--ease-out),
+    background var(--motion-standard) var(--ease-out);
 }
 
 .deploy-gallery-card:hover,
@@ -3282,6 +3357,8 @@ tbody tr.is-selected {
   background: var(--surface);
   color: var(--text);
   border-color: color-mix(in srgb, var(--template-accent, #007aff) 45%, var(--line));
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-soft);
 }
 
 .deploy-gallery-card:hover,
@@ -5078,6 +5155,12 @@ dd {
 
 @keyframes luma-spin {
   to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
 }
 
 .deploy-step-log {

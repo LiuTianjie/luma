@@ -1,4 +1,5 @@
 import base64
+import errno
 import io
 import json
 import os
@@ -4756,6 +4757,67 @@ class ControlApiTests(unittest.TestCase):
                 self.assertTrue(replaced_sources)
                 self.assertNotEqual(replaced_sources[0].parent, routes_root)
                 self.assertNotIn(routes_root, replaced_sources[0].parents)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_deployment_route_write_falls_back_when_staging_crosses_devices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "blg": {
+                        "name": "blg",
+                        "region": "home",
+                        "nodeId": "node-blg",
+                        "tailscaleIP": "100.64.0.3",
+                        "labels": {"luma.node.id": "node-blg", "luma.node.name": "blg", "region": "home"},
+                    }
+                }
+                save_state(state)
+                routes_root = root / "routes"
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks"), "routesRoot": str(routes_root)}}),
+                    encoding="utf-8",
+                )
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "home",
+                        "node": "blg",
+                        "exposure": "tailscale-relay",
+                        "domain": "api.example.com",
+                        "port": 80,
+                        "publishPort": 18080,
+                    }
+                )
+                route_target = routes_root / "api.yml"
+                real_replace = os.replace
+                exdev_raised = False
+
+                def replace_with_cross_device_once(src, dst):
+                    nonlocal exdev_raised
+                    if Path(dst) == route_target and not exdev_raised:
+                        exdev_raised = True
+                        raise OSError(errno.EXDEV, "Invalid cross-device link")
+                    return real_replace(src, dst)
+
+                with patch("luma.control.server.os.replace", side_effect=replace_with_cross_device_once), patch(
+                    "luma.control.server.resolve_service_image", side_effect=lambda _config, service, **_kwargs: (service, {})
+                ), patch("luma.control.server.sync_dns", return_value="DNS skipped"), patch(
+                    "luma.control.server.deploy_to_nomad", return_value="Nomad job deployed"
+                ), patch(
+                    "luma.control.server._refresh_nomad_cni_hostports_for_job",
+                    return_value={"nodes": ["blg"], "results": [], "skipped": []},
+                ), patch("luma.control.server._probe_public_route", return_value="Public route reachable"):
+                    handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
+
+                self.assertTrue(exdev_raised)
+                self.assertIn("http://100.64.0.3:18080", route_target.read_text(encoding="utf-8"))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

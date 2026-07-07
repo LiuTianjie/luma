@@ -72,6 +72,7 @@ export function ApplicationManagementPanel({
   onRefresh,
   onUpdateApplication,
   onNavigateToDeployments,
+  initialSelect,
 }: {
   lang: Lang;
   token: string;
@@ -79,8 +80,15 @@ export function ApplicationManagementPanel({
   onRefresh: () => Promise<void> | void;
   onUpdateApplication?: (request: ApplicationUpdateRequest) => void;
   onNavigateToDeployments?: () => void;
+  initialSelect?: string | null;
 }) {
-  const [selected, setSelected] = useState<Application | null>(null);
+  const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
+  const [selected, setSelected] = useState<Application | null>(() => {
+    if (initialSelect) {
+      return applications.find((app) => app.stack === initialSelect) || null;
+    }
+    return null;
+  });
   const [deploymentConfig, setDeploymentConfig] = useState<DeploymentConfig | null>(null);
   const [deploymentConfigFor, setDeploymentConfigFor] = useState("");
   const [configTab, setConfigTab] = useState<ConfigTab>("manifest");
@@ -92,7 +100,6 @@ export function ApplicationManagementPanel({
   const [rollbackState, setRollbackState] = useState<RollbackState | null>(null);
   const [logsTarget, setLogsTarget] = useState<LogsTarget | null>(null);
   const [filters, setFilters] = useState<ApplicationFilterState>({ query: "", status: "all", region: "all" });
-  const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
   const statusOptions = useMemo(() => [...new Set(applications.map((app) => app.status).filter(Boolean))].sort(), [applications]);
   const regionOptions = useMemo(() => [...new Set(applications.flatMap((app) => app.regions).filter(Boolean))].sort(), [applications]);
   const filteredApplications = useMemo(() => {

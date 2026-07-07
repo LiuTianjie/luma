@@ -63,9 +63,25 @@ export function Topbar({
             </button>
           ))}
         </div>
-        <div className="lang-switch" aria-label="Language">
-          <button className={lang === "zh" ? "active" : ""} onClick={() => onLangChange("zh")} type="button">中文</button>
-          <button className={lang === "en" ? "active" : ""} onClick={() => onLangChange("en")} type="button">EN</button>
+        <div className="lang-switch" role="group" aria-label={lang === "zh" ? "语言切换" : "Language switch"}>
+          <button
+            className={lang === "zh" ? "active" : ""}
+            onClick={() => onLangChange("zh")}
+            type="button"
+            aria-pressed={lang === "zh"}
+            aria-label={lang === "zh" ? "切换到中文" : "Switch to Chinese"}
+          >
+            中文
+          </button>
+          <button
+            className={lang === "en" ? "active" : ""}
+            onClick={() => onLangChange("en")}
+            type="button"
+            aria-pressed={lang === "en"}
+            aria-label={lang === "zh" ? "切换到英文" : "Switch to English"}
+          >
+            EN
+          </button>
         </div>
         <button type="button" onClick={onRefresh}>
           <RefreshCw size={16} aria-hidden="true" />
