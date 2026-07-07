@@ -5174,7 +5174,9 @@ def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8", temp_d
         except OSError as exc:
             if exc.errno != errno.EXDEV:
                 raise
-            same_device_tmp = path.parent / f".{path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
+            fallback_dir = path.parent / ".luma-route-staging"
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            same_device_tmp = fallback_dir / f".{path.stem}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
             try:
                 shutil.copy2(tmp, same_device_tmp)
                 with same_device_tmp.open("rb") as handle:

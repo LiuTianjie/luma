@@ -4798,12 +4798,15 @@ class ControlApiTests(unittest.TestCase):
                 route_target = routes_root / "api.yml"
                 real_replace = os.replace
                 exdev_raised = False
+                fallback_sources: list[Path] = []
 
                 def replace_with_cross_device_once(src, dst):
                     nonlocal exdev_raised
                     if Path(dst) == route_target and not exdev_raised:
                         exdev_raised = True
                         raise OSError(errno.EXDEV, "Invalid cross-device link")
+                    if Path(dst) == route_target:
+                        fallback_sources.append(Path(src))
                     return real_replace(src, dst)
 
                 with patch("luma.control.server.os.replace", side_effect=replace_with_cross_device_once), patch(
@@ -4817,6 +4820,10 @@ class ControlApiTests(unittest.TestCase):
                     handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
 
                 self.assertTrue(exdev_raised)
+                self.assertTrue(fallback_sources)
+                self.assertEqual(fallback_sources[-1].parent, routes_root / ".luma-route-staging")
+                self.assertEqual(fallback_sources[-1].suffix, ".tmp")
+                self.assertFalse(list((routes_root / ".luma-route-staging").glob("*.tmp")))
                 self.assertIn("http://100.64.0.3:18080", route_target.read_text(encoding="utf-8"))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
