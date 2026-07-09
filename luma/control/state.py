@@ -26,7 +26,16 @@ def load_state(path: Path | None = None) -> Dict[str, Any]:
     path = path or state_path()
     if not path.exists():
         raise LumaError(f"control state not initialized: {path}")
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise LumaError(f"cannot read control state {path}: {exc}") from exc
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise LumaError(
+            f"control state {path} is corrupt (invalid JSON): {exc}"
+        ) from exc
     if not isinstance(data, dict):
         raise LumaError(f"invalid control state: {path}")
     return data

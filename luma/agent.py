@@ -551,6 +551,7 @@ class _ContainerStatsSampler:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._consecutive_failures = 0
 
     def start(self) -> None:
         if self._thread:
@@ -579,8 +580,26 @@ class _ContainerStatsSampler:
     def _sample_once(self) -> None:
         try:
             items = self._stats_func()
-        except Exception:
+        except Exception as exc:
+            # Surface persistent sampling failures instead of swallowing them
+            # silently — log the first failure and periodically thereafter so a
+            # broken docker/stats path is diagnosable without flooding stderr.
+            self._consecutive_failures += 1
+            if self._consecutive_failures == 1 or self._consecutive_failures % 20 == 0:
+                print(
+                    f"luma: node agent container stats sampling failed "
+                    f"({self._consecutive_failures}x): {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return
+        if self._consecutive_failures:
+            print(
+                "luma: node agent container stats sampling recovered",
+                file=sys.stderr,
+                flush=True,
+            )
+            self._consecutive_failures = 0
         with self._lock:
             self._items = [dict(item) for item in items if isinstance(item, dict)]
 
@@ -1191,7 +1210,14 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                 container_stats = stats_sampler.snapshot() if stats_sampler else []
             now = time.time()
             if once or now - diagnostics_at >= max(diagnostics_interval, 1):
-                diagnostics = _agent_node_diagnostics()
+                try:
+                    diagnostics = _agent_node_diagnostics()
+                except Exception as exc:
+                    # Diagnostics are best-effort telemetry; a failure here must
+                    # never crash the poll loop and take the node agent offline.
+                    if once:
+                        raise
+                    print(f"luma: node agent diagnostics failed: {exc}", file=sys.stderr, flush=True)
                 diagnostics_at = now
             try:
                 task = client.lease_agent_task(
@@ -1234,8 +1260,25 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
 
     heartbeat_stop, heartbeat_thread = _start_agent_task_heartbeat(client, node_name=node_name, node_id=node_id, config_path=config_path)
     try:
-        result = execute_agent_task(task, config_path=config_path, progress=progress)
-        client.complete_agent_task(
+        # Keep task execution and result reporting in separate try scopes: a
+        # network error while reporting SUCCESS must not be caught and inverted
+        # into a "failed" report after the host mutation already happened.
+        try:
+            result = execute_agent_task(task, config_path=config_path, progress=progress)
+        except Exception as exc:
+            _report_agent_task_result(
+                client,
+                task_id=task_id,
+                node_name=node_name,
+                node_id=node_id,
+                status="failed",
+                message=str(exc),
+                result={},
+            )
+            return False
+        restart = bool(result.get("restartAgent"))
+        _report_agent_task_result(
+            client,
             task_id=task_id,
             node_name=node_name,
             node_id=node_id,
@@ -1243,19 +1286,39 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
             message=str(result.get("message") or "ok"),
             result=result,
         )
-        return bool(result.get("restartAgent"))
-    except Exception as exc:
+        return restart
+    finally:
+        _stop_agent_task_heartbeat(heartbeat_stop, heartbeat_thread)
+
+
+def _report_agent_task_result(
+    client: Any,
+    *,
+    task_id: str,
+    node_name: str,
+    node_id: str,
+    status: str,
+    message: str,
+    result: Dict[str, Any],
+) -> None:
+    """Report a task's terminal result to Control, guarding the call so a
+    reporting failure (network drop, Control restart) is logged rather than
+    escaping and crashing the node agent's poll loop."""
+    try:
         client.complete_agent_task(
             task_id=task_id,
             node_name=node_name,
             node_id=node_id,
-            status="failed",
-            message=str(exc),
-            result={},
+            status=status,
+            message=message,
+            result=result,
         )
-        return False
-    finally:
-        _stop_agent_task_heartbeat(heartbeat_stop, heartbeat_thread)
+    except Exception as exc:
+        print(
+            f"luma: node agent failed to report task {task_id} result ({status}): {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _start_agent_task_heartbeat(client: Any, *, node_name: str, node_id: str, config_path: Path) -> tuple[threading.Event, threading.Thread]:
@@ -1382,6 +1445,8 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
     sessions: dict[str, _PtySession] = {}
     outbound: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
     loop = asyncio.get_running_loop()
+    backoff = 1.0
+    max_backoff = 60.0
 
     try:
         while True:
@@ -1394,6 +1459,7 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
                     insecure=bool(config.get("insecure")),
                     resolve_ip=str(config.get("resolveIp") or "") or None,
                 ) as websocket:
+                    backoff = 1.0  # connection established; reset reconnect backoff
                     await websocket.send(json.dumps({"type": "auth", "token": token}, separators=(",", ":")))
                     send_task = asyncio.create_task(_terminal_sender(websocket, outbound))
                     try:
@@ -1409,11 +1475,19 @@ async def _run_terminal_supervisor(config_path: Path) -> None:
                         for session in list(sessions.values()):
                             session.close()
                         sessions.clear()
-            except Exception:
+            except Exception as exc:
                 for session in list(sessions.values()):
                     session.close()
                 sessions.clear()
-                await asyncio.sleep(3)
+                # Log the cause instead of silently swallowing it, and back off
+                # exponentially so a persistently-down Control isn't hammered.
+                print(
+                    f"luma: terminal supervisor reconnecting after error ({exc}); retry in {backoff:.0f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
     finally:
         for session in list(sessions.values()):
             session.close()

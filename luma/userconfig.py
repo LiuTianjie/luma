@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable
 
 from .errors import LumaError
+from .io import atomic_write_text
 
 
 DEFAULT_CONFIG_PATH = Path.home() / ".luma.config.json"
@@ -140,11 +141,9 @@ def write_user_config(env: Dict[str, str], path: Path | None = None) -> Path:
         "version": 1,
         "env": dict(sorted(merged_env.items())),
     }
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except PermissionError:
-        pass
+    atomic_write_text(
+        path, json.dumps(data, indent=2, sort_keys=True) + "\n", mode=0o600
+    )
     return path
 
 

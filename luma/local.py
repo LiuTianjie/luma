@@ -34,7 +34,13 @@ class LocalExecutor:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            stdout, _ = process.communicate()
+            # Bound the post-kill drain: an orphaned grandchild that inherited
+            # the stdout pipe can otherwise keep communicate() blocked forever
+            # even after the direct child was killed.
+            try:
+                stdout, _ = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                stdout = ""
             output = _text_output(exc.stdout) + _text_output(stdout)
             message = f"command timed out after {timeout}s"
             return LocalResult(code=124, output=(str(output) + "\n" + message).strip())
@@ -82,10 +88,11 @@ class LocalExecutor:
         return f"Copied {source} -> {target}"
 
     def write_secret(self, content: str, remote_path: str, *, mode: str = "600") -> str:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fh:
-            fh.write(content)
-            local = Path(fh.name)
+        fh = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
+        local = Path(fh.name)
         try:
+            with fh:
+                fh.write(content)
             tmp_path = f"/tmp/luma-secret-{os.getpid()}"
             self.upload(local, tmp_path)
             self.sudo(

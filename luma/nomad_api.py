@@ -12,6 +12,7 @@ its own.
 """
 
 import json
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -488,6 +489,12 @@ def _q(value: str) -> str:
 
 
 class NomadApi:
+    # Bound each request by intent rather than a single 10-minute timeout: a
+    # stalled read-only status/dashboard poll must not block a request handler
+    # for 10 minutes, while write/deploy operations still get a generous budget.
+    READ_TIMEOUT = 30
+    WRITE_TIMEOUT = 120
+
     def __init__(self, api_url: str, *, token: str = ""):
         self.api_url = api_url.rstrip("/")
         self.token = token
@@ -497,17 +504,29 @@ class NomadApi:
         method: str,
         path: str,
         body: Dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
     ) -> Any:
-        raw = self.request_text(method, path, body)
+        raw = self.request_text(method, path, body, timeout=timeout)
         if not raw:
             return None
-        return json.loads(raw)
+        try:
+            return json.loads(raw)
+        except ValueError as exc:
+            raise LumaError(
+                f"Nomad API {method} {path} returned a non-JSON response: {exc}"
+            ) from exc
+
+    def _default_timeout(self, method: str) -> float:
+        return self.READ_TIMEOUT if method.upper() == "GET" else self.WRITE_TIMEOUT
 
     def request_text(
         self,
         method: str,
         path: str,
         body: Dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
     ) -> str:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         headers = {"Accept": "application/json"}
@@ -516,12 +535,18 @@ class NomadApi:
         if self.token:
             headers["X-Nomad-Token"] = self.token
         req = urllib.request.Request(self.api_url + path, data=data, method=method, headers=headers)
+        effective_timeout = timeout if timeout is not None else self._default_timeout(method)
         try:
-            with urllib.request.urlopen(req, timeout=600) as resp:
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise LumaError(f"Nomad API error {exc.code}: {detail}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise LumaError(
+                f"Nomad API {method} {path} timed out after {effective_timeout:g}s "
+                f"at {self.api_url}. Check that the Nomad agent is responsive."
+            ) from exc
         except urllib.error.URLError as exc:
             raise LumaError(
                 f"Nomad API unavailable at {self.api_url}: {exc.reason}. "

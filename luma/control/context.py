@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from ..errors import LumaError
+from ..io import atomic_write_text
 
 
 def config_home() -> Path:
@@ -45,13 +46,10 @@ def save_context(
     if resolve_ip:
         data["resolveIp"] = resolve_ip
     path = _context_path(cluster_id)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except PermissionError:
-        pass
-    current_path().parent.mkdir(parents=True, exist_ok=True)
-    current_path().write_text(cluster_id + "\n", encoding="utf-8")
+    atomic_write_text(
+        path, json.dumps(data, indent=2, sort_keys=True) + "\n", mode=0o600
+    )
+    atomic_write_text(current_path(), cluster_id + "\n")
 
 
 def list_contexts() -> List[Dict[str, Any]]:
@@ -107,5 +105,4 @@ def use_context(cluster_id: str) -> None:
     path = _context_path(cluster_id)
     if not path.exists():
         raise LumaError(f"unknown context: {cluster_id}")
-    current_path().parent.mkdir(parents=True, exist_ok=True)
-    current_path().write_text(cluster_id + "\n", encoding="utf-8")
+    atomic_write_text(current_path(), cluster_id + "\n")

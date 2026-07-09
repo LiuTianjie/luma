@@ -14,11 +14,15 @@ VERSION_FILES = [
 ]
 VERSION_REFERENCE_FILES = [
     ROOT / "README.md",
+    ROOT / "README.zh-CN.md",
     ROOT / "docs" / "luma-cli.md",
     ROOT / "docs" / "release.md",
     ROOT / "docs" / "how-to-use-luma.md",
+    ROOT / "docs" / "compose-storage.md",
     ROOT / "luma" / "assets" / "README.md",
     ROOT / "luma" / "cli.py",
+    ROOT / "skills" / "luma-deployment-yaml" / "SKILL.md",
+    ROOT / "skills" / "luma-deployment-yaml" / "references" / "manifest-reference.md",
 ]
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 VERSION_REFERENCE_PATTERNS = [

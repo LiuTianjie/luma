@@ -5507,6 +5507,18 @@ def _deploy_step(steps: list[dict[str, str]], name: str, action: Any, *, progres
         steps.append(step)
         _emit_progress(progress, step)
         raise LumaError(f"{name} failed: {exc}") from exc
+    except Exception as exc:
+        # A non-LumaError (socket timeout, ConnectionError from sync_dns/Nomad,
+        # etc.) previously bypassed step recording entirely, so the step list and
+        # NDJSON stream lost which step failed. Record the failing step and emit
+        # the event, but re-raise the ORIGINAL exception unchanged: the deploy
+        # wrapper keys off the exception type to drive the record to
+        # "failed_partial" (vs a LumaError's terminal handling), so wrapping it
+        # here would strand the deploy record.
+        step = {"name": name, "status": "fail", "message": f"{type(exc).__name__}: {exc}"}
+        steps.append(step)
+        _emit_progress(progress, step)
+        raise
     message = _step_message(result)
     step = {"name": name, "status": "ok", "message": message}
     steps.append(step)
@@ -8516,7 +8528,11 @@ def _asgi_stream_deployment(token: str, body: Dict[str, Any], *, compose: bool) 
                 result = handler(token, body, progress=emit)
                 emit({"status": "done", "result": result})
             except LumaError as exc:
-                emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=_request_id(), include_error=False)})
+                request_id = _request_id()
+                # Log server-side too: a client-only failure event leaves no
+                # trace in the manager logs to correlate a failed deploy with.
+                print(f"requestId={request_id} stream deployment failed: {exc}", file=sys.stderr, flush=True)
+                emit({"status": "fail", "message": str(exc), **_error_payload("luma_error", str(exc), request_id=request_id, include_error=False)})
             except Exception as exc:
                 request_id = _request_id()
                 print(f"requestId={request_id} stream deployment internal error: {exc}", file=sys.stderr, flush=True)

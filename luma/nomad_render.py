@@ -332,7 +332,7 @@ def render_compose_job(
         cpus_val = limits.get("cpus") or reservations.get("cpus")
         mem_val = limits.get("memory") or reservations.get("memory")
         if cpus_val is not None:
-            resources["CPU"] = max(1, round(float(cpus_val) * 1000))
+            resources["CPU"] = _cpu_mhz(cpus_val)
         if mem_val is not None:
             resources["MemoryMB"] = _memory_mb(mem_val)
             if limits.get("memory") and reservations.get("memory"):
@@ -907,7 +907,7 @@ def _resources(service: ServiceSpec) -> Dict[str, Any]:
     cpus_val = limits.get("cpus") or reservations.get("cpus")
     mem_val = limits.get("memory") or reservations.get("memory")
     if cpus_val is not None:
-        cpu = max(1, round(float(cpus_val) * 1000))
+        cpu = _cpu_mhz(cpus_val)
     if mem_val is not None:
         mem = _memory_mb(mem_val)
     out = {"CPU": cpu, "MemoryMB": mem}
@@ -916,6 +916,18 @@ def _resources(service: ServiceSpec) -> Dict[str, Any]:
         out["MemoryMaxMB"] = _memory_mb(limits["memory"])
         out["MemoryMB"] = _memory_mb(reservations["memory"])
     return out
+
+
+def _cpu_mhz(value: Any) -> int:
+    try:
+        cpus = float(value)
+    except (TypeError, ValueError) as exc:
+        raise LumaError(
+            f"invalid resources.cpus value {value!r}: expected a number of CPU cores (e.g. 0.5, 2)"
+        ) from exc
+    if cpus <= 0:
+        raise LumaError(f"invalid resources.cpus value {value!r}: must be greater than 0")
+    return max(1, round(cpus * 1000))
 
 
 def _memory_mb(value: Any) -> int:

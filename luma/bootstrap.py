@@ -51,8 +51,11 @@ def _step(results: list[str], emit: Progress | None, title: str, action: Callabl
     _emit(emit, f"[start] {title}")
     try:
         output = action()
-    except Exception:
-        _emit(emit, f"[fail] {title}")
+    except Exception as exc:
+        # Emit the cause, not just the step title: otherwise the deploy event
+        # stream records that a step failed but gives no way to tell why.
+        detail = str(exc).strip()
+        _emit(emit, f"[fail] {title}" + (f": {detail}" if detail else ""))
         if fix:
             _emit(emit, f"  Fix: {fix}")
         raise
@@ -1475,12 +1478,18 @@ def _configure_docker_proxy(remote: Executor) -> str:
 
 
 def _refresh_core_services(remote: Executor) -> str:
-    remote.run(
-        "set -euo pipefail; "
+    # Restart each running core job but don't abort the whole refresh if one
+    # fails; instead print the failed job names so the caller can surface them
+    # rather than silently reporting success on a failed restart.
+    output = remote.run(
         "for job in traefik egress luma-control; do "
-        "nomad job status \"$job\" >/dev/null 2>&1 && nomad job restart -yes \"$job\" >/dev/null || true; "
+        "nomad job status \"$job\" >/dev/null 2>&1 || continue; "
+        "nomad job restart -yes \"$job\" >/dev/null 2>&1 || echo \"$job\"; "
         "done"
     )
+    failed = [line.strip() for line in output.splitlines() if line.strip()]
+    if failed:
+        return "Core services refresh failed for: " + ", ".join(failed)
     return "Core services refresh requested"
 
 

@@ -28,7 +28,7 @@ class ControlClient:
 
     def request(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Dict[str, Any]:
         with self._open(method, path, body, timeout=timeout) as response:
-            raw = response.read().decode("utf-8")
+            raw = response.read().decode("utf-8", errors="replace")
         if not raw:
             return {}
         try:
@@ -45,8 +45,19 @@ class ControlClient:
     def stream(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Iterator[Dict[str, Any]]:
         response = self._open(method, path, body, timeout=timeout)
         with response:
-            for raw_line in response:
-                line = raw_line.decode("utf-8").strip()
+            line_iter = iter(response)
+            while True:
+                try:
+                    raw_line = next(line_iter)
+                except StopIteration:
+                    break
+                except (TimeoutError, socket.timeout) as exc:
+                    raise LumaError(_timeout_message(path, timeout)) from exc
+                except (urllib.error.URLError, OSError) as exc:
+                    # A mid-stream connection drop / read timeout must surface as
+                    # a clean LumaError, not a raw traceback the CLI can't format.
+                    raise LumaError(f"control API stream interrupted: {exc}") from exc
+                line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
                 try:

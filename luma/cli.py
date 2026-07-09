@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.159 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.160 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1863,7 +1863,13 @@ def _existing_control_state() -> Dict[str, object] | None:
     raw = result.output.strip()
     start = raw.find("{")
     end = raw.rfind("}")
-    data = json.loads(raw[start : end + 1] if start >= 0 and end >= start else raw)
+    try:
+        data = json.loads(raw[start : end + 1] if start >= 0 and end >= start else raw)
+    except ValueError as exc:
+        raise LumaError(
+            f"control state {path} is corrupt (invalid JSON): {exc}. "
+            "Pass --domain <control-domain> to proceed."
+        ) from exc
     return data if isinstance(data, dict) else None
 
 

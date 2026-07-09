@@ -11,6 +11,33 @@ from .config import NodeConfig
 from .errors import LumaError
 
 
+# ssh exits 255 specifically for transport/connection failures (unreachable
+# host, auth rejected, host-key mismatch) as opposed to the remote command's
+# own non-zero exit — surfacing that distinction makes failures diagnosable.
+SSH_TRANSPORT_EXIT = 255
+
+# Guard rails so a stalled connection or a hung remote command can never block
+# the CLI indefinitely. ConnectTimeout bounds the TCP/handshake phase;
+# DEFAULT_REMOTE_TIMEOUT bounds the whole command.
+SSH_CONNECT_TIMEOUT = 10
+DEFAULT_REMOTE_TIMEOUT = 900
+
+
+def _ssh_base_args() -> list[str]:
+    # BatchMode=yes: never block on an interactive password/passphrase prompt.
+    # -n: redirect stdin from /dev/null so a prompt can't hang on the local tty
+    #     (the sudo -S password path pipes the password inside the remote shell,
+    #     not over ssh stdin, so this is safe).
+    return [
+        "ssh",
+        "-n",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
+    ]
+
+
 @dataclass(frozen=True)
 class RemoteResult:
     code: int
@@ -21,19 +48,32 @@ class RemoteExecutor:
     def __init__(self, node: NodeConfig):
         self.node = node
 
-    def run_result(self, command: str) -> RemoteResult:
-        result = subprocess.run(
-            ["ssh", self.node.host, f"bash -lc {shlex.quote(command)}"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+    def run_result(self, command: str, *, timeout: int | None = DEFAULT_REMOTE_TIMEOUT) -> RemoteResult:
+        try:
+            result = subprocess.run(
+                [*_ssh_base_args(), self.node.host, f"bash -lc {shlex.quote(command)}"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = exc.output if isinstance(exc.output, str) else ""
+            raise LumaError(
+                f"remote command on {self.node.name} timed out after {timeout}s"
+                + (f":\n{output.strip()}" if output.strip() else "")
+            ) from exc
         return RemoteResult(code=result.returncode, output=result.stdout)
 
-    def run(self, command: str, *, check: bool = True) -> str:
-        result = self.run_result(command)
+    def run(self, command: str, *, check: bool = True, timeout: int | None = DEFAULT_REMOTE_TIMEOUT) -> str:
+        result = self.run_result(command, timeout=timeout)
         if check and result.code != 0:
+            if result.code == SSH_TRANSPORT_EXIT:
+                raise LumaError(
+                    f"ssh connection to {self.node.name} ({self.node.host}) failed "
+                    f"(unreachable, auth rejected, or host-key issue):\n{result.output.strip()}"
+                )
             raise LumaError(f"remote command failed on {self.node.name}:\n{result.output.strip()}")
         return result.output
 
@@ -60,24 +100,42 @@ class RemoteExecutor:
             remote_command = f"sudo -n bash -lc {quoted}"
         return self.run_result(remote_command)
 
-    def upload(self, local: Path, remote_path: str) -> str:
+    def upload(self, local: Path, remote_path: str, *, timeout: int | None = DEFAULT_REMOTE_TIMEOUT) -> str:
         local = local.resolve()
-        result = subprocess.run(
-            ["scp", "-r", str(local), f"{self.node.host}:{remote_path}"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "scp",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
+                    "-r",
+                    str(local),
+                    f"{self.node.host}:{remote_path}",
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = exc.output if isinstance(exc.output, str) else ""
+            raise LumaError(
+                f"upload to {self.node.name} timed out after {timeout}s"
+                + (f":\n{output.strip()}" if output.strip() else "")
+            ) from exc
         if result.returncode != 0:
             raise LumaError(f"upload failed to {self.node.name}:\n{result.stdout.strip()}")
         return f"Uploaded {local} -> {self.node.name}:{remote_path}"
 
     def write_secret(self, content: str, remote_path: str, *, mode: str = "600") -> str:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fh:
-            fh.write(content)
-            local = Path(fh.name)
+        fh = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
+        local = Path(fh.name)
         try:
+            with fh:
+                fh.write(content)
             tmp_remote = f"/tmp/luma-secret-{os.getpid()}"
             self.upload(local, tmp_remote)
             self.sudo(

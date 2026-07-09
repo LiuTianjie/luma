@@ -330,6 +330,23 @@ resources:
         self.assertEqual(res["MemoryMB"], 128)
         self.assertEqual(res["MemoryMaxMB"], 256)
 
+    def test_non_numeric_cpus_raises_named_error(self):
+        with self.assertRaises(LumaError) as ctx:
+            self.render(
+                """
+name: app
+image: ghcr.io/acme/app:latest
+region: cn
+exposure: none
+resources:
+  limits:
+    cpus: "half"
+"""
+            )
+        # The error must name the offending field rather than surfacing a raw
+        # ValueError from float("half").
+        self.assertIn("cpus", str(ctx.exception))
+
     def test_cloudflare_tunnel_adds_sidecar_task(self):
         job = self.render(
             """
