@@ -106,6 +106,18 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn('license = "MIT"', pyproject)
         self.assertIn('license-files = ["LICENSE"]', pyproject)
 
+    def test_python39_contract_does_not_use_dataclass_slots(self):
+        root = Path(__file__).resolve().parents[1]
+        pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('requires-python = ">=3.9"', pyproject)
+
+        incompatible = []
+        for path in sorted((root / "luma").rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            if re.search(r"@dataclass\([^)]*\bslots\s*=", source):
+                incompatible.append(str(path.relative_to(root)))
+        self.assertEqual(incompatible, [], "dataclass slots require Python 3.10+: " + ", ".join(incompatible))
+
     def test_asset_pyproject_keeps_control_runtime_dependencies(self):
         root = Path(__file__).resolve().parents[1]
         asset_pyproject = (root / "luma" / "assets" / "pyproject.toml").read_text(encoding="utf-8")
@@ -962,6 +974,9 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("set +e", installer)
         self.assertIn('return "$code"', installer)
         self.assertIn("package install failed; using source checkout with existing venv dependencies", installer)
+        self.assertIn("prune_stale_luma_metadata()", installer)
+        self.assertIn('luma_infra-*.dist-info', installer)
+        self.assertIn('expected="luma_infra-${source_version}.dist-info"', installer)
         self.assertIn('PYTHONPATH="$SOURCE_DIR\\${PYTHONPATH:+:\\$PYTHONPATH}"', installer)
         self.assertIn('exec "$VENV_DIR/bin/python" -m luma.cli', installer)
 

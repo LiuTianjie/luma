@@ -341,6 +341,16 @@ pip_install_luma() {
   return "$code"
 }
 
+prune_stale_luma_metadata() {
+  source_version="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$SOURCE_DIR/luma/__init__.py" | head -n 1)"
+  [ -n "$source_version" ] || return 0
+  expected="luma_infra-${source_version}.dist-info"
+  for metadata in "$VENV_DIR"/lib/python*/site-packages/luma_infra-*.dist-info; do
+    [ -d "$metadata" ] || continue
+    [ "$(basename "$metadata")" = "$expected" ] || rm -rf "$metadata"
+  done
+}
+
 INSTALL_SUCCEEDED=0
 if [ -n "$INSTALL_MODE" ]; then
   if pip_install_luma "$INSTALL_MODE" "$SOURCE_DIR"; then
@@ -353,6 +363,8 @@ else
 fi
 if [ "$INSTALL_SUCCEEDED" -eq 0 ]; then
   echo "[warn] package install failed; using source checkout with existing venv dependencies"
+else
+  prune_stale_luma_metadata
 fi
 
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then

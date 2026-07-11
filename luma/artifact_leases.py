@@ -29,7 +29,7 @@ _ARTIFACTS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ArtifactLeaseBinding:
     principal_ref: str
     tenant_ref: str
@@ -76,7 +76,7 @@ class ArtifactLeaseBinding:
         }
 
 
-@dataclass(slots=True)
+@dataclass
 class ArtifactLeaseRecord:
     lease_id: str
     binding: ArtifactLeaseBinding

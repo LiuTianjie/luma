@@ -76,7 +76,7 @@ _PUBLIC_ARTIFACT_MEDIA_TYPES = {
 _BUILDER_ANALYZE_CLEANUP_HEALTHY = True
 
 
-@dataclass(slots=True)
+@dataclass
 class BuilderArtifactExport:
     stream: Any = field(repr=False)
     name: str
@@ -1341,7 +1341,7 @@ def _run_analyzer_container(
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _PathOwnershipState:
     path: Path
     uid: int

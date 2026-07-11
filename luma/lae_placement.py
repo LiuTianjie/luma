@@ -39,7 +39,7 @@ class PlacementFailure(Exception):
         super().__init__(reason)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class _Candidate:
     node_id: str
     registered_name: str
@@ -48,7 +48,7 @@ class _Candidate:
     failure_domain: str = ""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PlacementDecision:
     region: str
     requested_cpu_mhz: int

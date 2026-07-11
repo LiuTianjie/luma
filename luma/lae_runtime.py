@@ -142,7 +142,7 @@ def canonical_hash(value: Any) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RuntimeBinding:
     tenant_ref: str
     application_ref: str
@@ -742,7 +742,7 @@ def validate_lifecycle_body(action: str, body: Any) -> dict[str, Any]:
     return result
 
 
-@dataclass(slots=True)
+@dataclass
 class RuntimeSecretLease:
     secret_ref: str
     principal_ref: str
