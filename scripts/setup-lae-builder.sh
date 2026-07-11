@@ -45,6 +45,7 @@ readonly AUDIT_LOG="${AUDIT_DIR}/lae-builder-setup.log"
 readonly MANIFEST_FILE="${BUILDER_ROOT}/toolchain-manifest.env"
 readonly ROOTLESS_DOCKER_REGISTRY_STATE="${BUILDER_ROOT}/rootless-docker-managed-registries.json"
 readonly ROOTLESS_DOCKER_TOOL_ROOT="/usr/local/lib/luma-builder/docker-rootless-tools"
+readonly ROOTLESS_DOCKER_SOCKET_HELPER="/usr/local/lib/luma-builder/normalize-docker-socket"
 readonly BUILDKIT_INSTALL_ROOT="/usr/local/lib/luma-builder/buildkit-${BUILDKIT_VERSION}"
 readonly BUILDKIT_USER_UNIT="luma-buildkit.service"
 readonly TRIVY_DB_REPOSITORY="ghcr.io/aquasecurity/trivy-db:2"
@@ -383,6 +384,40 @@ wait_for_socket() {
   die "${label} socket did not become ready: ${socket_path}"
 }
 
+configure_rootless_docker_socket_permissions() {
+  local builder_gid
+  builder_gid=$(id -g "$BUILDER_USER")
+  install -d -m 0755 -o root -g root "$(dirname "$ROOTLESS_DOCKER_SOCKET_HELPER")"
+  local helper="${TEMP_DIR}/normalize-docker-socket"
+  cat >"$helper" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+socket="$(runtime_dir)/docker.sock"
+for _attempt in {1..100}; do
+  if [[ -S "\$socket" ]]; then
+    chgrp "${builder_gid}" "\$socket"
+    chmod 0660 "\$socket"
+    exit 0
+  fi
+  sleep 0.1
+done
+printf 'rootless Docker socket did not become ready: %s\n' "\$socket" >&2
+exit 1
+EOF
+  write_if_changed "$helper" "$ROOTLESS_DOCKER_SOCKET_HELPER" 0755 root root
+
+  local override_dir="$(builder_home)/.config/systemd/user/docker.service.d"
+  local override="${TEMP_DIR}/luma-socket-permissions.conf"
+  install -d -m 0755 -o "$BUILDER_USER" -g "$(builder_group)" "$override_dir"
+  cat >"$override" <<EOF
+[Service]
+ExecStartPost=${ROOTLESS_DOCKER_SOCKET_HELPER}
+EOF
+  write_if_changed \
+    "$override" "${override_dir}/luma-socket-permissions.conf" 0644 \
+    "$BUILDER_USER" "$(builder_group)"
+}
+
 configure_rootless_docker() {
   ensure_subid_range /etc/subuid --add-subuids
   ensure_subid_range /etc/subgid --add-subgids
@@ -392,9 +427,12 @@ configure_rootless_docker() {
 
   run_as_builder "$ROOTLESS_DOCKER_SETUP_TOOL" install --force
   configure_rootless_docker_registry
+  configure_rootless_docker_socket_permissions
+  run_as_builder systemctl --user daemon-reload
   run_as_builder systemctl --user enable docker.service
   run_as_builder systemctl --user restart docker.service
   wait_for_socket "$(runtime_dir)/docker.sock" "rootless Docker"
+  run_as_builder "$ROOTLESS_DOCKER_SOCKET_HELPER"
   audit "configured_rootless_docker socket=$(runtime_dir)/docker.sock"
 }
 
@@ -726,8 +764,18 @@ verify_tool_versions() {
 
 verify_rootless_docker() {
   local socket_path="$(runtime_dir)/docker.sock"
+  local builder_gid
+  builder_gid=$(id -g "$BUILDER_USER")
   [[ -S "$socket_path" ]] || die "rootless Docker socket is missing: ${socket_path}"
   [[ "$(stat -c %u "$socket_path")" == "$BUILDER_UID" ]] || die "rootless Docker socket owner is not UID ${BUILDER_UID}"
+  [[ "$(stat -c %g "$socket_path")" == "$builder_gid" ]] || die "rootless Docker socket group does not match the daemon peer GID"
+  [[ "$(stat -c %a "$socket_path")" == "660" ]] || die "rootless Docker socket mode is not 0660"
+  local override="$(builder_home)/.config/systemd/user/docker.service.d/luma-socket-permissions.conf"
+  [[ -f "$ROOTLESS_DOCKER_SOCKET_HELPER" && ! -L "$ROOTLESS_DOCKER_SOCKET_HELPER" ]] || \
+    die "rootless Docker socket normalization helper is missing"
+  [[ -f "$override" && ! -L "$override" ]] || die "rootless Docker socket systemd override is missing"
+  grep -Fxq "ExecStartPost=${ROOTLESS_DOCKER_SOCKET_HELPER}" "$override" || \
+    die "rootless Docker socket systemd override is invalid"
   local security_options
   security_options=$(run_as_builder docker --host "$(rootless_docker_host)" info --format '{{json .SecurityOptions}}') || \
     die "rootless Docker daemon is unavailable"

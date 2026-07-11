@@ -192,7 +192,7 @@ services:
         reservations: {cpus: "0.10", memory: 128M}
 
   postgres:
-    image: postgres:17@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b
+    image: 100.66.177.70:5000/lae/postgres-amd64:17@sha256:5aee909f99ab78c62f03636b6ca25a17195657605ce6782d9919ce4288595eda
     platform: linux/amd64
     environment:
       POSTGRES_DB: lae

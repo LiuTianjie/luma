@@ -658,6 +658,35 @@ class BuilderAnalyzeExecutorTests(unittest.TestCase):
         self.assertNotIn(secret, captured["env"].values())
         self.assertEqual(captured["command"][-2:], ["https://github.com/acme/app.git", str(Path(temporary) / "checkout")])
 
+    def test_full_commit_ref_is_fetched_and_checked_out_detached(self):
+        commands = []
+        commit = "f829276c68503f7afae195c3e3f778f085242cb0"
+
+        def fake_run(command, **_kwargs):
+            commands.append(list(command))
+            return _ProcessResult(0, "")
+
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "luma.builder_executor._run_cancellable_process", side_effect=fake_run
+        ):
+            destination = Path(temporary) / "checkout"
+            _clone_source(
+                "https://github.com/render-examples/fastapi.git",
+                destination,
+                ref=commit,
+                git_token="",
+                git_username="",
+                cancel_event=threading.Event(),
+                timeout=30,
+            )
+
+        self.assertEqual(len(commands), 4)
+        self.assertEqual(commands[0][-3:], ["init", "--", str(destination)])
+        self.assertEqual(commands[1][-4:], ["remote", "add", "origin", "https://github.com/render-examples/fastapi.git"])
+        self.assertEqual(commands[2][-5:], ["--depth", "1", "--no-tags", "origin", commit])
+        self.assertEqual(commands[3][-3:], ["checkout", "--detach", "FETCH_HEAD"])
+        self.assertNotIn("--branch", [item for command in commands for item in command])
+
     def test_runner_argv_enforces_isolation_limits_and_fixed_command(self):
         captured = {}
 

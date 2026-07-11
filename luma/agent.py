@@ -1013,14 +1013,18 @@ def _node_tailscale_watchdog_launchd_plist(script_path: str) -> str:
 
 
 def _agent_executable_args(config_path: Path, *, executable: str | None = None) -> list[str]:
-    executable = executable or os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or _current_executable() or sys.executable
+    # Preserve the install layout of the running Luma command. In particular,
+    # a manager refresh may run with root privileges while the supported CLI
+    # lives in the manager operator's home. Falling back to root's PATH here
+    # rewrites a previously healthy service to /root/.local/bin/luma.
+    executable = executable or _installed_luma_executable()
     if Path(executable).name.startswith("python"):
         return [executable, "-m", "luma.cli", "node-agent", "run", "--config", str(config_path)]
     return [executable, "node-agent", "run", "--config", str(config_path)]
 
 
 def _terminal_supervisor_args(config_path: Path, *, executable: str | None = None) -> list[str]:
-    executable = executable or os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or _current_executable() or sys.executable
+    executable = executable or _installed_luma_executable()
     if Path(executable).name.startswith("python"):
         return [executable, "-m", "luma.cli", "node-agent", "terminal-supervisor", "--config", str(config_path)]
     return [executable, "node-agent", "terminal-supervisor", "--config", str(config_path)]

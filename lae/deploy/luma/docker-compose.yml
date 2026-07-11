@@ -31,7 +31,7 @@ services:
           memory: 768M
         reservations:
           cpus: "0.20"
-          memory: 512M
+          memory: 256M
 
   api:
     platform: linux/amd64
@@ -218,10 +218,10 @@ services:
           memory: 256M
         reservations:
           cpus: "0.10"
-          memory: 256M
+          memory: 128M
 
   postgres:
-    image: postgres:17@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b
+    image: 100.66.177.70:5000/lae/postgres-amd64:17@sha256:5aee909f99ab78c62f03636b6ca25a17195657605ce6782d9919ce4288595eda
     platform: linux/amd64
     environment:
       POSTGRES_DB: lae
@@ -305,7 +305,7 @@ services:
       resources:
         limits:
           cpus: "0.20"
-          memory: 128M
+          memory: 512M
         reservations:
           cpus: "0.05"
           memory: 256M

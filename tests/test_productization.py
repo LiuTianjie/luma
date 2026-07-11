@@ -37,7 +37,7 @@ from luma.agent import (
 from luma.assets import asset_path, asset_text
 from luma.config import LumaConfig
 from luma.compose import load_compose_deployment
-from luma.cloudflare import delete_dns, sync_control_dns
+from luma.cloudflare import CloudflareClient, delete_dns, sync_control_dns
 from luma.bootstrap import (
     _acme_email,
     _deploy_nomad_job,
@@ -350,9 +350,10 @@ class ProductConfigTests(unittest.TestCase):
                 _restore_env("LUMA_CONFIG_HOME", old_home)
 
     def test_node_agent_unit_uses_python_module_when_invoked_from_stdin(self):
-        with patch.dict(os.environ, {"LUMA_AGENT_EXECUTABLE": ""}, clear=False), patch("shutil.which", return_value=None), patch(
-            "sys.argv", ["-"]
-        ):
+        with patch(
+            "luma.agent._installed_luma_executable",
+            return_value="/usr/bin/python3",
+        ), patch("sys.argv", ["-"]):
             args = _agent_executable_args(Path("/opt/luma/node-agent/agent.json"))
             unit = _systemd_unit(Path("/opt/luma/node-agent/agent.json"))
 
@@ -370,6 +371,19 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=-/etc/default/luma-node-agent", unit)
         self.assertIn("Restart=always", unit)
         self.assertIn("RestartSec=5", unit)
+
+    def test_node_agent_systemd_unit_preserves_running_install_layout(self):
+        with patch(
+            "luma.agent._installed_luma_executable",
+            return_value="/home/tao/.local/bin/luma",
+        ):
+            unit = _systemd_unit(Path("/opt/luma/node-agent/agent.json"))
+
+        self.assertIn(
+            "ExecStart=/home/tao/.local/bin/luma node-agent run --config /opt/luma/node-agent/agent.json",
+            unit,
+        )
+        self.assertNotIn("/root/.local/bin/luma", unit)
 
     def test_node_agent_install_includes_linux_tailscale_watchdog(self):
         command = _node_tailscale_watchdog_install_command("linux")
@@ -1164,6 +1178,19 @@ class ProductConfigTests(unittest.TestCase):
                 client.request.assert_any_call("DELETE", "/zones/zone-id/dns_records/record-1")
             finally:
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
+    def test_cloudflare_client_retries_transient_network_errors(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"success": true, "result": []}'
+        with patch(
+            "luma.cloudflare.urllib.request.urlopen",
+            side_effect=[urllib.error.URLError(OSError(errno.ENETUNREACH, "Network is unreachable")), response],
+        ) as urlopen, patch("luma.cloudflare.time.sleep") as sleep:
+            payload = CloudflareClient("cf-token").request("GET", "/zones")
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(0.5)
 
     def test_profiles_have_expected_roles(self):
         self.assertIn("edge", PROFILES["single-node"].roles)

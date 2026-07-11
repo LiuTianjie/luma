@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
@@ -12,6 +14,7 @@ from .service import ServiceSpec
 
 
 API_BASE = "https://api.cloudflare.com/client/v4"
+API_ATTEMPTS = 4
 
 
 class CloudflareClient:
@@ -32,12 +35,21 @@ class CloudflareClient:
             headers=headers,
             method=method,
         )
-        try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise LumaError(f"Cloudflare API error {exc.code}: {detail}") from exc
+        payload: Dict[str, Any] | None = None
+        for attempt in range(API_ATTEMPTS):
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise LumaError(f"Cloudflare API error {exc.code}: {detail}") from exc
+            except (urllib.error.URLError, OSError) as exc:
+                if attempt + 1 >= API_ATTEMPTS:
+                    raise LumaError(f"Cloudflare API unavailable after {API_ATTEMPTS} attempts: {exc}") from exc
+                time.sleep(0.5 * (2**attempt))
+        if payload is None:
+            raise LumaError("Cloudflare API returned no response")
         if not payload.get("success"):
             raise LumaError(f"Cloudflare API failed: {payload.get('errors')}")
         return payload

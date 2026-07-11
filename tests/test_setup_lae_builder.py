@@ -92,6 +92,18 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
         for fragment in required_fragments:
             self.assertIn(fragment, self.source)
 
+    def test_rootless_docker_socket_identity_is_normalized_after_restart(self):
+        self.assertIn(
+            'readonly ROOTLESS_DOCKER_SOCKET_HELPER="/usr/local/lib/luma-builder/normalize-docker-socket"',
+            self.source,
+        )
+        self.assertIn("configure_rootless_docker_socket_permissions", self.source)
+        self.assertIn("ExecStartPost=${ROOTLESS_DOCKER_SOCKET_HELPER}", self.source)
+        self.assertIn('chgrp "${builder_gid}" "\\$socket"', self.source)
+        self.assertIn('chmod 0660 "\\$socket"', self.source)
+        self.assertIn('rootless Docker socket group does not match the daemon peer GID', self.source)
+        self.assertIn('rootless Docker socket mode is not 0660', self.source)
+
     def test_ubuntu_docker_io_rootless_tools_are_supported(self):
         self.assertIn("resolve_rootless_docker_tools()", self.source)
         self.assertIn("/usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh", self.source)

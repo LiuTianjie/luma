@@ -804,23 +804,40 @@ def _clone_source(
             "GIT_CONFIG_GLOBAL": os.devnull,
         }
     )
-    command = [
-        _require_git_runtime(),
+    git = _require_git_runtime()
+    base_command = [
+        git,
         "-c",
         "credential.helper=",
         "-c",
         "core.hooksPath=/dev/null",
         "-c",
         "protocol.file.allow=never",
-        "clone",
-        "--depth",
-        "1",
-        "--no-tags",
-        "--single-branch",
     ]
-    if ref:
-        command += ["--branch", ref]
-    command += ["--", repository, str(destination)]
+    if _FULL_COMMIT_RE.fullmatch(ref):
+        # ``git clone --branch`` accepts branches and tags, not a detached
+        # commit object. Template sources are intentionally pinned to exact
+        # commits, so fetch that object explicitly and never infer a mutable
+        # default branch.
+        commands = [
+            [*base_command, "init", "--", str(destination)],
+            [*base_command, "-C", str(destination), "remote", "add", "origin", repository],
+            [*base_command, "-C", str(destination), "fetch", "--depth", "1", "--no-tags", "origin", ref],
+            [*base_command, "-C", str(destination), "checkout", "--detach", "FETCH_HEAD"],
+        ]
+    else:
+        command = [
+            *base_command,
+            "clone",
+            "--depth",
+            "1",
+            "--no-tags",
+            "--single-branch",
+        ]
+        if ref:
+            command += ["--branch", ref]
+        command += ["--", repository, str(destination)]
+        commands = [command]
 
     with tempfile.TemporaryDirectory(prefix="luma-git-auth-") as auth_tmp:
         environment["HOME"] = auth_tmp
@@ -839,18 +856,19 @@ def _clone_source(
                     "LUMA_GIT_PASSWORD_FILE": str(password_file),
                 }
             )
-        result = _run_cancellable_process(
-            command,
-            env=environment,
-            timeout=timeout,
-            cancel_event=cancel_event,
-            redact_values=(git_token,),
-            disk_watch_path=disk_watch_path,
-            disk_limit_bytes=disk_limit_bytes,
-        )
-    if result.returncode != 0:
-        detail = _safe_failure_category(result.output)
-        raise LumaError(f"git clone failed ({detail})")
+        for command in commands:
+            result = _run_cancellable_process(
+                command,
+                env=environment,
+                timeout=timeout,
+                cancel_event=cancel_event,
+                redact_values=(git_token,),
+                disk_watch_path=disk_watch_path,
+                disk_limit_bytes=disk_limit_bytes,
+            )
+            if result.returncode != 0:
+                detail = _safe_failure_category(result.output)
+                raise LumaError(f"git clone failed ({detail})")
 
 
 class _ProcessResult:
