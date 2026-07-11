@@ -4,17 +4,33 @@ This directory is the product boundary for LAE. It is intentionally isolated
 from the root Luma Python package and dashboard workspace so it can be moved to
 an independent repository without changing package names or service contracts.
 
-The current foundation is executable and testable. It establishes versioned
-contracts, a deterministic analyzer, PostgreSQL durable operations/outbox, a
-typed Luma adapter with an in-memory fake, component health entry points, a
-machine-readable CLI, public email/deploy-token authentication, an atomic
-public HTTPS-Git analysis enqueue path, a quota-counted application catalog,
-encrypted environment metadata, and a dev/staging-only signed mock billing
-slice. The private Git connection catalog now stores only versioned AES-GCM
-ciphertext and issues consumer/host-bound one-time leases; a real mutually
-authenticated LAE-to-Luma redemption endpoint is still required before private
-Git is production-usable. Real payment providers, the deployment controller,
-and end-to-end Luma staging are not yet claimed as complete.
+The current foundation is executable, tested, and deployed to a real Luma
+staging stack. It establishes versioned contracts, a deterministic analyzer,
+PostgreSQL durable operations/outbox, typed Luma Builder and Runtime adapters,
+component health entry points, a machine-readable CLI, public
+email/deploy-token authentication, Git and static-artifact source lanes, a
+quota-counted application catalog, encrypted environment metadata, lifecycle
+operations, and a dev/staging-only signed mock billing slice. Private Git and
+object-source redemption use mutually authenticated, task-bound, one-time
+leases. The Web account console provides deploy-token management, plan,
+subscription, usage, and mock-checkout flows.
+
+Current verification snapshot (2026-07-11):
+
+- Luma `0.1.171` candidate: 719/719 tests passed with `ResourceWarning` treated
+  as an error. The live fleet remains on `0.1.170` until the release upgrade.
+- LAE `make check`: 351 tests passed and 23 conditional integration tests were
+  skipped; the Web typecheck and Next.js production build passed.
+- A real `luma import` built and pushed 6 images, registered 9 staging services,
+  and created staging DNS. Platform services are pinned to `lab`; tenant
+  runtime placement is limited to `manager + tecent`.
+
+The 9 platform tasks, TLS, and base Web/API/artifact probes are healthy. Real
+registration, deploy-token, CLI, template and analysis flows have run; tenant
+Runtime deployment and lifecycle E2E are still open. This is not a production-
+readiness claim. Real payment providers, production SMTP,
+dedicated production runners and stateful infrastructure, recovery drills,
+capacity controls, and abuse/compliance controls remain launch blockers.
 
 ## Boundaries
 
@@ -115,6 +131,7 @@ Image-only Compose services are represented explicitly as signed
 allowed public reference anonymously with `crane` during analysis, signs the
 expected platform digest, and verifies the same resolution again at build time
 before producing CycloneDX, offline Trivy, and LAE-owned external-resolution
-evidence. This is implemented and covered by isolated tests, but remains behind
-the public launch gate until network-level redirect/DNS egress enforcement and
-real Luma staging validation are complete.
+evidence. This is implemented and covered by isolated tests. The platform stack
+has been imported into real Luma staging, but tenant-level image resolution,
+network-level redirect/DNS egress enforcement, and the complete Builder/Runtime
+E2E remain behind the public launch gate.

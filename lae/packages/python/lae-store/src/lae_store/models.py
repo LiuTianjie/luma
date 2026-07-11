@@ -1304,7 +1304,7 @@ class Analysis(TimestampMixin, Base):
         ),
         CheckConstraint(
             "status IN ('queued','analyzing','analyzed','deployable',"
-            "'needs_configuration','not_deployable','failed','expired')",
+            "'needs_configuration','not_deployable','diagnostic_failed','failed','expired')",
             name="status",
         ),
         CheckConstraint(
@@ -1316,7 +1316,7 @@ class Analysis(TimestampMixin, Base):
             "evidence_digest IS NULL AND artifact_state = 'descriptor-only' AND "
             "plan_stored IS FALSE) OR "
             "((status IN ('analyzed','deployable','needs_configuration',"
-            "'not_deployable')) AND policy_version IS NOT NULL AND "
+            "'not_deployable','diagnostic_failed')) AND policy_version IS NOT NULL AND "
             "agent_image_digest IS NOT NULL AND resolved_commit_full IS NOT NULL AND "
             "source_tree_digest IS NOT NULL AND source_snapshot_id IS NOT NULL AND "
             "source_snapshot_digest IS NOT NULL AND "
@@ -1356,6 +1356,21 @@ class Analysis(TimestampMixin, Base):
             "artifact_state IN ('descriptor-only','stored')", name="artifact_state"
         ),
         CheckConstraint(
+            "verdict IS NULL OR verdict IN "
+            "('deployable','needs_input','unsupported','diagnostic_failed')",
+            name="verdict",
+        ),
+        CheckConstraint(
+            "diagnostic_status IS NULL OR diagnostic_status IN "
+            "('succeeded','diagnostic_failed')",
+            name="diagnostic_status",
+        ),
+        CheckConstraint(
+            "diagnostic_mode IS NULL OR diagnostic_mode IN "
+            "('ai','deterministic_fallback')",
+            name="diagnostic_mode",
+        ),
+        CheckConstraint(
             "plan_stored = (artifact_state = 'stored')", name="plan_storage_state"
         ),
     )
@@ -1379,6 +1394,14 @@ class Analysis(TimestampMixin, Base):
     deployment_plan_digest: Mapped[str | None] = mapped_column(String(71))
     build_plan_digest: Mapped[str | None] = mapped_column(String(71))
     evidence_digest: Mapped[str | None] = mapped_column(String(71))
+    verdict: Mapped[str | None] = mapped_column(String(32))
+    diagnostic_status: Mapped[str | None] = mapped_column(String(32))
+    diagnostic_mode: Mapped[str | None] = mapped_column(String(32))
+    diagnostic_code: Mapped[str | None] = mapped_column(String(96))
+    knowledge_version: Mapped[str | None] = mapped_column(String(96))
+    blockers: Mapped[list[dict[str, str]]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     artifact_state: Mapped[str] = mapped_column(
         String(24), nullable=False, server_default="descriptor-only"
     )

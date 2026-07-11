@@ -38,7 +38,11 @@ services:
     domain: lae-api-staging.itool.tech
     port: 8080
   worker: {node: lab, exposure: none}
-  agent-controller: {node: lab, exposure: none}
+  agent-controller:
+    node: lab
+    exposure: tailscale-relay
+    domain: lae-agent-staging.itool.tech
+    port: 8081
   postgres: {node: lab, exposure: none}
   artifact-store:
     node: lab

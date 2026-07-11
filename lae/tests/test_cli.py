@@ -818,7 +818,8 @@ class CliTests(unittest.TestCase):
 
     def test_checkout_only_creates_a_user_confirmed_session(self) -> None:
         class FakeClient:
-            calls = []
+            def __init__(self) -> None:
+                self.calls = []
 
             def post(self, path, body=None, *, idempotency_key=None):
                 self.calls.append((path, body, idempotency_key))
@@ -828,11 +829,46 @@ class CliTests(unittest.TestCase):
                     "requiresUserAction": True,
                 }
 
-        client = FakeClient()
-        stdout = io.StringIO()
-        with patch("lae_cli.__main__._client", return_value=client), redirect_stdout(
-            stdout
+        for cli_interval, api_interval in (
+            ("month", "monthly"),
+            ("year", "yearly"),
         ):
+            with self.subTest(interval=cli_interval):
+                client = FakeClient()
+                stdout = io.StringIO()
+                with patch(
+                    "lae_cli.__main__._client", return_value=client
+                ), redirect_stdout(stdout):
+                    exit_code = main(
+                        [
+                            "billing",
+                            "checkout",
+                            "--plan",
+                            "pro",
+                            "--interval",
+                            cli_interval,
+                            "--idempotency-key",
+                            "checkout-test-1",
+                            "--format",
+                            "json",
+                        ]
+                    )
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(
+                    client.calls[0],
+                    (
+                        "/billing/checkout-sessions",
+                        {"plan": "pro", "interval": api_interval},
+                        "checkout-test-1",
+                    ),
+                )
+                self.assertTrue(
+                    json.loads(stdout.getvalue())["requiresUserAction"]
+                )
+
+    def test_checkout_rejects_client_selected_provider(self) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
             exit_code = main(
                 [
                     "billing",
@@ -842,23 +878,18 @@ class CliTests(unittest.TestCase):
                     "--interval",
                     "year",
                     "--provider",
-                    "alipay",
+                    "mock",
                     "--idempotency-key",
                     "checkout-test-1",
                     "--format",
                     "json",
                 ]
             )
-        self.assertEqual(exit_code, 0)
+        self.assertEqual(exit_code, 2)
         self.assertEqual(
-            client.calls[0],
-            (
-                "/billing/checkout-sessions",
-                {"plan": "pro", "interval": "year", "provider": "alipay"},
-                "checkout-test-1",
-            ),
+            json.loads(stderr.getvalue())["error"]["code"],
+            "LAE_CLI_ARGUMENT_INVALID",
         )
-        self.assertTrue(json.loads(stdout.getvalue())["requiresUserAction"])
 
 
 def _parser_actions() -> list[str]:

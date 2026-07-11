@@ -28,6 +28,7 @@ RUN groupadd --gid 10001 lae && \
 
 WORKDIR /opt/lae
 COPY --from=build /opt/lae/.venv /opt/lae/.venv
+COPY --from=build /src/knowledge /opt/lae/knowledge
 
 USER 10001:10001
 

@@ -415,6 +415,12 @@ def analyze_source(
             "evidenceDigest": artifact_summary["evidence"]["digest"],
             "policyVersion": normalized["policyVersion"],
             "agentImageDigest": normalized["agentImageDigest"],
+            "verdict": validated["verdict"],
+            "diagnosticStatus": validated["diagnosticStatus"],
+            "diagnosticMode": validated["diagnosticMode"],
+            "diagnosticCode": validated["diagnosticCode"],
+            "knowledgeVersion": validated["knowledgeVersion"],
+            "blockers": validated["blockers"],
             "artifacts": artifact_summary,
         }
 
@@ -1269,6 +1275,14 @@ def _run_analyzer_container(
     pids_limit = _bounded_env_int("LUMA_BUILDER_ANALYZE_PIDS_LIMIT", 256, 32, 4096)
     cpu = f"{float(limits['cpu']):g}"
     memory = f"{int(limits['memoryMiB'])}m"
+    controller_url = os.environ.get(
+        "LUMA_BUILDER_ANALYZE_CONTROLLER_URL", ""
+    ).strip()
+    controller_token = os.environ.get(
+        "LUMA_BUILDER_ANALYZE_CONTROLLER_TOKEN", ""
+    ).strip()
+    ai_required = os.environ.get("LUMA_BUILDER_ANALYZE_AI_REQUIRED", "0").strip()
+    network_mode = "bridge" if controller_url and controller_token else "none"
     command = [
         docker,
         "--host",
@@ -1280,7 +1294,7 @@ def _run_analyzer_container(
         "--name",
         container_name,
         "--network",
-        "none",
+        network_mode,
         "--read-only",
         "--cap-drop",
         "ALL",
@@ -1319,6 +1333,22 @@ def _run_analyzer_container(
         "/input/metadata.json",
         "--output-dir",
         "/output",
+    ]
+    # The runner never receives a model-provider key. It gets only the scoped
+    # controller credential configured on the trusted Builder host; without
+    # both values it uses the deterministic analyzer.
+    if controller_url and controller_token:
+        insert_at = command.index("--mount")
+        command[insert_at:insert_at] = [
+            "--env",
+            f"LAE_AGENT_CONTROLLER_URL={controller_url}",
+            "--env",
+            f"LAE_AGENT_CONTROLLER_TOKEN={controller_token}",
+        ]
+    insert_at = command.index("--mount")
+    command[insert_at:insert_at] = [
+        "--env",
+        f"LAE_AGENT_AI_REQUIRED={ai_required}",
     ]
     execution_error: BaseException | None = None
     result: _ProcessResult | None = None
@@ -1607,6 +1637,12 @@ def _validate_runner_output(output_dir: Path, metadata: Dict[str, Any]) -> Dict[
         "sourceSnapshotDigest",
         "policyVersion",
         "agentImageDigest",
+        "verdict",
+        "diagnosticStatus",
+        "diagnosticMode",
+        "diagnosticCode",
+        "knowledgeVersion",
+        "blockers",
         "artifacts",
     }
     unknown = sorted(set(result) - expected_top_level)
@@ -1632,6 +1668,24 @@ def _validate_runner_output(output_dir: Path, metadata: Dict[str, Any]) -> Dict[
         raise LumaError("runner result has an invalid schemaVersion or status")
     if result.get("decision") not in {"allow", "needs_configuration", "deny"}:
         raise LumaError("runner result has an invalid decision")
+    expected_verdict = {
+        "allow": "deployable",
+        "needs_configuration": "needs_input",
+        "deny": "unsupported",
+    }[result["decision"]]
+    if result.get("verdict") != expected_verdict and not (
+        result.get("verdict") == "diagnostic_failed"
+        and result.get("diagnosticStatus") == "diagnostic_failed"
+    ):
+        raise LumaError("runner verdict does not match decision")
+    if result.get("diagnosticStatus") not in {"succeeded", "diagnostic_failed"}:
+        raise LumaError("runner diagnosticStatus is invalid")
+    if result.get("diagnosticMode") not in {"ai", "deterministic_fallback"}:
+        raise LumaError("runner diagnosticMode is invalid")
+    for field in ("diagnosticCode", "knowledgeVersion"):
+        value = result.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,95}", value):
+            raise LumaError(f"runner {field} is invalid")
     for key in (
         "externalOperationId",
         "tenantRef",
@@ -1677,9 +1731,27 @@ def _validate_runner_output(output_dir: Path, metadata: Dict[str, Any]) -> Dict[
     deployment_policy = _require_mapping(artifact_bodies["deploymentPlan"].get("policy"), "deployment plan policy")
     if result.get("decision") != deployment_policy.get("decision"):
         raise LumaError("runner decision does not match deployment plan policy")
+    evidence_ai = _require_mapping(
+        artifact_bodies["evidence"].get("ai"), "analysis evidence ai"
+    )
+    if (
+        artifact_bodies["evidence"].get("verdict") != result["verdict"]
+        or evidence_ai.get("status") != result["diagnosticStatus"]
+        or evidence_ai.get("mode") != result["diagnosticMode"]
+        or evidence_ai.get("code") != result["diagnosticCode"]
+        or evidence_ai.get("knowledgeVersion") != result["knowledgeVersion"]
+        or artifact_bodies["evidence"].get("unsupported") != result.get("blockers")
+    ):
+        raise LumaError("runner public verdict does not match analysis evidence")
     return {
         "artifacts": artifacts,
         "buildPlanProposal": artifact_bodies["buildPlan"],
+        "verdict": result["verdict"],
+        "diagnosticStatus": result["diagnosticStatus"],
+        "diagnosticMode": result["diagnosticMode"],
+        "diagnosticCode": result["diagnosticCode"],
+        "knowledgeVersion": result["knowledgeVersion"],
+        "blockers": result["blockers"],
     }
 
 
@@ -1804,6 +1876,9 @@ def _validate_artifact_binding(name: str, artifact: Dict[str, Any], metadata: Di
             "environment",
             "warnings",
             "blockers",
+            "verdict",
+            "unsupported",
+            "ai",
         }
         if set(artifact) != required or artifact.get("schemaVersion") != "lae.analysis-evidence/v1":
             raise LumaError("runner evidence has an invalid closed schema")
@@ -1815,7 +1890,7 @@ def _validate_artifact_binding(name: str, artifact: Dict[str, Any], metadata: Di
                 raise LumaError(f"runner evidence has a conflicting {key}")
         if not isinstance(artifact.get("adapter"), dict):
             raise LumaError("runner evidence has an invalid adapter")
-        for key in ("inventory", "findings", "environment", "warnings", "blockers"):
+        for key in ("inventory", "findings", "environment", "warnings", "blockers", "unsupported"):
             if not isinstance(artifact.get(key), list):
                 raise LumaError("runner evidence has an invalid collection")
         return

@@ -284,7 +284,17 @@ class PublicResourceApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
-            set(response.json()), {"id", "status", "digests", "planStored", "links"}
+            set(response.json()),
+            {
+                "id",
+                "status",
+                "verdict",
+                "diagnostic",
+                "blockers",
+                "digests",
+                "planStored",
+                "links",
+            },
         )
         self.assertTrue(response.json()["planStored"])
         serialized = response.text.lower()

@@ -172,11 +172,36 @@ class PublicAnalysisRecord:
     build_plan_digest: str | None
     evidence_digest: str | None
     plan_stored: bool
+    verdict: str | None = None
+    diagnostic_status: str | None = None
+    diagnostic_mode: str | None = None
+    diagnostic_code: str | None = None
+    knowledge_version: str | None = None
+    blockers: tuple[dict[str, str], ...] = ()
 
     def public_body(self) -> dict[str, Any]:
+        verdict = self.verdict or {
+            "deployable": "deployable",
+            "needs_configuration": "needs_input",
+            # Pre-verdict rows do not have structured blocker evidence. Require
+            # reinspection instead of presenting a fake complete unsupported
+            # diagnosis with an empty blocker list.
+            "not_deployable": "diagnostic_failed",
+            "diagnostic_failed": "diagnostic_failed",
+            "failed": "diagnostic_failed",
+            "expired": "diagnostic_failed",
+        }.get(self.status)
         return {
             "id": self.id,
             "status": self.status,
+            "verdict": verdict,
+            "diagnostic": {
+                "status": self.diagnostic_status,
+                "mode": self.diagnostic_mode,
+                "code": self.diagnostic_code,
+                "knowledgeVersion": self.knowledge_version,
+            },
+            "blockers": list(self.blockers) if verdict == "unsupported" else [],
             "digests": {
                 "sourceTree": self.source_tree_digest,
                 "sourceSnapshot": self.source_snapshot_digest,
@@ -304,6 +329,12 @@ class PostgresPublicResourceStore:
             build_plan_digest=analysis.build_plan_digest,
             evidence_digest=analysis.evidence_digest,
             plan_stored=analysis.plan_stored,
+            verdict=analysis.verdict,
+            diagnostic_status=analysis.diagnostic_status,
+            diagnostic_mode=analysis.diagnostic_mode,
+            diagnostic_code=analysis.diagnostic_code,
+            knowledge_version=analysis.knowledge_version,
+            blockers=tuple(analysis.blockers or []),
         )
 
     async def list_operation_events(

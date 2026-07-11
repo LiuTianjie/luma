@@ -1,6 +1,6 @@
 # LAE Builder 主机准备与验收
 
-> 状态：代码与本地静态测试已完成；尚未在 staging Builder 主机执行。本文不构成已上线证明。
+> 状态：Luma `0.1.171` 候选已通过 gate，当前 live `builder` 仍为 `0.1.170`；既有构建链路已完成真实 `--check` 和平台 import。升级、幂等重跑、隔离/压力/故障与恢复证据未全部关闭，本文不构成 production-ready 证明。
 
 LAE Builder v2 只在显式准备过的 Ubuntu 专用节点上启用。仓库默认不会让普通 Luma 节点宣告 `builder-analyze-v1` 或 `builder-build-v1`：只有操作员执行准备脚本、所有运行时门槛通过、node agent 重新加载环境后，能力探测才可能成功。
 
@@ -66,6 +66,10 @@ sudo scripts/setup-lae-builder.sh \
 
 脚本只为 rootless Docker 管理本次指定的 insecure registry 条目：它用 `/var/lib/luma/builder/rootless-docker-managed-registries.json` 记录自己拥有的条目，更新时移除旧的 managed 值并保留运维人员原有的其他 Docker daemon 配置。
 
+当前共享 staging 的实际参数是：pull host `100.66.177.70:5000`，Builder 本机 push host `localhost:5000`，内部 registry 使用 insecure HTTP，平台镜像构建使用 direct 网络。两类地址必须继续分开：target node 不能用 Builder 的 loopback，Builder push 也不应绕一圈访问自己的 Tailscale 地址。
+
+Direct 模式还要求 BuildKit container 中不能残留历史代理环境。当前版本会比较持久化 Buildx container 的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 与本次请求，不匹配就删除并重建，防止旧 `aly` proxy 或变更前的 manager proxy 继续影响 base image pull。若出现 `short read`、`unexpected EOF`、`ECONNRESET` 或依赖下载异常，先检查实际 BuildKit container env 和 direct 连通性，不要只重试 import；LAE 平台 Dockerfile 已在依赖安装步骤显式 `unset` 大小写代理变量，租户构建则仍应服从单独的出口策略。
+
 ## 4. `--check` 验收
 
 `--check` 使用与 setup 完全相同的显式信任输入，但不安装包、不写持久配置、不拉镜像、不刷新 DB、不重启服务。它会在 Builder work root 中创建并删除一个真实的 rootless bind probe，用同一 digest runner 读取 `0500/0400` source/input 并写入 `0700` output，以证明宿主路径 ownership 与 mount 语义不是纸面配置：
@@ -105,9 +109,9 @@ sudo scripts/setup-lae-builder.sh --check \
 
 ## 6. 尚需 staging 关闭的证据
 
-脚本落库不等于 Builder 已可公开承载用户代码。至少还要在真实 staging 专用节点完成并保存：
+当前 `builder` 上使用 pull `100.66.177.70:5000`、push `localhost:5000` 的真实 `--check` 已通过，证明固定工具链、rootless socket、runner digest、registry endpoint 和 bind probe 在该时点一致。脚本落库与单次 `--check` 仍不等于 Builder 已可公开承载用户代码，至少还要完成并保存：
 
-1. setup 首跑、二次幂等重跑、`--check` 三份完整输出与 audit/manifest；
+1. setup 首跑与二次幂等重跑的完整输出，并归档本次及后续 `--check` 的 audit/manifest；
 2. rootless Docker/BuildKit peer UID、cgroup CPU/内存/PID/磁盘限制和并发压测；尤其要验证 root node-agent 创建的 `0700` 单任务目录能以最小范围 ACL/chown 提供给 UID 1000 的 analyzer bind mount，不能把整棵源码目录改成 world-readable；
 3. 多服务 Compose 构建、SBOM、Trivy 扫描、provenance、push、digest pull 的端到端任务证据；
 4. registry 不可达、错误 BuildKit checksum、runner tag/错误 digest、Trivy DB 缺失时均 fail closed；
@@ -116,4 +120,4 @@ sudo scripts/setup-lae-builder.sh --check \
 7. Trivy DB 定时刷新与 freshness 告警；
 8. registry 从 anonymous 迁移到短期 credential broker 后，删除 `LUMA_BUILDER_ALLOW_ANONYMOUS_REGISTRY=1` 的迁移验证。
 
-因此当前默认状态仍是：**普通节点不启用 Builder；只有操作员显式运行 setup 且验收通过的专用节点才启用本机 Builder env。真实 staging 尚未执行，本能力不能标记为 production-ready。**
+因此当前默认状态仍是：**普通节点不启用 Builder；只有操作员显式运行 setup 且验收通过的专用节点才启用本机 Builder env。当前 staging 已真实执行 import 并通过一次 Builder `--check`，但公开多租户 Builder 的剩余门禁未清零，本能力不能标记为 production-ready。**

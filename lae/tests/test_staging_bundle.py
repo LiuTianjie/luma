@@ -27,6 +27,9 @@ class StagingBundleTests(unittest.TestCase):
     def test_bundle_is_private_complete_separated_and_never_prints_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "bundle"
+            api_key = Path(temporary) / "ark-api-key"
+            api_key.write_text("test-provider-key", encoding="utf-8")
+            api_key.chmod(0o600)
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -37,6 +40,10 @@ class StagingBundleTests(unittest.TestCase):
                     ANALYZER,
                     "--cluster-id",
                     "luma-staging-test",
+                    "--llm-model",
+                    "test-model",
+                    "--llm-api-key-file",
+                    str(api_key),
                 ],
                 check=True,
                 capture_output=True,
@@ -56,6 +63,11 @@ class StagingBundleTests(unittest.TestCase):
                 .read_text(encoding="utf-8")
                 .splitlines()
                 if line and not line.startswith("#")
+            }
+            required -= {
+                "LAE_AGENT_LLM_API_KEY",
+                "LAE_AGENT_LLM_BASE_URL",
+                "LAE_AGENT_LLM_MODEL",
             }
             self.assertTrue(required.issubset(environment))
             self.assertTrue(all(environment[name] for name in required))
@@ -92,6 +104,15 @@ class StagingBundleTests(unittest.TestCase):
                 (output / "object-broker.token").read_text().strip(),
                 environment["LAE_OBJECT_SOURCE_BROKER_TOKEN"],
             )
+            builder_ai = _dotenv(output / "builder-agent-ai.env")
+            self.assertEqual(
+                builder_ai["LUMA_BUILDER_ANALYZE_CONTROLLER_TOKEN"],
+                environment["LAE_AGENT_CONTROLLER_TOKEN"],
+            )
+            self.assertEqual(
+                builder_ai["LUMA_BUILDER_ANALYZE_AI_REQUIRED"],
+                "1",
+            )
 
             signing = json.loads(
                 (output / "lae-plan-signing.json").read_text(encoding="utf-8")
@@ -127,9 +148,10 @@ class StagingBundleTests(unittest.TestCase):
                 control_environment,
             )
             self.assertIn(
-                "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON='[\"manager\",\"tecent\"]'",
+                'LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON=["manager","tecent"]',
                 control_environment,
             )
+            self.assertNotIn("export ", control_environment)
             self.assertNotIn("LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON", environment)
 
             repeated = subprocess.run(
@@ -142,6 +164,10 @@ class StagingBundleTests(unittest.TestCase):
                     ANALYZER,
                     "--cluster-id",
                     "luma-staging-test",
+                    "--llm-model",
+                    "test-model",
+                    "--llm-api-key-file",
+                    str(api_key),
                 ],
                 capture_output=True,
                 text=True,
@@ -163,6 +189,10 @@ class StagingBundleTests(unittest.TestCase):
                     "registry.invalid/lae-agent:latest",
                     "--cluster-id",
                     "luma-staging-test",
+                    "--llm-model",
+                    "test-model",
+                    "--llm-api-key-file",
+                    str(Path(temporary) / "missing-key"),
                 ],
                 capture_output=True,
                 text=True,

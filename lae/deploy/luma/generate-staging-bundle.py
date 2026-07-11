@@ -16,7 +16,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -78,12 +77,6 @@ def _dotenv(values: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _shell_environment(values: dict[str, str]) -> str:
-    return "\n".join(
-        f"export {name}={shlex.quote(value)}" for name, value in sorted(values.items())
-    ) + "\n"
-
-
 def _arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate a private LAE staging deployment bundle."
@@ -97,6 +90,19 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--checkout-base-url", default="https://lae-staging.itool.tech"
+    )
+    parser.add_argument(
+        "--agent-controller-url",
+        default="https://lae-agent-staging.itool.tech",
+    )
+    parser.add_argument(
+        "--llm-base-url", default="https://ark.cn-beijing.volces.com/api/v3"
+    )
+    parser.add_argument("--llm-model", required=True)
+    parser.add_argument(
+        "--llm-api-key-file",
+        required=True,
+        help="Root/user-owned 0400 or 0600 file containing the staging provider API key.",
     )
     parser.add_argument(
         "--runtime-storage-class", default="lae-staging-runtime-nfs"
@@ -134,6 +140,26 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
     checkout_base_url = _closed_https_url(
         args.checkout_base_url, label="checkout base URL"
     )
+    agent_controller_url = _closed_https_url(
+        args.agent_controller_url, label="agent controller URL"
+    )
+    llm_base_url = _closed_https_url(args.llm_base_url, label="LLM base URL")
+    key_path = Path(args.llm_api_key_file).expanduser()
+    key_stat = key_path.lstat()
+    if not key_path.is_file() or key_path.is_symlink():
+        raise ValueError("LLM API key file must be a regular non-symlink file")
+    if key_stat.st_uid not in {0, os.getuid()} or key_stat.st_mode & 0o077 or key_stat.st_size > 16 * 1024:
+        raise ValueError("LLM API key file owner, mode, or size is unsafe")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(key_path, flags)
+    try:
+        llm_api_key = os.read(descriptor, 16 * 1024 + 1).decode("utf-8").strip()
+    finally:
+        os.close(descriptor)
+    if not llm_api_key or any(character in llm_api_key for character in "\x00\r\n"):
+        raise ValueError("LLM API key file is invalid")
+    if not args.llm_model.strip():
+        raise ValueError("LLM model is required")
     registries = sorted(args.external_registries or ["docker.io", "ghcr.io"])
     if (
         not registries
@@ -163,10 +189,12 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
     plan_signing_key = _base64_key()
     postgres_password = secrets.token_urlsafe(32)
     valkey_password = secrets.token_urlsafe(36)
+    agent_controller_token = _token("lae_agent_")
 
     environment = {
         "LAE_ADMIN_API_TOKEN": admin_token,
         "LAE_ANALYZER_IMAGE_DIGEST": args.analyzer_image_digest,
+        "LAE_AGENT_CONTROLLER_TOKEN": agent_controller_token,
         "LAE_APPLICATION_IDEMPOTENCY_HMAC_KEY": _base64_key(),
         "LAE_AUTH_HMAC_KEY": _base64_key(),
         "LAE_BILLING_HMAC_KEY": _base64_key(),
@@ -225,6 +253,12 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
         "LAE_WORKER_STATE_HMAC_KEY": _base64_key(),
         "VALKEY_PASSWORD": valkey_password,
     }
+    environment.update(
+        {
+            "ARK_API_KEY": llm_api_key,
+            "ARK_MODEL": args.llm_model.strip(),
+        }
+    )
 
     manager_files = {
         "lae-builder.token": builder_token,
@@ -232,6 +266,13 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
         "credential-broker.token": credential_broker_token,
         "object-broker.token": object_broker_token,
         "lae-admin.token": admin_token,
+        "builder-agent-ai.env": _dotenv(
+            {
+                "LUMA_BUILDER_ANALYZE_CONTROLLER_TOKEN": agent_controller_token,
+                "LUMA_BUILDER_ANALYZE_CONTROLLER_URL": agent_controller_url,
+                "LUMA_BUILDER_ANALYZE_AI_REQUIRED": "1",
+            }
+        ),
         "lae-builder-principals.json": json.dumps(
             {
                 "lae-builder": {
@@ -298,7 +339,10 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
     _write_private(output / "lae-platform-staging.env", _dotenv(environment))
     for name, content in manager_files.items():
         _write_private(output / name, content)
-    _write_private(output / "lae-control.env", _shell_environment(control_environment))
+    # This artifact is installed as /opt/luma/control/control.env.  It is a
+    # strict NAME=value data file consumed by Luma, not a sourceable shell
+    # script; none of these values are inline credentials.
+    _write_private(output / "lae-control.env", _dotenv(control_environment))
 
     fingerprints = {
         name: hashlib.sha256((content + "\n").encode()).hexdigest()

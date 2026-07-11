@@ -396,12 +396,14 @@ name = "lae-agent-controller"
 version = "0.1.0"
 source = { editable = "services/agent-controller" }
 dependencies = [
+    { name = "lae-agent-core" },
     { name = "lae-contracts" },
     { name = "lae-core" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "lae-agent-core", editable = "packages/python/lae-agent-core" },
     { name = "lae-contracts", editable = "packages/contracts" },
     { name = "lae-core", editable = "packages/python/lae-core" },
 ]

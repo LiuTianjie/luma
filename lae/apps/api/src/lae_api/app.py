@@ -8,13 +8,15 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Sequence
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.cors import CORSMiddleware
 
 from lae_core import VERSION, component_payload
 from lae_store import (
@@ -108,6 +110,57 @@ _CREDENTIAL_LIKE = re.compile(
     r"(?:lae_(?:dt|ss_v[0-9]+|cs|em)_[A-Za-z0-9_-]{8,}|bearer\s+[A-Za-z0-9._~-]{8,})",
     re.IGNORECASE,
 )
+_CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+_CORS_HEADERS = [
+    "Accept",
+    "Authorization",
+    "Content-Type",
+    "Idempotency-Key",
+    "X-CSRF-Token",
+    "X-Request-Id",
+]
+
+
+def _cors_allowed_origins(
+    configured: Sequence[str] | str | None = None,
+) -> list[str]:
+    raw_origins: Sequence[str]
+    if configured is None:
+        raw_origins = os.environ.get("LAE_CORS_ALLOWED_ORIGINS", "").split(",")
+    elif isinstance(configured, str):
+        raw_origins = configured.split(",")
+    else:
+        raw_origins = configured
+
+    origins: list[str] = []
+    for raw_origin in raw_origins:
+        origin = raw_origin.strip()
+        if not origin:
+            continue
+        try:
+            parsed = urlsplit(origin)
+            parsed_port = parsed.port
+        except ValueError as exc:
+            raise AuthConfigurationError("CORS allowed origin is invalid") from exc
+        if (
+            origin == "*"
+            or parsed.scheme not in {"http", "https"}
+            or parsed.hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise AuthConfigurationError("CORS allowed origin is invalid")
+        normalized = f"{parsed.scheme.lower()}://{parsed.hostname.lower()}"
+        if parsed_port is not None:
+            normalized += f":{parsed_port}"
+        if origin.lower() != normalized:
+            raise AuthConfigurationError("CORS allowed origin is invalid")
+        if normalized not in origins:
+            origins.append(normalized)
+    return origins
 
 
 class StrictModel(BaseModel):
@@ -402,6 +455,7 @@ def create_app(
     admin_authenticator: Any | None = None,
     admin_store: Any | None = None,
     billing_driver: str | None = None,
+    cors_allowed_origins: Sequence[str] | str | None = None,
 ) -> FastAPI:
     environment = (
         billing_environment or os.environ.get("LAE_ENVIRONMENT", "development")
@@ -605,6 +659,17 @@ def create_app(
         version=VERSION,
         lifespan=lifespan,
     )
+    allowed_origins = _cors_allowed_origins(cors_allowed_origins)
+    if allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_credentials=True,
+            allow_methods=_CORS_METHODS,
+            allow_headers=_CORS_HEADERS,
+            expose_headers=["X-Request-Id"],
+            max_age=600,
+        )
 
     def auth() -> AuthService:
         service = runtime["auth"]

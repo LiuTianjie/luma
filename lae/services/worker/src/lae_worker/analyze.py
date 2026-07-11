@@ -279,6 +279,12 @@ class AnalysisDigestReferences:
     evidence_digest: str
     policy_version: str
     artifacts: tuple[ArtifactDescriptor, ...]
+    verdict: str = "diagnostic_failed"
+    diagnostic_status: str = "diagnostic_failed"
+    diagnostic_mode: str = "deterministic_fallback"
+    diagnostic_code: str = "LEGACY_ANALYSIS_RESULT"
+    knowledge_version: str = "legacy"
+    blockers: tuple[dict[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not _COMMIT.fullmatch(self.resolved_commit):
@@ -314,6 +320,21 @@ class AnalysisDigestReferences:
             for descriptor in self.artifacts
         ):
             raise AnalyzeOrchestrationError()
+        if self.verdict not in {
+            "deployable",
+            "needs_input",
+            "unsupported",
+            "diagnostic_failed",
+        }:
+            raise AnalyzeOrchestrationError()
+        if self.diagnostic_status not in {"succeeded", "diagnostic_failed"}:
+            raise AnalyzeOrchestrationError()
+        if self.diagnostic_mode not in {"ai", "deterministic_fallback"}:
+            raise AnalyzeOrchestrationError()
+        if self.verdict == "unsupported" and not self.blockers:
+            raise AnalyzeOrchestrationError()
+        if self.verdict != "unsupported" and self.blockers:
+            raise AnalyzeOrchestrationError()
 
     @classmethod
     def from_task(cls, task: BuilderTask) -> "AnalysisDigestReferences":
@@ -346,6 +367,18 @@ class AnalysisDigestReferences:
             evidence_digest=_required_string(result, "evidenceDigest"),
             policy_version=_required_string(result, "policyVersion"),
             artifacts=tuple(artifacts),
+            verdict=_optional_string(result, "verdict", "diagnostic_failed"),
+            diagnostic_status=_optional_string(
+                result, "diagnosticStatus", "diagnostic_failed"
+            ),
+            diagnostic_mode=_optional_string(
+                result, "diagnosticMode", "deterministic_fallback"
+            ),
+            diagnostic_code=_optional_string(
+                result, "diagnosticCode", "LEGACY_ANALYSIS_RESULT"
+            ),
+            knowledge_version=_optional_string(result, "knowledgeVersion", "legacy"),
+            blockers=_parse_blockers(result.get("blockers", [])),
         )
 
     def to_result(self) -> dict[str, object]:
@@ -358,6 +391,12 @@ class AnalysisDigestReferences:
             "buildPlanDigest": self.build_plan_digest,
             "evidenceDigest": self.evidence_digest,
             "policyVersion": self.policy_version,
+            "verdict": self.verdict,
+            "diagnosticStatus": self.diagnostic_status,
+            "diagnosticMode": self.diagnostic_mode,
+            "diagnosticCode": self.diagnostic_code,
+            "knowledgeVersion": self.knowledge_version,
+            "blockers": list(self.blockers),
             "artifactDescriptors": {
                 descriptor.name: descriptor.to_result()
                 for descriptor in self.artifacts
@@ -377,6 +416,7 @@ class AnalysisRecording:
             "deployable",
             "needs_configuration",
             "not_deployable",
+            "diagnostic_failed",
         }:
             raise AnalyzeOrchestrationError()
         if self.artifact_state not in {"descriptor-only", "stored"}:
@@ -1104,6 +1144,31 @@ def _required_string(value: Mapping[str, Any], key: str) -> str:
     if not isinstance(item, str):
         raise AnalyzeOrchestrationError()
     return item
+
+
+def _optional_string(value: Mapping[str, Any], key: str, default: str) -> str:
+    item = value.get(key, default)
+    if not isinstance(item, str) or not item:
+        raise AnalyzeOrchestrationError()
+    return item
+
+
+def _parse_blockers(value: Any) -> tuple[dict[str, str], ...]:
+    if not isinstance(value, list) or len(value) > 128:
+        raise AnalyzeOrchestrationError()
+    result: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {
+            "code",
+            "path",
+            "field",
+            "remediation",
+        }:
+            raise AnalyzeOrchestrationError()
+        if not all(isinstance(item[key], str) and item[key] for key in item):
+            raise AnalyzeOrchestrationError()
+        result.append(dict(item))
+    return tuple(result)
 
 
 def _required_int(value: Mapping[str, Any], key: str) -> int:

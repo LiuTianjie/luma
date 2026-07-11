@@ -189,6 +189,19 @@ export type AnalysisCreateResult = {
 export type Analysis = {
   id: string;
   status: string;
+  verdict: "deployable" | "needs_input" | "unsupported" | "diagnostic_failed" | null;
+  diagnostic: {
+    status: "succeeded" | "diagnostic_failed" | null;
+    mode: "ai" | "deterministic_fallback" | null;
+    code: string | null;
+    knowledgeVersion: string | null;
+  };
+  blockers: Array<{
+    code: string;
+    path: string;
+    field: string;
+    remediation: string;
+  }>;
   digests: {
     sourceTree: string | null;
     sourceSnapshot: string | null;

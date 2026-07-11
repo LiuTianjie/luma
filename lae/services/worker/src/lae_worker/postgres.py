@@ -802,7 +802,7 @@ class PostgresAnalysisRecorder:
             raise ValueError("builder_task_id has invalid format")
         require_opaque_id(operation_id, prefix="op")
         recording = AnalysisRecording(
-            analysis_status="analyzed",
+            analysis_status=_analysis_status_for_verdict(references.verdict),
             artifact_state="descriptor-only",
             plan_stored=False,
         )
@@ -860,6 +860,12 @@ class PostgresAnalysisRecorder:
                             deployment_plan_digest=references.deployment_plan_digest,
                             build_plan_digest=references.build_plan_digest,
                             evidence_digest=references.evidence_digest,
+                            verdict=references.verdict,
+                            diagnostic_status=references.diagnostic_status,
+                            diagnostic_mode=references.diagnostic_mode,
+                            diagnostic_code=references.diagnostic_code,
+                            knowledge_version=references.knowledge_version,
+                            blockers=list(references.blockers),
                             artifact_state=recording.artifact_state,
                             plan_stored=recording.plan_stored,
                         )
@@ -957,6 +963,12 @@ class PostgresAnalysisRecorder:
             analysis.deployment_plan_digest,
             analysis.build_plan_digest,
             analysis.evidence_digest,
+            analysis.verdict,
+            analysis.diagnostic_status,
+            analysis.diagnostic_mode,
+            analysis.diagnostic_code,
+            analysis.knowledge_version,
+            analysis.blockers,
             analysis.artifact_state,
             analysis.plan_stored,
         )
@@ -972,6 +984,13 @@ class PostgresAnalysisRecorder:
             None,
             None,
             None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            [],
             "descriptor-only",
             False,
         )
@@ -987,6 +1006,12 @@ class PostgresAnalysisRecorder:
         analysis.deployment_plan_digest = references.deployment_plan_digest
         analysis.build_plan_digest = references.build_plan_digest
         analysis.evidence_digest = references.evidence_digest
+        analysis.verdict = references.verdict
+        analysis.diagnostic_status = references.diagnostic_status
+        analysis.diagnostic_mode = references.diagnostic_mode
+        analysis.diagnostic_code = references.diagnostic_code
+        analysis.knowledge_version = references.knowledge_version
+        analysis.blockers = list(references.blockers)
         analysis.artifact_state = recording.artifact_state
         analysis.plan_stored = recording.plan_stored
 
@@ -1026,7 +1051,7 @@ class PostgresAnalysisRecorder:
         expected = (
             context.application_ref,
             context.source_revision_ref,
-            "analyzed",
+            _analysis_status_for_verdict(references.verdict),
             references.policy_version,
             self._agent_image_digest,
             references.resolved_commit,
@@ -1036,6 +1061,12 @@ class PostgresAnalysisRecorder:
             references.deployment_plan_digest,
             references.build_plan_digest,
             references.evidence_digest,
+            references.verdict,
+            references.diagnostic_status,
+            references.diagnostic_mode,
+            references.diagnostic_code,
+            references.knowledge_version,
+            list(references.blockers),
             "descriptor-only",
             False,
         )
@@ -1052,8 +1083,26 @@ class PostgresAnalysisRecorder:
             analysis.deployment_plan_digest,
             analysis.build_plan_digest,
             analysis.evidence_digest,
+            analysis.verdict,
+            analysis.diagnostic_status,
+            analysis.diagnostic_mode,
+            analysis.diagnostic_code,
+            analysis.knowledge_version,
+            analysis.blockers,
             analysis.artifact_state,
             analysis.plan_stored,
         )
         if actual != expected:
             raise AnalyzeOrchestrationError()
+
+
+def _analysis_status_for_verdict(verdict: str) -> str:
+    try:
+        return {
+            "deployable": "deployable",
+            "needs_input": "needs_configuration",
+            "unsupported": "not_deployable",
+            "diagnostic_failed": "diagnostic_failed",
+        }[verdict]
+    except KeyError as exc:
+        raise AnalyzeOrchestrationError() from exc

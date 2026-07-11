@@ -33,6 +33,7 @@ _UPLOAD_FAILURE = re.compile(r"^LAE_UPLOAD_[A-Z0-9_]{1,80}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_ENV_VALUE_BYTES = 64 * 1024
 _MAX_SOURCE_SECRET_BYTES = 4096
+_BILLING_INTERVALS = {"month": "monthly", "year": "yearly"}
 
 
 class SafeArgumentParser(argparse.ArgumentParser):
@@ -250,8 +251,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     checkout = billing.add_parser("checkout")
     checkout.add_argument("--plan", choices=("lite", "pro", "ultra"), required=True)
-    checkout.add_argument("--interval", choices=("month", "year"), required=True)
-    checkout.add_argument("--provider", choices=("wechat", "alipay", "mock"))
+    checkout.add_argument(
+        "--interval", choices=tuple(_BILLING_INTERVALS), required=True
+    )
     checkout.add_argument("--idempotency-key", required=True)
     return parser
 
@@ -1184,6 +1186,8 @@ def _run(args: argparse.Namespace) -> int:
             return 4
         if analysis.get("status") == "not_deployable":
             return 5
+        if analysis.get("status") == "diagnostic_failed":
+            return 9
         return 0 if analysis.get("status") == "deployable" else 7
     if args.command == "inspect-file":
         if not _REGION.fullmatch(args.region):
@@ -1291,6 +1295,8 @@ def _run(args: argparse.Namespace) -> int:
             return 4
         if analysis_status == "not_deployable":
             return 5
+        if analysis_status == "diagnostic_failed":
+            return 9
         if analysis_status in {"failed", "expired"}:
             return 7
         if analysis_status != "deployable":
@@ -1363,6 +1369,8 @@ def _run(args: argparse.Namespace) -> int:
             return 4
         if analysis_status == "not_deployable":
             return 5
+        if analysis_status == "diagnostic_failed":
+            return 9
         if analysis_status in {"failed", "expired"}:
             return 7
         if analysis_status != "deployable":
@@ -1555,10 +1563,8 @@ def _run(args: argparse.Namespace) -> int:
     if args.command == "billing":
         body: dict[str, Any] = {
             "plan": args.plan,
-            "interval": args.interval,
+            "interval": _BILLING_INTERVALS[args.interval],
         }
-        if args.provider:
-            body["provider"] = args.provider
         result = client.post(
             "/billing/checkout-sessions",
             body,

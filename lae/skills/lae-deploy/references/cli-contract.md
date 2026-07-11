@@ -39,7 +39,7 @@ lae env list <app>
 lae env set <app> <name> --service <service-or-*> --expected-version <version> --value-stdin --idempotency-key <key>
 lae env unset <app> <name> --service <service-or-*> --expected-version <version> --idempotency-key <key>
 lae plans list
-lae billing checkout --plan <lite|pro|ultra> --interval <month|year> [--provider <wechat|alipay|mock>] --idempotency-key <key>
+lae billing checkout --plan <lite|pro|ultra> --interval <month|year> --idempotency-key <key>
 ```
 
 The CLI exposes pending-app creation, public/private Git inspection, static
@@ -48,6 +48,10 @@ operations, bounded logs/metrics, plan discovery, and checkout-session
 creation. Deployment history and token management remain Web/API session
 flows; if `lae --help` does not advertise a flow, stop instead of substituting
 raw Luma calls.
+
+`billing checkout` keeps the human-facing `month|year` interval spelling and
+maps it to the API's `monthly|yearly` values. The active payment provider is a
+server-side capability and is never selected or sent by the CLI.
 
 `apps show` is the current CLI detail boundary for application services,
 routes, volumes, and environment metadata. Deployment-history and deploy-token

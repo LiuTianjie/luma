@@ -1,6 +1,6 @@
 # Luma Application Engine（LAE）产品与工程设计
 
-> 状态：Draft v0.3，核心部署边界、用户流程与值班 SOP 已成文；生产参数和真实 staging/恢复证据仍需关闭
+> 状态：Draft v0.5；代码候选为 Luma `0.1.171`，当前 live fleet 仍为 `0.1.170`；staging 的 9 个平台 task、TLS 与基础探针健康，租户 Runtime 部署/生命周期最终 E2E 仍待完成
 > 日期：2026-07-11
 > 目标：在 Luma 之上建设面向普通用户和 AI Agent 的多租户应用部署平台；LAE 自身及其依赖全部由 Luma 部署和管理。
 
@@ -11,6 +11,7 @@ LAE 不能只是给现有 Luma Dashboard 增加注册页。正确边界是：
 - **Luma** 是基础设施控制面和超级管理员底座，负责节点、调度、镜像、路由、DNS、存储以及真实部署。
 - **LAE** 是 ToC 产品控制面，负责用户、租户、应用、诊断、部署任务、配额、计费、凭据、审计、CLI 和 Agent 体验。
 - **LAE Agent** 是独立部署的、受策略约束的公开分析服务：API/controller 负责编排，源码拉取和分析 runner 由 Luma builder 执行。它输出结构化 `DeploymentPlan`，不直接持有 Luma 超级管理员凭据。
+- 用户不写、上传或维护 Luma 文件。LAE Agent 结合版本化 Knowledge Pack、确定性项目证据和可配置的 OpenAI-compatible 模型生成 manifest candidate；平台再以确定性 schema/语义/策略校验收敛并保存最终 Luma manifest。AI 不能移除 blocker、放宽权限或绕过平台策略。
 - 普通用户与用户级 deploy token 永远不能直接调用 Luma management API。LAE Orchestrator 是唯一允许调用 Luma 的产品服务。
 - 每次部署都必须保存不可变的源码快照标识、诊断结果、构建产物 digest、`DeploymentPlan` 和最终 Luma manifest。用户仓库无需包含 Luma 文件。
 - 用户只选择 `region`，不能选择或看到具体节点/IP。Luma 根据实时容量、runtime capability、builder 隔离、volume 可达性和上一 allocation 连续性完成 placement；完整拓扑只在内部控制面和授权管理员排障中可见。
@@ -34,30 +35,32 @@ LAE 不能只是给现有 Luma Dashboard 增加注册页。正确边界是：
 | 多服务 | Compose 可有多个公网 HTTP 服务，也支持内部服务、后台 worker、依赖服务和受管命名卷；暂不支持 `tcp-relay` |
 | 动态部署范围 | Dockerfile 与 Compose 对 Lite/Pro/Ultra 用户均开放；套餐只限制资源和高级能力，不以邀请制区分来源类型 |
 | Lite 有状态能力 | 允许受管命名卷和应用内自管数据库；基础备份规格暂按草案执行，仍需确认保留期与恢复方式 |
-| AI 使用 | 确定性分析器是安全与可部署判断的唯一依据；源码默认不发送到外部大模型 |
+| AI 使用 | OpenAI-compatible provider 的 base URL/API key/model 可配置；当前 staging 使用 ARK 映射。模型只接收脱敏、限量的结构化项目证据和版本化 Knowledge Pack，不接收源码正文或 secret；确定性校验拥有最终安全裁决权 |
 | 计费 | Lite / Pro / Ultra entitlement 先落地，支付先 mock，再接微信/支付宝 |
 | Runtime placement | 租户只提交 `cn`/`global` region；节点、IP、候选集和 failure domain 不进入租户投影，内部 placement 仅供 Luma 与管理员审计 |
 | 平台部署 | LAE Web/API/Agent/Worker/PostgreSQL/对象存储/观测组件全部由 Luma 部署 |
 
 ## 3. 当前 Luma 事实基线
 
-本设计不是从空白假设出发。2026-07-11 对当前控制面做了只读核验：
+本设计不是从空白假设出发。2026-07-11 当前 staging 的分层事实是：
 
-- Luma CLI 与 Control 均为 `0.1.160`。
-- 当前注册 9 个节点，8 个 node agent ready；manager 记录仍显示 agent missing，需要在承载公网 LAE 前修复。
-- 当前 16 个服务中 14 个 running、2 个 dead，4 个为 Compose 部署。
-- 默认构建节点是 `builder`，位于内部 `home` region；该值不属于 LAE 租户协议，公开 analysis/upload/template/Web/CLI 只接受 `cn | global`。内部 registry 服务在运行，但 build status 中 `registryHost` 仍为空。
+- 本轮代码候选为 Luma `0.1.171`；当前 live CLI、Control 与在线节点仍为 `0.1.170`，需按 manager → fleet 顺序完成同一不可变 ref 的升级。`manager` 是唯一控制面；`aly` 是过时历史节点，不进入本轮升级或任何 LAE placement。
+- LAE 平台 staging 固定在 `lab`；租户 runtime allowlist 是 `manager + tecent`，其中 `manager` 显式具备 runtime role。生产仍应使用专用平台与 runner pool，不能把当前共享节点布局当成生产拓扑。
+- 默认构建节点是 `builder`，位于内部 `home` region；该值不属于 LAE 租户协议，公开 analysis/upload/template/Web/CLI 只接受 `cn | global`。内部 registry 拉取地址为 `100.66.177.70:5000`，Builder 本机推送地址为 `localhost:5000`，平台构建使用 direct 模式；真实 `scripts/setup-lae-builder.sh --check` 已通过。
+- 当前 staging 的 9 个平台 task 均健康，三个公网域名 TLS 有效，Web、API live/ready 与 artifact ready 探针均返回 200。真实注册、默认 deploy token、CLI、模板与 analysis 已跑；租户 source → Builder → Runtime 部署、随机域名、观测与 lifecycle 动作矩阵仍待本轮最终 E2E，不能把平台健康外推为产品全功能已验收。
 - 现有 Luma `build-image` 已在 builder 临时目录 clone Git、执行 buildx、推送 registry，并能发现仓库内 Compose sidecar 后构建多个 service；凭据在 task lease 时注入。
 - legacy builder 没有“只分析不构建”的 action，也不能直接消费 LAE 生成的多服务 `BuildPlan`，其 Docker/buildx 共享宿主执行形态不满足公网多租户隔离。Builder v2 因此采用不可变 source snapshot、`analyze-source`、显式多 build plan、短期凭据 lease 和 rootless sandbox；其中 analyzer 已拒绝 default/rootful Docker daemon，其他公开门槛见实施状态文档。
 - 已有能力包括单服务/Compose 部署、预览、GitHub/Gitea 凭据、仓库构建、内部 registry、NDJSON 进度、部署历史、日志、指标、更新、重启和回滚。
 - 当前 Compose 会渲染成一个 Nomad group：所有 service 同节点、同 region、共享 network namespace、单 group 副本；LAE 必须检查端口唯一和整组容量，不能把逐服务 HA 当成现有能力。
-- LAE Runtime 已增加 Luma 内部 placement admission：按 region、Nomad/Luma readiness、runtime capability、builder-only 排除、managed volume 兼容和 prior allocation 生成候选约束，并用 Nomad plan 检查整组容量；真实节点故障/无容量/volume affinity 仍需 staging 验证。
+- LAE Runtime 已增加 Luma 内部 placement admission：按 region、Nomad/Luma readiness、runtime capability、builder-only 排除、managed volume 兼容和 prior allocation 生成候选约束，并用 Nomad plan 检查整组容量；当前 staging 候选为 `manager + tecent`，真实节点故障/无容量/volume affinity 仍需验收。
 - 现有认证只有一枚全局 management token 和一枚 node join token；`control.json` 是单集群状态文件，不是多租户数据库。
 - scoped secret、Git token 和 registry password 当前会进入控制面状态；这不满足公网多租户密钥隔离要求。
 - 部署写操作当前由进程内全局锁串行化；它可以支撑低并发运维，但不能直接当作公共平台并发执行层。
 - 当前没有文件上传、用户/RBAC、套餐、支付、邮件、应用 suspend/resume、租户级审计或 namespace enforcement。
 
 因此，现有 Luma 适合作为 LAE 的执行底座，但不适合直接暴露给租户。
+
+本轮还确认了两个部署约束：其一，BuildKit 的代理配置会持久化在 Buildx container 中，当前代码会在代理 URL、`NO_PROXY` 或 direct/proxy 模式变化时重建不匹配的 builder；LAE 平台 Dockerfile 的依赖下载显式使用 direct 网络，避免继承租户 build args。其二，`artifact-init` 在当前 Compose-to-Nomad 模型中是完成初始化后保持健康的长运行 task，staging 使用 512 MiB memory limit 与 256 MiB reservation；资源过低会让整个 9-service group 无法健康，production 参数必须独立验证且满足 reservation 不高于 limit。
 
 ## 4. MVP 支持矩阵
 

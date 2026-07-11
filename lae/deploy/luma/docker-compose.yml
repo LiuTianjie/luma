@@ -52,6 +52,7 @@ services:
       LAE_AUTH_HMAC_KEY_VERSION: "1"
       LAE_BILLING_DRIVER: disabled
       LAE_CREDENTIAL_BROKER_TOKEN: ${LAE_CREDENTIAL_BROKER_TOKEN}
+      LAE_CORS_ALLOWED_ORIGINS: https://lae.itool.tech
       LAE_DATABASE_URL: ${LAE_DATABASE_URL}
       LAE_DEPLOYMENT_IDEMPOTENCY_HMAC_KEY: ${LAE_DEPLOYMENT_IDEMPOTENCY_HMAC_KEY}
       LAE_EMAIL_DRIVER: smtp
@@ -201,6 +202,14 @@ services:
     build:
       context: ../..
       dockerfile: deploy/luma/docker/agent-controller.Dockerfile
+    environment:
+      LAE_AGENT_CONTROLLER_TOKEN: ${LAE_AGENT_CONTROLLER_TOKEN}
+      LAE_AGENT_AI_REQUIRED: "0"
+      LAE_AGENT_LLM_API_KEY: ${LAE_AGENT_LLM_API_KEY}
+      LAE_AGENT_LLM_BASE_URL: ${LAE_AGENT_LLM_BASE_URL}
+      LAE_AGENT_LLM_MODEL: ${LAE_AGENT_LLM_MODEL}
+      LAE_AGENT_LLM_TIMEOUT_SECONDS: "40"
+      LAE_AGENT_KNOWLEDGE_PATH: /opt/lae/knowledge/v1/knowledge-pack.json
     healthcheck:
       test:
         - CMD

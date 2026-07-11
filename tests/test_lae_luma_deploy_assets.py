@@ -125,7 +125,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         )
         self.assertEqual(
             {service.name for service in compose_public_services(deployment)},
-            {"web", "api", "artifact-store"},
+            {"web", "api", "agent-controller", "artifact-store"},
         )
         rendered = render_compose_job(
             config(),

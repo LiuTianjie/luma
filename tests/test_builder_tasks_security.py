@@ -790,6 +790,12 @@ class BuilderTaskSecurityTests(unittest.TestCase):
             "evidenceDigest": evidence_digest,
             "policyVersion": "2026-07-11",
             "agentImageDigest": RUNNER_IMAGE,
+            "verdict": "deployable",
+            "diagnosticStatus": "succeeded",
+            "diagnosticMode": "ai",
+            "diagnosticCode": "AI_ANALYSIS_SUCCEEDED",
+            "knowledgeVersion": "2026-07-11.1",
+            "blockers": [],
             "artifacts": {
                 "evidence": {
                     "digest": evidence_digest,

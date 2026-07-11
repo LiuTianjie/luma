@@ -109,6 +109,16 @@ def _artifact_body(name: str, metadata: dict) -> dict:
             "environment": [],
             "warnings": [],
             "blockers": [],
+            "verdict": "deployable",
+            "unsupported": [],
+            "ai": {
+                "status": "diagnostic_failed",
+                "mode": "deterministic_fallback",
+                "code": "AI_ANALYSIS_NOT_CONFIGURED",
+                "model": None,
+                "knowledgeVersion": "2026-07-11.1",
+                "manifestCandidate": {},
+            },
         }
     if name == "deploymentPlan":
         return {
@@ -182,6 +192,12 @@ def _write_valid_runner_output(
         "sourceSnapshotId": metadata["sourceSnapshotId"],
         "sourceSnapshotDigest": metadata["sourceSnapshotDigest"],
         "policyVersion": metadata["policyVersion"],
+        "verdict": "deployable",
+        "diagnosticStatus": "diagnostic_failed",
+        "diagnosticMode": "deterministic_fallback",
+        "diagnosticCode": "AI_ANALYSIS_NOT_CONFIGURED",
+        "knowledgeVersion": "2026-07-11.1",
+        "blockers": [],
         "artifacts": descriptors,
     }
     (output_dir / "result.json").write_text(
@@ -300,6 +316,12 @@ class BuilderAnalyzeExecutorTests(unittest.TestCase):
                     "evidenceDigest",
                     "policyVersion",
                     "agentImageDigest",
+                    "verdict",
+                    "diagnosticStatus",
+                    "diagnosticMode",
+                    "diagnosticCode",
+                    "knowledgeVersion",
+                    "blockers",
                     "artifacts",
                 },
             )

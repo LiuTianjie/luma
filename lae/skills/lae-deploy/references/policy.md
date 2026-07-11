@@ -1,5 +1,10 @@
 # LAE source and deployment policy
 
+Canonical capability, security, verdict, manifest, placement, environment and
+framework rules are bundled in `knowledge-pack.json`. The release test requires
+that self-contained Skill copy to be byte-for-byte identical to the Controller's
+versioned Knowledge Pack.
+
 ## Supported sources
 
 | Source | Accepted input | Build path |

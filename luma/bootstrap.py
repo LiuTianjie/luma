@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import ipaddress
 import os
@@ -21,6 +23,8 @@ from .remote import RemoteExecutor
 
 
 ROOT = "/opt/luma"
+CONTROL_ENV_FILE = f"{ROOT}/control/control.env"
+CONTROL_ENV_FILE_MAX_BYTES = 64 * 1024
 DEFAULT_TRAEFIK_IMAGE = "docker.1panel.live/library/traefik:v3.6"
 DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
@@ -117,6 +121,105 @@ def _control_image(config: LumaConfig) -> str:
     )
 
 
+def _parse_control_environment_file(content: bytes) -> dict[str, str]:
+    """Parse the persisted Control environment without shell evaluation.
+
+    The file is intentionally a small, strict ``NAME=value`` format.  It is
+    not a shell script: comments, ``export``, quoting, substitutions and
+    continuation lines are rejected instead of being interpreted.
+    """
+
+    from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, control_job_environment
+
+    if len(content) > CONTROL_ENV_FILE_MAX_BYTES:
+        raise LumaError("Luma Control environment file is too large")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise LumaError("Luma Control environment file must be UTF-8") from None
+    if "\0" in text or "\r" in text:
+        raise LumaError("Luma Control environment file contains invalid characters")
+
+    parsed: dict[str, str] = {}
+    for line_number, line in enumerate(text.split("\n"), start=1):
+        if not line:
+            continue
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
+        if match is None:
+            raise LumaError(
+                f"Luma Control environment file has an invalid line at {line_number}"
+            )
+        name, value = match.groups()
+        if name not in CONTROL_JOB_ENV_ALLOWLIST:
+            raise LumaError(
+                f"Luma Control environment file key is not allowlisted: {name}"
+            )
+        if name in parsed:
+            raise LumaError(
+                f"Luma Control environment file has a duplicate key: {name}"
+            )
+        if not value:
+            raise LumaError(
+                f"Luma Control environment file value is empty: {name}"
+            )
+        parsed[name] = value
+
+    # Reuse the renderer's per-key validation and normalization so persisted
+    # settings have exactly the same contract as invocation-time settings.
+    return control_job_environment(parsed)
+
+
+def _persisted_control_environment(
+    remote: Executor,
+    path: str = CONTROL_ENV_FILE,
+) -> dict[str, str]:
+    """Read the manager-owned Control environment after remote file checks."""
+
+    quoted_path = shlex.quote(path)
+    output = remote.sudo(
+        "set -euo pipefail; "
+        f"path={quoted_path}; "
+        "directory=${path%/*}; "
+        "[ ! -L \"$directory\" ] && [ -d \"$directory\" ] || { printf '%s\\n' "
+        "'Luma Control environment directory must be a real directory' >&2; exit 73; }; "
+        "directory_meta=$(stat -c '%u:%a' -- \"$directory\"); "
+        "directory_uid=${directory_meta%%:*}; directory_mode=${directory_meta#*:}; "
+        "[ \"$directory_uid\" = 0 ] && [ $((8#$directory_mode & 022)) -eq 0 ] || { "
+        "printf '%s\\n' 'Luma Control environment directory is not private' >&2; exit 73; }; "
+        "if [ ! -e \"$path\" ] && [ ! -L \"$path\" ]; then "
+        "printf '%s\\n' __LUMA_CONTROL_ENV_MISSING__; exit 0; fi; "
+        "[ ! -L \"$path\" ] || { printf '%s\\n' "
+        "'Luma Control environment file must not be a symlink' >&2; exit 73; }; "
+        "[ -f \"$path\" ] || { printf '%s\\n' "
+        "'Luma Control environment path must be a regular file' >&2; exit 73; }; "
+        "meta=$(stat -c '%u:%a:%s' -- \"$path\"); "
+        "uid=${meta%%:*}; rest=${meta#*:}; mode=${rest%%:*}; size=${rest#*:}; "
+        "[ \"$uid\" = 0 ] || { printf '%s\\n' "
+        "'Luma Control environment file must be owned by root' >&2; exit 73; }; "
+        "case \"$mode\" in 400|600) ;; *) printf '%s\\n' "
+        "'Luma Control environment file mode must be 0400 or 0600' >&2; exit 73;; esac; "
+        f"[ \"$size\" -le {CONTROL_ENV_FILE_MAX_BYTES} ] || {{ printf '%s\\n' "
+        "'Luma Control environment file is too large' >&2; exit 73; }; "
+        "base64 \"$path\" | tr -d '\\n'; printf '\\n'"
+    )
+    # Executors return text.  Treat an unconfigured test double like a missing
+    # optional file, while real executors can only return ``str`` here.
+    if not isinstance(output, str):
+        return {}
+    output = output.strip()
+    # Empty output is accepted as "not installed" for executor compatibility;
+    # the real command always emits either the marker or one base64 line.
+    if not output or output == "__LUMA_CONTROL_ENV_MISSING__":
+        return {}
+    if "\n" in output:
+        raise LumaError("Luma Control environment file reader returned invalid output")
+    try:
+        content = base64.b64decode(output, validate=True)
+    except (ValueError, binascii.Error):
+        raise LumaError("Luma Control environment file reader returned invalid data") from None
+    return _parse_control_environment_file(content)
+
+
 def _pull_image(remote: Executor, image: str) -> str:
     exists = _last_command_value(_docker(remote, f"docker image inspect {shlex.quote(image)} >/dev/null 2>&1 && echo yes || echo no"))
     if exists == "yes":
@@ -158,11 +261,18 @@ def deploy_control_stack(
     from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, render_control_job
 
     node = node_name or local_host_name()
-    control_environment = {
+    # The manager-owned file survives CLI/process updates.  The current
+    # invocation is intentionally authoritative, which permits an operator to
+    # rotate or override one setting without first rewriting the persisted
+    # file.  Both sources are independently restricted to the Control Job
+    # allowlist and validated by render_control_job.
+    control_environment = _persisted_control_environment(remote)
+    invocation_environment = {
         name: str(os.environ[name])
         for name in CONTROL_JOB_ENV_ALLOWLIST
         if str(os.environ.get(name) or "")
     }
+    control_environment.update(invocation_environment)
     job_json = render_control_job(
         image=deploy_image,
         node_name=node,

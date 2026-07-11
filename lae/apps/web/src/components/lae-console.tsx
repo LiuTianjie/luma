@@ -68,6 +68,7 @@ import {
   type ApplicationLogTail,
   type ApplicationMetricHistory,
   type ApplicationTemplate,
+  type Analysis,
 } from "../lib/lae-api";
 
 type FlowState = "idle" | "configuring" | "diagnosing" | "ready" | "deploying" | "live";
@@ -88,6 +89,21 @@ const templateIcons: Record<string, LucideIcon> = {
   "square-terminal": SquareTerminal,
 };
 
+function analysisFailureMessage(analysis: Analysis, subject: string): string {
+  if (analysis.verdict === "diagnostic_failed") {
+    return `平台诊断暂时失败（${analysis.diagnostic.code || "LAE_DIAGNOSTIC_FAILED"}）。${subject}没有被判定为不支持，请稍后重试。`;
+  }
+  if (analysis.verdict === "unsupported") {
+    const fixes = analysis.blockers
+      .map((item) => `${item.code} · ${item.path} · ${item.field}：${item.remediation}`)
+      .join("；");
+    return fixes
+      ? `${subject}暂不支持部署。${fixes}`
+      : `${subject}暂不支持部署；请重新运行诊断以获取完整修复建议。`;
+  }
+  return `${subject}目前不能进入部署，请按诊断结果补齐配置后重试。`;
+}
+
 const templatePositions: Record<string, { x: number; y: number; drift: number }> = {
   "nextjs-docker": { x: 18, y: 27, drift: 0.2 },
   "fastapi-minimal": { x: 43, y: 16, drift: 0.8 },
@@ -95,9 +111,21 @@ const templatePositions: Record<string, { x: number; y: number; drift: number }>
   "express-hello": { x: 48, y: 68, drift: 0.5 },
 };
 
+const templateDescriptions: Record<string, string> = {
+  "nextjs-docker": "已配置 standalone 输出的 Next.js App Router 起步应用。",
+  "fastapi-minimal": "轻量 Python API，并自带自动生成的 OpenAPI 文档界面。",
+  "flask-hello": "克制、易于扩展的 Python Web 服务起步应用。",
+  "express-hello": "使用标准启动命令的轻量 Node.js HTTP 服务。",
+};
+
+type ConsoleSection = "deployment" | "applications" | "activity" | "cli";
+
+const consoleSections: ConsoleSection[] = ["deployment", "applications", "activity", "cli"];
+
 function arrangeTemplates(items: ApplicationTemplate[]): Template[] {
   return items.map(({ icon, ...item }, index) => ({
     ...item,
+    description: templateDescriptions[item.id] || item.description,
     iconName: icon,
     icon: templateIcons[icon] || Sparkles,
     ...(templatePositions[item.id] || {
@@ -172,6 +200,7 @@ export function LaeConsole() {
   const [deploymentConfiguration, setDeploymentConfiguration] =
     useState<DeploymentConfiguration | null>(null);
   const [environmentSaving, setEnvironmentSaving] = useState(false);
+  const [activeSection, setActiveSection] = useState<ConsoleSection>("deployment");
   const [activeRun, setActiveRun] = useState<{
     applicationId: string;
     analysisId: string;
@@ -193,6 +222,52 @@ export function LaeConsole() {
     },
     [],
   );
+
+  useEffect(() => {
+    const setSectionFromHash = () => {
+      const section = window.location.hash.slice(1) as ConsoleSection;
+      if (consoleSections.includes(section)) setActiveSection(section);
+    };
+    const setSectionFromScroll = () => {
+      const marker = window.innerWidth <= 760 ? 104 : 142;
+      const hashSection = window.location.hash.slice(1) as ConsoleSection;
+      let current: ConsoleSection = "deployment";
+      for (const section of consoleSections) {
+        const element = document.getElementById(section);
+        if (element && element.getBoundingClientRect().top <= marker) current = section;
+      }
+      const activityTop = document.getElementById("activity")?.getBoundingClientRect().top;
+      const cliTop = document.getElementById("cli")?.getBoundingClientRect().top;
+      const utilitiesShareRow =
+        activityTop !== undefined && cliTop !== undefined && Math.abs(activityTop - cliTop) < 4;
+      if (
+        utilitiesShareRow &&
+        (hashSection === "activity" || hashSection === "cli") &&
+        activityTop <= marker
+      ) {
+        current = hashSection;
+      }
+      if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 8) {
+        current = utilitiesShareRow && hashSection === "activity" ? "activity" : "cli";
+      }
+      setActiveSection(current);
+    };
+    const updateInitialSection = () => {
+      setSectionFromScroll();
+      setSectionFromHash();
+    };
+
+    window.addEventListener("hashchange", setSectionFromHash);
+    window.addEventListener("scroll", setSectionFromScroll, { passive: true });
+    window.addEventListener("resize", setSectionFromScroll);
+    const frame = window.requestAnimationFrame(updateInitialSection);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("hashchange", setSectionFromHash);
+      window.removeEventListener("scroll", setSectionFromScroll);
+      window.removeEventListener("resize", setSectionFromScroll);
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -469,7 +544,7 @@ export function LaeConsole() {
       const result = await getAnalysis(analysis.analysis.id, controller.signal);
       if (
         operationStatus === "succeeded" &&
-        result.status === "needs_configuration" &&
+        result.verdict === "needs_input" &&
         result.planStored
       ) {
         const configuration = await getDeploymentConfiguration(
@@ -484,12 +559,12 @@ export function LaeConsole() {
       }
       if (
         operationStatus !== "succeeded" ||
-        result.status !== "deployable" ||
+        result.verdict !== "deployable" ||
         !result.planStored
       ) {
         setFlow("configuring");
         setFlowError(
-          "该来源目前不能安全部署，请查看诊断事件后调整代码。",
+          analysisFailureMessage(result, "该来源"),
         );
         return;
       }
@@ -588,7 +663,7 @@ export function LaeConsole() {
       const result = await getAnalysis(analysis.analysis.id, controller.signal);
       if (
         operationStatus === "succeeded" &&
-        result.status === "needs_configuration" &&
+        result.verdict === "needs_input" &&
         result.planStored
       ) {
         const configuration = await getDeploymentConfiguration(
@@ -603,12 +678,12 @@ export function LaeConsole() {
       }
       if (
         operationStatus !== "succeeded" ||
-        result.status !== "deployable" ||
+        result.verdict !== "deployable" ||
         !result.planStored
       ) {
         setFlow("configuring");
         setFlowError(
-          "该静态产物目前不能安全部署，请查看诊断事件。",
+          analysisFailureMessage(result, "该静态产物"),
         );
         return;
       }
@@ -658,7 +733,7 @@ export function LaeConsole() {
       const analysis = await getAnalysis(result.analysis.id, controller.signal);
       if (
         operationStatus === "succeeded" &&
-        analysis.status === "needs_configuration" &&
+        analysis.verdict === "needs_input" &&
         analysis.planStored
       ) {
         const configuration = await getDeploymentConfiguration(
@@ -673,11 +748,11 @@ export function LaeConsole() {
       }
       if (
         operationStatus !== "succeeded" ||
-        analysis.status !== "deployable" ||
+        analysis.verdict !== "deployable" ||
         !analysis.planStored
       ) {
         setFlow("idle");
-        setFlowError("该模板未通过当前版本的安全诊断，应用不会进入部署阶段。");
+        setFlowError(analysisFailureMessage(analysis, "该模板"));
         return;
       }
       setFlow("ready");
@@ -793,23 +868,43 @@ export function LaeConsole() {
       />
 
       <aside className="rail" aria-label="主导航">
-        <button className="rail-button is-active" aria-label="部署">
+        <a
+          className={`rail-button${activeSection === "deployment" ? " is-active" : ""}`}
+          href="#deployment"
+          aria-current={activeSection === "deployment" ? "location" : undefined}
+          onClick={() => setActiveSection("deployment")}
+        >
           <CloudUpload size={18} strokeWidth={1.7} />
           <span>部署</span>
-        </button>
-        <button className="rail-button" aria-label="应用">
+        </a>
+        <a
+          className={`rail-button${activeSection === "applications" ? " is-active" : ""}`}
+          href="#applications"
+          aria-current={activeSection === "applications" ? "location" : undefined}
+          onClick={() => setActiveSection("applications")}
+        >
           <Boxes size={18} strokeWidth={1.7} />
           <span>应用</span>
-        </button>
-        <button className="rail-button" aria-label="活动">
+        </a>
+        <a
+          className={`rail-button${activeSection === "activity" ? " is-active" : ""}`}
+          href="#activity"
+          aria-current={activeSection === "activity" ? "location" : undefined}
+          onClick={() => setActiveSection("activity")}
+        >
           <Orbit size={18} strokeWidth={1.7} />
           <span>活动</span>
-        </button>
+        </a>
         <div className="rail-spacer" />
-        <button className="rail-button" aria-label="命令行">
+        <a
+          className={`rail-button${activeSection === "cli" ? " is-active" : ""}`}
+          href="#cli"
+          aria-current={activeSection === "cli" ? "location" : undefined}
+          onClick={() => setActiveSection("cli")}
+        >
           <Command size={18} strokeWidth={1.7} />
           <span>CLI</span>
-        </button>
+        </a>
       </aside>
 
       <section className="workspace">
@@ -839,7 +934,7 @@ export function LaeConsole() {
           </motion.p>
         </div>
 
-        <div className="main-grid">
+        <div className="main-grid console-anchor" id="deployment">
           <TemplateLake
             templates={templates}
             selected={selectedTemplate}
@@ -884,6 +979,7 @@ export function LaeConsole() {
           }
           onInspect={inspectApplication}
         />
+        <ConsoleUtilities flow={flow} events={operationEvents} error={flowError} />
       </section>
       <AnimatePresence>
         {observingApplication && (
@@ -1057,7 +1153,7 @@ function TemplateLake({
               transition={{ duration: 0.38, ease: [0.4, 0, 0.2, 1] }}
             >
               <Sparkles size={14} strokeWidth={1.5} />
-              <span><strong>{selected.name}</strong> 已选中，可在右侧开始诊断</span>
+              <span><strong>{selected.name}</strong> 已选中，继续开始诊断</span>
             </motion.div>
           )}
         </AnimatePresence>
@@ -1753,7 +1849,11 @@ function ApplicationShore({
 }) {
   const serviceCount = applications.reduce((total, app) => total + app.services, 0);
   return (
-    <section className="application-shore" aria-labelledby="applications-title">
+    <section
+      className="application-shore console-anchor"
+      id="applications"
+      aria-labelledby="applications-title"
+    >
       <div className="shore-title">
         <span className="section-index">02</span>
         <div>
@@ -1845,7 +1945,7 @@ function ApplicationShore({
               <span>{notice || "创建应用后，诊断与部署进度会在这里成为真实记录。"}</span>
             </div>
             {authenticated ? (
-              <a href="#deployment-title">开始部署 <ArrowRight size={14} /></a>
+              <a href="#deployment">开始部署 <ArrowRight size={14} /></a>
             ) : (
               <Link href="/login">注册或登录 <ArrowRight size={14} /></Link>
             )}
@@ -1853,6 +1953,70 @@ function ApplicationShore({
         )}
       </div>
     </section>
+  );
+}
+
+function ConsoleUtilities({
+  flow,
+  events,
+  error,
+}: {
+  flow: FlowState;
+  events: OperationEvent[];
+  error: string | null;
+}) {
+  const recentEvents = events.slice(-4).reverse();
+  return (
+    <div className="console-utilities">
+      <section className="utility-panel console-anchor" id="activity" aria-labelledby="activity-title">
+        <div className="utility-heading">
+          <span className="section-index">03</span>
+          <div>
+            <p>OPERATION STREAM</p>
+            <h2 id="activity-title">部署活动</h2>
+          </div>
+          <span className={`utility-status is-${flow}`}>{stateCopy[flow].eyebrow}</span>
+        </div>
+        {error && <p className="shore-notice" role="alert">{error}</p>}
+        {recentEvents.length ? (
+          <ol className="activity-ledger" aria-live="polite">
+            {recentEvents.map((event) => (
+              <li key={event.eventId} className={event.level === "error" ? "is-error" : ""}>
+                <span>{String(event.cursor).padStart(2, "0")}</span>
+                <div><strong>{event.message}</strong><small>{event.phase || event.status}</small></div>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <div className="utility-empty">
+            <Activity size={17} strokeWidth={1.45} />
+            <div>
+              <strong>{error ? "最近一次诊断需要处理" : "还没有部署活动"}</strong>
+              <span>{error || "开始一次诊断后，结构化进度会留在这里。"}</span>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="utility-panel console-anchor" id="cli" aria-labelledby="cli-title">
+        <div className="utility-heading">
+          <span className="section-index">04</span>
+          <div>
+            <p>AGENT-FRIENDLY</p>
+            <h2 id="cli-title">LAE CLI</h2>
+          </div>
+          <SquareTerminal size={18} strokeWidth={1.4} />
+        </div>
+        <p className="cli-description">Deploy token 授权后，CLI 与控制台走同一套诊断和部署协议，并持续输出机器可读进度。</p>
+        <div className="cli-command" aria-label="LAE CLI 示例命令">
+          <code><span>$</span> lae login --token-stdin</code>
+          <code><span>$</span> lae inspect --app &lt;id&gt; --repo &lt;url&gt; --ref &lt;ref&gt; --idempotency-key &lt;key&gt;</code>
+        </div>
+        <Link className="utility-link" href="/account">
+          管理 Deploy token <ArrowRight size={14} />
+        </Link>
+      </section>
+    </div>
   );
 }
 

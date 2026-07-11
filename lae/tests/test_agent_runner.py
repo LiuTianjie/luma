@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 LAE_ROOT = Path(__file__).resolve().parents[1]
 for relative in (
@@ -19,7 +21,13 @@ for relative in (
 ):
     sys.path.insert(0, str(LAE_ROOT / relative))
 
-from lae_agent_core import AnalysisError, analyze_source  # noqa: E402
+from lae_agent_core import (  # noqa: E402
+    AIDiagnosticError,
+    AnalysisError,
+    apply_ai_proposal,
+    analyze_source,
+    manifest_candidate_from_plan,
+)
 from lae_agent_runner.__main__ import main as runner_main  # noqa: E402
 from lae_contracts import validate_instance  # noqa: E402
 
@@ -497,6 +505,143 @@ services:
         error = json.loads(stderr.getvalue())
         self.assertEqual(error["code"], "LAE_ARGUMENT_INVALID")
         self.assertNotIn("canary-secret-value", stderr.getvalue())
+
+    def test_ai_controller_enriches_plan_from_redacted_bounded_project_context(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_controller(_config, request):
+            captured["request"] = request
+            plan = copy.deepcopy(request["deterministic"]["deploymentPlan"])
+            optional = next(
+                item for item in plan["environment"] if item["name"] == "OPTIONAL_SETTING"
+            )
+            optional["required"] = True
+            return {
+                "schemaVersion": "lae.ai-analysis-response/v1",
+                "status": "succeeded",
+                "model": "test-model",
+                "knowledgeVersion": "2026-07-11.1",
+                "proposal": {
+                    "deploymentPlan": plan,
+                    "manifestCandidate": manifest_candidate_from_plan(plan),
+                },
+            }
+
+        files = {
+            "package.json": '{"scripts":{"start":"node server.js"},"api_key":"canary-package-secret"}',
+            "README.md": "Run the production server. Authorization: Bearer canary-readme-secret",
+            "server.js": "console.log(process.env.OPTIONAL_SETTING)",
+            ".env": "UPSTREAM_API_KEY=canary-dotenv-secret\n",
+            "private-key.pem": "-----BEGIN PRIVATE KEY-----\ncanary-private\n-----END PRIVATE KEY-----\n",
+        }
+        environment = {
+            "LAE_AGENT_CONTROLLER_URL": "https://controller.example.test",
+            "LAE_AGENT_CONTROLLER_TOKEN": "controller-test-token",
+            "LAE_AGENT_AI_REQUIRED": "1",
+        }
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "lae_agent_core.analyzer.request_ai_analysis",
+            side_effect=fake_controller,
+        ):
+            result, artifacts = self._run(files)
+
+        self.assertEqual(result["verdict"], "needs_input")
+        self.assertEqual(result["diagnosticStatus"], "succeeded")
+        request_text = json.dumps(captured["request"], sort_keys=True)
+        for canary in (
+            "canary-package-secret",
+            "canary-readme-secret",
+            "canary-dotenv-secret",
+            "canary-private",
+        ):
+            self.assertNotIn(canary, request_text)
+        prompt_paths = {
+            item["path"] for item in captured["request"]["source"]["files"]
+        }
+        self.assertIn("README.md", prompt_paths)
+        self.assertIn("server.js", prompt_paths)
+        self.assertNotIn(".env", prompt_paths)
+        self.assertNotIn("private-key.pem", prompt_paths)
+        evidence = json.loads(artifacts["evidence.json"])
+        self.assertEqual(evidence["ai"]["knowledgeVersion"], "2026-07-11.1")
+
+    def test_required_ai_failure_is_diagnostic_failed_not_unsupported(self) -> None:
+        environment = {
+            "LAE_AGENT_CONTROLLER_URL": "https://controller.example.test",
+            "LAE_AGENT_CONTROLLER_TOKEN": "controller-test-token",
+            "LAE_AGENT_AI_REQUIRED": "1",
+        }
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "lae_agent_core.analyzer.request_ai_analysis",
+            side_effect=AIDiagnosticError("AI_PROVIDER_UNAVAILABLE"),
+        ):
+            result, artifacts = self._run({"index.html": "<h1>safe</h1>"})
+        self.assertEqual(result["verdict"], "diagnostic_failed")
+        self.assertEqual(result["blockers"], [])
+        self.assertEqual(result["diagnosticCode"], "AI_PROVIDER_UNAVAILABLE")
+        deployment = json.loads(artifacts["deployment-plan.json"])
+        self.assertEqual(deployment["policy"]["decision"], "allow")
+
+    def test_required_ai_missing_configuration_fails_closed_but_deny_stays_unsupported(self) -> None:
+        environment = {
+            "LAE_AGENT_CONTROLLER_URL": "",
+            "LAE_AGENT_CONTROLLER_TOKEN": "",
+            "LAE_AGENT_AI_REQUIRED": "1",
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            missing, _ = self._run({"index.html": "<h1>safe</h1>"})
+            denied, _ = self._run(
+                {"compose.yml": "services:\n  app:\n    image: nginx:1.27\n    privileged: true\n"}
+            )
+        self.assertEqual(missing["verdict"], "diagnostic_failed")
+        self.assertEqual(denied["verdict"], "unsupported")
+        self.assertTrue(denied["blockers"])
+
+    def test_ai_cannot_mark_new_environment_configured_or_remove_blocker(self) -> None:
+        _, artifacts = self._run({"index.html": "<h1>safe</h1>"})
+        baseline = json.loads(artifacts["deployment-plan.json"])
+        build_plan = json.loads(artifacts["build-plan-proposal.json"])
+        candidate = copy.deepcopy(baseline)
+        candidate["environment"].append(
+            {
+                "name": "DATABASE_URL",
+                "scope": "runtime",
+                "services": [candidate["services"][0]["key"]],
+                "required": True,
+                "sensitive": True,
+                "public": False,
+                "configured": True,
+            }
+        )
+        with self.assertRaises(AIDiagnosticError) as configured:
+            apply_ai_proposal(
+                {
+                    "deploymentPlan": candidate,
+                    "manifestCandidate": manifest_candidate_from_plan(candidate),
+                },
+                baseline,
+                build_plan,
+            )
+        self.assertEqual(configured.exception.code, "AI_PROPOSAL_UNSAFE")
+
+        blocked, blocked_artifacts = self._run(
+            {"compose.yml": "services:\n  app:\n    image: nginx:1.27\n    privileged: true\n"}
+        )
+        self.assertEqual(blocked["verdict"], "unsupported")
+        blocked_plan = json.loads(blocked_artifacts["deployment-plan.json"])
+        weakened = copy.deepcopy(blocked_plan)
+        weakened["blockers"] = []
+        weakened["policy"]["decision"] = "allow"
+        with self.assertRaises(AIDiagnosticError) as removed:
+            apply_ai_proposal(
+                {
+                    "deploymentPlan": weakened,
+                    "manifestCandidate": manifest_candidate_from_plan(weakened),
+                },
+                blocked_plan,
+                json.loads(blocked_artifacts["build-plan-proposal.json"]),
+            )
+        self.assertEqual(removed.exception.code, "AI_PROPOSAL_UNSAFE")
 
 
 if __name__ == "__main__":

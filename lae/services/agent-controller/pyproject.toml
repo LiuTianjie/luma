@@ -7,12 +7,13 @@ name = "lae-agent-controller"
 version = "0.1.0"
 description = "LAE analysis controller"
 requires-python = ">=3.12"
-dependencies = ["lae-contracts", "lae-core"]
+dependencies = ["lae-agent-core", "lae-contracts", "lae-core"]
 
 [project.scripts]
 lae-agent-controller = "lae_agent_controller.__main__:main"
 
 [tool.uv.sources]
+lae-agent-core = { workspace = true }
 lae-contracts = { workspace = true }
 lae-core = { workspace = true }
 

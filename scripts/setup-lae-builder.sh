@@ -64,6 +64,9 @@ AUDIT_READY="0"
 COMPLETED="0"
 ROOTLESS_DOCKER_SETUP_TOOL=""
 ROOTLESS_DOCKER_BIN_DIR=""
+AGENT_CONTROLLER_ENV_FILE=""
+readonly INSTALLED_AGENT_CONTROLLER_ENV="/etc/luma/lae-builder-ai.env"
+readonly AGENT_CONTROLLER_DROPIN="/etc/systemd/system/luma-node-agent.service.d/lae-agent-ai.conf"
 
 usage() {
   cat <<'EOF'
@@ -73,6 +76,7 @@ Usage:
     --registry-host HOST[:PORT] \
     --registry-push-host HOST[:PORT] \
     --buildkit-sha256 SHA256 \
+    [--agent-controller-env-file ROOT_ONLY_ENV] \
     [--registry-insecure] \
     [--external-registry HOST[:PORT] ...]
 
@@ -81,6 +85,8 @@ Required trust inputs:
   --registry-host         Builder pull registry host. No scheme, path, or credentials.
   --registry-push-host    BuildKit push registry host as seen from the builder.
   --buildkit-sha256       SHA-256 of buildkit-v0.31.1.linux-amd64.tar.gz.
+  --agent-controller-env-file  Optional root-only bundle artifact containing
+                          controller URL, scoped token, and AI_REQUIRED.
 
 Modes:
   default                 Configure the local host idempotently, then verify it.
@@ -155,6 +161,11 @@ while (($#)); do
       BUILDKIT_SHA256=${2,,}
       shift 2
       ;;
+    --agent-controller-env-file)
+      require_arg "$1" "${2-}"
+      AGENT_CONTROLLER_ENV_FILE=$2
+      shift 2
+      ;;
     --registry-insecure)
       REGISTRY_INSECURE="1"
       shift
@@ -225,6 +236,50 @@ validate_inputs() {
       die "--external-registry values must be sorted and unique"
     previous=$host
   done
+  if [[ -n "$AGENT_CONTROLLER_ENV_FILE" ]]; then
+    [[ -f "$AGENT_CONTROLLER_ENV_FILE" && ! -L "$AGENT_CONTROLLER_ENV_FILE" ]] || \
+      die "--agent-controller-env-file must be a regular non-symlink file"
+    [[ $(stat -c %a "$AGENT_CONTROLLER_ENV_FILE") =~ ^(400|600)$ ]] || \
+      die "--agent-controller-env-file must have mode 0400 or 0600"
+    python3 - "$AGENT_CONTROLLER_ENV_FILE" <<'PY' || exit 1
+import re, sys
+from pathlib import Path
+values = {}
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    if line and not line.startswith("#") and "=" in line:
+        key, value = line.split("=", 1)
+        values[key] = value
+expected = {"LUMA_BUILDER_ANALYZE_AI_REQUIRED", "LUMA_BUILDER_ANALYZE_CONTROLLER_TOKEN", "LUMA_BUILDER_ANALYZE_CONTROLLER_URL"}
+if set(values) != expected or values["LUMA_BUILDER_ANALYZE_AI_REQUIRED"] not in {"0", "1"}:
+    raise SystemExit("invalid closed Builder AI environment")
+if not values["LUMA_BUILDER_ANALYZE_CONTROLLER_URL"].startswith("https://"):
+    raise SystemExit("Builder AI controller URL must use HTTPS")
+if not re.fullmatch(r"lae_agent_[A-Za-z0-9_-]{32,}", values["LUMA_BUILDER_ANALYZE_CONTROLLER_TOKEN"]):
+    raise SystemExit("Builder AI controller token is invalid")
+PY
+  fi
+}
+
+install_agent_controller_env() {
+  [[ -n "$AGENT_CONTROLLER_ENV_FILE" ]] || return 0
+  install -d -m 0755 /etc/luma /etc/systemd/system/luma-node-agent.service.d
+  install -m 0600 -o root -g root "$AGENT_CONTROLLER_ENV_FILE" "$INSTALLED_AGENT_CONTROLLER_ENV"
+  local dropin="${TEMP_DIR}/lae-agent-ai.conf"
+  printf '%s\n' '[Service]' "EnvironmentFile=${INSTALLED_AGENT_CONTROLLER_ENV}" >"$dropin"
+  install -m 0644 -o root -g root "$dropin" "$AGENT_CONTROLLER_DROPIN"
+  systemctl daemon-reload
+}
+
+verify_agent_controller_env() {
+  [[ -n "$AGENT_CONTROLLER_ENV_FILE" ]] || return 0
+  [[ -f "$INSTALLED_AGENT_CONTROLLER_ENV" && ! -L "$INSTALLED_AGENT_CONTROLLER_ENV" ]] || \
+    die "installed Builder AI environment is missing"
+  [[ $(stat -c %a "$INSTALLED_AGENT_CONTROLLER_ENV") == "600" ]] || \
+    die "installed Builder AI environment must be mode 0600"
+  cmp -s "$AGENT_CONTROLLER_ENV_FILE" "$INSTALLED_AGENT_CONTROLLER_ENV" || \
+    die "installed Builder AI environment does not match the bundle artifact"
+  grep -Fxq "EnvironmentFile=${INSTALLED_AGENT_CONTROLLER_ENV}" "$AGENT_CONTROLLER_DROPIN" || \
+    die "Builder AI node-agent drop-in is invalid"
 }
 
 require_ubuntu_amd64() {
@@ -983,6 +1038,7 @@ verify_all() {
   verify_rootless_bind_probe
   verify_node_agent_unit
   verify_node_agent_env
+  verify_agent_controller_env
   verify_manifest
 }
 
@@ -1018,6 +1074,7 @@ install -d -m 0700 -o root -g root "$SNAPSHOT_ROOT"
 install_trivy_database
 pull_runner_image
 write_node_agent_env
+install_agent_controller_env
 verify_node_agent_unit
 write_manifest
 systemctl restart "$NODE_AGENT_UNIT"

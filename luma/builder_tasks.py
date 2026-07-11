@@ -102,6 +102,12 @@ _RESULT_FIELDS = {
             "evidenceDigest",
             "policyVersion",
             "agentImageDigest",
+            "verdict",
+            "diagnosticStatus",
+            "diagnosticMode",
+            "diagnosticCode",
+            "knowledgeVersion",
+            "blockers",
             "artifacts",
         }
     ),
@@ -384,7 +390,40 @@ def _validate_analyze_result(
         "evidenceDigest": _required_sha256(result, "evidenceDigest", "analyze-source result"),
         "policyVersion": _required_reference(result, "policyVersion", "analyze-source result"),
         "agentImageDigest": _required_string(result, "agentImageDigest", "analyze-source result", max_length=1024),
+        "verdict": _required_string(result, "verdict", "analyze-source result", max_length=32),
+        "diagnosticStatus": _required_string(result, "diagnosticStatus", "analyze-source result", max_length=32),
+        "diagnosticMode": _required_string(result, "diagnosticMode", "analyze-source result", max_length=32),
+        "diagnosticCode": _required_string(result, "diagnosticCode", "analyze-source result", max_length=96),
+        "knowledgeVersion": _required_string(result, "knowledgeVersion", "analyze-source result", max_length=96),
     }
+    if normalized["verdict"] not in {"deployable", "needs_input", "unsupported", "diagnostic_failed"}:
+        raise LumaError("analyze-source result.verdict is invalid")
+    if normalized["diagnosticStatus"] not in {"succeeded", "diagnostic_failed"}:
+        raise LumaError("analyze-source result.diagnosticStatus is invalid")
+    if normalized["diagnosticMode"] not in {"ai", "deterministic_fallback"}:
+        raise LumaError("analyze-source result.diagnosticMode is invalid")
+    for field in ("diagnosticCode", "knowledgeVersion"):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,95}", normalized[field]):
+            raise LumaError(f"analyze-source result.{field} is invalid")
+    raw_blockers = result.get("blockers")
+    if not isinstance(raw_blockers, list) or len(raw_blockers) > 128:
+        raise LumaError("analyze-source result.blockers is invalid")
+    blockers: list[Dict[str, str]] = []
+    for item in raw_blockers:
+        if not isinstance(item, dict) or set(item) != {"code", "path", "field", "remediation"}:
+            raise LumaError("analyze-source result.blockers is invalid")
+        blocker = {
+            key: _required_string(item, key, "analyze-source result blocker", max_length=1024)
+            for key in ("code", "path", "field", "remediation")
+        }
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{2,127}", blocker["code"]):
+            raise LumaError("analyze-source result blocker code is invalid")
+        blockers.append(blocker)
+    if normalized["verdict"] == "unsupported" and not blockers:
+        raise LumaError("unsupported analyze-source result must contain blockers")
+    if normalized["verdict"] != "unsupported" and blockers:
+        raise LumaError("only unsupported analyze-source result may contain blockers")
+    normalized["blockers"] = blockers
     if not _IMAGE_DIGEST_RE.fullmatch(normalized["agentImageDigest"]):
         raise LumaError("analyze-source result.agentImageDigest must be an immutable image reference")
     payload = request.get("payload") if isinstance(request, dict) and isinstance(request.get("payload"), dict) else {}

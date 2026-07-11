@@ -235,7 +235,7 @@ Compose 与 Dockerfile 是所有用户都可提交的标准来源，不需要 `a
 - `POST /analyses/{id}/rerun`
 - `POST /applications/{id}/update-checks`
 
-Analysis status：`queued | analyzing | deployable | needs_configuration | not_deployable | failed | expired`。
+Analysis status：`queued | analyzing | deployable | needs_configuration | not_deployable | diagnostic_failed | failed | expired`。公开响应另提供稳定的用户态 verdict：`deployable | needs_input | unsupported | diagnostic_failed`；`unsupported` 必须带结构化 blocker，`diagnostic_failed` 表示诊断基础设施失败而不是用户代码不可部署。
 
 API 在一个 PostgreSQL transaction 内创建 source revision、queued analysis、
 operation、builder checkpoint、一次性 source lease、首条 event/outbox 和幂等记录，

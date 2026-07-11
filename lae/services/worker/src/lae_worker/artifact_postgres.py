@@ -498,6 +498,7 @@ class PostgresAnalysisArtifactCatalog:
                 "deployable",
                 "needs_configuration",
                 "not_deployable",
+                "diagnostic_failed",
             }
             or analysis.artifact_state not in {"descriptor-only", "stored"}
             or analysis.plan_stored != (analysis.artifact_state == "stored")

@@ -2,7 +2,7 @@
 
 本目录是 `lae-platform` 的第一版可验证 Luma Compose 资产。它把平台本身作为一个受控 Compose 部署到 Luma：Web/API 与受策略约束的 artifact S3 endpoint 使用公网 HTTP，Worker、Agent Controller、PostgreSQL 和 Valkey 只在同一 Nomad group 的内部拓扑中通信。MinIO 数据面虽然有 HTTPS route，但 bucket policy、CORS 和最小权限 credential 只允许 LAE upload/artifact 流程，不能作为管理入口。这里没有公网 TCP/UDP、host bind、Docker socket、host network 或数据库公网入口。
 
-这不是“已经可以生产上线”的声明。当前资产可做静态校验、Luma import-mode 校验、镜像构建和本地完整 staging Compose E2E；production Worker、S3 artifact ingest、HTML/ZIP upload、单次 object-source redemption、Builder/Runtime adapter 和 bucket bootstrap 已有代码接线，但尚未在真实隔离 Luma staging 完成纵向 E2E、故障、恢复和安全验证。不要因为单元测试或本地 Compose 通过就跳过下面的上线门禁，也不要为了让任务变绿而把 production 环境改成 staging。
+这不是“已经可以生产上线”的声明。当前共享集群运行 Luma `0.1.170`：`lae-platform-staging` 的 9 个 Compose task 已健康运行，Web、API、artifact 与 Luma Control 公网探针均为 HTTP 200，TLS 和 DNS/route 已收敛；注册、默认 deploy token 与真实 Git 分析也已通过 staging 冒烟。仓库中的 `0.1.171` 是待发布 candidate，新增可配置 AI Agent、四态诊断 verdict、CORS/UI/CLI 修复和 Control/Builder AI 配置持久化，尚未导入 live staging。租户 runtime 的真实 deploy/lifecycle 纵向 E2E、故障恢复和生产安全门禁仍待完成，不能把平台健康外推为 production-ready。
 
 ## 文件
 
@@ -24,6 +24,18 @@ Web 使用 Next.js standalone 产物；本地 Next dev 默认把 `/v1` 代理到
 
 ## Luma 边界
 
+staging bundle 会额外生成私密的 `builder-agent-ai.env`。通过 root-only
+通道复制到 Builder 后，执行
+`sudo scripts/install-lae-builder-ai-env.sh builder-agent-ai.env`。同一个 scoped
+token 一端由 Luma secret 注入 `agent-controller`，另一端落在 Builder 的
+`0600` systemd EnvironmentFile；runner 永远拿不到模型 provider API key。
+staging 要求 AI 诊断，controller/provider 失败会返回 `diagnostic_failed`，
+不得进入部署。
+
+启用 controller 后，分析 sandbox 会从 `network=none` 切换为 Docker bridge
+以访问 HTTPS controller。runner 不执行租户源码，但这仍是较宽的 egress；
+生产需在宿主防火墙或 egress proxy 上收紧为 controller-only。
+
 - 所有服务位于一个 Luma Compose deployment。当前 renderer 会把它们放在同一个 Nomad group、同一节点和共享 network namespace 中；标准 Compose 下通过 service DNS 通信，在 Luma 下 service name 会映射到 `127.0.0.1`。
 - `web` 的 `/v1/*` 由 Next 服务端转发到 `http://api:8080/v1/*`，因此浏览器保持同源 cookie；`api` 仍以 `lae-api.itool.tech` 供 CLI/deploy-token 使用。
 - Sidecar 把整个 group 固定到名为 `lae-core` 的 cn 节点。该节点必须在 Luma 中真实存在并有足够资源；当前 sidecar 不能表达 workload-class selector。
@@ -31,11 +43,11 @@ Web 使用 Next.js standalone 产物；本地 Next dev 默认把 `/v1` 代理到
 - OCI registry 不在这个 Compose 里重复部署。它属于 Luma Builder 底座，通过现有 `luma registry serve` 管理；目标节点只拉取 Luma 注入的内部镜像。
 - 当前仓库没有可验证的独立 OTel/metrics/Loki/Grafana Luma deployment 资产。本目录不伪造它；`lae-observability` 仍是生产门禁中的单独交付项。
 
-平台 Compose 的 `node: lae-core` 是内部实现，不进入租户产品。用户应用走独立 LAE Runtime API：租户只提交 `region`，Luma Control 首先要求非空、精确的 `LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON`，再按实时节点 readiness/runtime capability、builder-only/control-plane-only policy、volume compatibility、prior allocation affinity 和 Nomad plan 生成内部 placement；缺失或非法 allowlist 会 fail closed，不会回退到通用 Docker 节点。控制面节点只有同时带显式 `runtime`/`lae-runtime` role 才能进入候选；当前 staging 明确把 `manager` 与 `tecent` 加入 allowlist，`builder` 仍不可进入。生产应换成至少两个专用 runner。具体 node ID/IP/failure domain 只保留在 Luma Control/Job 和授权管理员排障证据中；Web/CLI/用户日志只显示 region、service、route 和状态。Luma Dashboard 的 LAE“调度位置”视图已实现候选、preferred node 和实时 allocation 关联，但真实 staging 尚未验证。
+平台 Compose 的 `node: lae-core` 是内部实现，不进入租户产品。用户应用走独立 LAE Runtime API：租户只提交 `region`，Luma Control 首先要求非空、精确的 `LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON`，再按实时节点 readiness/runtime capability、builder-only/control-plane-only policy、volume compatibility、prior allocation affinity 和 Nomad plan 生成内部 placement；缺失或非法 allowlist 会 fail closed，不会回退到通用 Docker 节点。控制面节点只有同时带显式 `runtime`/`lae-runtime` role 才能进入候选；当前 staging 明确把 `manager` 与 `tecent` 加入 allowlist，`builder` 仍不可进入。生产应换成至少两个专用 runner。具体 node ID/IP/failure domain 只保留在 Luma Control/Job 和授权管理员排障证据中；Web/CLI/用户日志只显示 region、service、route 和状态。Luma Dashboard 的 LAE“调度位置”视图已实现候选、preferred node 和实时 allocation 关联，真实 staging 的故障切换、容量负例和 volume affinity 仍待验收。
 
 ## 实际落点与当前集群差距
 
-2026-07-11 对当前集群做的只读核验结果是：Control `0.1.160`；`manager` 是唯一控制面，`aly` 是应删除的历史注册；`lab`、`builder`、`tecent` 都 ready。这个快照会漂移，实施前必须重新执行 `luma status --format json`，不能把下表当成永久配置。
+2026-07-11 当前 staging 实施快照是：CLI、Control 与 8 个在线节点运行 Luma `0.1.170`，仓库 candidate 为 `0.1.171`；`manager` 是唯一控制面并显式允许兼任租户 runtime，`tecent` 是另一个 staging runtime，LAE 平台组固定在 `lab`，构建固定在 `builder`。`aly` 是过时历史节点，不参与升级、构建、平台或租户调度。这个快照会漂移，任何再次发布前都必须重新执行 `luma status --format json`，不能把下表当成永久配置。
 
 | 层 | 当前事实 | 可接受用途 | 生产要求 |
 | --- | --- | --- | --- |
@@ -48,6 +60,8 @@ Web 使用 Next.js standalone 产物；本地 Next dev 默认把 `/v1` 代理到
 Production sidecar 仍故意 pin `lae-core` 并引用两类 `lae-cn-*` storage class，因此真实 manager validate 应 fail closed。共享集群 staging 只能使用 `luma.compose.staging.itool.yml`：平台在 `lab`，平台卷使用 `builder-registry-nfs` 独立 path，公网入口经 `tailscale-relay`；`aly` 不参与任何新部署。租户 runtime allowlist 为 `manager + tecent`，其中 manager 必须显式带 runtime role；`builder` 和未显式 opt-in 的 control-plane 节点继续被排除。
 
 表中的 `home` 仅是现有 Luma Builder 的内部 region，不属于 LAE 租户协议。Web/API/store/CLI 对外统一只接受 `cn | global`，并在 analysis/upload/template admission 阶段拒绝 `home`。
+
+本轮 import 的 registry 与网络路径是明确配置，而不是从节点名推导：目标节点拉取使用 `100.66.177.70:5000`，Builder 本机推送使用 `localhost:5000`；LAE 平台镜像构建采用 direct 模式。Luma `0.1.170` 已在 live staging 检查持久化 Buildx container 的代理环境是否与本次请求一致，不一致时重建 builder，避免继续复用历史 `aly` 或其他失效代理；`0.1.171` 保留该行为并增加 AI Agent 配置持久化。LAE 平台 Dockerfile 的依赖下载步骤也显式清除代理变量，防止租户 build args 污染平台构建；这不等于所有租户构建都必须关闭代理，租户出口仍按其独立策略执行。
 
 ## 前置基础设施
 
@@ -70,7 +84,12 @@ Production sidecar 仍故意 pin `lae-core` 并引用两类 `lae-cn-*` storage c
    - `LUMA_LAE_ADMIN_TOKEN_FILE`：只供 Luma Dashboard 到 LAE internal admin API；
    - 三个 endpoint 均为闭合 HTTPS URL；Runtime 另需 `LUMA_LAE_RUNTIME_STORAGE_CLASS`、Builder registry/plan signing allowlist。
 
-   配置文件和 token file 使用 `0600`、不可 symlink，Builder/Runtime/management/broker/admin token 彼此独立。检查和轮换流程见 [运维 SOP](../../../docs/lae/10-operations-troubleshooting-sop.md)。
+   Bundle 中的 `lae-control.env` 必须以 root-owned `0600` 安装到固定路径
+   `/opt/luma/control/control.env`。它是 Luma 自动读取的严格 `NAME=value` 数据文件，
+   不是 shell script，不要 `source`；这样 `luma update manager` 后仍会保留上述
+   service-principal、broker、signing 与 placement 配置。配置文件和 token file 使用
+   `0600`、不可 symlink，Builder/Runtime/management/broker/admin token 彼此独立。
+   检查和轮换流程见 [运维 SOP](../../../docs/lae/10-operations-troubleshooting-sop.md)。
 
 5. 生产 SMTP 必须支持隐式 TLS 465。生产 Compose 固定 `LAE_SMTP_SECURITY=tls`，不会接受 Mailpit 或明文 SMTP。
 6. 将 `.env.example` 复制为被 Git 忽略的 `.env`，填充后按 deployment scope 导入；不要把值贴进命令历史、YAML 或工单：
@@ -85,7 +104,7 @@ Production sidecar 仍故意 pin `lae-core` 并引用两类 `lae-cn-*` storage c
 
 Production/Staging Compose 都显式设置 `LAE_DEPLOYMENT_WORKER_ENABLED=1` 与 `LAE_LIFECYCLE_WORKER_ENABLED=1`。Lifecycle timeout 当前为 1800 秒；suspend/resume/restart/rollback/delete 使用独立 durable lane。普通 delete 固定 `volumePolicy=retain`，V1 rollback 只接受与 application catalog 的 service/route/volume binding 拓扑兼容的历史 deployment。PostgreSQL 17 migration-backed lifecycle 集成已通过；真实 Luma 故障/恢复演练未通过前，这些配置仍不代表生产验收完成。
 
-## 只验证，不部署
+## 验证与已执行的 staging import
 
 从本目录运行：
 
@@ -122,9 +141,9 @@ sh deploy/luma/smoke-images.sh
 
 当前 MinIO Community 版本不支持依赖 per-bucket `PutBucketCors` 的初始化流程。本部署使用专用 artifact-store，并以精确的 `MINIO_API_CORS_ALLOW_ORIGIN` 配置 server-wide CORS：staging 为 `https://lae-staging.itool.tech`，production 为 `https://lae.itool.tech`，禁止 `*`。因此该 MinIO 实例不能与需要不同浏览器 Origin 的其他产品混用。
 
-以上只是本地 Docker Compose、真实 PostgreSQL/MinIO 组件和 API/CLI 的集成证据，**没有执行真实 Luma staging import/deploy**。不能据此声称 `lae-staging.itool.tech` 已上线，也不能跳过下面的 Builder、Runtime、route、placement 和恢复验收。
+在这些本地证据之上，当前共享集群已经执行真实 Luma staging import：6 个构建镜像已推送到内部 registry，9 个 task 的 Nomad job 已注册且 allocation 健康，DNS、TLS 与 route 已发布，Web、API、artifact 和 Luma Control 探针均为 HTTP 200；注册、默认 deploy token 和真实 Git 分析已完成冒烟。当前 live 平台仍是上一版镜像，`0.1.171` candidate 的 Agent Controller、CORS/UI/CLI 修复以及租户 runtime deploy/lifecycle 仍需按本节发布顺序做纵向验收。
 
-`luma import` 当前没有 preview-only 模式：它会真实 clone、build、push 并继续 deploy。因此本阶段不要执行 `luma import`。等上线门禁清零后，必须显式选择 staging sidecar，不能依赖自动发现：
+`luma import` 没有 preview-only 模式：它会真实 clone、build、push 并继续 deploy。以下命令是本轮已经执行的 staging 发布形状，仅用于可控重放；再次执行前必须先确认 release、bundle、registry、现有 job/volume 和回退点，并显式选择 staging sidecar，不能依赖自动发现：
 
 ```bash
 REPO=https://github.com/LiuTianjie/luma.git
@@ -136,13 +155,14 @@ BUNDLE_DIR=<private-staging-bundle-directory>
   --build-node builder \
   --compose-sidecar lae/deploy/luma/luma.compose.staging.itool.yml \
   --env "$BUNDLE_DIR/lae-platform-staging.env" \
+  --registry-host 100.66.177.70:5000 \
   --format ndjson \
   --timeout 3600
 ```
 
 `--compose-sidecar` 只接受仓库内规范 POSIX 相对路径，不能与 `--manifest` 同用。CLI 会先检查 Control capability，Control 再要求 Builder 回显完全相同的路径；绝对路径、`..`、symlink escape、缺失或非法 sidecar 都 fail closed，不能回退到 production `luma.compose.yml`。完整发布顺序、manager/fleet 升级和回退点见 [部署、升级与回退手册](../../../docs/lae/11-deployment-and-upgrade.md)。
 
-执行成功后检查 build 记录、镜像 commit/digest、Luma job、三个公网 HTTP route 和内部健康状态。
+执行成功后检查 build 记录、6 个镜像 commit/digest、9 个 Nomad task、三个公网 HTTP route 和内部健康状态。`artifact-init` 不是退出即成功的一次性 Nomad task：当前 renderer 把 Compose service 统一渲染成长运行 task，因此它完成 bucket/user/policy 初始化后写 readiness 文件并休眠。Staging 为它设置 `memory limit=512 MiB`、`memory reservation=256 MiB`，避免 `mc` 初始化峰值被过低的 reservation/limit 误判或 OOM；任何 production 参数都必须满足 reservation 不高于 limit，并经过真实 allocation 峰值验证。
 
 ## 数据保留与恢复
 
@@ -156,13 +176,13 @@ BUNDLE_DIR=<private-staging-bundle-directory>
 
 1. 当前 live cluster 没有 production `lae-core`、`lae-cn-postgres` 或 `lae-cn-artifacts`；`aly` 是待删除历史注册。Production sidecar 因而继续 fail closed。`luma.compose.staging.itool.yml` 明确使用 `lab + builder-registry-nfs + tailscale-relay`，不代表 production topology。
 2. Staging runtime 明确使用 `manager + tecent`：manager 需要显式 runtime role，二者仍由正向 allowlist、实时 readiness 和 Nomad plan 收敛。专用 production runner pool、无容量、drain、节点故障重调度、volume affinity，以及 admin placement 与真实 allocation 的关联仍需 Luma staging 演练。
-3. Builder/Runtime principal files、Git/object broker、LAE admin proxy、plan signing、registry、Analyzer repo digest 双端一致性和 runtime storage class 尚未作为一套真实 Control 配置完成 staging 验证；不能用 management token、inline secret 或 mutable analyzer tag 简化。
-4. S3 artifact/upload、MinIO policy/CORS、API/Worker 分权 credential 和一次性 object redemption 已完成本地真实 MinIO 最小权限与 CORS 正反例，但仍必须完成 Luma staging 的浏览器上传、恶意 ZIP、cancel/replay、Builder download、artifact ingest 和日志/state 无 URL/key E2E。
+3. Builder/Runtime principal files、Git/object broker、LAE admin proxy、plan signing、registry、Analyzer repo digest 与 runtime storage class 已有 staging 配置；`0.1.171` 发布仍须验证新的 controller scoped token、Builder `0600` EnvironmentFile、Worker/Control analyzer digest 三端一致。不能用 management token、inline secret 或 mutable analyzer tag 简化。
+4. S3 artifact/upload、MinIO policy/CORS、API/Worker 分权 credential 和一次性 object redemption 已完成本地真实 MinIO 最小权限与 CORS 正反例；Luma staging 的浏览器上传、恶意 ZIP、cancel/replay、Builder download、artifact ingest 和日志/state 无 URL/key E2E 仍是上线门禁。
 5. 当前平台 Compose renderer不把标准 Compose `healthcheck`/`depends_on` 全部转换成严格 Nomad readiness/启动顺序。Runtime API 会生成 HTTP check，但平台服务自身仍必须重试依赖，并验证故障/恢复行为。
-6. Agent Controller 目前主要是 health/version scaffold；公开 analysis enqueue 由 API、持久任务由 Worker 执行。不能把 Controller 的 200 health 当成完整 controller 功能上线。
+6. `0.1.171` Agent Controller 已实现 OpenAI-compatible provider、闭合 schema、Knowledge Pack 版本握手、认证、限流/并发/熔断与结构化诊断；staging 使用平台侧 ARK 映射，用户只需 LAE deploy token。它尚未进入 live staging，且生产仍缺用户同意与审计、私有入口、task-bound 单次 lease、controller-only egress、DNS rebinding/host allowlist 和成熟 ASGI/WAF 限流；Controller 的 200 health 不能替代真实分析验收。
 7. API 启动时执行 Alembic migration 是单副本 MVP 过渡方案。扩到多副本前必须提供 Luma init/migration job 或数据库 advisory lock，避免并发 migration。
 8. 当前 staging storage provider 是 builder 上的 NFS；必须分别评审 PostgreSQL/MinIO 的 hard/error semantics、fsync/locking、故障恢复和后端支持，并完成断网、重启、PITR/object/volume restore drill。单个 NFS path 不是备份。
-9. PostgreSQL PITR、MinIO/registry/volume backup+restore、容量告警、引用安全 GC、独立观测栈和真实 Luma staging 纵向 E2E 尚未完成。生产还缺专用 `lae-core`、至少两个专用 runtime runner、独立 storage class、真实 SMTP 和真实微信/支付宝等 payment provider；mock 不能进入 production。
+9. PostgreSQL PITR、MinIO/registry/volume backup+restore、容量告警、引用安全 GC、独立观测栈和租户 runtime 真实纵向 E2E 尚未完成；当前平台 9 task、DNS/TLS/route 和基础用户/Git 分析冒烟已经通过。生产还缺专用 `lae-core`、至少两个专用 runtime runner、独立 storage class、真实可用 SMTP 凭据和真实微信/支付宝等 payment provider；Mailpit/mock 不能进入 production。
 10. Runtime/server-side policy 仍需在真实节点证明 read-only rootfs、cap drop、no-new-privileges、PID/ephemeral disk、管理网/metadata/Tailscale 阻断和滥用治理，不能只依赖 Compose 表面字段。
 11. lifecycle API/Worker、结构化 update-check、更新/失败保旧、回滚、删除保卷和日志/指标已有代码、自动化测试与 PostgreSQL 17 集成证据；placement admin 精确审计视图也已实现。两者仍需真实 Luma staging 场景验收。以 [实施状态](../../../docs/lae/08-implementation-status.md) 为准。
 

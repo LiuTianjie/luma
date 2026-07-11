@@ -14,9 +14,19 @@ import yaml
 
 from lae_contracts import is_safe_external_image_reference, validate_instance
 
+from .ai import (
+    AIDiagnosticError,
+    AIControllerClientConfig,
+    KNOWLEDGE_VERSION,
+    apply_ai_proposal,
+    build_ai_request,
+    manifest_candidate_from_plan,
+    request_ai_analysis,
+    unsupported_findings,
+)
 from .canonical import atomic_write_json, canonical_bytes
 
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.2.0"
 ADAPTER_VERSION = "1.0.0"
 MAX_ANALYZED_FILE_BYTES = 2 * 1024 * 1024
 MAX_COMPOSE_BYTES = 2 * 1024 * 1024
@@ -1465,6 +1475,72 @@ def analyze_source(
         )
     analyzer = Analyzer(source_path, metadata)
     evidence, deployment_plan, build_plan_proposal = analyzer.run()
+    ai_required = os.environ.get("LAE_AGENT_AI_REQUIRED", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    diagnostic_status = "diagnostic_failed"
+    diagnostic_mode = "deterministic_fallback"
+    diagnostic_code = "AI_ANALYSIS_NOT_CONFIGURED"
+    provider_model: str | None = None
+    knowledge_version = KNOWLEDGE_VERSION
+    try:
+        ai_config = AIControllerClientConfig.from_env()
+        if ai_config is not None:
+            ai_response = request_ai_analysis(
+                ai_config,
+                build_ai_request(
+                    source_path,
+                    deployment_plan,
+                    build_plan_proposal,
+                    evidence,
+                ),
+            )
+            deployment_plan, manifest_candidate = apply_ai_proposal(
+                ai_response["proposal"], deployment_plan, build_plan_proposal
+            )
+            diagnostic_status = "succeeded"
+            diagnostic_mode = "ai"
+            diagnostic_code = "AI_ANALYSIS_SUCCEEDED"
+            raw_model = ai_response.get("model")
+            provider_model = raw_model if isinstance(raw_model, str) else None
+            knowledge_version = ai_response["knowledgeVersion"]
+        else:
+            manifest_candidate = manifest_candidate_from_plan(deployment_plan)
+    except AIDiagnosticError as exc:
+        diagnostic_code = exc.code
+        manifest_candidate = manifest_candidate_from_plan(deployment_plan)
+
+    if diagnostic_status == "diagnostic_failed":
+        deployment_plan["warnings"] = sorted(
+            {*deployment_plan["warnings"], "AI_ANALYSIS_DEGRADED_DETERMINISTIC_FALLBACK"}
+        )
+    _validate_plan("deployment-plan.v1.schema.json", deployment_plan)
+    _validate_plan_semantics(deployment_plan, build_plan_proposal)
+    verdict = (
+        "unsupported"
+        if deployment_plan["policy"]["decision"] == "deny"
+        else (
+            "diagnostic_failed"
+            if ai_required and diagnostic_status == "diagnostic_failed"
+            else _verdict(deployment_plan["policy"]["decision"])
+        )
+    )
+    evidence["ai"] = {
+        "status": diagnostic_status,
+        "mode": diagnostic_mode,
+        "code": diagnostic_code,
+        "model": provider_model,
+        "manifestCandidate": manifest_candidate,
+        "knowledgeVersion": knowledge_version,
+    }
+    evidence["verdict"] = verdict
+    evidence["unsupported"] = (
+        unsupported_findings(evidence) if verdict == "unsupported" else []
+    )
+    evidence["warnings"] = deployment_plan["warnings"]
+    evidence["blockers"] = deployment_plan["blockers"]
     output_path.mkdir(parents=True, exist_ok=True)
 
     artifact_values = (
@@ -1507,10 +1583,24 @@ def analyze_source(
         "policyVersion": analyzer.metadata["policyVersion"],
         "status": "succeeded",
         "decision": deployment_plan["policy"]["decision"],
+        "verdict": verdict,
+        "diagnosticStatus": diagnostic_status,
+        "diagnosticMode": diagnostic_mode,
+        "diagnosticCode": diagnostic_code,
+        "knowledgeVersion": knowledge_version,
+        "blockers": evidence["unsupported"],
         "artifacts": artifacts,
     }
     atomic_write_json(output_path / "result.json", result)
     return result
+
+
+def _verdict(decision: str) -> str:
+    return {
+        "allow": "deployable",
+        "needs_configuration": "needs_input",
+        "deny": "unsupported",
+    }[decision]
 
 
 def _validate_metadata(metadata: Mapping[str, Any]) -> dict[str, str]:
