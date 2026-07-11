@@ -244,6 +244,9 @@ class BuilderBuildExecutorTests(unittest.TestCase):
 
         build_commands = [command for command in commands if command[0].endswith("buildctl")]
         self.assertEqual(len(build_commands), 2)
+        for command in build_commands:
+            self.assertIn("attest:provenance=mode=max", command)
+            self.assertNotIn("--attest=type=provenance,mode=max", command)
         self.assertIn("/base:", next(value for value in build_commands[0] if value.startswith("type=image,name=")))
         self.assertIn("/web:", next(value for value in build_commands[1] if value.startswith("type=image,name=")))
         self.assertEqual(set(result["images"]), {"base", "web"})

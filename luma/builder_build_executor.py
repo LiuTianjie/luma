@@ -783,7 +783,8 @@ def _buildctl_command(
         f"type=image,name={push_tag},push=true",
         "--metadata-file",
         str(metadata_path),
-        "--attest=type=provenance,mode=max",
+        "--opt",
+        "attest:provenance=mode=max",
     ]
     target = str(build.get("target") or "").strip()
     if target:
@@ -1019,8 +1020,10 @@ def _runtime_prerequisites() -> _RuntimePrerequisites:
         timeout=5,
         start_new_session=True,
     )
-    if help_result.returncode != 0 or b"--attest" not in help_result.stdout:
-        raise LumaError("BuildKit does not support provenance attestations")
+    # buildctl sends attestation settings through Dockerfile frontend options;
+    # --attest is a buildx CLI flag and isn't part of buildctl.
+    if help_result.returncode != 0 or b"--opt" not in help_result.stdout:
+        raise LumaError("BuildKit does not support frontend options required for provenance attestations")
     version_commands = {
         "syft": [str(tools["syft"]), "version"],
         "trivy": [str(tools["trivy"]), "--version"],

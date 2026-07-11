@@ -92,6 +92,16 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
         for fragment in required_fragments:
             self.assertIn(fragment, self.source)
 
+    def test_ubuntu_docker_io_rootless_tools_are_supported(self):
+        self.assertIn("resolve_rootless_docker_tools()", self.source)
+        self.assertIn("/usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh", self.source)
+        self.assertIn('ROOTLESS_DOCKER_TOOL_ROOT="/usr/local/lib/luma-builder/docker-rootless-tools"', self.source)
+        self.assertIn('ln -sfn "$docker_cli" "$ROOTLESS_DOCKER_TOOL_ROOT/docker"', self.source)
+        self.assertIn('[[ -x "${bin_dir}/dockerd-rootless.sh" ]]', self.source)
+        self.assertIn('run_as_builder "$ROOTLESS_DOCKER_SETUP_TOOL" install --force', self.source)
+        self.assertIn("ROOTLESS_DOCKER_BIN_DIR", self.source)
+        self.assertIn('build_help=$(buildctl build --help 2>&1)', self.source)
+
     def test_generated_node_agent_environment_contains_capabilities_but_no_credentials(self):
         start = self.source.index("render_node_agent_env()")
         end = self.source.index("write_node_agent_env()")

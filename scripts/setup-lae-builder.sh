@@ -44,6 +44,7 @@ readonly AUDIT_DIR="/var/log/luma"
 readonly AUDIT_LOG="${AUDIT_DIR}/lae-builder-setup.log"
 readonly MANIFEST_FILE="${BUILDER_ROOT}/toolchain-manifest.env"
 readonly ROOTLESS_DOCKER_REGISTRY_STATE="${BUILDER_ROOT}/rootless-docker-managed-registries.json"
+readonly ROOTLESS_DOCKER_TOOL_ROOT="/usr/local/lib/luma-builder/docker-rootless-tools"
 readonly BUILDKIT_INSTALL_ROOT="/usr/local/lib/luma-builder/buildkit-${BUILDKIT_VERSION}"
 readonly BUILDKIT_USER_UNIT="luma-buildkit.service"
 readonly TRIVY_DB_REPOSITORY="ghcr.io/aquasecurity/trivy-db:2"
@@ -60,6 +61,8 @@ TEMP_DIR=""
 BIND_PROBE_DIR=""
 AUDIT_READY="0"
 COMPLETED="0"
+ROOTLESS_DOCKER_SETUP_TOOL=""
+ROOTLESS_DOCKER_BIN_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -294,8 +297,31 @@ require_docker_client() {
   version=$(docker_client_version) || die "Docker CLI is unavailable"
   version_ge "$version" "$DOCKER_MIN_VERSION" || \
     die "Docker ${DOCKER_MIN_VERSION}+ is required; found ${version}. Install it through the host's trusted Docker repository."
-  command -v dockerd-rootless-setuptool.sh >/dev/null 2>&1 || \
+  resolve_rootless_docker_tools || \
     die "dockerd-rootless-setuptool.sh is missing; install the Docker rootless extras package matching the host Docker release"
+}
+
+resolve_rootless_docker_tools() {
+  local candidate=""
+  candidate=$(command -v dockerd-rootless-setuptool.sh 2>/dev/null || true)
+  if [[ -z "$candidate" && -x /usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh ]]; then
+    local docker_cli
+    docker_cli=$(command -v docker 2>/dev/null || true)
+    [[ -n "$docker_cli" && -x "$docker_cli" ]] || return 1
+    install -d -m 0755 -o root -g root "$ROOTLESS_DOCKER_TOOL_ROOT"
+    ln -sfn /usr/share/docker.io/contrib/dockerd-rootless-setuptool.sh \
+      "$ROOTLESS_DOCKER_TOOL_ROOT/dockerd-rootless-setuptool.sh"
+    ln -sfn /usr/share/docker.io/contrib/dockerd-rootless.sh \
+      "$ROOTLESS_DOCKER_TOOL_ROOT/dockerd-rootless.sh"
+    ln -sfn "$docker_cli" "$ROOTLESS_DOCKER_TOOL_ROOT/docker"
+    candidate="$ROOTLESS_DOCKER_TOOL_ROOT/dockerd-rootless-setuptool.sh"
+  fi
+  [[ -n "$candidate" && -x "$candidate" ]] || return 1
+  local bin_dir
+  bin_dir=$(dirname "$candidate")
+  [[ -x "${bin_dir}/dockerd-rootless.sh" ]] || return 1
+  ROOTLESS_DOCKER_SETUP_TOOL=$candidate
+  ROOTLESS_DOCKER_BIN_DIR=$bin_dir
 }
 
 next_subid_start() {
@@ -340,7 +366,7 @@ run_as_builder() {
     HOME="$(builder_home)" \
     USER="$BUILDER_USER" \
     LOGNAME="$BUILDER_USER" \
-    PATH="/usr/local/bin:/usr/bin:/bin" \
+    PATH="${ROOTLESS_DOCKER_BIN_DIR:+${ROOTLESS_DOCKER_BIN_DIR}:}/usr/local/bin:/usr/bin:/bin" \
     XDG_RUNTIME_DIR="$(runtime_dir)" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=$(runtime_dir)/bus" \
     "$@"
@@ -364,7 +390,7 @@ configure_rootless_docker() {
   systemctl start "user@${BUILDER_UID}.service"
   install -d -m 0700 -o "$BUILDER_USER" -g "$(builder_group)" "$(runtime_dir)"
 
-  run_as_builder "$(command -v dockerd-rootless-setuptool.sh)" install --force
+  run_as_builder "$ROOTLESS_DOCKER_SETUP_TOOL" install --force
   configure_rootless_docker_registry
   run_as_builder systemctl --user enable docker.service
   run_as_builder systemctl --user restart docker.service
@@ -736,7 +762,10 @@ verify_rootless_buildkit() {
   [[ "$(stat -c %u "$socket_path")" == "$BUILDER_UID" ]] || die "rootless BuildKit socket owner is not UID ${BUILDER_UID}"
   run_as_builder buildctl --addr "unix://${socket_path}" debug workers >/dev/null || \
     die "rootless BuildKit has no available worker"
-  buildctl build --help 2>&1 | grep -q -- '--attest' || die "buildctl does not support attestations"
+  local build_help
+  build_help=$(buildctl build --help 2>&1) || die "buildctl build help is unavailable"
+  grep -q -- '--opt' <<<"$build_help" || \
+    die "buildctl does not support attestations through Dockerfile frontend options"
 }
 
 registry_scheme() {
