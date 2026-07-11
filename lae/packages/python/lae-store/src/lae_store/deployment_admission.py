@@ -14,6 +14,7 @@ from .application_catalog import new_managed_hostname
 from .errors import (
     DeploymentConflict,
     DeploymentEnvironmentIncomplete,
+    DeploymentEnvironmentScopeInvalid,
     DeploymentPlanInvalid,
     DeploymentPlanUnavailable,
     DeploymentQuotaExceeded,
@@ -1141,21 +1142,7 @@ class DeploymentAdmissionStore:
                 )
             )
         )
-        missing: list[str] = []
-        for variable in plan.environment:
-            if not variable.required:
-                continue
-            for service_key in variable.service_keys:
-                if ("*", variable.name) not in configured and (
-                    service_key,
-                    variable.name,
-                ) not in configured:
-                    missing.append(f"{service_key}:{variable.name}")
-        if missing:
-            # Variable names are schema metadata, never plaintext values.
-            raise DeploymentEnvironmentIncomplete(
-                "required deployment environment is not configured"
-            )
+        _validate_environment_bindings(configured, plan)
 
     def _next_hostname(self) -> str:
         hostname = self._hostname_factory()
@@ -1164,6 +1151,55 @@ class DeploymentAdmissionStore:
                 "managed hostname generator returned invalid data"
             )
         return hostname
+
+
+def _validate_environment_bindings(
+    configured: set[tuple[str, str]],
+    plan: PreparedDeploymentPlan,
+) -> None:
+    """Fail closed when a stored value would escape its trusted plan scope."""
+
+    service_keys = {service.service_key for service in plan.services}
+    targets_by_name: dict[str, set[str]] = {}
+    for variable in plan.environment:
+        targets_by_name.setdefault(variable.name, set()).update(variable.service_keys)
+
+    for service_scope, name in configured:
+        if service_scope == "*":
+            if len(service_keys) == 1:
+                continue
+            if targets_by_name.get(name) != service_keys:
+                raise DeploymentEnvironmentScopeInvalid(
+                    "wildcard environment scope is not declared for every service"
+                )
+            continue
+        if service_scope not in service_keys:
+            raise DeploymentEnvironmentScopeInvalid(
+                "environment scope targets an unknown service"
+            )
+        declared_targets = targets_by_name.get(name)
+        if declared_targets is not None and service_scope not in declared_targets:
+            raise DeploymentEnvironmentScopeInvalid(
+                "environment variable targets a service outside its plan binding"
+            )
+
+    missing: list[str] = []
+    for variable in plan.environment:
+        if not variable.required:
+            continue
+        wildcard_allowed = len(service_keys) == 1 or (
+            targets_by_name.get(variable.name) == service_keys
+        )
+        for service_key in variable.service_keys:
+            if (service_key, variable.name) not in configured and not (
+                wildcard_allowed and ("*", variable.name) in configured
+            ):
+                missing.append(f"{service_key}:{variable.name}")
+    if missing:
+        # Variable names are schema metadata, never plaintext values.
+        raise DeploymentEnvironmentIncomplete(
+            "required deployment environment is not configured"
+        )
 
 
 __all__ = [

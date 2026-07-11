@@ -202,6 +202,10 @@ ALERT_NODE_CPU_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_CPU_PERCENT", "90
 TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS", "300"))
 DEFAULT_BUILD_NODE_NAME = "builder"
 RECOVERABLE_ROUTE_HTTP_STATUSES = {502, 503, 504}
+PUBLIC_ROUTE_SETTLE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_PUBLIC_ROUTE_SETTLE_TIMEOUT_SECONDS", "120"))
+PUBLIC_ROUTE_SETTLE_INTERVAL_SECONDS = float(os.environ.get("LUMA_PUBLIC_ROUTE_SETTLE_INTERVAL_SECONDS", "2"))
+TRAEFIK_PROVIDER_SETTLE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TRAEFIK_PROVIDER_SETTLE_TIMEOUT_SECONDS", "20"))
+DOCKER_RESTART_RECOVERY_TIMEOUT_SECONDS = int(os.environ.get("LUMA_DOCKER_RESTART_RECOVERY_TIMEOUT_SECONDS", "180"))
 ARTIFACT_DOWNLOADS = ArtifactLeaseManager(
     temporary_root=(
         Path(os.environ["LUMA_ARTIFACT_RENDEZVOUS_ROOT"])
@@ -7333,6 +7337,155 @@ def handle_build_deploy(
         raise
 
 
+def _docker_restart_allocation_ids(result: Any) -> set[str]:
+    if not isinstance(result, dict) or not bool(result.get("dockerRestarted")):
+        return set()
+    raw = result.get("affectedAllocationIds")
+    if not isinstance(raw, list):
+        return set()
+    return {str(value).strip() for value in raw if str(value).strip()}
+
+
+def _nomad_running_allocation_counts(allocations: Any, *, excluded_ids: set[str] | None = None) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    excluded = excluded_ids or set()
+    if not isinstance(allocations, list):
+        return counts
+    for allocation in allocations:
+        if not _nomad_allocation_is_running(allocation):
+            continue
+        allocation_id = str(allocation.get("ID") or allocation.get("id") or "").strip()
+        if allocation_id in excluded:
+            continue
+        group = str(allocation.get("TaskGroup") or allocation.get("task_group") or "").strip()
+        counts[group] = counts.get(group, 0) + 1
+    return counts
+
+
+def _reconcile_allocations_after_docker_restart(
+    state: Dict[str, Any],
+    node_name: str,
+    allocation_ids: set[str] | list[str],
+    *,
+    timeout: int = DOCKER_RESTART_RECOVERY_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """Recreate allocations whose Docker containers survived with detached CNI.
+
+    Docker restarts can bring Nomad init/app containers back while leaving their
+    CNI namespace with only loopback.  The node agent records the active Nomad
+    allocation ids before restarting Docker; Control validates those ids against
+    Nomad and then replaces them, waiting for the original per-job running count
+    before declaring the daemon change complete.
+    """
+
+    requested_ids = {str(value).strip() for value in allocation_ids if str(value).strip()}
+    if not requested_ids:
+        return {
+            "node": node_name,
+            "affectedAllocationIds": [],
+            "recreatedAllocationIds": [],
+            "jobs": [],
+            "message": "Docker restarted with no active Nomad Docker allocations",
+        }
+
+    config = load_config(_control_config_path())
+    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    validated: Dict[str, Dict[str, Any]] = {}
+    skipped: list[str] = []
+    host_ports: set[int] = set()
+    for allocation_id in sorted(requested_ids):
+        try:
+            allocation = api.request("GET", f"/v1/allocation/{urllib.parse.quote(allocation_id, safe='')}")
+        except LumaError as exc:
+            if "Nomad API error 404" in str(exc):
+                skipped.append(allocation_id)
+                continue
+            raise
+        if not isinstance(allocation, dict):
+            raise LumaError(f"Nomad returned invalid allocation detail after Docker restart: {allocation_id}")
+        allocation_node = _luma_node_name_for_nomad_allocation(state, allocation)
+        if not allocation_node or _canonical_node_name(state, allocation_node) != _canonical_node_name(state, node_name):
+            raise LumaError(
+                f"refusing to recreate allocation {allocation_id}: Nomad places it on "
+                f"{allocation_node or 'an unknown node'}, not {node_name}"
+            )
+        job_id = str(allocation.get("JobID") or allocation.get("job_id") or "").strip()
+        if not job_id:
+            raise LumaError(f"Nomad allocation has no job id after Docker restart: {allocation_id}")
+        desired_status = str(allocation.get("DesiredStatus") or allocation.get("desired_status") or "run").lower()
+        if desired_status not in {"run", "running"}:
+            skipped.append(allocation_id)
+            continue
+        validated[allocation_id] = allocation
+        host_ports.update(_nomad_allocation_host_ports(allocation))
+
+    if not validated:
+        return {
+            "node": node_name,
+            "affectedAllocationIds": sorted(requested_ids),
+            "recreatedAllocationIds": [],
+            "skippedAllocationIds": sorted(skipped),
+            "jobs": [],
+            "message": "Docker restart allocations were already terminal or absent in Nomad",
+        }
+
+    baselines: Dict[str, Dict[str, int]] = {}
+    for allocation in validated.values():
+        job_id = str(allocation.get("JobID") or allocation.get("job_id") or "").strip()
+        if job_id in baselines:
+            continue
+        allocations = api.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
+        if not isinstance(allocations, list):
+            raise LumaError(f"Nomad returned invalid allocations for job after Docker restart: {job_id}")
+        baselines[job_id] = _nomad_running_allocation_counts(allocations)
+
+    for allocation_id in sorted(validated):
+        api.request("POST", f"/v1/allocation/{urllib.parse.quote(allocation_id, safe='')}/stop", None)
+
+    deadline = time.monotonic() + max(1, int(timeout))
+    last_counts: Dict[str, Dict[str, int]] = {}
+    while True:
+        ready = True
+        last_counts = {}
+        for job_id, expected in baselines.items():
+            allocations = api.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
+            if not isinstance(allocations, list):
+                raise LumaError(f"Nomad returned invalid allocations while recovering Docker restart: {job_id}")
+            current = _nomad_running_allocation_counts(allocations, excluded_ids=set(validated))
+            last_counts[job_id] = current
+            affected_groups = {
+                str(item.get("TaskGroup") or item.get("task_group") or "").strip()
+                for item in validated.values()
+                if str(item.get("JobID") or item.get("job_id") or "").strip() == job_id
+            }
+            for group in affected_groups:
+                required = max(1, int(expected.get(group) or 0))
+                if int(current.get(group) or 0) < required:
+                    ready = False
+        if ready:
+            break
+        if time.monotonic() >= deadline:
+            details = "; ".join(
+                f"{job_id}: expected={baselines[job_id]}, running={last_counts.get(job_id, {})}"
+                for job_id in sorted(baselines)
+            )
+            raise LumaError(f"Nomad allocations did not recover after Docker restart on {node_name}: {details}")
+        time.sleep(1)
+
+    cni_hostports = _refresh_nomad_cni_hostports_for_nodes(state, {node_name}, ports=sorted(host_ports))
+    jobs = sorted(baselines)
+    return {
+        "node": node_name,
+        "affectedAllocationIds": sorted(requested_ids),
+        "recreatedAllocationIds": sorted(validated),
+        "skippedAllocationIds": sorted(skipped),
+        "jobs": jobs,
+        "running": last_counts,
+        "cniHostports": cni_hostports,
+        "message": f"Recovered {len(validated)} Nomad allocation(s) after Docker restart on {node_name}",
+    }
+
+
 def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -7377,6 +7530,7 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
     # must be configured out-of-band if it also runs pulled workloads.
     configured: list[str] = []
     skipped: list[str] = []
+    docker_recoveries: list[Dict[str, Any]] = []
     registry_no_proxy = _merge_no_proxy(EGRESS_NO_PROXY, *_no_proxy_entries_for_registry(registry_host))
     config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
     for node_name in sorted(str(n) for n in nodes):
@@ -7390,8 +7544,10 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
         if str(agent.get("os") or "") != "linux" or not _node_agent_is_ready(node_record):
             skipped.append(node_name)
             continue
+        affected_allocation_ids: set[str] = set()
+        configuration_error: LumaError | None = None
         try:
-            _run_node_agent_task(
+            registry_result = _run_node_agent_task(
                 state,
                 node_name,
                 "configure-insecure-registry",
@@ -7399,9 +7555,10 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
                 timeout=240,
                 required_capability=None,
             )
+            affected_allocation_ids.update(_docker_restart_allocation_ids(registry_result))
             daemon_proxy = _docker_daemon_proxy_for_node(config, state, node_name, node_record)
             if daemon_proxy:
-                _run_node_agent_task(
+                proxy_result = _run_node_agent_task(
                     state,
                     node_name,
                     "configure-docker-egress-proxy",
@@ -7409,9 +7566,28 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
                     timeout=240,
                     required_capability=None,
                 )
-            configured.append(node_name)
+                affected_allocation_ids.update(_docker_restart_allocation_ids(proxy_result))
         except LumaError as exc:
-            skipped.append(f"{node_name} ({exc})")
+            configuration_error = exc
+        if affected_allocation_ids:
+            try:
+                recovery = _reconcile_allocations_after_docker_restart(state, node_name, affected_allocation_ids)
+            except LumaError as exc:
+                raise LumaError(
+                    f"Docker restarted on {node_name}, but its Nomad allocations did not recover automatically: {exc}"
+                ) from exc
+            docker_recoveries.append(recovery)
+            recovery_step = {
+                "name": f"Recover Docker restart on {node_name}",
+                "status": "ok",
+                "message": str(recovery.get("message") or "Nomad allocations recovered"),
+            }
+            steps.append(recovery_step)
+            _emit_progress(progress, recovery_step)
+        if configuration_error is not None:
+            skipped.append(f"{node_name} ({configuration_error})")
+        else:
+            configured.append(node_name)
     insecure_step = {
         "name": "Configure insecure-registries",
         "status": "ok",
@@ -7431,6 +7607,7 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
         "pushHost": f"localhost:{port}",
         "configuredNodes": configured,
         "skippedNodes": skipped,
+        "dockerRestartRecoveries": docker_recoveries,
         "steps": steps,
     }
 
@@ -7912,6 +8089,8 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
                 progress=progress,
             )
         )
+        routes_root = _resolve_control_path(config.routes_root, config_path)
+        route_target: Path | None = None
         if service.exposure in {"tailscale-relay", "tcp-relay"}:
             route_target = _resolve_control_path(route_path(config, service), config_path)
             route_target.parent.mkdir(parents=True, exist_ok=True)
@@ -7927,7 +8106,6 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
                     progress=progress,
                 )
                 route_text = render_tailscale_route(config, route_service) if service.exposure == "tailscale-relay" else render_tcp_route(config, route_service)
-                routes_root = _resolve_control_path(config.routes_root, config_path)
                 _deploy_step(steps, "Write route", lambda: _write_route_file(route_target, route_text, routes_root=routes_root), progress=progress)
                 written.append(str(route_target))
         probe_result = _deploy_step(
@@ -7939,6 +8117,8 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
                 stack=service.slug,
                 skip_orchestrator=_skip_orchestrator(body),
                 steps=steps,
+                route_file=route_target if service.exposure == "tailscale-relay" else None,
+                routes_root=routes_root,
                 progress=progress,
             ),
             progress=progress,
@@ -8767,16 +8947,23 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         probe_results: list[str] = []
         for service in compose_public_services(deployment):
             service_spec = _compose_service_as_service_spec(deployment, service)
+            route_file = (
+                _resolve_control_path(compose_route_path(config, deployment, service.name), config_path)
+                if service.exposure == "tailscale-relay"
+                else None
+            )
             probe_results.append(
                 _deploy_step(
                     steps,
                     f"Probe public route {service.name}",
-                    lambda service_spec=service_spec: _probe_public_route_with_recovery(
+                    lambda service_spec=service_spec, route_file=route_file: _probe_public_route_with_recovery(
                         token,
                         service_spec,
                         stack=deployment.slug,
                         skip_orchestrator=_skip_orchestrator(body),
                         steps=steps,
+                        route_file=route_file,
+                        routes_root=routes_root,
                         progress=progress,
                     ),
                     progress=progress,
@@ -10408,6 +10595,16 @@ def image_pull_requires_egress(image: str) -> bool:
     return registry in _egress_pull_registries()
 
 
+def _guard_manager_docker_daemon_change(state: Dict[str, Any], node_name: str) -> None:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    if isinstance(record, dict) and _node_record_is_manager(record):
+        raise LumaError(
+            f"Docker daemon configuration on manager node {node_name} requires a host-owned maintenance operation; "
+            "Control will not restart the Docker daemon that is running itself. Configure the manager daemon on the host, then retry."
+        )
+
+
 def ensure_image_pull_network(state: Dict[str, Any], image: str) -> str:
     registry = _image_registry_host(image)
     if registry in _egress_pull_registries():
@@ -10429,6 +10626,7 @@ def ensure_image_pull_network(state: Dict[str, Any], image: str) -> str:
     if not node_name:
         raise LumaError(f"image pull proxy bypass requires Docker daemon access for {registry}, but the control manager node is not registered")
 
+    _guard_manager_docker_daemon_change(state, node_name)
     no_proxy = _merge_no_proxy(_docker_info_no_proxy(info), EGRESS_NO_PROXY, *required_no_proxy)
     result = _run_node_agent_task(
         state,
@@ -10455,6 +10653,7 @@ def ensure_image_pull_egress_proxy(state: Dict[str, Any], image: str) -> str:
     node_name = _local_control_node_name(state, info)
     if not node_name:
         raise LumaError(f"image pull egress requires Docker daemon proxy for {registry}, but the control manager node is not registered")
+    _guard_manager_docker_daemon_change(state, node_name)
     result = _run_node_agent_task(
         state,
         node_name,
@@ -10594,6 +10793,8 @@ def _probe_public_route_with_recovery(
     stack: str,
     skip_orchestrator: bool,
     steps: list[dict[str, str]],
+    route_file: Path | None = None,
+    routes_root: Path | None = None,
     progress: Callable[[dict[str, str]], None] | None = None,
 ) -> str:
     if skip_orchestrator:
@@ -10603,13 +10804,48 @@ def _probe_public_route_with_recovery(
     except LumaError as exc:
         if not _public_route_error_is_recoverable(exc):
             raise
+        if _public_route_error_is_traefik_miss(exc):
+            provider_message = _deploy_step(
+                steps,
+                "Reconcile Traefik provider",
+                lambda: _reconcile_traefik_provider(route_file=route_file, routes_root=routes_root),
+                progress=progress,
+            )
+            try:
+                retry = _wait_for_public_route(
+                    service,
+                    timeout=TRAEFIK_PROVIDER_SETTLE_TIMEOUT_SECONDS,
+                )
+                return f"Recovered public route after provider reconciliation ({provider_message}): {retry}"
+            except LumaError as provider_exc:
+                if _public_route_error_is_traefik_miss(provider_exc):
+                    _deploy_step(
+                        steps,
+                        "Recover Traefik ingress",
+                        _recover_traefik_ingress,
+                        progress=progress,
+                    )
+                    retry = _wait_for_public_route(service)
+                    return f"Recovered public route after Traefik recreate: {retry}"
+                exc = provider_exc
+
+        # Gateway errors during an update are normally rollout convergence, not
+        # a broken allocation.  Wait for the exact deployment first; only if the
+        # route remains unhealthy after the full settle budget do we replace the
+        # application allocation.
+        try:
+            retry = _wait_for_public_route(service)
+            return f"Public route settled after rollout: {retry}"
+        except LumaError as settled_exc:
+            if not _public_route_error_is_gateway_failure(settled_exc):
+                raise
         _deploy_step(
             steps,
-            "Recover public route",
+            "Recover application upstream",
             lambda: _recover_public_route_allocation(token, stack),
             progress=progress,
         )
-        retry = _probe_public_route(service)
+        retry = _wait_for_public_route(service)
         return f"Recovered public route after allocation recreate: {retry}"
 
 
@@ -10617,16 +10853,122 @@ def _public_route_error_is_recoverable(exc: LumaError) -> bool:
     message = str(exc)
     if "Public route unhealthy:" not in message:
         return False
-    if "Traefik router not found" in message:
-        return True
-    return any(f"HTTP {status}" in message for status in RECOVERABLE_ROUTE_HTTP_STATUSES)
+    return _public_route_error_is_traefik_miss(exc) or _public_route_error_is_gateway_failure(exc)
+
+
+def _public_route_error_is_traefik_miss(exc: LumaError) -> bool:
+    return "Public route unhealthy:" in str(exc) and "Traefik router not found" in str(exc)
+
+
+def _public_route_error_is_gateway_failure(exc: LumaError) -> bool:
+    message = str(exc)
+    return "Public route unhealthy:" in message and any(
+        f"HTTP {status}" in message for status in RECOVERABLE_ROUTE_HTTP_STATUSES
+    )
+
+
+def _wait_for_public_route(
+    service: ServiceSpec,
+    *,
+    timeout: int = PUBLIC_ROUTE_SETTLE_TIMEOUT_SECONDS,
+    interval: float = PUBLIC_ROUTE_SETTLE_INTERVAL_SECONDS,
+) -> str:
+    deadline = time.monotonic() + max(0, float(timeout))
+    last_error: LumaError | None = None
+    while True:
+        try:
+            result = _probe_public_route(service)
+            if not result.startswith("Public route probe inconclusive:"):
+                return result
+            last_error = LumaError(result)
+        except LumaError as exc:
+            if not _public_route_error_is_recoverable(exc):
+                raise
+            last_error = exc
+        if time.monotonic() >= deadline:
+            raise last_error or LumaError("Public route did not become ready")
+        time.sleep(max(0.05, float(interval)))
+
+
+def _reconcile_traefik_provider(*, route_file: Path | None, routes_root: Path | None) -> str:
+    if route_file is None:
+        return "waiting for Nomad provider convergence"
+    if routes_root is None:
+        raise LumaError("Traefik route root is unavailable")
+    if not route_file.exists() or not route_file.is_file():
+        raise LumaError(f"Traefik route file is unavailable: {route_file}")
+    original = route_file.read_text(encoding="utf-8")
+    _write_route_file(route_file, original, routes_root=routes_root, validate=False)
+    return f"republished {route_file.name}"
+
+
+def _wait_for_nomad_job_replacement(
+    api: NomadApi,
+    job_id: str,
+    old_allocation_ids: set[str] | list[str],
+    *,
+    min_running: int = 1,
+    timeout: int = PUBLIC_ROUTE_SETTLE_TIMEOUT_SECONDS,
+) -> list[str]:
+    old_ids = {str(value).strip() for value in old_allocation_ids if str(value).strip()}
+    deadline = time.monotonic() + max(1, int(timeout))
+    last: list[str] = []
+    while True:
+        allocations = api.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
+        if not isinstance(allocations, list):
+            raise LumaError(f"Nomad returned invalid allocations while recovering job: {job_id}")
+        last = sorted(
+            str(allocation.get("ID") or allocation.get("id") or "").strip()
+            for allocation in allocations
+            if _nomad_allocation_is_running(allocation)
+            and str(allocation.get("ID") or allocation.get("id") or "").strip() not in old_ids
+        )
+        last = [value for value in last if value]
+        if len(last) >= max(1, int(min_running)):
+            return last
+        if time.monotonic() >= deadline:
+            raise LumaError(
+                f"Nomad job {job_id} did not replace {len(old_ids)} allocation(s) within {timeout}s"
+            )
+        time.sleep(1)
+
+
+def _recover_traefik_ingress() -> str:
+    state = load_state()
+    config = load_config(_control_config_path())
+    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    allocations = api.request("GET", "/v1/job/traefik/allocations")
+    if not isinstance(allocations, list):
+        raise LumaError("Nomad returned invalid allocations for Traefik")
+    running_ids = {
+        str(allocation.get("ID") or allocation.get("id") or "").strip()
+        for allocation in allocations
+        if _nomad_allocation_is_running(allocation)
+    }
+    running_ids.discard("")
+    if not running_ids:
+        raise LumaError("Traefik has no running allocation to recover")
+    for allocation_id in sorted(running_ids):
+        api.request("POST", f"/v1/allocation/{urllib.parse.quote(allocation_id, safe='')}/stop", None)
+    replacements = _wait_for_nomad_job_replacement(api, "traefik", running_ids, min_running=1)
+    return f"Traefik allocation recreated ({', '.join(replacements)})"
 
 
 def _recover_public_route_allocation(token: str, stack: str) -> str:
     result = handle_application_restart(token, {"stack": stack, "mode": "recreate"})
     restarted = result.get("restarted") if isinstance(result, dict) else []
-    count = len(restarted) if isinstance(restarted, list) else 0
-    return f"allocation recreate requested ({count} allocation(s))"
+    allocation_ids = {
+        str(item.get("allocId") or "").strip()
+        for item in restarted
+        if isinstance(item, dict) and str(item.get("allocId") or "").strip()
+    } if isinstance(restarted, list) else set()
+    if not allocation_ids:
+        raise LumaError(f"application allocation recreate returned no allocation ids: {stack}")
+    state = load_state()
+    config = load_config(_control_config_path())
+    api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    replacements = _wait_for_nomad_job_replacement(api, stack, allocation_ids, min_running=1)
+    return f"allocation recreate completed ({len(allocation_ids)} replaced by {len(replacements)} running allocation(s))"
 
 
 def _read_probe_error_sample(exc: urllib.error.HTTPError) -> bytes:
@@ -12433,7 +12775,8 @@ def _configure_target_image_pull_proxy(state: Dict[str, Any], node_name: str, im
     proxy = _target_image_pull_proxy_url(state, node_name, gateway_node=gateway_node)
     if not proxy:
         raise LumaError(f"image pull egress is running, but no reachable egress proxy address was found for {node_name}")
-    _run_node_agent_task(
+    _guard_manager_docker_daemon_change(state, node_name)
+    result = _run_node_agent_task(
         state,
         node_name,
         "configure-docker-egress-proxy",
@@ -12441,6 +12784,9 @@ def _configure_target_image_pull_proxy(state: Dict[str, Any], node_name: str, im
         timeout=180,
         required_capability="docker-egress-proxy",
     )
+    affected_allocation_ids = _docker_restart_allocation_ids(result)
+    if affected_allocation_ids:
+        _reconcile_allocations_after_docker_restart(state, node_name, affected_allocation_ids)
 
 
 def _deferred_service_image(

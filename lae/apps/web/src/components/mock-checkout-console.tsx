@@ -147,8 +147,8 @@ export function MockCheckoutConsole({ orderId }: { orderId: string }) {
           transition={{ duration: 0.58, ease: [0.22, 1, 0.36, 1] }}
         >
           <section className="mock-checkout-intro" aria-labelledby="checkout-title">
-            <p><span /> DEVELOPMENT PAYMENT INSTRUMENT</p>
-            <h1 id="checkout-title">确认这一次<em>模拟付款。</em></h1>
+            <p><span /> STAGING CHECKOUT</p>
+            <h1 id="checkout-title">确认模拟付款</h1>
             <div className="mock-checkout-assurance">
               <ShieldCheck size={14} />
               <span>不会连接微信、支付宝或银行卡，也不会产生真实扣款。</span>
@@ -222,15 +222,8 @@ export function MockCheckoutConsole({ orderId }: { orderId: string }) {
 }
 
 function CheckoutAmbient({ reduced }: { reduced: boolean }) {
-  return (
-    <div className="mock-checkout-ambient" aria-hidden="true">
-      <motion.span
-        animate={reduced ? undefined : { x: [0, 36, 0], y: [0, -20, 0] }}
-        transition={{ duration: 24, repeat: Infinity, ease: "easeInOut" }}
-      />
-      <i /><i /><i /><b />
-    </div>
-  );
+  void reduced;
+  return null;
 }
 
 function CheckoutLoading() {

@@ -19,7 +19,13 @@ for relative in (
     sys.path.insert(0, str(LAE_ROOT / relative))
 
 from lae_api.deployment_api import register_deployment_routes  # noqa: E402
-from lae_store import ResourceNotFound, TenantScope, new_id  # noqa: E402
+from lae_store import (  # noqa: E402
+    DeploymentEnvironmentScopeInvalid,
+    IdempotentCatalogResult,
+    ResourceNotFound,
+    TenantScope,
+    new_id,
+)
 from lae_store.deployment_admission import (  # noqa: E402
     DeploymentAdmissionResult,
     PublicDeploymentRecord,
@@ -124,16 +130,66 @@ class FakeDeploymentService:
                 "kind": "compose",
                 "serviceKeys": ["web", "worker"],
                 "environmentSchemaDigest": "sha256:" + "a" * 64,
+                "environmentScopeMode": "service",
                 "environment": [
                     {
                         "name": "DATABASE_URL",
                         "serviceKeys": ["web", "worker"],
+                        "references": [
+                            "web:DATABASE_URL",
+                            "worker:DATABASE_URL",
+                        ],
                         "required": True,
                         "sensitive": True,
                     }
                 ],
             }
         }
+
+    async def patch_environment(
+        self,
+        scope: TenantScope,
+        principal: Principal,
+        application_id: str,
+        analysis_id: str,
+        payload: object,
+        idempotency_key: str,
+    ) -> IdempotentCatalogResult:
+        self.calls.append(
+            (
+                "patch_environment",
+                (
+                    scope,
+                    principal,
+                    application_id,
+                    analysis_id,
+                    payload,
+                    idempotency_key,
+                ),
+            )
+        )
+        if any(reference.startswith("*:") for reference in payload.set):
+            raise DeploymentEnvironmentScopeInvalid("wildcard is unsafe")
+        return IdempotentCatalogResult(
+            {
+                "environment": {
+                    "version": payload.expectedVersion + 1,
+                    "variables": [
+                        {
+                            "serviceScope": reference.split(":", 1)[0],
+                            "name": reference.split(":", 1)[1],
+                            "configured": True,
+                            "sensitive": True,
+                            "required": True,
+                            "source": "user",
+                            "updatedAt": "2026-07-11T00:00:00Z",
+                        }
+                        for reference in payload.set
+                    ],
+                }
+            },
+            replayed=False,
+        )
 
 
 class DeploymentRouteTests(unittest.TestCase):
@@ -296,6 +352,70 @@ class DeploymentRouteTests(unittest.TestCase):
         self.assertEqual(hidden.status_code, 404)
         self.assertEqual(hidden.json()["error"]["code"], "LAE_NOT_FOUND")
         self.assertNotIn("secret detail", hidden.text)
+
+    def test_plan_environment_patch_requires_explicit_service_scope(self) -> None:
+        analysis_id = new_id("ana")
+        path = (
+            f"/v1/applications/{self.service.application_id}/analyses/"
+            f"{analysis_id}/environment"
+        )
+        secret = "never-return-this-value"
+        payload = {
+            "expectedVersion": 0,
+            "environmentSchemaDigest": "sha256:" + "a" * 64,
+            "set": {
+                "web:DATABASE_URL": {"value": secret},
+                "worker:DATABASE_URL": {"value": secret},
+            },
+            "unset": [],
+        }
+        response = self.client.patch(
+            path,
+            headers={
+                "Idempotency-Key": "plan-environment-1",
+                "X-CSRF-Token": "csrf-value",
+            },
+            json=payload,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["idempotency-replayed"], "false")
+        self.assertEqual(
+            self.auth_calls[-1],
+            {"scope": "apps:write", "csrf": "csrf-value", "mutation": True},
+        )
+        self.assertNotIn(secret, response.text)
+        call = self.service.calls[-1][1]
+        self.assertEqual(set(call[4].set), {"web:DATABASE_URL", "worker:DATABASE_URL"})
+
+        wildcard = self.client.patch(
+            path,
+            headers={"Idempotency-Key": "plan-environment-wildcard"},
+            json={
+                **payload,
+                "set": {"*:DATABASE_URL": {"value": secret}},
+            },
+        )
+        self.assertEqual(wildcard.status_code, 409)
+        self.assertEqual(
+            wildcard.json()["error"]["code"], "LAE_ENVIRONMENT_SCOPE_INVALID"
+        )
+        self.assertNotIn(secret, wildcard.text)
+
+        caller_flags = self.client.patch(
+            path,
+            headers={"Idempotency-Key": "plan-environment-flags"},
+            json={
+                **payload,
+                "set": {
+                    "web:DATABASE_URL": {
+                        "value": secret,
+                        "sensitive": False,
+                        "required": False,
+                    }
+                },
+            },
+        )
+        self.assertEqual(caller_flags.status_code, 422)
 
 
 if __name__ == "__main__":

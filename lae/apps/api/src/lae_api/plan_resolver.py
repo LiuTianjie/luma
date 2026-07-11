@@ -106,6 +106,10 @@ class DeploymentConfigurationSchema:
     service_keys: tuple[str, ...]
     environment: tuple[PreparedEnvironmentVariable, ...]
     environment_schema_digest: str
+    services: tuple[dict[str, object], ...] = ()
+    routes: tuple[dict[str, object], ...] = ()
+    volumes: tuple[dict[str, object], ...] = ()
+    warnings: tuple[str, ...] = ()
 
     def public_body(self) -> dict[str, object]:
         return {
@@ -113,10 +117,19 @@ class DeploymentConfigurationSchema:
             "kind": self.kind,
             "serviceKeys": list(self.service_keys),
             "environmentSchemaDigest": self.environment_schema_digest,
+            "environmentScopeMode": "service",
+            "services": [dict(service) for service in self.services],
+            "routes": [dict(route) for route in self.routes],
+            "volumes": [dict(volume) for volume in self.volumes],
+            "warnings": list(self.warnings),
             "environment": [
                 {
                     "name": variable.name,
                     "serviceKeys": list(variable.service_keys),
+                    "references": [
+                        f"{service_key}:{variable.name}"
+                        for service_key in variable.service_keys
+                    ],
                     "required": variable.required,
                     "sensitive": variable.sensitive,
                 }
@@ -172,6 +185,8 @@ class S3DeploymentPlanResolver:
         plan = await self._load_verified_plan(artifact)
         _require_plan_semantics(plan, artifact)
         services = _list_of_mappings(plan, "services")
+        routes = _list_of_mappings(plan, "routes")
+        volumes = _list_of_mappings(plan, "volumes")
         environment = _prepared_runtime_environment(
             _list_of_mappings(plan, "environment")
         )
@@ -184,6 +199,10 @@ class S3DeploymentPlanResolver:
             ),
             environment=environment,
             environment_schema_digest=_canonical_digest(normalized),
+            services=tuple(_public_service_summary(service) for service in services),
+            routes=tuple(_public_route_summary(route) for route in routes),
+            volumes=tuple(_public_volume_summary(volume) for volume in volumes),
+            warnings=tuple(_string_list(plan, "warnings")),
         )
 
     async def _load_verified_plan(
@@ -522,6 +541,49 @@ def _require_plan_semantics(
             if service_key not in known_services or binding in seen_environment:
                 raise DeploymentPlanInvalid("environment service binding is invalid")
             seen_environment.add(binding)
+
+
+def _public_service_summary(service: Mapping[str, object]) -> dict[str, object]:
+    """Return the reviewed, secret-free service facts shown before deploy."""
+
+    resources = _mapping(service, "resources")
+    image = _mapping(service, "image")
+    healthcheck = service.get("healthcheck")
+    return {
+        "key": _required_string(service, "key"),
+        "role": _required_string(service, "role"),
+        "dependencies": list(_string_list(service, "dependencies")),
+        "resources": {
+            "cpu": _required_string(resources, "cpu"),
+            "memoryMiB": _required_int(resources, "memoryMiB"),
+        },
+        "port": service.get("port"),
+        "imageSource": _required_string(image, "source"),
+        "healthPath": (
+            _required_string(_mapping_value(healthcheck, "healthcheck"), "path")
+            if healthcheck is not None
+            else None
+        ),
+    }
+
+
+def _public_route_summary(route: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "serviceKey": _required_string(route, "serviceKey"),
+        "containerPort": _required_int(route, "containerPort"),
+        "healthPath": _required_string(route, "healthPath"),
+        "primary": _required_bool(route, "primary"),
+    }
+
+
+def _public_volume_summary(volume: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "key": _required_string(volume, "key"),
+        "serviceKeys": list(_string_list(volume, "serviceKeys")),
+        "mountPath": _required_string(volume, "mountPath"),
+        "backupPolicy": _required_string(volume, "backupPolicy"),
+        "deletePolicy": _required_string(volume, "deletePolicy"),
+    }
 
 
 def _image_requirement(service: Mapping[str, object]) -> RuntimeImageRequirement:

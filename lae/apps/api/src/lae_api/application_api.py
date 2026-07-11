@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lae_store import (
+    APPLICATION_ENVIRONMENT_PATCH_ROUTE,
+    PLAN_ENVIRONMENT_PATCH_ROUTE,
     ApplicationCatalogStore,
     ApplicationConflict,
     ApplicationQuotaExceeded,
@@ -27,11 +29,13 @@ from lae_store import (
     IdempotencyKeyReused,
     IdempotentCatalogResult,
     PatchEnvironment,
+    PreparedEnvironmentVariable,
     Principal,
     ResourceNotFound,
     SubscriptionUnavailable,
     TenantScope,
     CreateApplicationDraft,
+    DeploymentEnvironmentScopeInvalid,
     keyed_request_hash,
 )
 
@@ -300,7 +304,130 @@ class ApplicationApiService:
             idempotency=IdempotencyInput(
                 key=idempotency_key,
                 method="PATCH",
-                route_template="/v1/applications/{application_id}/environment",
+                route_template=APPLICATION_ENVIRONMENT_PATCH_ROUTE,
+                request_hash=request_hash,
+            ),
+        )
+
+    async def patch_plan_environment(
+        self,
+        scope: TenantScope,
+        principal: Any,
+        application_id: str,
+        *,
+        analysis_id: str,
+        expected_version: int,
+        environment_schema_digest: str,
+        plan_service_keys: tuple[str, ...],
+        schema_environment: tuple[PreparedEnvironmentVariable, ...],
+        values: Mapping[str, str],
+        unset: tuple[str, ...],
+        idempotency_key: str,
+    ) -> IdempotentCatalogResult:
+        """Encrypt a verified-plan-bound, explicitly service-scoped patch."""
+
+        service_keys = set(plan_service_keys)
+        if not service_keys or len(service_keys) != len(plan_service_keys):
+            raise DeploymentEnvironmentScopeInvalid(
+                "deployment environment service namespace is invalid"
+            )
+        bindings: dict[tuple[str, str], PreparedEnvironmentVariable] = {}
+        targets_by_name: dict[str, set[str]] = {}
+        for variable in schema_environment:
+            targets = targets_by_name.setdefault(variable.name, set())
+            for service_key in variable.service_keys:
+                bindings[(service_key, variable.name)] = variable
+                targets.add(service_key)
+
+        plaintext: list[EnvironmentPlaintext] = []
+        explicitly_set_names: set[str] = set()
+        for reference, value in values.items():
+            service_scope, name = _parse_environment_reference(reference)
+            if service_scope == "*" or service_scope not in service_keys:
+                raise DeploymentEnvironmentScopeInvalid(
+                    "deployment environment requires an explicit plan service"
+                )
+            known_targets = targets_by_name.get(name)
+            if known_targets is not None and service_scope not in known_targets:
+                raise DeploymentEnvironmentScopeInvalid(
+                    "deployment environment variable targets the wrong service"
+                )
+            variable = bindings.get((service_scope, name))
+            plaintext.append(
+                EnvironmentPlaintext(
+                    service_scope=service_scope,
+                    name=name,
+                    value=value,
+                    is_sensitive=variable.sensitive if variable else True,
+                    required=variable.required if variable else False,
+                )
+            )
+            explicitly_set_names.add(name)
+
+        effective_unset = set(unset)
+        for reference in unset:
+            service_scope, name = _parse_environment_reference(reference)
+            if service_scope != "*" and service_scope not in service_keys:
+                raise DeploymentEnvironmentScopeInvalid(
+                    "deployment environment unset targets an unknown service"
+                )
+            known_targets = targets_by_name.get(name)
+            if (
+                service_scope != "*"
+                and known_targets is not None
+                and service_scope not in known_targets
+            ):
+                raise DeploymentEnvironmentScopeInvalid(
+                    "deployment environment variable targets the wrong service"
+                )
+        # Atomically remove broad legacy values once an explicit service value
+        # for the same name is supplied. Wildcard deletion is migration-only.
+        effective_unset.update(f"*:{name}" for name in explicitly_set_names)
+        unset_keys = tuple(
+            EnvironmentKey(*_parse_environment_reference(reference))
+            for reference in sorted(effective_unset)
+        )
+
+        hash_payload = {
+            "applicationId": application_id,
+            "analysisId": analysis_id,
+            "environmentSchemaDigest": environment_schema_digest,
+            "expectedVersion": expected_version,
+            "set": {
+                f"{item.service_scope}:{item.name}": {
+                    "value": item.value,
+                    "sensitive": item.is_sensitive,
+                    "required": item.required,
+                }
+                for item in plaintext
+            },
+            "unset": sorted(effective_unset),
+        }
+        request_hash = keyed_request_hash(hash_payload, self._idempotency_hash_key)
+        encrypted = tuple(
+            self._crypto.encrypt_value(
+                item,
+                tenant_id=scope.tenant_id,
+                application_id=application_id,
+            )
+            for item in plaintext
+        )
+        return await self._catalog.patch_environment_idempotent(
+            PatchEnvironment(
+                scope=scope,
+                application_id=application_id,
+                expected_version=expected_version,
+                set_values=encrypted,
+                unset=unset_keys,
+                plan_analysis_id=analysis_id,
+                plan_environment_schema_digest=environment_schema_digest,
+                plan_service_keys=plan_service_keys,
+            ),
+            principal=_store_principal(principal),
+            idempotency=IdempotencyInput(
+                key=idempotency_key,
+                method="PATCH",
+                route_template=PLAN_ENVIRONMENT_PATCH_ROUTE,
                 request_hash=request_hash,
             ),
         )
@@ -544,6 +671,12 @@ def register_application_routes(
                 "LAE_ENVIRONMENT_VERSION_CONFLICT",
                 "Environment version does not match current state",
                 details={"expectedVersion": exc.expected, "currentVersion": exc.actual},
+            ) from exc
+        except DeploymentEnvironmentScopeInvalid as exc:
+            raise error(
+                409,
+                "LAE_ENVIRONMENT_SCOPE_INVALID",
+                "Environment variables must target an allowed application service",
             ) from exc
         except ResourceNotFound as exc:
             raise error(404, "LAE_NOT_FOUND", "Application not found") from exc

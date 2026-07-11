@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import os
 import sys
@@ -30,11 +31,14 @@ from lae_store import (  # noqa: E402
     EnvironmentMetadata,
     EnvironmentVariableMetadata,
     EnvironmentVersionConflict,
+    DeploymentEnvironmentScopeInvalid,
     HttpRouteRecord,
     IdempotencyKeyReused,
     IdempotentCatalogResult,
     ResourceNotFound,
+    PreparedEnvironmentVariable,
     ServiceRecord,
+    TenantScope,
     VolumeRecord,
     new_id,
 )
@@ -218,12 +222,16 @@ class RecordingApplicationCatalog:
     async def list_applications(self, scope: object) -> tuple[ApplicationSummary, ...]:
         return (self.summary(),) if scope.tenant_id == self.tenant_id else ()
 
-    async def get_application(self, scope: object, application_id: str) -> ApplicationRecord:
+    async def get_application(
+        self, scope: object, application_id: str
+    ) -> ApplicationRecord:
         if scope.tenant_id != self.tenant_id or application_id != self.application_id:
             raise ResourceNotFound("missing")
         return self.record()
 
-    async def get_environment(self, scope: object, application_id: str) -> EnvironmentMetadata:
+    async def get_environment(
+        self, scope: object, application_id: str
+    ) -> EnvironmentMetadata:
         if scope.tenant_id != self.tenant_id or application_id != self.application_id:
             raise ResourceNotFound("missing")
         return self.environment()
@@ -232,7 +240,10 @@ class RecordingApplicationCatalog:
         self, command: object, *, principal: object, idempotency: object
     ) -> IdempotentCatalogResult:
         del principal
-        if command.scope.tenant_id != self.tenant_id or command.application_id != self.application_id:
+        if (
+            command.scope.tenant_id != self.tenant_id
+            or command.application_id != self.application_id
+        ):
             raise ResourceNotFound("missing")
         existing = self._idempotency.get(("patch", idempotency.key))
         if existing is not None:
@@ -317,9 +328,7 @@ class ApplicationApiTests(unittest.TestCase):
             json={"name": "Changed", "slug": "changed"},
         )
         self.assertEqual(conflict.status_code, 409)
-        self.assertEqual(
-            conflict.json()["error"]["code"], "LAE_IDEMPOTENCY_KEY_REUSED"
-        )
+        self.assertEqual(conflict.json()["error"]["code"], "LAE_IDEMPOTENCY_KEY_REUSED")
 
         self.auth.scopes = frozenset({"apps:read"})
         forbidden = self.client.post(
@@ -388,7 +397,9 @@ class ApplicationApiTests(unittest.TestCase):
         self.assertEqual(hidden.status_code, 404)
         self.assertNotIn(application_id, hidden.text)
 
-    def test_environment_patch_encrypts_all_values_and_never_echoes_secret(self) -> None:
+    def test_environment_patch_encrypts_all_values_and_never_echoes_secret(
+        self,
+    ) -> None:
         secret = "never-echo-this-secret-value"
         path = f"/v1/applications/{self.catalog.application_id}/environment"
         headers = {**self.bearer, "Idempotency-Key": "environment-1"}
@@ -422,9 +433,7 @@ class ApplicationApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(conflict.status_code, 409)
-        self.assertEqual(
-            conflict.json()["error"]["code"], "LAE_IDEMPOTENCY_KEY_REUSED"
-        )
+        self.assertEqual(conflict.json()["error"]["code"], "LAE_IDEMPOTENCY_KEY_REUSED")
         stale = self.client.patch(
             path,
             headers={**self.bearer, "Idempotency-Key": "environment-stale"},
@@ -450,6 +459,89 @@ class ApplicationApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"]["code"], "LAE_INVALID_ARGUMENT")
         self.assertNotIn(secret, response.text)
+
+    def test_plan_environment_patch_derives_flags_and_keeps_service_scopes(
+        self,
+    ) -> None:
+        analysis_id = new_id("ana")
+        digest = "sha256:" + "a" * 64
+        secret = "postgres://plan-bound-secret"
+        result = asyncio.run(
+            self.service.patch_plan_environment(
+                TenantScope(self.auth.tenant_id),
+                type(
+                    "Principal",
+                    (),
+                    {
+                        "credential_type": "deploy_token",
+                        "credential_id": self.auth.deploy_token_id,
+                    },
+                )(),
+                self.catalog.application_id,
+                analysis_id=analysis_id,
+                expected_version=0,
+                environment_schema_digest=digest,
+                plan_service_keys=("web", "worker"),
+                schema_environment=(
+                    PreparedEnvironmentVariable(
+                        "DATABASE_URL", ("web",), required=True, sensitive=True
+                    ),
+                ),
+                values={
+                    "web:DATABASE_URL": secret,
+                    "worker:FEATURE_FLAG": "enabled",
+                },
+                unset=(),
+                idempotency_key="plan-environment-1",
+            )
+        )
+        self.assertEqual(result.response_body["environment"]["version"], 1)
+        command = self.catalog.patch_calls[-1]
+        self.assertEqual(command.plan_analysis_id, analysis_id)
+        self.assertEqual(command.plan_environment_schema_digest, digest)
+        self.assertEqual(command.plan_service_keys, ("web", "worker"))
+        encrypted = {item.key: item for item in command.set_values}
+        self.assertEqual(
+            set(encrypted),
+            {("web", "DATABASE_URL"), ("worker", "FEATURE_FLAG")},
+        )
+        self.assertTrue(encrypted[("web", "DATABASE_URL")].required)
+        self.assertTrue(encrypted[("web", "DATABASE_URL")].is_sensitive)
+        self.assertFalse(encrypted[("worker", "FEATURE_FLAG")].required)
+        self.assertTrue(encrypted[("worker", "FEATURE_FLAG")].is_sensitive)
+        self.assertEqual(
+            {item.key for item in command.unset},
+            {("*", "DATABASE_URL"), ("*", "FEATURE_FLAG")},
+        )
+        self.assertNotIn(secret, repr(command))
+
+        with self.assertRaises(DeploymentEnvironmentScopeInvalid):
+            asyncio.run(
+                self.service.patch_plan_environment(
+                    TenantScope(self.auth.tenant_id),
+                    type(
+                        "Principal",
+                        (),
+                        {
+                            "credential_type": "deploy_token",
+                            "credential_id": self.auth.deploy_token_id,
+                        },
+                    )(),
+                    self.catalog.application_id,
+                    analysis_id=analysis_id,
+                    expected_version=1,
+                    environment_schema_digest=digest,
+                    plan_service_keys=("web", "worker"),
+                    schema_environment=(
+                        PreparedEnvironmentVariable(
+                            "DATABASE_URL", ("web",), required=True
+                        ),
+                    ),
+                    values={"worker:DATABASE_URL": "must-not-cross"},
+                    unset=(),
+                    idempotency_key="plan-environment-wrong-scope",
+                )
+            )
 
     def test_runtime_crypto_configuration_fails_readiness_closed(self) -> None:
         names = {

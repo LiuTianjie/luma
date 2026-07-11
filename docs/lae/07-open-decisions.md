@@ -20,6 +20,9 @@
 | D-012 | Lite 允许受管 named volume 和应用内自管数据库 | Confirmed 2026-07-11 | Lite 不是纯静态套餐；仍不承诺托管数据库 SLA |
 | D-013 | Dockerfile 与 Compose 对所有用户开放 | Confirmed 2026-07-11 | 不采用邀请制/申请 Beta；安全隔离是公开发布门槛而非用户分层 |
 | D-014 | Git 源码拉取、Agent runner 分析与镜像构建统一走 Luma builder | Confirmed 2026-07-11 | LAE Agent 是 controller + builder runner；需要 Builder v2 task 协议 |
+| D-015 | AI provider 的 Base URL/API key/model 由平台配置，staging 可映射 ARK；Agent 必须携带版本化 LAE Knowledge Pack | Confirmed 2026-07-11 | 用户不提供模型 key；AI 生成 candidate/解释，确定性校验终审并明确不可部署原因 |
+| D-016 | `manager` 是唯一控制面，`aly` 是过时历史名称 | Confirmed 2026-07-11 | 升级、placement、SOP 与资产均不得再把 `aly` 当真实节点 |
+| D-017 | Staging 租户 runtime 可落在 `manager + tecent`，manager 可显式兼任 runtime；用户只选择 region，不看具体 placement | Confirmed 2026-07-11 | 内部正向 allowlist、runtime role、容量/volume 门禁和管理员审计；生产仍建议专用 runner |
 
 ## 2. P0：会改变总体架构
 
@@ -43,7 +46,7 @@
 
 ### Q6. 用户源码是否允许发送给外部大模型？
 
-**Recommended default：不允许；确定性 Agent 本地分析，LLM 只处理脱敏摘要且需用户显式同意。**
+**Recommended default：不发送源码正文或 secret；允许模型处理脱敏、限量的结构化 evidence 和版本化 Knowledge Pack。Production 启用前取得用户同意并记录披露/audit event。**
 
 影响：隐私协议、私有代码安全、global egress、Agent 解释质量和成本。
 

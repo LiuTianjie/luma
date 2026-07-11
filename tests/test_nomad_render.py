@@ -475,11 +475,29 @@ port: 3000
         # bridge + port 8080 (reachable by Traefik, see migration notes)
         self.assertEqual(job["TaskGroups"][0]["Networks"][0]["Mode"], "bridge")
         self.assertEqual(job["TaskGroups"][0]["Networks"][0]["ReservedPorts"][0]["Value"], 8080)
+        self.assertEqual(job["Update"]["HealthCheck"], "checks")
+        service = job["TaskGroups"][0]["Services"][0]
+        self.assertEqual(service["Provider"], "nomad")
+        self.assertEqual(service["PortLabel"], "http")
+        self.assertEqual(service["AddressMode"], "host")
+        self.assertEqual(
+            service["Checks"],
+            [{
+                "Name": "luma-control-health",
+                "Type": "http",
+                "PortLabel": "http",
+                "Path": "/v1/health",
+                "Interval": 10_000_000_000,
+                "Timeout": 2_000_000_000,
+            }],
+        )
         # host binds via mount blocks, never the dangerous volumes shorthand
         self.assertNotIn("volumes", task["Config"])
         sources = {m["source"] for m in task["Config"]["mount"]}
         self.assertIn("/var/run/docker.sock", sources)
-        self.assertIn("/opt/luma/control", sources)
+        self.assertIn("/opt/luma", sources)
+        self.assertNotIn("/opt/luma/control", sources)
+        self.assertNotIn("/opt/luma/routes", sources)
 
     def test_control_job_only_forwards_allowlisted_lae_file_url_and_timeout_values(self):
         canary = "inline-control-secret-must-not-enter-job"
@@ -608,6 +626,10 @@ port: 3000
         self.assertIn("--entrypoints.tcp-3306.address=:3306", args)
         self.assertTrue(any("acme.email=ops@example.com" in a for a in args))
         self.assertTrue(any("providers.nomad=true" in a for a in args))
+        self.assertIn("--providers.nomad.watch=true", args)
+        self.assertIn("--accesslog=true", args)
+        self.assertIn("--accesslog.format=json", args)
+        self.assertFalse(any("accesslog.filepath" in a for a in args))
         self.assertFalse(any("providers.swarm" in a for a in args))
 
     def test_egress_job_static_proxy_port_and_config_bind(self):

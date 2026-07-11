@@ -21,6 +21,8 @@ from lae_store import (  # noqa: E402
     PublicAnalysisRecord,
     PublicOperationEventPage,
     PublicOperationEventRecord,
+    PublicOperationListRecord,
+    PublicOperationPage,
     PublicOperationRecord,
     ResourceNotFound,
     TenantScope,
@@ -93,6 +95,7 @@ class ResourceAuthService:
 class RecordingPublicResourceStore:
     def __init__(self, tenant_id: str) -> None:
         self.tenant_id = tenant_id
+        self.application_id = new_id("app")
         self.analysis_id = new_id("ana")
         self.source_operation_id = new_id("op")
         self.deployment_operation_id = new_id("op")
@@ -157,7 +160,13 @@ class RecordingPublicResourceStore:
                 ),
             ),
         }
+        self.operation_applications = {
+            operation_id: self.application_id for operation_id in self.operations
+        }
         now = datetime(2026, 7, 11, tzinfo=timezone.utc)
+        self.operation_created_at = {
+            operation_id: now for operation_id in self.operations
+        }
         self.events = {
             self.source_operation_id: [
                 PublicOperationEventRecord(
@@ -213,6 +222,57 @@ class RecordingPublicResourceStore:
         if operation is None:
             raise ResourceNotFound("not found")
         return operation
+
+    async def list_operations(
+        self,
+        scope: TenantScope,
+        *,
+        allowed_scopes: frozenset[str],
+        application_id: str | None,
+        kind: str | None,
+        before: str | None,
+        limit: int,
+    ) -> PublicOperationPage:
+        if application_id is not None:
+            require_opaque_id(application_id, prefix="app")
+        if before is not None:
+            require_opaque_id(before, prefix="op")
+        if not 1 <= limit <= 100:
+            raise ValueError("invalid limit")
+        if scope.tenant_id != self.tenant_id:
+            return PublicOperationPage((), False)
+        visible = []
+        for operation in self.operations.values():
+            try:
+                required_scope = required_scope_for_operation(operation.kind)
+            except ResourceNotFound:
+                continue
+            if required_scope not in allowed_scopes:
+                continue
+            if kind is not None and operation.kind != kind:
+                continue
+            operation_application_id = self.operation_applications.get(operation.id)
+            if (
+                application_id is not None
+                and operation_application_id != application_id
+            ):
+                continue
+            if before is not None and operation.id >= before:
+                continue
+            visible.append(operation)
+        visible.sort(key=lambda operation: operation.id, reverse=True)
+        has_more = len(visible) > limit
+        records = tuple(
+            PublicOperationListRecord(
+                operation=operation,
+                application_id=self.operation_applications.get(operation.id),
+                created_at=self.operation_created_at[operation.id],
+                started_at=None,
+                finished_at=None,
+            )
+            for operation in visible[:limit]
+        )
+        return PublicOperationPage(records, has_more)
 
     async def list_operation_events(
         self,
@@ -348,6 +408,90 @@ class PublicResourceApiTests(unittest.TestCase):
         )
         hidden = self.client.get(f"/v1/operations/{unknown_id}", headers=self.bearer)
         self.assertEqual(hidden.status_code, 404)
+
+    def test_operation_history_is_scope_filtered_and_cursor_resumable(self) -> None:
+        extra_id = new_id("op")
+        self.store.operations[extra_id] = PublicOperationRecord(
+            id=extra_id,
+            kind="deployment.create",
+            status="running",
+            phase="deploy.apply",
+            error_code=None,
+            cancel_requested=False,
+            last_event_seq=4,
+        )
+        self.store.operation_applications[extra_id] = self.store.application_id
+        self.store.operation_created_at[extra_id] = datetime(
+            2026, 7, 11, 0, 1, tzinfo=timezone.utc
+        )
+        self.auth.deploy_scopes = frozenset({"deployments:write"})
+        path = "/v1/operations"
+        first = self.client.get(
+            path,
+            headers=self.bearer,
+            params={"applicationId": self.store.application_id, "limit": 1},
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertTrue(first.json()["hasMore"])
+        self.assertIsNotNone(first.json()["nextCursor"])
+        first_item = first.json()["operations"][0]
+        self.assertEqual(first_item["kind"], "deployment.create")
+        self.assertEqual(first_item["applicationId"], self.store.application_id)
+        self.assertIn("createdAt", first_item)
+        self.assertEqual(
+            first_item["links"]["events"],
+            f"/v1/operations/{first_item['id']}/events",
+        )
+
+        second = self.client.get(
+            path,
+            headers=self.bearer,
+            params={
+                "applicationId": self.store.application_id,
+                "limit": 1,
+                "before": first.json()["nextCursor"],
+            },
+        )
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertFalse(second.json()["hasMore"])
+        self.assertIsNone(second.json()["nextCursor"])
+        ids = {first_item["id"], second.json()["operations"][0]["id"]}
+        self.assertEqual(
+            ids,
+            {self.store.deployment_operation_id, extra_id},
+        )
+        serialized = first.text.lower() + second.text.lower()
+        for forbidden in ("credential", "luma", "image", "stdout", "repository"):
+            self.assertNotIn(forbidden, serialized)
+        self.assertEqual(first.headers["cache-control"], "no-store, max-age=0")
+
+        denied_kind = self.client.get(
+            path,
+            headers=self.bearer,
+            params={"kind": "application.restart"},
+        )
+        self.assertEqual(denied_kind.status_code, 403)
+        invalid_kind = self.client.get(
+            path,
+            headers=self.bearer,
+            params={"kind": "internal.reconcile"},
+        )
+        self.assertEqual(invalid_kind.status_code, 400)
+
+    def test_operation_history_hides_foreign_tenant_and_requires_a_history_scope(
+        self,
+    ) -> None:
+        self.auth.deploy_scopes = frozenset({"deployments:write"})
+        self.auth.deploy_tenant_id = new_id("ten")
+        foreign = self.client.get("/v1/operations", headers=self.bearer)
+        self.assertEqual(foreign.status_code, 200, foreign.text)
+        self.assertEqual(foreign.json()["operations"], [])
+
+        self.auth.deploy_tenant_id = self.auth.tenant_id
+        self.auth.deploy_scopes = frozenset({"apps:read"})
+        denied = self.client.get("/v1/operations", headers=self.bearer)
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["error"]["code"], "LAE_FORBIDDEN")
 
     def test_update_check_operation_exposes_only_closed_comparison(self) -> None:
         self.auth.deploy_scopes = frozenset({"apps:write"})

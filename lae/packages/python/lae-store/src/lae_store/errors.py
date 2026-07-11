@@ -97,6 +97,18 @@ class DeploymentEnvironmentIncomplete(StoreError):
     pass
 
 
+class DeploymentEnvironmentScopeInvalid(StoreError):
+    """Stored environment scopes are incompatible with the trusted plan."""
+
+    pass
+
+
+class DeploymentEnvironmentSchemaConflict(StoreError):
+    """The caller configured a different verified environment schema."""
+
+    pass
+
+
 class ApplicationLifecycleConflict(StoreError):
     """The requested application transition conflicts with durable state."""
 

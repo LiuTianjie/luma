@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import sys
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 LAE_ROOT = Path(__file__).resolve().parents[1]
 for relative in (
@@ -28,7 +28,6 @@ from lae_store import (  # noqa: E402
     LeaseLost,
     OperationRecord,
     OperationStatus,
-    TenantScope,
     new_id,
 )
 from lae_worker import (  # noqa: E402
@@ -43,6 +42,11 @@ from lae_worker import (  # noqa: E402
     FakeRuntimeSecretProvider,
     InMemoryDeploymentStateStore,
     RuntimeManifestRenderer,
+)
+from lae_worker.deployment_postgres import (  # noqa: E402
+    DeploymentContextInvalid,
+    TrustedRuntimeService,
+    _environment_requirements,
 )
 
 
@@ -66,9 +70,7 @@ class FakeOperations:
         )
         return self.operation
 
-    async def append_event(
-        self, scope, operation_id, event, *, worker_id
-    ) -> int:
+    async def append_event(self, scope, operation_id, event, *, worker_id) -> int:
         self._owned(scope, operation_id, worker_id)
         self.events.append(event)
         self.operation = replace(
@@ -98,7 +100,9 @@ class FakeOperations:
             status=effective.value,
             result=result if effective is OperationStatus.SUCCEEDED else None,
             error_code=error_code if effective is OperationStatus.FAILED else None,
-            error_message=error_message if effective is OperationStatus.FAILED else None,
+            error_message=error_message
+            if effective is OperationStatus.FAILED
+            else None,
             lease_owner=None,
             lease_expires_at=None,
         )
@@ -131,9 +135,7 @@ def build_result(keys: tuple[str, ...], snapshot_digest: str) -> dict[str, objec
         key: f"registry.internal/apps/{key}@sha256:" + str(index + 1) * 64
         for index, key in enumerate(keys)
     }
-    image_digests = {
-        key: image.rsplit("@", 1)[1] for key, image in images.items()
-    }
+    image_digests = {key: image.rsplit("@", 1)[1] for key, image in images.items()}
     sbom = {key: "sha256:" + "a" * 64 for key in keys}
     provenance = {key: "sha256:" + "b" * 64 for key in keys}
     scan = {key: "sha256:" + "c" * 64 for key in keys}
@@ -345,9 +347,7 @@ class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
             )
             if compose
             else (),
-            environment=(
-                DeploymentEnvironmentRequirement("web", "DATABASE_URL"),
-            )
+            environment=(DeploymentEnvironmentRequirement("web", "DATABASE_URL"),)
             if compose
             else (),
             normalized_compose_digest="sha256:" + "f" * 64 if compose else None,
@@ -399,7 +399,9 @@ class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
                 return result
         self.fail("deployment did not reach a terminal state")
 
-    async def test_single_service_activates_only_after_service_and_route_health(self) -> None:
+    async def test_single_service_activates_only_after_service_and_route_health(
+        self,
+    ) -> None:
         context = self.context(compose=False)
         runner, store, _builder = self.runner(context)
         result = await self.execute(runner)
@@ -409,13 +411,17 @@ class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
             (self.revision_id, self.deployment_id),
         )
 
-    async def test_compose_verifies_two_public_http_routes_and_keeps_datastore_internal(self) -> None:
+    async def test_compose_verifies_two_public_http_routes_and_keeps_datastore_internal(
+        self,
+    ) -> None:
         context = self.context(compose=True)
         runner, store, _builder = self.runner(context)
         result = await self.execute(runner)
         self.assertEqual(result.operation.status, "succeeded")
         self.assertEqual(len(context.routes), 2)
-        self.assertFalse(any(route.service_key == "postgres" for route in context.routes))
+        self.assertFalse(
+            any(route.service_key == "postgres" for route in context.routes)
+        )
         self.assertEqual(store.reservations[self.operation_id], "consumed")
         self.assertEqual(len(store.volume_bindings[self.operation_id]), 1)
 
@@ -471,6 +477,83 @@ class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.operation.error_code, "LAE_DEPLOYMENT_TIMED_OUT")
         self.assertEqual(builder.create_count, 0)
         self.assertEqual(store.reservations[self.operation_id], "released")
+
+
+class DeploymentEnvironmentScopeTests(unittest.TestCase):
+    @staticmethod
+    def service(
+        service_key: str, environment_names: tuple[str, ...]
+    ) -> TrustedRuntimeService:
+        return TrustedRuntimeService(
+            service_key=service_key,
+            role="worker",
+            build_key=f"build-{service_key}",
+            command=None,
+            dependencies=(),
+            cpu="0.25",
+            memory_mib=256,
+            environment_names=environment_names,
+            port=None,
+            health_path=None,
+            health_interval_seconds=None,
+        )
+
+    def test_specific_values_never_cross_service_boundaries(self) -> None:
+        services = (
+            self.service("web", ("DATABASE_URL", "SHARED_TOKEN")),
+            self.service("worker", ("QUEUE_URL", "SHARED_TOKEN")),
+        )
+        requirements = _environment_requirements(
+            [
+                SimpleNamespace(service_scope="web", name="DATABASE_URL"),
+                SimpleNamespace(service_scope="worker", name="QUEUE_URL"),
+                SimpleNamespace(service_scope="worker", name="CUSTOM_FLAG"),
+            ],
+            services,
+        )
+        self.assertEqual(
+            {(item.service_key, item.name) for item in requirements},
+            {
+                ("web", "DATABASE_URL"),
+                ("worker", "QUEUE_URL"),
+                ("worker", "CUSTOM_FLAG"),
+            },
+        )
+        with self.assertRaises(DeploymentContextInvalid):
+            _environment_requirements(
+                [SimpleNamespace(service_scope="worker", name="DATABASE_URL")],
+                services,
+            )
+
+    def test_legacy_wildcard_requires_single_or_all_service_plan_binding(self) -> None:
+        services = (
+            self.service("web", ("DATABASE_URL", "SHARED_TOKEN")),
+            self.service("worker", ("SHARED_TOKEN",)),
+        )
+        shared = _environment_requirements(
+            [SimpleNamespace(service_scope="*", name="SHARED_TOKEN")],
+            services,
+        )
+        self.assertEqual(
+            {(item.service_key, item.name) for item in shared},
+            {("web", "SHARED_TOKEN"), ("worker", "SHARED_TOKEN")},
+        )
+        for name in ("DATABASE_URL", "CUSTOM_SECRET"):
+            with self.subTest(name=name):
+                with self.assertRaises(DeploymentContextInvalid):
+                    _environment_requirements(
+                        [SimpleNamespace(service_scope="*", name=name)],
+                        services,
+                    )
+
+        single = _environment_requirements(
+            [SimpleNamespace(service_scope="*", name="LEGACY_SECRET")],
+            (self.service("web", ()),),
+        )
+        self.assertEqual(
+            {(item.service_key, item.name) for item in single},
+            {("web", "LEGACY_SECRET")},
+        )
 
 
 if __name__ == "__main__":

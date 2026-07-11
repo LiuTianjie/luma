@@ -16,6 +16,7 @@ from .errors import (
     ApplicationConflict,
     ApplicationQuotaExceeded,
     CustomDomainUnsupported,
+    DeploymentEnvironmentScopeInvalid,
     EnvironmentVersionConflict,
     IdempotencyKeyReused,
     InvalidPlanLimits,
@@ -61,6 +62,10 @@ _OBSERVED_STATES = frozenset(
         "suspended",
         "unknown",
     }
+)
+APPLICATION_ENVIRONMENT_PATCH_ROUTE = "/v1/applications/{application_id}/environment"
+PLAN_ENVIRONMENT_PATCH_ROUTE = (
+    "/v1/applications/{application_id}/analyses/{analysis_id}/environment"
 )
 
 
@@ -332,6 +337,9 @@ class PatchEnvironment:
     expected_version: int
     set_values: tuple[EncryptedEnvironmentValue, ...] = ()
     unset: tuple[EnvironmentKey, ...] = ()
+    plan_analysis_id: str | None = None
+    plan_environment_schema_digest: str | None = None
+    plan_service_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         require_opaque_id(self.application_id, prefix="app")
@@ -347,6 +355,70 @@ class PatchEnvironment:
             raise ValueError("environment patch contains duplicate keys")
         if set(set_keys).intersection(unset_keys):
             raise ValueError("environment patch cannot set and unset the same key")
+        plan_bound = self.plan_analysis_id is not None
+        if plan_bound != (
+            self.plan_environment_schema_digest is not None
+        ) or plan_bound != bool(self.plan_service_keys):
+            raise ValueError("environment plan binding must be complete")
+        if plan_bound:
+            require_opaque_id(self.plan_analysis_id or "", prefix="ana")
+            _require_digest(
+                self.plan_environment_schema_digest or "",
+                field="plan_environment_schema_digest",
+            )
+            if len(self.plan_service_keys) != len(set(self.plan_service_keys)):
+                raise ValueError("environment plan service keys must be unique")
+            for service_key in self.plan_service_keys:
+                _require_catalog_key(service_key, field="environment plan service key")
+            if any(value.service_scope == "*" for value in self.set_values):
+                raise ValueError("plan-bound environment writes require service scope")
+
+
+def _environment_patch_service_keys(
+    *,
+    application_kind: str,
+    materialized_service_keys: set[str],
+    command: PatchEnvironment,
+) -> set[str]:
+    """Return the trusted service namespace for one environment mutation.
+
+    A pending application has no catalog topology yet. Only an API command
+    bound to a verified analysis may introduce service-scoped values there.
+    Materialized applications continue to use their catalog topology and a
+    plan-bound update must describe that exact topology.
+    """
+
+    if application_kind == "pending":
+        allowed = set(command.plan_service_keys)
+    else:
+        allowed = set(materialized_service_keys)
+        if (
+            command.plan_analysis_id is not None
+            and set(command.plan_service_keys) != allowed
+        ):
+            raise DeploymentEnvironmentScopeInvalid(
+                "environment plan topology does not match application"
+            )
+
+    for value in command.set_values:
+        if value.service_scope == "*":
+            if command.plan_analysis_id is not None:
+                raise ValueError("plan-bound environment writes require service scope")
+            if len(materialized_service_keys) > 1:
+                raise DeploymentEnvironmentScopeInvalid(
+                    "wildcard environment writes are unsupported for Compose applications"
+                )
+        elif value.service_scope not in allowed:
+            raise DeploymentEnvironmentScopeInvalid(
+                "environment value references an unknown service"
+            )
+    for key in command.unset:
+        # Wildcard deletion remains available solely to migrate legacy rows.
+        if key.service_scope != "*" and key.service_scope not in allowed:
+            raise DeploymentEnvironmentScopeInvalid(
+                "environment value references an unknown service"
+            )
+    return allowed
 
 
 @dataclass(frozen=True, slots=True)
@@ -1126,15 +1198,14 @@ class ApplicationCatalogStore:
     ) -> IdempotentCatalogResult:
         """CAS-patch encrypted values and persist only a safe historical response."""
 
-        if (
-            idempotency.method != "PATCH"
-            or idempotency.route_template
-            != "/v1/applications/{application_id}/environment"
-        ):
+        if idempotency.method != "PATCH" or idempotency.route_template not in {
+            APPLICATION_ENVIRONMENT_PATCH_ROUTE,
+            PLAN_ENVIRONMENT_PATCH_ROUTE,
+        }:
             raise ValueError("environment patch idempotency scope is invalid")
         lock_scope = (
             f"lae:environment-patch:{command.scope.tenant_id}:{principal.type}:"
-            f"{principal.id}:{idempotency.key}"
+            f"{principal.id}:{idempotency.route_template}:{idempotency.key}"
         )
         try:
             async with self._sessions() as session:
@@ -1448,9 +1519,23 @@ class ApplicationCatalogStore:
                 )
             )
         )
-        for value in command.set_values:
-            if value.service_scope != "*" and value.service_scope not in service_keys:
-                raise ValueError("environment value references an unknown service")
+        if command.plan_analysis_id is not None:
+            analysis_id = await session.scalar(
+                select(Analysis.id).where(
+                    Analysis.tenant_id == command.scope.tenant_id,
+                    Analysis.application_id == command.application_id,
+                    Analysis.id == command.plan_analysis_id,
+                    Analysis.status.in_(("deployable", "needs_configuration")),
+                    Analysis.plan_stored.is_(True),
+                )
+            )
+            if analysis_id is None:
+                raise ResourceNotFound("deployment analysis not found")
+        _environment_patch_service_keys(
+            application_kind=application.kind,
+            materialized_service_keys=service_keys,
+            command=command,
+        )
 
         rows = {
             (row.service_scope, row.name): row

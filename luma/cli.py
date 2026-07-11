@@ -167,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.171 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.172 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -3336,12 +3336,19 @@ def _append_deep_node_checks(checks: list[tuple[str, bool, str]], node_items: li
             )
         )
         cni = nomad.get("cniHostPorts") if isinstance(nomad.get("cniHostPorts"), dict) else {}
-        cni_fix = _cni_hostport_fix(cni.get("conflicts"))
+        cni_fixes = [
+            fix
+            for fix in (
+                _cni_missing_network_fix(cni.get("missingNetworks")),
+                _cni_hostport_fix(cni.get("conflicts")),
+            )
+            if fix
+        ]
         checks.append(
             (
                 f"Node {node_name} Nomad CNI hostports",
-                not cni_fix,
-                cni_fix or "No duplicated CNI hostport DNAT rules detected",
+                not cni_fixes,
+                " ".join(cni_fixes) or "Nomad allocation networks and CNI hostport rules look healthy",
             )
         )
         pull_errors = diagnostics.get("recentImagePullErrors") if isinstance(diagnostics.get("recentImagePullErrors"), list) else []
@@ -3370,6 +3377,24 @@ def _cni_hostport_fix(raw_conflicts: Any) -> str:
     if not details:
         return ""
     return "Clear stale CNI-HOSTPORT-DNAT rules or recreate the affected allocation after cleaning CNI state; duplicated hostports: " + "; ".join(details[:6])
+
+
+def _cni_missing_network_fix(raw_missing: Any) -> str:
+    if not isinstance(raw_missing, list) or not raw_missing:
+        return ""
+    allocations = sorted(
+        {
+            str(item.get("allocId") or "").strip()
+            for item in raw_missing
+            if isinstance(item, dict) and str(item.get("allocId") or "").strip()
+        }
+    )
+    if not allocations:
+        return ""
+    return (
+        "Recreate the affected allocation(s): their Nomad CNI namespace has only loopback after a Docker restart; "
+        "allocations: " + ", ".join(allocations[:8])
+    )
 
 
 def _docker_mirror_fix(raw_mirrors: Any) -> str:

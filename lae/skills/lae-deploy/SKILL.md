@@ -1,6 +1,6 @@
 ---
 name: lae-deploy
-description: Register, authenticate, inspect, deploy, update, and operate applications through the Luma Application Engine CLI, including safe checkout handoff. Use when an agent needs to onboard a user, determine whether a local static artifact or Git repository is deployable, supply required environment variables safely, watch or resume a deployment, inspect app status, perform suspend/resume/restart/update-check/rollback actions, or explain plan/checkout flow without using a Luma management token or completing payment directly.
+description: Onboard and authenticate users, then inspect, deploy, update, and operate applications through the Luma Application Engine CLI, including safe Web registration and checkout handoffs. Use when an agent needs to onboard a user, determine whether a local static artifact or Git repository is deployable, supply required environment variables safely, watch or resume a deployment, inspect app status, perform suspend/resume/restart/update-check/rollback actions, or explain plan/checkout flow without using a Luma management token or completing payment directly.
 ---
 
 # Deploy with LAE
@@ -12,11 +12,14 @@ Use the `lae` CLI as the only deployment boundary. Never call Luma management AP
 - Keep deploy tokens, Git credentials, OTPs, payment data, and environment values out of prompts, command arguments, repositories, and logs.
 - Ask the user to enter secrets in their own terminal through stdin, an environment variable, or an OS credential store. Do not echo them. A private Git credential must use `--secret-stdin`; set `LAE_DEPLOY_TOKEN` locally because one stdin stream cannot carry both values.
 - Run `inspect` before every new deployment or source update. Use `inspect-file` for `.html`/`.zip` sources. Do not bypass a blocker or edit generated LAE/Luma deployment files by hand.
-- Treat only the public analysis status `deployable` as ready to deploy. For
-  `needs_configuration`, collect only the named values through safe terminal
-  input and reuse the same stored analysis after configuration. For
-  `not_deployable`, report the stable blocker and stop. The internal policy
-  words `allow` and `deny` are not CLI statuses.
+- Treat only the public analysis verdict `deployable` as ready to deploy. For
+  `needs_input`, collect only the named values through safe terminal input and
+  reuse the same stored analysis after configuration. For `unsupported`,
+  report every stable blocker and stop. For `diagnostic_failed`, preserve the
+  operation/request ID and report a platform diagnostic failure; never label
+  the user's code unsupported. Internal analysis statuses such as
+  `needs_configuration`/`not_deployable` and policy words `allow`/`deny` are
+  not CLI verdicts.
 - Do not attempt public TCP/UDP, host ports, privileged containers, host namespaces, devices, sockets, bind mounts, or custom domains.
 - Require explicit user confirmation before rollback, application deletion, source-connection revocation, subscription changes, or opening a payment checkout. Never complete payment for the user.
 - Preserve the returned operation ID and cursor until the operation is terminal.
@@ -85,7 +88,7 @@ Record the analysis and operation IDs. Summarize only structured topology, publi
 
 For every required variable:
 
-1. Read the `configuration` object returned with `needs_configuration`. If resuming later, run `lae config show --app <app> --analysis <analysis> --format json`. Trust only names, `serviceKeys`, `required`, and `sensitive`; no value is returned.
+1. Read the `configuration` object returned with public verdict `needs_input`. If resuming later, run `lae config show --app <app> --analysis <analysis> --format json`. Trust only names, `serviceKeys`, `required`, and `sensitive`; no value is returned.
 2. Run `lae env list <app> --format json` and retain its current version for compare-and-set.
 3. Explain why each required name is needed and which services consume it. Use `--service '*'` when one value is shared by every listed service, or set each listed service separately.
 4. Direct the user to `lae env set <app> <name> --service <service-or-*> --expected-version <version> --value-stdin --idempotency-key <stable-key>` or the Web form. The deploy token must come from `LAE_DEPLOY_TOKEN` when stdin carries the value. Do not ask them to paste the value into the conversation, including for non-sensitive configuration.
@@ -120,7 +123,7 @@ Do not call a deployment successful until the operation is terminal `succeeded` 
 
 Start with `lae apps show <app> --format json`. Then use the narrow action the user requested:
 
-For a curated starter, inspect `lae templates list --format json`, then run `lae templates launch <template-id> --name <name> --slug <slug> --wait --idempotency-key <key>`. A template launch still goes through the same LAE Agent diagnosis and may return `needs_configuration`.
+For a curated starter, inspect `lae templates list --format json`, then run `lae templates launch <template-id> --name <name> --slug <slug> --wait --idempotency-key <key>`. A template launch still goes through the same LAE Agent diagnosis and may return public verdict `needs_input`.
 
 - `check-update`: inspect upstream changes; never deploy automatically unless the user explicitly enabled that policy.
 - `suspend`/`resume`/`restart`: watch the returned operation to terminal state.

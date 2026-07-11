@@ -216,6 +216,34 @@ class DeploymentPlanResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             public["serviceKeys"], ["web", "postgres"]
         )
+        self.assertEqual(
+            public["services"],
+            [
+                {
+                    "key": "web",
+                    "role": "http",
+                    "dependencies": ["postgres"],
+                    "resources": {"cpu": "0.50", "memoryMiB": 512},
+                    "port": 8080,
+                    "imageSource": "build",
+                    "healthPath": "/healthz",
+                },
+                {
+                    "key": "postgres",
+                    "role": "datastore",
+                    "dependencies": [],
+                    "resources": {"cpu": "0.50", "memoryMiB": 1024},
+                    "port": None,
+                    "imageSource": "external",
+                    "healthPath": None,
+                },
+            ],
+        )
+        self.assertEqual(
+            public["routes"],
+            [{"serviceKey": "web", "containerPort": 8080, "healthPath": "/healthz", "primary": True}],
+        )
+        self.assertEqual(public["volumes"][0]["mountPath"], "/var/lib/postgresql/data")
         encoded = json.dumps(public, sort_keys=True)
         for forbidden in (artifact.storage_key, artifact.artifact_id, "value", "ciphertext"):
             self.assertNotIn(forbidden, encoded)

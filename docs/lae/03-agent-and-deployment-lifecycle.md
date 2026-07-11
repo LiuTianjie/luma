@@ -104,10 +104,15 @@ SOURCE_REQUESTED
   -> BUILD_PLAN
   -> LUMA_ARTIFACT_GENERATION
   -> LUMA_PREVIEW
-  -> DEPLOYABLE | NEEDS_CONFIGURATION | NOT_DEPLOYABLE
+  -> deployable | needs_input | unsupported | diagnostic_failed
 ```
 
 `SNAPSHOT_AND_DIGEST` 是安全边界：后续 `build-plan` 必须引用同一 snapshot digest 和 resolved commit。浮动 branch 更新后需要新 analysis，旧 plan 不得继续构建。
+
+以上是公开 verdict。数据库中的兼容 analysis status 仍可能使用
+`needs_configuration`/`not_deployable`；Web、CLI 与 Skill 必须消费公开的
+`needs_input`/`unsupported`，并把 `diagnostic_failed` 明确解释为平台诊断故障而不是
+用户代码不支持。`unsupported` 必须包含稳定 blocker、证据位置和可执行修复建议。
 
 ### 4.1 Inventory
 

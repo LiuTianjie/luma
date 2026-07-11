@@ -6,11 +6,12 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Mapping
 
 from lae_store.auth import (
     AuthBackend,
     AuthCompletion,
+    AuthConfigurationError,
     AuthRejected,
     DeployTokenPrincipal,
     DeployTokenRecord,
@@ -26,9 +27,68 @@ class CsrfRejected(AuthRejected):
     pass
 
 
+class PreviewAuthDisabled(AuthRejected):
+    pass
+
+
+class PreviewAuthUnavailable(AuthRejected):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class StartAccepted:
     accepted: bool = True
+
+
+class _PreviewEmailCapture:
+    """Intercept one synthetic mailbox without retaining real-user credentials."""
+
+    def __init__(self, delegate: EmailSender, email: str) -> None:
+        self._delegate = delegate
+        self._email = email
+        self._sequence = 0
+        self._latest: EmailChallengeDelivery | None = None
+
+    @property
+    def sequence(self) -> int:
+        return self._sequence
+
+    def take_delivery_after(self, sequence: int) -> EmailChallengeDelivery | None:
+        if self._sequence <= sequence:
+            return None
+        delivery = self._latest
+        self._latest = None
+        return delivery
+
+    async def send_auth_challenge(self, delivery: EmailChallengeDelivery) -> None:
+        if hmac.compare_digest(delivery.email, self._email):
+            # The reserved .invalid mailbox must never be handed to an external
+            # SMTP provider. Its credential is held only long enough for the
+            # explicit staging preview endpoint to exchange it.
+            self._sequence += 1
+            self._latest = delivery
+            return
+        await self._delegate.send_auth_challenge(delivery)
+
+
+def preview_email_from_env(
+    values: Mapping[str, str], *, environment: str
+) -> str | None:
+    mode = values.get("LAE_AUTH_PREVIEW_MODE", "disabled").strip().lower()
+    if mode in {"", "disabled"}:
+        return None
+    if mode != "public" or environment.strip().lower() != "staging":
+        raise AuthConfigurationError("auth preview mode is not allowed")
+    try:
+        email = normalize_email(values.get("LAE_AUTH_PREVIEW_EMAIL", ""))
+    except (TypeError, ValueError) as exc:
+        raise AuthConfigurationError("auth preview email is invalid") from exc
+    domain = email.rsplit("@", 1)[1]
+    if not domain.endswith(".invalid"):
+        raise AuthConfigurationError(
+            "auth preview email must use a reserved domain"
+        )
+    return email
 
 
 class AuthService:
@@ -41,15 +101,63 @@ class AuthService:
         minimum_start_duration: float = 0.2,
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        preview_email: str | None = None,
     ) -> None:
         if not 0 <= minimum_start_duration <= 5:
             raise ValueError("minimum_start_duration must be between 0 and 5 seconds")
         self._backend = backend
-        self._email = email_sender
+        self._preview_email: str | None = None
+        self._preview_capture: _PreviewEmailCapture | None = None
+        self._preview_lock = asyncio.Lock()
+        if preview_email is not None:
+            normalized_preview = normalize_email(preview_email)
+            if not normalized_preview.rsplit("@", 1)[1].endswith(".invalid"):
+                raise ValueError("preview email must use a reserved domain")
+            self._preview_email = normalized_preview
+            self._preview_capture = _PreviewEmailCapture(
+                email_sender, normalized_preview
+            )
+            self._email: EmailSender = self._preview_capture
+        else:
+            self._email = email_sender
         self._logger = logger or logging.getLogger("lae.auth")
         self._minimum_start_duration = minimum_start_duration
         self._monotonic = monotonic
         self._sleeper = sleeper
+
+    @property
+    def preview_enabled(self) -> bool:
+        return self._preview_capture is not None
+
+    async def request_preview_challenge(
+        self,
+        *,
+        request_ip: str | None,
+        device_id: str | None,
+    ) -> EmailChallengeDelivery:
+        capture = self._preview_capture
+        email = self._preview_email
+        if capture is None or email is None:
+            raise PreviewAuthDisabled("preview authentication is disabled")
+
+        async with self._preview_lock:
+            # Existing preview users take the login branch. A fresh staging
+            # database has no such identity, so the indistinguishable login
+            # miss falls through to the ordinary registration contract.
+            for purpose in ("login", "register"):
+                sequence = capture.sequence
+                await self.start(
+                    email=email,
+                    purpose=purpose,
+                    request_ip=request_ip,
+                    device_id=device_id,
+                )
+                delivery = capture.take_delivery_after(sequence)
+                if delivery is not None and delivery.purpose == purpose:
+                    return delivery
+        raise PreviewAuthUnavailable(
+            "preview authentication is temporarily unavailable"
+        )
 
     async def start(
         self,

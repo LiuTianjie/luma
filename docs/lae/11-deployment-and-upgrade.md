@@ -27,8 +27,8 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：真实 Luma staging 已完成 import；最终产品 E2E 与故障恢复验收仍在收尾
-> 日期：2026-07-11
+> 状态：Luma `0.1.171` 与 LAE staging ref `20469a4` 已 live；最终产品 E2E、批量 404/502 P0 与故障恢复验收仍在收尾
+> 日期：2026-07-12
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
 ## 1. 当前结论
@@ -54,10 +54,13 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 storage class 和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-11，本轮代码候选为 Luma `0.1.171`（719/719），LAE gate 为
-351 passed/23 skipped；当前 live fleet 仍为 `0.1.170`。平台 9 个 task、TLS 与
-基础 probes 健康，真实注册/token/CLI/template/analysis 已跑；tenant Runtime
-deploy/lifecycle 最终 E2E 仍待完成，因此不代表 production-ready。
+截至 2026-07-12，Luma CLI、Control 与 live fleet 已统一为 `0.1.171`；该 release
+曾通过 719/719 gate。LAE staging 当前 job version 4 使用 commit tag `20469a4`，平台
+9 个 task、TLS、Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider
+已配置。Mailpit 注册/token/CLI/template/analysis 已跑；真实邮箱送达、最新
+provider-backed verdict、tenant Runtime deploy/lifecycle 最终 E2E 仍待完成。另有控制面
+升级或其他应用发布后既有 route 批量 404/502 的 live P0，当前 working tree 修复尚未
+形成 release，因此不代表 production-ready。
 
 ## 2. 发布输入与不变量
 
@@ -66,6 +69,7 @@ deploy/lifecycle 最终 E2E 仍待完成，因此不代表 production-ready。
 ```bash
 REPO=https://github.com/LiuTianjie/luma.git
 BRANCH=codex/lae-foundation
+TARGET_VERSION=<target-semver>
 FULL_SHA=<verified-40-character-git-commit>
 SHORT_SHA="$(printf '%s' "$FULL_SHA" | cut -c1-7)"
 CONTROL_IMAGE="ghcr.io/liutianjie/luma-control:sha-$SHORT_SHA"
@@ -287,7 +291,7 @@ curl -fsSL \
 luma version --local
 ```
 
-确认本机 CLI 是本轮 `0.1.171` 候选后再执行：
+确认本机 CLI 是本轮 `$TARGET_VERSION` 候选后再执行：
 
 ```bash
 export LUMA_CONTROL_IMAGE="$CONTROL_IMAGE"
@@ -353,7 +357,7 @@ luma update fleet --install-ref "$LEGACY_BOOTSTRAP_REF" \
   --timeout 900 --format json
 ```
 
-确认每个 agent 已到 `0.1.171` 后，新的 installer 会从与安装 ref 相同的位置启动，
+确认每个 agent 已到 `$TARGET_VERSION` 后，新的 installer 会从与安装 ref 相同的位置启动，
 后续 fleet 更新必须恢复使用完整 SHA：
 
 ```bash
@@ -371,6 +375,29 @@ change 失败。
 Control capability，Control 要求 Builder 回显同一路径，Builder 在 clone 后拒绝
 absolute path、`..`、非规范路径、缺失文件和 symlink escape。任何一层版本过旧，
 import 都应失败，不允许自动发现 production sidecar。
+
+### 6.1 升级期间的 route 连续性门禁
+
+控制面升级不是只验证 `luma-control` 自己。变更前必须保存至少以下只读基线：Control
+health、LAE Web/API/Agent/artifact、每个 edge 类型的一条未变更 sentinel route，以及
+本轮会变更的应用 route。变更后逐项复验，并按
+[SOP 11.1](./10-operations-troubleshooting-sop.md#111-控制面升级或其他应用部署后批量-404502)
+区分 router 缺失的 404、upstream/CNI 断链的 502/504 和应用自身 404。
+
+任何 registry、proxy、`NO_PROXY` 或 insecure-registry 配置动作都必须先比较目标值。
+无差异时禁止重启 Docker；确需重启 daemon 时，必须在变更窗口内枚举旧 allocation，
+完成 CNI 诊断/安全重建和 route reconciliation，再检查未参与变更的 sentinel route。
+“发布后人工重启全部应用”不是可接受的运行协议。
+
+Nomad job submit 的成功条件必须绑定本次响应的 `JobModifyIndex`，沿 evaluation 找到
+exact deployment/`JobVersion`，并等待该版本每个 required task group 的新 allocation
+与 task health。上一版本仍健康、历史 successful deployment、allocation 仅显示
+`running` 或无 `EvalID` 都不能直接当作本次 rollout 成功；no-op 也必须证明本次
+`JobModifyIndex` 对应的当前版本与 allocation 已健康。failed/blocked/canceled、
+superseded 和 timeout 必须 fail closed。
+
+当前 live `0.1.171` 的批量 404/502 P0 在新 release、升级回归与故障注入证据完成前
+保持开放，并阻塞 production rollout。
 
 ## 7. 导入并部署 LAE staging
 

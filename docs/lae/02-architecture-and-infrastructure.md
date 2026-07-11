@@ -143,7 +143,7 @@ LAE 不把任意 Compose 字段原样转交 Luma。Agent 先生成 `NormalizedCo
 - `lae-agent` 是公开 Analysis API 背后的 controller：鉴权上下文由 `lae-api` 注入，controller 创建 operation，由 `lae-worker` 通过 Luma adapter 调度 builder task；Agent 不持有 Luma credential。
 - `lae-agent-runner` 是固定 digest 的无状态分析镜像，只在 builder sandbox 中读取不可变 source snapshot。
 - runner 执行规则化识别、env 证据提取、策略检查并生成 DeploymentPlan 与内部 unsigned BuildPlan proposal；它无网络、无解析器凭据。Luma analyze executor 在受控匿名 resolver 中加入 external `resolvedDigest` 后才生成 canonical candidate；可信 controller 校验 candidate 后签名。runner 不持有签名密钥，也不直接部署。
-- 可选 LLM 只生成解释，不改变 `deployable` 结论，也不获得源码，除非后续有单独的用户同意策略。
+- 可配置的 OpenAI-compatible 模型接收脱敏、限量的结构化 evidence 与版本化 LAE Knowledge Pack，可提出 adapter、环境变量、DeploymentPlan 和 manifest candidate，并生成解释；它不接收源码正文或 secret。确定性 detector/policy/schema/Luma validator 拥有最终裁决权：AI 不能删除 blocker、放宽能力、修改受保护的 route/volume/topology 或自行部署。Staging 当前映射 ARK；production 启用外部模型前仍需用户同意、披露和审计策略。
 
 ### 3.4 `lae-worker`
 

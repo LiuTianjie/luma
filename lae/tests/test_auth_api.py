@@ -226,6 +226,84 @@ class AuthApiTests(unittest.TestCase):
             self.assertNotIn(self.backend.magic, serialized)
         self.assertEqual(len(self.mail.deliveries), 1)
 
+    def test_preview_auth_is_explicit_and_only_returns_reserved_mailbox_credentials(self) -> None:
+        disabled_config = self.client.get("/v1/auth/config")
+        self.assertEqual(
+            disabled_config.json(),
+            {
+                "emailDelivery": {
+                    "mode": "email",
+                    "externalMailbox": True,
+                    "previewAccess": False,
+                }
+            },
+        )
+        self.assertEqual(self.client.post("/v1/auth/preview").status_code, 404)
+
+        class DistinctPreviewBackend(ApiAuthBackend):
+            preview_code = "222222"
+            ordinary_code = "111111"
+
+            async def begin_challenge(
+                self, **kwargs: object
+            ) -> PendingEmailChallenge | None:
+                email = str(kwargs["email"])
+                purpose = str(kwargs["purpose"])
+                challenge_id = new_id("emc")
+                code = (
+                    self.preview_code
+                    if email == "preview@lae.invalid"
+                    else self.ordinary_code
+                )
+                return PendingEmailChallenge(
+                    id=challenge_id,
+                    email=email,
+                    purpose=purpose,
+                    code=code,
+                    magic_token=f"lae_em_{challenge_id}_" + "P" * 43,
+                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+                )
+
+        backend = DistinctPreviewBackend()
+        downstream_mail = RecordingEmailSender()
+        preview_service = AuthService(
+            backend,
+            downstream_mail,
+            minimum_start_duration=0,
+            preview_email="preview@lae.invalid",
+        )
+        with TestClient(
+            create_app(preview_service), base_url="https://lae.example.test"
+        ) as preview_client:
+            config = preview_client.get("/v1/auth/config")
+            self.assertEqual(config.status_code, 200)
+            self.assertEqual(config.json()["emailDelivery"]["mode"], "preview")
+            self.assertFalse(config.json()["emailDelivery"]["externalMailbox"])
+
+            ordinary = preview_client.post(
+                "/v1/auth/register", json={"email": "person@example.test"}
+            )
+            self.assertEqual(ordinary.json(), {"accepted": True})
+            self.assertEqual(
+                [delivery.email for delivery in downstream_mail.deliveries],
+                ["person@example.test"],
+            )
+            self.assertEqual(
+                downstream_mail.deliveries[0].code, backend.ordinary_code
+            )
+
+            issued = preview_client.post("/v1/auth/preview")
+            self.assertEqual(issued.status_code, 201)
+            self.assertEqual(issued.headers["cache-control"], "no-store, max-age=0")
+            self.assertEqual(issued.json()["email"], "preview@lae.invalid")
+            self.assertEqual(issued.json()["purpose"], "login")
+            self.assertEqual(issued.json()["code"], backend.preview_code)
+            self.assertNotEqual(
+                issued.json()["code"], downstream_mail.deliveries[0].code
+            )
+            self.assertTrue(issued.json()["magicToken"].startswith("lae_em_"))
+            self.assertEqual(len(downstream_mail.deliveries), 1)
+
     def test_verify_requires_exactly_one_method_and_uses_stable_error_envelope(self) -> None:
         for payload in (
             {"email": "person@example.test"},

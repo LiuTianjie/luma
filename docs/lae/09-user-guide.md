@@ -1,6 +1,6 @@
 # 09. LAE 用户使用指南
 
-> 文档版本：2026-07-11<br>
+> 文档版本：2026-07-12<br>
 > 适用对象：LAE Web 用户、`lae` CLI 用户，以及代表用户调用 CLI 的 AI Agent<br>
 > 发布状态：代码能力说明，不代表生产 GA。真实可用性以 [实施状态与验收证据](./08-implementation-status.md) 和平台状态页为准。
 
@@ -19,7 +19,7 @@
 | 待 staging 验证 | 已有代码或真实部署，尚未在隔离 Luma staging 完成相应端到端、故障和安全验证 |
 | 发布门禁 | 未满足时不得向生产用户承诺可用 |
 
-截至 2026-07-11，真实 Luma staging 的 9 个平台 task、TLS 和 Web/API/artifact 基础探针健康；真实注册、deploy token、CLI、模板和 analysis 已跑。租户 source → Builder → Runtime 部署、随机域名、观测与 lifecycle 尚待最终 E2E，因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
+截至 2026-07-12，Luma CLI、Control 与 live fleet 已统一到 `0.1.171`；真实 staging 的 9 个平台 task、TLS 和 Web/API/Agent/artifact 基础探针健康，Agent ready 显示 AI provider 已配置。Mailpit 注册、deploy token、CLI、模板和 analysis 已跑，但 Mailpit 不向用户真实邮箱投递，最新 AI provider-backed verdict、租户 source → Builder → Runtime 部署、随机域名、观测与 lifecycle 仍待最终 E2E。因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
 
 ## 2. 支持什么
 
@@ -69,12 +69,12 @@ flowchart LR
 ### 4.1 邮件注册和登录
 
 1. 打开 LAE，进入“注册或登录”。
-2. 选择“注册”或“登录”，输入邮箱。
-3. 在邮箱中使用六位验证码，或点击一次性链接。链接中的凭据会在页面加载后从地址栏移除。
+2. Production 选择“注册”或“登录”并输入真实邮箱；启用 preview mode 的 staging 会明确显示 `STAGING PREVIEW`，直接点击“进入预览空间”，无需提交个人邮箱。
+3. 真实邮件模式在邮箱中使用六位验证码或一次性链接；preview mode 只为保留的 `.invalid` 测试账号签发短时凭据并自动交换 Session。链接中的凭据会在页面加载后从地址栏移除。
 4. 注册成功后，平台自动创建 personal tenant、Lite entitlement 和默认 deploy token。
 5. **默认 deploy token 只显示一次。** 立即复制到本机的安全凭据存储；不要粘贴到聊天、Issue、Git、截图或 shell history。
 
-当前 staging 使用内部 Mailpit 接收测试邮件，不会投递到真实外部邮箱，所以普通邮箱收不到是预期行为；现有外部 SMTP 凭据实测返回 `535` 鉴权失败。生产开放注册前必须换成可用的真实 SMTP provider，并通过发件域 SPF/DKIM/DMARC、退信和送达率验收。
+Staging 清单使用内部 Mailpit，不会向真实外部邮箱投递；公开 preview 入口只能取得固定 `preview@lae.invalid` 的凭据，不能查询其他地址，因此普通邮箱验证码不会从 Web 暴露。现有外部 SMTP 凭据实测返回 `535` 鉴权失败。生产开放注册前必须换成可用的真实 SMTP provider，并通过发件域 SPF/DKIM/DMARC、退信和送达率验收。
 
 登录建立 HttpOnly Session。正常再次登录不会重新显示已有 token。默认 token 仅首次展示；账户页已经支持查看 token metadata、新建、轮换和撤销。轮换或撤销会立即影响后续 CLI/Agent 请求，操作前确认没有仍在使用旧 token 的自动化。
 

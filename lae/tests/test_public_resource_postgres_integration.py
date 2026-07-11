@@ -219,6 +219,28 @@ class PostgreSQLPublicResourceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.operation_id = operation.id
+        deployment_operation = await self.operations.create_operation(
+            CreateOperation(
+                scope=TenantScope(self.tenant_id),
+                principal=Principal("user", self.user_id),
+                kind="deployment.create",
+                target_type="application",
+                target_id=self.application_id,
+                phase="deploy.prepare",
+            )
+        )
+        self.deployment_operation_id = deployment_operation.id
+        internal_operation = await self.operations.create_operation(
+            CreateOperation(
+                scope=TenantScope(self.tenant_id),
+                principal=Principal("user", self.user_id),
+                kind="internal.reconcile",
+                target_type="application",
+                target_id=self.application_id,
+                phase=None,
+            )
+        )
+        self.internal_operation_id = internal_operation.id
         async with self.sessions() as session:
             async with session.begin():
                 session.add(
@@ -247,12 +269,62 @@ class PostgreSQLPublicResourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(analysis.status, "queued")
         self.assertEqual(
             set(analysis.public_body()),
-            {"id", "status", "digests", "planStored", "links"},
+            {
+                "id",
+                "status",
+                "verdict",
+                "diagnostic",
+                "blockers",
+                "digests",
+                "planStored",
+                "links",
+            },
         )
         with self.assertRaises(ResourceNotFound):
             await self.public.get_operation(foreign, self.operation_id)
         with self.assertRaises(ResourceNotFound):
             await self.public.get_analysis(foreign, self.analysis_id)
+
+        first_history = await self.public.list_operations(
+            scope,
+            allowed_scopes=frozenset({"analyses:write", "deployments:write"}),
+            application_id=self.application_id,
+            limit=1,
+        )
+        self.assertTrue(first_history.has_more)
+        self.assertEqual(len(first_history.operations), 1)
+        history_cursor = first_history.public_body()["nextCursor"]
+        self.assertIsNotNone(history_cursor)
+        second_history = await self.public.list_operations(
+            scope,
+            allowed_scopes=frozenset({"analyses:write", "deployments:write"}),
+            application_id=self.application_id,
+            before=history_cursor,
+            limit=1,
+        )
+        self.assertFalse(second_history.has_more)
+        self.assertEqual(
+            {
+                first_history.operations[0].operation.id,
+                second_history.operations[0].operation.id,
+            },
+            {self.operation_id, self.deployment_operation_id},
+        )
+        self.assertNotIn(
+            self.internal_operation_id,
+            {
+                first_history.operations[0].operation.id,
+                second_history.operations[0].operation.id,
+            },
+        )
+        for item in first_history.operations + second_history.operations:
+            self.assertEqual(item.application_id, self.application_id)
+        foreign_history = await self.public.list_operations(
+            foreign,
+            allowed_scopes=frozenset({"analyses:write", "deployments:write"}),
+            limit=100,
+        )
+        self.assertEqual(foreign_history.operations, ())
 
         claimed = await self.operations.claim_next(
             worker_id="public-resource-worker",
@@ -307,7 +379,29 @@ class PostgreSQLPublicResourceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(analysis_response.status_code, 200)
             self.assertEqual(
                 set(analysis_response.json()),
-                {"id", "status", "digests", "planStored", "links"},
+                {
+                    "id",
+                    "status",
+                    "verdict",
+                    "diagnostic",
+                    "blockers",
+                    "digests",
+                    "planStored",
+                    "links",
+                },
+            )
+            history_response = await client.get(
+                "/v1/operations",
+                params={"applicationId": self.application_id, "limit": 100},
+            )
+            self.assertEqual(history_response.status_code, 200)
+            self.assertEqual(
+                [item["id"] for item in history_response.json()["operations"]],
+                [self.operation_id],
+            )
+            self.assertEqual(
+                history_response.json()["operations"][0]["applicationId"],
+                self.application_id,
             )
             event_response = await client.get(
                 f"/v1/operations/{self.operation_id}/events",

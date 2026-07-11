@@ -793,6 +793,13 @@ class ProductConfigTests(unittest.TestCase):
                     "-m multiport --dports 14173 -j CNI-DN-current\n"
                 ),
             ),
+            Mock(
+                code=0,
+                output=(
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    "\t/nomad_init_current\tcurrent-alloc\tlo\n"
+                ),
+            ),
         ]
 
         with patch("luma.agent.node_agent_os", return_value="linux"):
@@ -816,7 +823,73 @@ class ProductConfigTests(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(
+            diagnostics["nomad"]["cniHostPorts"]["missingNetworks"],
+            [
+                {
+                    "allocId": "current-alloc",
+                    "container": "0123456789ab",
+                    "name": "nomad_init_current",
+                    "interfaces": ["lo"],
+                }
+            ],
+        )
         self.assertIn("image pull aborted due to inactivity", diagnostics["recentImagePullErrors"][0])
+
+    def test_parse_nomad_cni_missing_networks_only_reports_loopback_only_init_containers(self):
+        from luma.agent import _parse_nomad_cni_missing_networks
+
+        output = (
+            "aaaaaaaaaaaaaaaaaaaaaaaa\t/nomad_init_broken\talloc-broken\tlo\n"
+            "bbbbbbbbbbbbbbbbbbbbbbbb\t/nomad_init_healthy\talloc-healthy\tlo,eth0\n"
+            "cccccccccccccccccccccccc\t/not_nomad_init\talloc-other\tlo\n"
+            "not-a-container-id\t/nomad_init_invalid\talloc-invalid\tlo\n"
+            "dddddddddddddddddddddddd\t/nomad_init_unsafe\talloc unsafe\tlo\n"
+            "eeeeeeeeeeeeeeeeeeeeeeee\t/nomad_init_unknown\talloc-unknown\t\n"
+        )
+
+        self.assertEqual(
+            _parse_nomad_cni_missing_networks(output),
+            [
+                {
+                    "allocId": "alloc-broken",
+                    "container": "aaaaaaaaaaaa",
+                    "name": "nomad_init_broken",
+                    "interfaces": ["lo"],
+                }
+            ],
+        )
+
+    def test_diagnostic_nomad_cni_missing_networks_is_empty_without_init_containers_or_tools(self):
+        from luma.agent import _diagnostic_nomad_cni_hostports
+
+        no_init_executor = Mock()
+        no_init_executor.run_result.side_effect = [
+            Mock(code=0, output=""),
+            Mock(code=0, output=""),
+        ]
+        with patch("luma.agent.node_agent_os", return_value="linux"):
+            no_init = _diagnostic_nomad_cni_hostports(no_init_executor)
+        self.assertEqual(no_init, {"conflicts": [], "missingNetworks": []})
+
+        unavailable_executor = Mock()
+        unavailable_executor.run_result.side_effect = [
+            Mock(code=0, output=""),
+            Mock(code=1, output="docker command not found"),
+        ]
+        with patch("luma.agent.node_agent_os", return_value="linux"):
+            unavailable = _diagnostic_nomad_cni_hostports(unavailable_executor)
+        self.assertEqual(unavailable, {"conflicts": [], "missingNetworks": []})
+
+    def test_diagnostic_nomad_cni_missing_networks_is_not_applicable_on_macos(self):
+        from luma.agent import _diagnostic_nomad_cni_hostports
+
+        executor = Mock()
+        with patch("luma.agent.node_agent_os", return_value="darwin"):
+            result = _diagnostic_nomad_cni_hostports(executor)
+
+        self.assertEqual(result, {"conflicts": [], "missingNetworks": []})
+        executor.run_result.assert_not_called()
 
     def test_doctor_deep_rejects_duplicate_cni_hostport_rules(self):
         old_home = _set_env("LUMA_CONFIG_HOME", tempfile.mkdtemp())
@@ -861,6 +934,53 @@ class ProductConfigTests(unittest.TestCase):
             output = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
             self.assertIn("Node blg Nomad CNI hostports: fail", output)
             self.assertIn("tcp/8081 old-granary -> current-granary", output)
+        finally:
+            _restore_env("LUMA_CONFIG_HOME", old_home)
+
+    def test_doctor_deep_rejects_loopback_only_nomad_cni_namespace(self):
+        old_home = _set_env("LUMA_CONFIG_HOME", tempfile.mkdtemp())
+        try:
+            save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="token")
+            client = Mock()
+            client.verify.return_value = {"clusterId": "luma-test"}
+            client.status.return_value = {
+                "cluster": {"id": "luma-test"},
+                "nomad": {"available": True},
+                "nodes": {
+                    "items": [
+                        {
+                            "name": "blg",
+                            "agentStatus": "ready",
+                            "diagnostics": {
+                                "docker": {"mirrors": [], "proxy": {}},
+                                "nomad": {
+                                    "dockerDriver": {"pullActivityTimeout": "30m"},
+                                    "cniHostPorts": {
+                                        "conflicts": [],
+                                        "missingNetworks": [
+                                            {
+                                                "allocId": "alloc-broken",
+                                                "container": "0123456789ab",
+                                                "name": "nomad_init_broken",
+                                                "interfaces": ["lo"],
+                                            }
+                                        ],
+                                    },
+                                },
+                                "recentImagePullErrors": [],
+                            },
+                        }
+                    ]
+                },
+            }
+            with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print") as printed:
+                code = main(["--no-env", "doctor", "--deep"])
+
+            self.assertEqual(code, 1)
+            output = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
+            self.assertIn("Node blg Nomad CNI hostports: fail", output)
+            self.assertIn("alloc-broken", output)
+            self.assertIn("only loopback", output)
         finally:
             _restore_env("LUMA_CONFIG_HOME", old_home)
 
@@ -5232,7 +5352,7 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_deployment_recovers_public_route_after_gateway_probe_failure(self):
+    def test_deployment_waits_for_rollout_before_recreating_gateway_upstream(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -5279,16 +5399,16 @@ class ControlApiTests(unittest.TestCase):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
 
                 self.assertEqual(probe.call_count, 2)
-                restart.assert_called_once_with(state["deployToken"], {"stack": "api", "mode": "recreate"})
-                self.assertIn("Recovered public route after allocation recreate", result["probe"])
+                restart.assert_not_called()
+                self.assertIn("Public route settled after rollout", result["probe"])
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
-                self.assertIn("Recover public route=ok:allocation recreate requested", steps)
-                self.assertIn("Probe public route=ok:Recovered public route after allocation recreate", steps)
+                self.assertNotIn("Recover application upstream", steps)
+                self.assertIn("Probe public route=ok:Public route settled after rollout", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_deployment_recovers_public_route_after_traefik_404(self):
+    def test_deployment_reconciles_traefik_404_without_restarting_application(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -5324,11 +5444,85 @@ class ControlApiTests(unittest.TestCase):
                     result = handle_deployment(state["deployToken"], {"manifest": manifest, "sourceName": "api.yaml"})
 
                 self.assertEqual(probe.call_count, 2)
-                restart.assert_called_once_with(state["deployToken"], {"stack": "api", "mode": "recreate"})
-                self.assertIn("Recovered public route after allocation recreate", result["probe"])
+                restart.assert_not_called()
+                self.assertIn("Recovered public route after provider reconciliation", result["probe"])
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Reconcile Traefik provider=ok:waiting for Nomad provider convergence", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_persistent_traefik_404_recreates_ingress_not_application(self):
+        from luma.control.server import _probe_public_route_with_recovery
+
+        service = ServiceSpec(
+            source=Path("api.yaml"),
+            name="api",
+            image="nginx:alpine",
+            region="cn",
+            exposure="cn-edge",
+            domain="api.example.com",
+            port=80,
+        )
+        miss = LumaError("Public route unhealthy: https://api.example.com/ -> HTTP 404 (Traefik router not found)")
+        steps = []
+        with patch("luma.control.server._probe_public_route", side_effect=miss), patch(
+            "luma.control.server._wait_for_public_route",
+            side_effect=[miss, "Public route reachable: https://api.example.com/ -> HTTP 200"],
+        ) as wait, patch(
+            "luma.control.server._recover_traefik_ingress",
+            return_value="Traefik allocation recreated (new-traefik)",
+        ) as recover_ingress, patch(
+            "luma.control.server._recover_public_route_allocation"
+        ) as recover_app:
+            result = _probe_public_route_with_recovery(
+                "deploy-token",
+                service,
+                stack="api",
+                skip_orchestrator=False,
+                steps=steps,
+            )
+
+        self.assertEqual(wait.call_count, 2)
+        recover_ingress.assert_called_once_with()
+        recover_app.assert_not_called()
+        self.assertIn("Recovered public route after Traefik recreate", result)
+
+    def test_persistent_gateway_failure_waits_then_recreates_application(self):
+        from luma.control.server import _probe_public_route_with_recovery
+
+        service = ServiceSpec(
+            source=Path("api.yaml"),
+            name="api",
+            image="nginx:alpine",
+            region="cn",
+            exposure="cn-edge",
+            domain="api.example.com",
+            port=80,
+        )
+        gateway = LumaError("Public route unhealthy: https://api.example.com/ -> HTTP 502")
+        steps = []
+        with patch("luma.control.server._probe_public_route", side_effect=gateway), patch(
+            "luma.control.server._wait_for_public_route",
+            side_effect=[gateway, "Public route reachable: https://api.example.com/ -> HTTP 200"],
+        ) as wait, patch(
+            "luma.control.server._recover_public_route_allocation",
+            return_value="allocation recreate completed (1 replaced by 1 running allocation(s))",
+        ) as recover_app, patch(
+            "luma.control.server._recover_traefik_ingress"
+        ) as recover_ingress:
+            result = _probe_public_route_with_recovery(
+                "deploy-token",
+                service,
+                stack="api",
+                skip_orchestrator=False,
+                steps=steps,
+            )
+
+        self.assertEqual(wait.call_count, 2)
+        recover_app.assert_called_once_with("deploy-token", "api")
+        recover_ingress.assert_not_called()
+        self.assertIn("Recovered public route after allocation recreate", result)
 
     def test_nomad_node_pin_does_not_require_swarm_node_id(self):
         state = {"nodes": {"lab": {"name": "lab", "region": "home", "status": "ready"}}}
@@ -12164,19 +12358,162 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_docker_restart_recreates_and_waits_for_affected_nomad_allocations(self):
+        from luma.control.server import _reconcile_allocations_after_docker_restart
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("defaults:\n  nomadAddr: http://127.0.0.1:4646\n", encoding="utf-8")
+                state = {
+                    "clusterId": "luma-test",
+                    "nomadToken": "nomad-token",
+                    "nodes": {
+                        "tecent": {
+                            "name": "tecent",
+                            "nomadNodeId": "node-tecent",
+                            "agent": {"status": "online", "lastSeen": int(time.time()), "capabilities": []},
+                        }
+                    },
+                }
+                job_reads = 0
+                calls = []
+
+                def request(_client, method, path, body=None):
+                    nonlocal job_reads
+                    calls.append((method, path, body))
+                    if (method, path) == ("GET", "/v1/allocation/alloc-old"):
+                        return {
+                            "ID": "alloc-old",
+                            "JobID": "api",
+                            "TaskGroup": "api",
+                            "NodeID": "node-tecent",
+                            "ClientStatus": "running",
+                            "DesiredStatus": "run",
+                        }
+                    if (method, path) == ("GET", "/v1/job/api/allocations"):
+                        job_reads += 1
+                        if job_reads == 1:
+                            return [{"ID": "alloc-old", "TaskGroup": "api", "ClientStatus": "running", "DesiredStatus": "run"}]
+                        return [{"ID": "alloc-new", "TaskGroup": "api", "ClientStatus": "running", "DesiredStatus": "run"}]
+                    if (method, path) == ("POST", "/v1/allocation/alloc-old/stop"):
+                        return {}
+                    raise AssertionError((method, path, body))
+
+                with patch("luma.control.server.NomadApi.request", request):
+                    result = _reconcile_allocations_after_docker_restart(state, "tecent", {"alloc-old"}, timeout=2)
+
+                self.assertEqual(result["recreatedAllocationIds"], ["alloc-old"])
+                self.assertEqual(result["jobs"], ["api"])
+                self.assertIn(("POST", "/v1/allocation/alloc-old/stop", None), calls)
+                self.assertGreaterEqual(job_reads, 2)
+            finally:
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_docker_restart_reconcile_rejects_allocation_from_another_node(self):
+        from luma.control.server import _reconcile_allocations_after_docker_restart
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("defaults:\n  nomadAddr: http://127.0.0.1:4646\n", encoding="utf-8")
+                state = {
+                    "nomadToken": "nomad-token",
+                    "nodes": {
+                        "tecent": {"name": "tecent", "nomadNodeId": "node-tecent"},
+                        "blg": {"name": "blg", "nomadNodeId": "node-blg"},
+                    },
+                }
+                allocation = {
+                    "ID": "alloc-other",
+                    "JobID": "api",
+                    "TaskGroup": "api",
+                    "NodeID": "node-blg",
+                    "ClientStatus": "running",
+                    "DesiredStatus": "run",
+                }
+                with patch("luma.control.server.NomadApi.request", return_value=allocation), self.assertRaisesRegex(
+                    LumaError, "not tecent"
+                ):
+                    _reconcile_allocations_after_docker_restart(state, "tecent", {"alloc-other"}, timeout=1)
+            finally:
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_configure_insecure_registry_only_restarts_docker_when_config_changes(self):
         from luma.agent import configure_insecure_registry
 
         executor = MagicMock()
+        executor.sudo.return_value = "LUMA_DOCKER_CONFIG_CHANGED=1\n"
         with patch("luma.agent.node_agent_os", return_value="linux"), patch(
             "luma.agent.LocalExecutor", return_value=executor
-        ):
-            configure_insecure_registry(registry="100.66.177.70:5000")
+        ), patch("luma.agent._active_nomad_docker_alloc_ids", return_value={"alloc-b", "alloc-a"}) as active_allocs:
+            result = configure_insecure_registry(registry="100.66.177.70:5000")
 
         script = executor.sudo.call_args.args[0]
         self.assertIn("changed=$(python3", script)
         self.assertIn("changed = host not in regs", script)
         self.assertIn('if [ "$changed" = "1" ]; then systemctl restart docker; fi', script)
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["dockerRestarted"])
+        self.assertEqual(result["affectedAllocationIds"], ["alloc-a", "alloc-b"])
+        active_allocs.assert_called_once_with(executor)
+
+    def test_configure_insecure_registry_reports_no_restart_when_unchanged(self):
+        from luma.agent import configure_insecure_registry
+
+        executor = MagicMock()
+        executor.sudo.return_value = "LUMA_DOCKER_CONFIG_CHANGED=0\n"
+        with patch("luma.agent.node_agent_os", return_value="linux"), patch(
+            "luma.agent.LocalExecutor", return_value=executor
+        ), patch("luma.agent._active_nomad_docker_alloc_ids", return_value={"alloc-a"}):
+            result = configure_insecure_registry(registry="100.66.177.70:5000")
+
+        self.assertFalse(result["changed"])
+        self.assertFalse(result["dockerRestarted"])
+        self.assertEqual(result["affectedAllocationIds"], [])
+        self.assertIn("already configured", result["message"])
+
+    def test_configure_docker_egress_proxy_only_restarts_when_content_changes(self):
+        from luma.agent import configure_docker_egress_proxy
+
+        executor = MagicMock()
+        executor.sudo.return_value = "LUMA_DOCKER_CONFIG_CHANGED=1\n"
+        with patch("luma.agent.node_agent_os", return_value="linux"), patch(
+            "luma.agent.LocalExecutor", return_value=executor
+        ), patch("luma.agent._active_nomad_docker_alloc_ids", return_value={"alloc-b", "alloc-a"}) as active_allocs:
+            result = configure_docker_egress_proxy(
+                proxy="http://10.0.0.2:7890",
+                no_proxy="localhost,127.0.0.1,100.64.0.0/10",
+            )
+
+        script = executor.sudo.call_args.args[0]
+        self.assertIn('cmp -s "$tmp" "$f"', script)
+        self.assertIn('if [ -f "$f" ] && cmp -s "$tmp" "$f"', script)
+        self.assertEqual(script.count("systemctl restart docker"), 1)
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["dockerRestarted"])
+        self.assertEqual(result["affectedAllocationIds"], ["alloc-a", "alloc-b"])
+        active_allocs.assert_called_once_with(executor)
+
+    def test_configure_docker_egress_proxy_reports_no_restart_when_content_matches(self):
+        from luma.agent import configure_docker_egress_proxy
+
+        executor = MagicMock()
+        executor.sudo.return_value = "LUMA_DOCKER_CONFIG_CHANGED=0\n"
+        with patch("luma.agent.node_agent_os", return_value="linux"), patch(
+            "luma.agent.LocalExecutor", return_value=executor
+        ), patch("luma.agent._active_nomad_docker_alloc_ids", return_value={"alloc-a"}):
+            result = configure_docker_egress_proxy(
+                proxy="http://10.0.0.2:7890",
+                no_proxy="localhost,127.0.0.1,100.64.0.0/10",
+            )
+
+        self.assertFalse(result["changed"])
+        self.assertFalse(result["dockerRestarted"])
+        self.assertEqual(result["affectedAllocationIds"], [])
+        self.assertIn("already configured", result["message"])
 
     def test_registry_serve_requires_declared_builder_node(self):
         from luma.control.server import handle_registry_serve

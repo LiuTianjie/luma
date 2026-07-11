@@ -30,6 +30,18 @@ for (const section of ["deployment", "applications", "activity", "cli"]) {
 if (!consoleSource.includes("aria-current={activeSection")) {
   throw new Error("Console navigation must expose the current location to assistive technology");
 }
+if (!consoleSource.includes('setCatalogStatus(unauthenticated ? "connected" : "unavailable")')) {
+  throw new Error("An unauthenticated 401 must not be presented as an unavailable LAE API");
+}
+if (!consoleSource.includes('{app.status} · {app.services} service')) {
+  throw new Error("Application state must be visible as text instead of color alone");
+}
+if (consoleSource.includes('`*:${name}`')) {
+  throw new Error("Compose environment values must never be widened to wildcard scope");
+}
+if (!consoleSource.includes("patchPlanEnvironment")) {
+  throw new Error("Deployment configuration must use the plan-bound environment endpoint");
+}
 if (!consoleSource.includes('"fastapi-minimal": "轻量 Python API')) {
   throw new Error("FastAPI template description must use the console's Chinese locale");
 }

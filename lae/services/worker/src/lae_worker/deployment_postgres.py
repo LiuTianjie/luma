@@ -359,7 +359,10 @@ class PostgresDeploymentContextLoader:
                 or trusted.kind != revision.kind
             ):
                 raise DeploymentContextInvalid()
-            requirements = _environment_requirements(environment_rows, service_keys)
+            requirements = _environment_requirements(
+                environment_rows,
+                tuple(trusted_services.values()),
+            )
             environment_by_service: dict[str, set[str]] = {
                 key: set() for key in service_keys
             }
@@ -1040,16 +1043,32 @@ class PostgresDeploymentStateStore:
 
 
 def _environment_requirements(
-    rows: list[ApplicationEnvironmentVariable], service_keys: set[str]
+    rows: list[ApplicationEnvironmentVariable],
+    services: tuple[TrustedRuntimeService, ...],
 ) -> tuple[DeploymentEnvironmentRequirement, ...]:
+    service_keys = {service.service_key for service in services}
+    declared_targets_by_name: dict[str, set[str]] = {}
+    for service in services:
+        for name in service.environment_names:
+            declared_targets_by_name.setdefault(name, set()).add(service.service_key)
+
     bindings: set[tuple[str, str]] = set()
     for row in rows:
         if row.service_scope == "*":
+            if len(service_keys) == 1:
+                bindings.add((next(iter(service_keys)), row.name))
+                continue
+            declared_targets = declared_targets_by_name.get(row.name)
+            if declared_targets != service_keys:
+                raise DeploymentContextInvalid()
             bindings.update((service_key, row.name) for service_key in service_keys)
-        elif row.service_scope in service_keys:
-            bindings.add((row.service_scope, row.name))
-        else:
+            continue
+        if row.service_scope not in service_keys:
             raise DeploymentContextInvalid()
+        declared_targets = declared_targets_by_name.get(row.name)
+        if declared_targets is not None and row.service_scope not in declared_targets:
+            raise DeploymentContextInvalid()
+        bindings.add((row.service_scope, row.name))
     return tuple(
         DeploymentEnvironmentRequirement(service_key, name)
         for service_key, name in sorted(bindings)

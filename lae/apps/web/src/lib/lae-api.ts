@@ -329,9 +329,34 @@ export type DeploymentConfiguration = {
   kind: "service" | "compose";
   serviceKeys: string[];
   environmentSchemaDigest: string;
+  environmentScopeMode: "service";
+  services: Array<{
+    key: string;
+    role: "http" | "worker" | "internal" | "datastore";
+    dependencies: string[];
+    resources: { cpu: string; memoryMiB: number };
+    port: number | null;
+    imageSource: "build" | "external";
+    healthPath: string | null;
+  }>;
+  routes: Array<{
+    serviceKey: string;
+    containerPort: number;
+    healthPath: string;
+    primary: boolean;
+  }>;
+  volumes: Array<{
+    key: string;
+    serviceKeys: string[];
+    mountPath: string;
+    backupPolicy: string;
+    deletePolicy: string;
+  }>;
+  warnings: string[];
   environment: Array<{
     name: string;
     serviceKeys: string[];
+    references: string[];
     required: boolean;
     sensitive: boolean;
   }>;
@@ -372,6 +397,19 @@ export type Operation = {
   updateCheck?: UpdateCheckResult;
 };
 
+export type OperationListItem = Operation & {
+  applicationId: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+export type OperationPage = {
+  operations: OperationListItem[];
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
 export type UpdateCheckResult = {
   baselineAvailable: boolean;
   sourceChanged: boolean;
@@ -401,6 +439,15 @@ export type OperationEventPage = {
   events: OperationEvent[];
   cursor: number;
   status: string;
+  terminal: boolean;
+  hasMore: boolean;
+};
+
+export type OperationRecovery = {
+  operation: Operation;
+  events: OperationEvent[];
+  cursor: number;
+  caughtUp: boolean;
   terminal: boolean;
   hasMore: boolean;
 };
@@ -460,6 +507,14 @@ export async function sha256File(file: File) {
 
 export async function getPrincipal(signal?: AbortSignal) {
   return requestJson<LaePrincipal>("/me", { signal });
+}
+
+export async function logout(signal?: AbortSignal) {
+  return requestJson<void>("/auth/logout", {
+    method: "POST",
+    mutation: true,
+    signal,
+  });
 }
 
 export async function listDeployTokens(signal?: AbortSignal) {
@@ -875,6 +930,33 @@ export async function patchApplicationEnvironment(
   });
 }
 
+export async function patchPlanEnvironment(
+  applicationId: string,
+  analysisId: string,
+  input: {
+    expectedVersion: number;
+    environmentSchemaDigest: string;
+    set: Record<string, { value: string }>;
+    unset?: string[];
+  },
+  idempotencyKey: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<{
+    environment: ApplicationRecord["environment"];
+    operation?: { id: string; status: string };
+  }>(
+    `/applications/${encodeURIComponent(applicationId)}/analyses/${encodeURIComponent(analysisId)}/environment`,
+    {
+      method: "PATCH",
+      body: { ...input, unset: input.unset || [] },
+      idempotencyKey,
+      mutation: true,
+      signal,
+    },
+  );
+}
+
 export async function createDeployment(
   input: {
     applicationId: string;
@@ -907,6 +989,17 @@ export async function listApplicationDeployments(
   const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
   return requestJson<{ deployments: ApplicationDeployment[] }>(
     `/applications/${encodeURIComponent(applicationId)}/deployments?limit=${boundedLimit}`,
+    { signal },
+  );
+}
+
+export async function getApplicationDeployment(
+  applicationId: string,
+  deploymentId: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<{ deployment: ApplicationDeployment }>(
+    `/applications/${encodeURIComponent(applicationId)}/deployments/${encodeURIComponent(deploymentId)}`,
     { signal },
   );
 }
@@ -966,15 +1059,88 @@ export async function getOperation(operationId: string, signal?: AbortSignal) {
   });
 }
 
+export async function listOperations(
+  input: {
+    applicationId?: string;
+    kind?: string;
+    before?: string;
+    limit?: number;
+  } = {},
+  signal?: AbortSignal,
+) {
+  const query = new URLSearchParams();
+  if (input.applicationId) query.set("applicationId", input.applicationId);
+  if (input.kind) query.set("kind", input.kind);
+  if (input.before) query.set("before", input.before);
+  const requestedLimit = Number.isFinite(input.limit) ? Math.trunc(input.limit!) : 50;
+  query.set("limit", String(Math.max(1, Math.min(100, requestedLimit))));
+  return requestJson<OperationPage>(`/operations?${query.toString()}`, { signal });
+}
+
+async function getOperationEventPage(
+  operationId: string,
+  after: number,
+  limit: number,
+  signal?: AbortSignal,
+) {
+  return requestJson<OperationEventPage>(
+    `/operations/${encodeURIComponent(operationId)}/events?after=${after}&limit=${limit}`,
+    { signal },
+  );
+}
+
 export async function getOperationEvents(
   operationId: string,
   cursor: number,
   signal?: AbortSignal,
 ) {
-  return requestJson<OperationEventPage>(
-    `/operations/${encodeURIComponent(operationId)}/events?after=${cursor}&limit=100`,
-    { signal },
-  );
+  return getOperationEventPage(operationId, cursor, 100, signal);
+}
+
+export async function recoverOperation(
+  operationId: string,
+  input: { after?: number; pageSize?: number; maxPages?: number } = {},
+  signal?: AbortSignal,
+): Promise<OperationRecovery> {
+  let cursor = Number.isSafeInteger(input.after) && input.after! >= 0
+    ? input.after!
+    : 0;
+  const requestedPageSize = Number.isFinite(input.pageSize)
+    ? Math.trunc(input.pageSize!)
+    : 100;
+  const pageSize = Math.max(1, Math.min(500, requestedPageSize));
+  const requestedMaxPages = Number.isFinite(input.maxPages)
+    ? Math.trunc(input.maxPages!)
+    : 20;
+  const maxPages = Math.max(1, Math.min(100, requestedMaxPages));
+  const events = new Map<string, OperationEvent>();
+  let hasMore = false;
+
+  for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+    const previousCursor = cursor;
+    const page = await getOperationEventPage(
+      operationId,
+      cursor,
+      pageSize,
+      signal,
+    );
+    for (const event of page.events) events.set(event.eventId, event);
+    cursor = Math.max(cursor, page.cursor);
+    hasMore = page.hasMore;
+    if (!hasMore || cursor <= previousCursor) break;
+  }
+
+  const operation = await getOperation(operationId, signal);
+  hasMore = hasMore || cursor < operation.cursor;
+  const caughtUp = !hasMore && cursor >= operation.cursor;
+  return {
+    operation,
+    events: [...events.values()].sort((left, right) => left.cursor - right.cursor),
+    cursor,
+    caughtUp,
+    terminal: operation.terminal && caughtUp,
+    hasMore,
+  };
 }
 
 export async function cancelOperation(operationId: string, signal?: AbortSignal) {

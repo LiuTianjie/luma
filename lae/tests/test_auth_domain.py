@@ -4,6 +4,7 @@ import io
 import logging
 import sys
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -12,7 +13,7 @@ LAE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(LAE_ROOT / "apps" / "api" / "src"))
 sys.path.insert(0, str(LAE_ROOT / "packages" / "python" / "lae-store" / "src"))
 
-from lae_api.auth_service import AuthService  # noqa: E402
+from lae_api.auth_service import AuthService, preview_email_from_env  # noqa: E402
 from lae_api.app import _runtime_auth_service  # noqa: E402
 from lae_api.email import (  # noqa: E402
     ConsoleEmailSender,
@@ -155,6 +156,39 @@ class AuthDomainTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("billing:checkout", SUPPORTED_DEPLOY_TOKEN_SCOPES)
         self.assertNotIn("billing:checkout", DEFAULT_DEPLOY_TOKEN_SCOPES)
 
+    def test_preview_auth_is_staging_only_and_requires_a_reserved_mailbox(self) -> None:
+        self.assertIsNone(preview_email_from_env({}, environment="production"))
+        self.assertEqual(
+            preview_email_from_env(
+                {
+                    "LAE_AUTH_PREVIEW_MODE": "public",
+                    "LAE_AUTH_PREVIEW_EMAIL": "Preview@LAE.Invalid",
+                },
+                environment="staging",
+            ),
+            "preview@lae.invalid",
+        )
+        for values, environment in (
+            (
+                {
+                    "LAE_AUTH_PREVIEW_MODE": "public",
+                    "LAE_AUTH_PREVIEW_EMAIL": "preview@lae.invalid",
+                },
+                "production",
+            ),
+            (
+                {
+                    "LAE_AUTH_PREVIEW_MODE": "public",
+                    "LAE_AUTH_PREVIEW_EMAIL": "person@itool.tech",
+                },
+                "staging",
+            ),
+            ({"LAE_AUTH_PREVIEW_MODE": "unexpected"}, "staging"),
+        ):
+            with self.subTest(values=values, environment=environment):
+                with self.assertRaises(AuthConfigurationError):
+                    preview_email_from_env(values, environment=environment)
+
     def test_code_magic_session_and_csrf_are_keyed_and_domain_separated(self) -> None:
         key = b"k" * 32
         challenge_id = new_id("emc")
@@ -254,6 +288,36 @@ class AuthDomainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend.activated, [backend.challenge.id])
         self.assertEqual(len(slept), 2)
         self.assertAlmostEqual(slept[0], slept[1], places=6)
+
+    async def test_preview_challenge_falls_back_to_registration_without_sending_mail(self) -> None:
+        class FreshPreviewBackend(FakeAuthBackend):
+            async def begin_challenge(
+                self, **kwargs: object
+            ) -> PendingEmailChallenge | None:
+                if kwargs.get("purpose") == "login":
+                    return None
+                return replace(
+                    self.challenge,
+                    email=str(kwargs["email"]),
+                    purpose=str(kwargs["purpose"]),
+                )
+
+        backend = FreshPreviewBackend()
+        downstream = RecordingEmailSender()
+        service = AuthService(
+            backend,
+            downstream,
+            minimum_start_duration=0,
+            preview_email="preview@lae.invalid",
+        )
+        delivery = await service.request_preview_challenge(
+            request_ip="203.0.113.10",
+            device_id="preview-device",
+        )
+        self.assertEqual(delivery.email, "preview@lae.invalid")
+        self.assertEqual(delivery.purpose, "register")
+        self.assertEqual(downstream.deliveries, [])
+        self.assertEqual(backend.activated, [backend.challenge.id])
 
     async def test_email_failure_cancels_pending_flow_and_never_logs_credentials(self) -> None:
         backend = FakeAuthBackend()

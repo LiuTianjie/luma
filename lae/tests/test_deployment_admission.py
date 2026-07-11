@@ -17,9 +17,17 @@ for relative in (
 from lae_api.deployment_api import (  # noqa: E402
     DeploymentApiService,
     DeploymentCreateRequest,
+    PlanEnvironmentPatchRequest,
 )
 from lae_api.plan_resolver import DeploymentConfigurationSchema  # noqa: E402
-from lae_store import IdempotencyInput, Principal, TenantScope, new_id  # noqa: E402
+from lae_store import (  # noqa: E402
+    DeploymentEnvironmentSchemaConflict,
+    IdempotencyInput,
+    IdempotentCatalogResult,
+    Principal,
+    TenantScope,
+    new_id,
+)
 from lae_store.deployment_admission import (  # noqa: E402
     DeploymentAdmissionResult,
     PreparedDeploymentPlan,
@@ -30,8 +38,11 @@ from lae_store.deployment_admission import (  # noqa: E402
     PublicDeploymentRecord,
     StoredDeploymentPlanArtifact,
     UnconfiguredPlanResolver,
+    _validate_environment_bindings,
 )
 from lae_store.errors import (  # noqa: E402
+    DeploymentEnvironmentIncomplete,
+    DeploymentEnvironmentScopeInvalid,
     DeploymentPlanInvalid,
     DeploymentPlanUnavailable,
 )
@@ -118,6 +129,41 @@ class PreparedPlanTests(unittest.TestCase):
         with self.assertRaises(DeploymentPlanUnavailable):
             asyncio.run(UnconfiguredPlanResolver().resolve(artifact))
 
+    def test_compose_wildcard_is_only_compatible_with_an_all_service_binding(
+        self,
+    ) -> None:
+        prepared = plan(new_id("src"))
+        with self.assertRaises(DeploymentEnvironmentScopeInvalid):
+            _validate_environment_bindings({("*", "DATABASE_URL")}, prepared)
+        with self.assertRaises(DeploymentEnvironmentScopeInvalid):
+            _validate_environment_bindings({("database", "DATABASE_URL")}, prepared)
+        _validate_environment_bindings(
+            {("web", "DATABASE_URL"), ("admin", "DATABASE_URL")},
+            prepared,
+        )
+
+        all_services = dataclasses.replace(
+            prepared,
+            environment=(
+                PreparedEnvironmentVariable(
+                    "SHARED_TOKEN",
+                    ("web", "admin", "database"),
+                    required=True,
+                ),
+            ),
+        )
+        _validate_environment_bindings({("*", "SHARED_TOKEN")}, all_services)
+
+    def test_required_compose_binding_cannot_be_satisfied_by_an_unrelated_scope(
+        self,
+    ) -> None:
+        prepared = plan(new_id("src"))
+        with self.assertRaises(DeploymentEnvironmentIncomplete):
+            _validate_environment_bindings(
+                {("web", "DATABASE_URL")},
+                prepared,
+            )
+
 
 class _Principal:
     credential_type = "deploy_token"
@@ -144,7 +190,9 @@ class _Resolver:
         return DeploymentConfigurationSchema(
             source_revision_id=artifact.source_revision_id,
             kind=self.prepared.kind,
-            service_keys=tuple(service.service_key for service in self.prepared.services),
+            service_keys=tuple(
+                service.service_key for service in self.prepared.services
+            ),
             environment=self.prepared.environment,
             environment_schema_digest=self.prepared.environment_schema_digest,
         )
@@ -181,6 +229,30 @@ class _ServiceStore:
     ) -> DeploymentAdmissionResult:
         self.admit_calls += 1
         return self.result
+
+
+class _EnvironmentWriter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def patch_plan_environment(
+        self,
+        scope: TenantScope,
+        principal: object,
+        application_id: str,
+        **kwargs: object,
+    ) -> IdempotentCatalogResult:
+        self.calls.append(
+            {
+                "scope": scope,
+                "principal": principal,
+                "applicationId": application_id,
+                **kwargs,
+            }
+        )
+        return IdempotentCatalogResult(
+            {"environment": {"version": 1, "variables": []}}, replayed=False
+        )
 
 
 class DeploymentApiServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -251,9 +323,13 @@ class DeploymentApiServiceTests(unittest.IsolatedAsyncioTestCase):
             {
                 "name": "DATABASE_URL",
                 "serviceKeys": ["web", "admin"],
+                "references": ["web:DATABASE_URL", "admin:DATABASE_URL"],
                 "required": True,
                 "sensitive": True,
             },
+        )
+        self.assertEqual(
+            configuration["configuration"]["environmentScopeMode"], "service"
         )
         assert store.last_idempotency is not None
         self.assertEqual(
@@ -273,6 +349,95 @@ class DeploymentApiServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(replayed, replay)
         self.assertEqual(resolver.calls, 1)
         self.assertEqual(store.admit_calls, 1)
+
+    async def test_plan_environment_patch_is_bound_to_verified_schema(self) -> None:
+        principal = _Principal()
+        application_id = new_id("app")
+        analysis_id = new_id("ana")
+        source_revision_id = new_id("src")
+        artifact = StoredDeploymentPlanArtifact(
+            artifact_id=new_id("art"),
+            analysis_id=analysis_id,
+            source_revision_id=source_revision_id,
+            digest=SHA,
+            media_type="application/vnd.lae.deployment-plan+json",
+            size_bytes=128,
+            storage_key="private/object-key",
+        )
+        deployment = PublicDeploymentRecord(
+            id=new_id("dep"),
+            application_id=application_id,
+            revision_id=new_id("rev"),
+            operation_id=new_id("op"),
+            status="queued",
+            previous_deployment_id=None,
+            started_at=None,
+            finished_at=None,
+            error_code=None,
+            created_at=datetime.now(timezone.utc),
+        )
+        store = _ServiceStore(
+            artifact,
+            DeploymentAdmissionResult(
+                deployment=deployment,
+                operation_id=deployment.operation_id,
+                operation_status="queued",
+                operation_phase="deploy.prepare",
+                operation_cursor=1,
+                replayed=False,
+            ),
+        )
+        prepared = plan(source_revision_id)
+        writer = _EnvironmentWriter()
+        service = DeploymentApiService(
+            store,  # type: ignore[arg-type]
+            _Resolver(prepared),
+            idempotency_hash_key=b"d" * 32,
+            environment_writer=writer,
+        )
+        payload = PlanEnvironmentPatchRequest(
+            expectedVersion=0,
+            environmentSchemaDigest=prepared.environment_schema_digest,
+            set={
+                "web:DATABASE_URL": {"value": "postgres://secret"},
+                "admin:DATABASE_URL": {"value": "postgres://secret"},
+            },
+        )
+        result = await service.patch_environment(
+            TenantScope(principal.tenant_id),
+            principal,
+            application_id,
+            analysis_id,
+            payload,
+            "environment-1",
+        )
+        self.assertEqual(result.response_body["environment"]["version"], 1)
+        self.assertEqual(len(writer.calls), 1)
+        call = writer.calls[0]
+        self.assertEqual(call["analysis_id"], analysis_id)
+        self.assertEqual(call["plan_service_keys"], ("web", "admin", "database"))
+        self.assertEqual(
+            call["values"],
+            {
+                "web:DATABASE_URL": "postgres://secret",
+                "admin:DATABASE_URL": "postgres://secret",
+            },
+        )
+
+        with self.assertRaises(DeploymentEnvironmentSchemaConflict):
+            await service.patch_environment(
+                TenantScope(principal.tenant_id),
+                principal,
+                application_id,
+                analysis_id,
+                PlanEnvironmentPatchRequest(
+                    expectedVersion=0,
+                    environmentSchemaDigest="sha256:" + "f" * 64,
+                    set={"web:DATABASE_URL": {"value": "changed"}},
+                ),
+                "environment-2",
+            )
+        self.assertEqual(len(writer.calls), 1)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ from lae_store.engine import create_postgres_engine, create_session_factory  # n
 from lae_store.errors import (  # noqa: E402
     ApplicationAlreadyMaterialized,
     ApplicationQuotaExceeded,
+    DeploymentEnvironmentScopeInvalid,
     EnvironmentVersionConflict,
     ResourceNotFound,
 )
@@ -264,6 +265,58 @@ class ApplicationCatalogPostgreSQLIntegrationTests(unittest.IsolatedAsyncioTestC
                     )
                 )
         return source_id, analysis_id, artifact_id
+
+    async def test_pending_application_accepts_only_plan_bound_service_scopes(
+        self,
+    ) -> None:
+        draft = await self.store.create_application_draft(
+            CreateApplicationDraft(
+                scope=self.scope,
+                name="Pending Environment",
+                slug="pending-environment",
+            )
+        )
+        application_id = draft.application.id
+        _source_id, analysis_id, _artifact_id = await self._seed_deployable_analysis(
+            application_id
+        )
+        value = EncryptedEnvironmentValue(
+            service_scope="web",
+            name="DATABASE_URL",
+            envelope_ciphertext=b"envelope:pending:scoped",
+            checksum=b"p" * 32,
+            key_version=1,
+        )
+
+        with self.assertRaises(DeploymentEnvironmentScopeInvalid):
+            await self.store.patch_environment(
+                PatchEnvironment(
+                    scope=self.scope,
+                    application_id=application_id,
+                    expected_version=0,
+                    set_values=(value,),
+                )
+            )
+
+        metadata = await self.store.patch_environment(
+            PatchEnvironment(
+                scope=self.scope,
+                application_id=application_id,
+                expected_version=0,
+                set_values=(value,),
+                plan_analysis_id=analysis_id,
+                plan_environment_schema_digest="sha256:" + "e" * 64,
+                plan_service_keys=("web", "database"),
+            )
+        )
+        self.assertEqual(metadata.version, 1)
+        self.assertEqual(
+            {(item.service_scope, item.name) for item in metadata.variables},
+            {("web", "DATABASE_URL")},
+        )
+        application = await self.store.get_application(self.scope, application_id)
+        self.assertEqual(application.application.kind, "pending")
+        self.assertEqual(application.services, ())
 
     async def test_catalog_tenant_cas_quota_and_lifecycle_facts(self) -> None:
         draft = await self.store.create_application_draft(

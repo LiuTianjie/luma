@@ -2,7 +2,7 @@
 
 本目录是 `lae-platform` 的第一版可验证 Luma Compose 资产。它把平台本身作为一个受控 Compose 部署到 Luma：Web/API 与受策略约束的 artifact S3 endpoint 使用公网 HTTP，Worker、Agent Controller、PostgreSQL 和 Valkey 只在同一 Nomad group 的内部拓扑中通信。MinIO 数据面虽然有 HTTPS route，但 bucket policy、CORS 和最小权限 credential 只允许 LAE upload/artifact 流程，不能作为管理入口。这里没有公网 TCP/UDP、host bind、Docker socket、host network 或数据库公网入口。
 
-这不是“已经可以生产上线”的声明。当前共享集群运行 Luma `0.1.170`：`lae-platform-staging` 的 9 个 Compose task 已健康运行，Web、API、artifact 与 Luma Control 公网探针均为 HTTP 200，TLS 和 DNS/route 已收敛；注册、默认 deploy token 与真实 Git 分析也已通过 staging 冒烟。仓库中的 `0.1.171` 是待发布 candidate，新增可配置 AI Agent、四态诊断 verdict、CORS/UI/CLI 修复和 Control/Builder AI 配置持久化，尚未导入 live staging。租户 runtime 的真实 deploy/lifecycle 纵向 E2E、故障恢复和生产安全门禁仍待完成，不能把平台健康外推为 production-ready。
+这不是“已经可以生产上线”的声明。截至 2026-07-12，当前共享集群的 Luma CLI、Control 与 live fleet 已统一到 `0.1.171`；`lae-platform-staging` 当前 job version 4 使用 commit tag `20469a4`，9 个 Compose task 已健康运行，Web、API、Agent、artifact 与 Luma Control 公网探针均为 HTTP 200，TLS 和 DNS/route 已收敛。Agent ready 显示 AI provider 已配置，Mailpit 注册、默认 deploy token、CLI、模板与 analysis 已通过 staging 冒烟；Mailpit 不会投递到用户真实邮箱，最新 AI provider-backed 四态 verdict、租户 runtime 的真实 deploy/lifecycle 纵向 E2E、故障恢复和生产安全门禁仍待完成。控制面升级或其他应用发布后既有 route 批量 404/502 的 live P0 也尚未由新 release 关闭，不能把平台健康外推为 production-ready。
 
 ## 文件
 
@@ -47,7 +47,7 @@ staging 要求 AI 诊断，controller/provider 失败会返回 `diagnostic_faile
 
 ## 实际落点与当前集群差距
 
-2026-07-11 当前 staging 实施快照是：CLI、Control 与 8 个在线节点运行 Luma `0.1.170`，仓库 candidate 为 `0.1.171`；`manager` 是唯一控制面并显式允许兼任租户 runtime，`tecent` 是另一个 staging runtime，LAE 平台组固定在 `lab`，构建固定在 `builder`。`aly` 是过时历史节点，不参与升级、构建、平台或租户调度。这个快照会漂移，任何再次发布前都必须重新执行 `luma status --format json`，不能把下表当成永久配置。
+2026-07-12 当前 staging 实施快照是：CLI、Control 与 8 个在线节点运行 Luma `0.1.171`；`manager` 是唯一控制面并显式允许兼任租户 runtime，`tecent` 是另一个 staging runtime，LAE 平台组固定在 `lab`，构建固定在 `builder`。`aly` 是过时历史节点，不参与升级、构建、平台或租户调度。这个快照会漂移，任何再次发布前都必须重新执行 `luma version` 与 `luma status --format json`，不能把下表当成永久配置。
 
 | 层 | 当前事实 | 可接受用途 | 生产要求 |
 | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ Production sidecar 仍故意 pin `lae-core` 并引用两类 `lae-cn-*` storage c
 
 表中的 `home` 仅是现有 Luma Builder 的内部 region，不属于 LAE 租户协议。Web/API/store/CLI 对外统一只接受 `cn | global`，并在 analysis/upload/template admission 阶段拒绝 `home`。
 
-本轮 import 的 registry 与网络路径是明确配置，而不是从节点名推导：目标节点拉取使用 `100.66.177.70:5000`，Builder 本机推送使用 `localhost:5000`；LAE 平台镜像构建采用 direct 模式。Luma `0.1.170` 已在 live staging 检查持久化 Buildx container 的代理环境是否与本次请求一致，不一致时重建 builder，避免继续复用历史 `aly` 或其他失效代理；`0.1.171` 保留该行为并增加 AI Agent 配置持久化。LAE 平台 Dockerfile 的依赖下载步骤也显式清除代理变量，防止租户 build args 污染平台构建；这不等于所有租户构建都必须关闭代理，租户出口仍按其独立策略执行。
+本轮 import 的 registry 与网络路径是明确配置，而不是从节点名推导：目标节点拉取使用 `100.66.177.70:5000`，Builder 本机推送使用 `localhost:5000`；LAE 平台镜像构建采用 direct 模式。Live `0.1.171` 会检查持久化 Buildx container 的代理环境是否与本次请求一致，不一致时重建 builder，并持久化 AI Agent 配置；但控制面/节点配置幂等性与 Docker daemon restart 后的 CNI/route 自动恢复仍是单独 P0，不能由 Buildx proxy 检查代替。LAE 平台 Dockerfile 的依赖下载步骤也显式清除代理变量，防止租户 build args 污染平台构建；这不等于所有租户构建都必须关闭代理，租户出口仍按其独立策略执行。
 
 ## 前置基础设施
 
@@ -91,7 +91,7 @@ Production sidecar 仍故意 pin `lae-core` 并引用两类 `lae-cn-*` storage c
    `0600`、不可 symlink，Builder/Runtime/management/broker/admin token 彼此独立。
    检查和轮换流程见 [运维 SOP](../../../docs/lae/10-operations-troubleshooting-sop.md)。
 
-5. 生产 SMTP 必须支持隐式 TLS 465。生产 Compose 固定 `LAE_SMTP_SECURITY=tls`，不会接受 Mailpit 或明文 SMTP。
+5. 生产 SMTP 必须支持隐式 TLS 465。生产 Compose 固定 `LAE_SMTP_SECURITY=tls`；API 启动时还会拒绝 Mailpit/本地域名、保留测试域发件人和缺少用户名/密码的配置。配置校验通过只表示形状有效，发布门禁仍需真实 canary、退信和送达率验证。
 6. 将 `.env.example` 复制为被 Git 忽略的 `.env`，填充后按 deployment scope 导入；不要把值贴进命令历史、YAML 或工单：
 
    ```bash
@@ -141,7 +141,7 @@ sh deploy/luma/smoke-images.sh
 
 当前 MinIO Community 版本不支持依赖 per-bucket `PutBucketCors` 的初始化流程。本部署使用专用 artifact-store，并以精确的 `MINIO_API_CORS_ALLOW_ORIGIN` 配置 server-wide CORS：staging 为 `https://lae-staging.itool.tech`，production 为 `https://lae.itool.tech`，禁止 `*`。因此该 MinIO 实例不能与需要不同浏览器 Origin 的其他产品混用。
 
-在这些本地证据之上，当前共享集群已经执行真实 Luma staging import：6 个构建镜像已推送到内部 registry，9 个 task 的 Nomad job 已注册且 allocation 健康，DNS、TLS 与 route 已发布，Web、API、artifact 和 Luma Control 探针均为 HTTP 200；注册、默认 deploy token 和真实 Git 分析已完成冒烟。当前 live 平台仍是上一版镜像，`0.1.171` candidate 的 Agent Controller、CORS/UI/CLI 修复以及租户 runtime deploy/lifecycle 仍需按本节发布顺序做纵向验收。
+在这些本地证据之上，当前共享集群已经执行真实 Luma staging import：6 个构建镜像已推送到内部 registry，9 个 task 的 Nomad job 已注册且 allocation 健康，DNS、TLS 与 route 已发布，Web、API、Agent、artifact 和 Luma Control 探针均为 HTTP 200；当前 job version 4 使用 commit tag `20469a4`，Agent ready 显示 AI provider 已配置。Mailpit 注册、默认 deploy token、CLI、模板和 analysis 已完成冒烟；最新 provider-backed 四态 verdict、真实邮箱送达以及租户 runtime deploy/lifecycle 仍需做纵向验收。
 
 `luma import` 没有 preview-only 模式：它会真实 clone、build、push 并继续 deploy。以下命令是本轮已经执行的 staging 发布形状，仅用于可控重放；再次执行前必须先确认 release、bundle、registry、现有 job/volume 和回退点，并显式选择 staging sidecar，不能依赖自动发现：
 
@@ -170,16 +170,16 @@ BUNDLE_DIR=<private-staging-bundle-directory>
 - `luma service remove lae-platform` 默认保留受管数据。禁止在普通回滚/下线中使用 `--delete-storage`。
 - PostgreSQL 必须在生产前接入 WAL/PITR 到与主数据盘不同的备份目标，并完成 restore drill。单个 NFS named volume 不是备份。
 - Artifact store 必须配置跨故障域复制/备份、bucket lifecycle 与按 tenant 的保留策略。Valkey 在此是易失 cache，不挂卷，也不能成为业务真相。
-- Staging Mailpit 数据放在独立 path，仅用于调试邮件；它没有公网 route，且不得复制到生产 sidecar。
+- Staging Mailpit 数据放在独立 path，仅用于调试邮件；它没有公网 route，且不得复制到生产 sidecar。公开 Web 通过显式 `LAE_AUTH_PREVIEW_MODE=public` 只为 `preview@lae.invalid` 签发预览凭据，普通真实邮箱的验证码不会被该端点读取或返回；production Compose 固定关闭 preview mode。
 
 ## 当前硬阻塞项
 
 1. 当前 live cluster 没有 production `lae-core`、`lae-cn-postgres` 或 `lae-cn-artifacts`；`aly` 已不在当前 8 节点 live 清单中，若再次出现只按 stale 历史注册清理。Production sidecar 因而继续 fail closed。`luma.compose.staging.itool.yml` 明确使用 `lab + builder-registry-nfs + tailscale-relay`，不代表 production topology。
 2. Staging runtime 明确使用 `manager + tecent`：manager 需要显式 runtime role，二者仍由正向 allowlist、实时 readiness 和 Nomad plan 收敛。专用 production runner pool、无容量、drain、节点故障重调度、volume affinity，以及 admin placement 与真实 allocation 的关联仍需 Luma staging 演练。
-3. Builder/Runtime principal files、Git/object broker、LAE admin proxy、plan signing、registry、Analyzer repo digest 与 runtime storage class 已有 staging 配置；`0.1.171` 发布仍须验证新的 controller scoped token、Builder `0600` EnvironmentFile、Worker/Control analyzer digest 三端一致。不能用 management token、inline secret 或 mutable analyzer tag 简化。
+3. Builder/Runtime principal files、Git/object broker、LAE admin proxy、plan signing、registry、Analyzer repo digest 与 runtime storage class 已有 staging 配置；live `0.1.171` 与平台 ref `20469a4` 仍须完成 controller scoped token、Builder `0600` EnvironmentFile、Worker/Control analyzer digest 三端一致及真实 provider-backed analysis 验收。不能用 management token、inline secret 或 mutable analyzer tag 简化。
 4. S3 artifact/upload、MinIO policy/CORS、API/Worker 分权 credential 和一次性 object redemption 已完成本地真实 MinIO 最小权限与 CORS 正反例；Luma staging 的浏览器上传、恶意 ZIP、cancel/replay、Builder download、artifact ingest 和日志/state 无 URL/key E2E 仍是上线门禁。
 5. 当前平台 Compose renderer不把标准 Compose `healthcheck`/`depends_on` 全部转换成严格 Nomad readiness/启动顺序。Runtime API 会生成 HTTP check，但平台服务自身仍必须重试依赖，并验证故障/恢复行为。
-6. `0.1.171` Agent Controller 已实现 OpenAI-compatible provider、闭合 schema、Knowledge Pack 版本握手、认证、限流/并发/熔断与结构化诊断；staging 使用平台侧 ARK 映射，用户只需 LAE deploy token。它尚未进入 live staging，且生产仍缺用户同意与审计、私有入口、task-bound 单次 lease、controller-only egress、DNS rebinding/host allowlist 和成熟 ASGI/WAF 限流；Controller 的 200 health 不能替代真实分析验收。
+6. Agent Controller 已进入 live staging，并实现 OpenAI-compatible provider、闭合 schema、Knowledge Pack 版本握手、认证、限流/并发/熔断与结构化诊断；staging 使用平台侧 ARK 映射，用户只需 LAE deploy token，ready 当前显示 `configured=true`。生产仍缺用户同意与审计、私有入口、task-bound 单次 lease、controller-only egress、DNS rebinding/host allowlist 和成熟 ASGI/WAF 限流；Controller 的 200 ready 不能替代真实 provider-backed analysis 与四态 verdict 验收。
 7. API 启动时执行 Alembic migration 是单副本 MVP 过渡方案。扩到多副本前必须提供 Luma init/migration job 或数据库 advisory lock，避免并发 migration。
 8. 当前 staging storage provider 是 builder 上的 NFS；必须分别评审 PostgreSQL/MinIO 的 hard/error semantics、fsync/locking、故障恢复和后端支持，并完成断网、重启、PITR/object/volume restore drill。单个 NFS path 不是备份。
 9. PostgreSQL PITR、MinIO/registry/volume backup+restore、容量告警、引用安全 GC、独立观测栈和租户 runtime 真实纵向 E2E 尚未完成；当前平台 9 task、DNS/TLS/route 和基础用户/Git 分析冒烟已经通过。生产还缺专用 `lae-core`、至少两个专用 runtime runner、独立 storage class、真实可用 SMTP 凭据和真实微信/支付宝等 payment provider；Mailpit/mock 不能进入 production。

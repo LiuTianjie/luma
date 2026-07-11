@@ -9,9 +9,28 @@ import ssl
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.message import EmailMessage
-from email.utils import format_datetime
+from email.utils import format_datetime, parseaddr
 from typing import Mapping, Protocol
 from urllib.parse import urlencode, urlsplit, urlunsplit
+
+
+_PUBLIC_SMTP_HOST = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))+$"
+)
+_MAILBOX_LOCAL = re.compile(r"^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}$")
+_RESERVED_MAIL_SUFFIXES = (
+    ".example",
+    ".invalid",
+    ".test",
+    ".localhost",
+    ".local",
+)
+_RESERVED_MAIL_DOMAINS = {
+    "example.com",
+    "example.net",
+    "example.org",
+    "localhost",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,15 +145,16 @@ class SmtpEmailSender:
 def smtp_config_from_env(
     values: Mapping[str, str], *, environment: str
 ) -> SmtpConfig:
+    production = environment.strip().lower() in {"production", "prod"}
     security = values.get("LAE_SMTP_SECURITY", "starttls").strip().lower()
-    if security == "plain" and environment.lower() in {"production", "prod"}:
+    if security == "plain" and production:
         raise EmailConfigurationError("plaintext SMTP is forbidden in production")
     try:
         port = int(values.get("LAE_SMTP_PORT", "465" if security == "tls" else "587"))
         timeout = float(values.get("LAE_SMTP_TIMEOUT_SECONDS", "10"))
     except ValueError as exc:
         raise EmailConfigurationError("SMTP configuration is invalid") from exc
-    return SmtpConfig(
+    config = SmtpConfig(
         host=values.get("LAE_SMTP_HOST", "").strip(),
         port=port,
         security=security,
@@ -143,6 +163,41 @@ def smtp_config_from_env(
         username=values.get("LAE_SMTP_USERNAME") or None,
         password=values.get("LAE_SMTP_PASSWORD") or None,
         timeout_seconds=timeout,
+    )
+    if production:
+        host = config.host.rstrip(".").lower()
+        _display_name, sender_address = parseaddr(config.sender)
+        sender_local, sender_domain = (
+            sender_address.lower().rsplit("@", 1)
+            if sender_address.count("@") == 1
+            else ("", "")
+        )
+        login_domain = (urlsplit(config.public_login_url).hostname or "").lower()
+        if (
+            _PUBLIC_SMTP_HOST.fullmatch(host) is None
+            or all(label.isdigit() for label in host.split("."))
+            or _reserved_mail_domain(host)
+            or config.username is None
+            or not config.username.strip()
+            or config.password is None
+            or not config.password.strip()
+            or _MAILBOX_LOCAL.fullmatch(sender_local) is None
+            or sender_local.startswith(".")
+            or sender_local.endswith(".")
+            or ".." in sender_local
+            or _PUBLIC_SMTP_HOST.fullmatch(sender_domain) is None
+            or _reserved_mail_domain(sender_domain)
+            or _PUBLIC_SMTP_HOST.fullmatch(login_domain) is None
+            or _reserved_mail_domain(login_domain)
+        ):
+            raise EmailConfigurationError("production SMTP configuration is invalid")
+    return config
+
+
+def _reserved_mail_domain(value: str) -> bool:
+    normalized = value.rstrip(".").lower()
+    return normalized in _RESERVED_MAIL_DOMAINS or normalized.endswith(
+        _RESERVED_MAIL_SUFFIXES
     )
 
 

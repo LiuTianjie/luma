@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal, Sequence
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Header, Request, Response
+from fastapi import FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,6 +28,7 @@ from lae_store import (
     Principal,
     PublicAnalysisRecord,
     PublicOperationEventPage,
+    PublicOperationPage,
     PublicOperationRecord,
     ResourceNotFound,
     SourceConnectionHostMismatch,
@@ -52,7 +53,13 @@ from lae_store.auth import (
     SessionPrincipal,
 )
 
-from .auth_service import AuthService, CsrfRejected
+from .auth_service import (
+    AuthService,
+    CsrfRejected,
+    PreviewAuthDisabled,
+    PreviewAuthUnavailable,
+    preview_email_from_env,
+)
 from .admin_api import (
     PostgresAdminReadStore,
     admin_authenticator_from_env,
@@ -109,6 +116,9 @@ _BEARER = re.compile(r"^Bearer (?P<token>[^\s,]{1,128})$", re.IGNORECASE)
 _CREDENTIAL_LIKE = re.compile(
     r"(?:lae_(?:dt|ss_v[0-9]+|cs|em)_[A-Za-z0-9_-]{8,}|bearer\s+[A-Za-z0-9._~-]{8,})",
     re.IGNORECASE,
+)
+_PUBLIC_OPERATION_LIST_SCOPES = frozenset(
+    {"analyses:write", "sources:write", "deployments:write", "apps:write"}
 )
 _CORS_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 _CORS_HEADERS = [
@@ -386,7 +396,7 @@ def _runtime_auth_service() -> tuple[AuthService, Any]:
     dsn = os.environ.get("LAE_DATABASE_URL", "")
     if not dsn:
         raise AuthConfigurationError("LAE_DATABASE_URL is not configured")
-    environment = os.environ.get("LAE_ENVIRONMENT", "development").lower()
+    environment = os.environ.get("LAE_ENVIRONMENT", "development").strip().lower()
     driver = os.environ.get("LAE_EMAIL_DRIVER", "console").strip().lower()
     if driver == "console":
         if environment in {"production", "prod"}:
@@ -406,7 +416,8 @@ def _runtime_auth_service() -> tuple[AuthService, Any]:
     key_ring = _key_ring_from_env()
     engine = create_postgres_engine(dsn)
     backend = PostgresAuthStore(create_session_factory(engine), key_ring)
-    return AuthService(backend, email_sender), engine
+    preview_email = preview_email_from_env(os.environ, environment=environment)
+    return AuthService(backend, email_sender, preview_email=preview_email), engine
 
 
 def _runtime_analysis_request_store(
@@ -561,6 +572,7 @@ def create_app(
                 runtime["deployments"] = deployment_service_from_env(
                     create_session_factory(runtime["engine"]),
                     resolver=deployment_plan_resolver_from_env(),
+                    environment_writer=runtime["applications"],
                 )
             except Exception:
                 # Deployment admission is capability-scoped until its verified
@@ -1104,6 +1116,29 @@ def create_app(
     async def version() -> dict[str, Any]:
         return component_payload("lae-api", status="version")
 
+    @app.get("/v1/auth/config")
+    async def auth_config() -> JSONResponse:
+        service = runtime["auth"]
+        mode = (
+            "preview"
+            if service is not None
+            and bool(getattr(service, "preview_enabled", False))
+            else "email"
+            if service is not None
+            else "unavailable"
+        )
+        response = JSONResponse(
+            {
+                "emailDelivery": {
+                    "mode": mode,
+                    "externalMailbox": mode == "email",
+                    "previewAccess": mode == "preview",
+                }
+            }
+        )
+        _no_store(response)
+        return response
+
     async def start_flow(
         request: Request, payload: StartRequest, purpose: str
     ) -> JSONResponse:
@@ -1130,6 +1165,39 @@ def create_app(
     @app.post("/v1/auth/email/resend", status_code=202)
     async def resend(request: Request, payload: ResendRequest) -> JSONResponse:
         return await start_flow(request, payload, payload.purpose)
+
+    @app.post("/v1/auth/preview", status_code=201)
+    async def preview_auth(request: Request) -> JSONResponse:
+        try:
+            delivery = await auth().request_preview_challenge(
+                request_ip=_client_ip(request),
+                device_id=request.headers.get("X-LAE-Device-Id"),
+            )
+        except PreviewAuthDisabled as exc:
+            raise ApiError(
+                404,
+                "LAE_AUTH_PREVIEW_DISABLED",
+                "Preview authentication is not enabled",
+            ) from exc
+        except PreviewAuthUnavailable as exc:
+            raise ApiError(
+                429,
+                "LAE_AUTH_PREVIEW_COOLDOWN",
+                "Preview access was just issued; try again shortly",
+                retryable=True,
+            ) from exc
+        response = JSONResponse(
+            {
+                "email": delivery.email,
+                "purpose": delivery.purpose,
+                "code": delivery.code,
+                "magicToken": delivery.magic_token,
+                "expiresAt": _timestamp(delivery.expires_at),
+            },
+            status_code=201,
+        )
+        _no_store(response)
+        return response
 
     async def verify_flow(
         request: Request, payload: VerifyRequest, purpose: str
@@ -1317,6 +1385,58 @@ def create_app(
         except (ResourceNotFound, ValueError) as exc:
             raise ApiError(404, "LAE_NOT_FOUND", "Analysis not found") from exc
         response = JSONResponse(analysis.public_body())
+        _no_store(response)
+        return response
+
+    @app.get("/v1/operations")
+    async def list_operations(
+        request: Request,
+        application_id: Annotated[
+            str | None,
+            Query(alias="applicationId", min_length=1, max_length=64),
+        ] = None,
+        kind: Annotated[str | None, Query(min_length=1, max_length=80)] = None,
+        before: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> JSONResponse:
+        resolution = await resolve_principal(request)
+        principal = resolution.selected
+        allowed_scopes = frozenset(principal.scopes) & _PUBLIC_OPERATION_LIST_SCOPES
+        if kind is not None:
+            try:
+                required_scope = required_scope_for_operation(kind)
+            except ResourceNotFound as exc:
+                raise ApiError(
+                    400,
+                    "LAE_INVALID_ARGUMENT",
+                    "Operation kind is invalid",
+                ) from exc
+            require_scope(principal, required_scope)
+            allowed_scopes = frozenset({required_scope})
+        elif not allowed_scopes:
+            raise ApiError(
+                403,
+                "LAE_FORBIDDEN",
+                "The credential lacks an operation history scope",
+            )
+        try:
+            page: PublicOperationPage = (
+                await public_resource_store().list_operations(
+                    TenantScope(principal.tenant_id),
+                    allowed_scopes=allowed_scopes,
+                    application_id=application_id,
+                    kind=kind,
+                    before=before,
+                    limit=limit,
+                )
+            )
+        except (ResourceNotFound, ValueError) as exc:
+            raise ApiError(
+                400,
+                "LAE_INVALID_ARGUMENT",
+                "Operation history query is invalid",
+            ) from exc
+        response = JSONResponse(page.public_body())
         _no_store(response)
         return response
 

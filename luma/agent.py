@@ -293,11 +293,90 @@ def _diagnostic_recent_image_pull_errors(executor: LocalExecutor) -> list[str]:
 
 def _diagnostic_nomad_cni_hostports(executor: LocalExecutor) -> Dict[str, Any]:
     if node_agent_os() != "linux":
-        return {"conflicts": []}
+        return {"conflicts": [], "missingNetworks": []}
     result = executor.run_result("iptables -t nat -S CNI-HOSTPORT-DNAT 2>/dev/null || true", timeout=10)
+    missing_networks = _diagnostic_nomad_cni_missing_networks(executor)
     if result.code != 0:
-        return {"conflicts": [], "message": (result.output or "iptables unavailable").strip()}
-    return {"conflicts": _parse_cni_hostport_conflicts(result.output or "")}
+        return {
+            "conflicts": [],
+            "missingNetworks": missing_networks,
+            "message": (result.output or "iptables unavailable").strip(),
+        }
+    return {
+        "conflicts": _parse_cni_hostport_conflicts(result.output or ""),
+        "missingNetworks": missing_networks,
+    }
+
+
+def _diagnostic_nomad_cni_missing_networks(executor: LocalExecutor) -> list[Dict[str, Any]]:
+    # Nomad's bridge network is owned by its running nomad_init_* container. A
+    # Docker daemon restart can restore that container with network=none while
+    # Nomad still considers the allocation healthy. Inspect /proc instead of
+    # entering the namespace: this keeps the check read-only and avoids making
+    # nsenter/ip availability a prerequisite.
+    command = (
+        "set -euo pipefail; "
+        f"{_docker_cli_prelude()}; "
+        'command -v awk >/dev/null 2>&1 || exit 0; '
+        '"$docker_cli" ps --filter name=nomad_init_ --format \'{{.ID}}\' 2>/dev/null '
+        "| while IFS= read -r container; do "
+        '[ -n "$container" ] || continue; '
+        'record=$("$docker_cli" inspect --format '
+        "'{{.Id}}|{{.Name}}|{{.State.Pid}}|{{index .Config.Labels \"com.hashicorp.nomad.alloc_id\"}}' "
+        '"$container" 2>/dev/null || true); '
+        '[ -n "$record" ] || continue; '
+        "IFS='|' read -r container_id container_name pid alloc_id <<< \"$record\"; "
+        "case \"$pid\" in ''|*[!0-9]*) continue ;; esac; "
+        '[ "$pid" -gt 0 ] 2>/dev/null || continue; '
+        '[ -r "/proc/$pid/net/dev" ] || continue; '
+        "interfaces=$(awk -F: 'NR > 2 { name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, \"\", name); "
+        "if (name != \"\") { if (seen) printf \",\"; printf \"%s\", name; seen=1 } } "
+        "END { if (seen) printf \"\\n\" }' \"/proc/$pid/net/dev\" 2>/dev/null || true); "
+        '[ -n "$interfaces" ] || continue; '
+        "printf '%s\\t%s\\t%s\\t%s\\n' \"$container_id\" \"$container_name\" \"$alloc_id\" \"$interfaces\"; "
+        "done"
+    )
+    result = executor.run_result(command, timeout=10)
+    if result.code != 0:
+        return []
+    return _parse_nomad_cni_missing_networks(result.output or "")
+
+
+def _parse_nomad_cni_missing_networks(output: str) -> list[Dict[str, Any]]:
+    missing: list[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for line in str(output or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        raw_container, raw_name, raw_alloc_id, raw_interfaces = (part.strip() for part in parts)
+        name = raw_name.removeprefix("/")
+        if not re.fullmatch(r"[0-9a-fA-F]{12,64}", raw_container):
+            continue
+        if not re.fullmatch(r"nomad_init_[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name):
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", raw_alloc_id):
+            continue
+        interfaces = [item.strip() for item in raw_interfaces.split(",") if item.strip()]
+        # Only a successfully inspected namespace containing exactly loopback
+        # is evidence of this failure. Empty, malformed, or additional
+        # interfaces are intentionally treated as non-actionable.
+        if interfaces != ["lo"]:
+            continue
+        container = raw_container[:12].lower()
+        key = (raw_alloc_id, container, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        missing.append(
+            {
+                "allocId": raw_alloc_id,
+                "container": container,
+                "name": name,
+                "interfaces": ["lo"],
+            }
+        )
+    return sorted(missing, key=lambda item: (item["allocId"], item["name"], item["container"]))
 
 
 def _parse_cni_hostport_conflicts(output: str) -> list[Dict[str, Any]]:
@@ -1963,26 +2042,59 @@ def remove_managed_nfs_export(*, name: str) -> Dict[str, Any]:
     return {"name": name, "message": "managed NFS export removed"}
 
 
+_DOCKER_CONFIG_CHANGED_MARKER = "LUMA_DOCKER_CONFIG_CHANGED="
+
+
+def _docker_config_changed(output: str) -> bool:
+    matches = re.findall(
+        rf"(?m)^{re.escape(_DOCKER_CONFIG_CHANGED_MARKER)}([01])\s*$",
+        str(output or ""),
+    )
+    if not matches:
+        raise LumaError("Docker daemon configuration completed without reporting whether it changed")
+    return matches[-1] == "1"
+
+
 def configure_docker_egress_proxy(*, proxy: str, no_proxy: str) -> Dict[str, Any]:
     os_value = node_agent_os()
     if os_value != "linux":
         raise LumaError(f"Docker daemon egress proxy setup is not supported on {os_value}")
     if not proxy.startswith(("http://", "https://")):
         raise LumaError("Docker daemon proxy must start with http:// or https://")
+    desired = (
+        "[Service]\n"
+        f'Environment="HTTP_PROXY={proxy}"\n'
+        f'Environment="HTTPS_PROXY={proxy}"\n'
+        f'Environment="NO_PROXY={no_proxy}"\n'
+    )
     command = (
         "set -euo pipefail; "
         "mkdir -p /etc/systemd/system/docker.service.d; "
-        "cat > /etc/systemd/system/docker.service.d/http-proxy.conf <<'EOF'\n"
-        "[Service]\n"
-        f"Environment=\"HTTP_PROXY={proxy}\"\n"
-        f"Environment=\"HTTPS_PROXY={proxy}\"\n"
-        f"Environment=\"NO_PROXY={no_proxy}\"\n"
-        "EOF\n"
+        "f=/etc/systemd/system/docker.service.d/http-proxy.conf; "
+        'tmp=$(mktemp "${f}.luma.XXXXXX"); '
+        'trap \'rm -f "$tmp"\' EXIT; '
+        f"printf '%s' {shlex.quote(desired)} > \"$tmp\"; "
+        'if [ -f "$f" ] && cmp -s "$tmp" "$f"; then '
+        "changed=0; "
+        "else "
+        'install -m 0644 "$tmp" "$f"; '
         "systemctl daemon-reload; "
-        "systemctl restart docker"
+        "systemctl restart docker; "
+        "changed=1; "
+        "fi; "
+        f"printf '{_DOCKER_CONFIG_CHANGED_MARKER}%s\\n' \"$changed\""
     )
-    LocalExecutor().sudo(command)
-    return {"proxy": proxy, "noProxy": no_proxy, "message": "Docker daemon egress proxy configured"}
+    executor = LocalExecutor()
+    active_alloc_ids = sorted(_active_nomad_docker_alloc_ids(executor))
+    changed = _docker_config_changed(executor.sudo(command))
+    return {
+        "proxy": proxy,
+        "noProxy": no_proxy,
+        "changed": changed,
+        "dockerRestarted": changed,
+        "affectedAllocationIds": active_alloc_ids if changed else [],
+        "message": "Docker daemon egress proxy configured" if changed else "Docker daemon egress proxy already configured",
+    }
 
 
 def resolve_docker_image(
@@ -2918,10 +3030,19 @@ def configure_insecure_registry(*, registry: str) -> Dict[str, Any]:
         "print('1' if changed else '0')\n"
         "PY\n"
         "); "
-        'if [ "$changed" = "1" ]; then systemctl restart docker; fi'
+        'if [ "$changed" = "1" ]; then systemctl restart docker; fi; '
+        f"printf '{_DOCKER_CONFIG_CHANGED_MARKER}%s\\n' \"$changed\""
     )
-    LocalExecutor().sudo(script)
-    return {"registry": host, "message": f"insecure-registry configured: {host}"}
+    executor = LocalExecutor()
+    active_alloc_ids = sorted(_active_nomad_docker_alloc_ids(executor))
+    changed = _docker_config_changed(executor.sudo(script))
+    return {
+        "registry": host,
+        "changed": changed,
+        "dockerRestarted": changed,
+        "affectedAllocationIds": active_alloc_ids if changed else [],
+        "message": f"insecure-registry configured: {host}" if changed else f"insecure-registry already configured: {host}",
+    }
 
 
 def _docker_image_repository(image: str) -> str:

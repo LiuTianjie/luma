@@ -10,12 +10,9 @@ importers:
 
   apps/web:
     dependencies:
-      '@fontsource-variable/manrope':
-        specifier: 5.2.8
-        version: 5.2.8
-      '@fontsource-variable/newsreader':
-        specifier: 5.2.10
-        version: 5.2.10
+      '@fontsource/ibm-plex-mono':
+        specifier: ^5.2.7
+        version: 5.2.7
       lucide-react:
         specifier: 1.24.0
         version: 1.24.0(react@19.2.7)
@@ -50,11 +47,8 @@ packages:
   '@emnapi/runtime@1.11.2':
     resolution: {integrity: sha512-kyOl3X0DuTiT1h2ft8r2fYO8JYtU9a9Xis/zBSiGArNaagCOWx90N1k2wxp18czFDH+OgcWGb5ZP/XMt3dcyPA==}
 
-  '@fontsource-variable/manrope@5.2.8':
-    resolution: {integrity: sha512-nc9lOuCRz73UHnovDE2bwXUdghE2SEOc7Aii0qGe3CLyE03W1a7VnY5Z6euRiapiKbCkGS+eXbY3s/kvWeGeSw==}
-
-  '@fontsource-variable/newsreader@5.2.10':
-    resolution: {integrity: sha512-MdI2iRwrqWpMOU/2aV2BgfZ4dJNlj/XlYaY8Zb7t87mWqHskYW0XiUANkt1cyOCiEfW2VQ0bQ5vZgGPp6B2B4w==}
+  '@fontsource/ibm-plex-mono@5.2.7':
+    resolution: {integrity: sha512-MKAb8qV+CaiMQn2B0dIi1OV3565NYzp3WN5b4oT6LTkk+F0jR6j0ZN+5BKJiIhffDC3rtBULsYZE65+0018z9w==}
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -424,9 +418,7 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
-  '@fontsource-variable/manrope@5.2.8': {}
-
-  '@fontsource-variable/newsreader@5.2.10': {}
+  '@fontsource/ibm-plex-mono@5.2.7': {}
 
   '@img/colour@1.1.0':
     optional: true

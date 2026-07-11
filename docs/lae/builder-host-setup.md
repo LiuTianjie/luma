@@ -1,6 +1,6 @@
 # LAE Builder 主机准备与验收
 
-> 状态：Luma `0.1.171` 候选已通过 gate，当前 live `builder` 仍为 `0.1.170`；既有构建链路已完成真实 `--check` 和平台 import。升级、幂等重跑、隔离/压力/故障与恢复证据未全部关闭，本文不构成 production-ready 证明。
+> 状态：Luma `0.1.171` 已通过 gate 并运行于 live `builder`；既有构建链路已完成真实 `--check` 和平台 import。配置幂等、Docker restart 后 CNI/route 恢复、隔离/压力/故障与恢复证据未全部关闭，本文不构成 production-ready 证明。
 
 LAE Builder v2 只在显式准备过的 Ubuntu 专用节点上启用。仓库默认不会让普通 Luma 节点宣告 `builder-analyze-v1` 或 `builder-build-v1`：只有操作员执行准备脚本、所有运行时门槛通过、node agent 重新加载环境后，能力探测才可能成功。
 

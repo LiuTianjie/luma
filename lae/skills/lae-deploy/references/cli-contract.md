@@ -61,8 +61,10 @@ they return one bounded service view per request.
 
 Agent execution must provide every required flag. Missing input fails instead of opening a browser. Supply environment values with `--value-stdin` and private Git credentials with `--secret-stdin`; never put them in an argument or environment variable. When stdin carries either secret, load the deploy token from `LAE_DEPLOY_TOKEN` so the two inputs cannot collide.
 
-When inspection returns `needs_configuration`, its terminal output includes a
-whitelisted `configuration` schema. Resume schema discovery with `config show`;
+When inspection returns public verdict `needs_input`, its terminal output
+includes a whitelisted `configuration` schema. The underlying stored analysis
+status may be `needs_configuration`, but agents must branch on the public
+verdict. Resume schema discovery with `config show`;
 it returns service keys and environment names/required/sensitive flags only.
 Fetch `env list` for the current compare-and-set version, then use `env set
 --value-stdin`. Reuse that same analysis after configuration; inspect again only

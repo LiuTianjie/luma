@@ -9,6 +9,8 @@ import {
   CircleUserRound,
   CloudUpload,
   Command,
+  Copy,
+  ExternalLink,
   FileArchive,
   GitFork,
   Globe2,
@@ -22,6 +24,8 @@ import {
   ServerCog,
   Sparkles,
   SquareTerminal,
+  Sun,
+  Moon,
   Trash2,
   Undo2,
   X,
@@ -29,7 +33,7 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import Link from "next/link";
-import { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import {
   createApplication,
@@ -50,12 +54,14 @@ import {
   getStaticUpload,
   LaeApiError,
   launchTemplate,
+  listOperations,
   listApplications,
   listApplicationDeployments,
   listSourceConnections,
   listTemplates,
   newIdempotencyKey,
-  patchApplicationEnvironment,
+  patchPlanEnvironment,
+  recoverOperation,
   requestApplicationAction,
   sha256File,
   staticUploadMediaType,
@@ -63,8 +69,10 @@ import {
   type LaePrincipal,
   type DeploymentConfiguration,
   type OperationEvent,
+  type OperationListItem,
   type SourceConnection,
   type ApplicationAction,
+  type ApplicationRecord,
   type ApplicationLogTail,
   type ApplicationMetricHistory,
   type ApplicationTemplate,
@@ -119,6 +127,7 @@ const templateDescriptions: Record<string, string> = {
 };
 
 type ConsoleSection = "deployment" | "applications" | "activity" | "cli";
+type CatalogStatus = "checking" | "connected" | "unavailable";
 
 const consoleSections: ConsoleSection[] = ["deployment", "applications", "activity", "cli"];
 
@@ -142,7 +151,7 @@ type ShoreApplication = {
   domain: string;
   status: string;
   services: number;
-  tone: "healthy" | "paused" | "pending";
+  tone: "healthy" | "paused" | "pending" | "degraded" | "failed";
   desiredState: "running" | "suspended" | "deleted";
   lifecycleEnabled: boolean;
   rollbackDeploymentId: string | null;
@@ -153,11 +162,18 @@ type ConfirmedLifecycleAction = {
   action: "rollback" | "delete";
 };
 
+type LiveDeployment = {
+  application: ApplicationRecord | null;
+  deploymentId: string;
+  operationId: string;
+};
+
 type GitSourceInput = {
   name: string;
   slug: string;
   repository: string;
   ref: string;
+  subdirectory?: string;
   connectionId?: string;
 };
 
@@ -166,12 +182,13 @@ const stateCopy: Record<FlowState, { eyebrow: string; title: string; note: strin
   configuring: { eyebrow: "SOURCE · 01", title: "给应用一个起点", note: "来源信息只用于创建受租户隔离的诊断任务。" },
   diagnosing: { eyebrow: "LAE AGENT · 02", title: "正在读懂这个应用", note: "源码仅在隔离的 Luma Builder 中展开与分析。" },
   ready: { eyebrow: "READY · 03", title: "可以部署", note: "拓扑与端口已确认。部署文件将由 LAE 保存，无需写回仓库。" },
-  deploying: { eyebrow: "DEPLOYING · 04", title: "服务正在浮出水面", note: "构建、分配路由并逐个验证 HTTP 服务。" },
+  deploying: { eyebrow: "DEPLOYING · 04", title: "正在部署服务", note: "构建镜像、分配路由并逐个验证 HTTP 服务。" },
   live: { eyebrow: "LIVE · 05", title: "部署完成", note: "应用已进入列表，域名在更新与重启时保持稳定。" },
 };
 
 export function LaeConsole() {
   const reduceMotion = useReducedMotion();
+  const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(true);
@@ -182,6 +199,7 @@ export function LaeConsole() {
   const [principal, setPrincipal] = useState<LaePrincipal | null>(null);
   const [shoreApplications, setShoreApplications] = useState<ShoreApplication[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogStatus, setCatalogStatus] = useState<CatalogStatus>("checking");
   const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
   const [catalogRefresh, setCatalogRefresh] = useState(0);
   const [lifecycleBusy, setLifecycleBusy] = useState<Set<string>>(() => new Set());
@@ -197,8 +215,13 @@ export function LaeConsole() {
   const [observabilityNotice, setObservabilityNotice] = useState<string | null>(null);
   const [flowError, setFlowError] = useState<string | null>(null);
   const [operationEvents, setOperationEvents] = useState<OperationEvent[]>([]);
+  const [recentOperations, setRecentOperations] = useState<OperationListItem[]>([]);
+  const [recoveryBusy, setRecoveryBusy] = useState<string | null>(null);
   const [deploymentConfiguration, setDeploymentConfiguration] =
     useState<DeploymentConfiguration | null>(null);
+  const [deploymentPlan, setDeploymentPlan] =
+    useState<DeploymentConfiguration | null>(null);
+  const [liveDeployment, setLiveDeployment] = useState<LiveDeployment | null>(null);
   const [environmentSaving, setEnvironmentSaving] = useState(false);
   const [activeSection, setActiveSection] = useState<ConsoleSection>("deployment");
   const [activeRun, setActiveRun] = useState<{
@@ -208,7 +231,27 @@ export function LaeConsole() {
   } | null>(null);
   const runController = useRef<AbortController | null>(null);
   const observabilityController = useRef<AbortController | null>(null);
+  const recoveredOnLoad = useRef(false);
   const fileInputId = useId();
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("luma.dashboard.theme");
+    const next =
+      stored === "light" || stored === "dark"
+        ? stored
+        : window.matchMedia("(prefers-color-scheme: light)").matches
+          ? "light"
+          : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+  }, []);
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    window.localStorage.setItem("luma.dashboard.theme", next);
+  };
 
   const stopRun = () => {
     runController.current?.abort();
@@ -297,11 +340,19 @@ export function LaeConsole() {
   useEffect(() => {
     const controller = new AbortController();
     setCatalogLoading(true);
+    setCatalogStatus("checking");
     setCatalogNotice(null);
     void (async () => {
       try {
         const identity = await getPrincipal(controller.signal);
-        const catalog = await listApplications(controller.signal);
+        const [catalog, operationPage] = await Promise.all([
+          listApplications(controller.signal),
+          listOperations({ limit: 12 }, controller.signal).catch(() => ({
+            operations: [],
+            hasMore: false,
+            nextCursor: null,
+          })),
+        ]);
         const details = await Promise.all(
           catalog.applications.map(async (application) => {
             try {
@@ -320,7 +371,9 @@ export function LaeConsole() {
           }),
         );
         if (controller.signal.aborted) return;
+        setCatalogStatus("connected");
         setPrincipal(identity);
+        setRecentOperations(operationPage.operations);
         setShoreApplications(
           catalog.applications.map((application, index) => {
             const view = details[index];
@@ -337,7 +390,10 @@ export function LaeConsole() {
                 )
               : null;
             const suspended = application.desiredState === "suspended";
-            const running = application.observedState === "running";
+            const observed = application.observedState;
+            const running = observed === "running";
+            const degraded = observed === "degraded";
+            const failed = observed === "failed";
             return {
               id: application.id,
               name: application.name,
@@ -346,11 +402,27 @@ export function LaeConsole() {
                 ? "已暂停"
                 : running
                   ? "运行中"
+                  : degraded
+                    ? "运行降级"
+                    : failed
+                      ? "运行失败"
                   : application.kind === "pending"
                     ? "待诊断"
-                    : "正在准备",
+                    : observed === "provisioning"
+                      ? "正在启动"
+                      : observed === "suspending"
+                        ? "正在暂停"
+                        : "状态未知",
               services: detail?.services.length || 0,
-              tone: suspended ? "paused" : running ? "healthy" : "pending",
+              tone: suspended
+                ? "paused"
+                : running
+                  ? "healthy"
+                  : degraded
+                    ? "degraded"
+                    : failed
+                      ? "failed"
+                      : "pending",
               desiredState: application.desiredState,
               lifecycleEnabled:
                 application.currentDeploymentId !== null && application.kind !== "pending",
@@ -360,10 +432,13 @@ export function LaeConsole() {
         );
       } catch (error) {
         if (controller.signal.aborted) return;
+        const unauthenticated = error instanceof LaeApiError && error.status === 401;
+        setCatalogStatus(unauthenticated ? "connected" : "unavailable");
         setPrincipal(null);
         setShoreApplications([]);
+        setRecentOperations([]);
         setCatalogNotice(
-          error instanceof LaeApiError && error.status === 401
+          unauthenticated
             ? "登录后，这里会显示你的真实应用与稳定域名。"
             : "暂时无法读取应用目录；部署入口不会用示例数据冒充真实状态。",
         );
@@ -380,6 +455,8 @@ export function LaeConsole() {
     setFlowError(null);
     setOperationEvents([]);
     setDeploymentConfiguration(null);
+    setDeploymentPlan(null);
+    setLiveDeployment(null);
     setFlow("configuring");
   };
 
@@ -406,6 +483,64 @@ export function LaeConsole() {
     }
     throw new DOMException("Operation watch canceled", "AbortError");
   };
+
+  const recoverHistoricalOperation = async (operation: OperationListItem) => {
+    if (recoveryBusy) return;
+    stopRun();
+    const controller = new AbortController();
+    runController.current = controller;
+    setRecoveryBusy(operation.id);
+    setFlowError(null);
+    try {
+      const recovered = await recoverOperation(operation.id, {}, controller.signal);
+      setOperationEvents(recovered.events.slice(-12));
+      let status = recovered.operation.status;
+      if (!recovered.terminal) {
+        setFlow(operation.kind === "deployment.create" ? "deploying" : "diagnosing");
+        status = await watchOperation(operation.id, controller.signal);
+      }
+      if (
+        operation.kind === "deployment.create" &&
+        status === "succeeded" &&
+        operation.applicationId
+      ) {
+        const application = await getApplication(operation.applicationId, controller.signal);
+        const deploymentId = application.application.currentDeploymentId;
+        if (deploymentId) {
+          setLiveDeployment({ application, deploymentId, operationId: operation.id });
+          setFlow("live");
+        } else {
+          setFlow("idle");
+        }
+      } else {
+        setFlow("idle");
+        if (status !== "succeeded") {
+          setFlowError("该操作已结束但未成功；历史事件已恢复，现有健康版本未被替换。");
+        }
+      }
+      setCatalogRefresh((value) => value + 1);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setFlow("idle");
+        setFlowError(
+          error instanceof LaeApiError ? error.message : "操作历史暂时无法恢复。",
+        );
+      }
+    } finally {
+      if (runController.current === controller) runController.current = null;
+      setRecoveryBusy(null);
+    }
+  };
+
+  useEffect(() => {
+    if (recoveredOnLoad.current || flow !== "idle") return;
+    const active = recentOperations.find(
+      (operation) => operation.kind === "deployment.create" && !operation.terminal,
+    );
+    if (!active) return;
+    recoveredOnLoad.current = true;
+    void recoverHistoricalOperation(active);
+  }, [flow, recentOperations]);
 
   const runLifecycleAction = async (
     application: ShoreApplication,
@@ -527,6 +662,7 @@ export function LaeConsole() {
           applicationId: created.application.id,
           repository: input.repository,
           ref: input.ref,
+          subdirectory: input.subdirectory,
           connectionId: input.connectionId,
         },
         newIdempotencyKey("analysis"),
@@ -542,16 +678,23 @@ export function LaeConsole() {
         controller.signal,
       );
       const result = await getAnalysis(analysis.analysis.id, controller.signal);
+      const configuration =
+        operationStatus === "succeeded" &&
+        result.planStored &&
+        (result.verdict === "deployable" || result.verdict === "needs_input")
+          ? await getDeploymentConfiguration(
+              created.application.id,
+              analysis.analysis.id,
+              controller.signal,
+            )
+          : null;
+      setDeploymentPlan(configuration?.configuration || null);
       if (
         operationStatus === "succeeded" &&
         result.verdict === "needs_input" &&
-        result.planStored
+        result.planStored &&
+        configuration
       ) {
-        const configuration = await getDeploymentConfiguration(
-          created.application.id,
-          analysis.analysis.id,
-          controller.signal,
-        );
         setDeploymentConfiguration(configuration.configuration);
         setFlow("configuring");
         setCatalogRefresh((value) => value + 1);
@@ -661,16 +804,23 @@ export function LaeConsole() {
         controller.signal,
       );
       const result = await getAnalysis(analysis.analysis.id, controller.signal);
+      const configuration =
+        operationStatus === "succeeded" &&
+        result.planStored &&
+        (result.verdict === "deployable" || result.verdict === "needs_input")
+          ? await getDeploymentConfiguration(
+              created.application.id,
+              analysis.analysis.id,
+              controller.signal,
+            )
+          : null;
+      setDeploymentPlan(configuration?.configuration || null);
       if (
         operationStatus === "succeeded" &&
         result.verdict === "needs_input" &&
-        result.planStored
+        result.planStored &&
+        configuration
       ) {
-        const configuration = await getDeploymentConfiguration(
-          created.application.id,
-          analysis.analysis.id,
-          controller.signal,
-        );
         setDeploymentConfiguration(configuration.configuration);
         setFlow("configuring");
         setCatalogRefresh((value) => value + 1);
@@ -713,6 +863,7 @@ export function LaeConsole() {
     setFlowError(null);
     setOperationEvents([]);
     setDeploymentConfiguration(null);
+    setDeploymentPlan(null);
     setFlow("diagnosing");
     try {
       const result = await launchTemplate(
@@ -731,16 +882,23 @@ export function LaeConsole() {
       });
       const operationStatus = await watchOperation(result.operation.id, controller.signal);
       const analysis = await getAnalysis(result.analysis.id, controller.signal);
+      const configuration =
+        operationStatus === "succeeded" &&
+        analysis.planStored &&
+        (analysis.verdict === "deployable" || analysis.verdict === "needs_input")
+          ? await getDeploymentConfiguration(
+              result.application.id,
+              result.analysis.id,
+              controller.signal,
+            )
+          : null;
+      setDeploymentPlan(configuration?.configuration || null);
       if (
         operationStatus === "succeeded" &&
         analysis.verdict === "needs_input" &&
-        analysis.planStored
+        analysis.planStored &&
+        configuration
       ) {
-        const configuration = await getDeploymentConfiguration(
-          result.application.id,
-          result.analysis.id,
-          controller.signal,
-        );
         setDeploymentConfiguration(configuration.configuration);
         setFlow("configuring");
         setCatalogRefresh((value) => value + 1);
@@ -769,7 +927,7 @@ export function LaeConsole() {
   };
 
   const saveEnvironment = async (
-    values: Record<string, { value: string; sensitive: boolean; required: boolean }>,
+    values: Record<string, { value: string }>,
   ) => {
     if (!activeRun || !deploymentConfiguration || environmentSaving) return;
     stopRun();
@@ -778,13 +936,13 @@ export function LaeConsole() {
     setEnvironmentSaving(true);
     setFlowError(null);
     try {
-      const result = await patchApplicationEnvironment(
+      const result = await patchPlanEnvironment(
         activeRun.applicationId,
+        activeRun.analysisId,
         {
           expectedVersion: activeRun.environmentVersion,
-          set: Object.fromEntries(
-            Object.entries(values).map(([name, value]) => [`*:${name}`, value]),
-          ),
+          environmentSchemaDigest: deploymentConfiguration.environmentSchemaDigest,
+          set: values,
         },
         newIdempotencyKey("environment"),
         controller.signal,
@@ -832,6 +990,15 @@ export function LaeConsole() {
         setFlowError("部署未通过运行态验证，现有健康版本没有被替换。");
         return;
       }
+      const application = await getApplication(
+        activeRun.applicationId,
+        controller.signal,
+      ).catch(() => null);
+      setLiveDeployment({
+        application,
+        deploymentId: created.deployment.id,
+        operationId: created.operation.id,
+      });
       setFlow("live");
       setCatalogRefresh((value) => value + 1);
     } catch (error) {
@@ -853,21 +1020,20 @@ export function LaeConsole() {
     setActiveRun(null);
     setOperationEvents([]);
     setDeploymentConfiguration(null);
+    setDeploymentPlan(null);
+    setLiveDeployment(null);
     setEnvironmentSaving(false);
     setFlowError(null);
   };
 
   return (
     <main className="console-shell">
-      <AmbientWater reduced={Boolean(reduceMotion)} />
-      <Header
-        principal={principal}
-        catalogStatus={
-          catalogLoading ? "checking" : catalogNotice ? "unavailable" : "connected"
-        }
-      />
-
       <aside className="rail" aria-label="主导航">
+        <Link className="rail-brand" href="/" aria-label="Luma Application Engine">
+          <div className="brand-mark"><span /><span /><span /></div>
+          <div><strong>LAE</strong><small>Luma Application Engine</small></div>
+        </Link>
+        <p className="rail-label">APPLICATION ENGINE</p>
         <a
           className={`rail-button${activeSection === "deployment" ? " is-active" : ""}`}
           href="#deployment"
@@ -907,31 +1073,28 @@ export function LaeConsole() {
         </a>
       </aside>
 
-      <section className="workspace">
+      <div className="console-main">
+        <Header
+          principal={principal}
+          catalogStatus={catalogStatus}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+        />
+        <section className="workspace">
         <div className="hero-copy">
-          <motion.div
-            initial={reduceMotion ? false : { opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
-            className="section-kicker"
-          >
-            <span className="quiet-dot" /> LUMA APPLICATION ENGINE
-          </motion.div>
-          <motion.h1
-            initial={reduceMotion ? false : { opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.05, ease: [0.22, 1, 0.36, 1] }}
-          >
-            让服务落在
-            <em>该落的地方。</em>
-          </motion.h1>
-          <motion.p
-            initial={reduceMotion ? false : { opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.55, delay: 0.14, ease: [0.22, 1, 0.36, 1] }}
-          >
-            带来仓库、静态产物或 Compose。LAE 负责诊断、构建与部署，Luma 负责让它持续运行。
-          </motion.p>
+          <div>
+            <p className="section-kicker">APPLICATION DELIVERY</p>
+            <h1>部署应用</h1>
+            <span>LAE Agent 诊断源码并生成 Luma 部署计划；支持 Git、静态产物与多服务 Compose。</span>
+          </div>
+          <a className="hero-primary" href="#deployment"><CloudUpload size={15} /> 新建部署</a>
+        </div>
+
+        <div className="overview-strip" aria-label="工作区概览">
+          <article><span>运行中</span><strong>{shoreApplications.filter((item) => item.tone === "healthy").length}</strong><small>applications</small></article>
+          <article><span>应用总数</span><strong>{catalogLoading ? "—" : shoreApplications.length}</strong><small>tenant catalog</small></article>
+          <article><span>已验证模板</span><strong>{templatesLoading ? "—" : templates.length}</strong><small>agent passed</small></article>
+          <article><span>来源</span><strong>3</strong><small>Git · File · Compose</small></article>
         </div>
 
         <div className="main-grid console-anchor" id="deployment">
@@ -951,6 +1114,8 @@ export function LaeConsole() {
             selectedFile={selectedFile}
             authenticated={principal !== null}
             configuration={deploymentConfiguration}
+            plan={deploymentPlan}
+            liveDeployment={liveDeployment}
             environmentSaving={environmentSaving}
             events={operationEvents}
             error={flowError}
@@ -979,8 +1144,16 @@ export function LaeConsole() {
           }
           onInspect={inspectApplication}
         />
-        <ConsoleUtilities flow={flow} events={operationEvents} error={flowError} />
-      </section>
+        <ConsoleUtilities
+          flow={flow}
+          events={operationEvents}
+          operations={recentOperations}
+          recoveryBusy={recoveryBusy}
+          error={flowError}
+          onRecover={(operation) => void recoverHistoricalOperation(operation)}
+        />
+        </section>
+      </div>
       <AnimatePresence>
         {observingApplication && (
           <ApplicationObservatory
@@ -1022,20 +1195,20 @@ export function LaeConsole() {
 function Header({
   principal,
   catalogStatus,
+  theme,
+  onToggleTheme,
 }: {
   principal: LaePrincipal | null;
-  catalogStatus: "checking" | "connected" | "unavailable";
+  catalogStatus: CatalogStatus;
+  theme: "light" | "dark";
+  onToggleTheme: () => void;
 }) {
   const accountName = principal?.user.email.split("@", 1)[0] || "登录";
   const catalogAvailable = catalogStatus === "connected";
   return (
     <header className="topbar">
-      <div className="brand" aria-label="Luma Application Engine">
-        <div className="brand-mark"><span /><span /><span /></div>
-        <div>
-          <strong>LAE</strong>
-          <small>Luma Application Engine</small>
-        </div>
+      <div className="topbar-breadcrumbs">
+        <span>LAE</span><ChevronRight size={12} /><strong>部署</strong>
       </div>
       <div className="runtime-status">
         <span className={`runtime-pulse${catalogAvailable ? "" : " is-muted"}`} />
@@ -1046,6 +1219,9 @@ function Header({
             : "LAE API unavailable"}
       </div>
       <div className="account">
+        <button className="theme-toggle" type="button" onClick={onToggleTheme} aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}>
+          {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
         <span className="plan-badge">{principal?.entitlement.plan.toUpperCase() || "GUEST"}</span>
         <Link className="account-button" aria-label={principal ? "账户" : "登录"} href={principal ? "/account" : "/login"}>
           <CircleUserRound size={18} strokeWidth={1.5} />
@@ -1054,24 +1230,6 @@ function Header({
         </Link>
       </div>
     </header>
-  );
-}
-
-function AmbientWater({ reduced }: { reduced: boolean }) {
-  return (
-    <div className="ambient" aria-hidden="true">
-      <motion.div
-        className="ambient-orb orb-one"
-        animate={reduced ? undefined : { x: [0, 34, 0], y: [0, -18, 0] }}
-        transition={{ duration: 18, repeat: Infinity, ease: "easeInOut" }}
-      />
-      <motion.div
-        className="ambient-orb orb-two"
-        animate={reduced ? undefined : { x: [0, -28, 0], y: [0, 22, 0] }}
-        transition={{ duration: 24, repeat: Infinity, ease: "easeInOut" }}
-      />
-      <div className="grain" />
-    </div>
   );
 }
 
@@ -1095,14 +1253,11 @@ function TemplateLake({
       <div className="lake-heading">
         <div>
           <span className="section-index">01</span>
-          <h2 id="template-title">从一个已知的形状开始</h2>
+          <h2 id="template-title">应用模板</h2>
         </div>
-        <span className="lake-note">模板不会绕过诊断</span>
+        <span className="lake-note">模板同样执行完整诊断</span>
       </div>
       <div className="water-field">
-        <div className="water-line line-a" />
-        <div className="water-line line-b" />
-        <div className="water-line line-c" />
         {!templates.length && (
           <div className="lake-status" role="status">
             {loading ? <RefreshCw className="stage-spin" size={15} /> : <Orbit size={15} />}
@@ -1117,29 +1272,22 @@ function TemplateLake({
               type="button"
               key={template.id}
               className={`template-float tone-${template.tone}${active ? " is-selected" : ""}`}
-              style={{ left: `${template.x}%`, top: `${template.y}%` }}
-              initial={reduced ? false : { opacity: 0, scale: 0.82, y: 14 }}
-              animate={{
-                opacity: 1,
-                scale: active ? 1.08 : 1,
-                y: reduced ? 0 : [0, index % 2 ? -5 : 5, 0],
-              }}
+              initial={reduced ? false : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
               transition={{
-                opacity: { duration: 0.5, delay: Math.min(index * 0.055, 0.32) },
-                scale: { duration: 0.35, ease: [0.4, 0, 0.2, 1] },
-                y: { duration: 5.5 + template.drift, repeat: Infinity, ease: "easeInOut" },
+                duration: 0.18,
+                delay: Math.min(index * 0.035, 0.18),
               }}
-              whileHover={reduced ? undefined : { scale: 1.12, y: -7 }}
-              whileTap={{ scale: 0.98 }}
               onClick={() => onSelect(template)}
               aria-pressed={active}
             >
-              <span className="template-ripple" />
               <span className="template-icon"><Icon size={22} strokeWidth={1.45} /></span>
               <span className="template-label">
                 <strong>{template.name}</strong>
-                <small>{active ? template.description : template.stack}</small>
+                <small>{template.stack}</small>
+                <em>{template.description}</em>
               </span>
+              <ArrowRight size={14} />
             </motion.button>
           );
         })}
@@ -1170,6 +1318,8 @@ function DeploymentInstrument({
   selectedFile,
   authenticated,
   configuration,
+  plan,
+  liveDeployment,
   environmentSaving,
   events,
   error,
@@ -1190,6 +1340,8 @@ function DeploymentInstrument({
   selectedFile: File | null;
   authenticated: boolean;
   configuration: DeploymentConfiguration | null;
+  plan: DeploymentConfiguration | null;
+  liveDeployment: LiveDeployment | null;
   environmentSaving: boolean;
   events: OperationEvent[];
   error: string | null;
@@ -1199,26 +1351,46 @@ function DeploymentInstrument({
   onAnalyzeUpload: (input: { name: string; slug: string; file: File }) => Promise<void>;
   onLaunchTemplate: (template: Template) => Promise<void>;
   onSaveEnvironment: (
-    values: Record<string, { value: string; sensitive: boolean; required: boolean }>,
+    values: Record<string, { value: string }>,
   ) => Promise<void>;
   onDeploy: () => void | Promise<void>;
   onReset: () => void;
   reduced: boolean;
 }) {
   const copy = stateCopy[flow];
-  const progress = useMemo(
-    () => ({ idle: 0, configuring: 12, diagnosing: 34, ready: 61, deploying: 83, live: 100 })[flow],
-    [flow],
-  );
+  const phases = ["来源", "诊断", "配置", "部署", "上线"];
+  const phaseIndex =
+    flow === "idle"
+      ? 0
+      : flow === "configuring"
+        ? configuration
+          ? 2
+          : 0
+        : flow === "diagnosing"
+          ? 1
+          : flow === "ready" || flow === "deploying"
+            ? 3
+            : 4;
   const locked = flow === "diagnosing" || flow === "deploying";
 
   return (
     <section className="instrument" aria-labelledby="deployment-title" aria-live="polite">
       <div className="instrument-topline">
         <span>{copy.eyebrow}</span>
-        <span>{String(progress).padStart(3, "0")}%</span>
+        <span>{locked ? "IN PROGRESS" : flow === "live" ? "VERIFIED" : "READY FOR INPUT"}</span>
       </div>
-      <div className="progress-track"><motion.span animate={{ width: `${progress}%` }} transition={{ duration: reduced ? 0.05 : 0.55, ease: [0.4, 0, 0.2, 1] }} /></div>
+      <ol className="phase-track" aria-label={`部署阶段：${phases[phaseIndex]}`}>
+        {phases.map((phase, index) => (
+          <li
+            key={phase}
+            className={index < phaseIndex ? "is-complete" : index === phaseIndex ? "is-current" : ""}
+            aria-current={index === phaseIndex ? "step" : undefined}
+          >
+            <span>{index < phaseIndex ? <Check size={10} /> : index + 1}</span>
+            <small>{phase}</small>
+          </li>
+        ))}
+      </ol>
 
       <AnimatePresence mode="wait">
         <motion.div
@@ -1273,6 +1445,10 @@ function DeploymentInstrument({
             onAnalyzeUpload={onAnalyzeUpload}
           />
         )
+      ) : flow === "ready" && plan ? (
+        <DeploymentPlanReview configuration={plan} />
+      ) : flow === "live" && liveDeployment ? (
+        <DeploymentHandoff deployment={liveDeployment} />
       ) : (
         <Diagnosis flow={flow} source={source} events={events} />
       )}
@@ -1299,6 +1475,108 @@ function DeploymentInstrument({
 
       <div className="trust-note"><LockKeyhole size={12} /> 源码与凭据不会进入 LAE 日志</div>
     </section>
+  );
+}
+
+function DeploymentPlanReview({
+  configuration,
+}: {
+  configuration: DeploymentConfiguration;
+}) {
+  const services = configuration.services || [];
+  const routes = configuration.routes || [];
+  const volumes = configuration.volumes || [];
+  const warnings = configuration.warnings || [];
+  const totalMemory = services.reduce(
+    (sum, service) => sum + service.resources.memoryMiB,
+    0,
+  );
+  return (
+    <div className="deployment-plan-review">
+      <div className="plan-review-banner">
+        <Check size={15} />
+        <div>
+          <strong>LAE Agent 已生成可部署计划</strong>
+          <span>确认服务拓扑与资源后，LAE 才会交给 Luma 执行。</span>
+        </div>
+      </div>
+      <div className="plan-review-grid" aria-label="部署计划摘要">
+        <article><span>类型</span><strong>{configuration.kind === "compose" ? "Compose" : "Service"}</strong><small>{configuration.sourceRevisionId.slice(0, 12)}</small></article>
+        <article><span>服务</span><strong>{services.length}</strong><small>{services.map((service) => service.key).join(" · ")}</small></article>
+        <article><span>公网 HTTP</span><strong>{routes.length}</strong><small>随机 *.itool.tech</small></article>
+        <article><span>资源</span><strong>{totalMemory} MiB</strong><small>{volumes.length} persistent volumes</small></article>
+      </div>
+      <div className="plan-service-table" role="table" aria-label="服务部署明细">
+        {services.map((service) => (
+          <div className="plan-service-row" role="row" key={service.key}>
+            <strong role="cell">{service.key}</strong>
+            <span role="cell">{service.role}</span>
+            <span role="cell">{service.resources.cpu} CPU</span>
+            <small role="cell">{service.resources.memoryMiB} MiB · {service.imageSource}</small>
+          </div>
+        ))}
+      </div>
+      <div className="plan-review-notes">
+        <span>{configuration.environment.length} environment bindings</span>
+        <span>{volumes.length ? `${volumes.length} volumes` : "no persistent volume"}</span>
+        <span>HTTP only · TCP relay disabled</span>
+        {warnings.map((warning) => <span key={warning}>{warning}</span>)}
+      </div>
+    </div>
+  );
+}
+
+function DeploymentHandoff({ deployment }: { deployment: LiveDeployment }) {
+  const [copied, setCopied] = useState(false);
+  const routes = deployment.application?.routes || [];
+  const copyRoutes = async () => {
+    if (!routes.length) return;
+    try {
+      await navigator.clipboard.writeText(
+        routes.map((route) => `https://${route.hostname}`).join("\n"),
+      );
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <div className="deployment-handoff">
+      <div className="handoff-heading">
+        <span><Check size={15} /></span>
+        <div>
+          <strong>运行态验证通过</strong>
+          <small>域名会在后续更新与重启时保持稳定</small>
+        </div>
+        {routes.length > 0 && (
+          <button type="button" onClick={() => void copyRoutes()}>
+            <Copy size={13} /> {copied ? "已复制" : "复制全部"}
+          </button>
+        )}
+      </div>
+      {routes.length ? (
+        <div className="handoff-routes">
+          {routes.map((route) => (
+            <a
+              key={`${route.serviceKey}:${route.hostname}`}
+              href={`https://${route.hostname}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span>{route.primary ? "PRIMARY" : route.serviceKey.toUpperCase()}</span>
+              <strong>{route.hostname}</strong>
+              <ExternalLink size={14} />
+            </a>
+          ))}
+        </div>
+      ) : (
+        <p className="handoff-pending">部署已经完成，应用目录正在同步全部公网 HTTP 路由。</p>
+      )}
+      <div className="handoff-references">
+        <span>deployment <code>{shortReference(deployment.deploymentId)}</code></span>
+        <span>operation <code>{shortReference(deployment.operationId)}</code></span>
+      </div>
+    </div>
   );
 }
 
@@ -1364,20 +1642,27 @@ function EnvironmentConfigurationForm({
   configuration: DeploymentConfiguration;
   saving: boolean;
   onSubmit: (
-    values: Record<string, { value: string; sensitive: boolean; required: boolean }>,
+    values: Record<string, { value: string }>,
   ) => Promise<void>;
 }) {
+  const fieldKey = (item: DeploymentConfiguration["environment"][number]) =>
+    `${item.name}:${item.references.join(",")}`;
   const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(configuration.environment.map((item) => [item.name, ""])),
+    Object.fromEntries(
+      configuration.environment.map((item) => [fieldKey(item), ""]),
+    ),
   );
   const [additionalName, setAdditionalName] = useState("");
   const [additionalValue, setAdditionalValue] = useState("");
+  const [additionalServiceKey, setAdditionalServiceKey] = useState(
+    configuration.serviceKeys[0] || "",
+  );
   const [notice, setNotice] = useState<string | null>(null);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const missing = configuration.environment.filter(
-      (item) => item.required && !(values[item.name] || "").length,
+      (item) => item.required && !(values[fieldKey(item)] || "").length,
     );
     if (missing.length) {
       setNotice(`请填写 ${missing.map((item) => item.name).join("、")}。`);
@@ -1392,25 +1677,18 @@ function EnvironmentConfigurationForm({
       setNotice("请填写追加变量的值。");
       return;
     }
-    const payload: Record<
-      string,
-      { value: string; sensitive: boolean; required: boolean }
-    > = {};
+    if (customName && !configuration.serviceKeys.includes(additionalServiceKey)) {
+      setNotice("请选择追加变量所属的服务。");
+      return;
+    }
+    const payload: Record<string, { value: string }> = {};
     for (const item of configuration.environment) {
-      const value = values[item.name] || "";
+      const value = values[fieldKey(item)] || "";
       if (!value.length && !item.required) continue;
-      payload[item.name] = {
-        value,
-        sensitive: item.sensitive,
-        required: item.required,
-      };
+      for (const reference of item.references) payload[reference] = { value };
     }
     if (customName) {
-      payload[customName] = {
-        value: additionalValue,
-        sensitive: true,
-        required: false,
-      };
+      payload[`${additionalServiceKey}:${customName}`] = { value: additionalValue };
     }
     setNotice(null);
     void onSubmit(payload);
@@ -1437,9 +1715,12 @@ function EnvironmentConfigurationForm({
               type={item.sensitive ? "password" : "text"}
               autoComplete="new-password"
               spellCheck={false}
-              value={values[item.name] || ""}
+              value={values[fieldKey(item)] || ""}
               onChange={(event) =>
-                setValues((current) => ({ ...current, [item.name]: event.target.value }))
+                setValues((current) => ({
+                  ...current,
+                  [fieldKey(item)]: event.target.value,
+                }))
               }
             />
           </label>
@@ -1448,6 +1729,17 @@ function EnvironmentConfigurationForm({
       <details className="connection-creator environment-extra">
         <summary><span>追加一个环境变量</span><ChevronRight size={14} /></summary>
         <div className="source-form-grid">
+          <label>
+            <span>目标服务</span>
+            <select
+              value={additionalServiceKey}
+              onChange={(event) => setAdditionalServiceKey(event.target.value)}
+            >
+              {configuration.serviceKeys.map((serviceKey) => (
+                <option key={serviceKey} value={serviceKey}>{serviceKey}</option>
+              ))}
+            </select>
+          </label>
           <label>
             <span>变量名</span>
             <input value={additionalName} onChange={(event) => setAdditionalName(event.target.value.toUpperCase())} placeholder="FEATURE_FLAG" />
@@ -1547,6 +1839,7 @@ function GitSourceForm({
   const [slug, setSlug] = useState("");
   const [repository, setRepository] = useState("");
   const [ref, setRef] = useState("main");
+  const [subdirectory, setSubdirectory] = useState("");
   const [connectionId, setConnectionId] = useState("");
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -1556,6 +1849,7 @@ function GitSourceForm({
       slug: slug.trim(),
       repository: repository.trim(),
       ref: ref.trim() || "main",
+      subdirectory: subdirectory.trim(),
       ...(privateConnection ? { connectionId: connectionId.trim() } : {}),
     });
   };
@@ -1595,6 +1889,12 @@ function GitSourceForm({
           <span>Branch / tag</span>
           <input required maxLength={255} value={ref} onChange={(event) => setRef(event.target.value)} />
         </label>
+        <label>
+          <span>项目子目录</span>
+          <input maxLength={512} value={subdirectory} onChange={(event) => setSubdirectory(event.target.value)} placeholder="apps/web（可选）" />
+        </label>
+      </div>
+      <div className="source-form-grid">
         {privateConnection ? (
           <label>
             <span>凭据连接</span>
@@ -1869,8 +2169,10 @@ function ApplicationShore({
         {applications.map((app) => (
           <article className="application-item" key={app.id}>
             <span className={`app-status ${app.tone}`} />
-            <div><strong>{app.name}</strong><small>{app.domain}</small></div>
-            <span className="service-count">{app.services} service{app.services > 1 ? "s" : ""}</span>
+            <div><Link className="application-name-link" href={`/applications/${app.id}`}>{app.name}</Link><small>{app.domain}</small></div>
+            <span className="service-count">
+              {app.status} · {app.services} service{app.services > 1 ? "s" : ""}
+            </span>
             <div className="app-actions">
               <button
                 type="button"
@@ -1959,11 +2261,17 @@ function ApplicationShore({
 function ConsoleUtilities({
   flow,
   events,
+  operations,
+  recoveryBusy,
   error,
+  onRecover,
 }: {
   flow: FlowState;
   events: OperationEvent[];
+  operations: OperationListItem[];
+  recoveryBusy: string | null;
   error: string | null;
+  onRecover: (operation: OperationListItem) => void;
 }) {
   const recentEvents = events.slice(-4).reverse();
   return (
@@ -1984,6 +2292,19 @@ function ConsoleUtilities({
               <li key={event.eventId} className={event.level === "error" ? "is-error" : ""}>
                 <span>{String(event.cursor).padStart(2, "0")}</span>
                 <div><strong>{event.message}</strong><small>{event.phase || event.status}</small></div>
+              </li>
+            ))}
+          </ol>
+        ) : operations.length ? (
+          <ol className="activity-ledger operation-history" aria-label="最近操作">
+            {operations.slice(0, 5).map((operation) => (
+              <li key={operation.id} className={operation.status === "failed" ? "is-error" : ""}>
+                <span>{operation.kind.split(".")[0].slice(0, 2).toUpperCase()}</span>
+                <div><strong>{operation.kind}</strong><small>{operation.phase || operation.status} · {shortReference(operation.id)}</small></div>
+                <button type="button" onClick={() => onRecover(operation)} disabled={recoveryBusy !== null}>
+                  {recoveryBusy === operation.id ? <RefreshCw className="stage-spin" size={12} /> : <Activity size={12} />}
+                  {operation.terminal ? "查看" : "恢复"}
+                </button>
               </li>
             ))}
           </ol>
@@ -2035,7 +2356,7 @@ function LifecycleConfirmation({
 }) {
   const rollback = request.action === "rollback";
   const application = request.application;
-  const title = rollback ? "回到上一道水位" : "让应用离开岸线";
+  const title = rollback ? "回滚到上一版本" : "删除这个应用";
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

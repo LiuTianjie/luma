@@ -127,6 +127,40 @@ class EmailSenderTests(unittest.IsolatedAsyncioTestCase):
         config = smtp_config_from_env(values, environment="development")
         self.assertEqual((config.host, config.port, config.security), ("mailpit", 1025, "plain"))
 
+    def test_production_requires_public_authenticated_smtp_and_real_sender(self) -> None:
+        valid = {
+            "LAE_SMTP_HOST": "smtp.mailgun.org",
+            "LAE_SMTP_PORT": "465",
+            "LAE_SMTP_SECURITY": "tls",
+            "LAE_SMTP_USERNAME": "lae",
+            "LAE_SMTP_PASSWORD": "provider-password-canary",
+            "LAE_EMAIL_FROM": "LAE <no-reply@itool.tech>",
+            "LAE_PUBLIC_LOGIN_URL": "https://lae.itool.tech/login",
+        }
+        config = smtp_config_from_env(valid, environment="production")
+        self.assertEqual(config.host, "smtp.mailgun.org")
+
+        invalid_variants = (
+            {**valid, "LAE_SMTP_HOST": "mailpit"},
+            {
+                **valid,
+                "LAE_SMTP_USERNAME": "",
+                "LAE_SMTP_PASSWORD": "",
+            },
+            {**valid, "LAE_EMAIL_FROM": "no-reply@example.org"},
+            {**valid, "LAE_SMTP_HOST": "smtp.example.test"},
+            {**valid, "LAE_EMAIL_FROM": "<@itool.tech>"},
+            {
+                **valid,
+                "LAE_PUBLIC_LOGIN_URL": "https://lae.example.test/login",
+            },
+        )
+        for index, values in enumerate(invalid_variants):
+            with self.subTest(case=index), self.assertRaises(
+                EmailConfigurationError
+            ):
+                smtp_config_from_env(values, environment="production")
+
     def test_login_url_cannot_contain_credentials_or_query(self) -> None:
         for url in (
             "https://user:pass@lae.itool.tech/login",
@@ -160,12 +194,12 @@ class EmailSenderTests(unittest.IsolatedAsyncioTestCase):
         smtp = {
             **common,
             "LAE_EMAIL_DRIVER": "smtp",
-            "LAE_SMTP_HOST": "smtp.example.test",
+            "LAE_SMTP_HOST": "smtp.mailgun.org",
             "LAE_SMTP_PORT": "465",
             "LAE_SMTP_SECURITY": "tls",
             "LAE_SMTP_USERNAME": "lae",
             "LAE_SMTP_PASSWORD": "runtime-password-canary",
-            "LAE_EMAIL_FROM": "no-reply@example.test",
+            "LAE_EMAIL_FROM": "no-reply@itool.tech",
             "LAE_PUBLIC_LOGIN_URL": "https://lae.itool.tech/login",
         }
         with patch.dict(os.environ, smtp, clear=True):

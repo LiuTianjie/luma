@@ -264,12 +264,16 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertEqual(production_api["LAE_EMAIL_DRIVER"], "smtp")
         self.assertEqual(production_api["LAE_SMTP_SECURITY"], "tls")
         self.assertEqual(str(production_api["LAE_SMTP_PORT"]), "465")
+        self.assertEqual(production_api["LAE_AUTH_PREVIEW_MODE"], "disabled")
+        self.assertNotIn("LAE_AUTH_PREVIEW_EMAIL", production_api)
 
         staging_api = staging.compose["services"]["api"]["environment"]
         self.assertEqual(staging_api["LAE_ENVIRONMENT"], "staging")
         self.assertEqual(staging_api["LAE_BILLING_DRIVER"], "mock")
         self.assertEqual(staging_api["LAE_SMTP_HOST"], "mailpit")
         self.assertEqual(staging_api["LAE_SMTP_SECURITY"], "plain")
+        self.assertEqual(staging_api["LAE_AUTH_PREVIEW_MODE"], "public")
+        self.assertTrue(staging_api["LAE_AUTH_PREVIEW_EMAIL"].endswith(".invalid"))
 
     def test_env_example_covers_references_without_secret_values(self):
         referenced: set[str] = set()

@@ -14,15 +14,21 @@ from lae_store.application_catalog import (  # noqa: E402
     CreateApplication,
     CreateApplicationDraft,
     EncryptedEnvironmentValue,
+    EnvironmentKey,
     EnvironmentVariableMetadata,
     HttpRouteSpec,
     MaterializeApplicationTopology,
+    PatchEnvironment,
     ServiceSpec,
     VolumeSpec,
     new_managed_hostname,
     tenant_application_quota_lock_statement,
+    _environment_patch_service_keys,
 )
-from lae_store.errors import CustomDomainUnsupported  # noqa: E402
+from lae_store.errors import (  # noqa: E402
+    CustomDomainUnsupported,
+    DeploymentEnvironmentScopeInvalid,
+)
 from lae_store.ids import new_id  # noqa: E402
 from lae_store.models import Application, ApplicationRoute  # noqa: E402
 from lae_store.repositories import TenantScope  # noqa: E402
@@ -120,6 +126,92 @@ class ApplicationCatalogDomainTests(unittest.TestCase):
                 checksum=b"x" * 32,
                 key_version=1,
             )
+
+    def test_pending_plan_can_write_explicit_scopes_without_materialized_services(
+        self,
+    ) -> None:
+        analysis_id = new_id("ana")
+        value = EncryptedEnvironmentValue(
+            service_scope="web",
+            name="DATABASE_URL",
+            envelope_ciphertext=b"ciphertext",
+            checksum=b"x" * 32,
+            key_version=1,
+        )
+        command = PatchEnvironment(
+            scope=self.scope,
+            application_id=new_id("app"),
+            expected_version=0,
+            set_values=(value,),
+            plan_analysis_id=analysis_id,
+            plan_environment_schema_digest="sha256:" + "a" * 64,
+            plan_service_keys=("web", "database"),
+        )
+        self.assertEqual(
+            _environment_patch_service_keys(
+                application_kind="pending",
+                materialized_service_keys=set(),
+                command=command,
+            ),
+            {"web", "database"},
+        )
+
+        unbound = dataclasses.replace(
+            command,
+            plan_analysis_id=None,
+            plan_environment_schema_digest=None,
+            plan_service_keys=(),
+        )
+        with self.assertRaises(DeploymentEnvironmentScopeInvalid):
+            _environment_patch_service_keys(
+                application_kind="pending",
+                materialized_service_keys=set(),
+                command=unbound,
+            )
+
+    def test_wildcard_writes_are_single_service_only_but_can_be_removed(self) -> None:
+        wildcard = EncryptedEnvironmentValue(
+            service_scope="*",
+            name="LEGACY_SECRET",
+            envelope_ciphertext=b"ciphertext",
+            checksum=b"x" * 32,
+            key_version=1,
+        )
+        command = PatchEnvironment(
+            scope=self.scope,
+            application_id=new_id("app"),
+            expected_version=1,
+            set_values=(wildcard,),
+        )
+        self.assertEqual(
+            _environment_patch_service_keys(
+                application_kind="service",
+                materialized_service_keys={"web"},
+                command=command,
+            ),
+            {"web"},
+        )
+        with self.assertRaises(DeploymentEnvironmentScopeInvalid):
+            _environment_patch_service_keys(
+                application_kind="compose",
+                materialized_service_keys={"web", "worker"},
+                command=command,
+            )
+
+        migration = PatchEnvironment(
+            scope=self.scope,
+            application_id=new_id("app"),
+            expected_version=1,
+            unset=(EnvironmentKey("*", "LEGACY_SECRET"),),
+        )
+        self.assertEqual(
+            _environment_patch_service_keys(
+                application_kind="compose",
+                materialized_service_keys={"web", "worker"},
+                command=migration,
+            ),
+            {"web", "worker"},
+        )
 
     def test_desired_and_observed_state_are_distinct_columns(self) -> None:
         columns = set(Application.__table__.columns.keys())

@@ -13,8 +13,7 @@
     "check": "node scripts/check-scaffold.mjs && pnpm run typecheck && pnpm run build"
   },
   "dependencies": {
-    "@fontsource-variable/manrope": "5.2.8",
-    "@fontsource-variable/newsreader": "5.2.10",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
     "lucide-react": "1.24.0",
     "motion": "12.42.2",
     "next": "16.2.10",

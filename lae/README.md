@@ -15,20 +15,28 @@ object-source redemption use mutually authenticated, task-bound, one-time
 leases. The Web account console provides deploy-token management, plan,
 subscription, usage, and mock-checkout flows.
 
-Current verification snapshot (2026-07-11):
+Current verification snapshot (2026-07-12):
 
-- Luma `0.1.171` candidate: 719/719 tests passed with `ResourceWarning` treated
-  as an error. The live fleet remains on `0.1.170` until the release upgrade.
-- LAE `make check`: 351 tests passed and 23 conditional integration tests were
-  skipped; the Web typecheck and Next.js production build passed.
+- Luma CLI, Control, and the live fleet are on `0.1.171`; that release passed
+  719/719 tests with `ResourceWarning` treated as an error. The current working
+  tree also contains unreleased rollout/route reliability work and must pass a
+  new immutable-release gate before it is treated as live.
+- Current LAE working tree `make check`: 355 tests passed and 23 conditional
+  integration tests were skipped; the Web typecheck and Next.js production
+  build passed. Its reserved `.invalid` staging preview-auth flow is not live
+  until a new immutable platform ref is imported.
 - A real `luma import` built and pushed 6 images, registered 9 staging services,
-  and created staging DNS. Platform services are pinned to `lab`; tenant
-  runtime placement is limited to `manager + tecent`.
+  and created staging DNS. The current staging job uses commit tag `20469a4`.
+  Platform services are pinned to `lab`; tenant runtime placement is limited
+  to `manager + tecent`.
 
-The 9 platform tasks, TLS, and base Web/API/artifact probes are healthy. Real
-registration, deploy-token, CLI, template and analysis flows have run; tenant
-Runtime deployment and lifecycle E2E are still open. This is not a production-
-readiness claim. Real payment providers, production SMTP,
+The 9 platform tasks, TLS, and base Web/API/Agent/artifact probes are healthy;
+Agent readiness reports the AI provider configured. Mailpit registration,
+deploy-token, CLI, template and analysis flows have run, but Mailpit does not
+deliver to a user's real mailbox and the latest provider-backed verdict is not
+yet a complete acceptance record. Tenant Runtime deployment and lifecycle E2E
+and the cross-application 404/502 upgrade incident are still open. This is not
+a production-readiness claim. Real payment providers, production SMTP,
 dedicated production runners and stateful infrastructure, recovery drills,
 capacity controls, and abuse/compliance controls remain launch blockers.
 

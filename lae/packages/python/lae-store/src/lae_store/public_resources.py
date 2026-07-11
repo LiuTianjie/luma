@@ -5,12 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .errors import ResourceNotFound
 from .ids import require_opaque_id
-from .models import Analysis, Operation, OperationEvent
+from .models import Analysis, Operation, OperationEvent, Upload
 from .repositories import OperationRecord, OperationStore, TenantScope
 from .state import TERMINAL_OPERATION_STATUSES, OperationStatus
 from .update_checks import UpdateCheckResult, public_update_check_from_operation
@@ -162,6 +162,45 @@ class PublicOperationRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class PublicOperationListRecord:
+    operation: PublicOperationRecord
+    application_id: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    def public_body(self) -> dict[str, Any]:
+        return {
+            **self.operation.public_body(),
+            "applicationId": self.application_id,
+            "createdAt": _timestamp(self.created_at),
+            "startedAt": (
+                _timestamp(self.started_at) if self.started_at is not None else None
+            ),
+            "finishedAt": (
+                _timestamp(self.finished_at) if self.finished_at is not None else None
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PublicOperationPage:
+    operations: tuple[PublicOperationListRecord, ...]
+    has_more: bool
+
+    def public_body(self) -> dict[str, Any]:
+        return {
+            "operations": [operation.public_body() for operation in self.operations],
+            "hasMore": self.has_more,
+            "nextCursor": (
+                self.operations[-1].operation.id
+                if self.has_more and self.operations
+                else None
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PublicAnalysisRecord:
     id: str
     operation_id: str
@@ -305,6 +344,114 @@ class PostgresPublicResourceStore:
         if operation is None:
             raise ResourceNotFound("operation not found")
         return _public_operation(operation)
+
+    async def list_operations(
+        self,
+        scope: TenantScope,
+        *,
+        allowed_scopes: frozenset[str],
+        application_id: str | None = None,
+        kind: str | None = None,
+        before: str | None = None,
+        limit: int = 50,
+    ) -> PublicOperationPage:
+        """List only public operation kinds visible to the caller's scopes.
+
+        ``allowed_scopes`` is applied in the SQL predicate, not as a response
+        filter. This keeps pagination stable for least-privilege deploy tokens
+        and prevents an internal or newly introduced operation kind from
+        becoming public by accident.
+        """
+
+        if application_id is not None:
+            require_opaque_id(application_id, prefix="app")
+        if before is not None:
+            require_opaque_id(before, prefix="op")
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise ValueError("operation list limit must be 1-100")
+
+        supported_scopes = frozenset(_PUBLIC_OPERATION_SCOPES.values()) | frozenset(
+            _PUBLIC_OPERATION_KIND_PREFIX_SCOPES.values()
+        )
+        visible_scopes = frozenset(allowed_scopes) & supported_scopes
+        if kind is not None:
+            required_scope = required_scope_for_operation(kind)
+            if required_scope not in visible_scopes:
+                return PublicOperationPage((), False)
+            visibility = Operation.kind == kind
+        else:
+            visibility_conditions = []
+            for public_kind, required_scope in _PUBLIC_OPERATION_SCOPES.items():
+                if required_scope in visible_scopes:
+                    visibility_conditions.append(Operation.kind == public_kind)
+            for prefix, required_scope in _PUBLIC_OPERATION_KIND_PREFIX_SCOPES.items():
+                if required_scope in visible_scopes:
+                    visibility_conditions.append(Operation.kind.startswith(prefix))
+            if not visibility_conditions:
+                return PublicOperationPage((), False)
+            visibility = or_(*visibility_conditions)
+
+        statement = (
+            select(Operation, Analysis.application_id, Upload.application_id)
+            .outerjoin(
+                Analysis,
+                and_(
+                    Analysis.tenant_id == Operation.tenant_id,
+                    Analysis.operation_id == Operation.id,
+                ),
+            )
+            .outerjoin(
+                Upload,
+                and_(
+                    Upload.tenant_id == Operation.tenant_id,
+                    Upload.operation_id == Operation.id,
+                ),
+            )
+            .where(Operation.tenant_id == scope.tenant_id, visibility)
+        )
+        if application_id is not None:
+            statement = statement.where(
+                or_(
+                    and_(
+                        Operation.target_type == "application",
+                        Operation.target_id == application_id,
+                    ),
+                    Analysis.application_id == application_id,
+                    Upload.application_id == application_id,
+                )
+            )
+        if before is not None:
+            # Operation IDs are time-sortable opaque ULIDs. Using the same key
+            # for ordering and pagination avoids offset drift while workers
+            # append newer operations during a browser refresh.
+            statement = statement.where(Operation.id < before)
+        statement = statement.order_by(Operation.id.desc()).limit(limit + 1)
+
+        async with self._sessions() as session:
+            rows = (await session.execute(statement)).all()
+
+        has_more = len(rows) > limit
+        records = []
+        for operation, analysis_application_id, upload_application_id in rows[:limit]:
+            resolved_application_id = (
+                operation.target_id
+                if operation.target_type == "application"
+                else analysis_application_id or upload_application_id
+            )
+            records.append(
+                PublicOperationListRecord(
+                    operation=_public_operation(operation),
+                    application_id=resolved_application_id,
+                    created_at=operation.created_at,
+                    started_at=operation.started_at,
+                    finished_at=operation.finished_at,
+                )
+            )
+        return PublicOperationPage(tuple(records), has_more)
 
     async def get_analysis(
         self, scope: TenantScope, analysis_id: str

@@ -15,6 +15,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   LogIn,
+  LogOut,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -40,6 +41,7 @@ import {
   BillingUsage,
   createCheckoutSession,
   createDeployToken,
+  createSourceConnection,
   DeployToken,
   DeployTokenIssue,
   DeployTokenScope,
@@ -50,9 +52,13 @@ import {
   LaePrincipal,
   listBillingPlans,
   listDeployTokens,
+  listSourceConnections,
+  logout,
   newIdempotencyKey,
   revokeDeployToken,
+  revokeSourceConnection,
   rotateDeployToken,
+  SourceConnection,
 } from "../lib/lae-api";
 
 const DEFAULT_SCOPES: DeployTokenScope[] = [
@@ -107,7 +113,7 @@ const COUNTER_COPY: Record<
 
 type SessionState = "loading" | "ready" | "guest" | "error";
 type ResourceErrors = Partial<
-  Record<"tokens" | "plans" | "subscription" | "usage", string>
+  Record<"tokens" | "plans" | "subscription" | "usage" | "connections", string>
 >;
 type TokenAction = { kind: "rotate" | "revoke"; token: DeployToken };
 type IssuedSecret = DeployTokenIssue & { action: "created" | "rotated" };
@@ -121,6 +127,7 @@ export function AccountConsole() {
   const [subscription, setSubscription] =
     useState<BillingSubscription | null>(null);
   const [usage, setUsage] = useState<BillingUsage | null>(null);
+  const [connections, setConnections] = useState<SourceConnection[] | null>(null);
   const [resourceErrors, setResourceErrors] = useState<ResourceErrors>({});
   const [refreshVersion, setRefreshVersion] = useState(0);
 
@@ -141,6 +148,28 @@ export function AccountConsole() {
   const [checkoutBusy, setCheckoutBusy] = useState<BillingPlanCode | null>(null);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [checkoutOrder, setCheckoutOrder] = useState<BillingOrder | null>(null);
+  const [connectionOpen, setConnectionOpen] = useState(false);
+  const [connectionProvider, setConnectionProvider] = useState<SourceConnection["provider"]>("github");
+  const [connectionName, setConnectionName] = useState("");
+  const [connectionBaseUrl, setConnectionBaseUrl] = useState("https://github.com");
+  const [connectionUsername, setConnectionUsername] = useState("");
+  const [connectionSecret, setConnectionSecret] = useState("");
+  const [connectionBusy, setConnectionBusy] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [pendingConnectionRevoke, setPendingConnectionRevoke] = useState<string | null>(null);
+  const [logoutBusy, setLogoutBusy] = useState(false);
+
+  const signOut = async () => {
+    if (logoutBusy) return;
+    setLogoutBusy(true);
+    try {
+      await logout();
+      window.location.assign("/login");
+    } catch (error) {
+      setCheckoutError(accountErrorMessage(error));
+      setLogoutBusy(false);
+    }
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -154,12 +183,13 @@ export function AccountConsole() {
         setPrincipal(currentPrincipal);
         setSessionState("ready");
 
-        const [tokenResult, planResult, subscriptionResult, usageResult] =
+        const [tokenResult, planResult, subscriptionResult, usageResult, connectionResult] =
           await Promise.allSettled([
             listDeployTokens(controller.signal),
             listBillingPlans(controller.signal),
             getBillingSubscription(controller.signal),
             getBillingUsage(controller.signal),
+            listSourceConnections(controller.signal),
           ]);
         if (!active) return;
 
@@ -183,6 +213,11 @@ export function AccountConsole() {
           setUsage(usageResult.value);
         } else {
           nextErrors.usage = accountErrorMessage(usageResult.reason);
+        }
+        if (connectionResult.status === "fulfilled") {
+          setConnections(connectionResult.value.connections);
+        } else {
+          nextErrors.connections = accountErrorMessage(connectionResult.reason);
         }
         setResourceErrors(nextErrors);
       } catch (error) {
@@ -298,10 +333,65 @@ export function AccountConsole() {
     }
   };
 
+  const submitConnection = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (connectionBusy) return;
+    setConnectionBusy("create");
+    setConnectionError(null);
+    try {
+      const result = await createSourceConnection(
+        {
+          provider: connectionProvider,
+          displayName: connectionName.trim(),
+          baseUrl: connectionBaseUrl.trim(),
+          username: connectionUsername.trim() || undefined,
+          secret: connectionSecret,
+        },
+        newIdempotencyKey("source-connection"),
+      );
+      setConnections((current) => [result.connection, ...(current || [])]);
+      setConnectionSecret("");
+      setConnectionName("");
+      setConnectionOpen(false);
+    } catch (error) {
+      setConnectionError(accountErrorMessage(error));
+    } finally {
+      setConnectionBusy(null);
+    }
+  };
+
+  const removeConnection = async (connectionId: string) => {
+    if (connectionBusy) return;
+    if (pendingConnectionRevoke !== connectionId) {
+      setPendingConnectionRevoke(connectionId);
+      return;
+    }
+    setConnectionBusy(connectionId);
+    setConnectionError(null);
+    try {
+      await revokeSourceConnection(
+        connectionId,
+        newIdempotencyKey("source-connection-revoke"),
+      );
+      setConnections((current) =>
+        (current || []).map((connection) =>
+          connection.id === connectionId
+            ? { ...connection, revokedAt: new Date().toISOString() }
+            : connection,
+        ),
+      );
+      setPendingConnectionRevoke(null);
+    } catch (error) {
+      setConnectionError(accountErrorMessage(error));
+    } finally {
+      setConnectionBusy(null);
+    }
+  };
+
   return (
     <main className="account-shell">
       <AccountAmbient reduced={Boolean(reduceMotion)} />
-      <AccountHeader principal={principal} />
+      <AccountHeader principal={principal} logoutBusy={logoutBusy} onLogout={() => void signOut()} />
 
       {sessionState === "loading" && <AccountLoading />}
       {sessionState === "guest" && <AccountGate mode="guest" onRetry={refresh} />}
@@ -316,12 +406,12 @@ export function AccountConsole() {
             transition={{ duration: 0.62, ease: [0.22, 1, 0.36, 1] }}
           >
             <div>
-              <p><span /> ACCOUNT CURRENT</p>
-              <h1>掌管你的<em>部署通行证。</em></h1>
+              <p><span /> ACCOUNT</p>
+              <h1>账户与用量</h1>
             </div>
             <dl>
               <div><dt>账户</dt><dd>{principal.user.email}</dd></div>
-              <div><dt>当前水位</dt><dd>{principal.entitlement.plan.toUpperCase()}</dd></div>
+              <div><dt>当前套餐</dt><dd>{principal.entitlement.plan.toUpperCase()}</dd></div>
               <div><dt>认证</dt><dd>SESSION</dd></div>
             </dl>
           </motion.section>
@@ -406,11 +496,70 @@ export function AccountConsole() {
             </section>
           </div>
 
+          <section className="account-surface account-connections" aria-labelledby="connections-title">
+            <div className="account-section-top">
+              <SectionHeading
+                index="03"
+                title="Git 来源连接"
+                note="GitHub、Gitea 与私有 Git"
+                icon={LockKeyhole}
+                id="connections-title"
+              />
+              <button
+                className="account-primary-small"
+                type="button"
+                aria-expanded={connectionOpen}
+                onClick={() => {
+                  setConnectionOpen((value) => !value);
+                  setConnectionError(null);
+                }}
+              >
+                {connectionOpen ? <X size={13} /> : <Plus size={13} />}
+                {connectionOpen ? "收起" : "添加连接"}
+              </button>
+            </div>
+
+            {connectionOpen && (
+              <form className="connection-account-form" onSubmit={submitConnection}>
+                <label><span>提供方</span><select value={connectionProvider} onChange={(event) => {
+                  const provider = event.target.value as SourceConnection["provider"];
+                  setConnectionProvider(provider);
+                  if (provider === "github") setConnectionBaseUrl("https://github.com");
+                }}><option value="github">GitHub</option><option value="gitea">Gitea</option><option value="generic">Generic Git</option></select></label>
+                <label><span>连接名称</span><input required maxLength={96} value={connectionName} onChange={(event) => setConnectionName(event.target.value)} placeholder="Production source" /></label>
+                <label><span>Base URL</span><input required type="url" value={connectionBaseUrl} onChange={(event) => setConnectionBaseUrl(event.target.value)} placeholder="https://git.example.com" /></label>
+                <label><span>用户名</span><input value={connectionUsername} onChange={(event) => setConnectionUsername(event.target.value)} autoComplete="username" placeholder="可选" /></label>
+                <label className="connection-secret"><span>Access token / 密钥</span><input required type="password" value={connectionSecret} onChange={(event) => setConnectionSecret(event.target.value)} autoComplete="new-password" placeholder="只在提交时发送" /></label>
+                <div className="connection-form-footer"><span>凭据由 LAE 加密保存，Builder 只获得任务级租约。</span><button type="submit" disabled={connectionBusy === "create"}>{connectionBusy === "create" ? <LoaderCircle className="is-spinning" size={13} /> : <ShieldCheck size={13} />}保存连接</button></div>
+              </form>
+            )}
+
+            {resourceErrors.connections ? (
+              <InlineError message={resourceErrors.connections} onRetry={refresh} />
+            ) : connections ? (
+              <div className="connection-account-list">
+                {connections.length === 0 && <div className="connection-account-empty"><LockKeyhole size={15} />还没有 Git 来源连接</div>}
+                {connections.map((connection) => {
+                  const inactive = Boolean(connection.revokedAt);
+                  return (
+                    <article key={connection.id} className={inactive ? "is-inactive" : ""}>
+                      <div><strong>{connection.displayName}</strong><span>{connection.provider.toUpperCase()} · {connection.allowedHost}</span></div>
+                      <code>{connection.username || "token"} · v{connection.credentialVersion}</code>
+                      <span className={`connection-state${inactive ? " is-off" : ""}`}>{inactive ? "已撤销" : "可用"}</span>
+                      {!inactive && <button type="button" onClick={() => void removeConnection(connection.id)} disabled={connectionBusy === connection.id}>{connectionBusy === connection.id ? <LoaderCircle className="is-spinning" size={12} /> : <Trash2 size={12} />}{pendingConnectionRevoke === connection.id ? "确认撤销" : "撤销"}</button>}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : <PanelLoading compact />}
+            {connectionError && <div className="account-inline-error" role="alert">{connectionError}</div>}
+          </section>
+
           <section className="account-surface account-plans" aria-labelledby="plans-title">
             <div className="account-section-top plan-heading-row">
               <SectionHeading
-                index="03"
-                title="选择下一段水域"
+                index="04"
+                title="套餐与付费周期"
                 note="月付或年付"
                 icon={Gauge}
                 id="plans-title"
@@ -483,7 +632,15 @@ export function AccountConsole() {
   );
 }
 
-function AccountHeader({ principal }: { principal: LaePrincipal | null }) {
+function AccountHeader({
+  principal,
+  logoutBusy,
+  onLogout,
+}: {
+  principal: LaePrincipal | null;
+  logoutBusy: boolean;
+  onLogout: () => void;
+}) {
   return (
     <header className="account-topbar">
       <Link className="account-brand" href="/" aria-label="返回 Luma Application Engine">
@@ -496,29 +653,26 @@ function AccountHeader({ principal }: { principal: LaePrincipal | null }) {
       <div className="account-identity">
         <span>{principal?.entitlement.plan.toUpperCase() || "ACCOUNT"}</span>
         <strong>{principal?.user.email || "账户中心"}</strong>
+        {principal && (
+          <button type="button" onClick={onLogout} disabled={logoutBusy} aria-label="退出登录">
+            {logoutBusy ? <LoaderCircle className="is-spinning" size={13} /> : <LogOut size={13} />}
+            退出
+          </button>
+        )}
       </div>
     </header>
   );
 }
 
 function AccountAmbient({ reduced }: { reduced: boolean }) {
-  return (
-    <div className="account-ambient" aria-hidden="true">
-      <motion.i
-        className="account-glow"
-        animate={reduced ? undefined : { x: [0, 34, 0], y: [0, -16, 0] }}
-        transition={{ duration: 22, repeat: Infinity, ease: "easeInOut" }}
-      />
-      <span /><span /><span />
-      <b />
-    </div>
-  );
+  void reduced;
+  return null;
 }
 
 function AccountLoading() {
   return (
     <div className="account-loading" role="status" aria-live="polite">
-      <span><LoaderCircle size={18} /> 正在读取账户水位</span>
+      <span><LoaderCircle size={18} /> 正在读取账户信息</span>
       <i /><i /><i />
     </div>
   );
@@ -530,7 +684,7 @@ function AccountGate({ mode, onRetry }: { mode: "guest" | "error"; onRetry: () =
       <div className="account-gate-rings" aria-hidden="true"><span /><span /><span /></div>
       <p>{mode === "guest" ? "SESSION REQUIRED" : "CONNECTION INTERRUPTED"}</p>
       <h1 id="account-gate-title">
-        {mode === "guest" ? <>先确认你是谁，<em>再交付通行证。</em></> : <>暂时读不到，<em>账户仍然安全。</em></>}
+        {mode === "guest" ? "需要登录" : "暂时无法读取账户"}
       </h1>
       <span>
         {mode === "guest"
@@ -840,7 +994,7 @@ function TokenActionDialog({
       <button className="dialog-close" type="button" disabled={busy} onClick={onClose} aria-label="关闭"><X size={15} /></button>
       <span className={`dialog-mark${rotate ? "" : " is-danger"}`}>{rotate ? <RefreshCw size={19} /> : <Trash2 size={19} />}</span>
       <p>{rotate ? "ROTATE CREDENTIAL" : "REVOKE CREDENTIAL"}</p>
-      <h2 id="token-action-title">{rotate ? "轮换这枚通行证？" : "撤销这枚通行证？"}</h2>
+      <h2 id="token-action-title">{rotate ? "轮换这个 Deploy token？" : "撤销这个 Deploy token？"}</h2>
       <div id="token-action-description" className="dialog-description">
         <strong>{action.token.name}</strong><code>{action.token.prefix}••••••••</code>
         <span>{rotate ? "旧 token 会立即失效，新明文仅展示一次。正在使用它的 Agent 需要同步更新。" : "撤销后无法恢复，使用它的 CLI 与 Agent 将立即失去访问权限。"}</span>

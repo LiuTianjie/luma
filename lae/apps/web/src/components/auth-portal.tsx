@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  ArrowLeft,
   ArrowRight,
   Check,
   Copy,
+  FlaskConical,
   KeyRound,
   Mail,
   ShieldCheck,
@@ -15,6 +15,7 @@ import { FormEvent, useEffect, useState } from "react";
 
 type Mode = "register" | "login";
 type Step = "request" | "verify" | "magic" | "complete";
+type DeliveryMode = "loading" | "email" | "preview" | "unavailable";
 
 const API_ROOT = (process.env.NEXT_PUBLIC_LAE_API_URL || "/v1").replace(/\/$/, "");
 
@@ -28,6 +29,23 @@ export function AuthPortal() {
   const [error, setError] = useState<string | null>(null);
   const [deployToken, setDeployToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("loading");
+
+  useEffect(() => {
+    let active = true;
+    void readAuthConfig()
+      .then((nextMode) => {
+        if (active) setDeliveryMode(nextMode);
+      })
+      .catch(() => {
+        // A rolling deployment may briefly pair the new Web with the previous
+        // API. Preserve the established email flow until config is readable.
+        if (active) setDeliveryMode("email");
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const rawFragment = window.location.hash.slice(1);
@@ -131,6 +149,61 @@ export function AuthPortal() {
     }
   };
 
+  const resendChallenge = async () => {
+    if (loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await request(mode === "register" ? "/auth/register" : "/auth/login/request", {
+        email,
+      });
+      setCode("");
+    } catch {
+      setError("验证码暂时无法重新发送；请稍后再试或更换邮箱。");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const enterPreview = async () => {
+    setLoading(true);
+    setError(null);
+    setStep("magic");
+    try {
+      const preview = await request("/auth/preview", {});
+      const previewEmail = preview.email;
+      const purpose = preview.purpose;
+      const magicToken = preview.magicToken;
+      if (
+        typeof previewEmail !== "string" ||
+        !previewEmail.endsWith(".invalid") ||
+        (purpose !== "register" && purpose !== "login") ||
+        typeof magicToken !== "string" ||
+        !magicToken.startsWith("lae_em_")
+      ) {
+        throw new Error("preview identity response invalid");
+      }
+      const nextMode: Mode = purpose;
+      setMode(nextMode);
+      setEmail(previewEmail);
+      const response = await request(
+        nextMode === "register" ? "/auth/email/verify" : "/auth/login/verify",
+        { email: previewEmail, magicToken },
+      );
+      setDeployToken(
+        typeof response.defaultDeployToken === "string"
+          ? response.defaultDeployToken
+          : null,
+      );
+      setStep("complete");
+    } catch {
+      setStep("request");
+      setError("预览身份刚刚被使用，请一分钟后重试。");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const copyToken = async () => {
     if (!deployToken) return;
     try {
@@ -143,34 +216,32 @@ export function AuthPortal() {
 
   return (
     <main className="auth-shell">
-      <div className="auth-ambient" aria-hidden="true">
-        <motion.span
-          animate={reduceMotion ? undefined : { scale: [1, 1.06, 1], opacity: [0.3, 0.48, 0.3] }}
-          transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <i /><i /><i />
-      </div>
-
       <section className="auth-story">
-        <Link href="/" className="auth-back"><ArrowLeft size={14} /> 返回 LAE</Link>
-        <div className="auth-monogram" aria-hidden="true"><span /><span /><span /></div>
+        <Link href="/" className="auth-back">
+          <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
+          <span><strong>LAE</strong><small>Luma Application Engine</small></span>
+        </Link>
         <div className="auth-story-copy">
           <p>BUILT ON LUMA</p>
-          <h1>你的应用，<em>不必学会云。</em></h1>
-          <span>LAE 读懂源码、生成部署计划，并把每一个 HTTP 服务安放到可持续运行的位置。</span>
+          <h1>部署服务</h1>
+          <span>连接源码，交给 LAE Agent 诊断，然后确认 Luma 部署计划。Git、静态产物和多服务 Compose 使用同一条流程。</span>
         </div>
         <div className="auth-assurances">
-          <span><ShieldCheck size={14} /> Rootless build isolation</span>
-          <span><KeyRound size={14} /> Task-bound credentials</span>
+          <span><ShieldCheck size={14} /> Rootless builder</span>
+          <span><KeyRound size={14} /> Scoped deploy token</span>
         </div>
       </section>
 
       <section className="auth-panel" aria-labelledby="auth-title">
         <div className="auth-panel-inner">
-          <div className="auth-switch" aria-label="认证方式">
-            <button type="button" disabled={loading} className={mode === "register" ? "is-active" : ""} onClick={() => switchMode("register")}>注册</button>
-            <button type="button" disabled={loading} className={mode === "login" ? "is-active" : ""} onClick={() => switchMode("login")}>登录</button>
-          </div>
+          {deliveryMode === "preview" ? (
+            <div className="auth-environment-mark"><FlaskConical size={13} /> STAGING PREVIEW</div>
+          ) : (
+            <div className="auth-switch" aria-label="认证方式">
+              <button type="button" disabled={loading} className={mode === "register" ? "is-active" : ""} onClick={() => switchMode("register")}>注册</button>
+              <button type="button" disabled={loading} className={mode === "login" ? "is-active" : ""} onClick={() => switchMode("login")}>登录</button>
+            </div>
+          )}
 
           <AnimatePresence mode="wait">
             <motion.div
@@ -180,11 +251,43 @@ export function AuthPortal() {
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.38, ease: [0.4, 0, 0.2, 1] }}
             >
-              {step === "request" && (
+              {step === "request" && deliveryMode === "loading" && (
+                <div className="auth-magic-progress" aria-live="polite">
+                  <p className="auth-step">01 · IDENTITY</p>
+                  <span aria-hidden="true" />
+                  <h2 id="auth-title">正在确认邮件通道</h2>
+                  <p className="auth-description">LAE 正在读取此环境可用的登录方式。</p>
+                </div>
+              )}
+
+              {step === "request" && deliveryMode === "preview" && (
+                <div className="auth-preview-entry">
+                  <p className="auth-step">01 · PREVIEW ACCESS</p>
+                  <h2 id="auth-title">进入预览环境</h2>
+                  <p className="auth-description">这是隔离的 staging 空间。真实邮箱不会收到验证码；LAE 会签发一个短时预览身份，并沿用正式的注册与 Session 流程。</p>
+                  <div className="auth-preview-note">
+                    <FlaskConical size={15} />
+                    <div><strong>不会读取你的邮箱</strong><span>预览凭据只属于保留的 .invalid 测试账号，不会返回任何真实用户验证码。</span></div>
+                  </div>
+                  <button className="auth-submit" type="button" disabled={loading} onClick={enterPreview}>
+                    {loading ? "正在准备…" : "进入预览空间"}<ArrowRight size={16} />
+                  </button>
+                </div>
+              )}
+
+              {step === "request" && deliveryMode === "unavailable" && (
+                <div>
+                  <p className="auth-step">01 · IDENTITY</p>
+                  <h2 id="auth-title">身份服务正在准备</h2>
+                  <p className="auth-description">当前无法签发登录凭据。稍后刷新即可，不需要重复提交邮箱。</p>
+                </div>
+              )}
+
+              {step === "request" && deliveryMode === "email" && (
                 <form onSubmit={requestChallenge}>
                   <p className="auth-step">01 · EMAIL</p>
                   <h2 id="auth-title">{mode === "register" ? "建立你的部署空间" : "回到你的应用"}</h2>
-                  <p className="auth-description">我们会发送一个短时验证码和登录链接。没有密码，也不把凭据放进浏览器存储。</p>
+                  <p className="auth-description">验证码和一次性链接会送到你输入的真实邮箱。没有密码，也不把凭据放进浏览器存储。</p>
                   <label className="auth-field">
                     <span>邮箱地址</span>
                     <div><Mail size={16} /><input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></div>
@@ -207,7 +310,10 @@ export function AuthPortal() {
                   <button className="auth-submit" type="submit" disabled={loading || code.length !== 6}>
                     {loading ? "正在验证…" : mode === "register" ? "完成注册" : "登录"}<ArrowRight size={16} />
                   </button>
-                  <button className="auth-text-action" type="button" onClick={() => setStep("request")}>更换邮箱</button>
+                  <div className="auth-secondary-actions">
+                    <button className="auth-text-action" type="button" disabled={loading} onClick={() => void resendChallenge()}>重新发送验证码</button>
+                    <button className="auth-text-action" type="button" disabled={loading} onClick={() => setStep("request")}>更换邮箱</button>
+                  </div>
                 </form>
               )}
 
@@ -240,7 +346,7 @@ export function AuthPortal() {
           </AnimatePresence>
 
           <div className="auth-error" aria-live="polite">{error}</div>
-          <p className="auth-legal">继续即表示你同意服务条款与隐私政策。公开运营前将替换为正式备案文本。</p>
+          <p className="auth-legal">{deliveryMode === "preview" ? "预览身份是共享的 staging 测试空间，请勿放入真实代码、密钥或个人数据。" : "继续即表示你同意服务条款与隐私政策。公开运营前将替换为正式备案文本。"}</p>
         </div>
       </section>
     </main>
@@ -260,4 +366,24 @@ async function request(path: string, body: Record<string, string>) {
     throw new Error("identity response invalid");
   }
   return value as Record<string, unknown>;
+}
+
+async function readAuthConfig(): Promise<DeliveryMode> {
+  const response = await fetch(`${API_ROOT}/auth/config`, {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error("identity config unavailable");
+  const value: unknown = await response.json();
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("identity config invalid");
+  }
+  const delivery = (value as Record<string, unknown>).emailDelivery;
+  if (typeof delivery !== "object" || delivery === null || Array.isArray(delivery)) {
+    throw new Error("identity delivery config invalid");
+  }
+  const mode = (delivery as Record<string, unknown>).mode;
+  return mode === "preview" || mode === "email" || mode === "unavailable"
+    ? mode
+    : "unavailable";
 }

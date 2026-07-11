@@ -273,6 +273,9 @@ def render_traefik_job(
         "--providers.nomad=true",
         f"--providers.nomad.endpoint.address={nomad_addr}",
         "--providers.nomad.exposedByDefault=false",
+        "--providers.nomad.watch=true",
+        "--accesslog=true",
+        "--accesslog.format=json",
         "--entrypoints.web.address=:80",
         "--entrypoints.websecure.address=:443",
         "--entrypoints.web.http.redirections.entrypoint.to=websecure",
@@ -631,23 +634,44 @@ def render_control_job(
         "Type": "service",
         "Datacenters": ["dc1"],
         "Constraints": [{"LTarget": "${meta.luma_node_name}", "RTarget": node_name, "Operand": "="}],
-        "Update": {"AutoRevert": True, "MinHealthyTime": 6_000_000_000, "HealthyDeadline": 120_000_000_000},
+        "Update": {
+            "AutoRevert": True,
+            "MinHealthyTime": 6_000_000_000,
+            "HealthyDeadline": 120_000_000_000,
+            "HealthCheck": "checks",
+        },
         "TaskGroups": [{
             "Name": "luma-control",
             "Count": 1,
             "MaxClientDisconnect": 3_600_000_000_000,
             "Networks": [{"Mode": "bridge", "ReservedPorts": [{"Label": "http", "Value": 8080, "To": 8080}]}],
+            "Services": [{
+                "Name": "luma-control",
+                "PortLabel": "http",
+                "Provider": "nomad",
+                "AddressMode": "host",
+                "Checks": [{
+                    "Name": "luma-control-health",
+                    "Type": "http",
+                    "PortLabel": "http",
+                    "Path": "/v1/health",
+                    "Interval": 10_000_000_000,
+                    "Timeout": 2_000_000_000,
+                }],
+            }],
             "Tasks": [{
                 "Name": "luma-control",
                 "Driver": "docker",
                 "Config": {
                     "image": image,
                     "ports": ["http"],
+                    # Keep the complete Luma state tree on one bind mount.  Route
+                    # files are staged in /opt/luma/.luma-route-staging and then
+                    # renamed into /opt/luma/routes; separate nested bind mounts
+                    # make that rename EXDEV and force staging back into the
+                    # Traefik-watched directory.
                     "mount": [
-                        {"type": "bind", "target": "/opt/luma/control", "source": "/opt/luma/control"},
-                        {"type": "bind", "target": "/opt/luma/luma.yaml", "source": "/opt/luma/luma.yaml"},
-                        {"type": "bind", "target": "/opt/luma/routes", "source": "/opt/luma/routes"},
-                        {"type": "bind", "target": "/opt/luma/stacks", "source": "/opt/luma/stacks"},
+                        {"type": "bind", "target": "/opt/luma", "source": "/opt/luma"},
                         {"type": "bind", "target": "/var/run/docker.sock", "source": "/var/run/docker.sock"},
                     ],
                 },
