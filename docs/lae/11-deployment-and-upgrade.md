@@ -193,11 +193,17 @@ umask 077
 BUNDLE_DIR="$HOME/lae-staging-bundle-$SHORT_SHA"
 ANALYZER_IMAGE_DIGEST=<registry/repository@sha256:64-hex-digest>
 CLUSTER_ID=<cluster-id-from-luma-status>
+LLM_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+LLM_MODEL=<ark-endpoint-or-other-openai-compatible-model-id>
+LLM_API_KEY_FILE=<local-0600-provider-key-file>
 
 python lae/deploy/luma/generate-staging-bundle.py \
   --output-dir "$BUNDLE_DIR" \
   --analyzer-image-digest "$ANALYZER_IMAGE_DIGEST" \
   --cluster-id "$CLUSTER_ID" \
+  --llm-base-url "$LLM_BASE_URL" \
+  --llm-model "$LLM_MODEL" \
+  --llm-api-key-file "$LLM_API_KEY_FILE" \
   --runtime-storage-class lae-staging-runtime-nfs \
   --runtime-node manager \
   --runtime-node tecent
@@ -239,6 +245,17 @@ Luma `CONTROL_JOB_ENV_ALLOWLIST` 中的严格 `NAME=value` 行，禁止 `source`
 regular file、不得是 symlink，权限只能为 `0400` 或 `0600`；否则更新 fail closed。
 当前命令进程中显式提供的 allowlist 环境变量优先于持久文件，可用于受控轮换；两种
 来源都会经过同一项级校验，任何非白名单变量都不会进入 Control Nomad Job。
+
+`builder-agent-ai.env` 只复制到 Builder，不放入 manager Control 目录。通过受控
+SSH/文件通道传到 Builder 后安装并重启 agent；该文件仅包含 controller URL、scoped
+token 与 fail-closed 开关，不含 provider API key：
+
+```bash
+sudo ./scripts/install-lae-builder-ai-env.sh \
+  "$BUNDLE_DIR/builder-agent-ai.env"
+sudo systemctl status luma-agent --no-pager
+sudo stat -c '%U:%G %a %n' /etc/luma/lae-builder-ai.env
+```
 
 ## 6. 升级顺序
 
@@ -293,6 +310,11 @@ nomad job status luma-control
 ```bash
 sudo --preserve-env=LUMA_CONTROL_IMAGE systemd-run \
   --unit="luma-manager-update-$SHORT_SHA" --collect \
+  env HOME=/home/tao \
+  LUMA_USER_HOME=/home/tao \
+  LUMA_INSTALL_HOME=/home/tao/.local/share/luma \
+  LUMA_BIN_DIR=/home/tao/.local/bin \
+  PIP_INDEX_URL=https://pypi.org/simple \
   /home/tao/.local/bin/luma --config /opt/luma/luma.yaml update manager \
   --install-ref "$FULL_SHA" --domain luma.itool.tech
 

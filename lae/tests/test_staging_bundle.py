@@ -40,6 +40,8 @@ class StagingBundleTests(unittest.TestCase):
                     ANALYZER,
                     "--cluster-id",
                     "luma-staging-test",
+                    "--llm-base-url",
+                    "https://llm.example.test/v1",
                     "--llm-model",
                     "test-model",
                     "--llm-api-key-file",
@@ -64,14 +66,17 @@ class StagingBundleTests(unittest.TestCase):
                 .splitlines()
                 if line and not line.startswith("#")
             }
-            required -= {
-                "LAE_AGENT_LLM_API_KEY",
-                "LAE_AGENT_LLM_BASE_URL",
-                "LAE_AGENT_LLM_MODEL",
-            }
             self.assertTrue(required.issubset(environment))
             self.assertTrue(all(environment[name] for name in required))
             self.assertEqual(environment["LAE_ANALYZER_IMAGE_DIGEST"], ANALYZER)
+            self.assertEqual(
+                environment["LAE_AGENT_LLM_BASE_URL"],
+                "https://llm.example.test/v1",
+            )
+            self.assertEqual(environment["LAE_AGENT_LLM_MODEL"], "test-model")
+            self.assertEqual(
+                environment["LAE_AGENT_LLM_API_KEY"], "test-provider-key"
+            )
             self.assertEqual(
                 environment["LAE_DATABASE_URL"],
                 "postgresql+asyncpg://lae:"
@@ -153,6 +158,12 @@ class StagingBundleTests(unittest.TestCase):
             )
             self.assertNotIn("export ", control_environment)
             self.assertNotIn("LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON", environment)
+            manifest = json.loads(
+                (output / "bundle-manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["llmBaseUrl"], "https://llm.example.test/v1")
+            self.assertEqual(manifest["llmModel"], "test-model")
+            self.assertNotIn("test-provider-key", json.dumps(manifest))
 
             repeated = subprocess.run(
                 [

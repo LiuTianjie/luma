@@ -174,7 +174,7 @@ BUNDLE_DIR=<private-staging-bundle-directory>
 
 ## 当前硬阻塞项
 
-1. 当前 live cluster 没有 production `lae-core`、`lae-cn-postgres` 或 `lae-cn-artifacts`；`aly` 是待删除历史注册。Production sidecar 因而继续 fail closed。`luma.compose.staging.itool.yml` 明确使用 `lab + builder-registry-nfs + tailscale-relay`，不代表 production topology。
+1. 当前 live cluster 没有 production `lae-core`、`lae-cn-postgres` 或 `lae-cn-artifacts`；`aly` 已不在当前 8 节点 live 清单中，若再次出现只按 stale 历史注册清理。Production sidecar 因而继续 fail closed。`luma.compose.staging.itool.yml` 明确使用 `lab + builder-registry-nfs + tailscale-relay`，不代表 production topology。
 2. Staging runtime 明确使用 `manager + tecent`：manager 需要显式 runtime role，二者仍由正向 allowlist、实时 readiness 和 Nomad plan 收敛。专用 production runner pool、无容量、drain、节点故障重调度、volume affinity，以及 admin placement 与真实 allocation 的关联仍需 Luma staging 演练。
 3. Builder/Runtime principal files、Git/object broker、LAE admin proxy、plan signing、registry、Analyzer repo digest 与 runtime storage class 已有 staging 配置；`0.1.171` 发布仍须验证新的 controller scoped token、Builder `0600` EnvironmentFile、Worker/Control analyzer digest 三端一致。不能用 management token、inline secret 或 mutable analyzer tag 简化。
 4. S3 artifact/upload、MinIO policy/CORS、API/Worker 分权 credential 和一次性 object redemption 已完成本地真实 MinIO 最小权限与 CORS 正反例；Luma staging 的浏览器上传、恶意 ZIP、cancel/replay、Builder download、artifact ingest 和日志/state 无 URL/key E2E 仍是上线门禁。

@@ -255,8 +255,9 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
     }
     environment.update(
         {
-            "ARK_API_KEY": llm_api_key,
-            "ARK_MODEL": args.llm_model.strip(),
+            "LAE_AGENT_LLM_API_KEY": llm_api_key,
+            "LAE_AGENT_LLM_BASE_URL": llm_base_url,
+            "LAE_AGENT_LLM_MODEL": args.llm_model.strip(),
         }
     )
 
@@ -357,6 +358,8 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
                 "controlUrl": control_url,
                 "publicApiUrl": public_api_url,
                 "analyzerImageDigest": args.analyzer_image_digest,
+                "llmBaseUrl": llm_base_url,
+                "llmModel": args.llm_model.strip(),
                 "managerFileSha256": fingerprints,
             },
             sort_keys=True,

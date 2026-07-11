@@ -260,7 +260,7 @@ LAE 公共协议只接受 `region: cn | global`。`node`、IP、pool、failure d
 当前 live 集群不能原样作为公共 LAE 生产池：
 
 - `builder` 在 `home` region，当前 `build-image` 使用 Docker/buildx 共享宿主能力，只适合现有内部构建；不能原样承载公开不可信分析与构建。
-- `manager` 是唯一控制面；`aly` 为待删除历史注册。当前 staging 决策允许 manager 显式兼任 runtime，必须先恢复 manager node agent 并写入 `role.runtime=true`。
+- `manager` 是唯一控制面；`aly` 是已退出当前 8 节点 live 清单的过时历史名称，若再次出现在注册表中应按 stale record 清理。当前 staging 决策允许 manager 显式兼任 runtime，并要求 manager node agent 写入 `role.runtime=true`。
 - 当前用户 workload 多集中在 home，且至少一个节点出现高负载/高内存占用。
 - 当前 registry 自动推导 pull host，LAE 上线前需要把 registry host、GC、备份和目标节点 pull 线路配置成显式、可监控状态。
 - Staging 平台在 `lab`，平台数据使用 `builder-registry-nfs` 独立 path；租户卷使用单独的 staging runtime storage 定义。这些都不能替代 PostgreSQL/对象存储的生产 HA 设计。
