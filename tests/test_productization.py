@@ -2271,6 +2271,15 @@ class CliTests(unittest.TestCase):
         refresh.assert_called_once()
         self.assertEqual(refresh.call_args.args[2], "luma.example.com")
 
+    def test_linux_managed_nfs_prepare_reuses_identical_export_path(self):
+        from luma.agent import _linux_prepare_nfs_command
+
+        command = _linux_prepare_nfs_command("lae-staging-runtime-nfs", "/srv/luma")
+        self.assertIn("glob.glob('/etc/exports.d/luma-*.exports')", command)
+        self.assertIn("if export_line in lines", command)
+        self.assertIn("target.unlink(missing_ok=True)", command)
+        self.assertIn("already exists with different options", command)
+
     def test_update_refreshes_manager_even_when_control_version_matches_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp) / "state"
@@ -8216,6 +8225,98 @@ class ControlApiTests(unittest.TestCase):
                         )
                 self.assertNotIn("bad-nfs", load_state().get("storageClasses", {}))
                 remove.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_set_reuses_existing_managed_export_for_same_node_and_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "builder": {
+                        "name": "builder",
+                        "region": "home",
+                        "nodeId": "builder-node-id",
+                        "labels": {
+                            "luma.node.name": "builder",
+                            "luma.node.id": "builder-node-id",
+                            "region": "home",
+                        },
+                    }
+                }
+                state["storageClasses"] = {
+                    "builder-registry-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "builder",
+                        "path": "/srv/luma",
+                        "regions": ["home"],
+                    }
+                }
+                save_state(state)
+
+                with patch("luma.control.server._prepare_managed_nfs_host") as prepare:
+                    result = handle_storage_set(
+                        state["deployToken"],
+                        {
+                            "name": "lae-staging-runtime-nfs",
+                            "node": "builder",
+                            "path": "/srv/luma",
+                            "regions": ["cn"],
+                            "nodes": ["manager", "tecent"],
+                        },
+                    )
+
+                prepare.assert_not_called()
+                self.assertEqual(result["storageHost"]["prepared"], "host NFS export reused")
+                self.assertEqual(result["storageHost"]["reusedFrom"], "builder-registry-nfs")
+                saved = load_state()["storageClasses"]["lae-staging-runtime-nfs"]
+                self.assertEqual(saved["exportName"], "builder-registry-nfs")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_storage_remove_retains_shared_export_then_removes_owner_file_last(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["storageClasses"] = {
+                    "builder-registry-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "builder",
+                        "path": "/srv/luma",
+                    },
+                    "lae-staging-runtime-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "builder",
+                        "path": "/srv/luma",
+                        "exportName": "builder-registry-nfs",
+                    },
+                }
+                save_state(state)
+
+                with patch("luma.control.server._remove_local_nfs_export") as remove_export, patch(
+                    "luma.control.server.remove_from_nomad", return_value="removed"
+                ):
+                    first = handle_storage_remove(
+                        state["deployToken"], {"name": "builder-registry-nfs"}
+                    )
+                    remove_export.assert_not_called()
+                    self.assertEqual(
+                        first["storageHost"]["export"],
+                        "retained: shared by lae-staging-runtime-nfs",
+                    )
+
+                    second = handle_storage_remove(
+                        state["deployToken"], {"name": "lae-staging-runtime-nfs"}
+                    )
+                    self.assertEqual(remove_export.call_count, 1)
+                    removed_spec = remove_export.call_args.args[0]
+                    self.assertEqual(removed_spec.name, "builder-registry-nfs")
+                    self.assertEqual(second["storageHost"]["export"], remove_export.return_value)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

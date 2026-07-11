@@ -8931,6 +8931,10 @@ def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     mutate_state(validate)
     state = load_state()
     storage_class_record = {key: value for key, value in item.items() if value not in ("", [], None)}
+    if mode == "managed":
+        storage_class_record["exportName"] = _managed_storage_export_name(
+            name, storage_class_record, state
+        )
     storage_host = _apply_managed_storage_class(name, storage_class_record, state)
 
     def save_storage_class(state: Dict[str, Any]) -> None:
@@ -8952,8 +8956,62 @@ def _apply_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[st
     storage_class = _storage_class_spec_from_record(name, item)
     if storage_class.mode != "managed":
         return None
+    export_name = str(item.get("exportName") or name)
+    if export_name != name:
+        return {
+            "name": name,
+            "node": str(storage_class.node or ""),
+            "path": str(storage_class.path or ""),
+            "prepared": "host NFS export reused",
+            "reusedFrom": export_name,
+        }
     host_result = _prepare_managed_nfs_host(storage_class, state)
     return host_result
+
+
+def _managed_storage_export_name(
+    name: str, item: Dict[str, Any], state: Dict[str, Any]
+) -> str:
+    storage_classes = (
+        state.get("storageClasses")
+        if isinstance(state.get("storageClasses"), dict)
+        else {}
+    )
+    existing = storage_classes.get(name)
+    if (
+        isinstance(existing, dict)
+        and _managed_storage_export_key(existing, state)
+        == _managed_storage_export_key(item, state)
+    ):
+        return str(existing.get("exportName") or name)
+    wanted = _managed_storage_export_key(item, state)
+    for other_name, other in storage_classes.items():
+        if str(other_name) == name or not isinstance(other, dict):
+            continue
+        if _managed_storage_export_key(other, state) == wanted:
+            return str(other.get("exportName") or other_name)
+    return name
+
+
+def _managed_storage_export_key(
+    item: Dict[str, Any], state: Dict[str, Any]
+) -> tuple[str, str, str] | None:
+    if str(item.get("mode") or "managed") != "managed":
+        return None
+    if str(item.get("provider") or "nfs") != "nfs":
+        return None
+    node_name = str(item.get("node") or "").strip()
+    path = str(item.get("path") or "").strip()
+    if not node_name or not path:
+        return None
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    node_identity = (
+        _node_record_nomad_node_id(record)
+        if isinstance(record, dict)
+        else node_name
+    ) or node_name
+    return ("nfs", node_identity, str(Path(path)))
 
 
 def _storage_class_spec_from_record(name: str, item: Dict[str, Any]) -> StorageClassSpec:
@@ -9153,7 +9211,31 @@ def _remove_managed_storage_class(name: str, item: Dict[str, Any], state: Dict[s
     storage_class = _storage_class_spec_from_record(name, item)
     if storage_class.mode != "managed":
         return None
-    export_removed = _remove_local_nfs_export(storage_class, state)
+    export_name = str(item.get("exportName") or name)
+    storage_classes = (
+        state.get("storageClasses")
+        if isinstance(state.get("storageClasses"), dict)
+        else {}
+    )
+    shared_by = next(
+        (
+            str(other_name)
+            for other_name, other in storage_classes.items()
+            if str(other_name) != name
+            and isinstance(other, dict)
+            and str(other.get("exportName") or other_name) == export_name
+        ),
+        "",
+    )
+    if shared_by:
+        export_removed = f"retained: shared by {shared_by}"
+    else:
+        export_record = dict(item)
+        export_record["exportName"] = export_name
+        export_storage_class = _storage_class_spec_from_record(
+            export_name, export_record
+        )
+        export_removed = _remove_local_nfs_export(export_storage_class, state)
     if not _storage_apply_available(state):
         return {"name": name, "removed": "pending: storage apply is not available", "export": export_removed}
     config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
