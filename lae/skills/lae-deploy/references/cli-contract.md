@@ -32,22 +32,39 @@ lae apps create --name <name> --slug <slug> --idempotency-key <key>
 lae apps check-update|suspend|resume|restart <app> --idempotency-key <key>
 lae apps rollback <app> [--deployment <deployment-id>] --idempotency-key <key>
 lae apps delete <app> --yes --idempotency-key <key>
+lae apps logs <app> [--service <key>] [--tail <lines>]
+lae apps metrics <app> [--service <key>] [--window <seconds>]
 lae config show --app <id> --analysis <id>
-lae deployments list|show
-lae services list|logs <app> [service]
 lae env list <app>
 lae env set <app> <name> --service <service-or-*> --expected-version <version> --value-stdin --idempotency-key <key>
 lae env unset <app> <name> --service <service-or-*> --expected-version <version> --idempotency-key <key>
-lae tokens list|create|rotate|revoke
 lae plans list
-lae billing checkout --plan <lite|pro|ultra> --interval <month|year> [--provider <wechat|alipay>] --idempotency-key <key>
+lae billing checkout --plan <lite|pro|ultra> --interval <month|year> [--provider <wechat|alipay|mock>] --idempotency-key <key>
 ```
 
-The CLI exposes pending-app creation, public/private Git inspection, static upload inspection, environment management, deployment and lifecycle operations, plan discovery, and checkout-session creation. Deployment history, logs, and token management remain capability-gated; if `lae --help` does not advertise a flow, stop instead of substituting raw Luma calls.
+The CLI exposes pending-app creation, public/private Git inspection, static
+upload inspection, environment management, deployment and lifecycle
+operations, bounded logs/metrics, plan discovery, and checkout-session
+creation. Deployment history and token management remain Web/API session
+flows; if `lae --help` does not advertise a flow, stop instead of substituting
+raw Luma calls.
+
+`apps show` is the current CLI detail boundary for application services,
+routes, volumes, and environment metadata. Deployment-history and deploy-token
+management are currently Web/API session flows and are intentionally not
+invented as CLI commands. `apps logs` and `apps metrics` are available, but
+they return one bounded service view per request.
 
 Agent execution must provide every required flag. Missing input fails instead of opening a browser. Supply environment values with `--value-stdin` and private Git credentials with `--secret-stdin`; never put them in an argument or environment variable. When stdin carries either secret, load the deploy token from `LAE_DEPLOY_TOKEN` so the two inputs cannot collide.
 
-When inspection returns `needs_configuration`, its terminal output includes a whitelisted `configuration` schema. Resume schema discovery with `config show`; it returns service keys and environment names/required/sensitive flags only. Fetch `env list` for the current compare-and-set version, then use `env set --value-stdin`. Never infer or pass a value in argv. A wildcard `--service '*'` satisfies all listed services only when the same value is intended for each one.
+When inspection returns `needs_configuration`, its terminal output includes a
+whitelisted `configuration` schema. Resume schema discovery with `config show`;
+it returns service keys and environment names/required/sensitive flags only.
+Fetch `env list` for the current compare-and-set version, then use `env set
+--value-stdin`. Reuse that same analysis after configuration; inspect again only
+after a source or deployment-plan input changes. Never infer or pass a value in
+argv. A wildcard `--service '*'` satisfies all listed services only when the
+same value is intended for each one.
 
 ## Static upload behavior
 

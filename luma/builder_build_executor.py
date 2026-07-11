@@ -85,6 +85,107 @@ _MAX_JSON_ARTIFACT_BYTES = 64 * 1024 * 1024
 _PROCESS_TERMINATE_GRACE_SECONDS = 3.0
 _MAX_SNAPSHOT_ENTRIES = 400_000
 _REQUIRED_TOOLS = ("buildctl", "syft", "trivy", "cosign", "crane")
+_OCI_INDEX_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    }
+)
+_OCI_MANIFEST_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    }
+)
+_IN_TOTO_MEDIA_TYPE = "application/vnd.in-toto+json"
+_BUILDKIT_REFERENCE_TYPE_ANNOTATION = "vnd.docker.reference.type"
+_BUILDKIT_REFERENCE_DIGEST_ANNOTATION = "vnd.docker.reference.digest"
+_BUILDKIT_ATTESTATION_MANIFEST_TYPE = "attestation-manifest"
+_IN_TOTO_PREDICATE_ANNOTATION = "in-toto.io/predicate-type"
+_IN_TOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+_SLSA_PROVENANCE_PREFIX = "https://slsa.dev/provenance/"
+_TRUSTED_STATIC_ADAPTER_PATH = ".lae/adapters/static-v1.Dockerfile"
+_TRUSTED_STATIC_ADAPTER_DOCKERFILE = b"""# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+
+FROM golang:1.24.8-bookworm@sha256:4ed690d6649d63c312b99a6120025ec79ce3b542968a37da53d6236c7c61a848 AS build
+
+WORKDIR /src
+
+COPY <<LAE_STATIC_SERVER_GO /src/main.go
+package main
+
+import (
+    "io"
+    "log"
+    "net/http"
+    "time"
+)
+
+func main() {
+    files := http.FileServer(http.Dir("/srv/www"))
+    handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+        if request.URL.Path == "/healthz" {
+            response.Header().Set("Cache-Control", "no-store")
+            response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+            if request.Method != http.MethodGet && request.Method != http.MethodHead {
+                response.Header().Set("Allow", "GET, HEAD")
+                http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
+                return
+            }
+            response.WriteHeader(http.StatusOK)
+            if request.Method == http.MethodGet {
+                _, _ = io.WriteString(response, "ok\\n")
+            }
+            return
+        }
+        if request.Method != http.MethodGet && request.Method != http.MethodHead {
+            response.Header().Set("Allow", "GET, HEAD")
+            http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+        response.Header().Set("X-Content-Type-Options", "nosniff")
+        files.ServeHTTP(response, request)
+    })
+    server := &http.Server{
+        Addr:              ":8080",
+        Handler:           handler,
+        ReadHeaderTimeout: 5 * time.Second,
+        IdleTimeout:       60 * time.Second,
+        MaxHeaderBytes:    1 << 20,
+    }
+    log.Fatal(server.ListenAndServe())
+}
+LAE_STATIC_SERVER_GO
+
+RUN mkdir -p /out && \\
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \\
+      go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' \\
+      -o /out/lae-static-server /src/main.go
+
+COPY . /site
+RUN test -f /site/index.html && rm -rf /site/.lae
+
+FROM scratch
+
+LABEL tech.itool.lae.adapter="static-v1"
+
+COPY --from=build --chown=10001:10001 /out/lae-static-server /usr/local/bin/lae-static-server
+COPY --from=build --chown=10001:10001 /site/ /srv/www/
+
+USER 10001:10001
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/lae-static-server"]
+"""
+_TRUSTED_STATIC_ADAPTER_DOCKERIGNORE_PATH = _TRUSTED_STATIC_ADAPTER_PATH + ".dockerignore"
+_TRUSTED_STATIC_ADAPTER_DOCKERIGNORE = (
+    b"# LAE static-v1 consumes the complete signed source snapshot.\n"
+)
+_TRUSTED_STATIC_ADAPTER_ASSETS = {
+    _TRUSTED_STATIC_ADAPTER_PATH: _TRUSTED_STATIC_ADAPTER_DOCKERFILE,
+    _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE_PATH: _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE,
+}
 
 
 @dataclass(frozen=True)
@@ -174,6 +275,7 @@ def build_plan(
         builds = list(normalized["signedBuildPlan"]["builds"])
         external_images = list(normalized["signedBuildPlan"]["externalImages"])
         ordered_builds = _topological_builds(builds)
+        _materialize_trusted_build_adapters(source, ordered_builds)
         resolved_paths = {
             build["key"]: _resolve_build_paths(source, build)
             for build in ordered_builds
@@ -305,26 +407,16 @@ def build_plan(
             _emit_phase(progress, key, "scan", "succeeded")
 
             _emit_phase(progress, key, "provenance", "running")
-            provenance_command = [prerequisites.cosign, "download", "attestation"]
-            if normalized["registry"]["insecure"]:
-                provenance_command.append("--allow-insecure-registry")
-            provenance_command.extend(["--platform", "linux/amd64", immutable_push])
-            provenance_result = _run_command(
-                provenance_command,
+            canonical_provenance = _retrieve_buildkit_provenance(
+                prerequisites.crane,
+                immutable_push,
+                expected_index_digest=image_digest,
+                insecure=normalized["registry"]["insecure"],
                 env=command_env,
                 timeout=_remaining_seconds(deadline),
                 cancel_event=cancel_event,
-                max_output_bytes=_MAX_PROVENANCE_BYTES,
             )
-            if provenance_result.returncode != 0:
-                raise LumaError("BuildKit provenance retrieval failed")
-            if provenance_result.truncated:
-                raise LumaError("BuildKit provenance output exceeds the artifact limit")
             provenance_path = artifacts_dir / f"{key}-provenance.json"
-            canonical_provenance = _validate_and_canonicalize_provenance(
-                provenance_result.output,
-                expected_image_digest=image_digest,
-            )
             _write_private_file(provenance_path, canonical_provenance)
             _emit_phase(progress, key, "provenance", "succeeded")
 
@@ -718,6 +810,64 @@ def _normalize_relative_parts(base: PurePosixPath, target: PurePosixPath) -> Pur
     return PurePosixPath(*parts)
 
 
+def _materialize_trusted_build_adapters(source: Path, builds: Iterable[Dict[str, Any]]) -> None:
+    """Materialize only the platform adapter explicitly named by the signed plan.
+
+    The source workspace is private to this build lease, but every parent and
+    destination is still checked with lstat before using O_EXCL/O_NOFOLLOW.  A
+    tenant snapshot can therefore neither replace the trusted adapter nor steer
+    its write through a symlink.
+    """
+
+    requested = {
+        str(build.get("dockerfile") or "")
+        for build in builds
+    }
+    if _TRUSTED_STATIC_ADAPTER_PATH not in requested:
+        return
+
+    root = source.resolve(strict=True)
+    targets: list[tuple[Path, bytes]] = []
+    for relative, content in _TRUSTED_STATIC_ADAPTER_ASSETS.items():
+        relative_path = PurePosixPath(relative)
+        current = source
+        for part in relative_path.parent.parts:
+            current = current / part
+            try:
+                current_stat = current.lstat()
+            except FileNotFoundError:
+                current.mkdir(mode=0o700)
+                current_stat = current.lstat()
+            if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISDIR(current_stat.st_mode):
+                raise LumaError("reserved platform adapter path conflicts with the source snapshot")
+            _assert_within_root(
+                current.resolve(strict=True),
+                root,
+                "reserved platform adapter path escapes the source snapshot",
+            )
+        target = source.joinpath(*relative_path.parts)
+        try:
+            target.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise LumaError("reserved platform adapter path conflicts with the source snapshot")
+        targets.append((target, content))
+
+    for target, content in targets:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(target, flags, 0o600)
+        try:
+            with os.fdopen(fd, "wb", closefd=False) as output:
+                output.write(content)
+                output.flush()
+                os.fsync(output.fileno())
+        finally:
+            os.close(fd)
+
+
 def _resolve_build_paths(source: Path, build: Dict[str, Any]) -> tuple[Path, Path]:
     root = source.resolve()
     context = _resolve_snapshot_path(root, str(build.get("context") or ""), expect_directory=True)
@@ -732,7 +882,11 @@ def _resolve_snapshot_path(root: Path, relative: str, *, expect_directory: bool)
     raw = Path(relative)
     if raw.is_absolute() or any(part == ".." for part in raw.parts) or "\0" in relative:
         raise LumaError("build path escapes the source snapshot")
-    candidate = (root / raw).resolve(strict=True)
+    try:
+        candidate = (root / raw).resolve(strict=True)
+    except FileNotFoundError as exc:
+        kind = "context" if expect_directory else "Dockerfile"
+        raise LumaError(f"build {kind} is not present in the source snapshot") from exc
     _assert_within_root(candidate, root, "build path escapes the source snapshot through a symlink")
     if expect_directory and not candidate.is_dir():
         raise LumaError("build context is not a directory")
@@ -803,6 +957,279 @@ def _read_buildkit_image_digest(path: Path) -> str:
     return digest
 
 
+def _retrieve_buildkit_provenance(
+    crane: str,
+    immutable_reference: str,
+    *,
+    expected_index_digest: str,
+    insecure: bool,
+    env: Mapping[str, str],
+    timeout: int,
+    cancel_event: Any,
+) -> bytes:
+    """Retrieve BuildKit's attached OCI attestation and preserve the LAE DSSE bundle contract."""
+
+    if not _SHA256_RE.fullmatch(expected_index_digest):
+        raise LumaError("BuildKit provenance image index digest is invalid")
+    try:
+        repository, reference_digest = immutable_reference.rsplit("@", 1)
+    except ValueError as exc:
+        raise LumaError("BuildKit provenance image reference is not immutable") from exc
+    if not repository or reference_digest != expected_index_digest:
+        raise LumaError("BuildKit provenance image reference does not match build metadata")
+
+    initial_timeout = max(int(timeout), 1)
+    deadline = time.monotonic() + initial_timeout
+    index = _crane_manifest_json(
+        crane,
+        immutable_reference,
+        expected_digest=expected_index_digest,
+        insecure=insecure,
+        env=env,
+        timeout=initial_timeout,
+        cancel_event=cancel_event,
+        label="BuildKit image index",
+    )
+    runnable_digest, attestation_digest, attestation_size = _select_buildkit_attestation(index)
+    attestation = _crane_manifest_json(
+        crane,
+        f"{repository}@{attestation_digest}",
+        expected_digest=attestation_digest,
+        expected_size=attestation_size,
+        insecure=insecure,
+        env=env,
+        timeout=_remaining_seconds(deadline),
+        cancel_event=cancel_event,
+        label="BuildKit attestation manifest",
+    )
+    layers = _select_buildkit_provenance_layers(attestation)
+
+    statements: list[Dict[str, Any]] = []
+    total_bytes = 0
+    for layer_digest, predicate_type, layer_size in layers:
+        command = [crane, "blob"]
+        if insecure:
+            command.append("--insecure")
+        command.append(f"{repository}@{layer_digest}")
+        result = _run_command(
+            command,
+            env=env,
+            timeout=_remaining_seconds(deadline),
+            cancel_event=cancel_event,
+            max_output_bytes=layer_size,
+        )
+        if result.returncode != 0:
+            raise LumaError("BuildKit provenance blob retrieval failed")
+        if result.truncated:
+            raise LumaError("BuildKit provenance output exceeds the artifact limit")
+        if len(result.output) != layer_size:
+            raise LumaError("BuildKit provenance blob does not match its OCI descriptor size")
+        if "sha256:" + hashlib.sha256(result.output).hexdigest() != layer_digest:
+            raise LumaError("BuildKit provenance blob does not match its OCI descriptor digest")
+        total_bytes += len(result.output)
+        if total_bytes > _MAX_PROVENANCE_BYTES:
+            raise LumaError("BuildKit provenance output exceeds the artifact limit")
+        statements.append(
+            _validate_buildkit_statement(
+                result.output,
+                expected_subject_digest=runnable_digest,
+                expected_predicate_type=predicate_type,
+            )
+        )
+
+    envelopes = []
+    for statement in statements:
+        payload = json.dumps(
+            statement,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        envelopes.append(
+            {
+                "payloadType": _IN_TOTO_MEDIA_TYPE,
+                "payload": base64.b64encode(payload).decode("ascii"),
+                "signatures": [],
+            }
+        )
+    canonical = json.dumps(
+        envelopes,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if not canonical or len(canonical) > _MAX_PROVENANCE_BYTES:
+        raise LumaError("BuildKit provenance output exceeds the artifact limit")
+    return canonical
+
+
+def _crane_manifest_json(
+    crane: str,
+    reference: str,
+    *,
+    expected_digest: str,
+    expected_size: int | None = None,
+    insecure: bool,
+    env: Mapping[str, str],
+    timeout: int,
+    cancel_event: Any,
+    label: str,
+) -> Dict[str, Any]:
+    command = [crane, "manifest"]
+    if insecure:
+        command.append("--insecure")
+    command.append(reference)
+    result = _run_command(
+        command,
+        env=env,
+        timeout=timeout,
+        cancel_event=cancel_event,
+        max_output_bytes=_MAX_COMMAND_OUTPUT_BYTES,
+    )
+    if result.returncode != 0 or result.truncated or not result.output:
+        raise LumaError(f"{label} retrieval failed")
+    if not _SHA256_RE.fullmatch(expected_digest):
+        raise LumaError(f"{label} digest is invalid")
+    if expected_size is not None and len(result.output) != expected_size:
+        raise LumaError(f"{label} does not match its OCI descriptor size")
+    if "sha256:" + hashlib.sha256(result.output).hexdigest() != expected_digest:
+        raise LumaError(f"{label} does not match its OCI descriptor digest")
+    try:
+        body = json.loads(result.output.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LumaError(f"{label} is not valid JSON") from exc
+    if not isinstance(body, dict):
+        raise LumaError(f"{label} JSON must be an object")
+    return body
+
+
+def _select_buildkit_attestation(index: Dict[str, Any]) -> tuple[str, str, int]:
+    if index.get("schemaVersion") != 2 or index.get("mediaType") not in _OCI_INDEX_MEDIA_TYPES:
+        raise LumaError("BuildKit provenance requires an OCI image index")
+    manifests = index.get("manifests")
+    if not isinstance(manifests, list) or not manifests or len(manifests) > 1024:
+        raise LumaError("BuildKit image index contains an invalid manifest list")
+
+    runnable: list[str] = []
+    attestation_descriptors: list[tuple[str, str, int]] = []
+    for descriptor in manifests:
+        if not isinstance(descriptor, dict):
+            raise LumaError("BuildKit image index contains an invalid descriptor")
+        digest = descriptor.get("digest")
+        media_type = descriptor.get("mediaType")
+        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+            raise LumaError("BuildKit image index contains an invalid descriptor digest")
+        descriptor_size = descriptor.get("size")
+        if (
+            isinstance(descriptor_size, bool)
+            or not isinstance(descriptor_size, int)
+            or descriptor_size <= 0
+            or descriptor_size > _MAX_JSON_ARTIFACT_BYTES
+        ):
+            raise LumaError("BuildKit image index contains an invalid descriptor size")
+        annotations = descriptor.get("annotations") or {}
+        if not isinstance(annotations, dict):
+            raise LumaError("BuildKit image index contains invalid descriptor annotations")
+        if annotations.get(_BUILDKIT_REFERENCE_TYPE_ANNOTATION) == _BUILDKIT_ATTESTATION_MANIFEST_TYPE:
+            referenced_digest = annotations.get(_BUILDKIT_REFERENCE_DIGEST_ANNOTATION)
+            if not isinstance(referenced_digest, str) or not _SHA256_RE.fullmatch(referenced_digest):
+                raise LumaError("BuildKit attestation descriptor has an invalid subject binding")
+            if descriptor_size > _MAX_COMMAND_OUTPUT_BYTES:
+                raise LumaError("BuildKit attestation manifest exceeds the artifact limit")
+            attestation_descriptors.append((digest, referenced_digest, descriptor_size))
+            continue
+        platform = descriptor.get("platform")
+        if (
+            media_type in _OCI_MANIFEST_MEDIA_TYPES
+            and isinstance(platform, dict)
+            and platform.get("os") == "linux"
+            and platform.get("architecture") == "amd64"
+        ):
+            runnable.append(digest)
+
+    if len(runnable) != 1:
+        raise LumaError("BuildKit image index must contain exactly one linux/amd64 manifest")
+    runnable_digest = runnable[0]
+    matching = [
+        (digest, size)
+        for digest, referenced_digest, size in attestation_descriptors
+        if referenced_digest == runnable_digest
+    ]
+    if len(matching) != 1:
+        raise LumaError("BuildKit attestation descriptor is not bound to the linux/amd64 manifest")
+    return runnable_digest, matching[0][0], matching[0][1]
+
+
+def _select_buildkit_provenance_layers(manifest: Dict[str, Any]) -> list[tuple[str, str, int]]:
+    if manifest.get("schemaVersion") != 2 or manifest.get("mediaType") not in _OCI_MANIFEST_MEDIA_TYPES:
+        raise LumaError("BuildKit attestation manifest is invalid")
+    layers = manifest.get("layers")
+    if not isinstance(layers, list) or not layers or len(layers) > 128:
+        raise LumaError("BuildKit attestation manifest contains an invalid layer list")
+    selected: list[tuple[str, str, int]] = []
+    for layer in layers:
+        if not isinstance(layer, dict):
+            raise LumaError("BuildKit attestation manifest contains an invalid layer descriptor")
+        if layer.get("mediaType") != _IN_TOTO_MEDIA_TYPE:
+            continue
+        digest = layer.get("digest")
+        layer_size = layer.get("size")
+        annotations = layer.get("annotations") or {}
+        predicate_type = annotations.get(_IN_TOTO_PREDICATE_ANNOTATION) if isinstance(annotations, dict) else None
+        if (
+            isinstance(digest, str)
+            and _SHA256_RE.fullmatch(digest)
+            and not isinstance(layer_size, bool)
+            and isinstance(layer_size, int)
+            and 0 < layer_size <= _MAX_PROVENANCE_BYTES
+            and isinstance(predicate_type, str)
+            and predicate_type.startswith(_SLSA_PROVENANCE_PREFIX)
+        ):
+            selected.append((digest, predicate_type, layer_size))
+    if not selected:
+        raise LumaError("BuildKit attestation manifest contains no SLSA provenance layer")
+    if sum(size for _digest, _predicate_type, size in selected) > _MAX_PROVENANCE_BYTES:
+        raise LumaError("BuildKit provenance output exceeds the artifact limit")
+    if len({digest for digest, _predicate_type, _size in selected}) != len(selected):
+        raise LumaError("BuildKit attestation manifest contains duplicate provenance layers")
+    return selected
+
+
+def _validate_buildkit_statement(
+    raw: bytes,
+    *,
+    expected_subject_digest: str,
+    expected_predicate_type: str,
+) -> Dict[str, Any]:
+    if not raw or len(raw) > _MAX_PROVENANCE_BYTES:
+        raise LumaError("BuildKit provenance statement is empty or too large")
+    try:
+        statement = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LumaError("BuildKit provenance statement is not valid JSON") from exc
+    if not isinstance(statement, dict) or statement.get("_type") != _IN_TOTO_STATEMENT_TYPE:
+        raise LumaError("BuildKit provenance is not an in-toto Statement")
+    predicate_type = statement.get("predicateType")
+    if (
+        not isinstance(predicate_type, str)
+        or not predicate_type.startswith(_SLSA_PROVENANCE_PREFIX)
+        or predicate_type != expected_predicate_type
+    ):
+        raise LumaError("BuildKit provenance predicate type does not match its OCI descriptor")
+    if not _SHA256_RE.fullmatch(expected_subject_digest):
+        raise LumaError("BuildKit provenance subject digest is invalid")
+    expected_hex = expected_subject_digest.split(":", 1)[1]
+    subjects = statement.get("subject")
+    if not isinstance(subjects, list) or not any(
+        isinstance(subject, dict)
+        and isinstance(subject.get("digest"), dict)
+        and subject["digest"].get("sha256") == expected_hex
+        for subject in subjects
+    ):
+        raise LumaError("BuildKit provenance is not bound to the linux/amd64 manifest digest")
+    return statement
+
+
 def _parse_resolved_digest(output: bytes) -> str:
     if not output or len(output) > 4096:
         raise LumaError("external image resolver returned an invalid digest")
@@ -868,50 +1295,6 @@ def _validate_scan_report(path: Path) -> None:
             severity = str(vulnerability.get("Severity") or "").upper() if isinstance(vulnerability, dict) else ""
             if severity in {"HIGH", "CRITICAL"}:
                 raise LumaError("image vulnerability policy rejected the image")
-
-
-def _validate_and_canonicalize_provenance(raw: bytes, *, expected_image_digest: str) -> bytes:
-    if not raw or len(raw) > _MAX_PROVENANCE_BYTES:
-        raise LumaError("BuildKit provenance output is empty or too large")
-    records: list[Dict[str, Any]] = []
-    try:
-        decoded = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise LumaError("BuildKit provenance output is not UTF-8 JSON") from exc
-    for line in decoded.splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise LumaError("BuildKit provenance output is not JSON") from exc
-        if not isinstance(record, dict):
-            raise LumaError("BuildKit provenance record is invalid")
-        records.append(record)
-    if not records:
-        raise LumaError("BuildKit provenance output contains no attestations")
-    expected_hex = expected_image_digest.split(":", 1)[1]
-    if not any(_provenance_subject_matches(record, expected_hex) for record in records):
-        raise LumaError("BuildKit provenance is not bound to the built image digest")
-    return json.dumps(records, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-
-
-def _provenance_subject_matches(record: Dict[str, Any], expected_hex: str) -> bool:
-    payload = record.get("payload")
-    if not isinstance(payload, str):
-        return False
-    try:
-        padding = "=" * (-len(payload) % 4)
-        statement = json.loads(base64.b64decode(payload + padding).decode("utf-8"))
-    except Exception:
-        return False
-    if not isinstance(statement, dict):
-        return False
-    for subject in statement.get("subject") or []:
-        digest = subject.get("digest") if isinstance(subject, dict) else None
-        if isinstance(digest, dict) and str(digest.get("sha256") or "").lower() == expected_hex:
-            return True
-    return False
 
 
 def _persist_artifact(path: Path, *, namespace: str, media_type: str) -> Dict[str, Any]:

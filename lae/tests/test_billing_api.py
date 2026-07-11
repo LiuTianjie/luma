@@ -99,9 +99,12 @@ class RecordingBillingStore:
         self.provider = provider
         self.order_id = new_id("ord")
         self.subscription_id = new_id("sub")
+        self.order_created_at = datetime.now(timezone.utc)
         self.calls: list[tuple[TenantScope, Principal, str, str, str]] = []
+        self.get_order_calls: list[TenantScope] = []
         self.events: list[ProviderPaymentEvent] = []
         self.replayed = False
+        self.order_status = "pending"
 
     async def list_plans(self):
         limits = {"applications": 3, "persistentVolumeBytes": 2_147_483_648}
@@ -152,7 +155,7 @@ class RecordingBillingStore:
         )
 
     def order(self, tenant_id: str, *, replayed: bool = False) -> BillingOrderRecord:
-        now = datetime.now(timezone.utc)
+        now = self.order_created_at
         return BillingOrderRecord(
             id=self.order_id,
             tenant_id=tenant_id,
@@ -163,8 +166,12 @@ class RecordingBillingStore:
             currency="CNY",
             amount_minor=9900,
             pricing_version="test-v1",
-            status="pending",
-            checkout_url=f"https://checkout.example.test/orders/{self.order_id}",
+            status=self.order_status,
+            checkout_url=(
+                f"https://checkout.example.test/orders/{self.order_id}"
+                if self.order_status == "pending"
+                else None
+            ),
             checkout_expires_at=now + timedelta(minutes=10),
             status_changed_at=now,
             paid_subscription_id=None,
@@ -189,6 +196,7 @@ class RecordingBillingStore:
         return self.order(scope.tenant_id, replayed=replay)
 
     async def get_order(self, scope: TenantScope, order_id: str):
+        self.get_order_calls.append(scope)
         if scope.tenant_id != self.tenant_id or order_id != self.order_id:
             raise ResourceNotFound("missing")
         return self.order(scope.tenant_id)
@@ -196,7 +204,17 @@ class RecordingBillingStore:
     async def process_provider_event(self, command: ProviderPaymentEvent):
         self.events.append(command)
         replayed = len(self.events) > 1
-        accepted = command.amount_minor == 9900 and command.reported_order_id == self.order_id
+        accepted = (
+            command.amount_minor == 9900
+            and command.reported_order_id == self.order_id
+            and command.merchant_id == self.provider.merchant_id
+            and command.plan_code == "pro"
+            and command.interval == "monthly"
+            and command.currency == "CNY"
+            and command.outcome == "paid"
+        )
+        if accepted:
+            self.order_status = "paid"
         return PaymentEventResult(
             event_id=new_id("pevt"),
             order_id=self.order_id,
@@ -316,6 +334,111 @@ class BillingApiTests(unittest.TestCase):
         self.assertEqual(session_created.status_code, 201)
         self.assertEqual(self.store.calls[-1][1].type, "session")
 
+    def test_mock_approval_is_session_only_tenant_scoped_and_server_fact_driven(self) -> None:
+        url = f"/v1/billing/mock/orders/{self.store.order_id}/approve"
+
+        self.auth.token_scopes = frozenset({"apps:read", "billing:checkout"})
+        token_attempt = self.client.post(
+            url,
+            headers={**self.bearer, "Idempotency-Key": "mock-approval-token"},
+            json={},
+        )
+        self.assertEqual(token_attempt.status_code, 403)
+        self.assertEqual(
+            token_attempt.json()["error"]["code"],
+            "LAE_MOCK_CHECKOUT_SESSION_REQUIRED",
+        )
+        self.assertEqual(self.store.events, [])
+
+        self.use_session()
+        missing_csrf = self.client.post(
+            url,
+            headers={"Idempotency-Key": "mock-approval-session"},
+            json={},
+        )
+        self.assertEqual(missing_csrf.status_code, 403)
+
+        missing_idempotency = self.client.post(
+            url,
+            headers={"X-CSRF-Token": self.auth.csrf_token},
+            json={},
+        )
+        self.assertEqual(missing_idempotency.status_code, 400)
+        self.assertEqual(
+            missing_idempotency.json()["error"]["code"],
+            "LAE_IDEMPOTENCY_REQUIRED",
+        )
+
+        injected_facts = self.client.post(
+            url,
+            headers={
+                "Idempotency-Key": "mock-approval-injected",
+                "X-CSRF-Token": self.auth.csrf_token,
+            },
+            json={"amountMinor": 1, "plan": "ultra", "merchantId": "attacker"},
+        )
+        self.assertEqual(injected_facts.status_code, 400)
+        self.assertEqual(self.store.events, [])
+
+        headers = {
+            "Idempotency-Key": "mock-approval-session",
+            "X-CSRF-Token": self.auth.csrf_token,
+        }
+        approved = self.client.post(url, headers=headers, json={})
+        replayed = self.client.post(url, headers=headers, json={})
+        self.assertEqual(approved.status_code, 200)
+        self.assertTrue(approved.json()["accepted"])
+        self.assertEqual(approved.json()["order"]["status"], "paid")
+        self.assertEqual(approved.json()["subscriptionId"], self.store.subscription_id)
+        self.assertEqual(approved.headers["idempotency-replayed"], "false")
+        self.assertEqual(replayed.status_code, 200)
+        self.assertEqual(replayed.headers["idempotency-replayed"], "true")
+        self.assertEqual(self.store.get_order_calls[-1].tenant_id, self.auth.tenant_id)
+
+        event = self.store.events[0]
+        order = self.store.order(self.auth.tenant_id)
+        self.assertEqual(event.path_order_id, order.id)
+        self.assertEqual(event.reported_order_id, order.id)
+        self.assertEqual(event.merchant_id, self.provider.merchant_id)
+        self.assertEqual(event.plan_code, order.plan_code)
+        self.assertEqual(event.interval, order.interval)
+        self.assertEqual(event.currency, order.currency)
+        self.assertEqual(event.amount_minor, order.amount_minor)
+        self.assertEqual(event.outcome, "paid")
+        self.assertEqual(event.occurred_at, order.created_at)
+
+    def test_mock_approval_hides_foreign_orders_and_rejects_invalid_idempotency(self) -> None:
+        self.use_session()
+        url = f"/v1/billing/mock/orders/{self.store.order_id}/approve"
+        headers = {
+            "Idempotency-Key": "mock/invalid",
+            "X-CSRF-Token": self.auth.csrf_token,
+        }
+        invalid_key = self.client.post(url, headers=headers, json={})
+        self.assertEqual(invalid_key.status_code, 400)
+        self.assertEqual(
+            invalid_key.json()["error"]["code"], "LAE_IDEMPOTENCY_INVALID"
+        )
+
+        original_tenant = self.auth.tenant_id
+        self.auth.tenant_id = new_id("ten")
+        try:
+            foreign = self.client.post(
+                url,
+                headers={
+                    "Idempotency-Key": "mock-foreign-order",
+                    "X-CSRF-Token": self.auth.csrf_token,
+                },
+                json={},
+            )
+        finally:
+            self.auth.tenant_id = original_tenant
+        self.assertEqual(foreign.status_code, 404)
+        self.assertEqual(
+            foreign.json()["error"]["code"], "LAE_BILLING_ORDER_NOT_FOUND"
+        )
+        self.assertEqual(self.store.events, [])
+
     def test_lite_checkout_order_tenant_fence_and_signed_one_time_mock_completion(self) -> None:
         self.auth.token_scopes = frozenset({"apps:read", "billing:checkout"})
         lite = self.client.post(
@@ -380,7 +503,12 @@ class BillingApiTests(unittest.TestCase):
                 f"/v1/billing/mock/orders/{self.store.order_id}/complete",
                 json={},
             )
+            approve = production.post(
+                f"/v1/billing/mock/orders/{self.store.order_id}/approve",
+                json={},
+            )
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(approve.status_code, 404)
 
     def test_billing_readiness_is_capability_scoped_and_driver_is_explicit(self) -> None:
         with TestClient(
@@ -425,7 +553,12 @@ class BillingApiTests(unittest.TestCase):
                 f"/v1/billing/mock/orders/{self.store.order_id}/complete",
                 json={},
             )
+            approve_route = staging.post(
+                f"/v1/billing/mock/orders/{self.store.order_id}/approve",
+                json={},
+            )
             self.assertNotEqual(mock_route.status_code, 404)
+            self.assertNotEqual(approve_route.status_code, 404)
 
     def test_mock_pricing_is_strict_and_fails_closed_in_production(self) -> None:
         raw = json.dumps(

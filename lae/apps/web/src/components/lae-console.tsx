@@ -228,7 +228,7 @@ export function LaeConsole() {
         const identity = await getPrincipal(controller.signal);
         const catalog = await listApplications(controller.signal);
         const details = await Promise.all(
-          catalog.applications.slice(0, 8).map(async (application) => {
+          catalog.applications.map(async (application) => {
             try {
               const [detail, deploymentHistory] = await Promise.all([
                 getApplication(application.id, controller.signal),
@@ -247,7 +247,7 @@ export function LaeConsole() {
         if (controller.signal.aborted) return;
         setPrincipal(identity);
         setShoreApplications(
-          catalog.applications.slice(0, 8).map((application, index) => {
+          catalog.applications.map((application, index) => {
             const view = details[index];
             const detail = view?.detail;
             const primary = detail?.routes.find((route) => route.primary);
@@ -951,7 +951,7 @@ function Header({
       </div>
       <div className="account">
         <span className="plan-badge">{principal?.entitlement.plan.toUpperCase() || "GUEST"}</span>
-        <Link className="account-button" aria-label={principal ? "账户" : "登录"} href="/login">
+        <Link className="account-button" aria-label={principal ? "账户" : "登录"} href={principal ? "/account" : "/login"}>
           <CircleUserRound size={18} strokeWidth={1.5} />
           <span>{accountName}</span>
           <ChevronRight size={14} strokeWidth={1.5} />

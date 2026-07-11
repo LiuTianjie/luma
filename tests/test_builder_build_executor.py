@@ -25,6 +25,11 @@ from luma.builder_build_executor import (
     BUILDKIT_ADDR_ENV,
     _CommandResult,
     _RuntimePrerequisites,
+    _TRUSTED_STATIC_ADAPTER_DOCKERFILE,
+    _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE,
+    _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE_PATH,
+    _TRUSTED_STATIC_ADAPTER_PATH,
+    _retrieve_buildkit_provenance,
     _rootless_buildkit_addr,
     _run_command,
     _validate_build_lease,
@@ -43,11 +48,84 @@ from luma.errors import LumaError
 
 
 SNAPSHOT_DIGEST_PLACEHOLDER = "sha256:" + ("a" * 64)
-IMAGE_DIGESTS = {
-    "base": "sha256:" + ("1" * 64),
-    "web": "sha256:" + ("2" * 64),
-}
 SECRET_SENTINEL = "registry-or-build-secret-must-not-reach-processes"
+
+
+def _json_bytes(body):
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _sha256_bytes(raw):
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _buildkit_fixture(key, *, descriptor_subject=None, statement_subject=None):
+    runnable_digest = _sha256_bytes(f"runnable-manifest:{key}".encode("utf-8"))
+    statement_subject_digest = statement_subject or runnable_digest
+    statement = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [
+            {
+                "name": f"lae/{key}",
+                "digest": {"sha256": statement_subject_digest.split(":", 1)[1]},
+            }
+        ],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {"buildDefinition": {"buildType": "https://mobyproject.org/buildkit@v1"}},
+    }
+    statement_bytes = _json_bytes(statement)
+    blob_digest = _sha256_bytes(statement_bytes)
+    attestation_manifest = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "layers": [
+            {
+                "mediaType": "application/vnd.in-toto+json",
+                "digest": blob_digest,
+                "size": len(statement_bytes),
+                "annotations": {"in-toto.io/predicate-type": "https://slsa.dev/provenance/v1"},
+            }
+        ],
+    }
+    attestation_bytes = _json_bytes(attestation_manifest)
+    attestation_digest = _sha256_bytes(attestation_bytes)
+    index = {
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": [
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": runnable_digest,
+                "size": 512,
+                "platform": {"os": "linux", "architecture": "amd64"},
+            },
+            {
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": attestation_digest,
+                "size": len(attestation_bytes),
+                "platform": {"os": "unknown", "architecture": "unknown"},
+                "annotations": {
+                    "vnd.docker.reference.type": "attestation-manifest",
+                    "vnd.docker.reference.digest": descriptor_subject or runnable_digest,
+                },
+            },
+        ],
+    }
+    index_bytes = _json_bytes(index)
+    return {
+        "runnableDigest": runnable_digest,
+        "statement": statement,
+        "statementBytes": statement_bytes,
+        "blobDigest": blob_digest,
+        "attestationBytes": attestation_bytes,
+        "attestationDigest": attestation_digest,
+        "indexBytes": index_bytes,
+        "indexDigest": _sha256_bytes(index_bytes),
+    }
+
+
+BUILDKIT_FIXTURES = {key: _buildkit_fixture(key) for key in ("base", "web")}
+IMAGE_DIGESTS = {key: fixture["indexDigest"] for key, fixture in BUILDKIT_FIXTURES.items()}
 
 
 class BuilderBuildExecutorTests(unittest.TestCase):
@@ -186,6 +264,28 @@ class BuilderBuildExecutorTests(unittest.TestCase):
             trivy_cache=self.trivy_cache,
         )
 
+    def _retrieve_fixture(self, fixture, *, index_output=None):
+        def fake_run(command, **_kwargs):
+            reference = command[-1]
+            if command[1] == "manifest" and reference.endswith("@" + fixture["indexDigest"]):
+                return _CommandResult(0, fixture["indexBytes"] if index_output is None else index_output)
+            if command[1] == "manifest" and reference.endswith("@" + fixture["attestationDigest"]):
+                return _CommandResult(0, fixture["attestationBytes"])
+            if command[1] == "blob" and reference.endswith("@" + fixture["blobDigest"]):
+                return _CommandResult(0, fixture["statementBytes"])
+            raise AssertionError(command)
+
+        with patch("luma.builder_build_executor._run_command", side_effect=fake_run):
+            return _retrieve_buildkit_provenance(
+                "/tools/crane",
+                "localhost:5000/lae/provenance-test@" + fixture["indexDigest"],
+                expected_index_digest=fixture["indexDigest"],
+                insecure=True,
+                env={"PATH": "/tools"},
+                timeout=30,
+                cancel_event=threading.Event(),
+            )
+
     def test_multi_build_executes_topologically_and_returns_supply_chain_artifacts(self):
         digest, _snapshot = self._install_snapshot(
             {
@@ -221,20 +321,18 @@ class BuilderBuildExecutorTests(unittest.TestCase):
                 output_path = Path(command[command.index("--output") + 1])
                 output_path.write_text(json.dumps({"Results": []}), encoding="utf-8")
                 return _CommandResult(0, b"")
-            if executable.endswith("cosign"):
-                image_digest = command[-1].rsplit("@", 1)[1]
-                statement = {
-                    "_type": "https://in-toto.io/Statement/v1",
-                    "subject": [{"name": "image", "digest": {"sha256": image_digest.split(":", 1)[1]}}],
-                    "predicateType": "https://slsa.dev/provenance/v1",
-                    "predicate": {},
-                }
-                envelope = {
-                    "payloadType": "application/vnd.in-toto+json",
-                    "payload": base64.b64encode(json.dumps(statement).encode("utf-8")).decode("ascii"),
-                    "signatures": [],
-                }
-                return _CommandResult(0, (json.dumps(envelope) + "\n").encode("utf-8"))
+            if executable.endswith("crane"):
+                reference = command[-1]
+                key = next(key for key in BUILDKIT_FIXTURES if f"/{key}@" in reference)
+                fixture = BUILDKIT_FIXTURES[key]
+                self.assertIn("--insecure", command)
+                if command[1] == "manifest" and reference.endswith("@" + fixture["indexDigest"]):
+                    return _CommandResult(0, fixture["indexBytes"])
+                if command[1] == "manifest" and reference.endswith("@" + fixture["attestationDigest"]):
+                    return _CommandResult(0, fixture["attestationBytes"])
+                if command[1] == "blob" and reference.endswith("@" + fixture["blobDigest"]):
+                    return _CommandResult(0, fixture["statementBytes"])
+                raise AssertionError(command)
             raise AssertionError(command)
 
         with patch("luma.builder_build_executor._runtime_prerequisites", return_value=self._prerequisites()), patch(
@@ -245,8 +343,10 @@ class BuilderBuildExecutorTests(unittest.TestCase):
         build_commands = [command for command in commands if command[0].endswith("buildctl")]
         self.assertEqual(len(build_commands), 2)
         for command in build_commands:
-            self.assertIn("attest:provenance=mode=max", command)
+            provenance_option = command.index("attest:provenance=mode=max")
+            self.assertEqual(command[provenance_option - 1], "--opt")
             self.assertNotIn("--attest=type=provenance,mode=max", command)
+        self.assertFalse(any(command[0].endswith("cosign") for command in commands))
         self.assertIn("/base:", next(value for value in build_commands[0] if value.startswith("type=image,name=")))
         self.assertIn("/web:", next(value for value in build_commands[1] if value.startswith("type=image,name=")))
         self.assertEqual(set(result["images"]), {"base", "web"})
@@ -258,6 +358,44 @@ class BuilderBuildExecutorTests(unittest.TestCase):
         for key, image in result["images"].items():
             self.assertTrue(image.endswith("@" + result["imageDigests"][key]))
             self.assertNotIn("localhost:5000", image)
+            artifact_digest = result["artifacts"][f"{key}-provenance"]["digest"].split(":", 1)[1]
+            artifact_path = (
+                self.snapshot_root
+                / "artifacts"
+                / "build"
+                / "provenance"
+                / "sha256"
+                / artifact_digest[:2]
+                / f"{artifact_digest}.json"
+            )
+            envelopes = json.loads(artifact_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(envelopes), 1)
+            statement = json.loads(base64.b64decode(envelopes[0]["payload"]).decode("utf-8"))
+            self.assertEqual(
+                statement["subject"][0]["digest"]["sha256"],
+                BUILDKIT_FIXTURES[key]["runnableDigest"].split(":", 1)[1],
+            )
+
+    def test_buildkit_provenance_rejects_descriptor_subject_mismatch(self):
+        fixture = _buildkit_fixture(
+            "descriptor-mismatch",
+            descriptor_subject="sha256:" + ("d" * 64),
+        )
+        with self.assertRaisesRegex(LumaError, "descriptor is not bound"):
+            self._retrieve_fixture(fixture)
+
+    def test_buildkit_provenance_rejects_statement_subject_mismatch(self):
+        fixture = _buildkit_fixture(
+            "statement-mismatch",
+            statement_subject="sha256:" + ("e" * 64),
+        )
+        with self.assertRaisesRegex(LumaError, "not bound to the linux/amd64 manifest"):
+            self._retrieve_fixture(fixture)
+
+    def test_buildkit_provenance_rejects_root_index_content_digest_mismatch(self):
+        fixture = _buildkit_fixture("root-content-mismatch")
+        with self.assertRaisesRegex(LumaError, "does not match its OCI descriptor digest"):
+            self._retrieve_fixture(fixture, index_output=fixture["indexBytes"] + b"\n")
 
     def test_zero_build_plan_validates_snapshot_without_invoking_toolchain(self):
         digest, _snapshot = self._install_snapshot({"README.md": "prebuilt images only\n"})
@@ -268,6 +406,127 @@ class BuilderBuildExecutorTests(unittest.TestCase):
         self.assertEqual(result["images"], {})
         self.assertEqual(result["scanDigests"], {})
         self.assertEqual(result["artifacts"], {})
+
+    def test_exact_static_adapter_is_materialized_before_build(self):
+        digest, _snapshot = self._install_snapshot(
+            {
+                ".dockerignore": "*\n",
+                "index.html": "<!doctype html><title>LAE</title>\n",
+            }
+        )
+        payload = self._payload(
+            digest,
+            [self._build("web", dockerfile=_TRUSTED_STATIC_ADAPTER_PATH)],
+        )
+        fixture = BUILDKIT_FIXTURES["web"]
+        build_commands = []
+
+        def fake_run(command, **_kwargs):
+            executable = command[0]
+            if executable.endswith("buildctl"):
+                build_commands.append(list(command))
+                dockerfile_root = Path(
+                    next(value for value in command if value.startswith("dockerfile=")).split("=", 1)[1]
+                )
+                context_root = Path(
+                    next(value for value in command if value.startswith("context=")).split("=", 1)[1]
+                )
+                self.assertEqual(
+                    (dockerfile_root / Path(_TRUSTED_STATIC_ADAPTER_PATH).name).read_bytes(),
+                    _TRUSTED_STATIC_ADAPTER_DOCKERFILE,
+                )
+                self.assertEqual(
+                    (context_root / _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE_PATH).read_bytes(),
+                    _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE,
+                )
+                self.assertTrue((context_root / "index.html").is_file())
+                metadata = Path(command[command.index("--metadata-file") + 1])
+                metadata.write_text(
+                    json.dumps({"containerimage.digest": fixture["indexDigest"]}),
+                    encoding="utf-8",
+                )
+                return _CommandResult(0, b"")
+            if executable.endswith("syft"):
+                output_path = Path(command[command.index("--output") + 1].split("=", 1)[1])
+                output_path.write_text(
+                    json.dumps({"bomFormat": "CycloneDX", "specVersion": "1.5", "components": []}),
+                    encoding="utf-8",
+                )
+                return _CommandResult(0, b"")
+            if executable.endswith("trivy"):
+                output_path = Path(command[command.index("--output") + 1])
+                output_path.write_text(json.dumps({"Results": []}), encoding="utf-8")
+                return _CommandResult(0, b"")
+            raise AssertionError(command)
+
+        with patch(
+            "luma.builder_build_executor._runtime_prerequisites",
+            return_value=self._prerequisites(),
+        ), patch(
+            "luma.builder_build_executor._run_command",
+            side_effect=fake_run,
+        ), patch(
+            "luma.builder_build_executor._retrieve_buildkit_provenance",
+            return_value=b"[]",
+        ):
+            result = build_plan(payload, cancel_event=threading.Event())
+
+        self.assertEqual(set(result["images"]), {"web"})
+        self.assertEqual(len(build_commands), 1)
+        command = build_commands[0]
+        self.assertIn(f"filename={Path(_TRUSTED_STATIC_ADAPTER_PATH).name}", command)
+        provenance_option = command.index("attest:provenance=mode=max")
+        self.assertEqual(command[provenance_option - 1], "--opt")
+        self.assertIn(
+            "FROM golang:1.24.8-bookworm@sha256:4ed690d6649d63c312b99a6120025ec79ce3b542968a37da53d6236c7c61a848",
+            _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"),
+        )
+        self.assertIn("FROM scratch", _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"))
+        self.assertIn('USER 10001:10001', _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"))
+        self.assertIn('request.URL.Path == "/healthz"', _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"))
+        self.assertIn("EXPOSE 8080", _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"))
+
+    def test_static_adapter_rejects_reserved_snapshot_path_and_symlink_conflicts(self):
+        occupied_digest, _snapshot = self._install_snapshot(
+            {
+                _TRUSTED_STATIC_ADAPTER_PATH: "FROM attacker.invalid/image\n",
+                "index.html": "<!doctype html><title>LAE</title>\n",
+            }
+        )
+        symlink_digest, _snapshot = self._install_snapshot(
+            {"index.html": "<!doctype html><title>LAE</title>\n"},
+            symlinks={".lae": "tenant-controlled"},
+        )
+        prerequisites = Mock(side_effect=AssertionError("toolchain must not start"))
+        with patch("luma.builder_build_executor._runtime_prerequisites", prerequisites):
+            for snapshot_digest in (occupied_digest, symlink_digest):
+                with self.subTest(snapshot_digest=snapshot_digest), self.assertRaisesRegex(
+                    LumaError,
+                    "reserved platform adapter path conflicts",
+                ):
+                    build_plan(
+                        self._payload(
+                            snapshot_digest,
+                            [self._build("web", dockerfile=_TRUSTED_STATIC_ADAPTER_PATH)],
+                        ),
+                        cancel_event=threading.Event(),
+                    )
+        prerequisites.assert_not_called()
+
+    def test_ordinary_missing_dockerfile_is_not_platform_materialized(self):
+        digest, _snapshot = self._install_snapshot(
+            {"index.html": "<!doctype html><title>LAE</title>\n"}
+        )
+        prerequisites = Mock(side_effect=AssertionError("toolchain must not start"))
+        with patch(
+            "luma.builder_build_executor._runtime_prerequisites",
+            prerequisites,
+        ), self.assertRaisesRegex(LumaError, "build Dockerfile is not present"):
+            build_plan(
+                self._payload(digest, [self._build("web", dockerfile="Dockerfile")]),
+                cancel_event=threading.Event(),
+            )
+        prerequisites.assert_not_called()
 
     def test_external_only_plan_resolves_scans_and_returns_immutable_artifacts(self):
         digest, _snapshot = self._install_snapshot({"compose.yaml": "services: {}\n"})

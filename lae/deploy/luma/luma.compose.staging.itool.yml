@@ -28,6 +28,10 @@ services:
     exposure: tailscale-relay
     domain: lae-staging.itool.tech
     port: 3000
+    # lab already has a host-network workload on 3000. Keep the container
+    # contract on 3000 while publishing LAE staging through a dedicated,
+    # preflighted host port.
+    publishPort: 13000
   api:
     node: lab
     exposure: tailscale-relay

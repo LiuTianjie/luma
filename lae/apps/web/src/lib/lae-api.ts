@@ -9,6 +9,117 @@ export type LaePrincipal = {
   credential: { type: "session" | "deploy_token"; scopes: string[] };
 };
 
+export type DeployTokenScope =
+  | "analyses:write"
+  | "apps:read"
+  | "apps:write"
+  | "billing:checkout"
+  | "deployments:write"
+  | "logs:read"
+  | "sources:write";
+
+export type DeployToken = {
+  id: string;
+  name: string;
+  prefix: string;
+  scopes: DeployTokenScope[];
+  purpose: string;
+  isDefault: boolean;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
+  lastUsedIp: string | null;
+  createdAt: string;
+};
+
+export type DeployTokenIssue = {
+  token: DeployToken;
+  plaintext: string;
+};
+
+export type BillingPlanCode = "lite" | "pro" | "ultra";
+export type BillingInterval = "monthly" | "yearly";
+export type BillingOrderStatus =
+  | "pending"
+  | "paid"
+  | "failed"
+  | "expired"
+  | "canceled";
+
+export type BillingPrice = {
+  amountMinor: number;
+  currency: string;
+};
+
+export type BillingPlan = {
+  code: BillingPlanCode;
+  version: number;
+  limits: Record<string, number>;
+  features: Record<string, boolean>;
+  pricing: {
+    mode: "free" | "mock-development-only" | string;
+    commerciallyApproved: boolean;
+    monthly: BillingPrice | null;
+    yearly: BillingPrice | null;
+  };
+};
+
+export type BillingSubscription = {
+  id: string;
+  plan: { code: BillingPlanCode; version: number };
+  interval: BillingInterval;
+  status: string;
+  provider: string;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  limits: Record<string, number>;
+  features: Record<string, boolean>;
+};
+
+export type BillingUsage = {
+  asOf: string;
+  ledger: {
+    connected: boolean;
+    mode: string;
+    billingImpact: boolean;
+  };
+  plan: { code: BillingPlanCode; version: number };
+  counters: Record<string, { used: number; limit: number | null }>;
+  notice: string;
+};
+
+export type BillingOrder = {
+  id: string;
+  status: BillingOrderStatus;
+  provider: string;
+  plan: { code: "pro" | "ultra"; version: number };
+  interval: BillingInterval;
+  price: BillingPrice & {
+    pricingVersion: string;
+    commerciallyApproved: boolean;
+  };
+  checkout: {
+    url: string;
+    expiresAt: string;
+    requiresUserAction: boolean;
+  } | null;
+  paidSubscriptionId: string | null;
+  statusChangedAt: string;
+  createdAt: string;
+};
+
+export type BillingPaymentResult = {
+  accepted: boolean;
+  event: {
+    id: string;
+    processingStatus: "accepted" | "rejected" | "ignored";
+    reason: string;
+  };
+  order: { id: string; status: BillingOrderStatus };
+  subscriptionId: string | null;
+};
+
 export type ApplicationSummary = {
   id: string;
   name: string;
@@ -336,6 +447,104 @@ export async function sha256File(file: File) {
 
 export async function getPrincipal(signal?: AbortSignal) {
   return requestJson<LaePrincipal>("/me", { signal });
+}
+
+export async function listDeployTokens(signal?: AbortSignal) {
+  return requestJson<{ tokens: DeployToken[] }>("/deploy-tokens", { signal });
+}
+
+export async function createDeployToken(
+  input: {
+    name: string;
+    scopes: DeployTokenScope[];
+    expiresAt?: string | null;
+  },
+  signal?: AbortSignal,
+) {
+  return requestJson<DeployTokenIssue>("/deploy-tokens", {
+    method: "POST",
+    body: {
+      name: input.name,
+      scopes: input.scopes,
+      expiresAt: input.expiresAt || null,
+    },
+    mutation: true,
+    signal,
+  });
+}
+
+export async function rotateDeployToken(
+  tokenId: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<DeployTokenIssue>(
+    `/deploy-tokens/${encodeURIComponent(tokenId)}/rotate`,
+    { method: "POST", body: {}, mutation: true, signal },
+  );
+}
+
+export async function revokeDeployToken(
+  tokenId: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<void>(`/deploy-tokens/${encodeURIComponent(tokenId)}`, {
+    method: "DELETE",
+    mutation: true,
+    signal,
+  });
+}
+
+export async function listBillingPlans(signal?: AbortSignal) {
+  return requestJson<{ plans: BillingPlan[] }>("/plans", { signal });
+}
+
+export async function getBillingSubscription(signal?: AbortSignal) {
+  return requestJson<{ subscription: BillingSubscription }>(
+    "/billing/subscription",
+    { signal },
+  );
+}
+
+export async function getBillingUsage(signal?: AbortSignal) {
+  return requestJson<BillingUsage>("/usage", { signal });
+}
+
+export async function createCheckoutSession(
+  input: { plan: "pro" | "ultra"; interval: BillingInterval },
+  idempotencyKey: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<{ order: BillingOrder }>("/billing/checkout-sessions", {
+    method: "POST",
+    body: input,
+    idempotencyKey,
+    mutation: true,
+    signal,
+  });
+}
+
+export async function getBillingOrder(orderId: string, signal?: AbortSignal) {
+  return requestJson<{ order: BillingOrder }>(
+    `/billing/orders/${encodeURIComponent(orderId)}`,
+    { signal },
+  );
+}
+
+export async function approveMockBillingOrder(
+  orderId: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<BillingPaymentResult>(
+    `/billing/mock/orders/${encodeURIComponent(orderId)}/approve`,
+    {
+      method: "POST",
+      body: {},
+      idempotencyKey,
+      mutation: true,
+      signal,
+    },
+  );
 }
 
 export async function listApplications(signal?: AbortSignal) {

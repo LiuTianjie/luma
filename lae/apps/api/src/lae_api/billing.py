@@ -93,6 +93,10 @@ class MockCompleteRequest(StrictModel):
         }
 
 
+class MockApproveRequest(StrictModel):
+    """The browser may approve an order, but it may not report payment facts."""
+
+
 def _timestamp(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -414,6 +418,125 @@ def create_billing_router(
         "staging",
         "test",
     }:
+
+        @router.post("/v1/billing/mock/orders/{order_id}/approve")
+        async def approve_mock_order(
+            order_id: str,
+            request: Request,
+            _payload: MockApproveRequest,
+            idempotency_key: Annotated[
+                str | None, Header(alias="Idempotency-Key")
+            ] = None,
+            x_csrf_token: Annotated[
+                str | None, Header(alias="X-CSRF-Token")
+            ] = None,
+        ) -> JSONResponse:
+            principal = await request.app.state.require_scoped_principal(
+                request,
+                "billing:checkout",
+                csrf_header=x_csrf_token,
+                mutation=True,
+            )
+            if principal.credential_type != "session":
+                raise BillingHttpError(
+                    403,
+                    "LAE_MOCK_CHECKOUT_SESSION_REQUIRED",
+                    "Mock checkout approval requires an interactive session",
+                )
+            if idempotency_key is None:
+                raise BillingHttpError(
+                    400,
+                    "LAE_IDEMPOTENCY_REQUIRED",
+                    "Idempotency-Key is required",
+                )
+
+            billing = runtime()
+            try:
+                # Resolve through the caller's tenant before constructing any
+                # provider event. No client-supplied plan, price or merchant
+                # fact is accepted by this endpoint.
+                order = await billing.store.get_order(
+                    TenantScope(principal.tenant_id), order_id
+                )
+            except (ResourceNotFound, ValueError) as exc:
+                raise BillingHttpError(
+                    404,
+                    "LAE_BILLING_ORDER_NOT_FOUND",
+                    "Billing order not found",
+                ) from exc
+            except BillingUnavailable as exc:
+                raise BillingHttpError(
+                    503,
+                    "LAE_BILLING_UNAVAILABLE",
+                    "Billing service is temporarily unavailable",
+                    retryable=True,
+                ) from exc
+
+            if order.provider != "mock" or order.provider != billing.provider.code:
+                raise BillingHttpError(
+                    409,
+                    "LAE_MOCK_CHECKOUT_ORDER_INVALID",
+                    "The billing order is not a mock checkout",
+                )
+            # A paid order is admitted only so an identical request can replay
+            # the already accepted provider event. A different key is rejected
+            # below when the store reports an ignored terminal-order event.
+            if order.status not in {"pending", "paid"}:
+                raise BillingHttpError(
+                    409,
+                    "LAE_MOCK_CHECKOUT_ORDER_TERMINAL",
+                    "The mock checkout can no longer be approved",
+                )
+
+            try:
+                result = await billing.store.process_provider_event(
+                    ProviderPaymentEvent(
+                        idempotency_key=idempotency_key,
+                        provider_event_id=idempotency_key,
+                        path_order_id=order.id,
+                        reported_order_id=order.id,
+                        merchant_id=billing.provider.merchant_id,
+                        plan_code=order.plan_code,
+                        interval=order.interval,
+                        currency=order.currency,
+                        amount_minor=order.amount_minor,
+                        outcome="paid",
+                        # A deterministic server-owned timestamp keeps a retry
+                        # byte-equivalent after the order changes to paid.
+                        occurred_at=order.created_at,
+                    )
+                )
+            except BillingEventConflict as exc:
+                raise BillingHttpError(
+                    409,
+                    "LAE_PAYMENT_EVENT_CONFLICT",
+                    "Payment event conflicts with a previous delivery",
+                ) from exc
+            except BillingUnavailable as exc:
+                raise BillingHttpError(
+                    503,
+                    "LAE_BILLING_UNAVAILABLE",
+                    "Billing service is temporarily unavailable",
+                    retryable=True,
+                ) from exc
+            except ValueError as exc:
+                raise BillingHttpError(
+                    400,
+                    "LAE_IDEMPOTENCY_INVALID",
+                    "Idempotency-Key is invalid",
+                ) from exc
+
+            if result.processing_status != "accepted":
+                raise BillingHttpError(
+                    409,
+                    "LAE_MOCK_CHECKOUT_ORDER_TERMINAL",
+                    "The mock checkout can no longer be approved",
+                )
+            response = JSONResponse(_payment_result_body(result))
+            response.headers["Idempotency-Replayed"] = (
+                "true" if result.replayed else "false"
+            )
+            return _no_store(response)
 
         @router.post("/v1/billing/mock/orders/{order_id}/complete")
         async def complete_mock_order(

@@ -12,7 +12,11 @@ Use the `lae` CLI as the only deployment boundary. Never call Luma management AP
 - Keep deploy tokens, Git credentials, OTPs, payment data, and environment values out of prompts, command arguments, repositories, and logs.
 - Ask the user to enter secrets in their own terminal through stdin, an environment variable, or an OS credential store. Do not echo them. A private Git credential must use `--secret-stdin`; set `LAE_DEPLOY_TOKEN` locally because one stdin stream cannot carry both values.
 - Run `inspect` before every new deployment or source update. Use `inspect-file` for `.html`/`.zip` sources. Do not bypass a blocker or edit generated LAE/Luma deployment files by hand.
-- Treat only `allow` as deployable. For `needs_configuration`, collect the named values through safe terminal input and inspect again. For `deny`, report the blocker and stop.
+- Treat only the public analysis status `deployable` as ready to deploy. For
+  `needs_configuration`, collect only the named values through safe terminal
+  input and reuse the same stored analysis after configuration. For
+  `not_deployable`, report the stable blocker and stop. The internal policy
+  words `allow` and `deny` are not CLI statuses.
 - Do not attempt public TCP/UDP, host ports, privileged containers, host namespaces, devices, sockets, bind mounts, or custom domains.
 - Require explicit user confirmation before rollback, application deletion, source-connection revocation, subscription changes, or opening a payment checkout. Never complete payment for the user.
 - Preserve the returned operation ID and cursor until the operation is terminal.
@@ -85,7 +89,10 @@ For every required variable:
 2. Run `lae env list <app> --format json` and retain its current version for compare-and-set.
 3. Explain why each required name is needed and which services consume it. Use `--service '*'` when one value is shared by every listed service, or set each listed service separately.
 4. Direct the user to `lae env set <app> <name> --service <service-or-*> --expected-version <version> --value-stdin --idempotency-key <stable-key>` or the Web form. The deploy token must come from `LAE_DEPLOY_TOKEN` when stdin carries the value. Do not ask them to paste the value into the conversation, including for non-sensitive configuration.
-5. Re-fetch `config show` and `env list`, then deploy the same stored analysis. Re-run inspection only when source, topology, routes, volumes, or build requirements changed.
+5. Re-fetch `config show` and `env list`, then deploy the same stored analysis.
+   Environment values are versioned separately and do not invalidate that
+   analysis. Re-run inspection only when source, topology, routes, volumes, or
+   build requirements changed.
 
 If a Compose diff adds/removes a volume, changes a public route, or is destructive, show the structured diff and wait for explicit confirmation.
 
@@ -125,4 +132,15 @@ If a cancel request races with a successful builder response, LAE operation stat
 
 ## Registration and billing boundary
 
-The skill may initiate email registration/login and generate a checkout URL. The user must enter email codes and approve checkout themselves. Do not read their mailbox, capture an OTP, change a plan, or submit a payment method. After the user returns, re-run `whoami` or query the checkout operation rather than assuming success.
+The current CLI authenticates with an existing deploy token; email
+registration/login and deploy-token creation are session-only Web flows. If the
+user has no token, send them to the LAE Web login/account pages and stop until
+they configure the resulting token locally. Do not substitute raw auth APIs,
+read their mailbox, capture an OTP, or ask them to paste a token into chat.
+
+The CLI may create a checkout session only when the configured deploy token has
+the explicit `billing:checkout` scope. Show the plan, interval, price, provider,
+and checkout URL, then require the user to open and approve it. Never complete
+payment, change a plan automatically, or submit payment data. After the user
+returns, re-run `whoami` and `lae plans list`; do not infer success from a
+browser redirect.
