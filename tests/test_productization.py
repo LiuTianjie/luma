@@ -125,6 +125,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn('"starlette>=0.49.0"', asset_pyproject)
         self.assertIn('"uvicorn[standard]>=0.38.0"', asset_pyproject)
         self.assertIn('"websockets>=15.0.1"', asset_pyproject)
+        self.assertIn('"python-socks[asyncio]>=2.4.0"', asset_pyproject)
 
     def test_pty_session_emits_from_reader_thread_through_event_loop(self):
         from luma.agent import _PtySession
