@@ -12,7 +12,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /src
 COPY . .
-RUN uv sync --frozen --no-dev --no-editable --package lae-worker
+# Platform dependencies use the builder's direct network. Luma may pass proxy
+# build args for tenant builds; do not let those leak into LAE's own images.
+RUN unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; \
+    uv sync --frozen --no-dev --no-editable --package lae-worker
 
 FROM python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b AS runtime
 
