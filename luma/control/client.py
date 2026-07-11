@@ -559,11 +559,14 @@ class ControlClient:
         context: str = "",
         dockerfile: str = "",
         registry_host: str = "",
+        proxy_mode: str = "auto",
         manifest: str = "",
         compose_sidecar: str = "",
         env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Dict[str, Any]:
+        if proxy_mode == "direct":
+            self._require_build_proxy_mode()
         if compose_sidecar:
             compose_sidecar = normalize_repo_relative_path(
                 compose_sidecar, label="composeSidecar"
@@ -587,11 +590,14 @@ class ControlClient:
         context: str = "",
         dockerfile: str = "",
         registry_host: str = "",
+        proxy_mode: str = "auto",
         manifest: str = "",
         compose_sidecar: str = "",
         env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Iterator[Dict[str, Any]]:
+        if proxy_mode == "direct":
+            self._require_build_proxy_mode()
         if compose_sidecar:
             compose_sidecar = normalize_repo_relative_path(
                 compose_sidecar, label="composeSidecar"
@@ -607,6 +613,16 @@ class ControlClient:
             raise LumaError(
                 "Luma Control does not support explicit Compose sidecar selection; "
                 "update the manager before running this import"
+            )
+
+    def _require_build_proxy_mode(self) -> None:
+        capabilities = self.health().get("capabilities") or []
+        if not isinstance(capabilities, list) or "build-proxy-mode-v1" not in {
+            str(item) for item in capabilities
+        }:
+            raise LumaError(
+                "Luma Control does not support explicit direct builder networking; "
+                "update the manager before using --proxy-mode direct"
             )
 
     @staticmethod
@@ -635,6 +651,14 @@ class ControlClient:
         for key, value in optional.items():
             if value:
                 body[key] = value
+        proxy_mode = str(values.get("proxy_mode") or "auto").strip().lower()
+        if proxy_mode not in {"auto", "direct"}:
+            raise LumaError("proxy mode must be auto or direct")
+        if proxy_mode == "direct":
+            # Keep both representations so upgraded Control can retain the
+            # user's intent and can distinguish explicit empty from omission.
+            body["proxyMode"] = "direct"
+            body["proxy"] = ""
         if values.get("port"):
             body["port"] = int(values["port"])
         if values.get("env_secrets") is not None:

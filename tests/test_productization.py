@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import tempfile
 import threading
 import time
@@ -1796,6 +1797,8 @@ class CliTests(unittest.TestCase):
                             "acme/app",
                             "--build-node",
                             "builder",
+                            "--proxy-mode",
+                            "direct",
                             "--manifest",
                             str(manifest_path),
                             "--env",
@@ -1808,6 +1811,7 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(kwargs["provider_id"], "gitea:lin")
                 self.assertEqual(kwargs["repository"], "acme/app")
                 self.assertEqual(kwargs["repo_url"], "")
+                self.assertEqual(kwargs["proxy_mode"], "direct")
                 self.assertIn("DATABASE_URL", kwargs["manifest"])
                 self.assertEqual(kwargs["env_secrets"], {"DATABASE_URL": "postgres://secret", "UNUSED": "value"})
             finally:
@@ -2198,6 +2202,107 @@ class CliTests(unittest.TestCase):
         refresh.assert_called_once()
         self.assertEqual(refresh.call_args.args[2], "luma.example.com")
         self.assertIs(refresh.call_args.args[3], state)
+
+    def test_installer_bootstrap_uses_the_same_tag_ref_as_source_archive(self):
+        from luma.installer import luma_installer_command
+
+        command, exact_ref = luma_installer_command("staging/a4b02a3", environ={})
+
+        self.assertEqual(exact_ref, "staging/a4b02a3")
+        self.assertIn(
+            "https://raw.githubusercontent.com/LiuTianjie/luma/staging/a4b02a3/scripts/install-luma.sh",
+            command,
+        )
+        self.assertNotIn("/main/scripts/install-luma.sh", command)
+
+    def test_local_update_pins_bootstrap_installer_and_archive_to_install_ref(self):
+        with patch("luma.cli.subprocess.run") as run:
+            from luma.cli import _run_luma_installer
+
+            _run_luma_installer(install_ref="v0.1.168")
+
+        self.assertIn("/v0.1.168/scripts/install-luma.sh", run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs["env"]["LUMA_INSTALL_REF"], "v0.1.168")
+
+    def test_node_agent_update_pins_bootstrap_installer_and_archive_to_install_ref(self):
+        executor = Mock()
+        completed = Mock(returncode=0, stdout="installer ok")
+        with patch("luma.agent.subprocess.run", return_value=completed) as run, patch(
+            "luma.agent.LocalExecutor", return_value=executor
+        ), patch("luma.agent.node_agent_os", return_value="linux"), patch(
+            "luma.agent._installed_luma_executable", return_value="/root/.local/bin/luma"
+        ):
+            update_luma_install(install_ref="staging/a4b02a3")
+
+        self.assertIn("/staging/a4b02a3/scripts/install-luma.sh", run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs["env"]["LUMA_INSTALL_REF"], "staging/a4b02a3")
+
+    def test_detached_manager_update_starts_before_installer_or_control_refresh(self):
+        with patch("luma.cli._start_detached_manager_update", return_value=0) as detached, patch(
+            "luma.cli._run_luma_installer"
+        ) as installer, patch("luma.cli._refresh_manager_control") as refresh:
+            code = main(["update", "manager", "--detach", "--install-ref", "v0.1.168"])
+
+        self.assertEqual(code, 0)
+        detached.assert_called_once()
+        installer.assert_not_called()
+        refresh.assert_not_called()
+
+    def test_detach_before_manager_subcommand_is_not_overwritten_by_subparser_defaults(self):
+        with patch("luma.cli._start_detached_manager_update", return_value=0) as detached:
+            code = main(["update", "--detach", "manager"])
+
+        self.assertEqual(code, 0)
+        detached.assert_called_once()
+
+    def test_detached_manager_child_does_not_spawn_recursively(self):
+        old_detached = _set_env("LUMA_UPDATE_DETACHED", "1")
+        old_reexec = _set_env("LUMA_UPDATE_REEXECED", "1")
+        try:
+            with patch("luma.cli._start_detached_manager_update") as detached, patch(
+                "luma.cli._refresh_manager_control"
+            ) as refresh, patch("luma.cli._try_refresh_manager_agent"):
+                code = main(["update", "manager", "--detach"])
+        finally:
+            _restore_env("LUMA_UPDATE_DETACHED", old_detached)
+            _restore_env("LUMA_UPDATE_REEXECED", old_reexec)
+
+        self.assertEqual(code, 0)
+        detached.assert_not_called()
+        refresh.assert_called_once()
+
+    def test_detached_manager_update_uses_new_session_private_log_and_status_file(self):
+        from luma.cli import _start_detached_manager_update
+
+        process = Mock(pid=4321)
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"XDG_STATE_HOME": tmp}, clear=False
+        ), patch("luma.cli._current_luma_command", return_value=["/opt/luma/bin/luma"]), patch(
+            "luma.cli.subprocess.Popen", return_value=process
+        ) as popen, patch("builtins.print"):
+            code = _start_detached_manager_update(
+                Mock(_raw_argv=["update", "manager", "--detach", "--install-ref", "deadbeef"])
+            )
+            logs = list((Path(tmp) / "luma" / "updates").glob("*.log"))
+            log_mode = logs[0].stat().st_mode & 0o777
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(log_mode, 0o600)
+        invocation = popen.call_args.args[0]
+        self.assertEqual(invocation[-5:], ["update", "manager", "--detach", "--install-ref", "deadbeef"])
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertIs(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        detached_env = popen.call_args.kwargs["env"]
+        self.assertEqual(detached_env["LUMA_UPDATE_DETACHED"], "1")
+        self.assertTrue(detached_env["LUMA_UPDATE_STATUS_PATH"].endswith(".status"))
+
+    def test_detach_is_rejected_for_fleet_update(self):
+        with patch("luma.cli._run_luma_installer") as installer:
+            code = main(["update", "--detach", "fleet"])
+
+        self.assertEqual(code, 1)
+        installer.assert_not_called()
 
     def test_update_manager_infers_cloudflare_dns_before_refresh(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3466,6 +3571,34 @@ class CliTests(unittest.TestCase):
         self.assertEqual(body["repository"], "acme/app")
         self.assertEqual(body["manifest"], "name: api\nregion: cn\nexposure: none\n")
         self.assertEqual(body["envSecrets"], {"DATABASE_URL": "postgres://secret"})
+
+    def test_control_client_direct_build_proxy_mode_is_capability_gated_and_explicit(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        health_response = MagicMock()
+        health_response.read.return_value = b'{"capabilities":["build-proxy-mode-v1"]}'
+        health_response.__enter__.return_value = health_response
+        build_response = MagicMock()
+        build_response.read.return_value = b'{"ok":true}'
+        build_response.__enter__.return_value = build_response
+
+        with patch("urllib.request.urlopen", side_effect=[health_response, build_response]) as urlopen:
+            client.build_deploy(repo_url="https://github.com/acme/app", proxy_mode="direct")
+
+        request = urlopen.call_args_list[1].args[0]
+        body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(body["proxyMode"], "direct")
+        self.assertIn("proxy", body)
+        self.assertEqual(body["proxy"], "")
+
+    def test_control_client_direct_build_proxy_mode_rejects_older_control(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        response = MagicMock()
+        response.read.return_value = b'{"capabilities":[]}'
+        response.__enter__.return_value = response
+        with patch("urllib.request.urlopen", return_value=response), self.assertRaisesRegex(
+            LumaError, "update the manager"
+        ):
+            client.build_deploy(repo_url="https://github.com/acme/app", proxy_mode="direct")
 
     def test_node_label_waits_longer_than_manager_node_discovery(self):
         client = ControlClient("https://luma.example.com", "secret")
@@ -11163,13 +11296,19 @@ class GithubImportTests(unittest.TestCase):
                 with patch("luma.control.server._run_node_agent_task", side_effect=fake_build), patch("luma.control.server.handle_deployment", side_effect=fake_deploy):
                     result = handle_build_deploy(
                         state["deployToken"],
-                        {"repoUrl": "https://github.com/acme/app", "ref": "main", "buildNode": "builder"},
+                        {
+                            "repoUrl": "https://github.com/acme/app",
+                            "ref": "main",
+                            "buildNode": "builder",
+                            "proxyMode": "direct",
+                        },
                     )
 
                 config = handle_deployment_config(state["deployToken"], "app")
                 self.assertEqual(config["gitSource"]["repoUrl"], "https://github.com/acme/app")
                 self.assertEqual(config["gitSource"]["ref"], "main")
                 self.assertEqual(config["gitSource"]["buildNode"], "builder")
+                self.assertEqual(config["gitSource"]["proxyMode"], "direct")
                 self.assertEqual(config["gitSource"]["buildRunId"], result["buildRunId"])
 
                 with patch("luma.control.server._run_node_agent_task", side_effect=fake_build), patch("luma.control.server.handle_deployment", side_effect=fake_deploy) as deploy:
@@ -11180,6 +11319,7 @@ class GithubImportTests(unittest.TestCase):
                 update_body = deploy.call_args.args[1]
                 self.assertEqual(update_body["gitSource"]["repoUrl"], "https://github.com/acme/app")
                 self.assertEqual(update_body["gitSource"]["ref"], "main")
+                self.assertEqual(update_body["gitSource"]["proxyMode"], "direct")
                 self.assertIn("image: 100.66.177.70:5000/acme/app:second", update_body["manifest"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -11676,6 +11816,17 @@ class GithubImportTests(unittest.TestCase):
             if cmd[:3] == ["docker", "buildx", "inspect"]:
                 inspect_count += 1
                 return Mock(returncode=1 if inspect_count == 1 else 0, stdout="")
+            if cmd[:2] == ["docker", "inspect"]:
+                return Mock(
+                    returncode=0,
+                    stdout=json.dumps(
+                        [
+                            "HTTP_PROXY=http://127.0.0.1:7890",
+                            "HTTPS_PROXY=http://127.0.0.1:7890",
+                            "NO_PROXY=localhost,127.0.0.1,100.66.177.70:5000",
+                        ]
+                    ),
+                )
             return Mock(returncode=0, stdout="created\n")
 
         with patch("luma.agent.subprocess.run", side_effect=fake_run):
@@ -11704,13 +11855,129 @@ class GithubImportTests(unittest.TestCase):
             if cmd[:3] == ["docker", "buildx", "inspect"]:
                 inspect_count += 1
                 return Mock(returncode=1 if inspect_count == 1 else 0, stdout="")
+            if cmd[:2] == ["docker", "inspect"]:
+                return Mock(returncode=0, stdout="[]")
             return Mock(returncode=0, stdout="created\n")
 
         with patch("luma.agent.subprocess.run", side_effect=fake_run):
             builder = _ensure_buildx_builder("docker", proxy="", no_proxy="localhost", env=buildx_env)
 
         self.assertEqual(builder, "luma-builder")
-        self.assertEqual([kwargs.get("env") for _, kwargs in calls], [buildx_env, buildx_env, buildx_env])
+        self.assertEqual([kwargs.get("env") for _, kwargs in calls], [buildx_env, buildx_env, buildx_env, buildx_env])
+
+    def test_buildx_builder_reuses_matching_proxy_driver_options(self):
+        from luma.agent import _ensure_buildx_builder
+
+        def fake_run(cmd, **_kwargs):
+            if cmd[:3] == ["docker", "buildx", "inspect"]:
+                return Mock(returncode=0, stdout="Name: luma-builder-egress\n")
+            if cmd[:2] == ["docker", "inspect"]:
+                return Mock(
+                    returncode=0,
+                    stdout=json.dumps(
+                        [
+                            "HTTP_PROXY=http://manager:7890",
+                            "HTTPS_PROXY=http://manager:7890",
+                            "NO_PROXY=localhost,127.0.0.1,100.64.0.0/10",
+                        ]
+                    ),
+                )
+            raise AssertionError(cmd)
+
+        with patch("luma.agent.subprocess.run", side_effect=fake_run) as run:
+            builder = _ensure_buildx_builder(
+                "docker",
+                proxy="http://manager:7890",
+                no_proxy="localhost,127.0.0.1,100.64.0.0/10",
+            )
+
+        self.assertEqual(builder, "luma-builder-egress")
+        self.assertEqual(run.call_count, 2)
+
+    def test_buildx_builder_proxy_match_rejects_changed_no_proxy(self):
+        from luma.agent import _buildx_builder_proxy_matches
+
+        container_env = json.dumps(
+            [
+                "HTTP_PROXY=http://manager:7890",
+                "HTTPS_PROXY=http://manager:7890",
+                "NO_PROXY=localhost,127.0.0.1",
+            ]
+        )
+        with patch(
+            "luma.agent.subprocess.run",
+            return_value=Mock(returncode=0, stdout=container_env),
+        ):
+            matches = _buildx_builder_proxy_matches(
+                "docker",
+                "luma-builder-egress",
+                proxy="http://manager:7890",
+                no_proxy="localhost,127.0.0.1,100.64.0.0/10",
+            )
+
+        self.assertFalse(matches)
+
+    def test_buildx_builder_recreates_when_proxy_url_changes(self):
+        from luma.agent import _ensure_buildx_builder
+
+        calls = []
+        docker_inspect_count = 0
+
+        def fake_run(cmd, **_kwargs):
+            nonlocal docker_inspect_count
+            calls.append(cmd)
+            if cmd[:3] == ["docker", "buildx", "inspect"]:
+                return Mock(returncode=0, stdout="Name: luma-builder-egress\n")
+            if cmd[:2] == ["docker", "inspect"]:
+                docker_inspect_count += 1
+                proxy = "http://aly:7890" if docker_inspect_count == 1 else "http://manager:7890"
+                return Mock(
+                    returncode=0,
+                    stdout=json.dumps(
+                        [f"HTTP_PROXY={proxy}", f"HTTPS_PROXY={proxy}", "NO_PROXY=localhost,127.0.0.1"]
+                    ),
+                )
+            return Mock(returncode=0, stdout="ok\n")
+
+        with patch("luma.agent.subprocess.run", side_effect=fake_run):
+            builder = _ensure_buildx_builder(
+                "docker",
+                proxy="http://manager:7890",
+                no_proxy="localhost,127.0.0.1",
+            )
+
+        self.assertEqual(builder, "luma-builder-egress")
+        self.assertEqual(calls[2], ["docker", "buildx", "rm", "-f", "luma-builder-egress"])
+        self.assertEqual(calls[3][:5], ["docker", "buildx", "create", "--name", "luma-builder-egress"])
+
+    def test_buildx_builder_recreates_no_proxy_builder_with_proxy_options(self):
+        from luma.agent import _ensure_buildx_builder
+
+        calls = []
+        docker_inspect_count = 0
+
+        def fake_run(cmd, **_kwargs):
+            nonlocal docker_inspect_count
+            calls.append(cmd)
+            if cmd[:3] == ["docker", "buildx", "inspect"]:
+                return Mock(returncode=0, stdout="Name: luma-builder\n")
+            if cmd[:2] == ["docker", "inspect"]:
+                docker_inspect_count += 1
+                container_env = [
+                    "HTTP_PROXY=http://aly:7890",
+                    "HTTPS_PROXY=http://aly:7890",
+                    "NO_PROXY=localhost",
+                ] if docker_inspect_count == 1 else []
+                return Mock(returncode=0, stdout=json.dumps(container_env))
+            return Mock(returncode=0, stdout="ok\n")
+
+        with patch("luma.agent.subprocess.run", side_effect=fake_run):
+            builder = _ensure_buildx_builder("docker", proxy="", no_proxy="localhost")
+
+        self.assertEqual(builder, "luma-builder")
+        self.assertEqual(calls[2], ["docker", "buildx", "rm", "-f", "luma-builder"])
+        create_cmd = calls[3]
+        self.assertNotIn("env.HTTP_PROXY=", " ".join(create_cmd))
 
     def test_buildx_build_recreates_missing_builder_and_retries(self):
         from luma.agent import _docker_buildx_build
@@ -11941,6 +12208,35 @@ class GithubImportTests(unittest.TestCase):
 
         config = LumaConfig({"defaults": {"nomadServer": "100.64.0.1:4647"}}, None)
         self.assertEqual(_egress_proxy_for_node(config, {"nodes": {}}, "missing"), "")
+
+    def test_build_proxy_request_missing_uses_auto_policy(self):
+        from luma.control.server import _build_proxy_for_request
+
+        with patch("luma.control.server._egress_proxy_for_node", return_value="http://manager:7890") as auto:
+            proxy = _build_proxy_for_request(Mock(), {}, "builder", {})
+
+        self.assertEqual(proxy, "http://manager:7890")
+        auto.assert_called_once()
+
+    def test_build_proxy_request_explicit_empty_is_direct(self):
+        from luma.control.server import _build_proxy_for_request
+
+        with patch("luma.control.server._egress_proxy_for_node") as auto:
+            proxy = _build_proxy_for_request(Mock(), {}, "builder", {"proxy": ""})
+
+        self.assertEqual(proxy, "")
+        auto.assert_not_called()
+
+    def test_build_proxy_request_direct_mode_is_direct_and_validated(self):
+        from luma.control.server import _build_proxy_for_request
+
+        with patch("luma.control.server._egress_proxy_for_node") as auto:
+            proxy = _build_proxy_for_request(Mock(), {}, "builder", {"proxyMode": "direct"})
+
+        self.assertEqual(proxy, "")
+        auto.assert_not_called()
+        with self.assertRaisesRegex(LumaError, "proxyMode must be auto or direct"):
+            _build_proxy_for_request(Mock(), {}, "builder", {"proxyMode": "invalid"})
 
 
 class RenderSecretsIsolationTests(unittest.TestCase):

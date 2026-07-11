@@ -34,6 +34,7 @@ from .builder_executor import (
     open_builder_analysis_artifact,
 )
 from .errors import LumaError
+from .installer import luma_installer_command
 from .local import LocalExecutor, LocalResult
 from .service import slugify
 
@@ -2325,13 +2326,39 @@ def _ensure_buildx_builder(
     inspect = subprocess.run(
         [docker, "buildx", "inspect", name],
         text=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         check=False,
         env=env,
         timeout=30,
     )
-    if inspect.returncode != 0:
+    needs_create = inspect.returncode != 0
+    if not needs_create and not _buildx_builder_proxy_matches(
+        docker,
+        name,
+        proxy=proxy,
+        no_proxy=no_proxy,
+        env=env,
+    ):
+        # Builder names distinguish proxy/no-proxy in the common case, but the
+        # egress proxy URL and NO_PROXY list can change while the named builder
+        # survives. Reusing it would keep BuildKit on the stale network path.
+        # Remove the incompatible builder before creating its replacement; if
+        # removal fails, stop rather than accidentally using the stale builder.
+        remove = subprocess.run(
+            [docker, "buildx", "rm", "-f", name],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            env=env,
+            timeout=60,
+        )
+        if remove.returncode != 0:
+            details = "\n".join(part for part in (inspect.stdout.strip(), remove.stdout.strip()) if part)
+            raise LumaError(f"failed to reconfigure buildx builder {name}:\n{details}")
+        needs_create = True
+    if needs_create:
         create_cmd = [docker, "buildx", "create", "--name", name, "--driver", "docker-container", "--driver-opt", "network=host"]
         if proxy:
             create_cmd += [
@@ -2363,7 +2390,69 @@ def _ensure_buildx_builder(
         if verify.returncode != 0:
             details = "\n".join(part for part in (create.stdout.strip(), verify.stdout.strip()) if part)
             raise LumaError(f"failed to create buildx builder:\n{details}")
+        if not _buildx_builder_proxy_matches(
+            docker,
+            name,
+            proxy=proxy,
+            no_proxy=no_proxy,
+            env=env,
+        ):
+            raise LumaError(f"failed to create buildx builder {name} with the requested proxy settings")
     return name
+
+
+def _buildx_builder_proxy_matches(
+    docker: str,
+    name: str,
+    *,
+    proxy: str,
+    no_proxy: str,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Return whether BuildKit's persisted container env matches this build."""
+    # Current buildx versions do not expose create-time driver opts through
+    # `buildx inspect`. The docker-container driver persists env.* driver opts
+    # as Config.Env on its deterministic BuildKit container, which gives us the
+    # actual settings that base-image pulls will use.
+    inspect = subprocess.run(
+        [
+            docker,
+            "inspect",
+            "--format",
+            "{{json .Config.Env}}",
+            f"buildx_buildkit_{name}0",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        env=env,
+        timeout=30,
+    )
+    if inspect.returncode != 0:
+        return False
+    try:
+        container_env = json.loads(inspect.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(container_env, list):
+        return False
+    options: dict[str, str] = {}
+    for item in container_env:
+        if not isinstance(item, str):
+            return False
+        key, separator, value = item.partition("=")
+        if separator and key.upper() in {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"}:
+            options[key.upper()] = value
+
+    proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+    if not proxy:
+        return all(key not in options for key in proxy_keys)
+    return (
+        options.get("HTTP_PROXY") == proxy
+        and options.get("HTTPS_PROXY") == proxy
+        and options.get("NO_PROXY") == no_proxy
+    )
 
 
 def _buildx_driver_opt(value: str) -> str:
@@ -2860,15 +2949,14 @@ def _docker_image_pull_error(*, image: str, output: str, platform: str = "") -> 
 
 def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AGENT_CONFIG) -> Dict[str, Any]:
     env = os.environ.copy()
-    if install_ref:
-        env["LUMA_INSTALL_REF"] = install_ref
+    command, exact_ref = luma_installer_command(install_ref, environ=env)
+    env["LUMA_INSTALL_REF"] = exact_ref
     layout = _current_install_layout()
     if layout:
         user_home, install_home, bin_dir = layout
         env.setdefault("LUMA_USER_HOME", str(user_home))
         env.setdefault("LUMA_INSTALL_HOME", str(install_home))
         env.setdefault("LUMA_BIN_DIR", str(bin_dir))
-    command = "curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
     try:
         completed = subprocess.run(
             command,
@@ -2910,7 +2998,7 @@ def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AG
     except Exception as exc:
         watchdog_message = f"Tailscale watchdog skipped: {exc}"
     return {
-        "installRef": install_ref,
+        "installRef": exact_ref,
         "message": f"Luma installer finished; {service_message}; {watchdog_message}",
         "output": _tail_text(output),
         "restartAgent": restart_agent,

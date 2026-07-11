@@ -33,6 +33,7 @@ from .agent import DEFAULT_AGENT_CONFIG, install_node_agent, run_node_agent, run
 from .envfile import load_env_file, parse_env_file
 from .errors import LumaError
 from .io import dump_yaml, write_yaml
+from .installer import luma_installer_command
 from .local import LocalExecutor
 from .profiles import PROFILES
 from .render import render_tailscale_route, render_tcp_route, route_path, stack_path
@@ -45,6 +46,7 @@ from . import __version__
 T = TypeVar("T")
 OUTPUT_FORMATS = ("text", "json", "ndjson")
 UPDATE_REEXEC_ENV = "LUMA_UPDATE_REEXECED"
+UPDATE_DETACHED_ENV = "LUMA_UPDATE_DETACHED"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -165,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.168 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.169 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -325,6 +327,12 @@ def build_parser() -> argparse.ArgumentParser:
     import_cmd.add_argument("--context", dest="build_context", default="", help="Docker build context within the repo (default: .)")
     import_cmd.add_argument("--dockerfile", default="", help="Dockerfile path within the repo (default: Dockerfile)")
     import_cmd.add_argument("--registry-host", dest="registry_host", default="", help="Registry host other nodes pull from (default: <build-node>:5000)")
+    import_cmd.add_argument(
+        "--proxy-mode",
+        choices=("auto", "direct"),
+        default="auto",
+        help="Builder outbound network mode: auto uses the node/region policy; direct explicitly disables the build proxy",
+    )
     _add_control_arguments(import_cmd)
     _add_output_arguments(import_cmd)
     import_cmd.add_argument("--timeout", type=int, default=2400, help="Seconds to wait for the build+deploy response")
@@ -453,6 +461,12 @@ def _add_update_manager_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--skip-egress", action="store_true")
     parser.add_argument("--overwrite-control-state", action="store_true")
     parser.add_argument("--install-ref", help="Git ref passed to the install script as LUMA_INSTALL_REF")
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Run a manager update in a detached transaction and write progress to a local log",
+    )
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -1529,6 +1543,13 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
 def cmd_update(args: argparse.Namespace) -> int:
     if args.update_command not in {None, "manager", "fleet"}:
         raise LumaError(f"unknown update command: {args.update_command}")
+    if bool(getattr(args, "detach", False)) and os.environ.get(UPDATE_DETACHED_ENV) != "1":
+        if args.update_command == "fleet":
+            raise LumaError("--detach is only supported for manager updates")
+        should_refresh = args.update_command == "manager" or _manager_refresh_decision(args)[0]
+        if not should_refresh:
+            raise LumaError("--detach requires a manager host with local control state, or the explicit `update manager` target")
+        return _start_detached_manager_update(args)
     if os.environ.get(UPDATE_REEXEC_ENV) == "1":
         print("[skip] Luma CLI already updated in this run")
     else:
@@ -1788,10 +1809,58 @@ def _manager_update_options_provided(args: argparse.Namespace) -> bool:
 
 def _run_luma_installer(*, install_ref: str | None = None) -> None:
     env = os.environ.copy()
-    if install_ref:
-        env["LUMA_INSTALL_REF"] = install_ref
-    command = "curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
+    command, exact_ref = luma_installer_command(install_ref, environ=env)
+    env["LUMA_INSTALL_REF"] = exact_ref
     subprocess.run(command, shell=True, check=True, env=env)
+
+
+def _start_detached_manager_update(args: argparse.Namespace) -> int:
+    command = _current_luma_command()
+    if not command:
+        raise LumaError("unable to locate the Luma executable for detached manager update")
+    raw_argv = list(getattr(args, "_raw_argv", ()) or sys.argv[1:])
+    state_root = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    update_dir = state_root / "luma" / "updates"
+    try:
+        update_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise LumaError(f"unable to create detached update state directory {update_dir}: {exc}") from exc
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    run_id = f"manager-{stamp}-{os.getpid()}"
+    log_path = update_dir / f"{run_id}.log"
+    status_path = update_dir / f"{run_id}.status"
+    try:
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as exc:
+        raise LumaError(f"unable to create detached update log {log_path}: {exc}") from exc
+    log_file = os.fdopen(log_fd, "w", encoding="utf-8")
+    env = os.environ.copy()
+    env[UPDATE_DETACHED_ENV] = "1"
+    env["LUMA_UPDATE_STATUS_PATH"] = str(status_path)
+    wrapper = (
+        'umask 077; "$@"; code=$?; '
+        'printf "%s\\n" "$code" > "$LUMA_UPDATE_STATUS_PATH"; exit "$code"'
+    )
+    try:
+        process = subprocess.Popen(
+            ["sh", "-c", wrapper, "luma-detached-update", *command, *raw_argv],
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+            env=env,
+        )
+    except Exception as exc:
+        log_file.close()
+        log_path.unlink(missing_ok=True)
+        raise LumaError(f"unable to start detached manager update: {exc}") from exc
+    log_file.close()
+    print(f"[ok] Detached manager update started (pid {process.pid})")
+    print(f"[info] Log: {log_path}")
+    print(f"[info] Status: {status_path} (0 = succeeded; non-zero = failed)")
+    print(f"[info] Follow progress: tail -f {shlex.quote(str(log_path))}")
+    return 0
 
 
 def _reexec_after_luma_update() -> None:
@@ -2622,6 +2691,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         context=args.build_context,
         dockerfile=args.dockerfile,
         registry_host=args.registry_host,
+        proxy_mode=args.proxy_mode,
         timeout=args.timeout,
     )
 
@@ -3403,6 +3473,7 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     parser = build_parser()
     args = parser.parse_args(argv)
+    args._raw_argv = list(argv)
     try:
         if not args.no_env:
             load_env_file(args.env_file)

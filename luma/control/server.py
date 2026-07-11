@@ -1645,6 +1645,7 @@ def _sanitize_git_source(source: Dict[str, Any]) -> Dict[str, Any]:
         "manifest",
         "composeContent",
         "composeSidecar",
+        "proxyMode",
         "buildRunId",
     }
     cleaned: Dict[str, Any] = {}
@@ -7121,6 +7122,24 @@ def _load_service_manifest(manifest: str) -> ServiceSpec:
         service_path.unlink(missing_ok=True)
 
 
+def _build_proxy_for_request(
+    config: LumaConfig,
+    state: Dict[str, Any],
+    build_node: str,
+    body: Dict[str, Any],
+) -> str:
+    proxy_mode = str(body.get("proxyMode") or "auto").strip().lower()
+    if proxy_mode not in {"auto", "direct"}:
+        raise LumaError("proxyMode must be auto or direct")
+    if proxy_mode == "direct":
+        return ""
+    if "proxy" in body:
+        # An explicitly empty string is a supported direct override for API
+        # clients that predate proxyMode; omission alone selects auto policy.
+        return str(body.get("proxy") or "").strip()
+    return _egress_proxy_for_node(config, state, build_node)
+
+
 
 
 def handle_build_deploy(
@@ -7162,10 +7181,11 @@ def handle_build_deploy(
         registry_host = str(build_config.get("registryHost") or "").strip() or f"{_nomad_route_host_for_node(state, build_node)}:5000"
     repo = _image_repo_from_repo_url(repo_url)
 
-    # git clone runs on the build node's host; cn/home nodes reach GitHub through
-    # the manager egress gateway. An explicit body.proxy overrides auto-resolution.
+    # git clone and BuildKit run on the build node. Preserve the distinction
+    # between a missing proxy (auto policy) and an explicitly empty proxy/direct
+    # mode; `body.get("proxy") or auto` would incorrectly erase that intent.
     config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
-    proxy = str(body.get("proxy") or "").strip() or _egress_proxy_for_node(config, state, build_node)
+    proxy = _build_proxy_for_request(config, state, build_node, body)
 
     # gitToken and registryAuth are injected at lease time (see
     # _agent_task_lease_payload) so they are never persisted in agentTasks state.
@@ -13025,6 +13045,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "builder-task-api-v1",
                         "builder-artifact-download-v1",
                         "repository-compose-sidecar-v1",
+                        "build-proxy-mode-v1",
                         "lae-runtime-api-v1",
                         "lae-runtime-lifecycle-v1",
                         "lae-runtime-observability-v1",
@@ -13852,6 +13873,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "builder-task-api-v1",
                 "builder-artifact-download-v1",
                 "repository-compose-sidecar-v1",
+                "build-proxy-mode-v1",
                 "lae-runtime-api-v1",
                 "lae-runtime-lifecycle-v1",
                 "lae-runtime-observability-v1",
