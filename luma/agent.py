@@ -2802,8 +2802,8 @@ def configure_insecure_registry(*, registry: str) -> Dict[str, Any]:
         "mkdir -p /etc/docker; "
         'f=/etc/docker/daemon.json; '
         '[ -f "$f" ] || echo "{}" > "$f"; '
-        f"python3 - \"$f\" {shlex.quote(host)} <<'PY'\n"
-        "import json, sys\n"
+        f"changed=$(python3 - \"$f\" {shlex.quote(host)} <<'PY'\n"
+        "import os, json, sys\n"
         "path, host = sys.argv[1], sys.argv[2]\n"
         "try:\n"
         "    data = json.load(open(path))\n"
@@ -2814,12 +2814,18 @@ def configure_insecure_registry(*, registry: str) -> Dict[str, Any]:
         "regs = data.get('insecure-registries')\n"
         "if not isinstance(regs, list):\n"
         "    regs = []\n"
+        "changed = host not in regs\n"
         "if host not in regs:\n"
         "    regs.append(host)\n"
-        "data['insecure-registries'] = regs\n"
-        "open(path, 'w').write(json.dumps(data, indent=2))\n"
+        "if changed:\n"
+        "    data['insecure-registries'] = regs\n"
+        "    tmp = path + '.luma.tmp'\n"
+        "    open(tmp, 'w').write(json.dumps(data, indent=2) + '\\n')\n"
+        "    os.replace(tmp, path)\n"
+        "print('1' if changed else '0')\n"
         "PY\n"
-        "systemctl restart docker"
+        "); "
+        'if [ "$changed" = "1" ]; then systemctl restart docker; fi'
     )
     LocalExecutor().sudo(script)
     return {"registry": host, "message": f"insecure-registry configured: {host}"}

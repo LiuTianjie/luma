@@ -11707,12 +11707,18 @@ class GithubImportTests(unittest.TestCase):
                 }
                 save_state(state)
                 calls = []
+                events = []
 
                 def fake_run_task(_state, node_name, action, payload, **_kwargs):
                     calls.append((node_name, action, payload))
+                    events.append(("agent", node_name, action))
                     return {"message": f"{action} ok"}
 
-                with patch("luma.control.server.handle_deployment", return_value={"service": "luma-registry", "steps": []}), patch(
+                def fake_deployment(_token, _body, **_kwargs):
+                    events.append(("deploy", "luma-registry"))
+                    return {"service": "luma-registry", "steps": []}
+
+                with patch("luma.control.server.handle_deployment", side_effect=fake_deployment), patch(
                     "luma.control.server._run_node_agent_task", side_effect=fake_run_task
                 ):
                     result = handle_registry_serve(state["deployToken"], {"node": "builder"})
@@ -11733,9 +11739,27 @@ class GithubImportTests(unittest.TestCase):
                 ][0]
                 self.assertEqual(tecent_proxy, "http://10.0.0.2:7890")
                 self.assertIn(("tecent", "configure-insecure-registry", {"registry": "100.66.177.70:5000"}), calls)
+                deploy_index = events.index(("deploy", "luma-registry"))
+                self.assertTrue(events[:deploy_index])
+                self.assertTrue(all(event[0] == "agent" for event in events[:deploy_index]))
+                self.assertFalse(any(event[0] == "agent" for event in events[deploy_index + 1 :]))
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_configure_insecure_registry_only_restarts_docker_when_config_changes(self):
+        from luma.agent import configure_insecure_registry
+
+        executor = MagicMock()
+        with patch("luma.agent.node_agent_os", return_value="linux"), patch(
+            "luma.agent.LocalExecutor", return_value=executor
+        ):
+            configure_insecure_registry(registry="100.66.177.70:5000")
+
+        script = executor.sudo.call_args.args[0]
+        self.assertIn("changed=$(python3", script)
+        self.assertIn("changed = host not in regs", script)
+        self.assertIn('if [ "$changed" = "1" ]; then systemctl restart docker; fi', script)
 
     def test_registry_serve_requires_declared_builder_node(self):
         from luma.control.server import handle_registry_serve

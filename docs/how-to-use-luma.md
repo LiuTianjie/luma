@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.161 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.162 sh
 ```
 
 For local development from a checkout:
@@ -393,6 +393,8 @@ luma registry serve --node build-1
 ```
 
 它会把 `registry:2` 部署到 `build-1`（默认 `5000` 端口、带持久化卷、仅 Tailscale 内网可达），并遍历非 manager 的就绪 Linux 节点配置 `insecure-registries`，让它们能经 Tailscale 内网从这个 registry 拉镜像。构建节点本机推送走 `localhost:5000`，跨节点拉取走 `<build-1-tailscale-host>:5000`。
+
+从 `0.1.162` 起，CLI 会先完成 Docker daemon 配置、再创建 registry allocation；重复写入相同的 `insecure-registries` 也不会重启 Docker。这个顺序避免首次启用 registry 时由 Docker 重启打断刚创建的 Nomad CNI 网络。
 
 可选 flag：
 

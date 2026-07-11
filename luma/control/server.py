@@ -7343,13 +7343,11 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
     }
     manifest_text = yaml.safe_dump(manifest, sort_keys=False, allow_unicode=False)
 
-    deploy_body = {"manifest": manifest_text, "sourceName": f"{name} (luma registry serve)"}
-    deploy_result = handle_deployment(token, deploy_body, progress=progress)
-    if isinstance(deploy_result, dict):
-        steps.extend(s for s in (deploy_result.get("steps") or []) if isinstance(s, dict))
-
     # Configure insecure-registries on every ready Linux node so any of them can
     # pull from the in-cluster registry (unpinned services schedule anywhere).
+    # Do this before creating the registry allocation: configuring the builder
+    # may restart Docker, which otherwise leaves the freshly-created Nomad CNI
+    # namespace detached while the task is restarted inside the old allocation.
     # Skip the manager: Control runs in a container there, and restarting its
     # Docker daemon would kill this very request mid-stream. The manager's daemon
     # must be configured out-of-band if it also runs pulled workloads.
@@ -7397,6 +7395,11 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
     }
     steps.append(insecure_step)
     _emit_progress(progress, insecure_step)
+
+    deploy_body = {"manifest": manifest_text, "sourceName": f"{name} (luma registry serve)"}
+    deploy_result = handle_deployment(token, deploy_body, progress=progress)
+    if isinstance(deploy_result, dict):
+        steps.extend(s for s in (deploy_result.get("steps") or []) if isinstance(s, dict))
 
     return {
         "service": name,

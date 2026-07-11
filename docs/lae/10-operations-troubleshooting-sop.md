@@ -83,6 +83,38 @@ docker compose -f lae/deploy/luma/docker-compose.staging.yml config --no-interpo
 
 Luma Dashboard 是 deployed service 日志、指标、allocation event 和节点状态的首选只读入口。不要为了“看日志”先重启服务。
 
+### 3.1 Registry 首次启动后 IPv4/Tailscale 不可达
+
+**Symptom**
+
+- `curl http://localhost:5000/v2/` 因优先使用 IPv6 而成功，但 `curl -4 http://127.0.0.1:5000/v2/` 或其它节点访问失败；
+- `registry` task 在运行，宿主机 `:5000` 也有监听，但 Nomad bridge 显示 `NO-CARRIER`；
+- allocation event 显示 registry 创建后 Docker daemon 被重启。
+
+这是 `0.1.161` 及更早版本中 `registry serve` 的启动顺序问题：它先创建 allocation，再写 Docker `insecure-registries` 并重启 daemon。`0.1.162` 已改为先配置节点、后部署 allocation；相同配置重复执行时也不再重启 Docker。
+
+**Checks**
+
+```bash
+.venv/bin/luma version
+curl --fail --silent --show-error --max-time 8 http://<builder-tailscale-host>:5000/v2/
+ssh <runtime-node> 'curl --fail --silent --show-error --max-time 8 http://<builder-tailscale-host>:5000/v2/'
+ssh <manager> 'nomad job status luma-registry'
+```
+
+如果宿主机还有一个非 Nomad 管理、使用同一数据目录和端口的历史容器，先只读核对其 bind mount、创建来源和 registry 数据目录；两个 registry 进程并发写同一目录不受支持。
+
+**Safe action — 仅限已批准的 staging 恢复**
+
+1. 先把 manager/Control 与 builder node agent 升级到 `0.1.162` 或更高版本；不要在旧 Control 上反复执行 `registry serve`。
+2. 记录 storage class 和实际数据 path，确认普通删除会保留 storage；禁止 `--delete-storage`、registry GC 或删除数据目录。
+3. 仅当历史 host-network 容器已确认不属于 Nomad 且数据 bind mount 已记录时，停止并移除该容器；保留数据目录。
+4. 执行 `.venv/bin/luma service remove luma-registry`，确认输出为 `Storage cleanup skipped`。
+5. 用原 node、port 和 storage class 重新执行 `.venv/bin/luma registry serve ...`。
+6. 从 builder、manager 和每个 runtime candidate 分别请求 `/v2/`；再推送一个候选镜像并按 `repository@sha256:...` 拉取验证。只看到 task `running` 不算恢复完成。
+
+如果升级后的 allocation 仍反复重启、数据目录损坏或跨节点无法访问，停止 build/deploy lane，保留 allocation/log/storage 证据并升级到 Storage + Luma Platform；不要切到临时公网 registry 绕过。
+
 ## 4. Luma Control 或 principal 配置不可用
 
 **Symptom**
