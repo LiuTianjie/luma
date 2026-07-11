@@ -1,0 +1,30 @@
+{
+  "name": "@lae/web",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=20.9"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/check-scaffold.mjs && pnpm run typecheck && pnpm run build"
+  },
+  "dependencies": {
+    "@fontsource-variable/manrope": "5.2.8",
+    "@fontsource-variable/newsreader": "5.2.10",
+    "lucide-react": "1.24.0",
+    "motion": "12.42.2",
+    "next": "16.2.10",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lae-agent-controller"
+version = "0.1.0"
+description = "LAE analysis controller"
+requires-python = ">=3.12"
+dependencies = ["lae-contracts", "lae-core"]
+
+[project.scripts]
+lae-agent-controller = "lae_agent_controller.__main__:main"
+
+[tool.uv.sources]
+lae-contracts = { workspace = true }
+lae-core = { workspace = true }
+
+[tool.setuptools.packages.find]
+where = ["src"]

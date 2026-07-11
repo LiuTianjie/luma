@@ -1,0 +1,47 @@
+name: lae-platform
+compose: docker-compose.yml
+region: cn
+
+volumes:
+  artifact-data:
+    storageClass: lae-cn-artifacts
+    path: lae/platform/artifacts/v1
+    accessMode: ReadWriteOnce
+    initialize: empty
+  postgres-data:
+    storageClass: lae-cn-postgres
+    path: lae/platform/postgres/v1
+    accessMode: ReadWriteOnce
+    initialize: empty
+
+services:
+  web:
+    node: lae-core
+    exposure: cn-edge
+    domain: lae.itool.tech
+    port: 3000
+  api:
+    node: lae-core
+    exposure: cn-edge
+    domain: lae-api.itool.tech
+    port: 8080
+  worker:
+    node: lae-core
+    exposure: none
+  agent-controller:
+    node: lae-core
+    exposure: none
+  postgres:
+    node: lae-core
+    exposure: none
+  artifact-store:
+    node: lae-core
+    exposure: cn-edge
+    domain: lae-artifacts.itool.tech
+    port: 9000
+  artifact-init:
+    node: lae-core
+    exposure: none
+  valkey:
+    node: lae-core
+    exposure: none

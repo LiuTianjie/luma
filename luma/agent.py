@@ -25,6 +25,14 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping
 
+from .builder_build_executor import build_plan, builder_build_available
+from .builder_executor import (
+    BuilderCleanupFailed,
+    BuilderTaskCanceled,
+    analyze_source,
+    builder_analyze_available,
+    open_builder_analysis_artifact,
+)
 from .errors import LumaError
 from .local import LocalExecutor, LocalResult
 from .service import slugify
@@ -110,6 +118,16 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
         return []
     if _docker_buildx_available():
         capabilities.append("docker-build")
+    if builder_analyze_available(os_value):
+        # Do not advertise the aggregate builder-task-v1 capability: this node
+        # implements analyze-source only.  build-plan gets its own executor and
+        # capability when that code genuinely exists.
+        capabilities.append("builder-analyze-v1")
+        capabilities.append("builder-artifact-export-v1")
+    if builder_build_available(os_value):
+        # build-plan has a separate, stricter rootless BuildKit + supply-chain
+        # gate.  Never advertise the aggregate builder-task-v1 capability.
+        capabilities.append("builder-build-v1")
     return capabilities
 
 
@@ -1128,6 +1146,7 @@ def _systemd_unit(config_path: Path, *, executable: str | None = None) -> str:
             "",
             "[Service]",
             "Type=simple",
+            "EnvironmentFile=-/etc/default/luma-node-agent",
             f"ExecStart={args}",
             "Restart=always",
             "RestartSec=5",
@@ -1252,27 +1271,112 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
 
 def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dict[str, Any], config_path: Path = DEFAULT_AGENT_CONFIG) -> bool:
     task_id = str(task.get("id") or "")
+    cancel_event = threading.Event()
+
     def progress(event: Dict[str, Any]) -> None:
         try:
             client.progress_agent_task(task_id=task_id, node_name=node_name, node_id=node_id, events=[event])
         except Exception as exc:
             print(f"luma: node agent task progress failed: {exc}", file=sys.stderr, flush=True)
 
-    heartbeat_stop, heartbeat_thread = _start_agent_task_heartbeat(client, node_name=node_name, node_id=node_id, config_path=config_path)
+    heartbeat_stop, heartbeat_thread = _start_agent_task_heartbeat(
+        client,
+        node_name=node_name,
+        node_id=node_id,
+        active_task_id=task_id,
+        cancel_event=cancel_event,
+        config_path=config_path,
+    )
     try:
         # Keep task execution and result reporting in separate try scopes: a
         # network error while reporting SUCCESS must not be caught and inverted
         # into a "failed" report after the host mutation already happened.
         try:
-            result = execute_agent_task(task, config_path=config_path, progress=progress)
-        except Exception as exc:
+            if str(task.get("action") or "") == "export-builder-artifact":
+                if cancel_event.is_set():
+                    raise BuilderTaskCanceled("builder artifact export canceled")
+                export = open_builder_analysis_artifact(
+                    task.get("payload") if isinstance(task.get("payload"), dict) else {},
+                    cancel_event=cancel_event,
+                )
+                try:
+                    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+                    response = client.upload_builder_artifact(
+                        lease_id=str(payload.get("leaseId") or ""),
+                        node_name=node_name,
+                        node_id=node_id,
+                        stream=export.stream,
+                        media_type=export.media_type,
+                        digest=export.digest,
+                        size_bytes=export.size_bytes,
+                        timeout=60,
+                    )
+                    if response != {
+                        "leaseId": str(payload.get("leaseId") or ""),
+                        "accepted": True,
+                    }:
+                        raise LumaError("builder artifact upload was not accepted")
+                    result = {
+                        "leaseId": str(payload.get("leaseId") or ""),
+                        "digest": export.digest,
+                        "sizeBytes": export.size_bytes,
+                        "message": "builder artifact exported",
+                    }
+                finally:
+                    export.close()
+            else:
+                result = execute_agent_task(task, config_path=config_path, progress=progress, cancel_event=cancel_event)
+        except BuilderCleanupFailed:
             _report_agent_task_result(
                 client,
                 task_id=task_id,
                 node_name=node_name,
                 node_id=node_id,
                 status="failed",
+                message="builder sandbox cleanup failed",
+                result={},
+            )
+            return False
+        except BuilderTaskCanceled as exc:
+            _report_agent_task_result(
+                client,
+                task_id=task_id,
+                node_name=node_name,
+                node_id=node_id,
+                status="canceled",
                 message=str(exc),
+                result={},
+            )
+            return False
+        except Exception as exc:
+            status = "canceled" if cancel_event.is_set() else "failed"
+            action = str(task.get("action") or "")
+            if action == "analyze-source":
+                failure_message = "builder analyze-source failed"
+            elif action == "build-plan":
+                failure_message = "builder build-plan failed"
+            elif action == "export-builder-artifact":
+                failure_message = "builder artifact export failed"
+            else:
+                failure_message = str(exc)
+            _report_agent_task_result(
+                client,
+                task_id=task_id,
+                node_name=node_name,
+                node_id=node_id,
+                status=status,
+                message="builder task canceled" if status == "canceled" else failure_message,
+                result={},
+            )
+            return False
+        if cancel_event.is_set():
+            _report_agent_task_result(
+                client,
+                task_id=task_id,
+                node_name=node_name,
+                node_id=node_id,
+                status="canceled",
+                message="builder task canceled",
                 result={},
             )
             return False
@@ -1321,22 +1425,33 @@ def _report_agent_task_result(
         )
 
 
-def _start_agent_task_heartbeat(client: Any, *, node_name: str, node_id: str, config_path: Path) -> tuple[threading.Event, threading.Thread]:
+def _start_agent_task_heartbeat(
+    client: Any,
+    *,
+    node_name: str,
+    node_id: str,
+    active_task_id: str,
+    cancel_event: threading.Event,
+    config_path: Path,
+) -> tuple[threading.Event, threading.Thread]:
     stop = threading.Event()
-    interval = _agent_task_heartbeat_interval(config_path)
+    interval = min(_agent_task_heartbeat_interval(config_path), 2.0)
 
     def loop() -> None:
         while not stop.is_set():
             try:
-                client.heartbeat_agent(
+                response = client.heartbeat_agent(
                     node_name=node_name,
                     node_id=node_id,
+                    active_task_id=active_task_id,
                     os_name=node_agent_os(),
                     arch=node_agent_arch(),
                     capabilities=node_agent_capabilities(),
                     metrics=node_agent_metrics(),
                     timeout=_agent_task_heartbeat_timeout(interval),
                 )
+                if isinstance(response, dict) and bool(response.get("cancelRequested")):
+                    cancel_event.set()
             except Exception as exc:
                 print(f"luma: node agent busy heartbeat failed: {exc}", file=sys.stderr, flush=True)
             if stop.wait(interval):
@@ -1693,6 +1808,7 @@ def execute_agent_task(
     *,
     config_path: Path = DEFAULT_AGENT_CONFIG,
     progress: Callable[[Dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Dict[str, Any]:
     action = str(task.get("action") or "")
     payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
@@ -1749,6 +1865,10 @@ def execute_agent_task(
         return update_luma_install(install_ref=str(payload.get("installRef") or ""), config_path=config_path)
     if action == "build-image":
         return build_image(payload, progress=progress)
+    if action == "analyze-source":
+        return analyze_source(payload, progress=progress, cancel_event=cancel_event)
+    if action == "build-plan":
+        return build_plan(payload, progress=progress, cancel_event=cancel_event)
     if action == "configure-insecure-registry":
         return configure_insecure_registry(registry=_required(payload, "registry"))
     if action == "join-nomad":
@@ -2297,6 +2417,76 @@ def _find_luma_deployment_manifest(repo: Path) -> tuple[str, Path] | None:
     return ranked[0]
 
 
+def _select_luma_compose_manifest(repo: Path, value: str) -> Path:
+    """Resolve and structurally validate an explicitly selected Compose sidecar."""
+
+    import yaml
+
+    from .compose import load_compose_deployment
+    from .repo_paths import normalize_repo_relative_path
+    from .service import VALID_REGIONS
+
+    selected = normalize_repo_relative_path(value, label="composeSidecar")
+    repo_root = repo.resolve()
+    unresolved = repo_root.joinpath(*selected.split("/"))
+    try:
+        sidecar_path = unresolved.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise LumaError(f"selected composeSidecar does not exist: {selected}") from exc
+    if sidecar_path != repo_root and repo_root not in sidecar_path.parents:
+        raise LumaError("selected composeSidecar escapes the repository")
+    if not sidecar_path.is_file() or unresolved.suffix not in {".yml", ".yaml"}:
+        raise LumaError("selected composeSidecar must be a YAML file")
+
+    try:
+        raw = yaml.safe_load(sidecar_path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise LumaError(f"selected composeSidecar is not valid YAML: {selected}") from exc
+    if not isinstance(raw, dict):
+        raise LumaError("selected composeSidecar must contain a YAML mapping")
+
+    compose_value = raw.get("compose", "docker-compose.yml")
+    if not isinstance(compose_value, str) or not compose_value.strip():
+        raise LumaError("selected composeSidecar requires string field: compose")
+    compose_path = _safe_repo_path_from(
+        sidecar_path.parent, repo_root, compose_value
+    )
+    if not compose_path.is_file():
+        raise LumaError(
+            f"selected composeSidecar references a missing Compose file: {compose_value}"
+        )
+
+    volumes = raw.get("volumes")
+    storage_names = (
+        {
+            str(spec.get("storageClass"))
+            for spec in volumes.values()
+            if isinstance(spec, dict) and spec.get("storageClass")
+        }
+        if isinstance(volumes, dict)
+        else set()
+    )
+    validation_storage = {
+        name: {
+            "provider": "nfs",
+            "mode": "external",
+            "endpoint": "nfs.invalid:/luma-sidecar-validation",
+            "regions": sorted(VALID_REGIONS),
+        }
+        for name in storage_names
+    }
+    try:
+        load_compose_deployment(
+            sidecar_path,
+            storage_classes=validation_storage,
+            allow_sidecar_storage_classes=False,
+            allow_build_services=True,
+        )
+    except LumaError as exc:
+        raise LumaError(f"selected composeSidecar is invalid: {exc}") from exc
+    return sidecar_path
+
+
 def _looks_like_compose_luma_manifest(path: Path) -> bool:
     name = path.name.lower()
     return bool(
@@ -2477,7 +2667,7 @@ def _build_compose_images(
         service_body.pop("build", None)
         images[service_name] = image
 
-    return {
+    result = {
         "kind": "compose",
         "manifest": sidecar_text,
         "composeContent": yaml.safe_dump(compose_data, sort_keys=False, allow_unicode=False),
@@ -2486,6 +2676,10 @@ def _build_compose_images(
         "sha": sha,
         "message": f"Built and pushed {len(images)} compose image(s)" if images else "Compose images already declared",
     }
+    selected_sidecar = str(payload.get("composeSidecar") or "")
+    if selected_sidecar:
+        result["composeSidecar"] = selected_sidecar
+    return result
 
 
 def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]], None] | None = None) -> Dict[str, Any]:
@@ -2516,7 +2710,12 @@ def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]],
         docker_config = Path(workdir) / "docker-config"
         _write_docker_auth_config(docker_config, _auth_for_host(registry_auth, push_host))
 
-        deployment_manifest = _find_luma_deployment_manifest(src)
+        selected_sidecar = str(payload.get("composeSidecar") or "")
+        deployment_manifest = (
+            ("compose", _select_luma_compose_manifest(src, selected_sidecar))
+            if selected_sidecar
+            else _find_luma_deployment_manifest(src)
+        )
         if deployment_manifest and deployment_manifest[0] == "compose":
             return _build_compose_images(
                 src=src,

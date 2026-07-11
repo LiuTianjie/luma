@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lae-contracts"
+version = "0.1.0"
+description = "Canonical LAE protocol schemas and standard-library validator"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+lae-contracts = "lae_contracts.validator:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lae_contracts = [
+  "specs/schemas/*.json",
+  "specs/events/*.yaml",
+  "specs/examples/*.json",
+  "specs/examples/valid/*.json",
+  "specs/examples/invalid/*.json",
+]

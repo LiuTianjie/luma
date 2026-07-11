@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.161"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.160 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.161 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.161"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.161"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -283,9 +283,13 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.160 --timeout 900
+luma update fleet --install-ref v0.1.161 --timeout 900
 luma update fleet --include-manager
 ```
+
+`--install-ref` accepts a release tag, branch, or full 40-character Git commit.
+Use a full commit for a coordinated candidate rollout so manager and node agents
+cannot resolve different revisions while a branch moves.
 
 Fleet update runs through the node agents. It updates the CLI on each ready non-manager node and then refreshes the local node-agent service and Tailscale watchdog. The Nomad server (manager) node is skipped by default; update the manager separately with `luma update manager` from the manager host. `--include-manager` is available for explicit repair workflows, but normal fleet updates should leave the active control plane alone. Nodes whose agent is too old to advertise `luma-update` are reported as skipped; run `luma update` once on those nodes, then they can participate in later fleet updates.
 
@@ -504,6 +508,25 @@ For Compose repositories, `luma import` builds services that still have `build:`
 ```bash
 luma compose validate --import-mode luma.compose.yml
 ```
+
+When a repository contains more than one deployment sidecar, select the exact
+Compose sidecar inside the cloned repository instead of relying on discovery:
+
+```bash
+luma import https://github.com/acme/platform.git \
+  --ref v1.4.0 \
+  --build-node builder \
+  --compose-sidecar deploy/staging.luma.compose.yml \
+  --env .env
+```
+
+`--compose-sidecar` accepts only a canonical POSIX repository-relative path and
+cannot be combined with `--manifest`. The CLI requires a Control capability
+before starting the build; Control requires the Builder to echo the same path;
+the Builder rejects absolute paths, `..`, missing/invalid YAML, and symlink
+escapes. An explicit selection never falls back to an auto-discovered sidecar.
+Update the manager and Builder agent first when either side lacks this
+capability.
 
 `--dry-run` renders locally and does not submit a deployment. When local rendering cannot read optional cluster context such as node or storage metadata, JSON output includes `validationMode: "degraded"` plus warnings; text output prints `[warn]` lines. `--skip-dns` and `--skip-orchestrator` are sent to the control API. `--commit` and `--push` are deprecated in control-plane deploy mode.
 

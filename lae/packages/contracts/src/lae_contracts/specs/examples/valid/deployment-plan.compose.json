@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "lae.deployment-plan/v1",
+  "planId": "plan_01JEXAMPLE",
+  "sourceRevisionId": "src_01JEXAMPLE",
+  "sourceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "kind": "compose",
+  "services": [
+    {
+      "key": "web",
+      "role": "http",
+      "image": {"source": "build", "buildKey": "web"},
+      "command": null,
+      "port": 8080,
+      "healthcheck": {"type": "http", "path": "/healthz", "intervalSeconds": 10},
+      "dependencies": ["postgres"],
+      "environmentNames": ["DATABASE_URL"],
+      "resources": {"cpu": "0.50", "memoryMiB": 512}
+    },
+    {
+      "key": "postgres",
+      "role": "datastore",
+      "image": {"source": "external", "ref": "postgres:17"},
+      "command": null,
+      "dependencies": [],
+      "environmentNames": ["POSTGRES_PASSWORD"],
+      "resources": {"cpu": "0.50", "memoryMiB": 1024}
+    }
+  ],
+  "routes": [
+    {
+      "serviceKey": "web",
+      "kind": "http",
+      "primary": true,
+      "hostnameRef": "domain_01JEXAMPLE",
+      "containerPort": 8080,
+      "healthPath": "/healthz"
+    }
+  ],
+  "volumes": [
+    {
+      "key": "pg-data",
+      "serviceKeys": ["postgres"],
+      "mountPath": "/var/lib/postgresql/data",
+      "class": "persistent",
+      "requestedBytes": 1073741824,
+      "accessMode": "ReadWriteOnce",
+      "backupPolicy": "plan-default",
+      "deletePolicy": "retain"
+    }
+  ],
+  "environment": [
+    {
+      "name": "DATABASE_URL",
+      "scope": "runtime",
+      "services": ["web"],
+      "required": true,
+      "sensitive": true,
+      "public": false,
+      "configured": false
+    }
+  ],
+  "warnings": [],
+  "blockers": [],
+  "policy": {"version": "2026-07-11", "decision": "allow"}
+}

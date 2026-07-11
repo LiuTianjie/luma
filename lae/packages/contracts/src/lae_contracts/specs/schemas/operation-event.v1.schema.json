@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.itool.tech/lae/operation-event.v1.schema.json",
+  "title": "LAE Operation Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "operationId",
+    "seq",
+    "type",
+    "phase",
+    "status",
+    "level",
+    "message",
+    "occurredAt",
+    "data"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "lae.operation-event/v1"},
+    "eventId": {"type": "string", "pattern": "^evt_[A-Za-z0-9_-]+$"},
+    "operationId": {"type": "string", "pattern": "^op_[A-Za-z0-9_-]+$"},
+    "seq": {"type": "integer", "minimum": 1},
+    "type": {
+      "type": "string",
+      "enum": [
+        "operation.created",
+        "builder.fetch.started",
+        "builder.analyze.progress",
+        "builder.build.progress",
+        "deployment.preview.succeeded",
+        "deployment.succeeded",
+        "operation.failed",
+        "operation.cancelled"
+      ]
+    },
+    "phase": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},
+    "status": {
+      "type": "string",
+      "enum": ["queued", "running", "succeeded", "failed", "cancelled"]
+    },
+    "level": {"type": "string", "enum": ["debug", "info", "warning", "error"]},
+    "message": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "occurredAt": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T"},
+    "data": {"type": "object"}
+  }
+}

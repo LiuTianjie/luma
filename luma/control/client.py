@@ -6,9 +6,10 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Iterator
+from typing import Any, BinaryIO, Dict, Iterator
 
 from ..errors import LumaError
+from ..repo_paths import normalize_repo_relative_path
 
 
 class ControlClient:
@@ -26,8 +27,16 @@ class ControlClient:
         self.resolve_ip = resolve_ip
         self._host_header = parsed.netloc
 
-    def request(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Dict[str, Any]:
-        with self._open(method, path, body, timeout=timeout) as response:
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: Dict[str, Any] | None = None,
+        *,
+        timeout: int = 30,
+        headers: Dict[str, str] | None = None,
+    ) -> Dict[str, Any]:
+        with self._open(method, path, body, timeout=timeout, headers=headers) as response:
             raw = response.read().decode("utf-8", errors="replace")
         if not raw:
             return {}
@@ -42,8 +51,16 @@ class ControlClient:
             raise LumaError("control API returned invalid JSON")
         return payload
 
-    def stream(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Iterator[Dict[str, Any]]:
-        response = self._open(method, path, body, timeout=timeout)
+    def stream(
+        self,
+        method: str,
+        path: str,
+        body: Dict[str, Any] | None = None,
+        *,
+        timeout: int = 30,
+        headers: Dict[str, str] | None = None,
+    ) -> Iterator[Dict[str, Any]]:
+        response = self._open(method, path, body, timeout=timeout, headers=headers)
         with response:
             line_iter = iter(response)
             while True:
@@ -71,20 +88,33 @@ class ControlClient:
                     raise LumaError("control API returned invalid stream JSON")
                 yield payload
 
-    def _open(self, method: str, path: str, body: Dict[str, Any] | None = None, *, timeout: int = 30) -> Any:
+    def _open(
+        self,
+        method: str,
+        path: str,
+        body: Dict[str, Any] | None = None,
+        *,
+        timeout: int = 30,
+        headers: Dict[str, str] | None = None,
+    ) -> Any:
         data = json.dumps(body or {}).encode("utf-8") if body is not None else None
-        headers = {
+        request_headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        for name, value in (headers or {}).items():
+            normalized_name = str(name or "").strip()
+            if not normalized_name or normalized_name.lower() in {"authorization", "host", "content-type"}:
+                raise LumaError(f"control request header cannot be overridden: {normalized_name or '<empty>'}")
+            request_headers[normalized_name] = str(value)
         if self.resolve_ip:
-            headers["Host"] = self._host_header
+            request_headers["Host"] = self._host_header
         req = urllib.request.Request(
             self._request_url(path),
             data=data,
             method=method,
-            headers=headers,
+            headers=request_headers,
         )
         try:
             kwargs: Dict[str, Any] = {"timeout": timeout}
@@ -120,6 +150,113 @@ class ControlClient:
 
     def status(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/status")
+
+    def create_builder_task(
+        self,
+        request_body: Dict[str, Any],
+        *,
+        idempotency_key: str,
+        timeout: int = 30,
+    ) -> Dict[str, Any]:
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise LumaError("idempotency_key is required")
+        return self.request(
+            "POST",
+            "/v1/builder/tasks",
+            dict(request_body),
+            timeout=timeout,
+            headers={"Idempotency-Key": key},
+        )
+
+    def get_builder_task(self, task_id: str) -> Dict[str, Any]:
+        return self.request("GET", f"/v1/builder/tasks/{urllib.parse.quote(str(task_id), safe='')}")
+
+    def get_builder_task_events(self, task_id: str, *, after: int = 0, limit: int = 200) -> Dict[str, Any]:
+        query = urllib.parse.urlencode({"after": int(after), "limit": int(limit)})
+        task_path = urllib.parse.quote(str(task_id), safe="")
+        return self.request("GET", f"/v1/builder/tasks/{task_path}/events?{query}")
+
+    def cancel_builder_task(self, task_id: str) -> Dict[str, Any]:
+        task_path = urllib.parse.quote(str(task_id), safe="")
+        return self.request("POST", f"/v1/builder/tasks/{task_path}/cancel", {})
+
+    def upload_builder_artifact(
+        self,
+        *,
+        lease_id: str,
+        node_name: str,
+        node_id: str,
+        stream: BinaryIO,
+        media_type: str,
+        digest: str,
+        size_bytes: int,
+        timeout: int = 30,
+    ) -> Dict[str, Any]:
+        """Stream a verified builder artifact to an in-memory Control lease."""
+
+        if not lease_id or not node_name or size_bytes <= 0:
+            raise LumaError("builder artifact upload binding is invalid")
+
+        def chunks() -> Iterator[bytes]:
+            while True:
+                chunk = stream.read(1024 * 1024)
+                if not chunk:
+                    return
+                yield chunk
+
+        path = (
+            "/v1/node-agent/artifact-downloads/"
+            f"{urllib.parse.quote(lease_id, safe='')}/content"
+        )
+        request_headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": media_type,
+            "Content-Length": str(size_bytes),
+            "X-Luma-Artifact-Digest": digest,
+            "X-Luma-Node-Name": node_name,
+            "X-Luma-Node-Id": node_id,
+            "Accept": "application/json",
+        }
+        if self.resolve_ip:
+            request_headers["Host"] = self._host_header
+        request = urllib.request.Request(
+            self._request_url(path),
+            data=chunks(),
+            method="POST",
+            headers=request_headers,
+        )
+
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        context = (
+            ssl._create_unverified_context()
+            if self.insecure
+            else ssl.create_default_context()
+        )
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            NoRedirect(),
+            urllib.request.HTTPSHandler(context=context),
+        )
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                raw = response.read(64 * 1024 + 1)
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+            raise LumaError("builder artifact upload failed") from exc
+        if len(raw) > 64 * 1024:
+            raise LumaError("builder artifact upload returned an invalid response")
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise LumaError(
+                "builder artifact upload returned an invalid response"
+            ) from exc
+        if not isinstance(value, dict):
+            raise LumaError("builder artifact upload returned an invalid response")
+        return value
 
     def restart_application(self, *, stack: str, service: str = "", mode: str = "", timeout: int = 120) -> Dict[str, Any]:
         body: Dict[str, Any] = {"stack": stack, "service": service, "mode": mode}
@@ -216,6 +353,7 @@ class ControlClient:
         *,
         node_name: str,
         node_id: str = "",
+        active_task_id: str = "",
         os_name: str = "",
         arch: str = "",
         capabilities: list[str] | None = None,
@@ -231,6 +369,8 @@ class ControlClient:
             "arch": arch,
             "capabilities": capabilities or [],
         }
+        if active_task_id:
+            body["activeTaskId"] = active_task_id
         if metrics:
             body["metrics"] = metrics
         if container_stats is not None:
@@ -420,9 +560,15 @@ class ControlClient:
         dockerfile: str = "",
         registry_host: str = "",
         manifest: str = "",
+        compose_sidecar: str = "",
         env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Dict[str, Any]:
+        if compose_sidecar:
+            compose_sidecar = normalize_repo_relative_path(
+                compose_sidecar, label="composeSidecar"
+            )
+            self._require_repository_compose_sidecar()
         return self.request("POST", "/v1/builds", self._build_body(locals()), timeout=timeout)
 
     def build_deploy_events(
@@ -442,10 +588,26 @@ class ControlClient:
         dockerfile: str = "",
         registry_host: str = "",
         manifest: str = "",
+        compose_sidecar: str = "",
         env_secrets: Dict[str, str] | None = None,
         timeout: int = 2400,
     ) -> Iterator[Dict[str, Any]]:
+        if compose_sidecar:
+            compose_sidecar = normalize_repo_relative_path(
+                compose_sidecar, label="composeSidecar"
+            )
+            self._require_repository_compose_sidecar()
         return self.stream("POST", "/v1/builds/stream", self._build_body(locals()), timeout=timeout)
+
+    def _require_repository_compose_sidecar(self) -> None:
+        capabilities = self.health().get("capabilities") or []
+        if not isinstance(capabilities, list) or "repository-compose-sidecar-v1" not in {
+            str(item) for item in capabilities
+        }:
+            raise LumaError(
+                "Luma Control does not support explicit Compose sidecar selection; "
+                "update the manager before running this import"
+            )
 
     @staticmethod
     def _build_body(values: Dict[str, Any]) -> Dict[str, Any]:
@@ -468,6 +630,7 @@ class ControlClient:
             "dockerfile": values.get("dockerfile"),
             "registryHost": values.get("registry_host"),
             "manifest": values.get("manifest"),
+            "composeSidecar": values.get("compose_sidecar"),
         }
         for key, value in optional.items():
             if value:

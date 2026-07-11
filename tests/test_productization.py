@@ -353,6 +353,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("Wants=network-online.target docker.service nomad.service", unit)
         self.assertIn("After=network-online.target docker.service nomad.service", unit)
         self.assertIn("StartLimitIntervalSec=0", unit)
+        self.assertIn("EnvironmentFile=-/etc/default/luma-node-agent", unit)
         self.assertIn("Restart=always", unit)
         self.assertIn("RestartSec=5", unit)
 
@@ -971,6 +972,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("refresh_node_agent_service()", installer)
         self.assertIn('LUMA_USER_HOME="${LUMA_USER_HOME:-${HOME:-}}"', installer)
         self.assertIn('agent_config="/opt/luma/node-agent/agent.json"', installer)
+        self.assertIn("EnvironmentFile=-/etc/default/luma-node-agent", installer)
         self.assertIn("ExecStart=$BIN_DIR/luma node-agent run --config $agent_config", installer)
         self.assertIn("systemctl daemon-reload", installer)
         self.assertIn("Luma node agent systemd restart scheduled", installer)
@@ -3740,6 +3742,85 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertNotIn("[start] Ensure control image pull egress", "\n".join(progress))
         self.assertIn(f'"image": "{digest_image}"', submitted["job"])
 
+    def test_control_stack_deploy_forwards_only_lae_control_allowlist(self):
+        image = "ghcr.io/liutianjie/luma-control@sha256:" + "a" * 64
+        config = LumaConfig(
+            {
+                "defaults": {
+                    "engine": "nomad",
+                    "images": {"lumaControl": image},
+                }
+            },
+            None,
+        )
+        remote = Mock()
+        submitted = {}
+        canary = "inline-manager-secret-must-not-enter-nomad-job"
+
+        def capture_job(_remote, job_json, job_id):
+            submitted["job"] = json.loads(job_json)
+            submitted["jobId"] = job_id
+            return f"Nomad job deployed: {job_id}"
+
+        environment = {
+            "LUMA_LAE_SERVICE_PRINCIPALS_FILE": "/opt/luma/control/lae-builder-principals.json",
+            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE": "/opt/luma/control/lae-runtime-principals.json",
+            "LUMA_CREDENTIAL_BROKER_URL": "https://broker.internal/v1/redeem",
+            "LUMA_CREDENTIAL_BROKER_TOKEN_FILE": "/opt/luma/control/broker.token",
+            "LUMA_OBJECT_SOURCE_BROKER_URL": "https://broker.internal/v1/objects",
+            "LUMA_LAE_ADMIN_API_URL": "https://lae-api.internal",
+            "LUMA_LAE_ADMIN_TOKEN_FILE": "/opt/luma/control/lae-admin.token",
+            "LUMA_LAE_SERVICE_TOKEN": canary,
+            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_JSON": json.dumps(
+                {"runtime": {"token": canary}}
+            ),
+            "LUMA_CREDENTIAL_BROKER_TOKEN": canary,
+            "UNRELATED_MANAGER_SECRET": canary,
+        }
+        with patch.dict(os.environ, environment, clear=True), patch(
+            "luma.bootstrap._ensure_control_image",
+            return_value=f"Control image pulled: {image}",
+        ), patch(
+            "luma.bootstrap._nomad_tmpfs_compat_status",
+            return_value="Nomad tmpfs compatibility ok",
+        ), patch(
+            "luma.bootstrap._deploy_nomad_job",
+            side_effect=capture_job,
+        ), patch(
+            "luma.bootstrap._wait_nomad_job",
+            return_value="Nomad job running: luma-control",
+        ):
+            deploy_control_stack(
+                remote,
+                config,
+                "luma.example.com",
+                require_pull_egress=False,
+                node_name="manager-1",
+            )
+
+        self.assertEqual(submitted["jobId"], "luma-control")
+        task_environment = submitted["job"]["Job"]["TaskGroups"][0]["Tasks"][0]["Env"]
+        self.assertEqual(
+            task_environment["LUMA_LAE_SERVICE_PRINCIPALS_FILE"],
+            "/opt/luma/control/lae-builder-principals.json",
+        )
+        self.assertEqual(
+            task_environment["LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE"],
+            "/opt/luma/control/lae-runtime-principals.json",
+        )
+        self.assertEqual(
+            task_environment["LUMA_CREDENTIAL_BROKER_TOKEN_FILE"],
+            "/opt/luma/control/broker.token",
+        )
+        for forbidden in (
+            "LUMA_LAE_SERVICE_TOKEN",
+            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_JSON",
+            "LUMA_CREDENTIAL_BROKER_TOKEN",
+            "UNRELATED_MANAGER_SECRET",
+        ):
+            self.assertNotIn(forbidden, task_environment)
+        self.assertNotIn(canary, json.dumps(submitted["job"], sort_keys=True))
+
     def test_manager_control_refresh_updates_ingress_without_recreating_other_core_stacks(self):
         config = LumaConfig(
             {
@@ -4485,6 +4566,61 @@ class ControlApiTests(unittest.TestCase):
                 saved_nodes = load_state().get("nodes", {})
                 self.assertNotIn("m4mini", saved_nodes)
                 self.assertIn("home-mac-mini", saved_nodes)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_node_unregister_stale_alias_never_drains_shared_manager_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(
+                    domain="luma.example.com",
+                    cluster_id="luma-test",
+                    overwrite=True,
+                )
+                shared_id = "manager-node-id"
+                state["nodes"] = {
+                    "aly": {
+                        "region": "cn",
+                        "status": "labeled",
+                        "nodeId": shared_id,
+                        "labels": {
+                            "luma.node.name": "aly",
+                            "luma.node.id": shared_id,
+                            "region": "cn",
+                        },
+                    },
+                    "manager-hostname": {
+                        "region": "cn",
+                        "status": "manager",
+                        "nomadRole": "server",
+                        "nomadServer": True,
+                        "nodeId": shared_id,
+                        "nomadNodeId": shared_id,
+                        "labels": {
+                            "luma.node.name": "manager-hostname",
+                            "luma.node.id": shared_id,
+                            "role.nomad-manager": "true",
+                            "region": "cn",
+                        },
+                    },
+                }
+                save_state(state)
+                with patch("luma.control.server.NomadApi") as nomad:
+                    result = handle_node_unregister(
+                        state["deployToken"], {"nodeName": "aly"}
+                    )
+
+                self.assertTrue(result["removed"])
+                self.assertTrue(result["registeredRemoved"])
+                self.assertFalse(result["nomadDrained"])
+                self.assertEqual(
+                    result["nomadDrainSkipped"], "shared_manager_identity"
+                )
+                nomad.assert_not_called()
+                saved_nodes = load_state().get("nodes", {})
+                self.assertNotIn("aly", saved_nodes)
+                self.assertIn("manager-hostname", saved_nodes)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -7475,6 +7611,25 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_docker_socket_connect_closes_socket_when_connect_fails(self):
+        from luma.control.server import DockerSocketConnection
+
+        class FailingSocket:
+            def __init__(self):
+                self.closed = False
+
+            def connect(self, _path):
+                raise OSError("socket unavailable")
+
+            def close(self):
+                self.closed = True
+
+        failing = FailingSocket()
+        with patch("luma.control.server.socket.socket", return_value=failing):
+            with self.assertRaises(OSError):
+                DockerSocketConnection("/missing/docker.sock").connect()
+        self.assertTrue(failing.closed)
+
     def test_deployment_renders_referenced_secrets_into_nomad_job_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -10326,12 +10481,19 @@ class GithubImportTests(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
             captured["env"] = kwargs.get("env")
+            captured["username"] = Path(captured["env"]["LUMA_GIT_USERNAME_FILE"]).read_text(encoding="utf-8")
+            captured["password"] = Path(captured["env"]["LUMA_GIT_PASSWORD_FILE"]).read_text(encoding="utf-8")
             return Mock(returncode=0, stdout="")
 
         with patch("luma.gitops.subprocess.run", side_effect=fake_run):
             gitops.clone("https://github.com/acme/app", Path("/tmp/x"), proxy="http://127.0.0.1:7890", token="ghp_secret")
         clone_url = captured["cmd"][-2]
-        self.assertIn("x-access-token:ghp_secret@", clone_url)
+        self.assertEqual(clone_url, "https://github.com/acme/app")
+        self.assertNotIn("ghp_secret", " ".join(captured["cmd"]))
+        self.assertNotIn("ghp_secret", json.dumps(captured["env"]))
+        self.assertEqual(captured["username"], "x-access-token")
+        self.assertEqual(captured["password"], "ghp_secret")
+        self.assertEqual(captured["env"]["GIT_ASKPASS_REQUIRE"], "force")
         self.assertEqual(captured["env"]["HTTPS_PROXY"], "http://127.0.0.1:7890")
 
     def test_clone_redacts_token_on_failure(self):
@@ -10343,6 +10505,43 @@ class GithubImportTests(unittest.TestCase):
                 gitops.clone("https://github.com/acme/app", Path("/tmp/x"), token="ghp_secret")
         self.assertNotIn("ghp_secret", str(ctx.exception))
         self.assertIn("***@", str(ctx.exception))
+
+    def test_clone_rejects_repository_urls_that_can_leak_credentials(self):
+        from luma import gitops
+
+        rejected = (
+            "https://user:gitea-super-secret@gcode.example.com/acme/app.git",
+            "https://gcode.example.com/acme/app.git?access_token=gitea-super-secret",
+            "https://gcode.example.com/acme/app.git#token=gitea-super-secret",
+            "ssh://user:password@gcode.example.com/acme/app.git",
+        )
+        with patch("luma.gitops.subprocess.run") as run:
+            for url in rejected:
+                with self.subTest(url=url), self.assertRaisesRegex(LumaError, "credentials|query parameters"):
+                    gitops.clone(url, Path("/tmp/x"))
+            run.assert_not_called()
+
+    def test_clone_removes_inherited_git_trace_environment(self):
+        from luma import gitops
+
+        captured = {}
+
+        def fake_run(_cmd, **kwargs):
+            captured["env"] = kwargs.get("env") or {}
+            return Mock(returncode=0, stdout="")
+
+        trace_env = {
+            "GIT_TRACE": "1",
+            "GIT_TRACE2": "/tmp/git-trace",
+            "GIT_TRACE_PACKET": "1",
+            "GIT_TRACE_CURL": "1",
+            "GIT_CURL_VERBOSE": "1",
+        }
+        with patch.dict(os.environ, trace_env, clear=False), patch("luma.gitops.subprocess.run", side_effect=fake_run):
+            gitops.clone("https://github.com/acme/app", Path("/tmp/x"), token="gitea-super-secret")
+
+        for name in trace_env:
+            self.assertNotIn(name, captured["env"])
 
     def test_image_repo_from_repo_url(self):
         from luma.control.server import _image_repo_from_repo_url, normalize_import_repo_url
@@ -10427,14 +10626,34 @@ class GithubImportTests(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
             captured["env"] = kwargs.get("env") or {}
+            captured["username"] = Path(captured["env"]["LUMA_GIT_USERNAME_FILE"]).read_text(encoding="utf-8")
+            captured["password"] = Path(captured["env"]["LUMA_GIT_PASSWORD_FILE"]).read_text(encoding="utf-8")
             return Mock(returncode=0, stdout="")
 
         with patch("luma.gitops.subprocess.run", side_effect=fake_run):
             gitops.clone("https://gcode.gaojiua.com:3000/acme/app", Path("/tmp/x"), token="gitea_secret", username="lin")
 
         clone_url = captured["cmd"][-2]
-        self.assertIn("https://lin:gitea_secret@gcode.gaojiua.com:3000/acme/app", clone_url)
-        self.assertNotIn("x-access-token", clone_url)
+        self.assertEqual(clone_url, "https://gcode.gaojiua.com:3000/acme/app")
+        self.assertEqual(captured["username"], "lin")
+        self.assertEqual(captured["password"], "gitea_secret")
+        self.assertNotIn("gitea_secret", " ".join(captured["cmd"]))
+        self.assertNotIn("gitea_secret", json.dumps(captured["env"]))
+
+    def test_head_commit_full_requires_complete_object_id(self):
+        from luma import gitops
+
+        full = "0123456789abcdef0123456789abcdef01234567"
+        with patch("luma.gitops.subprocess.run", return_value=Mock(returncode=0, stdout=full + "\n")) as run:
+            self.assertEqual(gitops.head_commit_full(Path("/tmp/repo")), full)
+        self.assertEqual(run.call_args.args[0][-1], "HEAD")
+
+        with patch("luma.gitops.subprocess.run", return_value=Mock(returncode=0, stdout="abc123\n")):
+            with self.assertRaisesRegex(LumaError, "invalid full object id"):
+                gitops.head_commit_full(Path("/tmp/repo"))
+        with patch("luma.gitops.subprocess.run", return_value=Mock(returncode=0, stdout=("a" * 41) + "\n")):
+            with self.assertRaisesRegex(LumaError, "invalid full object id"):
+                gitops.head_commit_full(Path("/tmp/repo"))
 
     def test_git_provider_repositories_fetch_all_pages(self):
         with tempfile.TemporaryDirectory() as tmp:

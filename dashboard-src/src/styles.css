@@ -2327,6 +2327,14 @@ tbody tr.is-selected {
   background: var(--well);
 }
 
+.lae-admin-panel { display: grid; gap: 14px; }
+.lae-admin-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.lae-admin-tabs button { display: inline-flex; min-height: 34px; align-items: center; gap: 7px; padding: 0 11px; border-color: var(--line); background: var(--surface); color: var(--text-muted); }
+.lae-admin-tabs button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--well); color: var(--text); }
+.lae-admin-tabs button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+.lae-admin-tabs button span { min-width: 20px; padding: 1px 5px; border-radius: 999px; background: var(--well); color: var(--text-subtle); font-size: .7rem; font-variant-numeric: tabular-nums; text-align: center; }
+.page-lae .workspace { background-image: radial-gradient(circle at 82% 12%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 26%); }
+
 .credentials-tabs button {
   min-height: 30px;
   padding: 0 12px;

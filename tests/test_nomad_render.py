@@ -481,6 +481,113 @@ port: 3000
         self.assertIn("/var/run/docker.sock", sources)
         self.assertIn("/opt/luma/control", sources)
 
+    def test_control_job_only_forwards_allowlisted_lae_file_url_and_timeout_values(self):
+        canary = "inline-control-secret-must-not-enter-job"
+        configured = {
+            "LUMA_LAE_SERVICE_PRINCIPALS_FILE": "/opt/luma/control/lae-builder-principals.json",
+            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE": "/opt/luma/control/lae-runtime-principals.json",
+            "LUMA_CREDENTIAL_BROKER_URL": "https://broker.internal/v1/redeem",
+            "LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS": "5",
+            "LUMA_CREDENTIAL_BROKER_TOKEN_FILE": "/opt/luma/control/credential-broker.token",
+            "LUMA_OBJECT_SOURCE_BROKER_URL": "https://broker.internal/v1/objects",
+            "LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS": "6.5",
+            "LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE": "/opt/luma/control/object-broker.token",
+            "LUMA_LAE_ADMIN_API_URL": "https://lae-api.internal/",
+            "LUMA_LAE_ADMIN_TIMEOUT_SECONDS": "8",
+            "LUMA_LAE_ADMIN_TOKEN_FILE": "/opt/luma/control/lae-admin.token",
+            "LUMA_LAE_PLAN_SIGNING_KEYS_FILE": "/opt/luma/control/lae-plan-signing.json",
+            "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": "registry.internal/lae/agent@sha256:" + "a" * 64,
+            "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY": "1",
+            "LUMA_LAE_BUILDER_REGISTRY_INSECURE": "1",
+            "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON": '["docker.io","ghcr.io"]',
+            "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": '["tecent"]',
+            "LUMA_LAE_RUNTIME_STORAGE_CLASS": "cn-nfs",
+            "LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS": "600",
+            "LUMA_LAE_SERVICE_TOKEN": canary,
+            "LUMA_LAE_SERVICE_PRINCIPALS_JSON": json.dumps({"token": canary}),
+            "LUMA_CREDENTIAL_BROKER_TOKEN": canary,
+            "UNRELATED_SECRET": canary,
+        }
+        job = render_control_job(
+            image="ghcr.io/acme/luma-control:v1",
+            node_name="manager-1",
+            control_environment=configured,
+            as_json=False,
+        )["Job"]
+        environment = job["TaskGroups"][0]["Tasks"][0]["Env"]
+        self.assertEqual(
+            environment["LUMA_LAE_ADMIN_API_URL"],
+            "https://lae-api.internal",
+        )
+        for name in (
+            "LUMA_LAE_SERVICE_PRINCIPALS_FILE",
+            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE",
+            "LUMA_CREDENTIAL_BROKER_URL",
+            "LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS",
+            "LUMA_CREDENTIAL_BROKER_TOKEN_FILE",
+            "LUMA_OBJECT_SOURCE_BROKER_URL",
+            "LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS",
+            "LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE",
+            "LUMA_LAE_ADMIN_API_URL",
+            "LUMA_LAE_ADMIN_TIMEOUT_SECONDS",
+            "LUMA_LAE_ADMIN_TOKEN_FILE",
+            "LUMA_LAE_PLAN_SIGNING_KEYS_FILE",
+            "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST",
+            "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY",
+            "LUMA_LAE_BUILDER_REGISTRY_INSECURE",
+            "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON",
+            "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON",
+            "LUMA_LAE_RUNTIME_STORAGE_CLASS",
+            "LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS",
+        ):
+            self.assertIn(name, environment)
+        for name in (
+            "LUMA_LAE_SERVICE_TOKEN",
+            "LUMA_LAE_SERVICE_PRINCIPALS_JSON",
+            "LUMA_CREDENTIAL_BROKER_TOKEN",
+            "UNRELATED_SECRET",
+        ):
+            self.assertNotIn(name, environment)
+        self.assertNotIn(canary, json.dumps(job, sort_keys=True))
+
+    def test_control_job_rejects_paths_outside_mount_and_open_urls_or_timeouts(self):
+        invalid = (
+            {"LUMA_LAE_ADMIN_TOKEN_FILE": "/tmp/admin.token"},
+            {"LUMA_LAE_ADMIN_TOKEN_FILE": "/opt/luma/control"},
+            {"LUMA_LAE_ADMIN_TOKEN_FILE": "/opt/luma/control/../admin.token"},
+            {"LUMA_LAE_ADMIN_TOKEN_FILE": "admin.token"},
+            {"LUMA_CREDENTIAL_BROKER_URL": "http://broker.internal/redeem"},
+            {"LUMA_CREDENTIAL_BROKER_URL": "https://user@broker.internal/redeem"},
+            {"LUMA_CREDENTIAL_BROKER_URL": "https://broker.internal/redeem?token=x"},
+            {"LUMA_LAE_ADMIN_API_URL": "https://lae-api.internal/admin"},
+            {"LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS": "0"},
+            {"LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS": "31"},
+            {"LUMA_LAE_ADMIN_TIMEOUT_SECONDS": "0.5"},
+            {"LUMA_LAE_ADMIN_TIMEOUT_SECONDS": "nan"},
+            {"LUMA_LAE_PLAN_SIGNING_KEYS_FILE": "/tmp/signing.json"},
+            {"LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": "lae-agent:latest"},
+            {"LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY": "yes"},
+            {"LUMA_LAE_BUILDER_REGISTRY_INSECURE": "2"},
+            {"LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON": '["GHCR.IO"]'},
+            {"LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON": '["ghcr.io","docker.io"]'},
+            {"LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON": '["ghcr.io/path"]'},
+            {"LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": "[]"},
+            {"LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": '["tecent","aly"]'},
+            {"LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": '["tecent","tecent"]'},
+            {"LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": '["tecent secret"]'},
+            {"LUMA_LAE_RUNTIME_STORAGE_CLASS": "../cn-nfs"},
+            {"LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS": "29"},
+            {"LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS": "3601"},
+        )
+        for environment in invalid:
+            with self.subTest(environment=environment), self.assertRaises(LumaError):
+                render_control_job(
+                    image="ghcr.io/acme/luma-control:v1",
+                    node_name="manager-1",
+                    control_environment=environment,
+                    as_json=False,
+                )
+
     def test_traefik_job_persists_certs_via_named_volume_mount(self):
         job = render_traefik_job(
             image="traefik:v3.6",

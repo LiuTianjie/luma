@@ -107,6 +107,14 @@ repair_install_ownership() {
   run_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_HOME"
 }
 
+is_commit_ref() {
+  [ "${#1}" -eq 40 ] || return 1
+  case "$1" in
+    *[!0-9a-fA-F]*) return 1 ;;
+  esac
+  return 0
+}
+
 ensure_path() {
   case ":$PATH:" in
     *":$BIN_DIR:"*) return 0 ;;
@@ -150,7 +158,11 @@ download_source() {
       default_archive_url="$REPO_URL/archive/refs/tags/$INSTALL_REF.tar.gz"
       ;;
     *)
-      default_archive_url="$REPO_URL/archive/refs/heads/$INSTALL_REF.tar.gz"
+      if is_commit_ref "$INSTALL_REF"; then
+        default_archive_url="$REPO_URL/archive/$INSTALL_REF.tar.gz"
+      else
+        default_archive_url="$REPO_URL/archive/refs/heads/$INSTALL_REF.tar.gz"
+      fi
       ;;
   esac
   archive_url="${LUMA_ARCHIVE_URL:-$default_archive_url}"
@@ -244,6 +256,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+EnvironmentFile=-/etc/default/luma-node-agent
 ExecStart=$BIN_DIR/luma node-agent run --config $agent_config
 Restart=always
 RestartSec=5

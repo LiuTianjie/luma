@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.itool.tech/lae/luma-builder-task.v1.schema.json",
+  "title": "Luma Builder Task Create Request for LAE v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "externalOperationId",
+    "tenantRef",
+    "applicationRef",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "luma.builder-task/v1"},
+    "kind": {"type": "string", "enum": ["analyze-source", "build-plan"]},
+    "externalOperationId": {"$ref": "#/$defs/reference"},
+    "tenantRef": {"$ref": "#/$defs/reference"},
+    "applicationRef": {"$ref": "#/$defs/reference"},
+    "payload": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {"const": "analyze-source"},
+            "payload": {"$ref": "#/$defs/analyzePayload"}
+          }
+        },
+        {
+          "properties": {
+            "kind": {"const": "build-plan"},
+            "payload": {"$ref": "#/$defs/buildPayload"}
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "reference": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$"
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu", "memoryMiB", "diskMiB", "timeoutSeconds"],
+      "properties": {
+        "cpu": {"type": "number", "minimum": 0.1, "maximum": 32},
+        "memoryMiB": {"type": "integer", "minimum": 128, "maximum": 131072},
+        "diskMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "timeoutSeconds": {"type": "integer", "minimum": 10, "maximum": 14400}
+      }
+    },
+    "gitSourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "ref": {"type": "string", "minLength": 1, "maxLength": 512},
+        "subdirectory": {"type": "string", "maxLength": 1024}
+      }
+    },
+    "objectSourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "digest", "mediaType", "sizeBytes"],
+      "properties": {
+        "kind": {"const": "object"},
+        "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "mediaType": {"type": "string", "enum": ["text/html", "application/zip"]},
+        "sizeBytes": {"type": "integer", "minimum": 1, "maximum": 536870912}
+      }
+    },
+    "sourceRef": {
+      "oneOf": [
+        {"$ref": "#/$defs/gitSourceRef"},
+        {"$ref": "#/$defs/objectSourceRef"}
+      ]
+    },
+    "analyzePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceRef", "credentialLeaseId", "agentImageDigest", "policyVersion", "limits"],
+      "properties": {
+        "sourceRef": {"$ref": "#/$defs/sourceRef"},
+        "credentialLeaseId": {"$ref": "#/$defs/reference"},
+        "agentImageDigest": {
+          "type": "string",
+          "pattern": "^[^\\s@]+@sha256:[a-f0-9]{64}$"
+        },
+        "policyVersion": {"$ref": "#/$defs/reference"},
+        "limits": {"$ref": "#/$defs/limits"}
+      }
+    },
+    "buildPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceSnapshotId",
+        "sourceSnapshotDigest",
+        "signedBuildPlan",
+        "credentialLeaseId",
+        "limits"
+      ],
+      "properties": {
+        "sourceSnapshotId": {"$ref": "#/$defs/reference"},
+        "sourceSnapshotDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "signedBuildPlan": {"$ref": "build-plan.v1.schema.json"},
+        "credentialLeaseId": {"$ref": "#/$defs/reference"},
+        "limits": {"$ref": "#/$defs/limits"}
+      }
+    }
+  }
+}

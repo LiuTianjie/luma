@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.itool.tech/lae/deployment-plan.v1.schema.json",
+  "title": "LAE Deployment Plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "planId",
+    "sourceRevisionId",
+    "sourceDigest",
+    "kind",
+    "services",
+    "routes",
+    "volumes",
+    "environment",
+    "warnings",
+    "blockers",
+    "policy"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "lae.deployment-plan/v1"},
+    "planId": {"type": "string", "pattern": "^plan_[A-Za-z0-9_-]+$"},
+    "sourceRevisionId": {"type": "string", "pattern": "^src_[A-Za-z0-9_-]+$"},
+    "sourceDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "kind": {"type": "string", "enum": ["service", "compose"]},
+    "services": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/service"}},
+    "routes": {"type": "array", "items": {"$ref": "#/$defs/route"}},
+    "volumes": {"type": "array", "items": {"$ref": "#/$defs/volume"}},
+    "environment": {"type": "array", "items": {"$ref": "#/$defs/environment"}},
+    "warnings": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "policy": {"$ref": "#/$defs/policy"}
+  },
+  "$defs": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {"type": "string", "enum": ["build", "external"]},
+        "buildKey": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "ref": {"type": "string", "minLength": 1}
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu", "memoryMiB"],
+      "properties": {
+        "cpu": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$"},
+        "memoryMiB": {"type": "integer", "minimum": 64}
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path", "intervalSeconds"],
+      "properties": {
+        "type": {"const": "http"},
+        "path": {"type": "string", "pattern": "^/"},
+        "intervalSeconds": {"type": "integer", "minimum": 1, "maximum": 300}
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "role", "image", "dependencies", "environmentNames", "resources"],
+      "properties": {
+        "key": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "role": {
+          "type": "string",
+          "enum": ["http", "worker", "internal", "datastore", "cron"]
+        },
+        "image": {"$ref": "#/$defs/image"},
+        "command": {"type": ["string", "null"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "healthcheck": {"$ref": "#/$defs/healthcheck"},
+        "dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
+        },
+        "environmentNames": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"}
+        },
+        "resources": {"$ref": "#/$defs/resources"}
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serviceKey", "kind", "primary", "hostnameRef", "containerPort", "healthPath"],
+      "properties": {
+        "serviceKey": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "kind": {"const": "http"},
+        "primary": {"type": "boolean"},
+        "hostnameRef": {"type": "string", "pattern": "^domain_[A-Za-z0-9_-]+$"},
+        "containerPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "healthPath": {"type": "string", "pattern": "^/"}
+      }
+    },
+    "volume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "serviceKeys",
+        "mountPath",
+        "class",
+        "requestedBytes",
+        "accessMode",
+        "backupPolicy",
+        "deletePolicy"
+      ],
+      "properties": {
+        "key": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "serviceKeys": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
+        },
+        "mountPath": {"type": "string", "pattern": "^/"},
+        "class": {"const": "persistent"},
+        "requestedBytes": {"type": "integer", "minimum": 1048576},
+        "accessMode": {"type": "string", "enum": ["ReadWriteOnce", "ReadWriteMany"]},
+        "backupPolicy": {"type": "string", "minLength": 1},
+        "deletePolicy": {"type": "string", "enum": ["retain", "delete-after-grace"]}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "scope", "services", "required", "sensitive", "public", "configured"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+        "scope": {"type": "string", "enum": ["build", "runtime"]},
+        "services": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}
+        },
+        "required": {"type": "boolean"},
+        "sensitive": {"type": "boolean"},
+        "public": {"type": "boolean"},
+        "configured": {"type": "boolean"}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "decision"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1},
+        "decision": {
+          "type": "string",
+          "enum": ["allow", "needs_configuration", "deny"]
+        }
+      }
+    }
+  }
+}

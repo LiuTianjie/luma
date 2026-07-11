@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "luma.builder-task/v1",
+  "kind": "build-plan",
+  "externalOperationId": "op-build-1",
+  "tenantRef": "tenant-builder-test",
+  "applicationRef": "application-builder-test",
+  "payload": {
+    "sourceSnapshotId": "snapshot-builder-test",
+    "sourceSnapshotDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "signedBuildPlan": {
+      "schemaVersion": "lae.build-plan/v1",
+      "sourceSnapshotDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "resolvedCommit": "0123456789abcdef0123456789abcdef01234567",
+      "policyVersion": "2026-07-11",
+      "builds": [
+        {
+          "key": "web",
+          "context": ".",
+          "dockerfile": "Dockerfile",
+          "target": "runtime",
+          "platform": "linux/amd64",
+          "buildArgNames": [],
+          "secretMountNames": [],
+          "dependsOnBuilds": []
+        }
+      ],
+      "externalImages": [
+        {
+          "key": "postgres",
+          "ref": "postgres:17",
+          "resolvedDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "platform": "linux/amd64"
+        }
+      ],
+      "signature": {
+        "keyId": "lae-plan-2026-01",
+        "value": "ZmFrZS1zaWduYXR1cmUtdjE"
+      }
+    },
+    "credentialLeaseId": "credential-lease-build-1",
+    "limits": {"cpu": 4, "memoryMiB": 4096, "diskMiB": 16384, "timeoutSeconds": 1800}
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "lae.contract-examples/v1",
+  "suites": [
+    {
+      "schema": "deployment-plan.v1.schema.json",
+      "valid": ["valid/deployment-plan.compose.json"],
+      "invalid": ["invalid/deployment-plan.tcp-and-node.json"]
+    },
+    {
+      "schema": "build-plan-proposal.v1.schema.json",
+      "valid": ["valid/build-plan-proposal.external-images.json"],
+      "invalid": ["invalid/build-plan-proposal.digest-mismatch.json"]
+    },
+    {
+      "schema": "build-plan-candidate.v1.schema.json",
+      "valid": ["valid/build-plan-candidate.multi-service.json"],
+      "invalid": [
+        "invalid/build-plan-candidate.signed.json",
+        "invalid/build-plan-candidate.latest-external-image.json"
+      ]
+    },
+    {
+      "schema": "build-plan.v1.schema.json",
+      "valid": ["valid/build-plan.multi-service.json"],
+      "invalid": [
+        "invalid/build-plan.registry-override.json",
+        "invalid/build-plan.duplicate-image-key.json"
+      ]
+    },
+    {
+      "schema": "operation-event.v1.schema.json",
+      "valid": ["valid/operation-event.progress.json"],
+      "invalid": ["invalid/operation-event.bad-sequence.json"]
+    },
+    {
+      "schema": "error.v1.schema.json",
+      "valid": ["valid/error.not-deployable.json"],
+      "invalid": ["invalid/error.secret-leak.json"]
+    },
+    {
+      "schema": "luma-builder-task.v1.schema.json",
+      "valid": [
+        "valid/luma-builder-task.analyze.json",
+        "valid/luma-builder-task.analyze-object.json",
+        "valid/luma-builder-task.build.json"
+      ],
+      "invalid": ["invalid/luma-builder-task.kind-payload-mismatch.json"]
+    }
+  ]
+}

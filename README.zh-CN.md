@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.160 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.161 sh
 ```
 
 从源码开发：
@@ -145,6 +145,76 @@ EGRESS_SUBSCRIPTION_URL=...
 | `EGRESS_SUBSCRIPTION_URL` | 需要 egress 时 | 代理订阅 URL。Luma 用它生成 Mihomo 配置，服务镜像拉取代理和 `proxy: true` 的运行时代理会用到。 |
 | `TAILSCALE_AUTHKEY` | 私有节点/home/tailscale-relay 按需 | 让服务器加入你的 tailnet。普通单公网 manager 和普通公开服务不强制需要。 |
 | `LUMA_SUDO_PASSWORD` | sudo 需要密码时按需 | 本机执行 sudo 命令的兜底密码。只保存在本机用户配置中，不会分发给 client。 |
+
+### Manager 端 LAE Control 文件
+
+Luma Control 为 LAE 提供服务时，Builder 与 Runtime 身份必须使用两套独立配置。Nomad job 已挂载 `/opt/luma/control`，所以传给 Control 的 principal、broker 和 admin 文件都必须放在这个目录下，并使用非软链接的私有常规文件（推荐 `0600`）。Token 内容只由 Control 在运行时读取，不会写进 Nomad Job 或 `control.json`。
+
+Builder principal 文件 `/opt/luma/control/lae-builder-principals.json`：
+
+```json
+{
+  "lae-builder": {
+    "tokenFile": "lae-builder.token",
+    "tenantRefs": ["*"],
+    "applicationRefs": ["*"]
+  }
+}
+```
+
+Runtime principal 文件 `/opt/luma/control/lae-runtime-principals.json`：
+
+```json
+{
+  "lae-runtime": {
+    "tokenFile": "lae-runtime.token",
+    "tenantRefs": ["*"],
+    "applicationRefs": ["*"],
+    "builderPrincipalRefs": ["lae-builder"],
+    "scopes": [
+      "runtime:volumes:prepare",
+      "runtime:deployments:write",
+      "runtime:deployments:read",
+      "runtime:logs",
+      "runtime:metrics",
+      "runtime:secrets:issue"
+    ]
+  }
+}
+```
+
+`tokenFile` 必须和对应 principal 文件在同一目录。准备好两个 token 文件后执行：
+
+```bash
+sudo install -d -m 700 /opt/luma/control
+sudo chmod 600 \
+  /opt/luma/control/lae-builder.token \
+  /opt/luma/control/lae-runtime.token \
+  /opt/luma/control/lae-builder-principals.json \
+  /opt/luma/control/lae-runtime-principals.json
+
+LUMA_LAE_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-builder-principals.json
+LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-runtime-principals.json
+```
+
+可选的 credential/object broker 与 LAE 超级管理员代理也使用服务端 token 文件：
+
+```bash
+LUMA_CREDENTIAL_BROKER_URL=https://lae-api.internal/v1/internal/credential-leases/redeem
+LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS=5
+LUMA_CREDENTIAL_BROKER_TOKEN_FILE=/opt/luma/control/lae-broker.token
+
+LUMA_OBJECT_SOURCE_BROKER_URL=https://lae-api.internal/v1/internal/object-source-leases/redeem
+LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS=5
+# 有意复用 credential broker token 时可以省略下一项：
+LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE=/opt/luma/control/lae-object-broker.token
+
+LUMA_LAE_ADMIN_API_URL=https://lae-api.internal
+LUMA_LAE_ADMIN_TIMEOUT_SECONDS=8
+LUMA_LAE_ADMIN_TOKEN_FILE=/opt/luma/control/lae-admin.token
+```
+
+把这些路径和 URL 写进 manager 的 `.env`，然后执行 `luma bootstrap manager` 或 `luma update manager`。Manager bootstrap 只会把上述 HTTPS URL、受限 timeout 和 `/opt/luma/control` 内的文件路径传进 Nomad job。旧的 `LUMA_LAE_SERVICE_TOKEN`、`LUMA_LAE_*_PRINCIPALS_JSON` 仍可供直接运行 Control 或本地测试兼容使用，但不会被 manager bootstrap 转发；生产 Nomad manager 应使用文件模式。
 
 如果不想提前编辑 `.env`，也可以直接运行 `luma bootstrap manager --domain ...`。缺少本地配置时，CLI 会逐项说明用途并交互式询问。
 

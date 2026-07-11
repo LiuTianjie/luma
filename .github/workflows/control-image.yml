@@ -58,6 +58,8 @@ jobs:
           npm run build:dashboard
           python -m unittest discover -s tests -p 'test_render.py'
           python -m unittest discover -s tests -p 'test_productization.py'
+          python -m unittest discover -s tests -p 'test_control_image_workflow.py'
+          python -m unittest discover -s tests -p 'test_import_compose_sidecar.py'
           git diff --check
 
       - name: Set up Docker Buildx
@@ -77,8 +79,9 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
+            type=ref,event=tag,enable=${{ github.event_name == 'push' }}
             type=sha,prefix=main-,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short,enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

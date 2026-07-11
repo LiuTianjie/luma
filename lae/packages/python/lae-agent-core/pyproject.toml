@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lae-agent-core"
+version = "0.1.0"
+description = "Deterministic, side-effect-free source analyzer for LAE builder tasks"
+requires-python = ">=3.12"
+dependencies = ["lae-contracts", "PyYAML>=6.0.2,<7"]
+
+[tool.uv.sources]
+lae-contracts = { workspace = true }
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -554,3 +554,81 @@ class NomadApi:
                 "from the luma-control container."
             ) from exc
         return raw
+
+    def put_variable(self, path: str, items: Dict[str, str]) -> Dict[str, Any]:
+        """Create/update a Nomad Variable without exposing values in a job spec.
+
+        The caller owns path/ACL policy. Values are sent only to Nomad's
+        encrypted Variables store and this method never interpolates them into
+        errors or log messages.
+        """
+
+        normalized = str(path or "").strip().strip("/")
+        if (
+            not normalized
+            or ".." in normalized.split("/")
+            or not isinstance(items, dict)
+            or not items
+            or any(
+                not isinstance(key, str)
+                or not key
+                or not isinstance(value, str)
+                for key, value in items.items()
+            )
+        ):
+            raise LumaError("invalid Nomad variable request")
+        try:
+            result = self.request(
+                "PUT",
+                "/v1/var/" + urllib.parse.quote(normalized, safe="/"),
+                {"Items": dict(items)},
+            )
+        except LumaError:
+            # Nomad should not echo Items, but keep this boundary generic even
+            # if a future server version changes its error payload.
+            raise LumaError("Nomad variable write failed") from None
+        if not isinstance(result, dict):
+            raise LumaError("Nomad variable write failed")
+        return result
+
+    def get_variable(self, path: str) -> Dict[str, str]:
+        """Read one variable for in-memory redaction at a trusted boundary.
+
+        Values are returned only to the caller and are never included in this
+        method's errors. LAE uses this solely to remove exact secret values
+        from application logs before returning them to a tenant.
+        """
+
+        normalized = str(path or "").strip().strip("/")
+        if not normalized or ".." in normalized.split("/"):
+            raise LumaError("invalid Nomad variable request")
+        try:
+            result = self.request(
+                "GET",
+                "/v1/var/" + urllib.parse.quote(normalized, safe="/"),
+            )
+        except LumaError:
+            raise LumaError("Nomad variable read failed") from None
+        items = result.get("Items") if isinstance(result, dict) else None
+        if not isinstance(items, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in items.items()
+        ):
+            raise LumaError("Nomad variable read failed")
+        return {str(key): str(value) for key, value in items.items()}
+
+    def delete_variable(self, path: str) -> None:
+        normalized = str(path or "").strip().strip("/")
+        if not normalized or ".." in normalized.split("/"):
+            raise LumaError("invalid Nomad variable request")
+        try:
+            self.request(
+                "DELETE",
+                "/v1/var/" + urllib.parse.quote(normalized, safe="/"),
+            )
+        except LumaError as exc:
+            # DELETE is used by retryable cancel/delete flows. A missing lease
+            # is already the requested end state and must stay idempotent.
+            if "Nomad API error 404" in str(exc):
+                return
+            raise LumaError("Nomad variable delete failed") from None

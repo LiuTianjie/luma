@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.161"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.160 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.161 sh
 ```
 
 Develop from source:
@@ -150,6 +150,89 @@ EGRESS_SUBSCRIPTION_URL=...
 | `EGRESS_SUBSCRIPTION_URL` | Required only for egress | Proxy subscription URL. Luma uses it to generate Mihomo config for image-pull proxying and runtime proxying for services with `proxy: true`. |
 | `TAILSCALE_AUTHKEY` | Needed for private/home/tailscale-relay nodes | Lets servers join your tailnet. Not required for an ordinary single public manager or ordinary public services. |
 | `LUMA_SUDO_PASSWORD` | Only when sudo needs a password | Local fallback password for sudo commands. It stays in the local user config and is not distributed to clients. |
+
+### Manager-side LAE Control files
+
+When Luma Control serves LAE, keep Builder and Runtime identities in separate
+private files on the manager. The Nomad job mounts `/opt/luma/control`; every
+principal, broker, and admin file passed to the job must therefore live below
+that directory. Files must be regular, non-symlink files readable only by the
+owner (`0600` is recommended). Token contents are read by Luma Control at
+runtime and are never rendered into the Nomad Job or `control.json`.
+
+Create one token file per identity, then create the two principal files. A
+`tokenFile` is a file in the same directory as its principal file:
+
+```json
+{
+  "lae-builder": {
+    "tokenFile": "lae-builder.token",
+    "tenantRefs": ["*"],
+    "applicationRefs": ["*"]
+  }
+}
+```
+
+Save that as `/opt/luma/control/lae-builder-principals.json`. Save the Runtime
+configuration separately as `/opt/luma/control/lae-runtime-principals.json`:
+
+```json
+{
+  "lae-runtime": {
+    "tokenFile": "lae-runtime.token",
+    "tenantRefs": ["*"],
+    "applicationRefs": ["*"],
+    "builderPrincipalRefs": ["lae-builder"],
+    "scopes": [
+      "runtime:volumes:prepare",
+      "runtime:deployments:write",
+      "runtime:deployments:read",
+      "runtime:logs",
+      "runtime:metrics",
+      "runtime:secrets:issue"
+    ]
+  }
+}
+```
+
+Install all four files privately and configure the manager's `.env` before
+`luma bootstrap manager` or `luma update manager`:
+
+```bash
+sudo install -d -m 700 /opt/luma/control
+sudo chmod 600 \
+  /opt/luma/control/lae-builder.token \
+  /opt/luma/control/lae-runtime.token \
+  /opt/luma/control/lae-builder-principals.json \
+  /opt/luma/control/lae-runtime-principals.json
+
+LUMA_LAE_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-builder-principals.json
+LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-runtime-principals.json
+```
+
+Optional credential/object brokers and the LAE super-admin proxy use the same
+file-only pattern:
+
+```bash
+LUMA_CREDENTIAL_BROKER_URL=https://lae-api.internal/v1/internal/credential-leases/redeem
+LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS=5
+LUMA_CREDENTIAL_BROKER_TOKEN_FILE=/opt/luma/control/lae-broker.token
+
+LUMA_OBJECT_SOURCE_BROKER_URL=https://lae-api.internal/v1/internal/object-source-leases/redeem
+LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS=5
+# Optional when it intentionally reuses LUMA_CREDENTIAL_BROKER_TOKEN_FILE:
+LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE=/opt/luma/control/lae-object-broker.token
+
+LUMA_LAE_ADMIN_API_URL=https://lae-api.internal
+LUMA_LAE_ADMIN_TIMEOUT_SECONDS=8
+LUMA_LAE_ADMIN_TOKEN_FILE=/opt/luma/control/lae-admin.token
+```
+
+Only the documented HTTPS URLs, bounded timeouts, and file paths are copied
+into the `luma-control` Job. Inline legacy variables such as
+`LUMA_LAE_SERVICE_TOKEN` and `LUMA_LAE_*_PRINCIPALS_JSON` remain available for
+direct/local compatibility but are deliberately not forwarded by manager
+bootstrap; production Nomad managers should use the file configuration above.
 
 You can skip editing `.env` and run `luma bootstrap manager --domain ...` directly. When local values are missing, the CLI explains each value and prompts interactively.
 
@@ -252,7 +335,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.161"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -322,7 +405,7 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 
 | Question | What to do |
 | --- | --- |
-| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI, hot-refreshes Luma Control, and refreshes the manager node agent when possible, without restarting Traefik, the Nomad agent, Docker, or app jobs. |
+| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI, reconciles firewall/Traefik/control config and the Luma Control job, then refreshes the manager node agent when possible. It does not restart Docker/Nomad or redeploy app jobs. |
 | Update worker/home nodes | Run `luma update fleet` from a logged-in client after the manager has the current Control API. Fleet update skips the Nomad server (manager) node by default; update the manager separately with `luma update manager` on the manager. Nodes whose agent is too old to support fleet update are reported as skipped; run `luma update` once on those nodes. |
 | View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, the orchestrator (Nomad) with its leader, and registered nodes with `role=client`. |
 | View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the management token on a trusted device. |

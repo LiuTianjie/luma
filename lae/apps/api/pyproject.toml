@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lae-api"
+version = "0.1.0"
+description = "Public LAE API service"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "lae-contracts",
+  "lae-core",
+  "lae-luma-adapter",
+  "lae-store",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+test = ["httpx2>=2.5,<3"]
+
+[project.scripts]
+lae-api = "lae_api.__main__:main"
+
+[tool.uv.sources]
+lae-contracts = { workspace = true }
+lae-core = { workspace = true }
+lae-luma-adapter = { workspace = true }
+lae-store = { workspace = true }
+
+[tool.setuptools.packages.find]
+where = ["src"]

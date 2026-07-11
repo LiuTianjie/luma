@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "lae.build-plan-candidate/v1",
+  "sourceSnapshotDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "resolvedCommit": "0123456789abcdef0123456789abcdef01234567",
+  "policyVersion": "2026-07-11",
+  "builds": [],
+  "externalImages": [],
+  "signature": {
+    "keyId": "lae-plan-2026-01",
+    "value": "ZmFrZS1zaWduYXR1cmUtdjE"
+  }
+}

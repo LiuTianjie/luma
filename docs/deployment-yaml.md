@@ -238,6 +238,20 @@ Compose 仓库同样支持 import：`luma import` 会发现 `luma.compose.yml` /
 luma compose validate --import-mode luma.compose.yml
 ```
 
+If a repository has separate staging/production sidecars, pass the exact
+repository-relative Compose sidecar to import:
+
+```bash
+luma import https://github.com/acme/app.git \
+  --ref v1.2.3 \
+  --compose-sidecar deploy/staging.luma.compose.yml
+```
+
+The path is resolved only after the Builder clones the repository. Absolute or
+non-normalized paths, `..`, missing files, invalid Luma Compose sidecars, and
+symlink escapes are rejected. Explicit selection is fail-closed and never
+falls back to another discovered manifest.
+
 普通 `luma compose validate` / `luma compose deploy` 不构建镜像，因此仍要求运行时 Compose 的每个 service 都已经有 `image:`。
 
 CLI 会流式回传 clone → build → push → deploy 每一步。构建节点来自控制面声明的 builder 节点；通常无需传 `--build-node`，只有临时覆盖时才传，且 Control 会拒绝未声明的构建节点。`--env .env` 会把运行时环境变量作为 scoped secrets 交给控制面，由最终 `.luma.yml` / Compose 内容过滤并保存。单服务 import 可用 `--region` / `--exposure` / `--domain` / `--port` / `--platform` 覆盖 `.luma.yml` 里的对应字段；Compose import 只接受 `--region` 覆盖 sidecar，服务级入口要写在 `luma.compose.yml` 的 `services:` 里。构建出的镜像 tag 形如 `<build-node-tailscale-host>:5000/acme/myapp:<git-sha>`，其它区域的节点经 Tailscale 内网拉取（`luma registry serve` 已为各节点配好 `insecure-registries`）。构建历史用 `luma build list` 查看，失败详情用 `luma build logs <id>`，修好凭据或配置后可 `luma build retry <id>`。

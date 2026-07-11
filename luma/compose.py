@@ -508,6 +508,21 @@ def _render_storage_class_volume(storage_class: StorageClassSpec, volume: Compos
     }
 
 
+def render_storage_class_volume(
+    storage_class: StorageClassSpec,
+    volume: ComposeVolumeSpec,
+    endpoint: str,
+) -> Dict[str, Any]:
+    """Render Docker volume-driver options for a resolved storage class.
+
+    Kept as a public wrapper so trusted control-plane renderers can translate
+    the same storage policy into Nomad Docker ``mount.volume_options`` without
+    duplicating NFS endpoint parsing or mount option handling.
+    """
+
+    return _render_storage_class_volume(storage_class, volume, endpoint)
+
+
 def _parse_nfs_endpoint(storage_class: StorageClassSpec, endpoint: str) -> tuple[str, str]:
     if endpoint.startswith("nfs://"):
         endpoint = endpoint[len("nfs://") :]

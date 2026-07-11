@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.160 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.161 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -314,6 +314,11 @@ def build_parser() -> argparse.ArgumentParser:
     import_cmd.add_argument("--domain", default="", help="Override domain from the repo's .luma.yml for single-service imports")
     import_cmd.add_argument("--port", type=int, default=None, help="Override container port from the repo's .luma.yml for single-service imports")
     import_cmd.add_argument("--manifest", type=Path, help="Use this Luma manifest when the repository does not contain one")
+    import_cmd.add_argument(
+        "--compose-sidecar",
+        default="",
+        help="Select one repository-relative Luma Compose sidecar instead of auto-discovery",
+    )
     import_cmd.add_argument("--env", dest="deploy_env_file", type=Path, help="Import this .env file as scoped deployment secrets for the imported app/stack")
     import_cmd.add_argument("--secrets-env-file", dest="deploy_env_file", type=Path, help=argparse.SUPPRESS)
     import_cmd.add_argument("--platform", default="", help="Build platform (default: linux/amd64 or the repo's build.platform)")
@@ -2587,6 +2592,8 @@ def cmd_import(args: argparse.Namespace) -> int:
         raise LumaError("repo is required unless --provider-id and --repository are provided")
     if args.repo and (args.provider_id or args.repository):
         raise LumaError("use either repo URL/owner-name or --provider-id + --repository, not both")
+    if args.compose_sidecar and args.manifest:
+        raise LumaError("--compose-sidecar cannot be combined with --manifest")
 
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     source_label = args.repo or f"{args.provider_id}:{args.repository}"
@@ -2609,6 +2616,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         domain=args.domain,
         port=args.port,
         manifest=manifest_text,
+        compose_sidecar=args.compose_sidecar,
         env_secrets=env_secrets,
         platform=args.platform,
         context=args.build_context,
@@ -2655,6 +2663,11 @@ def cmd_import(args: argparse.Namespace) -> int:
                     _print_json({"type": "event", **step})
                 elif not quiet:
                     _print_deploy_step(step)
+
+    if args.compose_sidecar and result.get("composeSidecar") != args.compose_sidecar:
+        raise LumaError(
+            "Control did not confirm the selected Compose sidecar; refusing to report import success"
+        )
 
     if output_format != "text":
         _print_success(args, result)

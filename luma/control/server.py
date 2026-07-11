@@ -6,8 +6,10 @@ import base64
 import errno
 import functools
 import hashlib
+import hmac
 import http.client
 import json
+import math
 import os
 import re
 import secrets
@@ -15,6 +17,7 @@ import shlex
 import shutil
 import socket
 import ssl
+import stat
 import sys
 import tempfile
 import threading
@@ -23,6 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import replace
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, AsyncIterator
@@ -36,16 +40,46 @@ from starlette.websockets import WebSocket
 import yaml
 
 from ..assets import asset_path
+from ..artifact_leases import (
+    ArtifactLeaseBinding,
+    ArtifactLeaseManager,
+    ArtifactLeaseRecord,
+    MAX_ARTIFACT_BYTES,
+)
+from ..builder_tasks import (
+    BUILDER_TASK_SCHEMA_VERSION,
+    builder_action_for_kind,
+    builder_plan_content_digest,
+    builder_plan_signature_payload,
+    builder_registry_repository,
+    builder_task_request_hash,
+    parse_external_image_reference,
+    sanitize_builder_task_progress_event,
+    sanitize_builder_task_result,
+    validate_builder_task_request,
+)
 from ..cloudflare import delete_dns, sync_dns
+from ..credential_broker import (
+    CredentialLeaseBinding,
+    ObjectSourceLeaseBinding,
+    RedeemedCredential,
+    RedeemedObjectSource,
+    redeem_builder_credential,
+    redeem_builder_object_source,
+)
 from ..compose import (
     ComposeDeploymentSpec,
+    ComposeServiceSpec,
+    ComposeVolumeSpec,
     DEFAULT_NFS_MOUNT_OPTIONS,
     StorageClassSpec,
     compose_public_services,
     compose_route_path,
     compose_stack_path,
     load_compose_deployment,
+    render_storage_class_volume,
     render_compose_routes,
+    resolve_storage_mounts,
     storage_summary,
 )
 from ..config import LumaConfig, load_config
@@ -64,7 +98,48 @@ from ..registry import (
     registry_auth_matches_image,
 )
 from ..render import named_volume_sources, render_tailscale_route, render_tcp_route, route_path, stack_path
+from ..repo_paths import normalize_repo_relative_path
 from ..service import TCP_RELAY_RESERVED_PORTS, VALID_REGIONS, ServiceSpec, load_service, slugify, tcp_entrypoint_name
+from ..lae_runtime import (
+    MAX_RUNTIME_REQUEST_BYTES,
+    RUNTIME_AUDIENCE,
+    RUNTIME_SECRETS,
+    SCHEMA_VERSION as LAE_RUNTIME_SCHEMA_VERSION,
+    SCOPE_DEPLOYMENTS_READ,
+    SCOPE_DEPLOYMENTS_WRITE,
+    SCOPE_LOGS_READ,
+    SCOPE_METRICS_READ,
+    SCOPE_SECRETS_ISSUE,
+    SCOPE_VOLUMES_PREPARE,
+    LumaRuntimeError,
+    RuntimeBinding,
+    canonical_hash as _lae_runtime_hash,
+    conflict as _lae_runtime_conflict,
+    forbidden as _lae_runtime_forbidden,
+    invalid as _lae_runtime_invalid,
+    normalize_idempotency_key as _normalize_lae_runtime_idempotency_key,
+    not_found as _lae_runtime_not_found,
+    unauthorized as _lae_runtime_unauthorized,
+    unavailable as _lae_runtime_unavailable,
+    validate_deploy_body as _validate_lae_runtime_deploy_body,
+    validate_lifecycle_body as _validate_lae_runtime_lifecycle_body,
+    validate_secret_issue_body as _validate_lae_runtime_secret_issue_body,
+    validate_volume_prepare_body as _validate_lae_runtime_volume_prepare_body,
+)
+from ..lae_placement import (
+    PlacementDecision,
+    PlacementFailure,
+    REASON_NO_CAPACITY as LAE_PLACEMENT_NO_CAPACITY,
+    REASON_UNAVAILABLE as LAE_PLACEMENT_UNAVAILABLE,
+    REASON_VOLUME_INCOMPATIBLE as LAE_PLACEMENT_VOLUME_INCOMPATIBLE,
+    plan_lae_placement,
+    validate_nomad_plan as _validate_lae_nomad_plan,
+)
+from ..lae_admin_proxy import (
+    LaeAdminProxyError,
+    fetch_lae_admin_resource,
+    load_lae_admin_proxy_config,
+)
 from .. import __version__
 from .metrics import load_history, record_samples, sustained_breach
 from .state import init_state, load_state, mutate_state, require_token
@@ -108,6 +183,15 @@ AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SE
 # without bound — every remote-node deploy adds an entry that is never deleted,
 # and the whole file is re-serialized + fsynced on every heartbeat.
 AGENT_TASK_RETENTION_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_RETENTION_SECONDS", str(24 * 3600)))
+BUILDER_TASK_RETENTION_SECONDS = int(os.environ.get("LUMA_BUILDER_TASK_RETENTION_SECONDS", str(7 * 24 * 3600)))
+BUILDER_TASK_IDEMPOTENCY_SECONDS = int(os.environ.get("LUMA_BUILDER_TASK_IDEMPOTENCY_SECONDS", str(24 * 3600)))
+BUILDER_TASK_EVENT_LIMIT = int(os.environ.get("LUMA_BUILDER_TASK_EVENT_LIMIT", "5000"))
+LAE_RUNTIME_RECORD_RETENTION_SECONDS = int(
+    os.environ.get("LUMA_LAE_RUNTIME_RECORD_RETENTION_SECONDS", str(30 * 24 * 3600))
+)
+LAE_RUNTIME_IDEMPOTENCY_SECONDS = int(
+    os.environ.get("LUMA_LAE_RUNTIME_IDEMPOTENCY_SECONDS", str(7 * 24 * 3600))
+)
 TERMINAL_SESSION_LIMIT_PER_NODE = int(os.environ.get("LUMA_TERMINAL_SESSION_LIMIT_PER_NODE", "2"))
 TERMINAL_IDLE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TERMINAL_IDLE_TIMEOUT_SECONDS", "1800"))
 # Sustained-breach alerting: a metric must stay above the threshold for the
@@ -118,6 +202,28 @@ ALERT_NODE_CPU_PERCENT = float(os.environ.get("LUMA_ALERT_NODE_CPU_PERCENT", "90
 TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS = int(os.environ.get("LUMA_TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS", "300"))
 DEFAULT_BUILD_NODE_NAME = "builder"
 RECOVERABLE_ROUTE_HTTP_STATUSES = {502, 503, 504}
+ARTIFACT_DOWNLOADS = ArtifactLeaseManager(
+    temporary_root=(
+        Path(os.environ["LUMA_ARTIFACT_RENDEZVOUS_ROOT"])
+        if os.environ.get("LUMA_ARTIFACT_RENDEZVOUS_ROOT")
+        else None
+    )
+)
+
+# Serializes every control-plane deployment path, including the dedicated LAE
+# runtime API.  A single lock prevents a normal management deploy and an LAE
+# deploy from racing on job slugs, domains, routes, storage baselines, or the
+# generated Nomad artifact.
+_DEPLOY_LOCK = threading.RLock()
+
+
+def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with _DEPLOY_LOCK:
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 def _control_config_path() -> Path:
@@ -604,6 +710,893 @@ def _build_runs(state: Dict[str, Any]) -> Dict[str, Any]:
     return runs
 
 
+def _builder_tasks(state: Dict[str, Any]) -> Dict[str, Any]:
+    tasks = state.setdefault("builderTasks", {})
+    if not isinstance(tasks, dict):
+        tasks = {}
+        state["builderTasks"] = tasks
+    return tasks
+
+
+def _builder_task_idempotency(state: Dict[str, Any]) -> Dict[str, Any]:
+    records = state.setdefault("builderTaskIdempotency", {})
+    if not isinstance(records, dict):
+        records = {}
+        state["builderTaskIdempotency"] = records
+    return records
+
+
+def _builder_source_snapshots(state: Dict[str, Any]) -> Dict[str, Any]:
+    snapshots = state.setdefault("builderSourceSnapshots", {})
+    if not isinstance(snapshots, dict):
+        snapshots = {}
+        state["builderSourceSnapshots"] = snapshots
+    return snapshots
+
+
+def _builder_source_snapshot_scope(
+    principal_ref: str,
+    tenant_ref: str,
+    application_ref: str,
+    snapshot_id: str,
+) -> str:
+    scope = {
+        "principalRef": str(principal_ref),
+        "tenantRef": str(tenant_ref),
+        "applicationRef": str(application_ref),
+        "sourceSnapshotId": str(snapshot_id),
+    }
+    encoded = json.dumps(scope, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+class _LaePrincipalFileError(Exception):
+    pass
+
+
+def _read_lae_private_file(path: Path, *, max_bytes: int) -> str:
+    raw_path = str(path)
+    if (
+        not path.is_absolute()
+        or not raw_path
+        or len(raw_path) > 4096
+        or any(character in raw_path for character in ("\0", "\n", "\r"))
+    ):
+        raise _LaePrincipalFileError()
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_mode & 0o077
+            or not metadata.st_mode & stat.S_IRUSR
+            or not 1 <= metadata.st_size <= max_bytes
+        ):
+            raise _LaePrincipalFileError()
+        with os.fdopen(descriptor, "r", encoding="utf-8") as source:
+            descriptor = -1
+            value = source.read(max_bytes + 1)
+    except (OSError, UnicodeError, _LaePrincipalFileError):
+        raise _LaePrincipalFileError() from None
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    if len(value.encode("utf-8")) > max_bytes:
+        raise _LaePrincipalFileError()
+    return value
+
+
+def _load_lae_principal_file(env_name: str) -> tuple[Path, Dict[str, Any]]:
+    raw_path = str(os.environ.get(env_name) or "").strip()
+    if not raw_path:
+        raise _LaePrincipalFileError()
+    path = Path(raw_path)
+    try:
+        decoded = json.loads(_read_lae_private_file(path, max_bytes=128 * 1024))
+    except (ValueError, _LaePrincipalFileError):
+        raise _LaePrincipalFileError() from None
+    if not isinstance(decoded, dict) or not decoded:
+        raise _LaePrincipalFileError()
+    return path, decoded
+
+
+def _read_lae_principal_token(config_path: Path, token_file: Any) -> str:
+    raw = str(token_file or "")
+    if (
+        not raw
+        or raw != raw.strip()
+        or any(character in raw for character in ("\0", "\n", "\r"))
+    ):
+        raise _LaePrincipalFileError()
+    requested = Path(raw)
+    if requested.is_absolute():
+        selected = requested
+    elif len(requested.parts) == 1 and requested.name not in {"", ".", ".."}:
+        selected = config_path.parent / requested
+    else:
+        raise _LaePrincipalFileError()
+    if (
+        selected.parent != config_path.parent
+        or selected.name in {"", ".", ".."}
+    ):
+        raise _LaePrincipalFileError()
+    token = _read_lae_private_file(selected, max_bytes=4096).strip()
+    if (
+        not 16 <= len(token) <= 512
+        or any(not 33 <= ord(character) <= 126 for character in token)
+    ):
+        raise _LaePrincipalFileError()
+    return token
+
+
+def _lae_service_principals() -> list[Dict[str, Any]]:
+    raw = str(os.environ.get("LUMA_LAE_SERVICE_PRINCIPALS_JSON") or "").strip()
+    file_path = str(
+        os.environ.get("LUMA_LAE_SERVICE_PRINCIPALS_FILE") or ""
+    ).strip()
+    legacy_token = str(os.environ.get("LUMA_LAE_SERVICE_TOKEN") or "").strip()
+    principals: list[Dict[str, Any]] = []
+    if file_path:
+        if raw or legacy_token:
+            raise LumaError("LAE service principal configuration is invalid")
+        try:
+            config_path, configured = _load_lae_principal_file(
+                "LUMA_LAE_SERVICE_PRINCIPALS_FILE"
+            )
+        except _LaePrincipalFileError:
+            raise LumaError(
+                "LAE service principal configuration is invalid"
+            ) from None
+        allowed_fields = {"tokenFile", "tenantRefs", "applicationRefs"}
+        for principal_ref, value in configured.items():
+            if (
+                not isinstance(value, dict)
+                or set(value) != allowed_fields
+            ):
+                raise LumaError(
+                    "LAE service principal configuration is invalid"
+                )
+            principal_id = str(principal_ref or "").strip()
+            tenant_refs = value.get("tenantRefs")
+            application_refs = value.get("applicationRefs")
+            try:
+                principal_token = _read_lae_principal_token(
+                    config_path, value.get("tokenFile")
+                )
+            except _LaePrincipalFileError:
+                raise LumaError(
+                    "LAE service principal configuration is invalid"
+                ) from None
+            if (
+                not principal_id
+                or not isinstance(tenant_refs, list)
+                or not tenant_refs
+                or not all(
+                    isinstance(item, str) and item.strip()
+                    for item in tenant_refs
+                )
+                or not isinstance(application_refs, list)
+                or not application_refs
+                or not all(
+                    isinstance(item, str) and item.strip()
+                    for item in application_refs
+                )
+            ):
+                raise LumaError(
+                    "LAE service principal configuration is invalid"
+                )
+            principals.append(
+                {
+                    "id": principal_id,
+                    "token": principal_token,
+                    "tenantRefs": [str(item).strip() for item in tenant_refs],
+                    "applicationRefs": [
+                        str(item).strip() for item in application_refs
+                    ],
+                }
+            )
+    elif raw:
+        try:
+            configured = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LumaError("LAE service principal configuration is invalid") from exc
+        if not isinstance(configured, dict):
+            raise LumaError("LAE service principal configuration is invalid")
+        for principal_ref, value in configured.items():
+            if not isinstance(value, dict):
+                raise LumaError("LAE service principal configuration is invalid")
+            principal_id = str(principal_ref or "").strip()
+            principal_token = str(value.get("token") or "").strip()
+            tenant_refs = value.get("tenantRefs", ["*"])
+            application_refs = value.get("applicationRefs", ["*"])
+            if (
+                not principal_id
+                or not principal_token
+                or not isinstance(tenant_refs, list)
+                or not tenant_refs
+                or not all(isinstance(item, str) and item.strip() for item in tenant_refs)
+                or not isinstance(application_refs, list)
+                or not application_refs
+                or not all(isinstance(item, str) and item.strip() for item in application_refs)
+            ):
+                raise LumaError("LAE service principal configuration is invalid")
+            principals.append(
+                {
+                    "id": principal_id,
+                    "token": principal_token,
+                    "tenantRefs": [str(item).strip() for item in tenant_refs],
+                    "applicationRefs": [str(item).strip() for item in application_refs],
+                }
+            )
+    if legacy_token:
+        principals.append(
+            {
+                "id": str(os.environ.get("LUMA_LAE_SERVICE_PRINCIPAL_REF") or "lae-service").strip(),
+                "token": legacy_token,
+                "tenantRefs": ["*"],
+                "applicationRefs": ["*"],
+            }
+        )
+    token_fingerprints = {
+        hashlib.sha256(str(item["token"]).encode("utf-8")).digest()
+        for item in principals
+    }
+    if len(token_fingerprints) != len(principals):
+        raise LumaError("LAE service principal configuration is invalid")
+    return principals
+
+
+def _require_lae_service_principal(state: Dict[str, Any], token: str) -> Dict[str, Any]:
+    management_token = str(state.get("deployToken") or "")
+    if management_token and token and secrets.compare_digest(management_token, token):
+        raise LumaError("unauthorized")
+    supplied = str(token or "")
+    for principal in _lae_service_principals():
+        expected = str(principal.get("token") or "")
+        if expected and supplied and secrets.compare_digest(expected, supplied):
+            return {key: value for key, value in principal.items() if key != "token"}
+    raise LumaError("unauthorized")
+
+
+def _lae_runtime_service_principals() -> list[Dict[str, Any]]:
+    """Load the dedicated LAE runtime identities.
+
+    Runtime identities deliberately live in a different environment variable
+    from Builder identities.  A token copied from the management or Builder
+    plane is rejected even if its text is accidentally duplicated here.
+    """
+
+    raw = str(
+        os.environ.get("LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_JSON") or ""
+    ).strip()
+    file_path = str(
+        os.environ.get("LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE") or ""
+    ).strip()
+    if not raw and not file_path:
+        return []
+    config_path: Path | None = None
+    if file_path:
+        if raw:
+            raise _lae_runtime_unavailable(
+                "LAE runtime service principal configuration is invalid"
+            )
+        try:
+            config_path, configured = _load_lae_principal_file(
+                "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE"
+            )
+        except _LaePrincipalFileError:
+            raise _lae_runtime_unavailable(
+                "LAE runtime service principal configuration is invalid"
+            ) from None
+    else:
+        try:
+            configured = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise _lae_runtime_unavailable(
+                "LAE runtime service principal configuration is invalid"
+            ) from exc
+    if not isinstance(configured, dict) or not configured:
+        raise _lae_runtime_unavailable(
+            "LAE runtime service principal configuration is invalid"
+        )
+    token_field = "tokenFile" if config_path is not None else "token"
+    allowed_fields = {
+        token_field,
+        "tenantRefs",
+        "applicationRefs",
+        "builderPrincipalRefs",
+        "scopes",
+    }
+    allowed_scopes = {
+        SCOPE_VOLUMES_PREPARE,
+        SCOPE_DEPLOYMENTS_WRITE,
+        SCOPE_DEPLOYMENTS_READ,
+        SCOPE_LOGS_READ,
+        SCOPE_METRICS_READ,
+        SCOPE_SECRETS_ISSUE,
+    }
+    principals: list[Dict[str, Any]] = []
+    for raw_id, raw_value in configured.items():
+        if (
+            not isinstance(raw_id, str)
+            or not raw_id.strip()
+            or not isinstance(raw_value, dict)
+            or set(raw_value) - allowed_fields
+            or token_field not in raw_value
+        ):
+            raise _lae_runtime_unavailable(
+                "LAE runtime service principal configuration is invalid"
+            )
+        if config_path is not None:
+            try:
+                token = _read_lae_principal_token(
+                    config_path, raw_value.get("tokenFile")
+                )
+            except _LaePrincipalFileError:
+                raise _lae_runtime_unavailable(
+                    "LAE runtime service principal configuration is invalid"
+                ) from None
+        else:
+            token = raw_value.get("token")
+        tenant_refs = raw_value.get("tenantRefs", ["*"])
+        application_refs = raw_value.get("applicationRefs", ["*"])
+        builder_principal_refs = raw_value.get("builderPrincipalRefs")
+        scopes = raw_value.get("scopes")
+        if (
+            not isinstance(token, str)
+            or len(token) < 16
+            or len(token) > 512
+            or any(not 33 <= ord(character) <= 126 for character in token)
+            or not isinstance(tenant_refs, list)
+            or not tenant_refs
+            or not all(
+                isinstance(item, str) and item.strip() for item in tenant_refs
+            )
+            or not isinstance(application_refs, list)
+            or not application_refs
+            or not all(
+                isinstance(item, str) and item.strip()
+                for item in application_refs
+            )
+            or not isinstance(builder_principal_refs, list)
+            or not builder_principal_refs
+            or not all(
+                isinstance(item, str) and item.strip()
+                for item in builder_principal_refs
+            )
+            or not isinstance(scopes, list)
+            or not scopes
+            or not all(
+                isinstance(item, str) and item in allowed_scopes
+                for item in scopes
+            )
+            or len(set(scopes)) != len(scopes)
+        ):
+            raise _lae_runtime_unavailable(
+                "LAE runtime service principal configuration is invalid"
+            )
+        principals.append(
+            {
+                "id": raw_id.strip(),
+                "token": token,
+                "tenantRefs": [str(item).strip() for item in tenant_refs],
+                "applicationRefs": [
+                    str(item).strip() for item in application_refs
+                ],
+                "builderPrincipalRefs": [
+                    str(item).strip() for item in builder_principal_refs
+                ],
+                "scopes": list(scopes),
+            }
+        )
+    token_fingerprints = {
+        hashlib.sha256(str(item["token"]).encode("utf-8")).digest()
+        for item in principals
+    }
+    if len(token_fingerprints) != len(principals):
+        raise _lae_runtime_unavailable(
+            "LAE runtime service principal configuration is invalid"
+        )
+    return principals
+
+
+def _require_lae_runtime_principal(
+    state: Dict[str, Any],
+    token: str,
+    *,
+    audience: str,
+    scope: str,
+    binding: RuntimeBinding,
+) -> Dict[str, Any]:
+    if audience != RUNTIME_AUDIENCE:
+        raise _lae_runtime_unauthorized()
+    supplied = str(token or "")
+    if not supplied:
+        raise _lae_runtime_unauthorized()
+    management_token = str(state.get("deployToken") or "")
+    if management_token and secrets.compare_digest(management_token, supplied):
+        raise _lae_runtime_unauthorized()
+    # Builder and runtime tokens must be independently rotatable.  Refuse a
+    # duplicate rather than letting configuration blur the two audiences.
+    for builder_principal in _lae_service_principals():
+        builder_token = str(builder_principal.get("token") or "")
+        if builder_token and secrets.compare_digest(builder_token, supplied):
+            raise _lae_runtime_unauthorized()
+    principal: Dict[str, Any] | None = None
+    for candidate in _lae_runtime_service_principals():
+        expected = str(candidate.get("token") or "")
+        if expected and secrets.compare_digest(expected, supplied):
+            principal = candidate
+            break
+    if principal is None:
+        raise _lae_runtime_unauthorized()
+    if scope not in set(str(item) for item in principal.get("scopes") or []):
+        raise _lae_runtime_forbidden()
+    tenant_refs = set(str(item) for item in principal.get("tenantRefs") or [])
+    application_refs = set(
+        str(item) for item in principal.get("applicationRefs") or []
+    )
+    if (
+        "*" not in tenant_refs
+        and binding.tenant_ref not in tenant_refs
+        or "*" not in application_refs
+        and binding.application_ref not in application_refs
+    ):
+        raise _lae_runtime_forbidden()
+    return {key: value for key, value in principal.items() if key != "token"}
+
+
+def _authorize_lae_builder_scope(principal: Dict[str, Any], request: Dict[str, Any]) -> None:
+    tenant_ref = str(request.get("tenantRef") or "")
+    application_ref = str(request.get("applicationRef") or "")
+    tenant_refs = set(str(item) for item in principal.get("tenantRefs") or [])
+    application_refs = set(str(item) for item in principal.get("applicationRefs") or [])
+    if "*" not in tenant_refs and tenant_ref not in tenant_refs:
+        raise LumaError("unauthorized")
+    if "*" not in application_refs and application_ref not in application_refs:
+        raise LumaError("unauthorized")
+
+
+def _require_builder_task_owner(task: Dict[str, Any], principal: Dict[str, Any], task_id: str) -> None:
+    if str(task.get("principalRef") or "") != str(principal.get("id") or ""):
+        # Do not reveal task existence across service principals.
+        raise LumaError(f"builder task not found: {task_id}")
+
+
+def _builder_task_idempotency_scope(
+    principal: Dict[str, Any],
+    request: Dict[str, Any],
+    idempotency_key: str,
+) -> str:
+    scope = {
+        "principalRef": str(principal.get("id") or ""),
+        "route": "POST /v1/builder/tasks",
+        "tenantRef": str(request.get("tenantRef") or ""),
+        "applicationRef": str(request.get("applicationRef") or ""),
+        "idempotencyKey": idempotency_key,
+    }
+    encoded = json.dumps(scope, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _require_builder_agent_image_allowlist(request: Dict[str, Any]) -> None:
+    if str(request.get("kind") or "") != "analyze-source":
+        return
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    supplied = str(payload.get("agentImageDigest") or "")
+    expected = str(os.environ.get("LUMA_BUILDER_ANALYZE_IMAGE_DIGEST") or "").strip()
+    if not expected:
+        raise LumaError("builder analyzer image allowlist is unavailable")
+    if not secrets.compare_digest(expected, supplied):
+        raise LumaError("agentImageDigest is not allowlisted by Luma Control")
+    _lae_external_registry_allowlist()
+
+
+def _lae_plan_signing_keys() -> Dict[str, bytes]:
+    raw = str(os.environ.get("LUMA_LAE_PLAN_SIGNING_KEYS_JSON") or "").strip()
+    file_path = str(
+        os.environ.get("LUMA_LAE_PLAN_SIGNING_KEYS_FILE") or ""
+    ).strip()
+    if raw and file_path:
+        raise LumaError("LAE plan signing key configuration is ambiguous")
+    if not raw and not file_path:
+        raise LumaError("LAE plan signing key configuration is unavailable")
+    if file_path:
+        try:
+            _, configured = _load_lae_principal_file(
+                "LUMA_LAE_PLAN_SIGNING_KEYS_FILE"
+            )
+        except _LaePrincipalFileError:
+            raise LumaError(
+                "LAE plan signing key configuration is invalid"
+            ) from None
+    else:
+        try:
+            configured = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LumaError("LAE plan signing key configuration is invalid") from exc
+    if not isinstance(configured, dict) or not configured:
+        raise LumaError("LAE plan signing key configuration is invalid")
+    result: Dict[str, bytes] = {}
+    for key_id, raw_secret in configured.items():
+        if not isinstance(key_id, str) or not key_id.startswith("lae-plan-") or not isinstance(raw_secret, str):
+            raise LumaError("LAE plan signing key configuration is invalid")
+        secret_text = raw_secret.strip()
+        try:
+            secret = base64.b64decode(secret_text[7:], validate=True) if secret_text.startswith("base64:") else secret_text.encode("utf-8")
+        except (ValueError, TypeError) as exc:
+            raise LumaError("LAE plan signing key configuration is invalid") from exc
+        if len(secret) < 32:
+            raise LumaError("LAE plan signing keys must contain at least 256 bits")
+        result[key_id] = secret
+    return result
+
+
+def _verify_lae_plan_signature(request: Dict[str, Any]) -> None:
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    plan = payload.get("signedBuildPlan") if isinstance(payload.get("signedBuildPlan"), dict) else {}
+    signature = plan.get("signature") if isinstance(plan.get("signature"), dict) else {}
+    key_id = str(signature.get("keyId") or "")
+    key = _lae_plan_signing_keys().get(key_id)
+    if key is None:
+        raise LumaError("signedBuildPlan signature key is not trusted")
+    expected = base64.urlsafe_b64encode(
+        hmac.new(key, builder_plan_signature_payload(request), hashlib.sha256).digest()
+    ).rstrip(b"=").decode("ascii")
+    supplied = str(signature.get("value") or "")
+    if not supplied or not secrets.compare_digest(expected, supplied):
+        raise LumaError("signedBuildPlan signature verification failed")
+
+
+def _record_builder_source_snapshot(state: Dict[str, Any], task: Dict[str, Any], result: Dict[str, Any], *, now: int) -> None:
+    snapshot_id = str(result.get("sourceSnapshotId") or "")
+    record = {
+        "id": snapshot_id,
+        "digest": str(result.get("sourceSnapshotDigest") or ""),
+        "sourceTreeDigest": str(result.get("sourceTreeDigest") or ""),
+        "resolvedCommit": str(result.get("resolvedCommit") or ""),
+        "buildPlanDigest": str(result.get("buildPlanDigest") or ""),
+        "deploymentPlanDigest": str(result.get("deploymentPlanDigest") or ""),
+        "evidenceDigest": str(result.get("evidenceDigest") or ""),
+        "policyVersion": str(result.get("policyVersion") or ""),
+        "agentImageDigest": str(result.get("agentImageDigest") or ""),
+        "tenantRef": str(task.get("tenantRef") or ""),
+        "applicationRef": str(task.get("applicationRef") or ""),
+        "principalRef": str(task.get("principalRef") or ""),
+        "builderTaskId": str(task.get("id") or ""),
+        "createdAt": now,
+    }
+    snapshots = _builder_source_snapshots(state)
+    snapshot_scope = _builder_source_snapshot_scope(
+        record["principalRef"],
+        record["tenantRef"],
+        record["applicationRef"],
+        snapshot_id,
+    )
+    existing = snapshots.get(snapshot_scope)
+    if isinstance(existing, dict):
+        immutable_fields = (
+            "digest",
+            "sourceTreeDigest",
+            "resolvedCommit",
+            "buildPlanDigest",
+            "tenantRef",
+            "applicationRef",
+            "principalRef",
+        )
+        if any(str(existing.get(field) or "") != str(record.get(field) or "") for field in immutable_fields):
+            raise LumaError("source snapshot id is already bound to different immutable content")
+        return
+    snapshots[snapshot_scope] = record
+
+
+def _validate_bound_build_request(state: Dict[str, Any], request: Dict[str, Any], principal: Dict[str, Any]) -> None:
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    snapshot_id = str(payload.get("sourceSnapshotId") or "")
+    snapshot_scope = _builder_source_snapshot_scope(
+        str(principal.get("id") or ""),
+        str(request.get("tenantRef") or ""),
+        str(request.get("applicationRef") or ""),
+        snapshot_id,
+    )
+    snapshot = _builder_source_snapshots(state).get(snapshot_scope)
+    if not isinstance(snapshot, dict):
+        raise LumaError("build-plan source snapshot is unknown or expired")
+    plan = payload.get("signedBuildPlan") if isinstance(payload.get("signedBuildPlan"), dict) else {}
+    bindings = {
+        "digest": str(payload.get("sourceSnapshotDigest") or ""),
+        "resolvedCommit": str(plan.get("resolvedCommit") or ""),
+        "policyVersion": str(plan.get("policyVersion") or ""),
+        "tenantRef": str(request.get("tenantRef") or ""),
+        "applicationRef": str(request.get("applicationRef") or ""),
+        "principalRef": str(principal.get("id") or ""),
+    }
+    for field, expected in bindings.items():
+        if str(snapshot.get(field) or "") != expected:
+            raise LumaError(f"build-plan source snapshot {field} binding does not match")
+    if str(snapshot.get("buildPlanDigest") or "") != builder_plan_content_digest(request):
+        raise LumaError("build-plan content does not match the analyzed snapshot plan")
+    _verify_lae_plan_signature(request)
+
+
+def _builder_build_registry_lease(
+    state: Dict[str, Any],
+    request: Dict[str, Any],
+    principal: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Derive an ephemeral, platform-owned registry target for build-plan.
+
+    This value is created only for the node lease and is never copied into
+    ``agentTasks``.  Until a dedicated short-lived build credential broker is
+    wired, LAE builds are restricted to an explicitly enabled anonymous
+    internal registry; legacy ``state.registries`` credentials are never used.
+    """
+
+    if str(os.environ.get("LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY") or "").strip() != "1":
+        raise LumaError("LAE anonymous build registry is not explicitly enabled")
+    build_config = _build_config(state)
+    pull_host_raw = str(build_config.get("registryHost") or "").strip()
+    push_host_raw = str(build_config.get("pushHost") or "").strip()
+    if not pull_host_raw or not push_host_raw:
+        raise LumaError("LAE build registryHost and pushHost must be configured by Control")
+    pull_host = normalize_registry_host(pull_host_raw)
+    push_host = normalize_registry_host(push_host_raw)
+    insecure_raw = str(os.environ.get("LUMA_LAE_BUILDER_REGISTRY_INSECURE") or "").strip()
+    if insecure_raw not in {"0", "1"}:
+        raise LumaError("LUMA_LAE_BUILDER_REGISTRY_INSECURE must be explicitly set to 0 or 1")
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    plan = payload.get("signedBuildPlan") if isinstance(payload.get("signedBuildPlan"), dict) else {}
+    builds = plan.get("builds") if isinstance(plan.get("builds"), list) else []
+    external_images = plan.get("externalImages") if isinstance(plan.get("externalImages"), list) else []
+    principal_ref = str(principal.get("id") or "")
+    tenant_ref = str(request.get("tenantRef") or "")
+    application_ref = str(request.get("applicationRef") or "")
+    repositories = {
+        str(build.get("key") or ""): builder_registry_repository(
+            principal_ref,
+            tenant_ref,
+            application_ref,
+            str(build.get("key") or ""),
+        )
+        for build in builds
+        if isinstance(build, dict)
+    }
+    if len(repositories) != len(builds):
+        raise LumaError("signedBuildPlan contains an invalid build for registry derivation")
+    external_registries = _lae_external_registry_allowlist()
+    if any(not isinstance(item, dict) for item in external_images):
+        raise LumaError("signedBuildPlan contains an invalid external image")
+    requested_external_registries = {
+        parse_external_image_reference(str(item.get("ref") or ""))["registryHost"]
+        for item in external_images
+    }
+    denied_registries = sorted(requested_external_registries - set(external_registries))
+    if denied_registries:
+        raise LumaError("signedBuildPlan external image registry is not allowlisted by Luma Control")
+    return {
+        "schemaVersion": "luma.builder-registry-lease/v1",
+        "pullHost": pull_host,
+        "pushHost": push_host,
+        "repositories": repositories,
+        "externalRegistries": external_registries,
+        "insecure": insecure_raw == "1",
+        "authMode": "anonymous",
+    }
+
+
+def _lae_external_registry_allowlist() -> list[str]:
+    raw = str(os.environ.get("LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON") or "").strip()
+    if not raw:
+        return []
+    try:
+        configured = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise LumaError("LAE external registry allowlist configuration is invalid") from exc
+    if not isinstance(configured, list) or len(configured) > 32:
+        raise LumaError("LAE external registry allowlist configuration is invalid")
+    result: list[str] = []
+    for value in configured:
+        if not isinstance(value, str) or value != value.strip().lower():
+            raise LumaError("LAE external registry allowlist configuration is invalid")
+        try:
+            parsed = parse_external_image_reference(f"{value}/lae/allowlist-probe:1")
+        except LumaError as exc:
+            raise LumaError("LAE external registry allowlist configuration is invalid") from exc
+        if parsed["registryHost"] != value:
+            raise LumaError("LAE external registry allowlist configuration is invalid")
+        result.append(value)
+    if len(result) != len(set(result)):
+        raise LumaError("LAE external registry allowlist configuration is invalid")
+    return sorted(result)
+
+
+def _builder_task_http_status(exc: Exception) -> int:
+    message = str(exc)
+    lowered = message.lower()
+    if message == "unauthorized" or "bearer token" in lowered:
+        return 401
+    if "builder task not found" in lowered:
+        return 404
+    if "idempotency-key is already bound" in lowered:
+        return 409
+    if "event cursor expired" in lowered:
+        return 410
+    if (
+        "no declared, ready builder" in lowered
+        or "allowlist is unavailable" in lowered
+        or "signing key configuration is unavailable" in lowered
+        or "signing key configuration is invalid" in lowered
+        or "build registry" in lowered
+        or "anonymous build registry" in lowered
+    ):
+        return 503
+    return 400
+
+
+def _builder_task_error_code(status: int) -> str:
+    return {
+        400: "bad_request",
+        401: "unauthorized",
+        404: "not_found",
+        409: "conflict",
+        410: "gone",
+        503: "service_unavailable",
+    }.get(int(status), "luma_error")
+
+
+def _normalize_builder_idempotency_key(value: str) -> str:
+    key = str(value or "").strip()
+    if not key:
+        raise LumaError("Idempotency-Key header is required")
+    if len(key) > 200:
+        raise LumaError("Idempotency-Key header exceeds 200 characters")
+    if any(ord(char) < 33 or ord(char) > 126 for char in key):
+        raise LumaError("Idempotency-Key header contains unsupported characters")
+    return key
+
+
+def _builder_task_event(task: Dict[str, Any], event: Dict[str, Any], *, now: int | None = None) -> Dict[str, Any]:
+    now = int(time.time()) if now is None else int(now)
+    events = task.get("events")
+    if not isinstance(events, list):
+        events = []
+        task["events"] = events
+    cursor = int(task.get("nextEventCursor") or 1)
+    message = str(event.get("message") or event.get("line") or "").strip()[:4000]
+    item: Dict[str, Any] = {
+        "cursor": cursor,
+        "seq": cursor,
+        "ts": now,
+        "type": str(event.get("type") or "status").strip()[:40] or "status",
+    }
+    for key in ("name", "status"):
+        value = str(event.get(key) or "").strip()
+        if value:
+            item[key] = value[:80]
+    if message:
+        item["message"] = message
+    events.append(item)
+    limit = max(int(BUILDER_TASK_EVENT_LIMIT), 100)
+    if len(events) > limit:
+        del events[: len(events) - limit]
+    task["nextEventCursor"] = cursor + 1
+    task["oldestEventCursor"] = int(events[0].get("cursor") or cursor) if events else cursor + 1
+    task["updatedAt"] = now
+    return item
+
+
+def _builder_task_public(task: Dict[str, Any]) -> Dict[str, Any]:
+    result = {
+        "id": str(task.get("id") or ""),
+        "schemaVersion": str(task.get("schemaVersion") or BUILDER_TASK_SCHEMA_VERSION),
+        "kind": str(task.get("kind") or ""),
+        "externalOperationId": str(task.get("externalOperationId") or ""),
+        "tenantRef": str(task.get("tenantRef") or ""),
+        "applicationRef": str(task.get("applicationRef") or ""),
+        "status": str(task.get("status") or ""),
+        "builderNode": str(task.get("builderNode") or ""),
+        "message": str(task.get("message") or ""),
+        "createdAt": int(task.get("createdAt") or 0),
+        "updatedAt": int(task.get("updatedAt") or 0),
+        "startedAt": int(task.get("startedAt") or 0),
+        "completedAt": int(task.get("completedAt") or 0),
+        "lastCursor": max(int(task.get("nextEventCursor") or 1) - 1, 0),
+    }
+    stored_result = task.get("result")
+    if isinstance(stored_result, dict):
+        result["result"] = dict(stored_result)
+    return result
+
+
+def _prune_builder_tasks(state: Dict[str, Any], *, now: int | None = None) -> None:
+    now = int(time.time()) if now is None else int(now)
+    cutoff = now - max(int(BUILDER_TASK_RETENTION_SECONDS), 3600)
+    terminal = {"canceled", "succeeded", "failed", "timed_out"}
+    tasks = _builder_tasks(state)
+    stale_ids = {
+        str(task_id)
+        for task_id, task in tasks.items()
+        if isinstance(task, dict)
+        and str(task.get("status") or "") in terminal
+        and int(task.get("completedAt") or task.get("updatedAt") or 0) < cutoff
+    }
+    for task_id in stale_ids:
+        tasks.pop(task_id, None)
+    idempotency = _builder_task_idempotency(state)
+    for key, record in list(idempotency.items()):
+        if not isinstance(record, dict):
+            idempotency.pop(key, None)
+            continue
+        task_id = str(record.get("taskId") or "")
+        if int(record.get("expiresAt") or 0) <= now or task_id not in tasks:
+            idempotency.pop(key, None)
+
+
+def _builder_task_capabilities(kind: str) -> tuple[str, str]:
+    specific = {
+        "analyze-source": "builder-analyze-v1",
+        "build-plan": "builder-build-v1",
+    }.get(str(kind or ""))
+    if not specific:
+        raise LumaError(f"unsupported builder task kind: {kind}")
+    return specific, "builder-task-v1"
+
+
+def _node_agent_has_any_capability(record: Dict[str, Any], capabilities: tuple[str, ...]) -> bool:
+    if _node_agent_status(record) != "ready":
+        return False
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    advertised = {str(value) for value in agent.get("capabilities") or []}
+    return bool(advertised.intersection(capabilities))
+
+
+def _select_builder_task_node(state: Dict[str, Any], kind: str) -> str:
+    required_capabilities = _builder_task_capabilities(kind)
+    config = _build_config(state)
+    candidates: list[str] = []
+    default_node = str(config.get("defaultNode") or "").strip()
+    if default_node:
+        candidates.append(default_node)
+    candidates.extend(_declared_build_node_names(state))
+    if not candidates and DEFAULT_BUILD_NODE_NAME in (state.get("nodes") or {}):
+        candidates.append(DEFAULT_BUILD_NODE_NAME)
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    seen: set[str] = set()
+    for name in candidates:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        record = _node_record_for_name(nodes, name)
+        if isinstance(record, dict) and _node_agent_has_any_capability(record, required_capabilities):
+            return name
+    declared = ", ".join(_declared_build_node_names(state)) or "none"
+    raise LumaError(
+        f"no declared, ready builder supports {' or '.join(required_capabilities)}; "
+        f"update a builder node agent first (declared builders: {declared})"
+    )
+
+
+def _builder_task_for_agent_task(state: Dict[str, Any], agent_task: Dict[str, Any]) -> Dict[str, Any] | None:
+    builder_task_id = str(agent_task.get("builderTaskId") or "").strip()
+    if not builder_task_id:
+        return None
+    task = _builder_tasks(state).get(builder_task_id)
+    return task if isinstance(task, dict) else None
+
+
+def _builder_task_terminal(status: str) -> bool:
+    return status in {"canceled", "succeeded", "failed", "timed_out"}
+
+
 def _redact_build_request(body: Dict[str, Any]) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     for key, value in body.items():
@@ -651,6 +1644,7 @@ def _sanitize_git_source(source: Dict[str, Any]) -> Dict[str, Any]:
         "pushHost",
         "manifest",
         "composeContent",
+        "composeSidecar",
         "buildRunId",
     }
     cleaned: Dict[str, Any] = {}
@@ -844,7 +1838,7 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
     now = int(time.time()) if now is None else now
     cutoff = now - AGENT_TASK_RETENTION_SECONDS
     tasks = _agent_tasks(state)
-    terminal = {"succeeded", "failed", "timeout"}
+    terminal = {"succeeded", "failed", "timeout", "canceled"}
     stale = [
         task_id
         for task_id, task in tasks.items()
@@ -890,6 +1884,191 @@ def handle_node_agent_token(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_BUILDER_CREDENTIAL_FAILURE_MESSAGE = "builder credential lease redemption failed"
+
+
+def _strip_builder_object_source_ephemeral(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove every object-source delivery field from a durable payload copy."""
+
+    sanitized = dict(payload)
+    sanitized.pop("objectUrl", None)
+    sanitized.pop("objectAllowedHost", None)
+    source_ref = sanitized.get("sourceRef")
+    if isinstance(source_ref, dict):
+        source_copy = dict(source_ref)
+        source_copy.pop("objectUrl", None)
+        source_copy.pop("objectAllowedHost", None)
+        sanitized["sourceRef"] = source_copy
+    return sanitized
+
+
+def _builder_analyze_credential_binding(
+    task: Dict[str, Any],
+    builder_task: Dict[str, Any] | None,
+) -> CredentialLeaseBinding | ObjectSourceLeaseBinding | None:
+    if not isinstance(builder_task, dict) or str(builder_task.get("kind") or "") != "analyze-source":
+        return None
+    request = (
+        builder_task.get("request")
+        if isinstance(builder_task.get("request"), dict)
+        else {}
+    )
+    payload = request.get("payload") if isinstance(request.get("payload"), dict) else {}
+    source_ref = payload.get("sourceRef") if isinstance(payload.get("sourceRef"), dict) else {}
+    common = {
+        "lease_id": str(payload.get("credentialLeaseId") or ""),
+        "builder_task_id": str(builder_task.get("id") or task.get("builderTaskId") or ""),
+        "external_operation_id": str(builder_task.get("externalOperationId") or ""),
+        "principal_ref": str(builder_task.get("principalRef") or ""),
+        "tenant_ref": str(builder_task.get("tenantRef") or ""),
+        "application_ref": str(builder_task.get("applicationRef") or ""),
+    }
+    if source_ref.get("kind") == "object":
+        return ObjectSourceLeaseBinding(
+            **common,
+            object_descriptor=dict(source_ref),
+        )
+    return CredentialLeaseBinding(
+        **common,
+        repository=str(source_ref.get("repository") or ""),
+    )
+
+
+def _fail_builder_credential_redemption(agent_task_id: str, builder_task_id: str) -> None:
+    """Atomically fail a claimed builder task without persisting broker output."""
+
+    now = int(time.time())
+
+    def mutate(state: Dict[str, Any]) -> None:
+        agent_task = _agent_tasks(state).get(agent_task_id)
+        builder_task = _builder_tasks(state).get(builder_task_id)
+        if not isinstance(agent_task, dict) or not isinstance(builder_task, dict):
+            return
+        if str(agent_task.get("builderTaskId") or "") != builder_task_id:
+            return
+        if str(agent_task.get("status") or "") != "running" or str(builder_task.get("status") or "") != "running":
+            # Cancellation or another terminal transition won while the broker
+            # call was in flight.  Never revive or overwrite that state.
+            return
+        agent_task.update(
+            {
+                "status": "failed",
+                "message": _BUILDER_CREDENTIAL_FAILURE_MESSAGE,
+                "result": {},
+                "completedAt": now,
+                "updatedAt": now,
+            }
+        )
+        builder_task.update(
+            {
+                "status": "failed",
+                "message": _BUILDER_CREDENTIAL_FAILURE_MESSAGE,
+                "result": {},
+                "completedAt": now,
+                "updatedAt": now,
+            }
+        )
+        _builder_task_event(
+            builder_task,
+            {
+                "type": "status",
+                "status": "failed",
+                "message": _BUILDER_CREDENTIAL_FAILURE_MESSAGE,
+            },
+            now=now,
+        )
+
+    _mutate_control_state(mutate)
+
+
+def _finalize_unhanded_builder_cancellation(agent_task_id: str, builder_task_id: str) -> None:
+    """Finish a cancellation that won while no agent had received the task."""
+
+    now = int(time.time())
+
+    def mutate(state: Dict[str, Any]) -> None:
+        agent_task = _agent_tasks(state).get(agent_task_id)
+        builder_task = _builder_tasks(state).get(builder_task_id)
+        if not isinstance(agent_task, dict) or not isinstance(builder_task, dict):
+            return
+        if (
+            str(agent_task.get("builderTaskId") or "") != builder_task_id
+            or str(agent_task.get("status") or "") != "running"
+            or str(builder_task.get("status") or "") != "cancel_requested"
+        ):
+            return
+        message = "builder task canceled before credential delivery"
+        agent_task.update(
+            {
+                "status": "canceled",
+                "message": message,
+                "result": {},
+                "completedAt": now,
+                "updatedAt": now,
+            }
+        )
+        builder_task.update(
+            {
+                "status": "canceled",
+                "message": message,
+                "result": {},
+                "completedAt": now,
+                "updatedAt": now,
+            }
+        )
+        _builder_task_event(
+            builder_task,
+            {"type": "status", "status": "canceled", "message": message},
+            now=now,
+        )
+
+    _mutate_control_state(mutate)
+
+
+def _builder_credential_delivery_allowed(agent_task_id: str, builder_task_id: str) -> bool:
+    """Re-check cancellation/terminal state after broker network I/O."""
+
+    def mutate(state: Dict[str, Any]) -> bool:
+        agent_task = _agent_tasks(state).get(agent_task_id)
+        builder_task = _builder_tasks(state).get(builder_task_id)
+        return bool(
+            isinstance(agent_task, dict)
+            and isinstance(builder_task, dict)
+            and str(agent_task.get("builderTaskId") or "") == builder_task_id
+            and str(agent_task.get("status") or "") == "running"
+            and not agent_task.get("cancelRequestedAt")
+            and str(builder_task.get("status") or "") == "running"
+        )
+
+    return bool(_mutate_control_state(mutate))
+
+
+def _enrich_builder_analyze_lease(
+    leased_task: Dict[str, Any],
+    redemption: RedeemedCredential | RedeemedObjectSource,
+) -> Dict[str, Any]:
+    payload = _strip_builder_object_source_ephemeral(
+        leased_task.get("payload")
+        if isinstance(leased_task.get("payload"), dict)
+        else {}
+    )
+    # Even a manually corrupted state file cannot bypass the broker by placing
+    # legacy credentials in the child payload.
+    payload.pop("gitToken", None)
+    payload.pop("gitUsername", None)
+    if isinstance(redemption, RedeemedObjectSource):
+        source_ref = payload.get("sourceRef") if isinstance(payload.get("sourceRef"), dict) else {}
+        if source_ref.get("kind") != "object":
+            raise LumaError(_BUILDER_CREDENTIAL_FAILURE_MESSAGE)
+        payload["objectUrl"] = redemption.object_url
+        payload["objectAllowedHost"] = redemption.allowed_host
+    elif redemption.kind == "git-https":
+        payload["gitUsername"] = redemption.username
+        payload["gitToken"] = redemption.password
+    leased_task["payload"] = payload
+    return leased_task
+
+
 def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     node_name = str(body.get("nodeName") or "").strip()
     node_id = str(body.get("nodeId") or "").strip()
@@ -901,7 +2080,12 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     wait_seconds = min(max(int(body.get("waitSeconds") or 0), 0), 30)
     deadline = time.time() + wait_seconds
     while True:
-        def mutate(state: Dict[str, Any]) -> Dict[str, Any] | None:
+        def mutate(
+            state: Dict[str, Any],
+        ) -> tuple[
+            Dict[str, Any],
+            CredentialLeaseBinding | ObjectSourceLeaseBinding | None,
+        ] | None:
             nonlocal normalized_container_stats
             nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
             entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
@@ -916,18 +2100,130 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 if task.get("nodeName") != canonical_node_name or task.get("status") != "queued":
                     continue
+                required_capabilities_raw = task.get("requiredCapabilitiesAny")
+                required_capabilities = tuple(
+                    str(value).strip()
+                    for value in required_capabilities_raw
+                    if str(value).strip()
+                ) if isinstance(required_capabilities_raw, list) else ()
+                required_capability = str(task.get("requiredCapability") or "").strip()
+                if required_capabilities and not _node_agent_has_any_capability(record, required_capabilities):
+                    continue
+                if not required_capabilities and required_capability and not _node_agent_is_ready(record, required_capability=required_capability):
+                    continue
+                builder_task = _builder_task_for_agent_task(state, task)
+                if builder_task is not None:
+                    builder_status = str(builder_task.get("status") or "")
+                    if builder_status != "queued":
+                        if builder_status in {"cancel_requested", "canceled"}:
+                            task["status"] = "canceled"
+                            task["message"] = "builder task canceled before lease"
+                            task["completedAt"] = now
+                            task["updatedAt"] = now
+                        continue
+                # Ephemeral source fields must never survive a prior crash or
+                # manual state corruption. Remove them from the durable child
+                # before producing the in-memory lease payload.
+                durable_payload = _strip_builder_object_source_ephemeral(
+                    task.get("payload")
+                    if isinstance(task.get("payload"), dict)
+                    else {}
+                )
+                task["payload"] = durable_payload
                 task["status"] = "running"
                 task["leasedAt"] = now
                 task["updatedAt"] = now
-                return {
+                if builder_task is not None:
+                    builder_task["status"] = "running"
+                    builder_task["startedAt"] = now
+                    builder_task["updatedAt"] = now
+                    _builder_task_event(
+                        builder_task,
+                        {"type": "status", "status": "running", "message": "builder task leased"},
+                        now=now,
+                    )
+                leased_task = {
                     "id": task_id,
                     "action": task.get("action"),
                     "payload": _agent_task_lease_payload(state, task),
                 }
+                redemption_binding = _builder_analyze_credential_binding(task, builder_task)
+                if redemption_binding is not None:
+                    parent_request = (
+                        builder_task.get("request")
+                        if isinstance(builder_task, dict)
+                        and isinstance(builder_task.get("request"), dict)
+                        else {}
+                    )
+                    parent_payload = (
+                        parent_request.get("payload")
+                        if isinstance(parent_request.get("payload"), dict)
+                        else {}
+                    )
+                    # The durable parent request is the source-of-truth. A
+                    # corrupted child cannot redirect either Git or object
+                    # redemption to a different source.
+                    leased_task["payload"]["sourceRef"] = dict(
+                        parent_payload.get("sourceRef")
+                        if isinstance(parent_payload.get("sourceRef"), dict)
+                        else {}
+                    )
+                    leased_task["payload"]["credentialLeaseId"] = str(
+                        parent_payload.get("credentialLeaseId") or ""
+                    )
+                    # The public request schema already forbids these fields.
+                    # Strip again at the final trust boundary so old global
+                    # gitProviders/secrets and manually edited state can never
+                    # participate in an LAE analyze-source lease.
+                    leased_task["payload"].pop("gitToken", None)
+                    leased_task["payload"].pop("gitUsername", None)
+                    leased_task["payload"].pop("objectUrl", None)
+                    leased_task["payload"].pop("objectAllowedHost", None)
+                return leased_task, redemption_binding
             return None
 
-        leased = _mutate_control_state(mutate)
-        if leased or time.time() >= deadline:
+        candidate = _mutate_control_state(mutate)
+        if candidate is not None:
+            leased, redemption_binding = candidate
+            if redemption_binding is not None:
+                try:
+                    # Deliberately outside mutate_state's process lock: broker
+                    # I/O must not block heartbeats, cancellation, or other
+                    # task leases.
+                    redemption = (
+                        redeem_builder_object_source(redemption_binding)
+                        if isinstance(redemption_binding, ObjectSourceLeaseBinding)
+                        else redeem_builder_credential(redemption_binding)
+                    )
+                except Exception:
+                    _fail_builder_credential_redemption(
+                        str(leased.get("id") or ""),
+                        redemption_binding.builder_task_id,
+                    )
+                    _finalize_unhanded_builder_cancellation(
+                        str(leased.get("id") or ""),
+                        redemption_binding.builder_task_id,
+                    )
+                    leased = None
+                else:
+                    if _builder_credential_delivery_allowed(
+                        str(leased.get("id") or ""),
+                        redemption_binding.builder_task_id,
+                    ):
+                        leased = _enrich_builder_analyze_lease(
+                            leased, redemption
+                        )
+                    else:
+                        # Cancellation or a terminal transition happened while
+                        # redeeming.  Drop the in-memory credential and return
+                        # no task; nothing is written to Control state.
+                        _finalize_unhanded_builder_cancellation(
+                            str(leased.get("id") or ""),
+                            redemption_binding.builder_task_id,
+                        )
+                        leased = None
+            break
+        if time.time() >= deadline:
             break
         time.sleep(1)
     state = load_state()
@@ -958,11 +2254,41 @@ def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, A
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, canonical_node_name) or {}
     _record_metrics_history(canonical_node_name, body, container_stats=normalized_container_stats, config=config, state=state)
-    return {"nodeName": canonical_node_name, "status": _node_agent_status(record)}
+    active_task_id = str(body.get("activeTaskId") or "").strip()
+    cancel_requested = False
+    if active_task_id:
+        active_task = _agent_tasks(state).get(active_task_id)
+        if isinstance(active_task, dict) and str(active_task.get("nodeName") or "") == canonical_node_name:
+            builder_task = _builder_task_for_agent_task(state, active_task)
+            cancel_requested = bool(active_task.get("cancelRequestedAt")) or (
+                isinstance(builder_task, dict)
+                and str(builder_task.get("status") or "") in {"cancel_requested", "canceled"}
+            )
+    return {
+        "nodeName": canonical_node_name,
+        "status": _node_agent_status(record),
+        "activeTaskId": active_task_id,
+        "cancelRequested": cancel_requested,
+    }
 
 
 def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(task.get("payload") if isinstance(task.get("payload"), dict) else {})
+    if task.get("action") == "analyze-source":
+        payload = _strip_builder_object_source_ephemeral(payload)
+        # The analyzer discovers image refs only after the network-disabled
+        # runner finishes, so Control leases its complete public-registry
+        # allowlist for analyze-side digest binding. This derived policy is not
+        # persisted in the child task body.
+        payload["externalRegistries"] = _lae_external_registry_allowlist()
+    if task.get("action") == "build-plan":
+        builder_task = _builder_task_for_agent_task(state, task)
+        if not isinstance(builder_task, dict):
+            raise LumaError("build-plan task is missing its durable parent")
+        request = builder_task.get("request") if isinstance(builder_task.get("request"), dict) else {}
+        principal = {"id": str(builder_task.get("principalRef") or "")}
+        payload["principalRef"] = principal["id"]
+        payload["registry"] = _builder_build_registry_lease(state, request, principal)
     if task.get("action") in {"resolve-docker-image", "diagnose-docker-pull"} and not payload.get("registryAuth"):
         image = str(payload.get("image") or "")
         registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
@@ -1009,16 +2335,17 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
     node_id = str(body.get("nodeId") or "").strip()
     task_id = str(body.get("taskId") or "").strip()
     status = str(body.get("status") or "").strip()
-    if status not in {"succeeded", "failed"}:
-        raise LumaError("status must be succeeded or failed")
+    if status not in {"succeeded", "failed", "canceled"}:
+        raise LumaError("status must be succeeded, failed, or canceled")
     if not node_name or not task_id:
         raise LumaError("nodeName and taskId are required")
 
     normalized_container_stats: list[Dict[str, Any]] = []
     config = load_config(_control_config_path())
+    final_status = status
 
     def mutate(state: Dict[str, Any]) -> None:
-        nonlocal normalized_container_stats
+        nonlocal final_status, normalized_container_stats
         nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
         entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
         canonical_node_name = entry[0] if entry else node_name
@@ -1029,21 +2356,86 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
         if not isinstance(task, dict) or task.get("nodeName") != canonical_node_name:
             raise LumaError(f"agent task not found: {task_id}")
         now = int(time.time())
+        builder_task = _builder_task_for_agent_task(state, task)
+        effective_status = status
+        effective_message = str(body.get("message") or "")
+        raw_result = body.get("result") if isinstance(body.get("result"), dict) else {}
+        stored_result = raw_result
+        if builder_task is not None and str(builder_task.get("status") or "") in {"cancel_requested", "canceled"}:
+            effective_status = "canceled"
+            effective_message = "builder task canceled"
+        if builder_task is not None:
+            stored_result = {}
+            if effective_status == "succeeded":
+                try:
+                    stored_result = sanitize_builder_task_result(
+                        str(builder_task.get("kind") or ""),
+                        raw_result,
+                        request=builder_task.get("request") if isinstance(builder_task.get("request"), dict) else None,
+                    )
+                    if str(builder_task.get("kind") or "") == "analyze-source":
+                        _record_builder_source_snapshot(state, builder_task, stored_result, now=now)
+                    effective_message = "builder task succeeded"
+                except LumaError:
+                    effective_status = "failed"
+                    effective_message = "invalid builder task result"
+            else:
+                # Node-agent completion messages are untrusted process output.
+                # Persist only a Control-generated terminal description.
+                effective_message = f"builder task {effective_status}"
+        elif str(task.get("action") or "") == "export-builder-artifact":
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
+            expected = {
+                "leaseId": str(payload.get("leaseId") or ""),
+                "digest": str(artifact.get("digest") or ""),
+                "sizeBytes": artifact.get("sizeBytes"),
+                "message": "builder artifact exported",
+            }
+            if effective_status == "succeeded" and raw_result == expected:
+                stored_result = {
+                    "leaseId": expected["leaseId"],
+                    "digest": expected["digest"],
+                    "sizeBytes": expected["sizeBytes"],
+                }
+                effective_message = "builder artifact exported"
+            else:
+                stored_result = {}
+                if effective_status == "succeeded":
+                    effective_status = "failed"
+                effective_message = f"builder artifact export {effective_status}"
+                ARTIFACT_DOWNLOADS.revoke(str(payload.get("leaseId") or ""))
+        final_status = effective_status
         task.update(
             {
-                "status": status,
-                "message": str(body.get("message") or ""),
-                "result": body.get("result") if isinstance(body.get("result"), dict) else {},
+                "status": effective_status,
+                "message": effective_message,
+                "result": stored_result,
                 "completedAt": now,
                 "updatedAt": now,
             }
         )
+        if builder_task is not None:
+            builder_task["status"] = effective_status
+            builder_task["message"] = effective_message
+            builder_task["result"] = stored_result
+            builder_task["completedAt"] = now
+            builder_task["updatedAt"] = now
+            _builder_task_event(
+                builder_task,
+                {
+                    "type": "status",
+                    "status": effective_status,
+                    "message": effective_message or f"builder task {effective_status}",
+                },
+                now=now,
+            )
 
     _mutate_control_state(mutate)
     state = load_state()
     entry = _node_record_entry_for_name_or_id(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name, node_id)
     _record_metrics_history(entry[0] if entry else node_name, body, config=config, state=state)
-    return {"taskId": task_id, "status": status}
+    return {"taskId": task_id, "status": final_status}
 
 
 def handle_node_agent_progress(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1066,10 +2458,15 @@ def handle_node_agent_progress(token: str, body: Dict[str, Any]) -> Dict[str, An
         task = tasks.get(task_id)
         if not isinstance(task, dict) or task.get("nodeName") != canonical_node_name:
             raise LumaError(f"agent task not found: {task_id}")
+        builder_task = _builder_task_for_agent_task(state, task)
+        stored_events = [sanitize_builder_task_progress_event(event) for event in events] if builder_task is not None else events
         progress = task.get("progress") if isinstance(task.get("progress"), list) else []
-        progress.extend(events)
+        progress.extend(stored_events)
         task["progress"] = progress[-5000:]
         task["updatedAt"] = int(time.time())
+        if builder_task is not None and not _builder_task_terminal(str(builder_task.get("status") or "")):
+            for event in stored_events:
+                _builder_task_event(builder_task, event)
 
     _mutate_control_state(mutate)
     return {"taskId": task_id, "events": len(events)}
@@ -1169,6 +2566,8 @@ def _wait_node_agent_task(
                 return {"taskId": task_id, **result}
             if status == "failed":
                 raise LumaError(str(task.get("message") or f"agent task failed: {task_id}"))
+            if status == "canceled":
+                raise LumaError(str(task.get("message") or f"agent task canceled: {task_id}"))
         time.sleep(1)
     def mark_timeout(state: Dict[str, Any]) -> None:
         tasks = _agent_tasks(state)
@@ -1279,6 +2678,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     public_services = [_public_dashboard_service(item) for item in services]
     issues = _dashboard_issues(nodes, public_services)
 
+    lae_admin_available = _lae_admin_proxy_available()
     readiness = {
         "dns": {
             "ready": not dns_missing,
@@ -1292,6 +2692,9 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
             "engine": engine,
             "leader": str(nomad_summary.get("leader") or ""),
             "error": str(nomad_summary.get("error") or ""),
+        },
+        "laeAdmin": {
+            "available": lae_admin_available,
         },
     }
 
@@ -1310,6 +2713,239 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         "issues": issues,
         "errors": errors,
     }
+
+
+_LAE_ADMIN_DASHBOARD_RESOURCES = frozenset(
+    {"users", "tenants", "applications", "operations", "placements", "usage"}
+)
+_LAE_ADMIN_QUERY_ERROR = "LAE admin query is invalid"
+_LAE_ADMIN_UNAVAILABLE_ERROR = "LAE admin API is unavailable"
+
+
+def _lae_admin_proxy_available() -> bool:
+    """Report only whether the local server-side proxy config is usable."""
+
+    try:
+        load_lae_admin_proxy_config()
+    except LaeAdminProxyError:
+        return False
+    return True
+
+
+def _parse_dashboard_lae_admin_query(
+    resource: str,
+    raw_query: str,
+) -> tuple[int, int]:
+    if resource not in _LAE_ADMIN_DASHBOARD_RESOURCES:
+        raise LaeAdminProxyError(_LAE_ADMIN_QUERY_ERROR)
+    try:
+        pairs = urllib.parse.parse_qsl(
+            str(raw_query or ""),
+            keep_blank_values=True,
+            strict_parsing=True,
+            max_num_fields=2,
+        )
+    except (TypeError, ValueError):
+        raise LaeAdminProxyError(_LAE_ADMIN_QUERY_ERROR) from None
+    if (
+        len(pairs) != len({key for key, _value in pairs})
+        or any(key not in {"limit", "offset"} for key, _value in pairs)
+    ):
+        raise LaeAdminProxyError(_LAE_ADMIN_QUERY_ERROR)
+    values = dict(pairs)
+    raw_limit = values.get("limit", "100")
+    raw_offset = values.get("offset", "0")
+    if (
+        re.fullmatch(r"[1-9][0-9]{0,2}", raw_limit) is None
+        or re.fullmatch(r"(?:0|[1-9][0-9]{0,6})", raw_offset) is None
+    ):
+        raise LaeAdminProxyError(_LAE_ADMIN_QUERY_ERROR)
+    limit = int(raw_limit)
+    offset = int(raw_offset)
+    if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
+        raise LaeAdminProxyError(_LAE_ADMIN_QUERY_ERROR)
+    return limit, offset
+
+
+def _dashboard_lae_active_allocations(
+    client: NomadApi,
+    job_slug: str,
+) -> tuple[list[Dict[str, str]], str]:
+    if not job_slug:
+        return [], "not_submitted"
+    try:
+        allocations = client.request(
+            "GET",
+            f"/v1/job/{urllib.parse.quote(job_slug, safe='')}/allocations",
+        )
+    except LumaError:
+        return [], "unavailable"
+    if not isinstance(allocations, list):
+        return [], "unavailable"
+    result: list[Dict[str, str]] = []
+    for raw in allocations:
+        if not isinstance(raw, dict):
+            continue
+        desired = str(raw.get("DesiredStatus") or "").lower()
+        status = str(raw.get("ClientStatus") or "").lower()
+        if desired not in {"", "run", "running"}:
+            continue
+        if status in {"complete", "dead", "failed", "lost"}:
+            continue
+        node_id = str(raw.get("NodeID") or "").strip()
+        node_name = str(raw.get("NodeName") or "").strip()
+        allocation_id = str(raw.get("ID") or "").strip()
+        if not node_id and not node_name:
+            continue
+        result.append(
+            {
+                "allocationId": allocation_id,
+                "nodeId": node_id,
+                "nodeName": node_name,
+                "status": status or "unknown",
+            }
+        )
+    result.sort(
+        key=lambda item: (
+            item["nodeName"],
+            item["nodeId"],
+            item["allocationId"],
+        )
+    )
+    return result, "observed"
+
+
+def _dashboard_lae_runtime_placements(
+    state: Dict[str, Any],
+    *,
+    limit: int,
+    offset: int,
+) -> Dict[str, Any]:
+    """Return topology only to the Luma management-token dashboard."""
+
+    raw_runtime = state.get("laeRuntime")
+    runtime = raw_runtime if isinstance(raw_runtime, dict) else {}
+    raw_deployments = runtime.get("deployments")
+    deployments = raw_deployments if isinstance(raw_deployments, dict) else {}
+    records = [
+        record
+        for record in deployments.values()
+        if isinstance(record, dict) and isinstance(record.get("placement"), dict)
+    ]
+    records.sort(
+        key=lambda record: (
+            int(record.get("updatedAt") or record.get("createdAt") or 0),
+            str(record.get("runtimeDeploymentRef") or ""),
+        ),
+        reverse=True,
+    )
+    selected = records[offset : offset + limit]
+    client: NomadApi | None = None
+    if selected:
+        try:
+            config_path = Path(
+                os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"
+            )
+            config = load_config(config_path)
+            client = NomadApi(
+                nomad_addr(config, state),
+                token=str(state.get("nomadToken") or ""),
+            )
+        except (LumaError, OSError, ValueError):
+            client = None
+
+    items: list[Dict[str, Any]] = []
+    for record in selected:
+        placement = dict(record.get("placement") or {})
+        summary = (
+            dict(placement.get("summary"))
+            if isinstance(placement.get("summary"), dict)
+            else {}
+        )
+        manifest = (
+            dict(record.get("manifest"))
+            if isinstance(record.get("manifest"), dict)
+            else {}
+        )
+        job_slug = str(record.get("jobSlug") or "")
+        active, observation = (
+            _dashboard_lae_active_allocations(client, job_slug)
+            if client is not None
+            else ([], "unavailable" if job_slug else "not_submitted")
+        )
+        candidate_node_ids = sorted(
+            {
+                str(value)
+                for value in placement.get("candidateNodeIds") or []
+                if isinstance(value, str) and value
+            }
+        )
+        item: Dict[str, Any] = {
+            "runtimeDeploymentRef": str(
+                record.get("runtimeDeploymentRef") or ""
+            ),
+            "tenantRef": str(record.get("tenantRef") or ""),
+            "applicationRef": str(record.get("applicationRef") or ""),
+            "deploymentRef": str(record.get("deploymentRef") or ""),
+            "jobSlug": job_slug,
+            "status": str(record.get("status") or "unknown"),
+            "region": str(summary.get("region") or manifest.get("region") or ""),
+            "stateful": bool(summary.get("stateful")),
+            "continuity": str(summary.get("continuity") or "unknown"),
+            "candidateNodeIds": candidate_node_ids,
+            "preferredNodeId": str(placement.get("preferredNodeId") or ""),
+            "activeAllocations": active,
+            "observationStatus": observation,
+            "decisionDigest": str(summary.get("decisionDigest") or ""),
+            "updatedAt": int(
+                record.get("updatedAt") or record.get("createdAt") or 0
+            ),
+        }
+        preferred_domain = placement.get("preferredFailureDomain")
+        if isinstance(preferred_domain, dict):
+            item["preferredFailureDomain"] = {
+                "metaKey": str(preferred_domain.get("metaKey") or ""),
+                "value": str(preferred_domain.get("value") or ""),
+            }
+        items.append(item)
+    return {
+        "placements": items,
+        "page": {"limit": limit, "offset": offset, "total": len(records)},
+    }
+
+
+def handle_dashboard_lae_admin(
+    token: str,
+    resource: str,
+    raw_query: str = "",
+) -> Dict[str, Any]:
+    # Authenticate with the Control management token before parsing resource or
+    # query details and before reading the server-side LAE admin token file.
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    limit, offset = _parse_dashboard_lae_admin_query(resource, raw_query)
+    if resource == "placements":
+        return _dashboard_lae_runtime_placements(
+            state,
+            limit=limit,
+            offset=offset,
+        )
+    try:
+        return fetch_lae_admin_resource(
+            resource,
+            limit=limit,
+            offset=offset,
+        )
+    except LaeAdminProxyError:
+        raise
+    except Exception:
+        # Defensive boundary: an unexpected transport implementation must not
+        # copy its URL, headers, body, or token into Control's error/log path.
+        raise LaeAdminProxyError(_LAE_ADMIN_UNAVAILABLE_ERROR) from None
+
+
+def _lae_admin_proxy_http_status(exc: LaeAdminProxyError) -> int:
+    return 400 if str(exc) == _LAE_ADMIN_QUERY_ERROR else 503
 
 
 def handle_dashboard_logs(token: str, service_name: str, *, tail: int = 120, since: str = "") -> Dict[str, Any]:
@@ -1375,6 +3011,3394 @@ def handle_dashboard_runtime_events(token: str, service_name: str) -> Dict[str, 
         "events": _dedupe_runtime_events(events)[-80:],
         "updatedAt": int(time.time()),
     }
+
+
+def _lae_runtime_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    runtime = state.setdefault("laeRuntime", {})
+    if not isinstance(runtime, dict):
+        runtime = {}
+        state["laeRuntime"] = runtime
+    for key in (
+        "volumes",
+        "volumeIdempotency",
+        "deployments",
+        "deploymentIdempotency",
+        "lifecycleIdempotency",
+        "applicationBindings",
+        "hostnameBindings",
+    ):
+        if not isinstance(runtime.get(key), dict):
+            runtime[key] = {}
+    return runtime
+
+
+def _lae_runtime_binding_matches(
+    value: Any, binding: RuntimeBinding, *, principal_ref: str
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    expected = {"principalRef": principal_ref, **binding.state_body()}
+    return all(str(value.get(key) or "") == expected_value for key, expected_value in expected.items())
+
+
+def _lae_runtime_volume_owner_matches(
+    value: Any, binding: RuntimeBinding, *, principal_ref: str
+) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return (
+        str(value.get("principalRef") or "") == principal_ref
+        and str(value.get("tenantRef") or "") == binding.tenant_ref
+        and str(value.get("applicationRef") or "") == binding.application_ref
+    )
+
+
+def _lae_runtime_prune(state: Dict[str, Any], *, now: int) -> None:
+    runtime = _lae_runtime_state(state)
+    retention = max(int(LAE_RUNTIME_RECORD_RETENTION_SECONDS), 3600)
+    # A running/degraded record is the saved manifest and runtime identity used
+    # by lifecycle resume/restart. Never age an active application out of the
+    # control state merely because it has been healthy for a long time.
+    terminal = {"failed", "canceled", "deleted"}
+    expired_deployments = {
+        deployment_ref
+        for deployment_ref, record in runtime["deployments"].items()
+        if isinstance(record, dict)
+        and str(record.get("status") or "") in terminal
+        and int(record.get("updatedAt") or record.get("createdAt") or 0)
+        < now - retention
+    }
+    for deployment_ref in expired_deployments:
+        runtime["deployments"].pop(deployment_ref, None)
+    for bucket_name in (
+        "volumeIdempotency",
+        "deploymentIdempotency",
+        "lifecycleIdempotency",
+    ):
+        bucket = runtime[bucket_name]
+        for key, record in list(bucket.items()):
+            if (
+                not isinstance(record, dict)
+                or int(record.get("expiresAt") or 0) <= now
+                or (
+                    bucket_name in {"deploymentIdempotency", "lifecycleIdempotency"}
+                    and str(record.get("runtimeDeploymentRef") or "")
+                    in expired_deployments
+                )
+            ):
+                bucket.pop(key, None)
+
+
+def _lae_runtime_idempotency_scope(
+    principal_ref: str,
+    binding: RuntimeBinding,
+    route: str,
+    idempotency_key: str,
+) -> str:
+    return _lae_runtime_hash(
+        {
+            "principalRef": principal_ref,
+            **binding.state_body(),
+            "route": route,
+            "idempotencyKey": _normalize_lae_runtime_idempotency_key(
+                idempotency_key
+            ),
+        }
+    )
+
+
+def _lae_runtime_storage_class(
+    state: Dict[str, Any], *, region: str | None = None
+) -> tuple[str, StorageClassSpec]:
+    name = str(os.environ.get("LUMA_LAE_RUNTIME_STORAGE_CLASS") or "").strip()
+    if not name:
+        raise _lae_runtime_unavailable(
+            "LAE managed storage is not configured"
+        )
+    raw = _state_storage_classes(state).get(name)
+    if not isinstance(raw, dict):
+        raise _lae_runtime_unavailable(
+            "LAE managed storage class is unavailable"
+        )
+    spec = _storage_class_spec_from_record(name, raw)
+    if spec.provider != "nfs" or spec.mode != "managed":
+        raise _lae_runtime_unavailable(
+            "LAE managed storage class is unsupported"
+        )
+    if region is not None and spec.regions and region not in set(spec.regions):
+        raise _lae_runtime_unavailable(
+            "LAE managed storage is unavailable in the deployment region"
+        )
+    return name, spec
+
+
+def _lae_runtime_volume_ref(binding: RuntimeBinding, key: str) -> str:
+    digest = hashlib.sha256(
+        (
+            binding.tenant_ref
+            + "\0"
+            + binding.application_ref
+            + "\0"
+            + key
+        ).encode("utf-8")
+    ).hexdigest()
+    return "lv_" + digest[:32]
+
+
+def _lae_runtime_volume_path(binding: RuntimeBinding, key: str) -> str:
+    tenant = hashlib.sha256(binding.tenant_ref.encode("utf-8")).hexdigest()[:20]
+    application = hashlib.sha256(
+        binding.application_ref.encode("utf-8")
+    ).hexdigest()[:20]
+    return f"lae/tenants/{tenant}/apps/{application}/volumes/{key}"
+
+
+def handle_lae_runtime_volume_prepare(
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    body: Dict[str, Any],
+    *,
+    idempotency_key: str,
+) -> Dict[str, Any]:
+    volumes = _validate_lae_runtime_volume_prepare_body(body)
+    request_hash = _lae_runtime_hash(
+        {"schemaVersion": LAE_RUNTIME_SCHEMA_VERSION, "volumes": list(volumes)}
+    )
+    normalized_idempotency = _normalize_lae_runtime_idempotency_key(
+        idempotency_key
+    )
+    now = int(time.time())
+
+    def mutate(current: Dict[str, Any]) -> tuple[list[Dict[str, str]], bool]:
+        principal = _require_lae_runtime_principal(
+            current,
+            token,
+            audience=audience,
+            scope=SCOPE_VOLUMES_PREPARE,
+            binding=binding,
+        )
+        principal_ref = str(principal["id"])
+        _lae_runtime_prune(current, now=now)
+        runtime = _lae_runtime_state(current)
+        scope = _lae_runtime_idempotency_scope(
+            principal_ref,
+            binding,
+            "POST /v1/lae/runtime/volumes:prepare",
+            normalized_idempotency,
+        )
+        existing_idempotency = runtime["volumeIdempotency"].get(scope)
+        if isinstance(existing_idempotency, dict):
+            if not secrets.compare_digest(
+                str(existing_idempotency.get("requestHash") or ""),
+                request_hash,
+            ):
+                raise _lae_runtime_conflict()
+            refs = existing_idempotency.get("volumeRefs")
+            if isinstance(refs, list):
+                result: list[Dict[str, str]] = []
+                for ref in refs:
+                    record = runtime["volumes"].get(str(ref))
+                    if not isinstance(record, dict) or not _lae_runtime_binding_matches(
+                        record, binding, principal_ref=principal_ref
+                    ):
+                        raise _lae_runtime_conflict(
+                            "volume idempotency record is unavailable"
+                        )
+                    result.append(
+                        {
+                            "key": str(record["key"]),
+                            "volumeRef": str(record["volumeRef"]),
+                        }
+                    )
+                return result, True
+
+        storage_class_name = ""
+        if volumes:
+            storage_class_name, _ = _lae_runtime_storage_class(current)
+        bindings: list[Dict[str, str]] = []
+        refs: list[str] = []
+        for volume in volumes:
+            key = str(volume["key"])
+            volume_ref = _lae_runtime_volume_ref(binding, key)
+            existing_ref = str(volume.get("existingRef") or "")
+            if existing_ref and existing_ref != volume_ref:
+                raise _lae_runtime_not_found()
+            stored = runtime["volumes"].get(volume_ref)
+            if isinstance(stored, dict):
+                if (
+                    not _lae_runtime_volume_owner_matches(
+                        stored, binding, principal_ref=principal_ref
+                    )
+                    or str(stored.get("key") or "") != key
+                    or str(stored.get("storageClass") or "")
+                    != storage_class_name
+                    or int(volume["requestedBytes"])
+                    < int(stored.get("requestedBytes") or 0)
+                    or str(stored.get("accessMode") or "")
+                    != str(volume["accessMode"])
+                    or list(stored.get("mounts") or [])
+                    != list(volume["mounts"])
+                ):
+                    raise _lae_runtime_conflict(
+                        "managed volume binding is immutable"
+                    )
+                stored["requestedBytes"] = int(volume["requestedBytes"])
+                stored.update(binding.state_body())
+                stored["updatedAt"] = now
+            else:
+                if existing_ref:
+                    raise _lae_runtime_not_found()
+                runtime["volumes"][volume_ref] = {
+                    "volumeRef": volume_ref,
+                    "principalRef": principal_ref,
+                    **binding.state_body(),
+                    "key": key,
+                    "requestedBytes": int(volume["requestedBytes"]),
+                    "accessMode": str(volume["accessMode"]),
+                    "mounts": list(volume["mounts"]),
+                    "storageClass": storage_class_name,
+                    "path": _lae_runtime_volume_path(binding, key),
+                    "status": "prepared",
+                    "createdAt": now,
+                    "updatedAt": now,
+                }
+            refs.append(volume_ref)
+            bindings.append({"key": key, "volumeRef": volume_ref})
+        runtime["volumeIdempotency"][scope] = {
+            "requestHash": request_hash,
+            "volumeRefs": refs,
+            "createdAt": now,
+            "expiresAt": now + max(int(LAE_RUNTIME_IDEMPOTENCY_SECONDS), 60),
+        }
+        return bindings, False
+
+    bindings, replayed = _mutate_control_state(mutate)
+    return {
+        "schemaVersion": LAE_RUNTIME_SCHEMA_VERSION,
+        "volumes": bindings,
+        "replayed": replayed,
+    }
+
+
+def handle_lae_runtime_secret_issue(
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    body: Dict[str, Any],
+    *,
+    idempotency_key: str,
+) -> Dict[str, Any]:
+    request = _validate_lae_runtime_secret_issue_body(body)
+    state = load_state()
+    principal = _require_lae_runtime_principal(
+        state,
+        token,
+        audience=audience,
+        scope=SCOPE_SECRETS_ISSUE,
+        binding=binding,
+    )
+    lease, replayed = RUNTIME_SECRETS.issue(
+        principal_ref=str(principal["id"]),
+        binding=binding,
+        request=request,
+        idempotency_key=idempotency_key,
+    )
+    return {
+        "schemaVersion": LAE_RUNTIME_SCHEMA_VERSION,
+        "replayed": replayed,
+        "secret": lease.public_body(),
+    }
+
+
+def _lae_runtime_application_scope(
+    principal_ref: str, binding: RuntimeBinding
+) -> str:
+    return _lae_runtime_hash(
+        {
+            "principalRef": principal_ref,
+            "tenantRef": binding.tenant_ref,
+            "applicationRef": binding.application_ref,
+        }
+    )
+
+
+def _lae_runtime_job_slug(binding: RuntimeBinding) -> str:
+    digest = hashlib.sha256(
+        (binding.tenant_ref + "\0" + binding.application_ref).encode("utf-8")
+    ).hexdigest()
+    return "lae-" + digest[:28]
+
+
+def _lae_runtime_task_name(service_key: str, revision_ref: str) -> str:
+    revision = hashlib.sha256(revision_ref.encode("utf-8")).hexdigest()[:10]
+    return f"{service_key}-r{revision}"
+
+
+def _lae_runtime_variable_path(
+    job_slug: str, group_name: str, task_name: str
+) -> str:
+    return f"nomad/jobs/{job_slug}/{group_name}/{task_name}"
+
+
+def _lae_runtime_resolve_images(
+    state: Dict[str, Any],
+    builder_principal_refs: set[str],
+    binding: RuntimeBinding,
+    manifest: Dict[str, Any],
+) -> Dict[str, str]:
+    images: Dict[str, str] = {}
+    for service in manifest["services"]:
+        image_binding = service["image"]
+        task_id = str(image_binding["builderTaskRef"])
+        task = _builder_tasks(state).get(task_id)
+        if (
+            not isinstance(task, dict)
+            or str(task.get("principalRef") or "") not in builder_principal_refs
+            or str(task.get("tenantRef") or "") != binding.tenant_ref
+            or str(task.get("applicationRef") or "") != binding.application_ref
+            or str(task.get("externalOperationId") or "") != binding.operation_ref
+            or str(task.get("kind") or "") != "build-plan"
+            or str(task.get("status") or "") != "succeeded"
+        ):
+            raise _lae_runtime_not_found()
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        result_images = result.get("images") if isinstance(result.get("images"), dict) else {}
+        result_digests = (
+            result.get("imageDigests")
+            if isinstance(result.get("imageDigests"), dict)
+            else {}
+        )
+        build_key = str(image_binding["buildKey"])
+        supplied_digest = str(image_binding["imageDigest"])
+        resolved_image = str(result_images.get(build_key) or "")
+        resolved_digest = str(result_digests.get(build_key) or "")
+        if (
+            resolved_digest != supplied_digest
+            or not resolved_image.endswith("@" + supplied_digest)
+        ):
+            raise _lae_runtime_invalid(
+                "runtime image binding does not match the verified Builder output"
+            )
+        images[str(service["key"])] = resolved_image
+    return images
+
+
+def _lae_runtime_validate_volumes(
+    state: Dict[str, Any],
+    principal_ref: str,
+    binding: RuntimeBinding,
+    manifest: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    runtime = _lae_runtime_state(state)
+    result: Dict[str, Dict[str, Any]] = {}
+    for volume in manifest["volumes"]:
+        volume_ref = str(volume.get("existingRef") or "")
+        record = runtime["volumes"].get(volume_ref)
+        if (
+            not isinstance(record, dict)
+            or not _lae_runtime_binding_matches(
+                record, binding, principal_ref=principal_ref
+            )
+            or str(record.get("key") or "") != str(volume["key"])
+            or int(record.get("requestedBytes") or 0)
+            != int(volume["requestedBytes"])
+            or str(record.get("accessMode") or "")
+            != str(volume["accessMode"])
+            or list(record.get("mounts") or []) != list(volume["mounts"])
+        ):
+            raise _lae_runtime_not_found()
+        result[str(volume["key"])] = dict(record)
+    return result
+
+
+def _lae_runtime_hostname_conflicts(
+    state: Dict[str, Any],
+    *,
+    job_slug: str,
+    hostnames: set[str],
+) -> bool:
+    deployments = _deployments_state(state)
+    for bucket in (deployments["services"], deployments["compose"]):
+        for slug, record in bucket.items():
+            if str(slug) == job_slug or not isinstance(record, dict):
+                continue
+            data = _safe_manifest_dict(record.get("manifest"))
+            candidates: set[str] = set()
+            domain = data.get("domain")
+            if isinstance(domain, str):
+                candidates.add(domain)
+            services = data.get("services") if isinstance(data.get("services"), dict) else {}
+            for service in services.values():
+                if isinstance(service, dict) and isinstance(service.get("domain"), str):
+                    candidates.add(str(service["domain"]))
+            if candidates & hostnames:
+                return True
+    return False
+
+
+def _lae_runtime_compose_spec(
+    state: Dict[str, Any],
+    binding: RuntimeBinding,
+    manifest: Dict[str, Any],
+    images: Dict[str, str],
+    volume_records: Dict[str, Dict[str, Any]],
+    *,
+    job_slug: str,
+) -> ComposeDeploymentSpec:
+    runtime_storage_class = ""
+    if manifest["volumes"]:
+        runtime_storage_class, _ = _lae_runtime_storage_class(
+            state, region=str(manifest["region"])
+        )
+        if any(
+            str(record.get("storageClass") or "")
+            != runtime_storage_class
+            for record in volume_records.values()
+        ):
+            raise _lae_runtime_conflict(
+                "managed storage class binding changed"
+            )
+    routes = {str(item["serviceKey"]): item for item in manifest["routes"]}
+    compose_services: Dict[str, Any] = {}
+    sidecar_services: Dict[str, ComposeServiceSpec] = {}
+    for service in manifest["services"]:
+        key = str(service["key"])
+        body: Dict[str, Any] = {
+            "image": images[key],
+            "depends_on": list(service["dependencies"]),
+            "deploy": {
+                "resources": {
+                    "limits": {
+                        "cpus": str(service["resources"]["cpu"]),
+                        "memory": f"{int(service['resources']['memoryMiB'])}M",
+                    },
+                    "reservations": {
+                        "cpus": str(service["resources"]["cpu"]),
+                        "memory": f"{int(service['resources']['memoryMiB'])}M",
+                    },
+                }
+            },
+        }
+        if service.get("command") is not None:
+            body["command"] = str(service["command"])
+        if service.get("healthcheck") is not None:
+            health = service["healthcheck"]
+            body["healthcheck"] = {
+                "test": [
+                    "CMD",
+                    "wget",
+                    "--spider",
+                    "-q",
+                    f"http://127.0.0.1:{int(service['port'])}{health['path']}",
+                ],
+                "interval": f"{int(health['intervalSeconds'])}s",
+            }
+        mounts: list[Dict[str, Any]] = []
+        for volume in manifest["volumes"]:
+            for mount in volume["mounts"]:
+                if mount["serviceKey"] != key:
+                    continue
+                mounts.append(
+                    {
+                        "type": "volume",
+                        "source": str(volume["key"]),
+                        "target": str(mount["mountPath"]),
+                        "read_only": bool(mount["readOnly"]),
+                    }
+                )
+        if mounts:
+            body["volumes"] = mounts
+        route = routes.get(key)
+        if route is not None:
+            body["expose"] = [int(route["containerPort"])]
+        compose_services[key] = body
+        sidecar_services[key] = ComposeServiceSpec(
+            name=key,
+            region=str(manifest["region"]),
+            exposure=(str(route["exposure"]) if route is not None else "none"),
+            domain=(str(route["hostname"]) if route is not None else None),
+            port=(int(route["containerPort"]) if route is not None else None),
+            replicas=1,
+        )
+
+    selected_storage_classes: Dict[str, StorageClassSpec] = {}
+    compose_volumes: Dict[str, Any] = {}
+    sidecar_volumes: Dict[str, ComposeVolumeSpec] = {}
+    for volume in manifest["volumes"]:
+        key = str(volume["key"])
+        stored = volume_records[key]
+        class_name = str(stored["storageClass"])
+        raw_class = _state_storage_classes(state).get(class_name)
+        if not isinstance(raw_class, dict):
+            raise _lae_runtime_unavailable(
+                "LAE managed storage class is unavailable"
+            )
+        selected_storage_classes[class_name] = _storage_class_spec_from_record(
+            class_name, raw_class
+        )
+        compose_volumes[key] = {}
+        sidecar_volumes[key] = ComposeVolumeSpec(
+            name=key,
+            storage_class=class_name,
+            path=str(stored["path"]),
+            access_mode=str(volume["accessMode"]),
+        )
+
+    compose = {
+        "services": compose_services,
+        **({"volumes": compose_volumes} if compose_volumes else {}),
+    }
+    spec = ComposeDeploymentSpec(
+        source=Path("lae-runtime"),
+        compose_path=Path("lae-runtime/docker-compose.yml"),
+        compose=compose,
+        name=job_slug,
+        region=str(manifest["region"]),
+        storage_classes=selected_storage_classes,
+        volumes=sidecar_volumes,
+        services=sidecar_services,
+        warnings=[],
+    )
+    # This validates region/storage reachability and rejects any accidental
+    # local/host backend before a job is rendered.
+    resolve_storage_mounts(spec, node_records=_state_nodes(state))
+    return spec
+
+
+def _lae_runtime_safe_compose_payload(
+    spec: ComposeDeploymentSpec,
+) -> tuple[str, str, Dict[str, Any]]:
+    compose_content = yaml.safe_dump(
+        spec.compose, sort_keys=True, allow_unicode=False
+    )
+    sidecar = {
+        "name": spec.name,
+        "compose": "docker-compose.yml",
+        "region": spec.region,
+        "volumes": {
+            key: {
+                "storageClass": volume.storage_class,
+                "path": volume.path,
+                "accessMode": volume.access_mode,
+            }
+            for key, volume in spec.volumes.items()
+        },
+        "services": {
+            key: {
+                "region": service.region or spec.region,
+                "exposure": service.exposure,
+                **({"domain": service.domain} if service.domain else {}),
+                **({"port": service.port} if service.port else {}),
+            }
+            for key, service in spec.services.items()
+        },
+    }
+    sidecar_text = yaml.safe_dump(sidecar, sort_keys=True, allow_unicode=False)
+    return sidecar_text, compose_content, {
+        "manifest": sidecar_text,
+        "composeContent": compose_content,
+        "sourceName": "lae.runtime.compose.yml",
+        "origin": "lae-runtime",
+    }
+
+
+def _lae_runtime_template(path: str, names: list[str]) -> Dict[str, Any]:
+    lines = [f'{{{{ with nomadVar "{path}" }}}}']
+    for name in sorted(names):
+        lines.append(f"{name}={{{{ .{name}.Value | toJSON }}}}")
+    lines.append("{{ end }}")
+    return {
+        "DestPath": "secrets/lae-runtime.env",
+        "EmbeddedTmpl": "\n".join(lines) + "\n",
+        "Envvars": True,
+        "ChangeMode": "restart",
+        "Perms": "0600",
+    }
+
+
+def _raise_lae_runtime_placement_failure(exc: PlacementFailure) -> None:
+    """Translate internal topology failures to stable, non-sensitive errors."""
+
+    if exc.reason == LAE_PLACEMENT_NO_CAPACITY:
+        raise LumaRuntimeError(
+            "runtime capacity is temporarily unavailable in this region",
+            status=503,
+            code="capacity_unavailable",
+        ) from exc
+    if exc.reason == LAE_PLACEMENT_VOLUME_INCOMPATIBLE:
+        raise LumaRuntimeError(
+            "managed volume is incompatible with runtime placement",
+            status=409,
+            code="volume_placement_incompatible",
+        ) from exc
+    raise LumaRuntimeError(
+        "runtime placement is temporarily unavailable",
+        status=503,
+        code="placement_unavailable",
+    ) from exc
+
+
+def _lae_runtime_node_allowlist() -> tuple[str, ...]:
+    """Load the positive-admission runner set without exposing topology.
+
+    A generic ready Docker node is not sufficient evidence that the host is
+    isolated for untrusted tenant workloads.  The operator must explicitly
+    admit every LAE runtime node; missing or ambiguous configuration fails
+    closed as a placement control-plane outage.
+    """
+
+    raw = str(
+        os.environ.get("LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON") or ""
+    ).strip()
+    try:
+        configured = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        raise PlacementFailure(LAE_PLACEMENT_UNAVAILABLE) from None
+    if (
+        not isinstance(configured, list)
+        or not configured
+        or len(configured) > 64
+        or any(not isinstance(item, str) for item in configured)
+    ):
+        raise PlacementFailure(LAE_PLACEMENT_UNAVAILABLE)
+    nodes = [str(item) for item in configured]
+    if (
+        nodes != sorted(nodes)
+        or len(nodes) != len(set(nodes))
+        or any(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item) is None
+            for item in nodes
+        )
+    ):
+        raise PlacementFailure(LAE_PLACEMENT_UNAVAILABLE)
+    return tuple(nodes)
+
+
+def _lae_runtime_nomad_placement_nodes(
+    config: LumaConfig,
+    state: Dict[str, Any],
+) -> tuple[NomadApi, list[Dict[str, Any]]]:
+    """Read current Nomad node detail without projecting it to LAE callers."""
+
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+    try:
+        summaries = client.request("GET", "/v1/nodes")
+    except LumaError as exc:
+        _raise_lae_runtime_placement_failure(
+            PlacementFailure(LAE_PLACEMENT_UNAVAILABLE)
+        )
+        raise AssertionError("unreachable") from exc
+    if not isinstance(summaries, list):
+        _raise_lae_runtime_placement_failure(
+            PlacementFailure(LAE_PLACEMENT_UNAVAILABLE)
+        )
+    result: list[Dict[str, Any]] = []
+    detail_failures = 0
+    for summary in summaries:
+        if not isinstance(summary, dict):
+            continue
+        node_id = str(summary.get("ID") or "").strip()
+        if not node_id:
+            continue
+        try:
+            detail = client.request(
+                "GET", f"/v1/node/{urllib.parse.quote(node_id, safe='')}"
+            )
+        except LumaError:
+            # One unreachable/down node must not block rescheduling to another
+            # ready runtime node. If every detail lookup fails, the snapshot is
+            # unusable and placement fails closed below.
+            detail_failures += 1
+            continue
+        if not isinstance(detail, dict):
+            detail_failures += 1
+            continue
+        merged = dict(summary)
+        merged.update(detail)
+        merged["ID"] = node_id
+        result.append(merged)
+    if not result and detail_failures:
+        _raise_lae_runtime_placement_failure(
+            PlacementFailure(LAE_PLACEMENT_UNAVAILABLE)
+        )
+    return client, result
+
+
+def _lae_runtime_prior_nomad_node(
+    client: NomadApi,
+    job_slug: str,
+) -> str:
+    try:
+        allocations = client.request(
+            "GET",
+            f"/v1/job/{urllib.parse.quote(job_slug, safe='')}/allocations",
+        )
+    except LumaError as exc:
+        if "Nomad API error 404" in str(exc):
+            return ""
+        _raise_lae_runtime_placement_failure(
+            PlacementFailure(LAE_PLACEMENT_UNAVAILABLE)
+        )
+        raise AssertionError("unreachable") from exc
+    if not isinstance(allocations, list):
+        _raise_lae_runtime_placement_failure(
+            PlacementFailure(LAE_PLACEMENT_UNAVAILABLE)
+        )
+    active: list[Dict[str, Any]] = []
+    for raw in allocations:
+        if not isinstance(raw, dict) or not str(raw.get("NodeID") or "").strip():
+            continue
+        desired = str(raw.get("DesiredStatus") or "").lower()
+        client_status = str(raw.get("ClientStatus") or "").lower()
+        if desired in {"run", ""} and client_status in {
+            "running",
+            "pending",
+            "starting",
+            "unknown",
+            "",
+        }:
+            active.append(raw)
+    active.sort(
+        key=lambda value: (
+            int(value.get("ModifyIndex") or 0),
+            int(value.get("CreateIndex") or 0),
+            str(value.get("ID") or ""),
+        ),
+        reverse=True,
+    )
+    return str(active[0].get("NodeID") or "") if active else ""
+
+
+def _lae_runtime_plan_placement(
+    config: LumaConfig,
+    state: Dict[str, Any],
+    manifest: Dict[str, Any],
+    *,
+    job_slug: str,
+) -> tuple[PlacementDecision, NomadApi]:
+    client, nomad_nodes = _lae_runtime_nomad_placement_nodes(config, state)
+    prior_node_id = _lae_runtime_prior_nomad_node(client, job_slug)
+    storage_class: Dict[str, Any] | None = None
+    if manifest["volumes"]:
+        try:
+            class_name, _ = _lae_runtime_storage_class(
+                state, region=str(manifest["region"])
+            )
+        except LumaRuntimeError as exc:
+            _raise_lae_runtime_placement_failure(
+                PlacementFailure(LAE_PLACEMENT_VOLUME_INCOMPATIBLE)
+            )
+            raise AssertionError("unreachable") from exc
+        raw_class = _state_storage_classes(state).get(class_name)
+        if isinstance(raw_class, dict):
+            storage_class = {"name": class_name, **raw_class}
+    try:
+        allowed_runtime_nodes = _lae_runtime_node_allowlist()
+        decision = plan_lae_placement(
+            manifest=manifest,
+            registered_nodes=(
+                state.get("nodes")
+                if isinstance(state.get("nodes"), dict)
+                else {}
+            ),
+            nomad_nodes=nomad_nodes,
+            declared_builder_nodes=_declared_build_node_names(state),
+            allowed_runtime_nodes=allowed_runtime_nodes,
+            storage_class=storage_class,
+            prior_node_id=prior_node_id,
+            agent_stale_seconds=AGENT_STALE_SECONDS,
+        )
+    except PlacementFailure as exc:
+        _raise_lae_runtime_placement_failure(exc)
+        raise AssertionError("unreachable") from exc
+    return decision, client
+
+
+def _lae_runtime_validate_placement_plan(
+    client: NomadApi,
+    *,
+    job_slug: str,
+    stack_text: str,
+) -> None:
+    try:
+        rendered = json.loads(stack_text)
+        job = rendered.get("Job") if isinstance(rendered, dict) else None
+        if not isinstance(job, dict):
+            raise ValueError("missing Job")
+        plan = client.request(
+            "POST",
+            f"/v1/job/{urllib.parse.quote(job_slug, safe='')}/plan",
+            {"Job": job, "Diff": False, "PolicyOverride": False},
+        )
+        _validate_lae_nomad_plan(plan)
+    except PlacementFailure as exc:
+        _raise_lae_runtime_placement_failure(exc)
+    except (LumaError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        _raise_lae_runtime_placement_failure(
+            PlacementFailure(LAE_PLACEMENT_UNAVAILABLE)
+        )
+        raise AssertionError("unreachable") from exc
+
+
+def _lae_runtime_render_job(
+    state: Dict[str, Any],
+    config: LumaConfig,
+    binding: RuntimeBinding,
+    manifest: Dict[str, Any],
+    spec: ComposeDeploymentSpec,
+    secret_values: Dict[str, str],
+    *,
+    runtime_deployment_ref: str,
+    placement: PlacementDecision | None = None,
+) -> tuple[str, Dict[str, Dict[str, str]], list[str]]:
+    runtime_config = _config_with_state_nodes(config, state)
+    rendered = render_compose_job(
+        runtime_config,
+        spec,
+        as_json=False,
+        registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
+        resolve_secrets=False,
+        egress_proxy_url=_egress_proxy_for_region(
+            config, state, str(manifest["region"])
+        ),
+    )
+    if not isinstance(rendered, dict) or not isinstance(rendered.get("Job"), dict):
+        raise _lae_runtime_unavailable("Luma runtime renderer is unavailable")
+    job = rendered["Job"]
+    groups = job.get("TaskGroups") if isinstance(job.get("TaskGroups"), list) else []
+    if len(groups) != 1 or not isinstance(groups[0], dict):
+        raise _lae_runtime_unavailable("Luma runtime renderer is unavailable")
+    group = groups[0]
+    group_name = str(group.get("Name") or spec.slug)
+    tasks = group.get("Tasks") if isinstance(group.get("Tasks"), list) else []
+    task_names: Dict[str, str] = {}
+    variable_items: Dict[str, Dict[str, str]] = {}
+    refs_by_service: Dict[str, list[Dict[str, Any]]] = {}
+    for item in manifest["secretRefs"]:
+        refs_by_service.setdefault(str(item["serviceKey"]), []).append(item)
+
+    storage_mounts = resolve_storage_mounts(
+        spec, node_records=_state_nodes(state)
+    )
+    endpoint_by_volume = {
+        str(item["volume"]): str(item["endpoint"])
+        for item in storage_mounts
+    }
+    application_volume_prefix = hashlib.sha256(
+        binding.application_ref.encode("utf-8")
+    ).hexdigest()[:16]
+    variable_paths: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise _lae_runtime_unavailable("Luma runtime renderer is unavailable")
+        service_key = str(task.get("Name") or "")
+        if service_key not in {str(item["key"]) for item in manifest["services"]}:
+            raise _lae_runtime_unavailable("Luma runtime renderer is unavailable")
+        runtime_task_name = _lae_runtime_task_name(
+            service_key, binding.revision_ref
+        )
+        task["Name"] = runtime_task_name
+        task_names[service_key] = runtime_task_name
+        config_body = task.get("Config") if isinstance(task.get("Config"), dict) else {}
+        mounts = config_body.get("mount") if isinstance(config_body.get("mount"), list) else []
+        for mount in mounts:
+            if not isinstance(mount, dict) or str(mount.get("type") or "") != "volume":
+                raise _lae_runtime_invalid("LAE runtime rejected a non-managed mount")
+            volume_key = str(mount.get("source") or "")
+            volume = spec.volumes.get(volume_key)
+            storage_class = (
+                spec.storage_classes.get(str(volume.storage_class))
+                if volume is not None
+                else None
+            )
+            endpoint = endpoint_by_volume.get(volume_key)
+            if volume is None or storage_class is None or endpoint is None:
+                raise _lae_runtime_invalid("LAE runtime volume binding is invalid")
+            driver = render_storage_class_volume(
+                storage_class, volume, endpoint
+            )
+            mount["source"] = (
+                f"lae-{application_volume_prefix}-{slugify(volume_key)}"
+            )
+            mount["volume_options"] = {
+                "no_copy": False,
+                "driver_config": {
+                    "name": str(driver.get("driver") or "local"),
+                    "options": dict(driver.get("driver_opts") or {}),
+                },
+            }
+        refs = refs_by_service.get(service_key, [])
+        if refs:
+            path = _lae_runtime_variable_path(
+                spec.slug, group_name, runtime_task_name
+            )
+            items: Dict[str, str] = {}
+            for item in refs:
+                ref = str(item["secretRef"])
+                if ref not in secret_values:
+                    raise _lae_runtime_invalid(
+                        "runtime secret reference is unavailable"
+                    )
+                items[str(item["name"])] = secret_values[ref]
+            task["Templates"] = [
+                _lae_runtime_template(path, list(items))
+            ]
+            variable_items[path] = items
+            variable_paths.append(path)
+
+    route_by_service = {
+        str(item["serviceKey"]): item for item in manifest["routes"]
+    }
+    manifest_service_by_key = {
+        str(item["key"]): item for item in manifest["services"]
+    }
+    for service_block in group.get("Services") or []:
+        if not isinstance(service_block, dict):
+            continue
+        route = route_by_service.get(str(service_block.get("Name") or ""))
+        if route is None:
+            continue
+        manifest_service = manifest_service_by_key.get(
+            str(service_block.get("Name") or ""), {}
+        )
+        healthcheck = (
+            manifest_service.get("healthcheck")
+            if isinstance(manifest_service, dict)
+            and isinstance(manifest_service.get("healthcheck"), dict)
+            else {}
+        )
+        service_block["Checks"] = [
+            {
+                "Name": "lae-http-health",
+                "Type": "http",
+                "Path": str(route["healthPath"]),
+                "Interval": int(
+                    healthcheck.get("intervalSeconds") or 10
+                )
+                * 1_000_000_000,
+                "Timeout": 3_000_000_000,
+            }
+        ]
+    meta = job.get("Meta") if isinstance(job.get("Meta"), dict) else {}
+    meta.update(
+        {
+            "luma.lae": "true",
+            "luma.lae.tenant": binding.tenant_ref,
+            "luma.lae.application": binding.application_ref,
+            "luma.lae.operation": binding.operation_ref,
+            "luma.lae.revision": binding.revision_ref,
+            "luma.lae.deployment": binding.deployment_ref,
+            "luma.lae.runtimeDeployment": runtime_deployment_ref,
+            "luma.lae.manifestDigest": str(manifest["manifestDigest"]),
+        }
+    )
+    job["Meta"] = meta
+    if placement is not None:
+        try:
+            placement.apply_to_job(rendered)
+        except PlacementFailure as exc:
+            _raise_lae_runtime_placement_failure(exc)
+    # ``variable_items`` is returned separately and is never serialized into
+    # the job or control state.
+    return (
+        json.dumps(rendered, indent=2, sort_keys=True, ensure_ascii=True),
+        variable_items,
+        variable_paths,
+    )
+
+
+def _lae_runtime_nomad_job_version(
+    config: LumaConfig, state: Dict[str, Any], slug: str
+) -> int | None:
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+    try:
+        value = client.request(
+            "GET", f"/v1/job/{urllib.parse.quote(slug, safe='')}"
+        )
+    except LumaError as exc:
+        if "Nomad API error 404" in str(exc):
+            return None
+        raise _lae_runtime_unavailable("Nomad runtime is unavailable") from exc
+    if not isinstance(value, dict):
+        raise _lae_runtime_unavailable("Nomad runtime is unavailable")
+    version = value.get("Version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise _lae_runtime_unavailable("Nomad runtime is unavailable")
+    return version
+
+
+def _install_lae_runtime_variables(
+    config: LumaConfig,
+    state: Dict[str, Any],
+    variable_items: Dict[str, Dict[str, str]],
+) -> None:
+    if not variable_items:
+        return
+    if not str(state.get("nomadToken") or ""):
+        raise _lae_runtime_unavailable(
+            "Nomad Variables require an authenticated control plane"
+        )
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+    written: list[str] = []
+    try:
+        for path, items in variable_items.items():
+            client.put_variable(path, items)
+            written.append(path)
+    except LumaError as exc:
+        for path in written:
+            try:
+                client.delete_variable(path)
+            except LumaError:
+                pass
+        raise _lae_runtime_unavailable(
+            "secure runtime secret installation is unavailable"
+        ) from exc
+
+
+def _delete_lae_runtime_variables(
+    config: LumaConfig, state: Dict[str, Any], paths: list[str]
+) -> None:
+    if not paths:
+        return
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+    for path in paths:
+        try:
+            client.delete_variable(path)
+        except LumaError as exc:
+            if "Nomad API error 404" in str(exc):
+                continue
+            raise _lae_runtime_unavailable(
+                "secure runtime secret cleanup is unavailable"
+            ) from exc
+
+
+def _execute_lae_runtime_deployment(
+    *,
+    token: str,
+    audience: str,
+    principal_ref: str,
+    binding: RuntimeBinding,
+    runtime_deployment_ref: str,
+    manifest: Dict[str, Any],
+    images: Dict[str, str],
+    volume_records: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    state = load_state()
+    current_principal = _require_lae_runtime_principal(
+        state,
+        token,
+        audience=audience,
+        scope=SCOPE_DEPLOYMENTS_WRITE,
+        binding=binding,
+    )
+    if str(current_principal.get("id") or "") != principal_ref:
+        raise _lae_runtime_forbidden()
+    secret_values = RUNTIME_SECRETS.resolve_manifest(
+        principal_ref=principal_ref,
+        binding=binding,
+        secret_refs=list(manifest["secretRefs"]),
+    )
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    job_slug = _lae_runtime_job_slug(binding)
+    # Placement is a Luma-internal admission decision. The caller supplied
+    # only ``region``; current ready runtime nodes, builder isolation, managed
+    # volume compatibility, and prior allocation continuity are resolved here.
+    placement, placement_client = _lae_runtime_plan_placement(
+        config,
+        state,
+        manifest,
+        job_slug=job_slug,
+    )
+    spec = _lae_runtime_compose_spec(
+        state,
+        binding,
+        manifest,
+        images,
+        volume_records,
+        job_slug=job_slug,
+    )
+    _lae_runtime_storage_class(
+        state, region=str(manifest["region"])
+    ) if manifest["volumes"] else None
+    previous_version = _lae_runtime_nomad_job_version(config, state, job_slug)
+    stack_text, variable_items, variable_paths = _lae_runtime_render_job(
+        state,
+        config,
+        binding,
+        manifest,
+        spec,
+        secret_values,
+        runtime_deployment_ref=runtime_deployment_ref,
+        placement=placement,
+    )
+    # Nomad's plan endpoint is the authoritative capacity check. It evaluates
+    # the exact rendered group (aggregate CPU/memory/ports and the internal
+    # candidate constraints) without registering the job.
+    _lae_runtime_validate_placement_plan(
+        placement_client,
+        job_slug=job_slug,
+        stack_text=stack_text,
+    )
+    # The plaintext exists only in ``secret_values``/``variable_items`` and the
+    # encrypted Nomad Variables request. Neither mapping is returned or saved.
+    _install_lae_runtime_variables(config, state, variable_items)
+    try:
+        _prepare_compose_managed_storage(spec, state)
+        target = _resolve_control_path(
+            compose_stack_path(config, spec), config_path
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(stack_text, encoding="utf-8")
+        for route in manifest["routes"]:
+            sync_dns(
+                config,
+                _compose_service_as_service_spec(
+                    spec, spec.services[str(route["serviceKey"])]
+                ),
+            )
+        deploy_to_nomad(config, stack_text, state, slug=job_slug)
+    except BaseException:
+        # Variables remain for an idempotent retry. They are encrypted in Nomad
+        # and bound to the not-yet-running revision-specific task identities.
+        raise
+    current_version = _lae_runtime_nomad_job_version(config, state, job_slug)
+    sidecar_text, compose_content, normal_body = _lae_runtime_safe_compose_payload(
+        spec
+    )
+    _mark_compose_deployment(
+        spec,
+        normal_body,
+        "lae.runtime.compose.yml",
+        status="active",
+        steps=[
+            {
+                "name": "LAE runtime deployment",
+                "status": "ok",
+                "message": "Submitted through the dedicated LAE runtime API",
+            }
+        ],
+    )
+    return {
+        "jobSlug": job_slug,
+        "taskNames": {
+            str(service["key"]): _lae_runtime_task_name(
+                str(service["key"]), binding.revision_ref
+            )
+            for service in manifest["services"]
+        },
+        "variablePaths": variable_paths,
+        "previousNomadVersion": previous_version,
+        "nomadVersion": current_version,
+        "composeManifest": sidecar_text,
+        "composeContent": compose_content,
+        # Control-state only. The LAE public projection intentionally omits it.
+        "placement": placement.internal_state(),
+    }
+
+
+def _lae_runtime_deployment_public(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "deploymentRef": str(record["runtimeDeploymentRef"]),
+        "status": str(record["status"]),
+        "manifestDigest": str(record["manifestDigest"]),
+        "serviceStatuses": dict(record.get("serviceStatuses") or {}),
+        "routeStatuses": dict(record.get("routeStatuses") or {}),
+        "volumeBindings": [
+            {"key": str(item["key"]), "volumeRef": str(item["volumeRef"])}
+            for item in record.get("volumeBindings") or []
+        ],
+    }
+
+
+def _lae_runtime_deployment_envelope(
+    record: Dict[str, Any], *, replayed: bool | None = None
+) -> Dict[str, Any]:
+    value: Dict[str, Any] = {
+        "schemaVersion": LAE_RUNTIME_SCHEMA_VERSION,
+        "deployment": _lae_runtime_deployment_public(record),
+    }
+    if replayed is not None:
+        value["replayed"] = replayed
+    return value
+
+
+@_serialize_deploy
+def handle_lae_runtime_deployment_create(
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    body: Dict[str, Any],
+    *,
+    idempotency_key: str,
+) -> Dict[str, Any]:
+    manifest = _validate_lae_runtime_deploy_body(body, binding)
+    normalized_idempotency = _normalize_lae_runtime_idempotency_key(
+        idempotency_key
+    )
+    logical_hash = _lae_runtime_hash(
+        {
+            "manifestDigest": manifest["manifestDigest"],
+            "normalizedComposeDigest": manifest.get("normalizedComposeDigest"),
+        }
+    )
+    now = int(time.time())
+
+    def reserve(current: Dict[str, Any]) -> tuple[Dict[str, Any], bool, bool]:
+        principal = _require_lae_runtime_principal(
+            current,
+            token,
+            audience=audience,
+            scope=SCOPE_DEPLOYMENTS_WRITE,
+            binding=binding,
+        )
+        principal_ref = str(principal["id"])
+        _lae_runtime_prune(current, now=now)
+        runtime = _lae_runtime_state(current)
+        idempotency_scope = _lae_runtime_idempotency_scope(
+            principal_ref,
+            binding,
+            "POST /v1/lae/runtime/deployments",
+            normalized_idempotency,
+        )
+        existing_idem = runtime["deploymentIdempotency"].get(
+            idempotency_scope
+        )
+        if isinstance(existing_idem, dict):
+            if not secrets.compare_digest(
+                str(existing_idem.get("requestHash") or ""), logical_hash
+            ):
+                raise _lae_runtime_conflict()
+            existing = runtime["deployments"].get(
+                str(existing_idem.get("runtimeDeploymentRef") or "")
+            )
+            if not isinstance(existing, dict) or not _lae_runtime_binding_matches(
+                existing, binding, principal_ref=principal_ref
+            ):
+                raise _lae_runtime_conflict(
+                    "runtime deployment idempotency record is unavailable"
+                )
+            if str(existing.get("status") or "") in {
+                "preparing",
+                "failed",
+            } and bool(existing.get("retryable", True)):
+                existing["manifest"] = manifest
+                existing["status"] = "preparing"
+                existing["retryable"] = True
+                existing["updatedAt"] = now
+                return dict(existing), True, True
+            return dict(existing), True, False
+
+        application_scope = _lae_runtime_application_scope(
+            principal_ref, binding
+        )
+        application = runtime["applicationBindings"].get(application_scope)
+        job_slug = _lae_runtime_job_slug(binding)
+        if isinstance(application, dict):
+            if (
+                str(application.get("name") or "") != str(manifest["name"])
+                or str(application.get("jobSlug") or "") != job_slug
+            ):
+                raise _lae_runtime_conflict(
+                    "application runtime identity is immutable"
+                )
+            current_ref = str(application.get("currentRuntimeDeploymentRef") or "")
+            current_record = runtime["deployments"].get(current_ref)
+            if isinstance(current_record, dict) and str(
+                current_record.get("status") or ""
+            ) in {
+                "preparing",
+                "deploying",
+                "canceling",
+                "suspending",
+                "resuming",
+                "restarting",
+                "deleting",
+            }:
+                raise LumaRuntimeError(
+                    "another runtime deployment is in progress",
+                    status=429,
+                    code="capacity_unavailable",
+                )
+        else:
+            application = {
+                "principalRef": principal_ref,
+                "tenantRef": binding.tenant_ref,
+                "applicationRef": binding.application_ref,
+                "name": str(manifest["name"]),
+                "jobSlug": job_slug,
+                "createdAt": now,
+            }
+            runtime["applicationBindings"][application_scope] = application
+
+        hostnames = {str(item["hostname"]) for item in manifest["routes"]}
+        if _lae_runtime_hostname_conflicts(
+            current, job_slug=job_slug, hostnames=hostnames
+        ):
+            raise _lae_runtime_conflict(
+                "managed hostname is already bound"
+            )
+        for hostname in hostnames:
+            owner = runtime["hostnameBindings"].get(hostname)
+            if isinstance(owner, dict) and (
+                str(owner.get("principalRef") or "") != principal_ref
+                or str(owner.get("tenantRef") or "") != binding.tenant_ref
+                or str(owner.get("applicationRef") or "")
+                != binding.application_ref
+            ):
+                raise _lae_runtime_conflict(
+                    "managed hostname is already bound"
+                )
+
+        images = _lae_runtime_resolve_images(
+            current,
+            set(
+                str(item)
+                for item in principal.get("builderPrincipalRefs") or []
+            ),
+            binding,
+            manifest,
+        )
+        volume_records = _lae_runtime_validate_volumes(
+            current, principal_ref, binding, manifest
+        )
+        runtime_ref = "lae-run-" + secrets.token_hex(16)
+        previous_runtime_ref = str(
+            application.get("currentRuntimeDeploymentRef") or ""
+        )
+        record: Dict[str, Any] = {
+            "runtimeDeploymentRef": runtime_ref,
+            "principalRef": principal_ref,
+            **binding.state_body(),
+            "manifest": manifest,
+            "manifestDigest": str(manifest["manifestDigest"]),
+            "requestHash": logical_hash,
+            "status": "preparing",
+            "retryable": True,
+            "jobSlug": job_slug,
+            "images": images,
+            "volumeRecords": volume_records,
+            "volumeBindings": [
+                {
+                    "key": str(item["key"]),
+                    "volumeRef": str(item["existingRef"]),
+                }
+                for item in manifest["volumes"]
+            ],
+            "serviceStatuses": {
+                str(item["key"]): "pending"
+                for item in manifest["services"]
+            },
+            "routeStatuses": {
+                str(item["hostname"]): "pending"
+                for item in manifest["routes"]
+            },
+            "previousRuntimeDeploymentRef": previous_runtime_ref,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        runtime["deployments"][runtime_ref] = record
+        runtime["deploymentIdempotency"][idempotency_scope] = {
+            "requestHash": logical_hash,
+            "runtimeDeploymentRef": runtime_ref,
+            "createdAt": now,
+            "expiresAt": now
+            + max(int(LAE_RUNTIME_IDEMPOTENCY_SECONDS), 60),
+        }
+        application["currentRuntimeDeploymentRef"] = runtime_ref
+        application["updatedAt"] = now
+        for hostname in hostnames:
+            runtime["hostnameBindings"][hostname] = {
+                "principalRef": principal_ref,
+                "tenantRef": binding.tenant_ref,
+                "applicationRef": binding.application_ref,
+                "runtimeDeploymentRef": runtime_ref,
+                "updatedAt": now,
+            }
+        return dict(record), False, True
+
+    record, replayed, execute = _mutate_control_state(reserve)
+    if not execute:
+        return _lae_runtime_deployment_envelope(record, replayed=replayed)
+    try:
+        execution = _execute_lae_runtime_deployment(
+            token=token,
+            audience=audience,
+            principal_ref=str(record["principalRef"]),
+            binding=binding,
+            runtime_deployment_ref=str(record["runtimeDeploymentRef"]),
+            manifest=dict(record["manifest"]),
+            images=dict(record["images"]),
+            volume_records={
+                str(key): dict(value)
+                for key, value in dict(record["volumeRecords"]).items()
+            },
+        )
+    except LumaRuntimeError as exc:
+        def fail_runtime(current: Dict[str, Any]) -> None:
+            stored = _lae_runtime_state(current)["deployments"].get(
+                str(record["runtimeDeploymentRef"])
+            )
+            if isinstance(stored, dict):
+                stored["status"] = "failed"
+                stored["retryable"] = exc.status in {429, 503}
+                stored["updatedAt"] = int(time.time())
+
+        _mutate_control_state(fail_runtime)
+        raise
+    except (LumaError, OSError, TimeoutError) as exc:
+        def fail_unavailable(current: Dict[str, Any]) -> None:
+            stored = _lae_runtime_state(current)["deployments"].get(
+                str(record["runtimeDeploymentRef"])
+            )
+            if isinstance(stored, dict):
+                stored["status"] = "failed"
+                stored["retryable"] = True
+                stored["updatedAt"] = int(time.time())
+
+        _mutate_control_state(fail_unavailable)
+        raise _lae_runtime_unavailable(
+            "Luma runtime deployment is temporarily unavailable"
+        ) from exc
+
+    def complete_submit(current: Dict[str, Any]) -> Dict[str, Any]:
+        stored = _lae_runtime_state(current)["deployments"].get(
+            str(record["runtimeDeploymentRef"])
+        )
+        if not isinstance(stored, dict) or not _lae_runtime_binding_matches(
+            stored, binding, principal_ref=str(record["principalRef"])
+        ):
+            raise _lae_runtime_not_found()
+        stored.update(execution)
+        # Safe, non-secret render inputs no longer need to remain duplicated in
+        # the runtime record once the Nomad job has been submitted.
+        stored.pop("volumeRecords", None)
+        stored["status"] = "deploying"
+        stored["retryable"] = True
+        stored["submittedAt"] = int(time.time())
+        stored["updatedAt"] = int(time.time())
+        return dict(stored)
+
+    submitted = _mutate_control_state(complete_submit)
+    return _lae_runtime_deployment_envelope(submitted, replayed=replayed)
+
+
+def _lae_runtime_probe_route(hostname: str, health_path: str) -> str:
+    request = urllib.request.Request(
+        f"https://{hostname}{health_path}",
+        method="GET",
+        headers={"User-Agent": "luma-lae-runtime-health/1"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            status = int(response.status)
+    except urllib.error.HTTPError as exc:
+        status = int(exc.code)
+    except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError):
+        return "pending"
+    return "ready" if 200 <= status < 400 else "unhealthy"
+
+
+def _observe_lae_runtime_deployment(
+    state: Dict[str, Any], record: Dict[str, Any]
+) -> Dict[str, Any]:
+    if str(record.get("status") or "") in {
+        "canceled",
+        "failed",
+        "suspended",
+        "suspending",
+        "rolling_back",
+        "deleting",
+        "deleted",
+    }:
+        return dict(record)
+    job_slug = str(record.get("jobSlug") or "")
+    manifest = record.get("manifest") if isinstance(record.get("manifest"), dict) else {}
+    task_names = record.get("taskNames") if isinstance(record.get("taskNames"), dict) else {}
+    if not job_slug or not manifest or not task_names:
+        raise _lae_runtime_unavailable("runtime deployment state is incomplete")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+    try:
+        detail = client.request(
+            "GET", f"/v1/job/{urllib.parse.quote(job_slug, safe='')}"
+        )
+    except LumaError as exc:
+        if "Nomad API error 404" in str(exc):
+            detail = None
+        else:
+            raise _lae_runtime_unavailable(
+                "Nomad runtime status is unavailable"
+            ) from exc
+    deadline = int(record.get("submittedAt") or record.get("createdAt") or 0) + int(
+        os.environ.get("LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS", "600")
+    )
+    timed_out = int(time.time()) >= deadline
+    if detail is None:
+        value = dict(record)
+        if timed_out:
+            value["status"] = "failed"
+            value["retryable"] = False
+        return value
+    if not isinstance(detail, dict):
+        raise _lae_runtime_unavailable("Nomad runtime status is unavailable")
+    meta = detail.get("Meta") if isinstance(detail.get("Meta"), dict) else {}
+    expected_meta = {
+        "luma.lae": "true",
+        "luma.lae.tenant": str(record["tenantRef"]),
+        "luma.lae.application": str(record["applicationRef"]),
+        "luma.lae.operation": str(record["operationRef"]),
+        "luma.lae.revision": str(record["revisionRef"]),
+        "luma.lae.deployment": str(record["deploymentRef"]),
+        "luma.lae.runtimeDeployment": str(record["runtimeDeploymentRef"]),
+        "luma.lae.manifestDigest": str(record["manifestDigest"]),
+    }
+    if any(str(meta.get(key) or "") != expected for key, expected in expected_meta.items()):
+        value = dict(record)
+        value["status"] = "failed"
+        value["retryable"] = False
+        value["serviceStatuses"] = {
+            str(item["key"]): "missing" for item in manifest["services"]
+        }
+        return value
+    jobs = nomad_services_summary(config, state)
+    job = next(
+        (
+            item
+            for item in jobs
+            if isinstance(item, dict)
+            and str(item.get("jobId") or item.get("name") or "") == job_slug
+        ),
+        None,
+    )
+    if not isinstance(job, dict):
+        raise _lae_runtime_unavailable("Nomad runtime status is unavailable")
+    runtime_tasks = {
+        str(item.get("name") or ""): item
+        for item in job.get("tasks") or []
+        if isinstance(item, dict)
+    }
+    service_statuses: Dict[str, str] = {}
+    for service in manifest["services"]:
+        service_key = str(service["key"])
+        task = runtime_tasks.get(str(task_names.get(service_key) or ""))
+        status = str(task.get("status") or "") if isinstance(task, dict) else ""
+        if status in {"running", "healthy"}:
+            service_statuses[service_key] = "healthy"
+        elif status in {"failed", "dead", "lost"}:
+            service_statuses[service_key] = "failed"
+        elif status in {"pending", "starting", "queued"}:
+            service_statuses[service_key] = "starting"
+        else:
+            service_statuses[service_key] = "missing" if timed_out else "unknown"
+    route_statuses: Dict[str, str] = {}
+    for route in manifest["routes"]:
+        hostname = str(route["hostname"])
+        if service_statuses.get(str(route["serviceKey"])) != "healthy":
+            route_statuses[hostname] = "failed" if timed_out else "pending"
+            continue
+        observed = _lae_runtime_probe_route(hostname, str(route["healthPath"]))
+        route_statuses[hostname] = (
+            "failed" if observed == "unhealthy" and timed_out else observed
+        )
+    required = {
+        str(item["key"]) for item in manifest["services"] if item["required"]
+    }
+    required_failed = any(
+        service_statuses.get(key) in {"failed", "missing"} for key in required
+    )
+    routes_failed = any(value == "failed" for value in route_statuses.values())
+    ready = all(service_statuses.get(key) == "healthy" for key in required) and all(
+        value == "ready" for value in route_statuses.values()
+    )
+    value = dict(record)
+    value["serviceStatuses"] = service_statuses
+    value["routeStatuses"] = route_statuses
+    if required_failed or routes_failed:
+        value["status"] = "failed"
+        value["retryable"] = False
+    elif ready:
+        value["status"] = "running"
+        value["retryable"] = False
+    else:
+        value["status"] = "deploying"
+    version = detail.get("Version")
+    if isinstance(version, int) and not isinstance(version, bool) and version >= 0:
+        value["nomadVersion"] = version
+    return value
+
+
+def handle_lae_runtime_deployment_get(
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    runtime_deployment_ref: str,
+) -> Dict[str, Any]:
+    state = load_state()
+    principal = _require_lae_runtime_principal(
+        state,
+        token,
+        audience=audience,
+        scope=SCOPE_DEPLOYMENTS_READ,
+        binding=binding,
+    )
+    principal_ref = str(principal["id"])
+    record = _lae_runtime_state(state)["deployments"].get(
+        str(runtime_deployment_ref or "")
+    )
+    if not isinstance(record, dict) or not _lae_runtime_binding_matches(
+        record, binding, principal_ref=principal_ref
+    ):
+        raise _lae_runtime_not_found()
+    application_scope = _lae_runtime_application_scope(principal_ref, binding)
+    application = _lae_runtime_state(state)["applicationBindings"].get(
+        application_scope
+    )
+    is_current = isinstance(application, dict) and str(
+        application.get("currentRuntimeDeploymentRef") or ""
+    ) == str(runtime_deployment_ref)
+    observed = (
+        _observe_lae_runtime_deployment(state, dict(record))
+        if is_current
+        else dict(record)
+    )
+    if observed != record:
+        def update_observation(current: Dict[str, Any]) -> Dict[str, Any]:
+            current_principal = _require_lae_runtime_principal(
+                current,
+                token,
+                audience=audience,
+                scope=SCOPE_DEPLOYMENTS_READ,
+                binding=binding,
+            )
+            stored = _lae_runtime_state(current)["deployments"].get(
+                str(runtime_deployment_ref)
+            )
+            if not isinstance(stored, dict) or not _lae_runtime_binding_matches(
+                stored,
+                binding,
+                principal_ref=str(current_principal["id"]),
+            ):
+                raise _lae_runtime_not_found()
+            for key in (
+                "status",
+                "retryable",
+                "serviceStatuses",
+                "routeStatuses",
+                "nomadVersion",
+            ):
+                if key in observed:
+                    stored[key] = observed[key]
+            stored["updatedAt"] = int(time.time())
+            return dict(stored)
+
+        observed = _mutate_control_state(update_observation)
+    return _lae_runtime_deployment_envelope(observed)
+
+
+LAE_RUNTIME_LOG_TAIL_DEFAULT = 120
+LAE_RUNTIME_LOG_TAIL_MAX = 500
+LAE_RUNTIME_LOG_LINE_BYTES_MAX = 2048
+LAE_RUNTIME_LOG_RESPONSE_BYTES_MAX = 1024 * 1024
+LAE_RUNTIME_METRICS_WINDOW_DEFAULT = 3600
+LAE_RUNTIME_METRICS_WINDOW_MAX = 7 * 24 * 3600
+LAE_RUNTIME_METRICS_POINTS_MAX = 10_000
+
+
+def _parse_lae_runtime_observability_query(
+    raw_query: str, *, kind: str
+) -> int:
+    if kind == "logs":
+        key = "tail"
+        default = LAE_RUNTIME_LOG_TAIL_DEFAULT
+        maximum = LAE_RUNTIME_LOG_TAIL_MAX
+    elif kind == "metrics":
+        key = "window"
+        default = LAE_RUNTIME_METRICS_WINDOW_DEFAULT
+        maximum = LAE_RUNTIME_METRICS_WINDOW_MAX
+    else:
+        raise _lae_runtime_invalid("runtime observability request is invalid")
+    try:
+        pairs = urllib.parse.parse_qsl(
+            str(raw_query or ""),
+            keep_blank_values=True,
+            strict_parsing=True,
+            max_num_fields=2,
+        )
+    except ValueError as exc:
+        raise _lae_runtime_invalid(
+            "runtime observability query is invalid"
+        ) from exc
+    if not pairs:
+        return default
+    if len(pairs) != 1 or pairs[0][0] != key or not pairs[0][1]:
+        raise _lae_runtime_invalid(
+            "runtime observability query is invalid"
+        )
+    try:
+        value = int(pairs[0][1])
+    except ValueError as exc:
+        raise _lae_runtime_invalid(
+            f"runtime observability {key} is invalid"
+        ) from exc
+    if isinstance(value, bool) or not 1 <= value <= maximum:
+        raise _lae_runtime_invalid(
+            f"runtime observability {key} exceeds the platform limit"
+        )
+    return value
+
+
+def _lae_runtime_observability_target(
+    state: Dict[str, Any],
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    runtime_deployment_ref: str,
+    service_key: str,
+    *,
+    scope: str,
+) -> tuple[Dict[str, Any], Dict[str, Any], str, str]:
+    principal = _require_lae_runtime_principal(
+        state,
+        token,
+        audience=audience,
+        scope=scope,
+        binding=binding,
+    )
+    principal_ref = str(principal["id"])
+    record = _lae_runtime_state(state)["deployments"].get(
+        str(runtime_deployment_ref or "")
+    )
+    if not isinstance(record, dict) or not _lae_runtime_binding_matches(
+        record, binding, principal_ref=principal_ref
+    ):
+        raise _lae_runtime_not_found()
+    manifest = record.get("manifest")
+    if not isinstance(manifest, dict):
+        raise _lae_runtime_unavailable("runtime deployment state is incomplete")
+    service = next(
+        (
+            item
+            for item in manifest.get("services") or []
+            if isinstance(item, dict)
+            and str(item.get("key") or "") == str(service_key or "")
+        ),
+        None,
+    )
+    if not isinstance(service, dict):
+        # Do not reveal whether another task/job exists. The only selectable
+        # unit is a serviceKey from this bound saved manifest.
+        raise _lae_runtime_not_found()
+    job_slug = str(record.get("jobSlug") or "")
+    task_names = (
+        record.get("taskNames")
+        if isinstance(record.get("taskNames"), dict)
+        else {}
+    )
+    task_name = str(task_names.get(str(service_key)) or "")
+    if (
+        job_slug != _lae_runtime_job_slug(binding)
+        or task_name
+        != _lae_runtime_task_name(str(service_key), binding.revision_ref)
+    ):
+        raise _lae_runtime_unavailable("runtime deployment state is incomplete")
+    return dict(record), service, job_slug, task_name
+
+
+def _lae_runtime_log_secret_values(
+    config: LumaConfig, state: Dict[str, Any], record: Dict[str, Any]
+) -> tuple[set[str], set[str]]:
+    manifest = record.get("manifest") if isinstance(record.get("manifest"), dict) else {}
+    secret_refs = [
+        item
+        for item in manifest.get("secretRefs") or []
+        if isinstance(item, dict)
+    ]
+    names = {str(item.get("name") or "") for item in secret_refs if item.get("name")}
+    if not secret_refs:
+        return names, set()
+    paths = [str(item) for item in record.get("variablePaths") or [] if str(item)]
+    task_names = record.get("taskNames") if isinstance(record.get("taskNames"), dict) else {}
+    if not paths or not task_names:
+        raise _lae_runtime_unavailable(
+            "runtime log redaction material is unavailable"
+        )
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+    values: set[str] = set()
+    for service_key in {str(item.get("serviceKey") or "") for item in secret_refs}:
+        task_name = str(task_names.get(service_key) or "")
+        matching_paths = [path for path in paths if path.endswith("/" + task_name)]
+        if not task_name or len(matching_paths) != 1:
+            raise _lae_runtime_unavailable(
+                "runtime log redaction material is unavailable"
+            )
+        try:
+            items = client.get_variable(matching_paths[0])
+        except LumaError as exc:
+            raise _lae_runtime_unavailable(
+                "runtime log redaction material is unavailable"
+            ) from exc
+        expected_names = {
+            str(item.get("name") or "")
+            for item in secret_refs
+            if str(item.get("serviceKey") or "") == service_key
+        }
+        if not expected_names.issubset(items):
+            raise _lae_runtime_unavailable(
+                "runtime log redaction material is unavailable"
+            )
+        values.update(str(items[name]) for name in expected_names if items[name])
+    return names, values
+
+
+_LAE_RUNTIME_LOG_SENSITIVE_NAME = re.compile(
+    r"(?i)\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY)\b"
+)
+_LAE_RUNTIME_LOG_BEARER = re.compile(
+    r"(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]+"
+)
+_LAE_RUNTIME_LOG_URL_USERINFO = re.compile(
+    r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@"
+)
+
+
+def _redact_lae_runtime_log_line(
+    raw_line: str, *, secret_names: set[str], secret_values: set[str]
+) -> str:
+    line = str(raw_line)
+    for value in sorted(secret_values, key=len, reverse=True):
+        line = line.replace(value, "[REDACTED]")
+    line = re.sub(r"lsec_[A-Za-z0-9][A-Za-z0-9._-]{7,122}", "[REDACTED]", line)
+    line = _LAE_RUNTIME_LOG_BEARER.sub(r"\1[REDACTED]", line)
+    line = _LAE_RUNTIME_LOG_URL_USERINFO.sub(r"\1[REDACTED]@", line)
+    candidate_names = set(secret_names)
+    candidate_names.update(_LAE_RUNTIME_LOG_SENSITIVE_NAME.findall(line))
+    upper = line.upper()
+    cut_at: int | None = None
+    for name in candidate_names:
+        if not name:
+            continue
+        start = upper.find(name.upper())
+        while start >= 0:
+            separator_positions = [
+                position
+                for position in (
+                    line.find("=", start + len(name), start + len(name) + 8),
+                    line.find(":", start + len(name), start + len(name) + 8),
+                )
+                if position >= 0
+            ]
+            if separator_positions:
+                cut_at = min(separator_positions) + 1
+                break
+            start = upper.find(name.upper(), start + len(name))
+        if cut_at is not None:
+            break
+    if cut_at is not None:
+        line = line[:cut_at] + " [REDACTED]"
+    encoded = line.encode("utf-8", errors="replace")
+    if len(encoded) > LAE_RUNTIME_LOG_LINE_BYTES_MAX:
+        line = (
+            encoded[:LAE_RUNTIME_LOG_LINE_BYTES_MAX]
+            .decode("utf-8", errors="ignore")
+            + "…"
+        )
+    return line
+
+
+def handle_lae_runtime_logs(
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    runtime_deployment_ref: str,
+    service_key: str,
+    *,
+    tail: int,
+) -> Dict[str, Any]:
+    if isinstance(tail, bool) or not 1 <= int(tail) <= LAE_RUNTIME_LOG_TAIL_MAX:
+        raise _lae_runtime_invalid("runtime observability tail is invalid")
+    state = load_state()
+    record, _service, job_slug, task_name = _lae_runtime_observability_target(
+        state,
+        token,
+        audience,
+        binding,
+        runtime_deployment_ref,
+        service_key,
+        scope=SCOPE_LOGS_READ,
+    )
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+    _lae_runtime_verified_job(config, state, record, required=True)
+    secret_names, secret_values = _lae_runtime_log_secret_values(
+        config, state, record
+    )
+    try:
+        raw_lines = _nomad_log_lines(
+            config,
+            state,
+            f"{job_slug}/{task_name}",
+            tail=int(tail),
+            bound_job_id=job_slug,
+            bound_task_name=task_name,
+        )
+    except LumaError as exc:
+        raise _lae_runtime_unavailable(
+            "runtime service logs are temporarily unavailable"
+        ) from exc
+    selected: list[str] = []
+    total = 0
+    truncated = False
+    for raw_line in reversed(raw_lines[-int(tail) :]):
+        line = _redact_lae_runtime_log_line(
+            str(raw_line),
+            secret_names=secret_names,
+            secret_values=secret_values,
+        )
+        size = len(line.encode("utf-8"))
+        if total + size > LAE_RUNTIME_LOG_RESPONSE_BYTES_MAX:
+            truncated = True
+            break
+        selected.append(line)
+        total += size
+    selected.reverse()
+    return {
+        "schemaVersion": LAE_RUNTIME_SCHEMA_VERSION,
+        "lumaName": str(record["manifest"]["name"]),
+        "serviceKey": str(service_key),
+        "tail": int(tail),
+        "logs": selected,
+        "truncated": truncated or len(raw_lines) > len(selected),
+        "updatedAt": int(time.time()),
+    }
+
+
+def handle_lae_runtime_metrics(
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    runtime_deployment_ref: str,
+    service_key: str,
+    *,
+    window: int,
+) -> Dict[str, Any]:
+    if (
+        isinstance(window, bool)
+        or not 1 <= int(window) <= LAE_RUNTIME_METRICS_WINDOW_MAX
+    ):
+        raise _lae_runtime_invalid("runtime observability window is invalid")
+    state = load_state()
+    record, _service, job_slug, task_name = _lae_runtime_observability_target(
+        state,
+        token,
+        audience,
+        binding,
+        runtime_deployment_ref,
+        service_key,
+        scope=SCOPE_METRICS_READ,
+    )
+    internal_name = _dashboard_task_full_name(
+        job_slug, task_name, compose=True
+    )
+    raw_series = load_history("service", internal_name, window=int(window))
+    series: Dict[str, list[list[float | int]]] = {
+        "cpuPercent": [],
+        "memoryUsageBytes": [],
+    }
+    for key in series:
+        raw_points = raw_series.get(key) if isinstance(raw_series, dict) else []
+        if not isinstance(raw_points, list):
+            continue
+        for point in raw_points[-LAE_RUNTIME_METRICS_POINTS_MAX:]:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                continue
+            timestamp, value = point
+            if (
+                isinstance(timestamp, bool)
+                or not isinstance(timestamp, (int, float))
+                or isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(timestamp))
+                or not math.isfinite(float(value))
+            ):
+                continue
+            series[key].append([int(timestamp), value])
+    return {
+        "schemaVersion": LAE_RUNTIME_SCHEMA_VERSION,
+        "lumaName": str(record["manifest"]["name"]),
+        "serviceKey": str(service_key),
+        "windowSeconds": int(window),
+        "series": series,
+        "updatedAt": int(time.time()),
+    }
+
+
+def _execute_lae_runtime_cancel(record: Dict[str, Any]) -> None:
+    state = load_state()
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    job_slug = str(record.get("jobSlug") or "")
+    previous_version = record.get("previousNomadVersion")
+    try:
+        if isinstance(previous_version, int) and not isinstance(previous_version, bool):
+            revert_job(
+                config, state, slug=job_slug, version=int(previous_version)
+            )
+        else:
+            remove_from_nomad(config, state, slug=job_slug)
+    except LumaError as exc:
+        if "Nomad API error 404" not in str(exc):
+            raise _lae_runtime_unavailable(
+                "runtime cancellation is temporarily unavailable"
+            ) from exc
+    _delete_lae_runtime_variables(
+        config,
+        state,
+        [str(item) for item in record.get("variablePaths") or []],
+    )
+
+
+@_serialize_deploy
+def handle_lae_runtime_deployment_cancel(
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    runtime_deployment_ref: str,
+    body: Dict[str, Any],
+) -> Dict[str, Any]:
+    if body != {}:
+        raise _lae_runtime_invalid("runtime cancel request body must be empty")
+
+    def begin(current: Dict[str, Any]) -> tuple[Dict[str, Any], bool, bool]:
+        principal = _require_lae_runtime_principal(
+            current,
+            token,
+            audience=audience,
+            scope=SCOPE_DEPLOYMENTS_WRITE,
+            binding=binding,
+        )
+        principal_ref = str(principal["id"])
+        runtime = _lae_runtime_state(current)
+        record = runtime["deployments"].get(str(runtime_deployment_ref or ""))
+        if not isinstance(record, dict) or not _lae_runtime_binding_matches(
+            record, binding, principal_ref=principal_ref
+        ):
+            raise _lae_runtime_not_found()
+        status = str(record.get("status") or "")
+        if status == "canceled":
+            return dict(record), True, False
+        application = runtime["applicationBindings"].get(
+            _lae_runtime_application_scope(principal_ref, binding)
+        )
+        active = isinstance(application, dict) and str(
+            application.get("currentRuntimeDeploymentRef") or ""
+        ) == str(runtime_deployment_ref)
+        record["status"] = "canceling"
+        record["updatedAt"] = int(time.time())
+        return dict(record), status == "canceling", active
+
+    record, replayed, execute = _mutate_control_state(begin)
+    if execute:
+        _execute_lae_runtime_cancel(record)
+
+    def finish(current: Dict[str, Any]) -> Dict[str, Any]:
+        principal = _require_lae_runtime_principal(
+            current,
+            token,
+            audience=audience,
+            scope=SCOPE_DEPLOYMENTS_WRITE,
+            binding=binding,
+        )
+        principal_ref = str(principal["id"])
+        runtime = _lae_runtime_state(current)
+        stored = runtime["deployments"].get(str(runtime_deployment_ref))
+        if not isinstance(stored, dict) or not _lae_runtime_binding_matches(
+            stored, binding, principal_ref=principal_ref
+        ):
+            raise _lae_runtime_not_found()
+        stored["status"] = "canceled"
+        stored["retryable"] = False
+        stored["updatedAt"] = int(time.time())
+        application = runtime["applicationBindings"].get(
+            _lae_runtime_application_scope(principal_ref, binding)
+        )
+        if isinstance(application, dict) and str(
+            application.get("currentRuntimeDeploymentRef") or ""
+        ) == str(runtime_deployment_ref):
+            previous_ref = str(stored.get("previousRuntimeDeploymentRef") or "")
+            application["currentRuntimeDeploymentRef"] = previous_ref
+            application["updatedAt"] = int(time.time())
+            for hostname in list(runtime["hostnameBindings"]):
+                owner = runtime["hostnameBindings"].get(hostname)
+                if not isinstance(owner, dict) or str(
+                    owner.get("runtimeDeploymentRef") or ""
+                ) != str(runtime_deployment_ref):
+                    continue
+                if previous_ref:
+                    owner["runtimeDeploymentRef"] = previous_ref
+                    owner["updatedAt"] = int(time.time())
+                else:
+                    runtime["hostnameBindings"].pop(hostname, None)
+        return dict(stored)
+
+    canceled = _mutate_control_state(finish)
+    return _lae_runtime_deployment_envelope(canceled, replayed=replayed)
+
+
+_LAE_RUNTIME_LIFECYCLE_ACTIONS = {"suspend", "resume", "restart", "rollback", "delete"}
+_LAE_RUNTIME_LIFECYCLE_TRANSITIONS = {
+    "suspend": "suspending",
+    "resume": "resuming",
+    "restart": "restarting",
+    "delete": "deleting",
+}
+
+
+def _lae_runtime_binding_from_record(record: Dict[str, Any]) -> RuntimeBinding:
+    try:
+        return RuntimeBinding(
+            tenant_ref=str(record["tenantRef"]),
+            application_ref=str(record["applicationRef"]),
+            operation_ref=str(record["operationRef"]),
+            revision_ref=str(record["revisionRef"]),
+            deployment_ref=str(record["deploymentRef"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _lae_runtime_unavailable(
+            "runtime deployment state is incomplete"
+        ) from exc
+
+
+def _lae_runtime_expected_job_meta(record: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        "luma.lae": "true",
+        "luma.lae.tenant": str(record["tenantRef"]),
+        "luma.lae.application": str(record["applicationRef"]),
+        "luma.lae.operation": str(record["operationRef"]),
+        "luma.lae.revision": str(record["revisionRef"]),
+        "luma.lae.deployment": str(record["deploymentRef"]),
+        "luma.lae.runtimeDeployment": str(record["runtimeDeploymentRef"]),
+        "luma.lae.manifestDigest": str(record["manifestDigest"]),
+    }
+
+
+def _lae_runtime_verified_job(
+    config: LumaConfig,
+    state: Dict[str, Any],
+    record: Dict[str, Any],
+    *,
+    required: bool,
+) -> Dict[str, Any] | None:
+    job_slug = str(record.get("jobSlug") or "")
+    if not job_slug or job_slug != _lae_runtime_job_slug(
+        _lae_runtime_binding_from_record(record)
+    ):
+        raise _lae_runtime_unavailable("runtime deployment state is incomplete")
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+    try:
+        detail = client.request(
+            "GET", f"/v1/job/{urllib.parse.quote(job_slug, safe='')}"
+        )
+    except LumaError as exc:
+        if "Nomad API error 404" in str(exc) and not required:
+            return None
+        raise _lae_runtime_unavailable(
+            "Nomad runtime lifecycle is unavailable"
+        ) from exc
+    if not isinstance(detail, dict):
+        raise _lae_runtime_unavailable("Nomad runtime lifecycle is unavailable")
+    meta = detail.get("Meta") if isinstance(detail.get("Meta"), dict) else {}
+    if any(
+        str(meta.get(key) or "") != expected
+        for key, expected in _lae_runtime_expected_job_meta(record).items()
+    ):
+        # Never mutate a job whose tenant/revision ownership cannot be proven,
+        # even when the stable application slug happens to match.
+        raise _lae_runtime_conflict("runtime job binding does not match")
+    return detail
+
+
+def _lae_runtime_bound_compose_spec(
+    state: Dict[str, Any], record: Dict[str, Any]
+) -> ComposeDeploymentSpec:
+    manifest = record.get("manifest")
+    images = record.get("images")
+    if not isinstance(manifest, dict) or not isinstance(images, dict):
+        raise _lae_runtime_unavailable("runtime deployment state is incomplete")
+    binding = _lae_runtime_binding_from_record(record)
+    volume_records = _lae_runtime_validate_volumes(
+        state,
+        str(record.get("principalRef") or ""),
+        binding,
+        manifest,
+    )
+    return _lae_runtime_compose_spec(
+        state,
+        binding,
+        manifest,
+        {str(key): str(value) for key, value in images.items()},
+        volume_records,
+        job_slug=str(record["jobSlug"]),
+    )
+
+
+def _lae_runtime_delete_routes(
+    config: LumaConfig, spec: ComposeDeploymentSpec
+) -> None:
+    for service in compose_public_services(spec):
+        delete_dns(config, _compose_service_as_service_spec(spec, service))
+
+
+def _lae_runtime_restore_routes(
+    config: LumaConfig, spec: ComposeDeploymentSpec
+) -> None:
+    for service in compose_public_services(spec):
+        sync_dns(config, _compose_service_as_service_spec(spec, service))
+
+
+def _execute_lae_runtime_lifecycle(
+    action: str,
+    record: Dict[str, Any],
+    *,
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    principal_ref: str,
+    volume_policy: str = "retain",
+) -> Dict[str, Any]:
+    """Execute a lifecycle action using only the saved, bound runtime record."""
+
+    state = load_state()
+    current_principal = _require_lae_runtime_principal(
+        state,
+        token,
+        audience=audience,
+        scope=SCOPE_DEPLOYMENTS_WRITE,
+        binding=binding,
+    )
+    if str(current_principal.get("id") or "") != principal_ref:
+        raise _lae_runtime_forbidden()
+    stored = _lae_runtime_state(state)["deployments"].get(
+        str(record.get("runtimeDeploymentRef") or "")
+    )
+    if (
+        not isinstance(stored, dict)
+        or not _lae_runtime_binding_matches(
+            stored, binding, principal_ref=principal_ref
+        )
+        or str(stored.get("manifestDigest") or "")
+        != str(record.get("manifestDigest") or "")
+        or str(stored.get("status") or "")
+        != _LAE_RUNTIME_LIFECYCLE_TRANSITIONS[action]
+    ):
+        raise _lae_runtime_conflict("runtime lifecycle binding changed")
+    record = dict(stored)
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    job_slug = str(record.get("jobSlug") or "")
+    spec = _lae_runtime_bound_compose_spec(state, record)
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+
+    try:
+        if action == "suspend":
+            detail = _lae_runtime_verified_job(
+                config, state, record, required=True
+            )
+            assert detail is not None
+            # On a retry after Luma stopped Nomad but before it checkpointed
+            # completion, GET returns the new ``Stop=true`` version. Keep the
+            # previously checkpointed active version so resume can never
+            # restore the stopped job by accident.
+            version = (
+                record.get("nomadVersion")
+                if bool(detail.get("Stop"))
+                else detail.get("Version")
+            )
+            if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+                raise _lae_runtime_unavailable(
+                    "Nomad runtime lifecycle is unavailable"
+                )
+            client.request(
+                "DELETE",
+                f"/v1/job/{urllib.parse.quote(job_slug, safe='')}?purge=false",
+            )
+            _lae_runtime_delete_routes(config, spec)
+            return {"suspendedNomadVersion": version}
+
+        if action == "resume":
+            # A non-purged stop preserves the encrypted Nomad Variables. Revert
+            # to the exact version captured at suspend; no caller-supplied job
+            # or manifest is accepted at this boundary.
+            _lae_runtime_verified_job(config, state, record, required=True)
+            version = record.get("suspendedNomadVersion")
+            if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+                raise _lae_runtime_conflict(
+                    "runtime deployment has no resumable saved version"
+                )
+            revert_job(config, state, slug=job_slug, version=version)
+            _lae_runtime_restore_routes(config, spec)
+            current_version = _lae_runtime_nomad_job_version(
+                config, state, job_slug
+            )
+            return {"nomadVersion": current_version}
+
+        if action == "restart":
+            _lae_runtime_verified_job(config, state, record, required=True)
+            allocations = client.request(
+                "GET",
+                f"/v1/job/{urllib.parse.quote(job_slug, safe='')}/allocations",
+            )
+            if not isinstance(allocations, list):
+                raise _lae_runtime_unavailable(
+                    "Nomad runtime lifecycle is unavailable"
+                )
+            stopped = 0
+            for allocation in allocations:
+                if not isinstance(allocation, dict):
+                    continue
+                if str(allocation.get("ClientStatus") or "").lower() != "running":
+                    continue
+                allocation_id = str(allocation.get("ID") or "").strip()
+                if not allocation_id:
+                    continue
+                client.request(
+                    "POST",
+                    f"/v1/allocation/{urllib.parse.quote(allocation_id, safe='')}/stop",
+                    None,
+                )
+                stopped += 1
+            if stopped == 0:
+                raise _lae_runtime_unavailable(
+                    "runtime deployment has no restartable allocation"
+                )
+            return {"restartedAllocations": stopped}
+
+        if action == "delete":
+            _lae_runtime_verified_job(config, state, record, required=False)
+            _lae_runtime_delete_routes(config, spec)
+            try:
+                remove_from_nomad(config, state, slug=job_slug)
+            except LumaError as exc:
+                if "Nomad API error 404" not in str(exc):
+                    raise
+            _delete_lae_runtime_variables(
+                config,
+                state,
+                [str(item) for item in record.get("variablePaths") or []],
+            )
+            if volume_policy == "delete":
+                _cleanup_compose_managed_storage(spec, state, dry_run=False)
+            stack_target = _resolve_control_path(
+                compose_stack_path(config, spec), config_path
+            )
+            _remove_generated_files(stack_target.parent)
+            return {
+                "deletedVolumeRefs": (
+                    [
+                        str(item.get("volumeRef") or "")
+                        for item in record.get("volumeBindings") or []
+                        if isinstance(item, dict)
+                    ]
+                    if volume_policy == "delete"
+                    else []
+                )
+            }
+    except LumaRuntimeError:
+        raise
+    except (LumaError, OSError, TimeoutError) as exc:
+        raise _lae_runtime_unavailable(
+            f"runtime {action} is temporarily unavailable"
+        ) from exc
+    raise _lae_runtime_invalid("runtime lifecycle action is invalid")
+
+
+def _execute_lae_runtime_rollback(
+    current: Dict[str, Any], target: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Revert the stable application job to one previously verified revision."""
+
+    state = load_state()
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    current_slug = str(current.get("jobSlug") or "")
+    target_slug = str(target.get("jobSlug") or "")
+    target_version = target.get("nomadVersion")
+    if (
+        not current_slug
+        or current_slug != target_slug
+        or isinstance(target_version, bool)
+        or not isinstance(target_version, int)
+        or target_version < 0
+    ):
+        raise _lae_runtime_conflict("runtime rollback target is incomplete")
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+    try:
+        detail = client.request(
+            "GET", f"/v1/job/{urllib.parse.quote(current_slug, safe='')}"
+        )
+        if not isinstance(detail, dict):
+            raise _lae_runtime_unavailable("Nomad runtime rollback is unavailable")
+        meta = detail.get("Meta") if isinstance(detail.get("Meta"), dict) else {}
+        current_meta = _lae_runtime_expected_job_meta(current)
+        target_meta = _lae_runtime_expected_job_meta(target)
+        matches_current = all(
+            str(meta.get(key) or "") == expected
+            for key, expected in current_meta.items()
+        )
+        matches_target = all(
+            str(meta.get(key) or "") == expected
+            for key, expected in target_meta.items()
+        )
+        if not matches_current and not matches_target:
+            raise _lae_runtime_conflict("runtime rollback job binding changed")
+        if matches_current:
+            current_spec = _lae_runtime_bound_compose_spec(state, current)
+            _lae_runtime_delete_routes(config, current_spec)
+            revert_job(config, state, slug=current_slug, version=target_version)
+        # Route publication is an independent side effect. Always repair it
+        # on retry, including the crash window after Nomad reverted but before
+        # the target routes were restored.
+        target_spec = _lae_runtime_bound_compose_spec(state, target)
+        _lae_runtime_restore_routes(config, target_spec)
+        return {
+            "nomadVersion": _lae_runtime_nomad_job_version(
+                config, state, current_slug
+            )
+        }
+    except LumaRuntimeError:
+        raise
+    except (LumaError, OSError, TimeoutError) as exc:
+        raise _lae_runtime_unavailable(
+            "runtime rollback is temporarily unavailable"
+        ) from exc
+
+
+def _handle_lae_runtime_deployment_rollback(
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    runtime_deployment_ref: str,
+    request: Dict[str, Any],
+    *,
+    idempotency_key: str,
+) -> Dict[str, Any]:
+    normalized_idempotency = _normalize_lae_runtime_idempotency_key(
+        idempotency_key
+    )
+    target_request = request.get("target")
+    if not isinstance(target_request, dict):
+        raise _lae_runtime_invalid("runtime rollback target is invalid")
+    target_ref = str(target_request.get("runtimeDeploymentRef") or "")
+    request_hash = _lae_runtime_hash(
+        {"action": "rollback", "request": request}
+    )
+    now = int(time.time())
+
+    def begin(
+        current_state: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, Any], bool, bool]:
+        principal = _require_lae_runtime_principal(
+            current_state,
+            token,
+            audience=audience,
+            scope=SCOPE_DEPLOYMENTS_WRITE,
+            binding=binding,
+        )
+        principal_ref = str(principal["id"])
+        _lae_runtime_prune(current_state, now=now)
+        runtime = _lae_runtime_state(current_state)
+        current = runtime["deployments"].get(str(runtime_deployment_ref or ""))
+        target = runtime["deployments"].get(target_ref)
+        if (
+            not isinstance(current, dict)
+            or not _lae_runtime_binding_matches(
+                current, binding, principal_ref=principal_ref
+            )
+            or not isinstance(target, dict)
+            or str(target.get("principalRef") or "") != principal_ref
+            or str(target.get("tenantRef") or "") != binding.tenant_ref
+            or str(target.get("applicationRef") or "")
+            != binding.application_ref
+            or str(target.get("operationRef") or "")
+            != str(target_request.get("operationRef") or "")
+            or str(target.get("revisionRef") or "")
+            != str(target_request.get("revisionRef") or "")
+            or str(target.get("deploymentRef") or "")
+            != str(target_request.get("deploymentRef") or "")
+            or target_ref == str(runtime_deployment_ref)
+            or str(target.get("jobSlug") or "")
+            != str(current.get("jobSlug") or "")
+        ):
+            raise _lae_runtime_not_found()
+        application = runtime["applicationBindings"].get(
+            _lae_runtime_application_scope(principal_ref, binding)
+        )
+        if not isinstance(application, dict):
+            raise _lae_runtime_conflict("runtime application binding is unavailable")
+        scope = _lae_runtime_idempotency_scope(
+            principal_ref,
+            binding,
+            "POST /v1/lae/runtime/deployments/{runtime-ref}/rollback",
+            normalized_idempotency,
+        )
+        existing = runtime["lifecycleIdempotency"].get(scope)
+        if isinstance(existing, dict):
+            if (
+                not secrets.compare_digest(
+                    str(existing.get("requestHash") or ""), request_hash
+                )
+                or str(existing.get("runtimeDeploymentRef") or "")
+                != str(runtime_deployment_ref)
+                or str(existing.get("targetRuntimeDeploymentRef") or "")
+                != target_ref
+            ):
+                raise _lae_runtime_conflict()
+            return (
+                dict(current),
+                dict(target),
+                True,
+                not bool(existing.get("completed")),
+            )
+        if str(application.get("currentRuntimeDeploymentRef") or "") != str(
+            runtime_deployment_ref
+        ):
+            raise _lae_runtime_conflict(
+                "runtime rollback source is not the active revision"
+            )
+        if str(current.get("status") or "") not in {"running", "degraded"}:
+            raise _lae_runtime_conflict("runtime rollback source is not healthy")
+        if str(target.get("status") or "") not in {
+            "running",
+            "degraded",
+            "suspended",
+            "superseded",
+        }:
+            raise _lae_runtime_conflict("runtime rollback target is unavailable")
+        target_version = target.get("nomadVersion")
+        if (
+            isinstance(target_version, bool)
+            or not isinstance(target_version, int)
+            or target_version < 0
+        ):
+            raise _lae_runtime_conflict("runtime rollback target is incomplete")
+        runtime["lifecycleIdempotency"][scope] = {
+            "requestHash": request_hash,
+            "runtimeDeploymentRef": str(runtime_deployment_ref),
+            "targetRuntimeDeploymentRef": target_ref,
+            "action": "rollback",
+            "completed": False,
+            "createdAt": now,
+            "expiresAt": now + max(int(LAE_RUNTIME_IDEMPOTENCY_SECONDS), 60),
+        }
+        current["status"] = "rolling_back"
+        current["retryable"] = True
+        current["updatedAt"] = now
+        return dict(current), dict(target), False, True
+
+    current, target, replayed, execute = _mutate_control_state(begin)
+    if execute:
+        result = _execute_lae_runtime_rollback(current, target)
+    else:
+        result = {}
+
+    def finish(current_state: Dict[str, Any]) -> Dict[str, Any]:
+        principal = _require_lae_runtime_principal(
+            current_state,
+            token,
+            audience=audience,
+            scope=SCOPE_DEPLOYMENTS_WRITE,
+            binding=binding,
+        )
+        principal_ref = str(principal["id"])
+        runtime = _lae_runtime_state(current_state)
+        stored_current = runtime["deployments"].get(str(runtime_deployment_ref))
+        stored_target = runtime["deployments"].get(target_ref)
+        if not isinstance(stored_current, dict) or not isinstance(
+            stored_target, dict
+        ):
+            raise _lae_runtime_not_found()
+        application = runtime["applicationBindings"].get(
+            _lae_runtime_application_scope(principal_ref, binding)
+        )
+        if not isinstance(application, dict):
+            raise _lae_runtime_conflict("runtime application binding is unavailable")
+        scope = _lae_runtime_idempotency_scope(
+            principal_ref,
+            binding,
+            "POST /v1/lae/runtime/deployments/{runtime-ref}/rollback",
+            normalized_idempotency,
+        )
+        idem = runtime["lifecycleIdempotency"].get(scope)
+        if not isinstance(idem, dict):
+            raise _lae_runtime_conflict("runtime rollback checkpoint is unavailable")
+        if bool(idem.get("completed")):
+            return dict(stored_target)
+        if str(stored_current.get("status") or "") != "rolling_back":
+            raise _lae_runtime_conflict("runtime rollback state changed")
+        stored_current["status"] = "superseded"
+        stored_current["retryable"] = False
+        stored_current["updatedAt"] = int(time.time())
+        stored_target.update(result)
+        stored_target["status"] = "deploying"
+        stored_target["retryable"] = False
+        stored_target["serviceStatuses"] = {
+            str(key): "pending"
+            for key in dict(stored_target.get("serviceStatuses") or {})
+        }
+        stored_target["routeStatuses"] = {
+            str(key): "pending"
+            for key in dict(stored_target.get("routeStatuses") or {})
+        }
+        stored_target["submittedAt"] = int(time.time())
+        stored_target["updatedAt"] = int(time.time())
+        target_binding = _lae_runtime_binding_from_record(stored_target)
+        for item in stored_target.get("volumeBindings") or []:
+            if not isinstance(item, dict):
+                raise _lae_runtime_conflict(
+                    "runtime rollback volume binding is incomplete"
+                )
+            volume_ref = str(item.get("volumeRef") or "")
+            volume = runtime["volumes"].get(volume_ref)
+            if (
+                not isinstance(volume, dict)
+                or not _lae_runtime_volume_owner_matches(
+                    volume, target_binding, principal_ref=principal_ref
+                )
+                or str(volume.get("key") or "") != str(item.get("key") or "")
+            ):
+                raise _lae_runtime_conflict(
+                    "runtime rollback volume binding is unavailable"
+                )
+            volume.update(target_binding.state_body())
+            volume["updatedAt"] = int(time.time())
+        application["currentRuntimeDeploymentRef"] = target_ref
+        application["updatedAt"] = int(time.time())
+        for hostname, owner in list(runtime["hostnameBindings"].items()):
+            if (
+                isinstance(owner, dict)
+                and str(owner.get("principalRef") or "") == principal_ref
+                and str(owner.get("tenantRef") or "") == binding.tenant_ref
+                and str(owner.get("applicationRef") or "")
+                == binding.application_ref
+            ):
+                runtime["hostnameBindings"].pop(hostname, None)
+        manifest = stored_target.get("manifest")
+        routes = manifest.get("routes") if isinstance(manifest, dict) else []
+        for route in routes if isinstance(routes, list) else []:
+            if not isinstance(route, dict):
+                continue
+            hostname = str(route.get("hostname") or "")
+            if hostname:
+                runtime["hostnameBindings"][hostname] = {
+                    "principalRef": principal_ref,
+                    "tenantRef": binding.tenant_ref,
+                    "applicationRef": binding.application_ref,
+                    "runtimeDeploymentRef": target_ref,
+                    "updatedAt": int(time.time()),
+                }
+        idem["completed"] = True
+        idem["updatedAt"] = int(time.time())
+        return dict(stored_target)
+
+    completed = _mutate_control_state(finish)
+    return _lae_runtime_deployment_envelope(completed, replayed=replayed)
+
+
+@_serialize_deploy
+def handle_lae_runtime_deployment_lifecycle(
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    runtime_deployment_ref: str,
+    action: str,
+    body: Dict[str, Any],
+    *,
+    idempotency_key: str,
+) -> Dict[str, Any]:
+    if action not in _LAE_RUNTIME_LIFECYCLE_ACTIONS:
+        raise _lae_runtime_invalid("runtime lifecycle action is invalid")
+    request = _validate_lae_runtime_lifecycle_body(action, body)
+    if action == "rollback":
+        return _handle_lae_runtime_deployment_rollback(
+            token,
+            audience,
+            binding,
+            runtime_deployment_ref,
+            request,
+            idempotency_key=idempotency_key,
+        )
+    normalized_idempotency = _normalize_lae_runtime_idempotency_key(
+        idempotency_key
+    )
+    request_hash = _lae_runtime_hash(
+        {"action": action, "request": request}
+    )
+    transition = _LAE_RUNTIME_LIFECYCLE_TRANSITIONS[action]
+    now = int(time.time())
+
+    def begin(current: Dict[str, Any]) -> tuple[Dict[str, Any], bool, bool]:
+        principal = _require_lae_runtime_principal(
+            current,
+            token,
+            audience=audience,
+            scope=SCOPE_DEPLOYMENTS_WRITE,
+            binding=binding,
+        )
+        principal_ref = str(principal["id"])
+        _lae_runtime_prune(current, now=now)
+        runtime = _lae_runtime_state(current)
+        record = runtime["deployments"].get(str(runtime_deployment_ref or ""))
+        if not isinstance(record, dict) or not _lae_runtime_binding_matches(
+            record, binding, principal_ref=principal_ref
+        ):
+            raise _lae_runtime_not_found()
+        scope = _lae_runtime_idempotency_scope(
+            principal_ref,
+            binding,
+            f"POST /v1/lae/runtime/deployments/{{runtime-ref}}/{action}",
+            normalized_idempotency,
+        )
+        existing = runtime["lifecycleIdempotency"].get(scope)
+        if isinstance(existing, dict):
+            if (
+                not secrets.compare_digest(
+                    str(existing.get("requestHash") or ""), request_hash
+                )
+                or str(existing.get("runtimeDeploymentRef") or "")
+                != str(runtime_deployment_ref)
+            ):
+                raise _lae_runtime_conflict()
+            return dict(record), True, not bool(existing.get("completed"))
+
+        status = str(record.get("status") or "")
+        application = runtime["applicationBindings"].get(
+            _lae_runtime_application_scope(principal_ref, binding)
+        )
+        active = isinstance(application, dict) and str(
+            application.get("currentRuntimeDeploymentRef") or ""
+        ) == str(runtime_deployment_ref)
+        if status != "deleted" and not active:
+            raise _lae_runtime_conflict(
+                "runtime lifecycle target is not the active application revision"
+            )
+        in_progress = set(_LAE_RUNTIME_LIFECYCLE_TRANSITIONS.values()) | {
+            "preparing",
+            "canceling",
+        }
+        if status in in_progress and status != transition:
+            raise LumaRuntimeError(
+                "another runtime mutation is in progress",
+                status=429,
+                code="capacity_unavailable",
+            )
+        no_op = (
+            action == "suspend" and status == "suspended"
+            or action == "resume" and status in {"running", "deploying"}
+            or action == "delete" and status == "deleted"
+        )
+        allowed = {
+            "suspend": {"running", "degraded", "deploying"},
+            "resume": {"suspended"},
+            "restart": {"running", "degraded"},
+            "delete": {
+                "running",
+                "degraded",
+                "deploying",
+                "failed",
+                "suspended",
+            },
+        }[action]
+        if not no_op and status not in allowed and status != transition:
+            raise _lae_runtime_conflict(
+                f"runtime deployment cannot {action} from status {status or 'unknown'}"
+            )
+        runtime["lifecycleIdempotency"][scope] = {
+            "requestHash": request_hash,
+            "runtimeDeploymentRef": str(runtime_deployment_ref),
+            "action": action,
+            "completed": no_op,
+            "createdAt": now,
+            "expiresAt": now
+            + max(int(LAE_RUNTIME_IDEMPOTENCY_SECONDS), 60),
+        }
+        if no_op:
+            return dict(record), False, False
+        record["status"] = transition
+        record["retryable"] = True
+        record["updatedAt"] = now
+        return dict(record), False, True
+
+    record, replayed, execute = _mutate_control_state(begin)
+    if not execute:
+        return _lae_runtime_deployment_envelope(record, replayed=replayed)
+
+    result = _execute_lae_runtime_lifecycle(
+        action,
+        record,
+        token=token,
+        audience=audience,
+        binding=binding,
+        principal_ref=str(record["principalRef"]),
+        volume_policy=str(request.get("volumePolicy") or "retain"),
+    )
+
+    def finish(current: Dict[str, Any]) -> Dict[str, Any]:
+        principal = _require_lae_runtime_principal(
+            current,
+            token,
+            audience=audience,
+            scope=SCOPE_DEPLOYMENTS_WRITE,
+            binding=binding,
+        )
+        principal_ref = str(principal["id"])
+        runtime = _lae_runtime_state(current)
+        stored = runtime["deployments"].get(str(runtime_deployment_ref))
+        if not isinstance(stored, dict) or not _lae_runtime_binding_matches(
+            stored, binding, principal_ref=principal_ref
+        ):
+            raise _lae_runtime_not_found()
+        stored.update(result)
+        stored["retryable"] = False
+        if action == "suspend":
+            stored["status"] = "suspended"
+            stored["serviceStatuses"] = {
+                str(key): "suspended"
+                for key in dict(stored.get("serviceStatuses") or {})
+            }
+            stored["routeStatuses"] = {
+                str(key): "suspended"
+                for key in dict(stored.get("routeStatuses") or {})
+            }
+        elif action == "resume":
+            stored["status"] = "deploying"
+            stored["serviceStatuses"] = {
+                str(key): "pending"
+                for key in dict(stored.get("serviceStatuses") or {})
+            }
+            stored["routeStatuses"] = {
+                str(key): "pending"
+                for key in dict(stored.get("routeStatuses") or {})
+            }
+            stored["submittedAt"] = int(time.time())
+        elif action == "restart":
+            stored["status"] = "deploying"
+            stored["serviceStatuses"] = {
+                str(key): "starting"
+                for key in dict(stored.get("serviceStatuses") or {})
+            }
+            stored["submittedAt"] = int(time.time())
+        else:
+            stored["status"] = "deleted"
+            stored["serviceStatuses"] = {
+                str(key): "deleted"
+                for key in dict(stored.get("serviceStatuses") or {})
+            }
+            stored["routeStatuses"] = {
+                str(key): "deleted"
+                for key in dict(stored.get("routeStatuses") or {})
+            }
+            application = runtime["applicationBindings"].get(
+                _lae_runtime_application_scope(principal_ref, binding)
+            )
+            if isinstance(application, dict) and str(
+                application.get("currentRuntimeDeploymentRef") or ""
+            ) == str(runtime_deployment_ref):
+                application["currentRuntimeDeploymentRef"] = ""
+                application["updatedAt"] = int(time.time())
+            for hostname, owner in list(runtime["hostnameBindings"].items()):
+                if isinstance(owner, dict) and str(
+                    owner.get("runtimeDeploymentRef") or ""
+                ) == str(runtime_deployment_ref):
+                    runtime["hostnameBindings"].pop(hostname, None)
+            deleted_refs = {
+                str(item)
+                for item in result.get("deletedVolumeRefs") or []
+                if str(item)
+            }
+            for volume_ref in deleted_refs:
+                runtime["volumes"].pop(volume_ref, None)
+            if deleted_refs:
+                stored["volumeBindings"] = []
+                for key, item in list(runtime["volumeIdempotency"].items()):
+                    if not isinstance(item, dict) or deleted_refs & {
+                        str(value) for value in item.get("volumeRefs") or []
+                    }:
+                        runtime["volumeIdempotency"].pop(key, None)
+            _deployments_state(current)["compose"].pop(
+                str(stored.get("jobSlug") or ""), None
+            )
+            stored["variablePaths"] = []
+        stored["updatedAt"] = int(time.time())
+        scope = _lae_runtime_idempotency_scope(
+            principal_ref,
+            binding,
+            f"POST /v1/lae/runtime/deployments/{{runtime-ref}}/{action}",
+            normalized_idempotency,
+        )
+        idem = runtime["lifecycleIdempotency"].get(scope)
+        if isinstance(idem, dict):
+            idem["completed"] = True
+            idem["updatedAt"] = int(time.time())
+        return dict(stored)
+
+    completed = _mutate_control_state(finish)
+    return _lae_runtime_deployment_envelope(completed, replayed=replayed)
+
+
+def handle_builder_task_create(
+    token: str,
+    body: Dict[str, Any],
+    *,
+    idempotency_key: str,
+) -> Dict[str, Any]:
+    state = load_state()
+    principal = _require_lae_service_principal(state, token)
+    normalized = validate_builder_task_request(body)
+    _authorize_lae_builder_scope(principal, normalized)
+    _require_builder_agent_image_allowlist(normalized)
+    request_hash = builder_task_request_hash(normalized)
+    idempotency_key = _normalize_builder_idempotency_key(idempotency_key)
+    idempotency_scope = _builder_task_idempotency_scope(principal, normalized, idempotency_key)
+    kind = str(normalized["kind"])
+    action = builder_action_for_kind(kind)
+    now = int(time.time())
+
+    def mutate(current: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+        current_principal = _require_lae_service_principal(current, token)
+        _authorize_lae_builder_scope(current_principal, normalized)
+        _require_builder_agent_image_allowlist(normalized)
+        _prune_builder_tasks(current, now=now)
+        tasks = _builder_tasks(current)
+        idempotency = _builder_task_idempotency(current)
+        existing = idempotency.get(idempotency_scope)
+        if isinstance(existing, dict):
+            if str(existing.get("requestHash") or "") != request_hash:
+                raise LumaError("Idempotency-Key is already bound to a different builder task request")
+            existing_task = tasks.get(str(existing.get("taskId") or ""))
+            if isinstance(existing_task, dict):
+                return _builder_task_public(existing_task), True
+            idempotency.pop(idempotency_scope, None)
+
+        if kind == "build-plan":
+            _validate_bound_build_request(current, normalized, current_principal)
+            # Fail before enqueueing if Control cannot derive an authenticated
+            # platform-owned registry target.  The returned lease is discarded
+            # here and recreated only in memory when the node actually leases.
+            _builder_build_registry_lease(current, normalized, current_principal)
+
+        builder_node = _select_builder_task_node(current, kind)
+        builder_task_id = f"builder-{secrets.token_hex(12)}"
+        agent_task_id = f"task-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+        builder_task: Dict[str, Any] = {
+            "id": builder_task_id,
+            "schemaVersion": BUILDER_TASK_SCHEMA_VERSION,
+            "kind": kind,
+            "action": action,
+            "externalOperationId": str(normalized["externalOperationId"]),
+            "tenantRef": str(normalized["tenantRef"]),
+            "applicationRef": str(normalized["applicationRef"]),
+            "principalRef": str(current_principal["id"]),
+            "status": "queued",
+            "builderNode": builder_node,
+            "agentTaskId": agent_task_id,
+            "requestHash": request_hash,
+            "request": normalized,
+            "events": [],
+            "nextEventCursor": 1,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        _builder_task_event(
+            builder_task,
+            {"type": "status", "status": "queued", "message": f"{kind} task queued"},
+            now=now,
+        )
+        tasks[builder_task_id] = builder_task
+        _prune_agent_tasks(current, now=now)
+        child_payload: Dict[str, Any] = {
+            "builderTaskId": builder_task_id,
+            "schemaVersion": BUILDER_TASK_SCHEMA_VERSION,
+            "externalOperationId": str(normalized["externalOperationId"]),
+            "tenantRef": str(normalized["tenantRef"]),
+            "applicationRef": str(normalized["applicationRef"]),
+            **dict(normalized["payload"]),
+        }
+        _agent_tasks(current)[agent_task_id] = {
+            "id": agent_task_id,
+            "nodeName": builder_node,
+            "action": action,
+            "payload": child_payload,
+            "builderTaskId": builder_task_id,
+            "requiredCapabilitiesAny": list(_builder_task_capabilities(kind)),
+            "progress": [],
+            "status": "queued",
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        idempotency[idempotency_scope] = {
+            "taskId": builder_task_id,
+            "requestHash": request_hash,
+            "principalRef": str(current_principal["id"]),
+            "tenantRef": str(normalized["tenantRef"]),
+            "applicationRef": str(normalized["applicationRef"]),
+            "createdAt": now,
+            "expiresAt": now + max(int(BUILDER_TASK_IDEMPOTENCY_SECONDS), 60),
+        }
+        return _builder_task_public(builder_task), False
+
+    task, replayed = _mutate_control_state(mutate)
+    return {"task": task, "replayed": replayed}
+
+
+def _builder_artifact_lease_binding(
+    task: Dict[str, Any],
+    principal: Dict[str, Any],
+    body: Dict[str, Any],
+    *,
+    task_id: str,
+) -> tuple[ArtifactLeaseBinding, int]:
+    required = {
+        "schemaVersion",
+        "tenantRef",
+        "applicationRef",
+        "externalOperationId",
+        "builderTaskId",
+        "artifact",
+        "ttlSeconds",
+    }
+    if set(body) != required or body.get("schemaVersion") != "luma.artifact-download-lease/v1":
+        raise LumaError("artifact download lease request is invalid")
+    if str(body.get("builderTaskId") or "") != task_id:
+        raise LumaError(f"builder task not found: {task_id}")
+    expected_scope = {
+        "tenantRef": str(task.get("tenantRef") or ""),
+        "applicationRef": str(task.get("applicationRef") or ""),
+        "externalOperationId": str(task.get("externalOperationId") or ""),
+    }
+    if any(str(body.get(key) or "") != value for key, value in expected_scope.items()):
+        raise LumaError(f"builder task not found: {task_id}")
+    artifact = body.get("artifact")
+    if not isinstance(artifact, dict) or set(artifact) != {
+        "name",
+        "digest",
+        "mediaType",
+        "sizeBytes",
+    }:
+        raise LumaError("artifact download lease request is invalid")
+    result = task.get("result") if isinstance(task.get("result"), dict) else {}
+    descriptors = result.get("artifacts") if isinstance(result.get("artifacts"), dict) else {}
+    artifact_name = str(artifact.get("name") or "")
+    stored_descriptor = descriptors.get(artifact_name)
+    expected_descriptor = {
+        "digest": str(artifact.get("digest") or ""),
+        "mediaType": str(artifact.get("mediaType") or ""),
+        "sizeBytes": artifact.get("sizeBytes"),
+    }
+    if (
+        str(task.get("kind") or "") != "analyze-source"
+        or str(task.get("status") or "") != "succeeded"
+        or not isinstance(stored_descriptor, dict)
+        or stored_descriptor != expected_descriptor
+    ):
+        raise LumaError("builder artifact is unavailable")
+    ttl = body.get("ttlSeconds")
+    if isinstance(ttl, bool) or not isinstance(ttl, int) or not 5 <= ttl <= 300:
+        raise LumaError("artifact download lease request is invalid")
+    return (
+        ArtifactLeaseBinding(
+            principal_ref=str(principal.get("id") or ""),
+            tenant_ref=expected_scope["tenantRef"],
+            application_ref=expected_scope["applicationRef"],
+            external_operation_id=expected_scope["externalOperationId"],
+            builder_task_id=task_id,
+            artifact_name=artifact_name,
+            digest=expected_descriptor["digest"],
+            media_type=expected_descriptor["mediaType"],
+            size_bytes=int(expected_descriptor["sizeBytes"]),
+        ),
+        ttl,
+    )
+
+
+def handle_builder_artifact_lease_create(
+    token: str,
+    task_id: str,
+    body: Dict[str, Any],
+) -> Dict[str, Any]:
+    state = load_state()
+    principal = _require_lae_service_principal(state, token)
+    task = _builder_tasks(state).get(str(task_id or "").strip())
+    if not isinstance(task, dict):
+        raise LumaError(f"builder task not found: {task_id}")
+    _require_builder_task_owner(task, principal, task_id)
+    binding, ttl = _builder_artifact_lease_binding(
+        task, principal, body, task_id=task_id
+    )
+    node_name = str(task.get("builderNode") or "")
+    record, download_token = ARTIFACT_DOWNLOADS.issue(
+        binding, node_name=node_name, ttl_seconds=ttl
+    )
+    try:
+        _queue_node_agent_task(
+            state,
+            node_name,
+            "export-builder-artifact",
+            {
+                "leaseId": record.lease_id,
+                "builderTaskId": task_id,
+                "artifact": {
+                    "name": binding.artifact_name,
+                    "digest": binding.digest,
+                    "mediaType": binding.media_type,
+                    "sizeBytes": binding.size_bytes,
+                },
+            },
+            required_capability="builder-artifact-export-v1",
+        )
+    except BaseException:
+        ARTIFACT_DOWNLOADS.revoke(record.lease_id)
+        raise
+    expires_at = datetime.fromtimestamp(record.expires_at, timezone.utc)
+    return {
+        "schemaVersion": "luma.artifact-download-lease/v1",
+        "leaseId": record.lease_id,
+        "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
+        "downloadToken": download_token,
+        "binding": binding.public_body(),
+    }
+
+
+def _require_current_artifact_lease(record: ArtifactLeaseRecord) -> None:
+    state = load_state()
+    task = _builder_tasks(state).get(record.binding.builder_task_id)
+    if (
+        not isinstance(task, dict)
+        or str(task.get("kind") or "") != "analyze-source"
+        or str(task.get("status") or "") != "succeeded"
+        or str(task.get("principalRef") or "") != record.binding.principal_ref
+        or str(task.get("tenantRef") or "") != record.binding.tenant_ref
+        or str(task.get("applicationRef") or "") != record.binding.application_ref
+        or str(task.get("externalOperationId") or "")
+        != record.binding.external_operation_id
+    ):
+        raise LumaError("artifact download lease not found")
+
+
+def _artifact_upload_context(
+    token: str,
+    lease_id: str,
+    *,
+    node_name: str,
+    node_id: str,
+    media_type: str,
+    digest: str,
+    content_length: int,
+) -> ArtifactLeaseRecord:
+    state = load_state()
+    _require_node_agent_token(state, token, node_name, node_id=node_id)
+    record = ARTIFACT_DOWNLOADS.get_record(lease_id)
+    _require_current_artifact_lease(record)
+    if (
+        record.node_name != node_name
+        or record.binding.media_type != media_type
+        or record.binding.digest != digest
+        or record.binding.size_bytes != content_length
+    ):
+        raise LumaError("artifact upload binding is invalid")
+    return record
+
+
+def handle_node_agent_artifact_upload(
+    token: str,
+    lease_id: str,
+    *,
+    node_name: str,
+    node_id: str,
+    media_type: str,
+    digest: str,
+    content_length: int,
+    chunks: Any,
+) -> Dict[str, Any]:
+    _artifact_upload_context(
+        token,
+        lease_id,
+        node_name=node_name,
+        node_id=node_id,
+        media_type=media_type,
+        digest=digest,
+        content_length=content_length,
+    )
+    ARTIFACT_DOWNLOADS.accept_upload(
+        lease_id,
+        node_name=node_name,
+        media_type=media_type,
+        digest=digest,
+        content_length=content_length,
+        chunks=chunks,
+    )
+    return {"leaseId": lease_id, "accepted": True}
+
+
+async def handle_node_agent_artifact_upload_async(
+    token: str,
+    lease_id: str,
+    *,
+    node_name: str,
+    node_id: str,
+    media_type: str,
+    digest: str,
+    content_length: int,
+    chunks: AsyncIterator[bytes],
+) -> Dict[str, Any]:
+    await run_in_threadpool(
+        functools.partial(
+            _artifact_upload_context,
+            token,
+            lease_id,
+            node_name=node_name,
+            node_id=node_id,
+            media_type=media_type,
+            digest=digest,
+            content_length=content_length,
+        )
+    )
+    await ARTIFACT_DOWNLOADS.accept_upload_async(
+        lease_id,
+        node_name=node_name,
+        media_type=media_type,
+        digest=digest,
+        content_length=content_length,
+        chunks=chunks,
+    )
+    return {"leaseId": lease_id, "accepted": True}
+
+
+def handle_builder_artifact_download(
+    token: str, lease_id: str
+) -> ArtifactLeaseRecord:
+    record = ARTIFACT_DOWNLOADS.redeem(lease_id, token)
+    try:
+        _require_current_artifact_lease(record)
+        return record
+    except BaseException:
+        ARTIFACT_DOWNLOADS.complete(lease_id)
+        raise
+
+
+def handle_builder_task_get(token: str, task_id: str) -> Dict[str, Any]:
+    state = load_state()
+    principal = _require_lae_service_principal(state, token)
+    task = _builder_tasks(state).get(str(task_id or "").strip())
+    if not isinstance(task, dict):
+        raise LumaError(f"builder task not found: {task_id}")
+    _require_builder_task_owner(task, principal, task_id)
+    return {"task": _builder_task_public(task)}
+
+
+def handle_builder_task_events(
+    token: str,
+    task_id: str,
+    *,
+    after: int = 0,
+    limit: int = 200,
+) -> Dict[str, Any]:
+    state = load_state()
+    principal = _require_lae_service_principal(state, token)
+    task = _builder_tasks(state).get(str(task_id or "").strip())
+    if not isinstance(task, dict):
+        raise LumaError(f"builder task not found: {task_id}")
+    _require_builder_task_owner(task, principal, task_id)
+    if isinstance(after, bool) or not isinstance(after, int) or after < 0:
+        raise LumaError("after must be a non-negative integer cursor")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 500:
+        raise LumaError("limit must be an integer between 1 and 500")
+    events = [event for event in task.get("events") or [] if isinstance(event, dict)]
+    oldest_cursor = int(events[0].get("cursor") or 0) if events else int(task.get("nextEventCursor") or 1)
+    if after and events and after < oldest_cursor - 1:
+        raise LumaError(f"builder task event cursor expired; oldest available cursor is {oldest_cursor}")
+    remaining = [event for event in events if int(event.get("cursor") or 0) > after]
+    page = remaining[:limit]
+    next_cursor = int(page[-1].get("cursor") or after) if page else after
+    return {
+        "taskId": str(task.get("id") or task_id),
+        "status": str(task.get("status") or ""),
+        "events": page,
+        "nextCursor": next_cursor,
+        "oldestCursor": oldest_cursor,
+        "hasMore": len(remaining) > len(page),
+        "terminal": _builder_task_terminal(str(task.get("status") or "")),
+    }
+
+
+def handle_builder_task_cancel(token: str, task_id: str, _body: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    state = load_state()
+    principal = _require_lae_service_principal(state, token)
+    now = int(time.time())
+
+    def mutate(current: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+        current_principal = _require_lae_service_principal(current, token)
+        task = _builder_tasks(current).get(str(task_id or "").strip())
+        if not isinstance(task, dict):
+            raise LumaError(f"builder task not found: {task_id}")
+        _require_builder_task_owner(task, current_principal, task_id)
+        status = str(task.get("status") or "")
+        if _builder_task_terminal(status) or status == "cancel_requested":
+            return _builder_task_public(task), True
+        agent_task_id = str(task.get("agentTaskId") or "")
+        agent_task = _agent_tasks(current).get(agent_task_id)
+        agent_status = str(agent_task.get("status") or "") if isinstance(agent_task, dict) else ""
+        if status == "queued" and agent_status in {"", "queued"}:
+            task["status"] = "canceled"
+            task["message"] = "builder task canceled before lease"
+            task["completedAt"] = now
+            task["updatedAt"] = now
+            if isinstance(agent_task, dict):
+                agent_task["status"] = "canceled"
+                agent_task["message"] = "builder task canceled before lease"
+                agent_task["completedAt"] = now
+                agent_task["updatedAt"] = now
+            _builder_task_event(
+                task,
+                {"type": "status", "status": "canceled", "message": "builder task canceled before lease"},
+                now=now,
+            )
+        else:
+            task["status"] = "cancel_requested"
+            task["cancelRequestedAt"] = now
+            task["updatedAt"] = now
+            if isinstance(agent_task, dict):
+                agent_task["cancelRequestedAt"] = now
+                agent_task["updatedAt"] = now
+            _builder_task_event(
+                task,
+                {"type": "status", "status": "cancel_requested", "message": "builder task cancellation requested"},
+                now=now,
+            )
+        return _builder_task_public(task), False
+
+    task, replayed = _mutate_control_state(mutate)
+    return {"task": task, "replayed": replayed}
 
 
 def handle_build_run_list(token: str) -> Dict[str, Any]:
@@ -1954,8 +6978,25 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise LumaError(f"refusing to unregister Nomad manager node: {node_name}")
     config = load_config(_control_config_path())
     nomad_node_id = _node_record_nomad_node_id(removed) if isinstance(removed, dict) else ""
+    shared_manager_identity = bool(
+        nomad_node_id
+        and _node_identity_is_owned_by_other_manager(
+            nodes,
+            removed_key=removed_key or node_name,
+            node_id=nomad_node_id,
+        )
+    )
+    if shared_manager_identity:
+        # Old Control versions could leave a worker alias pointing at the
+        # manager's Nomad ID. Draining that ID while deleting the stale alias
+        # would evict the control plane. Remove only the bad registration; the
+        # real manager record remains authoritative and schedulable.
+        nomad_node_id = ""
     if not nomad_node_id:
-        nomad_node_id = _find_nomad_node_id_for_unregister(config, state, node_name=node_name)
+        if not shared_manager_identity:
+            nomad_node_id = _find_nomad_node_id_for_unregister(
+                config, state, node_name=node_name
+            )
     nomad_drained = False
     if nomad_node_id:
         _drain_nomad_node_for_unregister(config, state, node_name=node_name, node_id=nomad_node_id)
@@ -1982,6 +7023,9 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "registeredRemoved": registered_removed,
         "nomadDrained": nomad_drained,
         "nomadNodeId": nomad_node_id,
+        "nomadDrainSkipped": (
+            "shared_manager_identity" if shared_manager_identity else ""
+        ),
         "message": message,
     }
 
@@ -1989,6 +7033,22 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 def _node_record_nomad_node_id(record: Dict[str, Any]) -> str:
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
     return str(record.get("nomadNodeId") or record.get("nodeId") or labels.get("luma.node.id") or "").strip()
+
+
+def _node_identity_is_owned_by_other_manager(
+    nodes: Dict[str, Any], *, removed_key: str, node_id: str
+) -> bool:
+    wanted = str(node_id or "").strip()
+    if not wanted:
+        return False
+    for key, candidate in nodes.items():
+        if str(key) == removed_key or not isinstance(candidate, dict):
+            continue
+        if not _node_record_is_manager(candidate):
+            continue
+        if wanted in _node_record_identity_ids(candidate):
+            return True
+    return False
 
 
 def _find_nomad_node_id_for_unregister(config: Any, state: Dict[str, Any], *, node_name: str) -> str:
@@ -2084,6 +7144,13 @@ def handle_build_deploy(
         purpose="repository build",
     )
     ref = str(body.get("ref") or "").strip()
+    compose_sidecar = str(body.get("composeSidecar") or "")
+    if compose_sidecar:
+        compose_sidecar = normalize_repo_relative_path(
+            compose_sidecar, label="composeSidecar"
+        )
+        if str(body.get("manifest") or "").strip():
+            raise LumaError("composeSidecar cannot be combined with manifest")
     steps: list[dict[str, str]] = []
 
     registry_host = str(body.get("registryHost") or "").strip()
@@ -2112,6 +7179,8 @@ def handle_build_deploy(
     for key in ("context", "dockerfile", "platform"):
         if body.get(key):
             build_payload[key] = str(body.get(key))
+    if compose_sidecar:
+        build_payload["composeSidecar"] = compose_sidecar
 
     run_body = dict(body)
     run_body["repoUrl"] = repo_url
@@ -2149,6 +7218,13 @@ def handle_build_deploy(
             raise LumaError("build did not return an image reference")
         repo_manifest = str(build_result.get("manifest") or "").strip()
         repo_compose_content = str(build_result.get("composeContent") or "").strip()
+        if compose_sidecar and (
+            str(build_result.get("kind") or "") != "compose"
+            or str(build_result.get("composeSidecar") or "") != compose_sidecar
+        ):
+            raise LumaError(
+                "builder did not honor the selected composeSidecar; update the builder node agent"
+            )
 
         manifest_text = str(body.get("manifest") or "").strip() or repo_manifest
         if not manifest_text:
@@ -2188,7 +7264,14 @@ def handle_build_deploy(
             result = handle_compose_deployment(token, deploy_body, progress=run_progress)
             if isinstance(result, dict):
                 merged_steps = steps + list(result.get("steps") or [])
-                result = {**result, "steps": merged_steps, "image": built_image, "images": built_images, "buildRunId": build_run_id}
+                result = {
+                    **result,
+                    "steps": merged_steps,
+                    "image": built_image,
+                    "images": built_images,
+                    "buildRunId": build_run_id,
+                    **({"composeSidecar": compose_sidecar} if compose_sidecar else {}),
+                }
             _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
             return result
 
@@ -2703,26 +7786,6 @@ def _forget_service_deployment(state: Dict[str, Any], service: ServiceSpec) -> b
 def _forget_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploymentSpec) -> bool:
     compose = _deployments_state(state)["compose"]
     return compose.pop(deployment.slug, None) is not None
-
-
-# Serializes the state-touching deploy handlers. Each does a read-modify-write
-# of control.json (load_state snapshot -> checks -> render -> mutate_state); two
-# concurrent deploys could otherwise interleave on slug-availability checks and
-# scopedSecrets writes (TOCTOU). RLock so a deploy that nests another (none do
-# today) cannot self-deadlock. Read-only paths (preview/dry-run) are NOT wrapped
-# and stay concurrent. Long pre-state work (e.g. docker build in
-# handle_build_deploy) runs OUTSIDE this lock — only the handler below it holds
-# it — so the build of one deploy does not block an unrelated deploy.
-_DEPLOY_LOCK = threading.RLock()
-
-
-def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
-    @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        with _DEPLOY_LOCK:
-            return func(*args, **kwargs)
-
-    return wrapper
 
 
 @_serialize_deploy
@@ -6875,7 +11938,11 @@ class DockerSocketConnection(http.client.HTTPConnection):
 
     def connect(self) -> None:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(self.socket_path)
+        try:
+            sock.connect(self.socket_path)
+        except BaseException:
+            sock.close()
+            raise
         self.sock = sock
 
 
@@ -6918,9 +11985,23 @@ def docker_request_bytes(method: str, path: str, *, headers: Dict[str, str] | No
         conn.close()
 
 
-def _nomad_log_lines(config: Any, state: Dict[str, Any], service: str, *, tail: int = 120) -> list[str]:
+def _nomad_log_lines(
+    config: Any,
+    state: Dict[str, Any],
+    service: str,
+    *,
+    tail: int = 120,
+    bound_job_id: str = "",
+    bound_task_name: str = "",
+) -> list[str]:
     client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
-    job_id, task_filter = _nomad_log_target_from_state(state, service)
+    # Dedicated runtime observability passes the already authenticated,
+    # manifest-derived target explicitly. Dashboard callers retain the legacy
+    # state lookup, but they can never redirect an LAE request to another job.
+    if bound_job_id:
+        job_id, task_filter = str(bound_job_id), str(bound_task_name)
+    else:
+        job_id, task_filter = _nomad_log_target_from_state(state, service)
     if not job_id:
         raise LumaError("service is required")
     try:
@@ -7845,12 +12926,74 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "version": __version__,
                     "nodeJoinModel": "region-first",
-                    "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove", "node-agent-storage", "terminal"],
+                    "capabilities": [
+                        "node-region",
+                        "service-proxy",
+                        "dashboard",
+                        "service-remove",
+                        "node-agent-storage",
+                        "terminal",
+                        "builder-task-api-v1",
+                        "builder-artifact-download-v1",
+                        "repository-compose-sidecar-v1",
+                        "lae-runtime-api-v1",
+                        "lae-runtime-lifecycle-v1",
+                        "lae-runtime-observability-v1",
+                        "nomad-variables-secrets-v1",
+                    ],
                 },
             )
             return
         try:
             token = bearer_token(self.headers)
+            lae_runtime_observability_match = re.fullmatch(
+                r"/v1/lae/runtime/deployments/([^/]+)/services/([^/]+)/(logs|metrics)",
+                parsed_path,
+            )
+            if lae_runtime_observability_match:
+                kind = str(lae_runtime_observability_match.group(3))
+                limit = _parse_lae_runtime_observability_query(
+                    urllib.parse.urlparse(self.path).query,
+                    kind=kind,
+                )
+                common = (
+                    token,
+                    str(
+                        self.headers.get("X-Luma-Principal-Audience") or ""
+                    ),
+                    RuntimeBinding.from_headers(self.headers),
+                    urllib.parse.unquote(
+                        lae_runtime_observability_match.group(1)
+                    ),
+                    urllib.parse.unquote(
+                        lae_runtime_observability_match.group(2)
+                    ),
+                )
+                result = (
+                    handle_lae_runtime_logs(*common, tail=limit)
+                    if kind == "logs"
+                    else handle_lae_runtime_metrics(*common, window=limit)
+                )
+                self._json(200, result)
+                return
+            lae_runtime_deployment_match = re.fullmatch(
+                r"/v1/lae/runtime/deployments/([^/]+)", parsed_path
+            )
+            if lae_runtime_deployment_match:
+                self._json(
+                    200,
+                    handle_lae_runtime_deployment_get(
+                        token,
+                        str(
+                            self.headers.get("X-Luma-Principal-Audience") or ""
+                        ),
+                        RuntimeBinding.from_headers(self.headers),
+                        urllib.parse.unquote(
+                            lae_runtime_deployment_match.group(1)
+                        ),
+                    ),
+                )
+                return
             if parsed_path == "/v1/git-providers":
                 self._json(200, handle_git_provider_list(token))
                 return
@@ -7880,6 +13023,52 @@ class ControlHandler(BaseHTTPRequestHandler):
             if parsed_path == "/v1/builds":
                 self._json(200, handle_build_run_list(token))
                 return
+            builder_artifact_match = re.fullmatch(
+                r"/v1/builder/artifact-downloads/([^/]+)", parsed_path
+            )
+            if builder_artifact_match:
+                lease_id = urllib.parse.unquote(builder_artifact_match.group(1))
+                record = handle_builder_artifact_download(token, lease_id)
+                assert record.temporary_path is not None
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", record.binding.media_type)
+                    self.send_header("Content-Length", str(record.binding.size_bytes))
+                    self.send_header("X-Luma-Artifact-Digest", record.binding.digest)
+                    self.send_header("X-Luma-Artifact-Lease-Id", record.lease_id)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    with record.temporary_path.open("rb") as source:
+                        while True:
+                            chunk = source.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                finally:
+                    ARTIFACT_DOWNLOADS.complete(record.lease_id)
+                return
+            builder_events_match = re.fullmatch(r"/v1/builder/tasks/([^/]+)/events", parsed_path)
+            if builder_events_match:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                try:
+                    after = int(str((query.get("after") or ["0"])[0]) or "0")
+                    limit = int(str((query.get("limit") or ["200"])[0]) or "200")
+                except ValueError as exc:
+                    raise LumaError("after and limit must be integers") from exc
+                self._json(
+                    200,
+                    handle_builder_task_events(
+                        token,
+                        urllib.parse.unquote(builder_events_match.group(1)),
+                        after=after,
+                        limit=limit,
+                    ),
+                )
+                return
+            builder_task_match = re.fullmatch(r"/v1/builder/tasks/([^/]+)", parsed_path)
+            if builder_task_match:
+                self._json(200, handle_builder_task_get(token, urllib.parse.unquote(builder_task_match.group(1))))
+                return
             if parsed_path == "/v1/deployments/history":
                 self._json(200, handle_deployment_history(token))
                 return
@@ -7890,6 +13079,19 @@ class ControlHandler(BaseHTTPRequestHandler):
             build_match = re.fullmatch(r"/v1/builds/([^/]+)", parsed_path)
             if build_match:
                 self._json(200, handle_build_run_get(token, urllib.parse.unquote(build_match.group(1))))
+                return
+            lae_admin_match = re.fullmatch(
+                r"/v1/dashboard/lae/([^/]+)", parsed_path
+            )
+            if lae_admin_match:
+                self._json(
+                    200,
+                    handle_dashboard_lae_admin(
+                        token,
+                        urllib.parse.unquote(lae_admin_match.group(1)),
+                        urllib.parse.urlparse(self.path).query,
+                    ),
+                )
                 return
             if parsed_path == "/v1/dashboard":
                 self._json(200, handle_dashboard(token))
@@ -7940,16 +13142,198 @@ class ControlHandler(BaseHTTPRequestHandler):
                 name = urllib.parse.unquote(config_match.group(1))
                 self._json(200, handle_deployment_config(token, name))
                 return
+        except LaeAdminProxyError as exc:
+            status = _lae_admin_proxy_http_status(exc)
+            self._error(
+                status,
+                exc,
+                code=(
+                    "lae_admin_unavailable"
+                    if status == 503
+                    else "luma_error"
+                ),
+            )
+            return
+        except LumaRuntimeError as exc:
+            self._error(exc.status, exc, code=exc.code)
+            return
         except LumaError as exc:
-            code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+            code = _builder_task_http_status(exc) if parsed_path.startswith("/v1/builder/tasks") else (
+                401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+            )
             self._error(code, exc)
             return
         self._json(404, _error_payload("not_found", "not found", request_id=_request_id()))
 
     def do_POST(self) -> None:
         try:
-            body = self._read_json()
+            parsed_path = urllib.parse.urlparse(self.path).path
+            artifact_upload_match = re.fullmatch(
+                r"/v1/node-agent/artifact-downloads/([^/]+)/content",
+                parsed_path,
+            )
+            if artifact_upload_match:
+                lease_id = urllib.parse.unquote(artifact_upload_match.group(1))
+                try:
+                    content_length = int(self.headers.get("Content-Length") or "")
+                except ValueError as exc:
+                    raise LumaError("artifact upload content length is invalid") from exc
+                if not 1 <= content_length <= MAX_ARTIFACT_BYTES:
+                    raise LumaError("artifact upload content length is invalid")
+
+                def chunks() -> Any:
+                    remaining = content_length
+                    while remaining:
+                        chunk = self.rfile.read(min(1024 * 1024, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        yield chunk
+
+                self._json(
+                    200,
+                    handle_node_agent_artifact_upload(
+                        bearer_token(self.headers),
+                        lease_id,
+                        node_name=str(self.headers.get("X-Luma-Node-Name") or ""),
+                        node_id=str(self.headers.get("X-Luma-Node-Id") or ""),
+                        media_type=str(self.headers.get("Content-Type") or ""),
+                        digest=str(self.headers.get("X-Luma-Artifact-Digest") or ""),
+                        content_length=content_length,
+                        chunks=chunks(),
+                    ),
+                )
+                return
+            body = self._read_json(
+                max_bytes=(
+                    MAX_RUNTIME_REQUEST_BYTES
+                    if parsed_path.startswith("/v1/lae/runtime/")
+                    else None
+                )
+            )
             token = bearer_token(self.headers)
+            if parsed_path == "/v1/lae/runtime/volumes:prepare":
+                self._json(
+                    200,
+                    handle_lae_runtime_volume_prepare(
+                        token,
+                        str(
+                            self.headers.get("X-Luma-Principal-Audience") or ""
+                        ),
+                        RuntimeBinding.from_headers(self.headers),
+                        body,
+                        idempotency_key=str(
+                            self.headers.get("Idempotency-Key") or ""
+                        ),
+                    ),
+                )
+                return
+            if parsed_path == "/v1/lae/runtime/secrets:issue":
+                self._json(
+                    201,
+                    handle_lae_runtime_secret_issue(
+                        token,
+                        str(
+                            self.headers.get("X-Luma-Principal-Audience") or ""
+                        ),
+                        RuntimeBinding.from_headers(self.headers),
+                        body,
+                        idempotency_key=str(
+                            self.headers.get("Idempotency-Key") or ""
+                        ),
+                    ),
+                )
+                return
+            if parsed_path == "/v1/lae/runtime/deployments":
+                self._json(
+                    202,
+                    handle_lae_runtime_deployment_create(
+                        token,
+                        str(
+                            self.headers.get("X-Luma-Principal-Audience") or ""
+                        ),
+                        RuntimeBinding.from_headers(self.headers),
+                        body,
+                        idempotency_key=str(
+                            self.headers.get("Idempotency-Key") or ""
+                        ),
+                    ),
+                )
+                return
+            lae_runtime_cancel_match = re.fullmatch(
+                r"/v1/lae/runtime/deployments/([^/]+)/cancel", parsed_path
+            )
+            if lae_runtime_cancel_match:
+                self._json(
+                    200,
+                    handle_lae_runtime_deployment_cancel(
+                        token,
+                        str(
+                            self.headers.get("X-Luma-Principal-Audience") or ""
+                        ),
+                        RuntimeBinding.from_headers(self.headers),
+                        urllib.parse.unquote(
+                            lae_runtime_cancel_match.group(1)
+                        ),
+                        body,
+                    ),
+                )
+                return
+            lae_runtime_lifecycle_match = re.fullmatch(
+                r"/v1/lae/runtime/deployments/([^/]+)/(suspend|resume|restart|rollback|delete)",
+                parsed_path,
+            )
+            if lae_runtime_lifecycle_match:
+                self._json(
+                    200,
+                    handle_lae_runtime_deployment_lifecycle(
+                        token,
+                        str(
+                            self.headers.get("X-Luma-Principal-Audience") or ""
+                        ),
+                        RuntimeBinding.from_headers(self.headers),
+                        urllib.parse.unquote(
+                            lae_runtime_lifecycle_match.group(1)
+                        ),
+                        str(lae_runtime_lifecycle_match.group(2)),
+                        body,
+                        idempotency_key=str(
+                            self.headers.get("Idempotency-Key") or ""
+                        ),
+                    ),
+                )
+                return
+            if parsed_path == "/v1/builder/tasks":
+                self._json(
+                    202,
+                    handle_builder_task_create(
+                        token,
+                        body,
+                        idempotency_key=str(self.headers.get("Idempotency-Key") or ""),
+                    ),
+                )
+                return
+            builder_artifact_lease_match = re.fullmatch(
+                r"/v1/builder/tasks/([^/]+)/artifact-download-leases",
+                parsed_path,
+            )
+            if builder_artifact_lease_match:
+                self._json(
+                    201,
+                    handle_builder_artifact_lease_create(
+                        token,
+                        urllib.parse.unquote(builder_artifact_lease_match.group(1)),
+                        body,
+                    ),
+                )
+                return
+            builder_cancel_match = re.fullmatch(r"/v1/builder/tasks/([^/]+)/cancel", parsed_path)
+            if builder_cancel_match:
+                self._json(
+                    200,
+                    handle_builder_task_cancel(token, urllib.parse.unquote(builder_cancel_match.group(1)), body),
+                )
+                return
             if self.path == "/v1/auth/login/verify":
                 self._json(200, handle_login_verify(token))
                 return
@@ -8078,8 +13462,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self._json(200, handle_registry_remove(token, body))
                 return
             self._json(404, _error_payload("not_found", "not found", request_id=_request_id()))
+        except LumaRuntimeError as exc:
+            self._error(exc.status, exc, code=exc.code)
         except LumaError as exc:
-            code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+            request_path = urllib.parse.urlparse(self.path).path
+            code = _builder_task_http_status(exc) if request_path.startswith("/v1/builder/tasks") else (
+                401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+            )
             self._error(code, exc)
         except (BrokenPipeError, ConnectionResetError):
             return
@@ -8283,12 +13672,24 @@ class ControlHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def _read_json(self) -> Dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or "0")
+    def _read_json(self, *, max_bytes: int | None = None) -> Dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError as exc:
+            raise LumaError("request content length is invalid") from exc
+        if max_bytes is not None and not 0 <= length <= max_bytes:
+            raise _lae_runtime_invalid("LAE runtime request body is too large")
         if length == 0:
             return {}
-        raw = self.rfile.read(length).decode("utf-8")
-        data = json.loads(raw)
+        try:
+            raw = self.rfile.read(length).decode("utf-8")
+            data = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if max_bytes is not None:
+                raise _lae_runtime_invalid(
+                    "LAE runtime request contains malformed JSON"
+                ) from exc
+            raise LumaError("request body contains malformed JSON") from exc
         if not isinstance(data, dict):
             raise LumaError("request body must be a JSON object")
         return data
@@ -8352,7 +13753,21 @@ async def _asgi_health(_: Request) -> JSONResponse:
             "ok": True,
             "version": __version__,
             "nodeJoinModel": "region-first",
-            "capabilities": ["node-region", "service-proxy", "dashboard", "service-remove", "node-agent-storage", "terminal"],
+            "capabilities": [
+                "node-region",
+                "service-proxy",
+                "dashboard",
+                "service-remove",
+                "node-agent-storage",
+                "terminal",
+                "builder-task-api-v1",
+                "builder-artifact-download-v1",
+                "repository-compose-sidecar-v1",
+                "lae-runtime-api-v1",
+                "lae-runtime-lifecycle-v1",
+                "lae-runtime-observability-v1",
+                "nomad-variables-secrets-v1",
+            ],
         },
     )
 
@@ -8361,6 +13776,94 @@ async def _asgi_authenticated_get(request: Request) -> Response:
     parsed_path = request.url.path
     try:
         token = bearer_token(request.headers)
+        lae_runtime_observability_match = re.fullmatch(
+            r"/v1/lae/runtime/deployments/([^/]+)/services/([^/]+)/(logs|metrics)",
+            parsed_path,
+        )
+        if lae_runtime_observability_match:
+            kind = str(lae_runtime_observability_match.group(3))
+            limit = _parse_lae_runtime_observability_query(
+                request.url.query, kind=kind
+            )
+            common = (
+                token,
+                str(
+                    request.headers.get("X-Luma-Principal-Audience") or ""
+                ),
+                RuntimeBinding.from_headers(request.headers),
+                urllib.parse.unquote(
+                    lae_runtime_observability_match.group(1)
+                ),
+                urllib.parse.unquote(
+                    lae_runtime_observability_match.group(2)
+                ),
+            )
+            result = await run_in_threadpool(
+                functools.partial(
+                    handle_lae_runtime_logs,
+                    *common,
+                    tail=limit,
+                )
+                if kind == "logs"
+                else functools.partial(
+                    handle_lae_runtime_metrics,
+                    *common,
+                    window=limit,
+                )
+            )
+            response = _json_response(200, result)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        lae_runtime_deployment_match = re.fullmatch(
+            r"/v1/lae/runtime/deployments/([^/]+)", parsed_path
+        )
+        if lae_runtime_deployment_match:
+            return _json_response(
+                200,
+                await run_in_threadpool(
+                    handle_lae_runtime_deployment_get,
+                    token,
+                    str(
+                        request.headers.get("X-Luma-Principal-Audience") or ""
+                    ),
+                    RuntimeBinding.from_headers(request.headers),
+                    urllib.parse.unquote(
+                        lae_runtime_deployment_match.group(1)
+                    ),
+                ),
+            )
+        builder_artifact_match = re.fullmatch(
+            r"/v1/builder/artifact-downloads/([^/]+)", parsed_path
+        )
+        if builder_artifact_match:
+            record = await run_in_threadpool(
+                handle_builder_artifact_download,
+                token,
+                urllib.parse.unquote(builder_artifact_match.group(1)),
+            )
+            assert record.temporary_path is not None
+
+            async def artifact_stream() -> AsyncIterator[bytes]:
+                try:
+                    with record.temporary_path.open("rb") as source:
+                        while True:
+                            chunk = await run_in_threadpool(source.read, 1024 * 1024)
+                            if not chunk:
+                                break
+                            yield chunk
+                finally:
+                    ARTIFACT_DOWNLOADS.complete(record.lease_id)
+
+            return StreamingResponse(
+                artifact_stream(),
+                media_type=record.binding.media_type,
+                headers={
+                    "Content-Length": str(record.binding.size_bytes),
+                    "X-Luma-Artifact-Digest": record.binding.digest,
+                    "X-Luma-Artifact-Lease-Id": record.lease_id,
+                    "Cache-Control": "no-store",
+                },
+            )
         if parsed_path == "/v1/git-providers":
             return _json_response(200, await run_in_threadpool(handle_git_provider_list, token))
         git_repos_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories", parsed_path)
@@ -8382,6 +13885,31 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_control_status, token))
         if parsed_path == "/v1/builds":
             return _json_response(200, await run_in_threadpool(handle_build_run_list, token))
+        builder_events_match = re.fullmatch(r"/v1/builder/tasks/([^/]+)/events", parsed_path)
+        if builder_events_match:
+            try:
+                after = int(str(request.query_params.get("after") or "0") or "0")
+                limit = int(str(request.query_params.get("limit") or "200") or "200")
+            except ValueError as exc:
+                raise LumaError("after and limit must be integers") from exc
+            return _json_response(
+                200,
+                await run_in_threadpool(
+                    functools.partial(
+                        handle_builder_task_events,
+                        token,
+                        urllib.parse.unquote(builder_events_match.group(1)),
+                        after=after,
+                        limit=limit,
+                    )
+                ),
+            )
+        builder_task_match = re.fullmatch(r"/v1/builder/tasks/([^/]+)", parsed_path)
+        if builder_task_match:
+            return _json_response(
+                200,
+                await run_in_threadpool(handle_builder_task_get, token, urllib.parse.unquote(builder_task_match.group(1))),
+            )
         if parsed_path == "/v1/deployments/history":
             return _json_response(200, await run_in_threadpool(handle_deployment_history, token))
         deploy_event_match = re.fullmatch(r"/v1/deployments/history/([^/]+)", parsed_path)
@@ -8390,6 +13918,21 @@ async def _asgi_authenticated_get(request: Request) -> Response:
         build_match = re.fullmatch(r"/v1/builds/([^/]+)", parsed_path)
         if build_match:
             return _json_response(200, await run_in_threadpool(handle_build_run_get, token, urllib.parse.unquote(build_match.group(1))))
+        lae_admin_match = re.fullmatch(
+            r"/v1/dashboard/lae/([^/]+)", parsed_path
+        )
+        if lae_admin_match:
+            response = _json_response(
+                200,
+                await run_in_threadpool(
+                    handle_dashboard_lae_admin,
+                    token,
+                    urllib.parse.unquote(lae_admin_match.group(1)),
+                    request.url.query,
+                ),
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
         if parsed_path == "/v1/dashboard":
             return _json_response(200, await run_in_threadpool(handle_dashboard, token))
         if parsed_path == "/v1/dashboard/logs":
@@ -8431,19 +13974,220 @@ async def _asgi_authenticated_get(request: Request) -> Response:
         if config_match:
             name = urllib.parse.unquote(config_match.group(1))
             return _json_response(200, await run_in_threadpool(handle_deployment_config, token, name))
+    except LaeAdminProxyError as exc:
+        status = _lae_admin_proxy_http_status(exc)
+        response = _asgi_error(
+            status,
+            exc,
+            code=(
+                "lae_admin_unavailable"
+                if status == 503
+                else "luma_error"
+            ),
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except LumaRuntimeError as exc:
+        return _asgi_error(exc.status, exc, code=exc.code)
     except LumaError as exc:
-        code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
-        return _asgi_error(code, exc)
-    return _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
+        code = _builder_task_http_status(exc) if parsed_path.startswith("/v1/builder/tasks") else (
+            401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+        )
+        response = _asgi_error(code, exc, code=_builder_task_error_code(code) if parsed_path.startswith("/v1/builder/tasks") else "luma_error")
+        if parsed_path.startswith("/v1/dashboard/lae/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+    response = _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
+    if parsed_path.startswith("/v1/dashboard/lae/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+async def _asgi_lae_runtime_json(request: Request) -> Dict[str, Any]:
+    raw_length = request.headers.get("Content-Length")
+    if raw_length is not None:
+        try:
+            content_length = int(raw_length)
+        except ValueError as exc:
+            raise _lae_runtime_invalid(
+                "LAE runtime request content length is invalid"
+            ) from exc
+        if not 0 <= content_length <= MAX_RUNTIME_REQUEST_BYTES:
+            raise _lae_runtime_invalid("LAE runtime request body is too large")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_RUNTIME_REQUEST_BYTES:
+            raise _lae_runtime_invalid("LAE runtime request body is too large")
+        chunks.append(bytes(chunk))
+    raw = b"".join(chunks)
+    if not raw:
+        return {}
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _lae_runtime_invalid(
+            "LAE runtime request contains malformed JSON"
+        ) from exc
+    if not isinstance(body, dict):
+        raise _lae_runtime_invalid("LAE runtime request body must be an object")
+    return body
 
 
 async def _asgi_authenticated_post(request: Request) -> Response:
     try:
-        body = await request.json()
+        path = request.url.path
+        artifact_upload_match = re.fullmatch(
+            r"/v1/node-agent/artifact-downloads/([^/]+)/content", path
+        )
+        if artifact_upload_match:
+            try:
+                content_length = int(request.headers.get("Content-Length") or "")
+            except ValueError as exc:
+                raise LumaError("artifact upload content length is invalid") from exc
+            if not 1 <= content_length <= MAX_ARTIFACT_BYTES:
+                raise LumaError("artifact upload content length is invalid")
+            result = await handle_node_agent_artifact_upload_async(
+                bearer_token(request.headers),
+                urllib.parse.unquote(artifact_upload_match.group(1)),
+                node_name=str(request.headers.get("X-Luma-Node-Name") or ""),
+                node_id=str(request.headers.get("X-Luma-Node-Id") or ""),
+                media_type=str(request.headers.get("Content-Type") or ""),
+                digest=str(request.headers.get("X-Luma-Artifact-Digest") or ""),
+                content_length=content_length,
+                chunks=request.stream(),
+            )
+            return _json_response(200, result)
+        if path.startswith("/v1/lae/runtime/"):
+            body = await _asgi_lae_runtime_json(request)
+        else:
+            try:
+                body = await request.json()
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise LumaError("request body contains malformed JSON") from exc
         if not isinstance(body, dict):
             raise LumaError("request body must be a JSON object")
         token = bearer_token(request.headers)
-        path = request.url.path
+        if path == "/v1/lae/runtime/volumes:prepare":
+            result = await run_in_threadpool(
+                functools.partial(
+                    handle_lae_runtime_volume_prepare,
+                    token,
+                    str(
+                        request.headers.get("X-Luma-Principal-Audience") or ""
+                    ),
+                    RuntimeBinding.from_headers(request.headers),
+                    body,
+                    idempotency_key=str(
+                        request.headers.get("Idempotency-Key") or ""
+                    ),
+                )
+            )
+            return _json_response(200, result)
+        if path == "/v1/lae/runtime/secrets:issue":
+            result = await run_in_threadpool(
+                functools.partial(
+                    handle_lae_runtime_secret_issue,
+                    token,
+                    str(
+                        request.headers.get("X-Luma-Principal-Audience") or ""
+                    ),
+                    RuntimeBinding.from_headers(request.headers),
+                    body,
+                    idempotency_key=str(
+                        request.headers.get("Idempotency-Key") or ""
+                    ),
+                )
+            )
+            return _json_response(201, result)
+        if path == "/v1/lae/runtime/deployments":
+            result = await run_in_threadpool(
+                functools.partial(
+                    handle_lae_runtime_deployment_create,
+                    token,
+                    str(
+                        request.headers.get("X-Luma-Principal-Audience") or ""
+                    ),
+                    RuntimeBinding.from_headers(request.headers),
+                    body,
+                    idempotency_key=str(
+                        request.headers.get("Idempotency-Key") or ""
+                    ),
+                )
+            )
+            return _json_response(202, result)
+        lae_runtime_cancel_match = re.fullmatch(
+            r"/v1/lae/runtime/deployments/([^/]+)/cancel", path
+        )
+        if lae_runtime_cancel_match:
+            result = await run_in_threadpool(
+                handle_lae_runtime_deployment_cancel,
+                token,
+                str(
+                    request.headers.get("X-Luma-Principal-Audience") or ""
+                ),
+                RuntimeBinding.from_headers(request.headers),
+                urllib.parse.unquote(lae_runtime_cancel_match.group(1)),
+                body,
+            )
+            return _json_response(200, result)
+        lae_runtime_lifecycle_match = re.fullmatch(
+            r"/v1/lae/runtime/deployments/([^/]+)/(suspend|resume|restart|rollback|delete)",
+            path,
+        )
+        if lae_runtime_lifecycle_match:
+            result = await run_in_threadpool(
+                functools.partial(
+                    handle_lae_runtime_deployment_lifecycle,
+                    token,
+                    str(
+                        request.headers.get("X-Luma-Principal-Audience") or ""
+                    ),
+                    RuntimeBinding.from_headers(request.headers),
+                    urllib.parse.unquote(
+                        lae_runtime_lifecycle_match.group(1)
+                    ),
+                    str(lae_runtime_lifecycle_match.group(2)),
+                    body,
+                    idempotency_key=str(
+                        request.headers.get("Idempotency-Key") or ""
+                    ),
+                )
+            )
+            return _json_response(200, result)
+        if path == "/v1/builder/tasks":
+            result = await run_in_threadpool(
+                functools.partial(
+                    handle_builder_task_create,
+                    token,
+                    body,
+                    idempotency_key=str(request.headers.get("Idempotency-Key") or ""),
+                )
+            )
+            return _json_response(202, result)
+        builder_artifact_lease_match = re.fullmatch(
+            r"/v1/builder/tasks/([^/]+)/artifact-download-leases", path
+        )
+        if builder_artifact_lease_match:
+            result = await run_in_threadpool(
+                handle_builder_artifact_lease_create,
+                token,
+                urllib.parse.unquote(builder_artifact_lease_match.group(1)),
+                body,
+            )
+            return _json_response(201, result)
+        builder_cancel_match = re.fullmatch(r"/v1/builder/tasks/([^/]+)/cancel", path)
+        if builder_cancel_match:
+            return _json_response(
+                200,
+                await run_in_threadpool(
+                    handle_builder_task_cancel,
+                    token,
+                    urllib.parse.unquote(builder_cancel_match.group(1)),
+                    body,
+                ),
+            )
         routes: dict[str, Callable[..., Dict[str, Any]]] = {
             "/v1/auth/login/verify": handle_login_verify,
             "/v1/nodes/register": handle_node_register,
@@ -8507,9 +14251,17 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         if handler:
             return _json_response(200, await run_in_threadpool(handler, token, body))
         return _json_response(404, _error_payload("not_found", "not found", request_id=_request_id()))
+    except LumaRuntimeError as exc:
+        return _asgi_error(exc.status, exc, code=exc.code)
     except LumaError as exc:
-        code = 401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
-        return _asgi_error(code, exc)
+        code = _builder_task_http_status(exc) if request.url.path.startswith("/v1/builder/tasks") else (
+            401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400
+        )
+        return _asgi_error(
+            code,
+            exc,
+            code=_builder_task_error_code(code) if request.url.path.startswith("/v1/builder/tasks") else "luma_error",
+        )
     except Exception as exc:
         return _asgi_error(500, exc, code="internal_error")
 

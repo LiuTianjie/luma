@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "luma.builder-task/v1",
+  "kind": "analyze-source",
+  "externalOperationId": "op-analyze-upload-1",
+  "tenantRef": "tenant-builder-test",
+  "applicationRef": "application-builder-test",
+  "payload": {
+    "sourceRef": {
+      "kind": "object",
+      "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "mediaType": "application/zip",
+      "sizeBytes": 4096
+    },
+    "credentialLeaseId": "credential-lease-upload-1",
+    "agentImageDigest": "registry.itool.tech/infra/lae-agent-runner@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "policyVersion": "2026-07-11",
+    "limits": {"cpu": 2, "memoryMiB": 2048, "diskMiB": 4096, "timeoutSeconds": 300}
+  }
+}

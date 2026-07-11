@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.itool.tech/lae/error.v1.schema.json",
+  "title": "LAE Public Error v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "code", "message", "requestId", "retryable", "details"],
+  "properties": {
+    "schemaVersion": {"const": "lae.error/v1"},
+    "code": {"type": "string", "pattern": "^LAE_[A-Z0-9_]+$"},
+    "message": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "requestId": {"type": "string", "pattern": "^req_[A-Za-z0-9_-]+$"},
+    "retryable": {"type": "boolean"},
+    "details": {"type": "object"}
+  }
+}

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lae-store"
+version = "0.1.0"
+description = "PostgreSQL persistence and durable operation queue for LAE"
+requires-python = ">=3.12"
+dependencies = [
+  "SQLAlchemy[asyncio]>=2.0.41,<3",
+  "asyncpg>=0.30,<1",
+  "cryptography>=45,<47",
+]
+
+[project.optional-dependencies]
+migrations = ["alembic>=1.16,<2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

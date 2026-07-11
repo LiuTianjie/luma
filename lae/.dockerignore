@@ -1,0 +1,15 @@
+.dockerignore
+.env
+.env.*
+!.env.example
+.git
+.github
+.next
+.ruff_cache
+.venv
+**/.next
+**/.ruff_cache
+**/__pycache__
+node_modules
+**/node_modules
+tests

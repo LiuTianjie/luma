@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lae-worker"
+version = "0.1.0"
+description = "Durable LAE operation worker"
+requires-python = ">=3.12"
+dependencies = ["lae-contracts", "lae-core", "lae-luma-adapter", "lae-store"]
+
+[project.scripts]
+lae-worker = "lae_worker.__main__:main"
+
+[tool.uv.sources]
+lae-contracts = { workspace = true }
+lae-core = { workspace = true }
+lae-luma-adapter = { workspace = true }
+lae-store = { workspace = true }
+
+[tool.setuptools.packages.find]
+where = ["src"]

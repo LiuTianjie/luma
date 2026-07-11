@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "luma.builder-task/v1",
+  "kind": "build-plan",
+  "externalOperationId": "op-invalid",
+  "tenantRef": "tenant-builder-test",
+  "applicationRef": "application-builder-test",
+  "payload": {
+    "sourceRef": {
+      "repository": "https://github.com/acme/example.git",
+      "ref": "main",
+      "subdirectory": ""
+    },
+    "credentialLeaseId": "credential-lease-invalid",
+    "agentImageDigest": "registry.itool.tech/infra/lae-agent-runner@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "policyVersion": "2026-07-11",
+    "limits": {"cpu": 2, "memoryMiB": 2048, "diskMiB": 4096, "timeoutSeconds": 300}
+  }
+}

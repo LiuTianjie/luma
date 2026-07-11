@@ -1,0 +1,46 @@
+name: lae-platform-staging
+compose: docker-compose.staging.yml
+region: home
+
+# Live-cluster staging overlay for luma.itool.tech. This intentionally pins the
+# platform group to lab and uses isolated paths on builder-registry-nfs; it is
+# not the production placement or data topology described by luma.compose.yml.
+volumes:
+  artifact-data:
+    storageClass: builder-registry-nfs
+    path: lae/staging/artifacts/v1
+    accessMode: ReadWriteOnce
+    initialize: empty
+  mailpit-data:
+    storageClass: builder-registry-nfs
+    path: lae/staging/mailpit/v1
+    accessMode: ReadWriteOnce
+    initialize: empty
+  postgres-data:
+    storageClass: builder-registry-nfs
+    path: lae/staging/postgres/v1
+    accessMode: ReadWriteOnce
+    initialize: empty
+
+services:
+  web:
+    node: lab
+    exposure: tailscale-relay
+    domain: lae-staging.itool.tech
+    port: 3000
+  api:
+    node: lab
+    exposure: tailscale-relay
+    domain: lae-api-staging.itool.tech
+    port: 8080
+  worker: {node: lab, exposure: none}
+  agent-controller: {node: lab, exposure: none}
+  postgres: {node: lab, exposure: none}
+  artifact-store:
+    node: lab
+    exposure: tailscale-relay
+    domain: lae-artifacts-staging.itool.tech
+    port: 9000
+  artifact-init: {node: lab, exposure: none}
+  valkey: {node: lab, exposure: none}
+  mailpit: {node: lab, exposure: none}

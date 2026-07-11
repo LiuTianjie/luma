@@ -155,10 +155,19 @@ def deploy_control_stack(
     if engine != "nomad":
         raise LumaError("Nomad is the only supported deployment engine")
 
-    from .nomad_render import render_control_job
+    from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, render_control_job
 
     node = node_name or local_host_name()
-    job_json = render_control_job(image=deploy_image, node_name=node)
+    control_environment = {
+        name: str(os.environ[name])
+        for name in CONTROL_JOB_ENV_ALLOWLIST
+        if str(os.environ.get(name) or "")
+    }
+    job_json = render_control_job(
+        image=deploy_image,
+        node_name=node,
+        control_environment=control_environment,
+    )
     _step(results, emit, "Check Nomad tmpfs compatibility", lambda: _nomad_tmpfs_compat_status(remote))
     _step(results, emit, "Deploy Luma control job", lambda: _deploy_nomad_job(remote, job_json, "luma-control"))
     _step(results, emit, "Wait Luma control job", lambda: _wait_nomad_job(remote, "luma-control"))
