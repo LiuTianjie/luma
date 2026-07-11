@@ -4583,6 +4583,12 @@ class ControlApiTests(unittest.TestCase):
                     "aly": {
                         "region": "cn",
                         "status": "labeled",
+                        # Live Nomad reconciliation can copy server identity
+                        # fields onto the stale alias because both records share
+                        # one node ID. The authoritative sibling still makes
+                        # alias-only removal safe.
+                        "nomadRole": "server",
+                        "nomadServer": True,
                         "nodeId": shared_id,
                         "labels": {
                             "luma.node.name": "aly",

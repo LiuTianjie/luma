@@ -6974,8 +6974,6 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 removed = value
                 removed_key = str(key)
                 break
-    if isinstance(removed, dict) and _node_record_is_manager(removed):
-        raise LumaError(f"refusing to unregister Nomad manager node: {node_name}")
     config = load_config(_control_config_path())
     nomad_node_id = _node_record_nomad_node_id(removed) if isinstance(removed, dict) else ""
     shared_manager_identity = bool(
@@ -6986,6 +6984,12 @@ def handle_node_unregister(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             node_id=nomad_node_id,
         )
     )
+    if (
+        isinstance(removed, dict)
+        and _node_record_is_manager(removed)
+        and not shared_manager_identity
+    ):
+        raise LumaError(f"refusing to unregister Nomad manager node: {node_name}")
     if shared_manager_identity:
         # Old Control versions could leave a worker alias pointing at the
         # manager's Nomad ID. Draining that ID while deleting the stale alias
