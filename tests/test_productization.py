@@ -6862,6 +6862,7 @@ class ControlApiTests(unittest.TestCase):
                 route = yaml.safe_load((root / "routes" / "linkshell-gateway.yml").read_text(encoding="utf-8"))
                 upstream = route["http"]["services"]["linkshell-gateway"]["loadBalancer"]["servers"][0]["url"]
                 self.assertEqual(upstream, "http://100.64.29.91:8787")
+                self.assertEqual(route["http"]["routers"]["linkshell-gateway"]["priority"], 1000)
                 self.assertEqual(result["delivery"]["status"], "ready")
                 self.assertEqual(result["delivery"]["probes"], ["Public route reachable"])
             finally:
