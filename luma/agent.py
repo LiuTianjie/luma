@@ -2780,7 +2780,12 @@ def _docker_buildx_build(
         "--builder", builder,
         "--platform", platform,
         *proxy_build_args,
-        "--push",
+        # Luma's managed build registry is intentionally served over the
+        # tailnet as plain HTTP. Host dockerd already knows it as an insecure
+        # registry, but the docker-container BuildKit daemon is independent and
+        # does not inherit daemon.json. Tell the image exporter explicitly so
+        # pushes do not get upgraded to HTTPS inside BuildKit.
+        "--output", "type=image,push=true,registry.insecure=true",
         "-t", tag_sha,
         "-t", tag_latest,
         "-f", str(dockerfile_path),

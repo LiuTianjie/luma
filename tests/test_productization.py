@@ -12780,7 +12780,10 @@ class GithubImportTests(unittest.TestCase):
             dockerfile = context_dir / "Dockerfile"
             dockerfile.write_text("FROM busybox\n", encoding="utf-8")
 
-            def fake_stream(_command, **kwargs):
+            captured_command = []
+
+            def fake_stream(command, **kwargs):
+                captured_command.extend(command)
                 kwargs["on_line"]("#1 [internal] load build definition")
                 kwargs["on_line"]("#2 pushing layers")
                 return LocalResult(code=0, output="#1 [internal] load build definition\n#2 pushing layers\n")
@@ -12803,6 +12806,12 @@ class GithubImportTests(unittest.TestCase):
                 )
 
         self.assertEqual(image, "100.66.177.70:5000/acme/app:abc123")
+        self.assertNotIn("--push", captured_command)
+        output_index = captured_command.index("--output")
+        self.assertEqual(
+            captured_command[output_index + 1],
+            "type=image,push=true,registry.insecure=true",
+        )
         self.assertEqual([event["line"] for event in progress], ["#1 [internal] load build definition", "#2 pushing layers"])
 
     def test_registry_serve_configures_insecure_registry_and_docker_no_proxy(self):
