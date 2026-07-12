@@ -407,6 +407,11 @@ class BuilderBuildExecutorTests(unittest.TestCase):
         dockerfile = _TRUSTED_PYTHON_ADAPTER_DOCKERFILE.decode("utf-8")
         self.assertIn("python:3.12.13-alpine3.23@sha256:efc8538b", dockerfile)
         self.assertIn("adduser -D -u 10001", dockerfile)
+        self.assertIn("chmod 0555 /usr/local/lib/lae", dockerfile)
+        self.assertLess(
+            dockerfile.index("chmod 0555 /usr/local/lib/lae"),
+            dockerfile.index("COPY --chmod=0444 .lae/adapters/python-v1-runtime.py"),
+        )
         self.assertNotIn("slim-bookworm", dockerfile)
 
     def test_buildkit_provenance_rejects_descriptor_subject_mismatch(self):

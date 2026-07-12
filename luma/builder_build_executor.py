@@ -302,7 +302,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN addgroup -g 10001 lae && \
-    adduser -D -u 10001 -G lae -h /home/lae lae
+    adduser -D -u 10001 -G lae -h /home/lae lae && \
+    mkdir -p /usr/local/lib/lae && \
+    chmod 0555 /usr/local/lib/lae
 
 COPY --chmod=0444 .lae/adapters/python-v1-runtime.py /usr/local/lib/lae/lae_python_runtime.py
 COPY . /app
