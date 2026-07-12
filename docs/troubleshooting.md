@@ -112,6 +112,22 @@ luma update --control-url https://luma.example.com --token <node-join-token>
 
 After that, future `luma update fleet` runs can update it remotely.
 
+## Application is running but its public domain hangs after restart
+
+Treat restart as incomplete until runtime and delivery both agree:
+
+```bash
+nomad job allocs <stack>
+curl -fsS --max-time 5 http://<allocation-node-tailscale-ip>:<publish-port>/
+curl -vk --max-time 15 https://<domain>/
+```
+
+Then inspect `/opt/luma/routes/<stack>.yml` on the manager and the Nomad service registration. A legacy `cn-edge` job may still advertise a provider-private address such as `10.x.x.x` while the manager must use the node's Tailscale address. Do not repeatedly restart the healthy application. On Control `0.1.200+`, run the normal Dashboard/CLI restart once; Control infers the Luma node from the actual allocation, atomically republishes a higher-priority file route, synchronizes DNS, and waits for a public probe before returning `delivery.status=ready`.
+
+If Control reports `delivery reconcile skipped: deployment record is unavailable`, the job predates Luma's stored deployment records. Re-import/redeploy its manifest once so future restart, remove, and route recovery operations have a durable source of truth. If the generated route is correct but Traefik still serves its default 404, use the route reload/certificate retry action or inspect the Traefik file-provider mount; do not edit DNS to point at a worker node.
+
+Manager updates must also preserve `/opt/luma/luma.yaml`. After an update, `luma status` should report DNS `ready=true`. If `providers.dns` disappeared on an older release, restore it from the latest `/opt/luma/backups/*/luma.yaml`, keep the current control state/tokens, and update to `0.1.198+`, whose manager config installation deep-merges existing operator-managed sections.
+
 ## Manager update prints `tmpfs: Unknown parameter 'noswap'`
 
 This message comes from the manager's Nomad client when it prepares an

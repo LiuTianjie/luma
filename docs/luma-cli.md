@@ -369,7 +369,7 @@ luma service restart public-cn-service
 luma service restart my-stack --service web --mode task
 ```
 
-`--mode recreate` reschedules the allocation; `--mode task` restarts the task in place. Omitting `--mode` uses `recreate` for a whole stack and `task` when `--service` targets one task. Restart refuses the system stacks `traefik`, `egress`, and `luma-control`. See [operations.md](operations.md) for details.
+`--mode recreate` reschedules the allocation; `--mode task` restarts the task in place. Omitting `--mode` uses `recreate` for a whole stack and `task` when `--service` targets one task. After the runtime action, Control reconciles the saved deployment's routes and DNS and probes its public HTTP services; Compose reconciles every exposed service. Restart refuses the system stacks `traefik`, `egress`, and `luma-control`. See [operations.md](operations.md) for details.
 
 Remove a deployed service:
 
