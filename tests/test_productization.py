@@ -6808,7 +6808,6 @@ class ControlApiTests(unittest.TestCase):
                         "name": "linkshell-gateway",
                         "image": "example/gateway:1",
                         "region": "cn",
-                        "node": "tecent",
                         "public": True,
                         "exposure": "cn-edge",
                         "domain": "gateway.example.com",
@@ -6842,7 +6841,14 @@ class ControlApiTests(unittest.TestCase):
                 )
                 api = Mock()
                 api.request.side_effect = [
-                    [{"ID": "alloc-old", "ClientStatus": "running", "TaskStates": {"gateway": {}}}],
+                    [
+                        {
+                            "ID": "alloc-old",
+                            "ClientStatus": "running",
+                            "TaskStates": {"gateway": {}},
+                            "NodeID": "node-tecent",
+                        }
+                    ],
                     {},
                     [{"ID": "alloc-new", "ClientStatus": "running", "TaskStates": {"gateway": {}}}],
                 ]

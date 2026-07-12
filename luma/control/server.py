@@ -8477,6 +8477,7 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         raise LumaError(f"Nomad returned invalid allocations for job: {stack}")
     restarted = []
     recreated_allocation_ids: set[str] = set()
+    application_node_names: set[str] = set()
     recreated_node_names: set[str] = set()
     recreated_host_ports: set[int] = set()
     for alloc in allocations:
@@ -8488,6 +8489,9 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         alloc_id = str(alloc.get("ID") or alloc.get("ID") or "").strip()
         if not alloc_id:
             continue
+        allocation_node_name = _luma_node_name_for_nomad_allocation(state, alloc)
+        if allocation_node_name:
+            application_node_names.add(allocation_node_name)
         task_states = alloc.get("TaskStates") if isinstance(alloc.get("TaskStates"), dict) else {}
         if mode == "recreate":
             if service_name and service_name not in task_states:
@@ -8495,7 +8499,7 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
             api.request("POST", f"/v1/allocation/{urllib.parse.quote(alloc_id, safe='')}/stop", None)
             restarted.append({"allocId": alloc_id, "task": service_name or "*", "mode": mode})
             recreated_allocation_ids.add(alloc_id)
-            node_name = _luma_node_name_for_nomad_allocation(state, alloc)
+            node_name = allocation_node_name
             if node_name:
                 recreated_node_names.add(node_name)
             recreated_host_ports.update(_nomad_allocation_host_ports(alloc))
@@ -8525,11 +8529,22 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
     cni_hostports = _refresh_nomad_cni_hostports_for_nodes(state, recreated_node_names, ports=sorted(recreated_host_ports))
     if recreated_node_names or cni_hostports.get("results") or cni_hostports.get("skipped"):
         result["cniHostports"] = cni_hostports
-    result["delivery"] = _reconcile_application_delivery(state, config, stack)
+    result["delivery"] = _reconcile_application_delivery(
+        state,
+        config,
+        stack,
+        allocation_node_names=application_node_names,
+    )
     return result
 
 
-def _reconcile_application_delivery(state: Dict[str, Any], config: Any, stack: str) -> Dict[str, Any]:
+def _reconcile_application_delivery(
+    state: Dict[str, Any],
+    config: Any,
+    stack: str,
+    *,
+    allocation_node_names: set[str] | None = None,
+) -> Dict[str, Any]:
     """Restore the externally observable delivery state after an app restart.
 
     Nomad recreates allocations, but file-provider routes and DNS live outside
@@ -8555,6 +8570,17 @@ def _reconcile_application_delivery(state: Dict[str, Any], config: Any, stack: s
     route_results: list[str] = []
     dns_results: list[str] = []
     probe_results: list[str] = []
+    runtime_nodes = sorted({str(value).strip() for value in (allocation_node_names or set()) if str(value).strip()})
+
+    def bind_runtime_node(service: ServiceSpec) -> ServiceSpec:
+        if service.node or not runtime_nodes:
+            return service
+        if len(runtime_nodes) != 1:
+            raise LumaError(
+                f"{service.exposure} delivery reconcile cannot infer one node from allocations: "
+                + ", ".join(runtime_nodes)
+            )
+        return replace(service, node=runtime_nodes[0])
 
     file_route_exposures = {"cn-edge", "external-edge", "tailscale-relay", "tcp-relay"}
 
@@ -8591,6 +8617,7 @@ def _reconcile_application_delivery(state: Dict[str, Any], config: Any, stack: s
     if isinstance(service_record, dict):
         service, _source_name = _service_remove_request(service_record, stack)
         service = resolve_service_node_pin(service, state, engine="nomad")
+        service = bind_runtime_node(service)
         route_target = (
             _resolve_control_path(route_path(config, service), config_path)
             if service.exposure in file_route_exposures
@@ -8603,7 +8630,7 @@ def _reconcile_application_delivery(state: Dict[str, Any], config: Any, stack: s
         for service_name, service in deployment.services.items():
             if service.exposure == "none":
                 continue
-            service_spec = _compose_service_as_service_spec(deployment, service)
+            service_spec = bind_runtime_node(_compose_service_as_service_spec(deployment, service))
             route_target = (
                 _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
                 if service.exposure in file_route_exposures
