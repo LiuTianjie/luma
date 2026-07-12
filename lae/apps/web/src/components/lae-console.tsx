@@ -113,6 +113,13 @@ function analysisFailureMessage(analysis: Analysis, subject: string): string {
   return `${subject}目前不能进入部署，请按诊断结果补齐配置后重试。`;
 }
 
+function operationFailureMessage(
+  error: { code: string; message: string } | undefined,
+  fallback: string,
+): string {
+  return error ? `${fallback}（${error.code}）：${error.message}` : fallback;
+}
+
 const templatePositions: Record<string, { x: number; y: number; drift: number }> = {
   "nextjs-docker": { x: 18, y: 27, drift: 0.2 },
   "fastapi-minimal": { x: 43, y: 16, drift: 0.8 },
@@ -510,7 +517,12 @@ export function LaeConsole() {
       } else {
         setFlow("idle");
         if (status !== "succeeded") {
-          setFlowError("该操作已结束但未成功；历史事件已恢复，现有健康版本未被替换。");
+          setFlowError(
+            operationFailureMessage(
+              recovered.operation.error,
+              "该操作已结束但未成功；历史事件已恢复，现有健康版本未被替换。",
+            ),
+          );
         }
       }
       setCatalogRefresh((value) => value + 1);
@@ -981,8 +993,16 @@ export function LaeConsole() {
       );
       const status = await watchOperation(created.operation.id, controller.signal);
       if (status !== "succeeded") {
+        const operation = await getOperation(created.operation.id, controller.signal).catch(
+          () => null,
+        );
         setFlow("ready");
-        setFlowError("部署未通过运行态验证，现有健康版本没有被替换。");
+        setFlowError(
+          operationFailureMessage(
+            operation?.error,
+            "部署未通过运行态验证，现有健康版本没有被替换。",
+          ),
+        );
         return;
       }
       const application = await getApplication(

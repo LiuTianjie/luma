@@ -42,6 +42,13 @@ if (consoleSource.includes('`*:${name}`')) {
 if (!consoleSource.includes("patchPlanEnvironment")) {
   throw new Error("Deployment configuration must use the plan-bound environment endpoint");
 }
+if (
+  !consoleSource.includes("operationFailureMessage") ||
+  !consoleSource.includes("recovered.operation.error") ||
+  !consoleSource.includes("operation?.error")
+) {
+  throw new Error("Terminal deployment failures must expose the public operation error");
+}
 if (!consoleSource.includes('"fastapi-minimal": "轻量 Python API')) {
   throw new Error("FastAPI template description must use the console's Chinese locale");
 }
