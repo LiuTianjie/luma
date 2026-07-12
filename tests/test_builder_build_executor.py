@@ -328,6 +328,7 @@ class BuilderBuildExecutorTests(unittest.TestCase):
                 )
                 return _CommandResult(0, b"")
             if executable.endswith("trivy"):
+                self.assertEqual(command[command.index("--exit-code") + 1], "0")
                 output_path = Path(command[command.index("--output") + 1])
                 output_path.write_text(json.dumps({"Results": []}), encoding="utf-8")
                 return _CommandResult(0, b"")
@@ -492,6 +493,7 @@ class BuilderBuildExecutorTests(unittest.TestCase):
                 )
                 return _CommandResult(0, b"")
             if executable.endswith("trivy"):
+                self.assertEqual(command[command.index("--exit-code") + 1], "0")
                 output_path = Path(command[command.index("--output") + 1])
                 output_path.write_text(json.dumps({"Results": []}), encoding="utf-8")
                 return _CommandResult(0, b"")
@@ -629,6 +631,7 @@ class BuilderBuildExecutorTests(unittest.TestCase):
                 )
                 return _CommandResult(0, b"")
             if executable.endswith("trivy"):
+                self.assertEqual(command[command.index("--exit-code") + 1], "0")
                 output_path = Path(command[command.index("--output") + 1])
                 output_path.write_text(json.dumps({"Results": []}), encoding="utf-8")
                 return _CommandResult(0, b"")

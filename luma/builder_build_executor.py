@@ -657,7 +657,12 @@ def build_plan(
                 "--severity",
                 "HIGH,CRITICAL",
                 "--exit-code",
-                "1",
+                # Vulnerability findings are persisted for policy and UI
+                # decisions, but the default LAE admission path must not turn
+                # every base-image finding into an opaque build failure.  A
+                # non-zero exit now means the scanner itself failed; findings
+                # remain available in the verified report.
+                "0",
                 "--format",
                 "json",
                 "--output",
@@ -673,7 +678,7 @@ def build_plan(
                 cancel_event=cancel_event,
             )
             if scan_result.returncode != 0:
-                raise LumaError("image vulnerability scan failed or rejected the image")
+                raise LumaError("image vulnerability scan execution failed")
             _validate_scan_report(scan_path)
             _emit_phase(progress, key, "scan", "succeeded")
 
@@ -782,7 +787,7 @@ def build_plan(
                     "--severity",
                     "HIGH,CRITICAL",
                     "--exit-code",
-                    "1",
+                    "0",
                     "--format",
                     "json",
                     "--output",
@@ -794,7 +799,7 @@ def build_plan(
                 cancel_event=cancel_event,
             )
             if scan_result.returncode != 0:
-                raise LumaError("external image vulnerability scan failed or rejected the image")
+                raise LumaError("external image vulnerability scan execution failed")
             _validate_scan_report(scan_path)
             _emit_phase(progress, key, "scan", "succeeded")
 
