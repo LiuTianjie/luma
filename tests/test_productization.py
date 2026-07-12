@@ -705,11 +705,15 @@ class ProductConfigTests(unittest.TestCase):
 
     def test_node_agent_can_update_luma_install(self):
         completed = Mock(returncode=0, stdout="installed\n")
+        events = []
         with patch("luma.agent.subprocess.run", return_value=completed) as run, patch("luma.agent.LocalExecutor") as executor, patch(
             "luma.agent.node_agent_os", return_value="linux"
         ), patch("luma.agent._installed_luma_executable", return_value="/root/.local/bin/luma"):
             executor.return_value.sudo.return_value = ""
-            result = execute_agent_task({"action": "update-luma", "payload": {"installRef": "main"}})
+            result = execute_agent_task(
+                {"action": "update-luma", "payload": {"installRef": "main"}},
+                progress=events.append,
+            )
         run.assert_called_once()
         self.assertEqual(executor.return_value.sudo.call_count, 2)
         self.assertIn("install-luma.sh", run.call_args.args[0])
@@ -717,6 +721,15 @@ class ProductConfigTests(unittest.TestCase):
         self.assertEqual(result["installRef"], "main")
         self.assertEqual(result["message"], "Luma installer finished; node agent service refreshed; Tailscale watchdog installed")
         self.assertTrue(result["restartAgent"])
+        self.assertEqual(
+            [event["line"] for event in events],
+            [
+                "Downloading and installing Luma main.",
+                "Package installed; refreshing the node agent service definition.",
+                "Node agent service refreshed; refreshing the node watchdog.",
+                "Update prepared successfully; Tailscale watchdog installed.",
+            ],
+        )
 
     def test_node_agent_can_join_nomad_node(self):
         with patch("luma.bootstrap.install_nomad_node", return_value=["Nomad agent ready"]) as install_nomad, patch(
@@ -1130,6 +1143,10 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("Luma node agent launchd reload scheduled", installer)
         self.assertIn('LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH:-0', installer)
         self.assertIn("Luma node agent service refresh deferred", installer)
+        self.assertIn("LUMA_DOWNLOAD_CONNECT_TIMEOUT_SECONDS", installer)
+        self.assertIn("LUMA_DOWNLOAD_MAX_TIME_SECONDS", installer)
+        self.assertIn("LUMA_DOWNLOAD_RETRIES", installer)
+        self.assertIn("--retry-all-errors", installer)
 
     def test_installer_restores_user_install_ownership_after_root_update(self):
         root = Path(__file__).resolve().parents[1]
@@ -4507,7 +4524,7 @@ class ControlApiTests(unittest.TestCase):
         with patch("luma.control.server.load_state", return_value=state), patch(
             "luma.control.server.load_config", return_value=Mock()
         ), patch("luma.control.server._dashboard_route_files", return_value=routes), patch(
-            "luma.control.server._probe_public_route",
+            "luma.control.server._sentinel_probe_public_route",
             return_value={"domain": "app.example.com", "status": 200, "ok": True, "latencyMs": 12, "error": ""},
         ):
             result = handle_route_sentinel("management-token", {})
@@ -4515,6 +4532,27 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["succeeded"], 1)
         self.assertEqual(result["failed"], 0)
+
+    def test_route_sentinel_domain_probe_is_independent_from_service_probe(self):
+        from luma.control.server import _sentinel_probe_public_route
+
+        unauthorized = urllib.error.HTTPError(
+            "https://app.example.com/", 401, "unauthorized", {}, None
+        )
+        missing = urllib.error.HTTPError(
+            "https://missing.example.com/", 404, "missing", {}, None
+        )
+        with patch(
+            "luma.control.server.urllib.request.urlopen",
+            side_effect=[unauthorized, missing],
+        ):
+            published = _sentinel_probe_public_route("app.example.com")
+            unpublished = _sentinel_probe_public_route("missing.example.com")
+
+        self.assertTrue(published["ok"])
+        self.assertEqual(published["status"], 401)
+        self.assertFalse(unpublished["ok"])
+        self.assertEqual(unpublished["status"], 404)
 
     def test_prune_agent_tasks_drops_old_terminal_keeps_active_and_recent(self):
         from luma.control.server import _prune_agent_tasks, AGENT_TASK_RETENTION_SECONDS
@@ -4917,6 +4955,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result["succeeded"], 1)
                 self.assertEqual(result["results"][0]["agentVersionBefore"], "0.1.172")
                 self.assertEqual(result["results"][0]["agentVersionAfter"], "0.1.173")
+                self.assertIn("installing", [event["status"] for event in events])
                 self.assertIn("verifying", [event["status"] for event in events])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)

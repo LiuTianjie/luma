@@ -8820,6 +8820,19 @@ def handle_fleet_update(
                 progress(dict(item))
             continue
         try:
+            item["status"] = "installing"
+            item["message"] = f"Downloading and installing Luma {install_ref or 'latest'}."
+            if progress:
+                progress(dict(item))
+
+            def install_progress(event: Dict[str, Any]) -> None:
+                message = str(event.get("message") or event.get("line") or "").strip()
+                if message:
+                    item["status"] = "installing"
+                    item["message"] = message
+                    if progress:
+                        progress(dict(item))
+
             result = _run_node_agent_task(
                 current_state,
                 node_name,
@@ -8827,6 +8840,7 @@ def handle_fleet_update(
                 {"installRef": install_ref},
                 timeout=per_node_timeout,
                 required_capability="luma-update",
+                progress=install_progress,
             )
             item["status"] = "succeeded"
             item["message"] = str(result.get("message") or "Luma installer finished")
@@ -9117,7 +9131,7 @@ def handle_manager_update_status(token: str, update_id: str = "") -> Dict[str, A
     return {"clusterId": str(state.get("clusterId") or ""), "managerNode": node_name, **result}
 
 
-def _probe_public_route(domain: str) -> Dict[str, Any]:
+def _sentinel_probe_public_route(domain: str) -> Dict[str, Any]:
     started = time.monotonic()
     request = urllib.request.Request(
         f"https://{domain}/",
@@ -9168,7 +9182,7 @@ def handle_route_sentinel(token: str, body: Dict[str, Any] | None = None) -> Dic
         if unknown:
             raise LumaError("unknown route domain(s): " + ", ".join(unknown))
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(max(len(domains), 1), 12)) as executor:
-        results = list(executor.map(_probe_public_route, domains))
+        results = list(executor.map(_sentinel_probe_public_route, domains))
     failed = sum(1 for item in results if not item.get("ok"))
     return {
         "clusterId": str(state.get("clusterId") or ""),

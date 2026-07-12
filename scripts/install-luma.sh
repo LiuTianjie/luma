@@ -168,10 +168,23 @@ download_source() {
   archive_url="${LUMA_ARCHIVE_URL:-$default_archive_url}"
   tmp_dir="$(mktemp -d)"
   archive="$tmp_dir/luma.tar.gz"
+  download_connect_timeout="${LUMA_DOWNLOAD_CONNECT_TIMEOUT_SECONDS:-20}"
+  download_max_time="${LUMA_DOWNLOAD_MAX_TIME_SECONDS:-300}"
+  download_retries="${LUMA_DOWNLOAD_RETRIES:-4}"
+  case "$download_connect_timeout" in *[!0-9]*|"") download_connect_timeout=20 ;; esac
+  case "$download_max_time" in *[!0-9]*|"") download_max_time=300 ;; esac
+  case "$download_retries" in *[!0-9]*|"") download_retries=4 ;; esac
+  echo "Downloading Luma source for $INSTALL_REF (timeout ${download_max_time}s, retries ${download_retries})"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$archive_url" -o "$archive"
+    if curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+      curl -fsSL --connect-timeout "$download_connect_timeout" --max-time "$download_max_time" \
+        --retry "$download_retries" --retry-delay 2 --retry-all-errors "$archive_url" -o "$archive"
+    else
+      curl -fsSL --connect-timeout "$download_connect_timeout" --max-time "$download_max_time" \
+        --retry "$download_retries" --retry-delay 2 "$archive_url" -o "$archive"
+    fi
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$archive" "$archive_url"
+    wget -q --tries="$download_retries" --timeout="$download_connect_timeout" -O "$archive" "$archive_url"
   else
     echo "curl or wget is required to download Luma." >&2
     exit 1

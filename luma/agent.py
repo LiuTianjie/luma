@@ -1951,7 +1951,11 @@ def execute_agent_task(
             progress=progress,
         )
     if action == "update-luma":
-        return update_luma_install(install_ref=str(payload.get("installRef") or ""), config_path=config_path)
+        return update_luma_install(
+            install_ref=str(payload.get("installRef") or ""),
+            config_path=config_path,
+            progress=progress,
+        )
     if action == "start-manager-update":
         return start_manager_control_update(
             install_ref=str(payload.get("installRef") or ""),
@@ -3085,7 +3089,16 @@ def _docker_image_pull_error(*, image: str, output: str, platform: str = "") -> 
     return message
 
 
-def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AGENT_CONFIG) -> Dict[str, Any]:
+def update_luma_install(
+    *,
+    install_ref: str = "",
+    config_path: Path = DEFAULT_AGENT_CONFIG,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    def emit(message: str) -> None:
+        if progress:
+            progress({"type": "status", "line": message, "ts": int(time.time())})
+
     env = os.environ.copy()
     command, exact_ref = luma_installer_command(install_ref, environ=env)
     env["LUMA_INSTALL_REF"] = exact_ref
@@ -3095,6 +3108,7 @@ def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AG
         env.setdefault("LUMA_USER_HOME", str(user_home))
         env.setdefault("LUMA_INSTALL_HOME", str(install_home))
         env.setdefault("LUMA_BIN_DIR", str(bin_dir))
+    emit(f"Downloading and installing Luma {exact_ref}.")
     try:
         completed = subprocess.run(
             command,
@@ -3112,6 +3126,7 @@ def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AG
     output = completed.stdout or ""
     if completed.returncode != 0:
         raise LumaError(f"Luma installer failed with exit code {completed.returncode}: {_tail_text(output)}")
+    emit("Package installed; refreshing the node agent service definition.")
     os_value = node_agent_os()
     executable = _installed_luma_executable()
     restart_agent = True
@@ -3129,12 +3144,14 @@ def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AG
             executor.sudo(_agent_service_command(config_path, executable=executable, restart=False), timeout=60)
     except Exception as exc:
         raise LumaError(f"Luma installer finished but node agent service refresh failed: {exc}") from exc
+    emit(f"{service_message.capitalize()}; refreshing the node watchdog.")
     watchdog_message = "Tailscale watchdog skipped"
     try:
         LocalExecutor().sudo(_node_tailscale_watchdog_install_command(node_agent_os()), timeout=60)
         watchdog_message = "Tailscale watchdog installed"
     except Exception as exc:
         watchdog_message = f"Tailscale watchdog skipped: {exc}"
+    emit(f"Update prepared successfully; {watchdog_message}.")
     return {
         "installRef": exact_ref,
         "message": f"Luma installer finished; {service_message}; {watchdog_message}",

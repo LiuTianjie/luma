@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.173 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.174 sh
 ```
 
 For local development from a checkout:
@@ -544,7 +544,7 @@ dashboard 的 Applications → Versions 也能做同样的回滚。注意这是 
 
 日常升级不需要 SSH manager，也不需要在每台节点运行命令。使用管理 Token 登录 `https://<control-domain>/dashboard/fleet`，在「升级中心」完成整条流程：
 
-1. 填写不可变 release tag（例如 `v0.1.173`）。标准 tag 会自动建议同 tag 的 Control 镜像；自定义分支或 commit 需要明确填写已发布镜像。
+1. 填写不可变 release tag（例如 `v0.1.174`）。标准 tag 会自动建议同 tag 的 Control 镜像；自定义分支或 commit 需要明确填写已发布镜像。
 2. 点击「检查全部公网路由」保存升级前基线。HTTP 成功、重定向和鉴权拒绝都能证明路由已发布；404、网关错误和连接失败会明确标红，但不会悄悄阻断管理员操作。
 3. 第一次点击「升级 Control」会展示影响和基线结果，第二次确认才会执行。更新运行在独立 systemd 单元中，不会因 node agent 自身重启而被中断。
 4. Control 替换期间页面自动重连。完成后自动重新检查全部公网路由，并展示有界日志；无需手动重启应用。

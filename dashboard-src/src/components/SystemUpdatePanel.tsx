@@ -66,12 +66,13 @@ export function SystemUpdatePanel({
   const [reconnecting, setReconnecting] = useState(false);
 
   const targetVersion = versionFromRef(installRef);
-  const nonManagerNodes = useMemo(() => nodes.filter((node) => !managerNode(node)), [nodes]);
+  const managedNodes = useMemo(() => nodes.filter((node) => node.agentStatus !== "missing"), [nodes]);
+  const nonManagerNodes = useMemo(() => managedNodes.filter((node) => !managerNode(node)), [managedNodes]);
   const staleNodes = useMemo(
     () => nonManagerNodes.filter((node) => !targetVersion || node.agentVersion !== targetVersion).map((node) => node.name || "").filter(Boolean),
     [nonManagerNodes, targetVersion],
   );
-  const aligned = nodes.filter((node) => targetVersion && node.agentVersion === targetVersion).length;
+  const aligned = managedNodes.filter((node) => targetVersion && node.agentVersion === targetVersion).length;
 
   const probeRoutes = useCallback(async () => {
     setBusy("sentinel");
@@ -187,18 +188,18 @@ export function SystemUpdatePanel({
         <div className="system-update-version">
           <span>{zh ? "当前 Control" : "Control"}</span>
           <strong>{controlVersion || "-"}</strong>
-          <small>{targetVersion ? `${aligned}/${nodes.length} ${zh ? "节点已对齐" : "nodes aligned"}` : "-"}</small>
+          <small>{targetVersion ? `${aligned}/${managedNodes.length} ${zh ? "受管节点已对齐" : "managed nodes aligned"}` : "-"}</small>
         </div>
       </div>
 
       <div className="system-update-form">
         <label>
           <span>{zh ? "目标发布版本" : "Release ref"}</span>
-          <input value={installRef} onChange={(event) => onRefChange(event.target.value)} placeholder="v0.1.173" spellCheck={false} />
+          <input value={installRef} onChange={(event) => onRefChange(event.target.value)} placeholder="v0.1.174" spellCheck={false} />
         </label>
         <label>
           <span>{zh ? "Control 镜像" : "Control image"}</span>
-          <input value={controlImage} onChange={(event) => setControlImage(event.target.value)} placeholder="ghcr.io/liutianjie/luma-control:v0.1.173" spellCheck={false} />
+          <input value={controlImage} onChange={(event) => setControlImage(event.target.value)} placeholder="ghcr.io/liutianjie/luma-control:v0.1.174" spellCheck={false} />
         </label>
       </div>
 
