@@ -472,9 +472,10 @@ export class LaeApiError extends Error {
     requestId?: string | null;
     retryable?: boolean;
   }) {
-    super(publicMessage(input.status));
+    const code = ERROR_CODE.test(input.code) ? input.code : "LAE_API_REQUEST_FAILED";
+    super(publicMessage(input.status, code));
     this.name = "LaeApiError";
-    this.code = ERROR_CODE.test(input.code) ? input.code : "LAE_API_REQUEST_FAILED";
+    this.code = code;
     this.status = input.status;
     this.requestId = input.requestId || null;
     this.retryable = Boolean(input.retryable);
@@ -1249,7 +1250,16 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function publicMessage(status: number) {
+function publicMessage(status: number, code: string) {
+  if (code === "LAE_APPLICATION_QUOTA_EXCEEDED") {
+    return "当前套餐的应用数量已达上限；请删除不再使用的应用，或升级套餐后继续。";
+  }
+  if (code === "LAE_TEMPLATE_LAUNCH_CONFLICT") {
+    return "模板创建与当前应用状态冲突；刷新应用列表后再试一次。";
+  }
+  if (code === "LAE_IDEMPOTENCY_KEY_REUSED") {
+    return "这次请求标识已经用于其他操作；请重新发起。";
+  }
   if (status === 401) return "请先登录 LAE。";
   if (status === 403) return "当前凭据没有执行此操作的权限。";
   if (status === 409) return "状态已发生变化，请刷新后重试。";

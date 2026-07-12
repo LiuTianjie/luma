@@ -131,6 +131,36 @@ type CatalogStatus = "checking" | "connected" | "unavailable";
 
 const consoleSections: ConsoleSection[] = ["deployment", "applications", "activity", "cli"];
 
+const sectionCopy: Record<
+  ConsoleSection,
+  { eyebrow: string; title: string; note: string; breadcrumb: string }
+> = {
+  deployment: {
+    eyebrow: "APPLICATION DELIVERY",
+    title: "部署应用",
+    note: "LAE Agent 诊断源码并生成 Luma 部署计划；支持 Git、静态产物与多服务 Compose。",
+    breadcrumb: "部署",
+  },
+  applications: {
+    eyebrow: "APPLICATIONS",
+    title: "应用",
+    note: "查看运行状态、公开域名和服务拓扑，并执行暂停、重启、更新检查与回滚。",
+    breadcrumb: "应用",
+  },
+  activity: {
+    eyebrow: "OPERATIONS",
+    title: "部署活动",
+    note: "诊断、构建和部署都保留结构化进度；中断的操作可以从这里继续查看或恢复。",
+    breadcrumb: "活动",
+  },
+  cli: {
+    eyebrow: "AGENT INTERFACE",
+    title: "LAE CLI",
+    note: "为用户自己的 Agent 提供与控制台等价、机器可读的诊断与部署协议。",
+    breadcrumb: "CLI",
+  },
+};
+
 function arrangeTemplates(items: ApplicationTemplate[]): Template[] {
   return items.map(({ icon, ...item }, index) => ({
     ...item,
@@ -269,47 +299,11 @@ export function LaeConsole() {
   useEffect(() => {
     const setSectionFromHash = () => {
       const section = window.location.hash.slice(1) as ConsoleSection;
-      if (consoleSections.includes(section)) setActiveSection(section);
+      setActiveSection(consoleSections.includes(section) ? section : "deployment");
     };
-    const setSectionFromScroll = () => {
-      const marker = window.innerWidth <= 760 ? 104 : 142;
-      const hashSection = window.location.hash.slice(1) as ConsoleSection;
-      let current: ConsoleSection = "deployment";
-      for (const section of consoleSections) {
-        const element = document.getElementById(section);
-        if (element && element.getBoundingClientRect().top <= marker) current = section;
-      }
-      const activityTop = document.getElementById("activity")?.getBoundingClientRect().top;
-      const cliTop = document.getElementById("cli")?.getBoundingClientRect().top;
-      const utilitiesShareRow =
-        activityTop !== undefined && cliTop !== undefined && Math.abs(activityTop - cliTop) < 4;
-      if (
-        utilitiesShareRow &&
-        (hashSection === "activity" || hashSection === "cli") &&
-        activityTop <= marker
-      ) {
-        current = hashSection;
-      }
-      if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 8) {
-        current = utilitiesShareRow && hashSection === "activity" ? "activity" : "cli";
-      }
-      setActiveSection(current);
-    };
-    const updateInitialSection = () => {
-      setSectionFromScroll();
-      setSectionFromHash();
-    };
-
+    setSectionFromHash();
     window.addEventListener("hashchange", setSectionFromHash);
-    window.addEventListener("scroll", setSectionFromScroll, { passive: true });
-    window.addEventListener("resize", setSectionFromScroll);
-    const frame = window.requestAnimationFrame(updateInitialSection);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.removeEventListener("hashchange", setSectionFromHash);
-      window.removeEventListener("scroll", setSectionFromScroll);
-      window.removeEventListener("resize", setSectionFromScroll);
-    };
+    return () => window.removeEventListener("hashchange", setSectionFromHash);
   }, []);
 
   useEffect(() => {
@@ -1026,6 +1020,8 @@ export function LaeConsole() {
     setFlowError(null);
   };
 
+  const activeCopy = sectionCopy[activeSection];
+
   return (
     <main className="console-shell">
       <aside className="rail" aria-label="主导航">
@@ -1077,81 +1073,122 @@ export function LaeConsole() {
         <Header
           principal={principal}
           catalogStatus={catalogStatus}
+          activeSection={activeSection}
           theme={theme}
           onToggleTheme={toggleTheme}
         />
         <section className="workspace">
-        <div className="hero-copy">
-          <div>
-            <p className="section-kicker">APPLICATION DELIVERY</p>
-            <h1>部署应用</h1>
-            <span>LAE Agent 诊断源码并生成 Luma 部署计划；支持 Git、静态产物与多服务 Compose。</span>
-          </div>
-          <a className="hero-primary" href="#deployment"><CloudUpload size={15} /> 新建部署</a>
-        </div>
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              className={`workspace-view view-${activeSection}`}
+              key={activeSection}
+              initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -4 }}
+              transition={{ duration: reduceMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}
+            >
+              <div className="hero-copy">
+                <div>
+                  <p className="section-kicker">{activeCopy.eyebrow}</p>
+                  <h1>{activeCopy.title}</h1>
+                  <span>{activeCopy.note}</span>
+                </div>
+                {activeSection === "deployment" && (
+                  <button className="hero-primary" type="button" onClick={resetFlow}>
+                    <CloudUpload size={15} /> 新建部署
+                  </button>
+                )}
+                {activeSection === "applications" && (
+                  <a className="hero-primary" href="#deployment" onClick={() => setActiveSection("deployment")}>
+                    <CloudUpload size={15} /> 新建部署
+                  </a>
+                )}
+                {activeSection === "activity" && (
+                  <button className="hero-primary" type="button" onClick={() => setCatalogRefresh((value) => value + 1)}>
+                    <RefreshCw size={15} /> 刷新活动
+                  </button>
+                )}
+                {activeSection === "cli" && (
+                  <Link className="hero-primary" href="/account">
+                    <Command size={15} /> 管理 Token
+                  </Link>
+                )}
+              </div>
 
-        <div className="overview-strip" aria-label="工作区概览">
-          <article><span>运行中</span><strong>{shoreApplications.filter((item) => item.tone === "healthy").length}</strong><small>applications</small></article>
-          <article><span>应用总数</span><strong>{catalogLoading ? "—" : shoreApplications.length}</strong><small>tenant catalog</small></article>
-          <article><span>已验证模板</span><strong>{templatesLoading ? "—" : templates.length}</strong><small>agent passed</small></article>
-          <article><span>来源</span><strong>3</strong><small>Git · File · Compose</small></article>
-        </div>
+              {activeSection === "deployment" && (
+                <>
+                  <div className="overview-strip" aria-label="工作区概览">
+                    <article><span>运行中</span><strong>{shoreApplications.filter((item) => item.tone === "healthy").length}</strong><small>applications</small></article>
+                    <article><span>应用总数</span><strong>{catalogLoading ? "—" : shoreApplications.length}</strong><small>tenant catalog</small></article>
+                    <article><span>已验证模板</span><strong>{templatesLoading ? "—" : templates.length}</strong><small>agent passed</small></article>
+                    <article><span>来源</span><strong>3</strong><small>Git · File · Compose</small></article>
+                  </div>
 
-        <div className="main-grid console-anchor" id="deployment">
-          <TemplateLake
-            templates={templates}
-            selected={selectedTemplate}
-            onSelect={setSelectedTemplate}
-            loading={templatesLoading}
-            notice={templatesNotice}
-            reduced={Boolean(reduceMotion)}
-          />
-          <DeploymentInstrument
-            flow={flow}
-            source={source}
-            template={selectedTemplate}
-            fileInputId={fileInputId}
-            selectedFile={selectedFile}
-            authenticated={principal !== null}
-            configuration={deploymentConfiguration}
-            plan={deploymentPlan}
-            liveDeployment={liveDeployment}
-            environmentSaving={environmentSaving}
-            events={operationEvents}
-            error={flowError}
-            onSource={selectSource}
-            onFile={selectFile}
-            onAnalyzeGit={beginGitDiagnosis}
-            onAnalyzeUpload={beginUploadDiagnosis}
-            onLaunchTemplate={beginTemplateDiagnosis}
-            onSaveEnvironment={saveEnvironment}
-            onDeploy={deploy}
-            onReset={resetFlow}
-            reduced={Boolean(reduceMotion)}
-          />
-        </div>
+                  <div className="main-grid console-anchor" id="deployment">
+                    <TemplateLake
+                      templates={templates}
+                      selected={selectedTemplate}
+                      onSelect={setSelectedTemplate}
+                      loading={templatesLoading}
+                      notice={templatesNotice}
+                      reduced={Boolean(reduceMotion)}
+                    />
+                    <DeploymentInstrument
+                      flow={flow}
+                      source={source}
+                      template={selectedTemplate}
+                      fileInputId={fileInputId}
+                      selectedFile={selectedFile}
+                      authenticated={principal !== null}
+                      configuration={deploymentConfiguration}
+                      plan={deploymentPlan}
+                      liveDeployment={liveDeployment}
+                      environmentSaving={environmentSaving}
+                      events={operationEvents}
+                      error={flowError}
+                      onSource={selectSource}
+                      onFile={selectFile}
+                      onAnalyzeGit={beginGitDiagnosis}
+                      onAnalyzeUpload={beginUploadDiagnosis}
+                      onLaunchTemplate={beginTemplateDiagnosis}
+                      onSaveEnvironment={saveEnvironment}
+                      onDeploy={deploy}
+                      onReset={resetFlow}
+                      reduced={Boolean(reduceMotion)}
+                    />
+                  </div>
+                </>
+              )}
 
-        <ApplicationShore
-          applications={shoreApplications}
-          authenticated={principal !== null}
-          loading={catalogLoading}
-          notice={catalogNotice}
-          onRefresh={() => setCatalogRefresh((value) => value + 1)}
-          busyApplicationIds={lifecycleBusy}
-          onAction={runLifecycleAction}
-          onConfirmAction={(application, action) =>
-            setConfirmedLifecycleAction({ application, action })
-          }
-          onInspect={inspectApplication}
-        />
-        <ConsoleUtilities
-          flow={flow}
-          events={operationEvents}
-          operations={recentOperations}
-          recoveryBusy={recoveryBusy}
-          error={flowError}
-          onRecover={(operation) => void recoverHistoricalOperation(operation)}
-        />
+              {activeSection === "applications" && (
+                <ApplicationShore
+                  applications={shoreApplications}
+                  authenticated={principal !== null}
+                  loading={catalogLoading}
+                  notice={catalogNotice}
+                  onRefresh={() => setCatalogRefresh((value) => value + 1)}
+                  busyApplicationIds={lifecycleBusy}
+                  onAction={runLifecycleAction}
+                  onConfirmAction={(application, action) =>
+                    setConfirmedLifecycleAction({ application, action })
+                  }
+                  onInspect={inspectApplication}
+                />
+              )}
+
+              {(activeSection === "activity" || activeSection === "cli") && (
+                <ConsoleUtilities
+                  section={activeSection}
+                  flow={flow}
+                  events={operationEvents}
+                  operations={recentOperations}
+                  recoveryBusy={recoveryBusy}
+                  error={flowError}
+                  onRecover={(operation) => void recoverHistoricalOperation(operation)}
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
         </section>
       </div>
       <AnimatePresence>
@@ -1195,11 +1232,13 @@ export function LaeConsole() {
 function Header({
   principal,
   catalogStatus,
+  activeSection,
   theme,
   onToggleTheme,
 }: {
   principal: LaePrincipal | null;
   catalogStatus: CatalogStatus;
+  activeSection: ConsoleSection;
   theme: "light" | "dark";
   onToggleTheme: () => void;
 }) {
@@ -1208,7 +1247,7 @@ function Header({
   return (
     <header className="topbar">
       <div className="topbar-breadcrumbs">
-        <span>LAE</span><ChevronRight size={12} /><strong>部署</strong>
+        <span>LAE</span><ChevronRight size={12} /><strong>{sectionCopy[activeSection].breadcrumb}</strong>
       </div>
       <div className="runtime-status">
         <span className={`runtime-pulse${catalogAvailable ? "" : " is-muted"}`} />
@@ -2259,6 +2298,7 @@ function ApplicationShore({
 }
 
 function ConsoleUtilities({
+  section,
   flow,
   events,
   operations,
@@ -2266,6 +2306,7 @@ function ConsoleUtilities({
   error,
   onRecover,
 }: {
+  section: "activity" | "cli";
   flow: FlowState;
   events: OperationEvent[];
   operations: OperationListItem[];
@@ -2275,8 +2316,9 @@ function ConsoleUtilities({
 }) {
   const recentEvents = events.slice(-4).reverse();
   return (
-    <div className="console-utilities">
-      <section className="utility-panel console-anchor" id="activity" aria-labelledby="activity-title">
+    <div className="console-utilities is-single">
+      {section === "activity" && (
+        <section className="utility-panel console-anchor" id="activity" aria-labelledby="activity-title">
         <div className="utility-heading">
           <span className="section-index">03</span>
           <div>
@@ -2317,26 +2359,29 @@ function ConsoleUtilities({
             </div>
           </div>
         )}
-      </section>
+        </section>
+      )}
 
-      <section className="utility-panel console-anchor" id="cli" aria-labelledby="cli-title">
-        <div className="utility-heading">
-          <span className="section-index">04</span>
-          <div>
-            <p>AGENT-FRIENDLY</p>
-            <h2 id="cli-title">LAE CLI</h2>
+      {section === "cli" && (
+        <section className="utility-panel console-anchor" id="cli" aria-labelledby="cli-title">
+          <div className="utility-heading">
+            <span className="section-index">04</span>
+            <div>
+              <p>AGENT-FRIENDLY</p>
+              <h2 id="cli-title">LAE CLI</h2>
+            </div>
+            <SquareTerminal size={18} strokeWidth={1.4} />
           </div>
-          <SquareTerminal size={18} strokeWidth={1.4} />
-        </div>
-        <p className="cli-description">Deploy token 授权后，CLI 与控制台走同一套诊断和部署协议，并持续输出机器可读进度。</p>
-        <div className="cli-command" aria-label="LAE CLI 示例命令">
-          <code><span>$</span> lae login --token-stdin</code>
-          <code><span>$</span> lae inspect --app &lt;id&gt; --repo &lt;url&gt; --ref &lt;ref&gt; --idempotency-key &lt;key&gt;</code>
-        </div>
-        <Link className="utility-link" href="/account">
-          管理 Deploy token <ArrowRight size={14} />
-        </Link>
-      </section>
+          <p className="cli-description">Deploy token 授权后，CLI 与控制台走同一套诊断和部署协议，并持续输出机器可读进度。</p>
+          <div className="cli-command" aria-label="LAE CLI 示例命令">
+            <code><span>$</span> lae login --token-stdin</code>
+            <code><span>$</span> lae inspect --app &lt;id&gt; --repo &lt;url&gt; --ref &lt;ref&gt; --idempotency-key &lt;key&gt;</code>
+          </div>
+          <Link className="utility-link" href="/account">
+            管理 Deploy token <ArrowRight size={14} />
+          </Link>
+        </section>
+      )}
     </div>
   );
 }

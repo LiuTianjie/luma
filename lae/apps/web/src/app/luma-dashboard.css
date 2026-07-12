@@ -200,6 +200,10 @@ summary:focus-visible {
 .console-shell .plan-badge { padding: 4px 7px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 9px; }
 
 .console-shell .workspace { position: relative; z-index: auto; max-width: none; margin: 0; padding: 22px; }
+.console-shell .workspace-view { min-height: calc(100vh - var(--topbar-height) - 44px); }
+.console-shell .workspace-view.view-applications,
+.console-shell .workspace-view.view-activity,
+.console-shell .workspace-view.view-cli { display: flex; flex-direction: column; }
 .console-anchor { scroll-margin-top: 84px; }
 
 .console-shell .hero-copy {
@@ -334,6 +338,8 @@ summary:focus-visible {
 .console-shell .lake-status { color: var(--text-subtle); font-size: 10px; }
 
 .console-shell .application-shore { margin-top: 12px; padding: 0; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 0; overflow: hidden; }
+.console-shell .view-applications .application-shore { min-height: 520px; margin-top: 0; grid-template-columns: 220px minmax(0, 1fr); flex: 1; }
+.console-shell .view-applications .application-ribbon { align-content: start; }
 .console-shell .shore-title { padding: 16px; border-right: 1px solid var(--line); }
 .console-shell .shore-title h2 { margin: 0; color: var(--text); font-family: inherit; font-size: 15px; font-weight: 700; }
 .console-shell .shore-title p { color: var(--text-subtle); font-size: 10px; }
@@ -359,6 +365,12 @@ summary:focus-visible {
 .console-shell .application-empty a { color: var(--accent); font-size: 10px; }
 
 .console-shell .console-utilities { margin-top: 12px; gap: 12px; }
+.console-shell .console-utilities.is-single { margin-top: 0; grid-template-columns: minmax(0, 1fr); flex: 1; }
+.console-shell .console-utilities.is-single .utility-panel { min-height: 520px; }
+.console-shell .view-activity .activity-ledger { max-width: 980px; }
+.console-shell .view-cli .cli-description { max-width: 720px; font-size: 12px; line-height: 1.7; }
+.console-shell .view-cli .cli-command { max-width: 980px; min-height: 132px; padding: 20px; justify-content: center; gap: 14px; }
+.console-shell .view-cli .cli-command code { font-size: 11px; }
 .console-shell .utility-panel { min-height: 240px; padding: 16px; }
 .console-shell .utility-heading p { color: var(--text-subtle); font-size: 9px; }
 .console-shell .utility-heading h2 { color: var(--text); font-family: inherit; font-size: 15px; font-weight: 700; }
@@ -706,6 +718,7 @@ summary:focus-visible {
   .console-shell .phase-track li small { display: none; }
   .console-shell .water-field { grid-template-columns: 1fr; }
   .console-shell .application-shore { grid-template-columns: 1fr; }
+  .console-shell .view-applications .application-shore { min-height: 0; grid-template-columns: 1fr; }
   .console-shell .shore-title { border-right: 0; border-bottom: 1px solid var(--line); }
   .console-shell .console-utilities { grid-template-columns: 1fr; }
   .auth-shell { display: block; }
