@@ -15,7 +15,7 @@ from .config import LumaConfig, NodeConfig
 from .cloudflare import sync_control_dns
 from .egress import minimal_mihomo_config_from_url
 from .errors import LumaError
-from .io import dump_yaml
+from .io import dump_yaml, load_yaml
 from .local import LocalExecutor
 from .profiles import PROFILES, Profile
 from .registry import image_uses_mutable_latest_tag, registry_host_from_image
@@ -503,8 +503,31 @@ def _image_repository(image: str) -> str:
 
 
 def install_control_config(remote: Executor, config: LumaConfig, node: NodeConfig | None = None) -> str:
-    content = Path(config.path).read_text(encoding="utf-8") if config.path else dump_yaml(_bootstrap_config(config, node))
+    incoming = dict(config.raw) if config.path else _bootstrap_config(config, node)
+    destination = Path(ROOT) / "luma.yaml"
+    if isinstance(remote, LocalExecutor) and destination.exists():
+        # `luma update manager` may be launched with a smaller bootstrap config
+        # than the live control config. The update must be monotonic: preserve
+        # operator-owned sections (providers, node metadata, image overrides,
+        # etc.) that are absent from the incoming file while still allowing
+        # explicitly supplied values to override them.
+        incoming = _merge_control_config(load_yaml(destination), incoming)
+    if config.path and (not isinstance(remote, LocalExecutor) or Path(config.path).resolve() == destination.resolve()):
+        content = Path(config.path).read_text(encoding="utf-8")
+    else:
+        content = dump_yaml(incoming)
     return remote.write_secret(content, f"{ROOT}/luma.yaml", mode="644")
+
+
+def _merge_control_config(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(existing)
+    for key, value in incoming.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_control_config(current, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _bootstrap_config(config: LumaConfig, node: NodeConfig | None = None) -> dict[str, object]:

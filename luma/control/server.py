@@ -8476,6 +8476,7 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
     if not isinstance(allocations, list):
         raise LumaError(f"Nomad returned invalid allocations for job: {stack}")
     restarted = []
+    recreated_allocation_ids: set[str] = set()
     recreated_node_names: set[str] = set()
     recreated_host_ports: set[int] = set()
     for alloc in allocations:
@@ -8493,6 +8494,7 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
                 continue
             api.request("POST", f"/v1/allocation/{urllib.parse.quote(alloc_id, safe='')}/stop", None)
             restarted.append({"allocId": alloc_id, "task": service_name or "*", "mode": mode})
+            recreated_allocation_ids.add(alloc_id)
             node_name = _luma_node_name_for_nomad_allocation(state, alloc)
             if node_name:
                 recreated_node_names.add(node_name)
@@ -8513,10 +8515,110 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         "mode": mode,
         "restarted": restarted,
     }
+    if recreated_allocation_ids:
+        result["replacementAllocations"] = _wait_for_nomad_job_replacement(
+            api,
+            stack,
+            recreated_allocation_ids,
+            min_running=len(recreated_allocation_ids),
+        )
     cni_hostports = _refresh_nomad_cni_hostports_for_nodes(state, recreated_node_names, ports=sorted(recreated_host_ports))
     if recreated_node_names or cni_hostports.get("results") or cni_hostports.get("skipped"):
         result["cniHostports"] = cni_hostports
+    result["delivery"] = _reconcile_application_delivery(state, config, stack)
     return result
+
+
+def _reconcile_application_delivery(state: Dict[str, Any], config: Any, stack: str) -> Dict[str, Any]:
+    """Restore the externally observable delivery state after an app restart.
+
+    Nomad recreates allocations, but file-provider routes and DNS live outside
+    Nomad. A restart is only complete after those derived resources have been
+    reconstructed from Luma's stored deployment record and the public HTTP
+    endpoints have converged again.
+    """
+    deployments = _deployments_state(state)
+    slug = slugify(stack)
+    service_record = deployments["services"].get(slug)
+    compose_record = deployments["compose"].get(slug)
+    if not isinstance(service_record, dict) and not isinstance(compose_record, dict):
+        return {
+            "status": "skipped",
+            "message": "delivery reconcile skipped: deployment record is unavailable",
+            "routes": [],
+            "dns": [],
+            "probes": [],
+        }
+
+    config_path = _control_config_path()
+    routes_root = _resolve_control_path(config.routes_root, config_path)
+    route_results: list[str] = []
+    dns_results: list[str] = []
+    probe_results: list[str] = []
+
+    file_route_exposures = {"cn-edge", "external-edge", "tailscale-relay", "tcp-relay"}
+
+    def reconcile_service(service: ServiceSpec, route_target: Path | None) -> None:
+        route_service = service
+        if service.exposure in file_route_exposures:
+            if route_target is None:
+                raise LumaError(f"route target is required for {service.name}")
+            if service.exposure in {"tailscale-relay", "tcp-relay"}:
+                route_service = resolve_nomad_static_route_target(
+                    service,
+                    state,
+                    prefer_publish_port=service.exposure == "tailscale-relay",
+                )
+            else:
+                if not service.node:
+                    raise LumaError(f"{service.exposure} delivery reconcile requires a resolved node")
+                relay = dict(service.relay)
+                relay["host"] = _nomad_route_host_for_node(state, service.node)
+                relay["port"] = int(service.publish_port or service.port or 0)
+                route_service = replace(service, relay=relay)
+            route_text = (
+                render_tailscale_route(config, route_service)
+                if service.exposure == "tailscale-relay"
+                or service.exposure in {"cn-edge", "external-edge"}
+                else render_tcp_route(config, route_service)
+            )
+            route_target.parent.mkdir(parents=True, exist_ok=True)
+            route_results.append(_write_route_file(route_target, route_text, routes_root=routes_root))
+        dns_results.append(sync_dns(config, route_service))
+        if route_service.exposure in {"cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel"} and route_service.domain:
+            probe_results.append(_wait_for_public_route(route_service))
+
+    if isinstance(service_record, dict):
+        service, _source_name = _service_remove_request(service_record, stack)
+        service = resolve_service_node_pin(service, state, engine="nomad")
+        route_target = (
+            _resolve_control_path(route_path(config, service), config_path)
+            if service.exposure in file_route_exposures
+            else None
+        )
+        reconcile_service(service, route_target)
+        kind = "service"
+    else:
+        deployment, _source_name = _compose_remove_request(compose_record, stack)
+        for service_name, service in deployment.services.items():
+            if service.exposure == "none":
+                continue
+            service_spec = _compose_service_as_service_spec(deployment, service)
+            route_target = (
+                _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
+                if service.exposure in file_route_exposures
+                else None
+            )
+            reconcile_service(service_spec, route_target)
+        kind = "compose"
+
+    return {
+        "status": "ready",
+        "kind": kind,
+        "routes": route_results,
+        "dns": dns_results,
+        "probes": probe_results,
+    }
 
 
 def _application_restart_mode(value: Any, *, service_name: str = "") -> str:

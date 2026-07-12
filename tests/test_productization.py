@@ -57,6 +57,7 @@ from luma.bootstrap import (
     configure_tailscale_watchdog,
     deploy_control_stack,
     install_control_config,
+    _merge_control_config,
     install_docker,
     install_nomad_node,
     local_host_name,
@@ -3910,6 +3911,31 @@ class EnvFileTests(unittest.TestCase):
 
 
 class NomadBootstrapTests(unittest.TestCase):
+    def test_manager_config_merge_preserves_operator_providers_and_nested_defaults(self):
+        existing = {
+            "providers": {
+                "dns": {
+                    "type": "cloudflare",
+                    "zone": "itool.tech",
+                    "zoneId": "zone-id",
+                    "apiTokenEnv": "CLOUDFLARE_API_TOKEN",
+                }
+            },
+            "defaults": {"engine": "nomad", "routesRoot": "/opt/luma/routes"},
+            "nodes": {"manager": {"host": "localhost", "roles": ["edge"]}},
+        }
+        incoming = {
+            "defaults": {"engine": "nomad", "images": {"lumaControl": "example/control:new"}},
+            "nodes": {"manager": {"host": "localhost"}},
+        }
+
+        merged = _merge_control_config(existing, incoming)
+
+        self.assertEqual(merged["providers"], existing["providers"])
+        self.assertEqual(merged["defaults"]["routesRoot"], "/opt/luma/routes")
+        self.assertEqual(merged["defaults"]["images"]["lumaControl"], "example/control:new")
+        self.assertEqual(merged["nodes"]["manager"]["roles"], ["edge"])
+
     def test_install_control_config_generates_config_without_local_path(self):
         config = LumaConfig({}, None)
         node = config.default_manager()
@@ -6672,12 +6698,18 @@ class ControlApiTests(unittest.TestCase):
                     ],
                     {},
                     {},
+                    [
+                        {"ID": "alloc-api-new", "ClientStatus": "running", "TaskStates": {"api": {}}},
+                        {"ID": "alloc-worker-new", "ClientStatus": "running", "TaskStates": {"worker": {}}},
+                    ],
                 ]
                 with patch("luma.control.server.NomadApi", return_value=api):
                     result = handle_application_restart(state["deployToken"], {"stack": "myapp"})
                 self.assertEqual(result["stack"], "myapp")
                 self.assertEqual(result["mode"], "recreate")
                 self.assertEqual(len(result["restarted"]), 2)
+                self.assertEqual(result["replacementAllocations"], ["alloc-api-new", "alloc-worker-new"])
+                self.assertEqual(result["delivery"]["status"], "skipped")
                 api.request.assert_any_call("GET", "/v1/job/myapp/allocations")
                 api.request.assert_any_call("POST", "/v1/allocation/alloc-api/stop", None)
                 api.request.assert_any_call("POST", "/v1/allocation/alloc-worker/stop", None)
@@ -6715,6 +6747,14 @@ class ControlApiTests(unittest.TestCase):
                         },
                     ],
                     {},
+                    [
+                        {
+                            "ID": "alloc-api-new",
+                            "ClientStatus": "running",
+                            "TaskStates": {"api": {}},
+                            "NodeID": "node-blg",
+                        }
+                    ],
                 ]
                 with patch("luma.control.server.NomadApi", return_value=api), patch(
                     "luma.control.server._queue_node_agent_task",
@@ -6748,6 +6788,167 @@ class ControlApiTests(unittest.TestCase):
                 api.request.assert_any_call("POST", "/v1/client/allocation/alloc-app/restart", {"TaskName": "api"})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_restart_rebuilds_missing_http_route_from_deployment_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "tecent": {
+                        "name": "tecent",
+                        "nodeId": "node-tecent",
+                        "tailscaleIP": "100.64.29.91",
+                    }
+                }
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "linkshell-gateway",
+                        "image": "example/gateway:1",
+                        "region": "cn",
+                        "node": "tecent",
+                        "public": True,
+                        "exposure": "cn-edge",
+                        "domain": "gateway.example.com",
+                        "port": 8787,
+                        "publishPort": 8787,
+                    }
+                )
+                state["deployments"] = {
+                    "services": {
+                        "linkshell-gateway": {
+                            "kind": "service",
+                            "name": "linkshell-gateway",
+                            "slug": "linkshell-gateway",
+                            "manifest": manifest,
+                            "sourceName": "gateway.yaml",
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "defaults": {
+                                "engine": "nomad",
+                                "routesRoot": str(root / "routes"),
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                api = Mock()
+                api.request.side_effect = [
+                    [{"ID": "alloc-old", "ClientStatus": "running", "TaskStates": {"gateway": {}}}],
+                    {},
+                    [{"ID": "alloc-new", "ClientStatus": "running", "TaskStates": {"gateway": {}}}],
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api), patch(
+                    "luma.control.server.sync_dns", return_value="DNS unchanged"
+                ), patch(
+                    "luma.control.server._wait_for_public_route", return_value="Public route reachable"
+                ):
+                    result = handle_application_restart(state["deployToken"], {"stack": "linkshell-gateway"})
+
+                route = yaml.safe_load((root / "routes" / "linkshell-gateway.yml").read_text(encoding="utf-8"))
+                upstream = route["http"]["services"]["linkshell-gateway"]["loadBalancer"]["servers"][0]["url"]
+                self.assertEqual(upstream, "http://100.64.29.91:8787")
+                self.assertEqual(result["delivery"]["status"], "ready")
+                self.assertEqual(result["delivery"]["probes"], ["Public route reachable"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_application_restart_rebuilds_all_compose_http_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "tecent": {"name": "tecent", "nodeId": "node-tecent", "tailscaleIP": "100.64.29.91"}
+                }
+                compose = yaml.safe_dump(
+                    {
+                        "services": {
+                            "web": {"image": "example/web:1"},
+                            "admin": {"image": "example/admin:1"},
+                        }
+                    }
+                )
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "multi-http",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "services": {
+                            "web": {
+                                "node": "tecent",
+                                "exposure": "cn-edge",
+                                "domain": "web.example.com",
+                                "port": 3000,
+                                "publishPort": 13000,
+                            },
+                            "admin": {
+                                "node": "tecent",
+                                "exposure": "cn-edge",
+                                "domain": "admin.example.com",
+                                "port": 3001,
+                                "publishPort": 13001,
+                            },
+                        },
+                    }
+                )
+                state["deployments"] = {
+                    "services": {},
+                    "compose": {
+                        "multi-http": {
+                            "kind": "compose",
+                            "name": "multi-http",
+                            "slug": "multi-http",
+                            "manifest": sidecar,
+                            "composeContent": compose,
+                            "sourceName": "luma.compose.yml",
+                        }
+                    },
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "routesRoot": str(root / "routes")}}),
+                    encoding="utf-8",
+                )
+                api = Mock()
+                api.request.side_effect = [
+                    [{"ID": "alloc-old", "ClientStatus": "running", "TaskStates": {"web": {}, "admin": {}}}],
+                    {},
+                    [{"ID": "alloc-new", "ClientStatus": "running", "TaskStates": {"web": {}, "admin": {}}}],
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api), patch(
+                    "luma.control.server.sync_dns", return_value="DNS unchanged"
+                ), patch(
+                    "luma.control.server._wait_for_public_route", return_value="Public route reachable"
+                ):
+                    result = handle_application_restart(state["deployToken"], {"stack": "multi-http"})
+
+                web_route = yaml.safe_load((root / "routes" / "multi-http-web.yml").read_text(encoding="utf-8"))
+                admin_route = yaml.safe_load((root / "routes" / "multi-http-admin.yml").read_text(encoding="utf-8"))
+                self.assertEqual(
+                    web_route["http"]["services"]["multi-http-web"]["loadBalancer"]["servers"][0]["url"],
+                    "http://100.64.29.91:13000",
+                )
+                self.assertEqual(
+                    admin_route["http"]["services"]["multi-http-admin"]["loadBalancer"]["servers"][0]["url"],
+                    "http://100.64.29.91:13001",
+                )
+                self.assertEqual(len(result["delivery"]["routes"]), 2)
+                self.assertEqual(len(result["delivery"]["probes"]), 2)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_application_restart_rejects_system_stack(self):
         with tempfile.TemporaryDirectory() as tmp:
