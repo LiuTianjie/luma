@@ -237,7 +237,15 @@ class Analyzer:
             )
         )
         seed = {
-            "metadata": self.metadata,
+            # A snapshot id identifies one fetch attempt and is intentionally
+            # different on every update check.  Plans describe source content,
+            # so their identity must be derived from immutable source facts or
+            # an unchanged repository will look like a deployment change.
+            "metadata": {
+                "resolvedCommit": self.metadata["resolvedCommit"],
+                "sourceSnapshotDigest": self.metadata["sourceSnapshotDigest"],
+                "policyVersion": self.metadata["policyVersion"],
+            },
             "adapter": self.adapter,
             "inventory": self.inventory,
             "services": self.services,
@@ -248,7 +256,7 @@ class Analyzer:
         deployment_plan = {
             "schemaVersion": "lae.deployment-plan/v1",
             "planId": f"plan_{seed_digest[:24]}",
-            "sourceRevisionId": f"src_{_stable_identifier(self.metadata['sourceSnapshotId'])}",
+            "sourceRevisionId": f"src_{_stable_identifier(self.metadata['sourceSnapshotDigest'])}",
             "sourceDigest": self.metadata["sourceSnapshotDigest"],
             "kind": self.kind,
             "services": sorted(self.services, key=lambda item: item["key"]),

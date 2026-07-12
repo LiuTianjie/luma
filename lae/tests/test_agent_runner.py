@@ -116,6 +116,36 @@ class AgentRunnerTests(unittest.TestCase):
             )
             self.assertEqual(descriptor["sizeBytes"], len(artifacts[filename]))
 
+    def test_deployment_plan_is_stable_across_equivalent_source_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "index.html").write_text("<h1>stable</h1>", encoding="utf-8")
+            first_output = root / "first"
+            second_output = root / "second"
+
+            first = analyze_source(
+                source,
+                metadata(sourceSnapshotId="snapshot-fetch-one"),
+                first_output,
+            )
+            second = analyze_source(
+                source,
+                metadata(sourceSnapshotId="snapshot-fetch-two"),
+                second_output,
+            )
+
+            self.assertNotEqual(first["sourceSnapshotId"], second["sourceSnapshotId"])
+            self.assertEqual(
+                first["artifacts"]["deploymentPlan"]["digest"],
+                second["artifacts"]["deploymentPlan"]["digest"],
+            )
+            self.assertEqual(
+                (first_output / "deployment-plan.json").read_bytes(),
+                (second_output / "deployment-plan.json").read_bytes(),
+            )
+
     def test_platform_node_and_python_adapters_use_root_health_probe(self) -> None:
         fixtures = (
             (
