@@ -3,7 +3,10 @@
 # MinIO stopped publishing an official container for its 2025-10-15 security
 # release. Build the verified upstream release commit so LAE does not run the
 # older service-account/session-policy implementation that preceded that fix.
-FROM golang:1.24.8-bookworm@sha256:4ed690d6649d63c312b99a6120025ec79ce3b542968a37da53d6236c7c61a848 AS build
+# Docker Hub is intermittently too slow from the dedicated builder. The proxy
+# serves the exact same multi-arch manifest, still pinned and verified by the
+# upstream digest below, so it cannot substitute different image contents.
+FROM dockerproxy.net/library/golang:1.24.8-bookworm@sha256:4ed690d6649d63c312b99a6120025ec79ce3b542968a37da53d6236c7c61a848 AS build
 
 ARG MINIO_RELEASE=RELEASE.2025-10-15T17-29-55Z
 ARG MINIO_COMMIT=9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a
