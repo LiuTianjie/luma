@@ -15,6 +15,7 @@ from .errors import LumaError
 # than local ones.
 GIT_NETWORK_TIMEOUT = 300
 GIT_LOCAL_TIMEOUT = 60
+_FULL_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
 
 
 def _redact(text: str) -> str:
@@ -97,10 +98,29 @@ def clone(
         env["HTTPS_PROXY"] = proxy
         env["ALL_PROXY"] = proxy
 
-    command = ["git", "clone", "--depth", "1"]
-    if ref:
-        command += ["--branch", str(ref)]
-    command += [safe_url, str(dest)]
+    if ref and _FULL_COMMIT_RE.fullmatch(str(ref)):
+        commands = [
+            ["git", "init", "--", str(dest)],
+            ["git", "-C", str(dest), "remote", "add", "origin", safe_url],
+            [
+                "git",
+                "-C",
+                str(dest),
+                "fetch",
+                "--depth",
+                "1",
+                "--no-tags",
+                "origin",
+                str(ref),
+            ],
+            ["git", "-C", str(dest), "checkout", "--detach", "FETCH_HEAD"],
+        ]
+    else:
+        command = ["git", "clone", "--depth", "1"]
+        if ref:
+            command += ["--branch", str(ref)]
+        command += [safe_url, str(dest)]
+        commands = [command]
     try:
         with tempfile.TemporaryDirectory(prefix="luma-git-auth-") as auth_tmp:
             if token and safe_url.startswith("https://"):
@@ -113,15 +133,18 @@ def clone(
                 env["GIT_ASKPASS_REQUIRE"] = "force"
                 env["LUMA_GIT_USERNAME_FILE"] = str(username_file)
                 env["LUMA_GIT_PASSWORD_FILE"] = str(password_file)
-            result = subprocess.run(
-                command,
-                check=False,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-                timeout=GIT_NETWORK_TIMEOUT,
-            )
+            for command in commands:
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    timeout=GIT_NETWORK_TIMEOUT,
+                )
+                if result.returncode != 0:
+                    break
     except FileNotFoundError as exc:
         raise LumaError("git is not installed") from exc
     except subprocess.TimeoutExpired as exc:

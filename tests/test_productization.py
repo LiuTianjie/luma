@@ -11396,6 +11396,40 @@ class GithubImportTests(unittest.TestCase):
         self.assertIn("--branch", captured["cmd"])
         self.assertIn("main", captured["cmd"])
 
+    def test_clone_fetches_full_commit_without_treating_it_as_a_branch(self):
+        from luma import gitops
+
+        captured = []
+        commit = "45b76e581e894f5d66ef142944c781073c35f5ef"
+
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            return Mock(returncode=0, stdout="")
+
+        with patch("luma.gitops.subprocess.run", side_effect=fake_run):
+            gitops.clone("https://github.com/acme/app", Path("/tmp/x"), ref=commit)
+
+        self.assertEqual([command[1] for command in captured], ["init", "-C", "-C", "-C"])
+        self.assertEqual(captured[2][-2:], ["origin", commit])
+        self.assertEqual(captured[3][-2:], ["--detach", "FETCH_HEAD"])
+        self.assertNotIn("--branch", [item for command in captured for item in command])
+
+    def test_clone_accepts_uppercase_full_commit(self):
+        from luma import gitops
+
+        captured = []
+        commit = "45B76E581E894F5D66EF142944C781073C35F5EF"
+
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            return Mock(returncode=0, stdout="")
+
+        with patch("luma.gitops.subprocess.run", side_effect=fake_run):
+            gitops.clone("https://github.com/acme/app", Path("/tmp/x"), ref=commit)
+
+        self.assertEqual(captured[2][-2:], ["origin", commit])
+        self.assertEqual(captured[3][-2:], ["--detach", "FETCH_HEAD"])
+
     def test_clone_injects_token_and_proxy(self):
         from luma import gitops
 
