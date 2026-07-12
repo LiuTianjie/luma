@@ -357,7 +357,7 @@ class PostgresAnalysisRecorderShapeTests(unittest.TestCase):
             kind="upload",
             upload_id=new_id("upl"),
             resolved_commit_full=None,
-            source_tree_digest=references.source_tree_digest,
+            source_tree_digest="sha256:" + "0" * 64,
             snapshot_id=None,
             snapshot_digest="sha256:" + "7" * 64,
         )
@@ -370,7 +370,7 @@ class PostgresAnalysisRecorderShapeTests(unittest.TestCase):
         self.assertEqual(source.snapshot_id, references.source_snapshot_id)
         self.assertEqual(source.snapshot_digest, references.source_snapshot_digest)
 
-    def test_upload_source_rejects_scanner_tree_mismatch(self) -> None:
+    def test_upload_source_rejects_raw_object_digest_mismatch(self) -> None:
         references = replace(
             AnalysisCheckpointCodecTests.references(),
             resolved_commit="7" * 64,
@@ -382,7 +382,7 @@ class PostgresAnalysisRecorderShapeTests(unittest.TestCase):
             resolved_commit_full=None,
             source_tree_digest="sha256:" + "0" * 64,
             snapshot_id=f"upload:{upload_id}",
-            snapshot_digest="sha256:" + "7" * 64,
+            snapshot_digest="sha256:" + "8" * 64,
         )
 
         with self.assertRaises(AnalyzeOrchestrationError):

@@ -1059,13 +1059,12 @@ class PostgresAnalysisRecorder:
         source: SourceRevision, references: AnalysisDigestReferences
     ) -> None:
         if source.kind == "upload":
-            # Upload admission already pins the quarantined object and the
-            # scanner's canonical tree before the analyzer runs.  Those are
-            # provenance inputs, not the analyzer snapshot identity.  Verify
-            # them once, then replace the provisional upload:* snapshot fields
-            # with the immutable snapshot emitted by Builder.  Treating the
-            # provisional fields as a completed analyzer result makes every
-            # otherwise valid HTML/ZIP analysis fail at result recording.
+            # Upload admission already pins the quarantined object and records
+            # the scanner's validation tree before the analyzer runs.  The
+            # scanner and Builder intentionally use different tree formats, so
+            # only the raw object digest can bind both stages.  Verify that
+            # digest once, then replace all provisional upload identity fields
+            # with the immutable source tree and snapshot emitted by Builder.
             upload_digest = (
                 f"sha256:{references.resolved_commit}"
                 if len(references.resolved_commit) == 64
@@ -1074,12 +1073,13 @@ class PostgresAnalysisRecorder:
             if (
                 source.upload_id is None
                 or source.resolved_commit_full is not None
-                or source.source_tree_digest != references.source_tree_digest
+                or source.source_tree_digest is None
                 or source.snapshot_id != f"upload:{source.upload_id}"
                 or source.snapshot_digest != upload_digest
             ):
                 raise AnalyzeOrchestrationError()
             source.resolved_commit_full = references.resolved_commit
+            source.source_tree_digest = references.source_tree_digest
             source.snapshot_id = references.source_snapshot_id
             source.snapshot_digest = references.source_snapshot_digest
             return
