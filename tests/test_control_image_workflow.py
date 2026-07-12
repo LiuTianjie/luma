@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "control-image.yml"
+PYPI_WORKFLOW = ROOT / ".github" / "workflows" / "pypi.yml"
 
 
 class ControlImageWorkflowTests(unittest.TestCase):
@@ -49,6 +50,13 @@ class ControlImageWorkflowTests(unittest.TestCase):
             'default_archive_url="$REPO_URL/archive/$INSTALL_REF.tar.gz"',
             installer,
         )
+
+    def test_release_workflows_reject_tag_version_mismatch(self) -> None:
+        for path in (WORKFLOW, PYPI_WORKFLOW):
+            with self.subTest(path=path.name):
+                workflow = path.read_text(encoding="utf-8")
+                self.assertIn('expected="v$(python scripts/bump-version.py --check)"', workflow)
+                self.assertIn('test "$GITHUB_REF_NAME" = "$expected"', workflow)
 
 
 if __name__ == "__main__":

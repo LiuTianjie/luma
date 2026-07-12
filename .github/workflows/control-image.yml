@@ -54,6 +54,13 @@ jobs:
       - name: Validate image sources
         run: |
           python scripts/bump-version.py --check
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            expected="v$(python scripts/bump-version.py --check)"
+            test "$GITHUB_REF_NAME" = "$expected" || {
+              echo "release tag $GITHUB_REF_NAME does not match package version $expected" >&2
+              exit 1
+            }
+          fi
           npm run typecheck:dashboard
           npm run build:dashboard
           python -m unittest discover -s tests -p 'test_render.py'
