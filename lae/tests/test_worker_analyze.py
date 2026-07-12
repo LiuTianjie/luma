@@ -60,6 +60,7 @@ from lae_worker import (  # noqa: E402
     build_worker_from_env,
 )
 from lae_worker.postgres import _deserialize_result, _serialize_result  # noqa: E402
+from lae_worker.analyze import AnalyzeOrchestrationError  # noqa: E402
 
 
 NOW = datetime(2026, 7, 11, tzinfo=timezone.utc)
@@ -346,6 +347,49 @@ class AnalysisCheckpointCodecTests(unittest.TestCase):
 
 
 class PostgresAnalysisRecorderShapeTests(unittest.TestCase):
+    def test_upload_source_reconciles_provisional_scanner_identity(self) -> None:
+        references = AnalysisCheckpointCodecTests.references()
+        references = replace(
+            references,
+            resolved_commit="7" * 64,
+        )
+        source = SimpleNamespace(
+            kind="upload",
+            upload_id=new_id("upl"),
+            resolved_commit_full=None,
+            source_tree_digest=references.source_tree_digest,
+            snapshot_id=None,
+            snapshot_digest="sha256:" + "7" * 64,
+        )
+        source.snapshot_id = f"upload:{source.upload_id}"
+
+        PostgresAnalysisRecorder._validate_or_populate_source(source, references)
+
+        self.assertEqual(source.resolved_commit_full, references.resolved_commit)
+        self.assertEqual(source.source_tree_digest, references.source_tree_digest)
+        self.assertEqual(source.snapshot_id, references.source_snapshot_id)
+        self.assertEqual(source.snapshot_digest, references.source_snapshot_digest)
+
+    def test_upload_source_rejects_scanner_tree_mismatch(self) -> None:
+        references = replace(
+            AnalysisCheckpointCodecTests.references(),
+            resolved_commit="7" * 64,
+        )
+        upload_id = new_id("upl")
+        source = SimpleNamespace(
+            kind="upload",
+            upload_id=upload_id,
+            resolved_commit_full=None,
+            source_tree_digest="sha256:" + "0" * 64,
+            snapshot_id=f"upload:{upload_id}",
+            snapshot_digest="sha256:" + "7" * 64,
+        )
+
+        with self.assertRaises(AnalyzeOrchestrationError):
+            PostgresAnalysisRecorder._validate_or_populate_source(
+                source, references
+            )
+
     def test_populates_api_created_queued_analysis_with_ai_fields(self) -> None:
         context = AnalyzeSourceContext(
             tenant_ref=new_id("ten"),
