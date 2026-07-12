@@ -360,6 +360,8 @@ services:
         self.assertEqual(service_a["Name"], "tenant-a-web")
         self.assertEqual(service_b["Name"], "tenant-b-web")
         self.assertNotEqual(service_a["Name"], service_b["Name"])
+        self.assertEqual(service_a["Address"], "${meta.luma_tailscale_ip}")
+        self.assertNotIn("AddressMode", service_a)
         self.assertIn(
             "traefik.http.routers.tenant-a-web.rule=Host(`a.example.com`)",
             service_a["Tags"],

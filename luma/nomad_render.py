@@ -48,6 +48,8 @@ CONTROL_MEMORY_MAX_MB = 0
 
 EDGE_EXPOSURES = {"cn-edge", "external-edge"}
 HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
+NOMAD_TAILSCALE_META_KEY = "luma_tailscale_ip"
+NOMAD_TAILSCALE_SERVICE_ADDRESS = f"${{meta.{NOMAD_TAILSCALE_META_KEY}}}"
 
 CONTROL_JOB_FILE_ENV_NAMES = frozenset(
     {
@@ -615,6 +617,8 @@ def render_compose_job(
         group["Networks"] = [network]
     if nomad_services:
         group["Services"] = nomad_services
+        if not service_address:
+            constraints.append(_tailscale_service_address_constraint())
 
     job = {
         "ID": name, "Name": name, "Type": "service", "Datacenters": ["dc1"],
@@ -775,6 +779,8 @@ def _build_job(
     nomad_service = _service_block(config, service, port_label)
     if nomad_service is not None:
         group["Services"] = [nomad_service]
+        if nomad_service.get("Address") == NOMAD_TAILSCALE_SERVICE_ADDRESS:
+            constraints.append(_tailscale_service_address_constraint())
 
     tasks = [_app_task(config, service, port_label, registry_auth=registry_auth, secrets=secrets, resolve_secrets=resolve_secrets, egress_proxy_url=egress_proxy_url)]
     sidecar = _cloudflared_task(service, secrets=secrets, resolve_secrets=resolve_secrets)
@@ -987,10 +993,19 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
 
 
 def _set_edge_service_address(block: Dict[str, Any], address: str) -> None:
-    if address:
-        block["Address"] = address
-    else:
-        block["AddressMode"] = "host"
+    # A scheduled node's default host address may be a provider-private LAN IP
+    # (for example 10.0.0.10 on Tencent), which the manager-side Traefik cannot
+    # reach. Pinned nodes can use their resolved configured address; otherwise
+    # interpolate the Tailscale address published by every Luma Nomad client.
+    block["Address"] = address or NOMAD_TAILSCALE_SERVICE_ADDRESS
+    block.pop("AddressMode", None)
+
+
+def _tailscale_service_address_constraint() -> Dict[str, str]:
+    # Fail closed on legacy nodes that have not received the metadata migration
+    # yet: an unscheduled app is diagnosable, while a "running" app routed to an
+    # unreachable private IP is a false success.
+    return {"LTarget": NOMAD_TAILSCALE_SERVICE_ADDRESS, "Operand": "is_set"}
 
 
 def _node_service_address(config: LumaConfig, node_name: str) -> str:

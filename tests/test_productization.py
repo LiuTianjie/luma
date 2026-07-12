@@ -62,6 +62,7 @@ from luma.bootstrap import (
     local_host_name,
     refresh_manager_control_local,
     setup_tailscale,
+    sync_nomad_tailscale_service_metadata,
     verify_local_nomad_node,
 )
 from luma.control.client import ControlClient
@@ -4240,11 +4241,14 @@ class NomadBootstrapTests(unittest.TestCase):
             "luma.bootstrap.install_docker"
         ) as docker, patch("luma.bootstrap.setup_egress") as egress, patch(
             "luma.bootstrap._refresh_core_services"
-        ) as refresh_core, patch("luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog") as watchdog:
+        ) as refresh_core, patch(
+            "luma.bootstrap.sync_nomad_tailscale_service_metadata", return_value="metadata"
+        ) as sync_metadata, patch("luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog") as watchdog:
             result = refresh_manager_control_local(config, node, "luma.example.com", state)
 
         self.assertIn("firewall", result)
         self.assertIn("traefik ready", result)
+        self.assertIn("metadata", result)
         self.assertIn("watchdog", result)
         self.assertIn("config", result)
         self.assertIn("state", result)
@@ -4260,6 +4264,7 @@ class NomadBootstrapTests(unittest.TestCase):
         deploy_nomad.assert_called_once()
         self.assertIn("--entrypoints.tcp-3306.address=:3306", deploy_nomad.call_args.args[1])
         watchdog.assert_called_once()
+        sync_metadata.assert_called_once()
         docker.assert_not_called()
         egress.assert_not_called()
         refresh_core.assert_not_called()
@@ -4300,6 +4305,8 @@ class NomadBootstrapTests(unittest.TestCase):
         ) as deploy_control, patch("luma.bootstrap.configure_firewall", return_value="firewall"), patch(
             "luma.bootstrap._deploy_nomad_job", return_value="traefik deployed"
         ), patch("luma.bootstrap._wait_nomad_job", return_value="traefik ready"), patch(
+            "luma.bootstrap.sync_nomad_tailscale_service_metadata", return_value="metadata"
+        ), patch(
             "luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog"
         ):
             refresh_manager_control_local(config, node, "luma.example.com", state)
@@ -4350,6 +4357,8 @@ class NomadBootstrapTests(unittest.TestCase):
         ) as deploy_control, patch("luma.bootstrap.configure_firewall", return_value="firewall"), patch(
             "luma.bootstrap._deploy_nomad_job", return_value="traefik deployed"
         ), patch("luma.bootstrap._wait_nomad_job", return_value="traefik ready"), patch(
+            "luma.bootstrap.sync_nomad_tailscale_service_metadata", return_value="metadata"
+        ), patch(
             "luma.bootstrap.configure_tailscale_watchdog", return_value="watchdog"
         ):
             refresh_manager_control_local(config, node, "luma.example.com", state)
@@ -4361,6 +4370,48 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertEqual(state["nodes"]["aly"]["displayName"], "aly")
         self.assertIn("iZ0jl8auywzycory05d9cuZ", state["nodes"]["aly"]["aliases"])
         self.assertNotIn("managerAddr", state)
+
+    def test_manager_syncs_ready_nomad_nodes_with_tailscale_service_metadata(self):
+        remote = Mock()
+        remote.run_result.side_effect = [
+            Mock(
+                code=0,
+                output=json.dumps(
+                    [
+                        {
+                            "ID": "node-manager",
+                            "Status": "ready",
+                            "Address": "100.106.154.3",
+                        },
+                        {
+                            "ID": "node-tecent",
+                            "Status": "ready",
+                            "Address": "100.64.29.91",
+                        },
+                        {
+                            "ID": "node-down",
+                            "Status": "down",
+                            "Address": "100.64.0.9",
+                        },
+                    ]
+                ),
+            ),
+            Mock(code=0, output="Metadata updated"),
+            Mock(code=0, output="Metadata updated"),
+        ]
+
+        result = sync_nomad_tailscale_service_metadata(remote)
+
+        self.assertEqual(result, "Nomad Tailscale service metadata applied to 2 ready node(s)")
+        commands = [call.args[0] for call in remote.run_result.call_args_list[1:]]
+        self.assertIn(
+            "nomad node meta apply -node-id node-manager luma_tailscale_ip=100.106.154.3",
+            commands,
+        )
+        self.assertIn(
+            "nomad node meta apply -node-id node-tecent luma_tailscale_ip=100.64.29.91",
+            commands,
+        )
 
     def test_verify_nomad_node_accepts_tailscale_http_address(self):
         remote = Mock()

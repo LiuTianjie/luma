@@ -46,6 +46,7 @@ class RenderConfigTests(unittest.TestCase):
         self.assertIn("bootstrap_expect = 1", cfg)
         self.assertIn('http = "100.113.204.125"', cfg)
         self.assertIn('region         = "cn"', cfg)
+        self.assertIn('luma_tailscale_ip = "100.113.204.125"', cfg)
         self.assertIn('ingress = "true"', cfg)
         # volumes enabled — core components use host bind mounts.
         self.assertIn("volumes {", cfg)
@@ -61,6 +62,7 @@ class RenderConfigTests(unittest.TestCase):
         )
         self.assertIn("server_join {", cfg)
         self.assertIn('retry_join = ["100.113.204.125:4647"]', cfg)
+        self.assertIn('luma_tailscale_ip = "100.69.154.50"', cfg)
         self.assertNotIn("bootstrap_expect", cfg)
 
     def test_darwin_client_includes_cpu_override(self):

@@ -99,7 +99,12 @@ replicas: 2
         # traefik nomad-provider service
         svc = group["Services"][0]
         self.assertEqual(svc["Provider"], "nomad")
-        self.assertEqual(svc["AddressMode"], "host")
+        self.assertEqual(svc["Address"], "${meta.luma_tailscale_ip}")
+        self.assertNotIn("AddressMode", svc)
+        self.assertIn(
+            {"LTarget": "${meta.luma_tailscale_ip}", "Operand": "is_set"},
+            job["Constraints"],
+        )
         self.assertIn("traefik.enable=true", svc["Tags"])
         self.assertIn(
             "traefik.http.routers.app.rule=Host(`app.example.com`)", svc["Tags"]
