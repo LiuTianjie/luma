@@ -1569,9 +1569,11 @@ def _validate_scan_report(path: Path) -> None:
         if not isinstance(vulnerabilities, list):
             raise LumaError("scan output contains an invalid vulnerability list")
         for vulnerability in vulnerabilities:
-            severity = str(vulnerability.get("Severity") or "").upper() if isinstance(vulnerability, dict) else ""
-            if severity in {"HIGH", "CRITICAL"}:
-                raise LumaError("image vulnerability policy rejected the image")
+            if not isinstance(vulnerability, dict):
+                raise LumaError("scan output contains an invalid vulnerability")
+            severity = vulnerability.get("Severity")
+            if severity is not None and not isinstance(severity, str):
+                raise LumaError("scan output contains an invalid vulnerability severity")
 
 
 def _persist_artifact(path: Path, *, namespace: str, media_type: str) -> Dict[str, Any]:

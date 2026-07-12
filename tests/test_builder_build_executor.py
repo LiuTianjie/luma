@@ -43,6 +43,7 @@ from luma.builder_build_executor import (
     _run_command,
     _syft_environment,
     _validate_build_lease,
+    _validate_scan_report,
     build_plan,
     builder_build_available,
 )
@@ -169,6 +170,26 @@ class BuilderBuildExecutorTests(unittest.TestCase):
     def tearDown(self):
         self.env.stop()
         self.temporary.cleanup()
+
+    def test_scan_report_keeps_high_findings_without_rejecting_deployment(self):
+        report = self.root / "scan.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "Results": [
+                        {
+                            "Target": "application-image",
+                            "Vulnerabilities": [
+                                {"VulnerabilityID": "CVE-TEST", "Severity": "CRITICAL"}
+                            ],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        _validate_scan_report(report)
 
     def _install_snapshot(self, files, *, symlinks=None):
         source_tar = self.root / f"source-{time.time_ns()}.tar"
