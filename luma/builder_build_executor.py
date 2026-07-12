@@ -107,7 +107,7 @@ _SLSA_PROVENANCE_PREFIX = "https://slsa.dev/provenance/"
 _TRUSTED_STATIC_ADAPTER_PATH = ".lae/adapters/static-v1.Dockerfile"
 _TRUSTED_STATIC_ADAPTER_DOCKERFILE = b"""# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
-FROM golang:1.24.8-bookworm@sha256:4ed690d6649d63c312b99a6120025ec79ce3b542968a37da53d6236c7c61a848 AS build
+FROM golang:1.26.5-bookworm@sha256:18aedc16aa19b3fd7ded7245fc14b109e054d65d22ed53c355c899582bbb2113 AS build
 
 WORKDIR /src
 

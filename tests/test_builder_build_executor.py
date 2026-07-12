@@ -516,7 +516,7 @@ class BuilderBuildExecutorTests(unittest.TestCase):
         provenance_option = command.index("attest:provenance=mode=max")
         self.assertEqual(command[provenance_option - 1], "--opt")
         self.assertIn(
-            "FROM golang:1.24.8-bookworm@sha256:4ed690d6649d63c312b99a6120025ec79ce3b542968a37da53d6236c7c61a848",
+            "FROM golang:1.26.5-bookworm@sha256:18aedc16aa19b3fd7ded7245fc14b109e054d65d22ed53c355c899582bbb2113",
             _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"),
         )
         self.assertIn("FROM scratch", _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"))
