@@ -8,6 +8,7 @@ import unittest
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 LAE_ROOT = Path(__file__).resolve().parents[1]
 for relative in (
@@ -342,6 +343,64 @@ class AnalysisCheckpointCodecTests(unittest.TestCase):
         assert decoded is not None
         self.assertEqual(decoded.verdict, "diagnostic_failed")
         self.assertEqual(decoded.diagnostic_code, "LEGACY_ANALYSIS_RESULT")
+
+
+class PostgresAnalysisRecorderShapeTests(unittest.TestCase):
+    def test_populates_api_created_queued_analysis_with_ai_fields(self) -> None:
+        context = AnalyzeSourceContext(
+            tenant_ref=new_id("ten"),
+            application_ref=new_id("app"),
+            source_revision_ref=new_id("src"),
+            repository="https://github.com/acme/application.git",
+            ref="main",
+        )
+        analysis = SimpleNamespace(
+            application_id=context.application_ref,
+            source_revision_id=context.source_revision_ref,
+            status="queued",
+            policy_version=None,
+            agent_image_digest=None,
+            resolved_commit_full=None,
+            source_tree_digest=None,
+            source_snapshot_id=None,
+            source_snapshot_digest=None,
+            deployment_plan_digest=None,
+            build_plan_digest=None,
+            evidence_digest=None,
+            verdict=None,
+            diagnostic_status=None,
+            diagnostic_mode=None,
+            diagnostic_code=None,
+            knowledge_version=None,
+            blockers=[],
+            artifact_state="descriptor-only",
+            plan_stored=False,
+        )
+        references = AnalysisCheckpointCodecTests.references()
+        recording = AnalysisRecording(
+            analysis_status="deployable",
+            artifact_state="descriptor-only",
+            plan_stored=False,
+        )
+        recorder = PostgresAnalysisRecorder(
+            object(),
+            agent_image_digest="registry.internal/lae-agent@sha256:" + "a" * 64,
+        )
+
+        recorder._populate_queued_analysis(
+            analysis,
+            context=context,
+            references=references,
+            recording=recording,
+        )
+
+        self.assertEqual(analysis.status, "deployable")
+        self.assertEqual(analysis.verdict, "deployable")
+        self.assertEqual(analysis.diagnostic_status, "succeeded")
+        self.assertEqual(analysis.diagnostic_mode, "ai")
+        self.assertEqual(analysis.diagnostic_code, "AI_ANALYSIS_SUCCEEDED")
+        self.assertEqual(analysis.knowledge_version, "2026-07-11.1")
+        self.assertEqual(analysis.blockers, [])
 
 
 class AnalyzeWorkerTests(unittest.IsolatedAsyncioTestCase):
