@@ -218,7 +218,9 @@ RUN rm -rf /app/.lae && \
       if [ -f pnpm-lock.yaml ]; then corepack pnpm run build; \
       elif [ -f yarn.lock ]; then corepack yarn run build; \
       else npm run build; fi; \
-    fi
+    fi && \
+    mkdir -p /app/node_modules/.vite-temp /home/lae/.cache && \
+    chown -R 10001:10001 /app/node_modules/.vite-temp /home/lae/.cache
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
