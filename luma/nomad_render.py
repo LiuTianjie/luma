@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Mapping
 from .config import LumaConfig
 from .errors import LumaError
 from .registry import normalize_registry_host
-from .service import ServiceSpec, tcp_entrypoint_name, tcp_relay_publish_port
+from .service import ServiceSpec, slugify, tcp_entrypoint_name, tcp_relay_publish_port
 
 # Nomad requires CPU (MHz) and MemoryMB on every task. These match Nomad's own
 # defaults so an unspecified manifest behaves like a small container.
@@ -571,15 +571,22 @@ def render_compose_job(
         tasks.append(task)
 
         if exposure in {"cn-edge", "external-edge"} and override and override.domain and port:
+            # Compose service names are only unique inside one stack. Registering
+            # every tenant's common `web`/`api` task under that raw name makes
+            # Traefik merge unrelated allocations and gives every stack the same
+            # router key. Keep the task and port label Compose-compatible, but
+            # namespace the discovery service and router by the deployment slug.
+            service_id = f"{name}-{slugify(str(svc_name))}"
             service_block = {
-                "Name": str(svc_name),
+                "Name": service_id,
                 "PortLabel": label,
                 "Provider": "nomad",
                 "Tags": [
                     "traefik.enable=true",
-                    f"traefik.http.routers.{label}.rule=Host(`{override.domain}`)",
-                    f"traefik.http.routers.{label}.entrypoints={config.entrypoint}",
-                    f"traefik.http.routers.{label}.tls.certresolver={config.cert_resolver}",
+                    f"traefik.http.routers.{service_id}.rule=Host(`{override.domain}`)",
+                    f"traefik.http.routers.{service_id}.entrypoints={config.entrypoint}",
+                    f"traefik.http.routers.{service_id}.tls.certresolver={config.cert_resolver}",
+                    f"traefik.http.routers.{service_id}.service={service_id}",
                 ],
             }
             _set_edge_service_address(service_block, service_address)

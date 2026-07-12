@@ -100,7 +100,11 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertEqual(len(group["Tasks"]), 8)
         self.assertEqual(
             {service["Name"] for service in group["Services"]},
-            {"web", "api", "artifact-store"},
+            {
+                "lae-platform-web",
+                "lae-platform-api",
+                "lae-platform-artifact-store",
+            },
         )
         self.assertEqual(
             {port["To"] for port in group["Networks"][0]["DynamicPorts"]},

@@ -317,8 +317,60 @@ services:
         self.assertEqual(network["DynamicPorts"][0]["To"], 3000)
         self.assertNotIn("ReservedPorts", network)
         svc = job["TaskGroups"][0]["Services"][0]
+        self.assertEqual(svc["Name"], "web-stack-web")
         self.assertEqual(svc["Address"], "100.64.29.91")
         self.assertNotIn("AddressMode", svc)
+        self.assertIn(
+            "traefik.http.routers.web-stack-web.rule=Host(`web.example.com`)",
+            svc["Tags"],
+        )
+        self.assertIn(
+            "traefik.http.routers.web-stack-web.service=web-stack-web",
+            svc["Tags"],
+        )
+
+    def test_compose_edge_service_and_router_names_are_isolated_per_stack(self):
+        compose = """
+services:
+  web:
+    image: registry.example.com/web:latest
+"""
+
+        def render(stack_name: str, domain: str):
+            dep = write_deployment(
+                f"""
+name: {stack_name}
+compose: docker-compose.yml
+region: cn
+services:
+  web:
+    exposure: cn-edge
+    domain: {domain}
+    port: 3000
+""",
+                compose,
+            )
+            return render_compose_job(cfg(), dep, as_json=False)["Job"]["TaskGroups"][0]
+
+        tenant_a = render("tenant-a", "a.example.com")
+        tenant_b = render("tenant-b", "b.example.com")
+        service_a = tenant_a["Services"][0]
+        service_b = tenant_b["Services"][0]
+
+        self.assertEqual(service_a["Name"], "tenant-a-web")
+        self.assertEqual(service_b["Name"], "tenant-b-web")
+        self.assertNotEqual(service_a["Name"], service_b["Name"])
+        self.assertIn(
+            "traefik.http.routers.tenant-a-web.rule=Host(`a.example.com`)",
+            service_a["Tags"],
+        )
+        self.assertIn(
+            "traefik.http.routers.tenant-b-web.rule=Host(`b.example.com`)",
+            service_b["Tags"],
+        )
+        # User-facing Compose/task semantics remain unchanged.
+        self.assertEqual(tenant_a["Tasks"][0]["Name"], "web")
+        self.assertEqual(tenant_a["Networks"][0]["DynamicPorts"][0]["Label"], "web")
 
     def test_compose_publish_port_skips_canary_to_avoid_port_conflict(self):
         compose = """
