@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from starlette.testclient import TestClient
 
@@ -904,6 +904,118 @@ class LaeRuntimeApiTests(unittest.TestCase):
             )
         self.assertEqual(deleted["deployment"]["status"], "deleted")
         self.assertNotIn(volume_ref, load_state()["laeRuntime"]["volumes"])
+
+    def test_restart_waits_for_replacement_allocation_before_reporting_success(self) -> None:
+        volume_ref = self.prepare_volume()
+        with patch.object(
+            control_server,
+            "_execute_lae_runtime_deployment",
+            side_effect=self.fake_execution,
+        ):
+            deployed = control_server.handle_lae_runtime_deployment_create(
+                self.runtime_token,
+                RUNTIME_AUDIENCE,
+                self.binding,
+                self.deployment_body(volume_ref=volume_ref),
+                idempotency_key="deploy-restart-replacement",
+            )
+        runtime_ref = str(deployed["deployment"]["deploymentRef"])
+        state = load_state()
+        state["laeRuntime"]["deployments"][runtime_ref]["status"] = "restarting"
+        save_state(state)
+        record = dict(state["laeRuntime"]["deployments"][runtime_ref])
+        api = MagicMock()
+        api.request.side_effect = [
+            [{"ID": "alloc-old", "ClientStatus": "running"}],
+            {},
+        ]
+        bound_spec = object()
+        with (
+            patch.object(control_server, "NomadApi", return_value=api),
+            patch.object(
+                control_server,
+                "_lae_runtime_verified_job",
+                return_value={"ID": record["jobSlug"]},
+            ),
+            patch.object(
+                control_server,
+                "_lae_runtime_bound_compose_spec",
+                return_value=bound_spec,
+            ),
+            patch.object(
+                control_server,
+                "_wait_for_nomad_job_replacement",
+                return_value=["alloc-new"],
+            ) as wait_for_replacement,
+            patch.object(control_server, "_lae_runtime_restore_routes") as restore_routes,
+        ):
+            result = control_server._execute_lae_runtime_lifecycle(
+                "restart",
+                record,
+                token=self.runtime_token,
+                audience=RUNTIME_AUDIENCE,
+                binding=self.binding,
+                principal_ref=str(record["principalRef"]),
+            )
+
+        self.assertEqual(result["restartedAllocations"], 1)
+        self.assertEqual(result["replacementAllocationIds"], ["alloc-new"])
+        api.request.assert_any_call("POST", "/v1/allocation/alloc-old/stop", None)
+        wait_for_replacement.assert_called_once_with(
+            api,
+            str(record["jobSlug"]),
+            {"alloc-old"},
+            min_running=1,
+        )
+        restore_routes.assert_called_once()
+        self.assertIs(restore_routes.call_args.args[1], bound_spec)
+
+        checkpointed = dict(
+            load_state()["laeRuntime"]["deployments"][runtime_ref]
+        )
+        self.assertEqual(checkpointed["restartAllocationIds"], ["alloc-old"])
+        retry_api = MagicMock()
+        retry_api.request.return_value = [
+            {"ID": "alloc-old", "ClientStatus": "complete"},
+            {"ID": "alloc-new", "ClientStatus": "running"},
+        ]
+        with (
+            patch.object(control_server, "NomadApi", return_value=retry_api),
+            patch.object(
+                control_server,
+                "_lae_runtime_verified_job",
+                return_value={"ID": record["jobSlug"]},
+            ),
+            patch.object(
+                control_server,
+                "_lae_runtime_bound_compose_spec",
+                return_value=bound_spec,
+            ),
+            patch.object(
+                control_server,
+                "_wait_for_nomad_job_replacement",
+                return_value=["alloc-new"],
+            ) as retry_wait,
+            patch.object(control_server, "_lae_runtime_restore_routes"),
+        ):
+            retried = control_server._execute_lae_runtime_lifecycle(
+                "restart",
+                checkpointed,
+                token=self.runtime_token,
+                audience=RUNTIME_AUDIENCE,
+                binding=self.binding,
+                principal_ref=str(record["principalRef"]),
+            )
+        self.assertEqual(retried["replacementAllocationIds"], ["alloc-new"])
+        self.assertFalse(
+            any(call.args[0] == "POST" for call in retry_api.request.call_args_list)
+        )
+        retry_wait.assert_called_once_with(
+            retry_api,
+            str(record["jobSlug"]),
+            {"alloc-old"},
+            min_running=1,
+        )
 
     def test_rollback_reverts_to_exact_saved_runtime_and_switches_active_binding(self) -> None:
         target_binding = RuntimeBinding(

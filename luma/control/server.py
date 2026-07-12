@@ -5398,26 +5398,81 @@ def _execute_lae_runtime_lifecycle(
                 raise _lae_runtime_unavailable(
                     "Nomad runtime lifecycle is unavailable"
                 )
-            stopped = 0
+            stopped_allocation_ids = {
+                str(value).strip()
+                for value in record.get("restartAllocationIds") or []
+                if str(value).strip()
+            }
+            if not stopped_allocation_ids:
+                stopped_allocation_ids = {
+                    str(allocation.get("ID") or "").strip()
+                    for allocation in allocations
+                    if isinstance(allocation, dict)
+                    and str(allocation.get("ClientStatus") or "").lower()
+                    == "running"
+                    and str(allocation.get("ID") or "").strip()
+                }
+                if not stopped_allocation_ids:
+                    raise _lae_runtime_unavailable(
+                        "runtime deployment has no restartable allocation"
+                    )
+
+                def checkpoint_restart(current: Dict[str, Any]) -> None:
+                    stored_restart = _lae_runtime_state(current)["deployments"].get(
+                        str(record.get("runtimeDeploymentRef") or "")
+                    )
+                    if (
+                        not isinstance(stored_restart, dict)
+                        or not _lae_runtime_binding_matches(
+                            stored_restart, binding, principal_ref=principal_ref
+                        )
+                        or str(stored_restart.get("status") or "") != "restarting"
+                    ):
+                        raise _lae_runtime_conflict(
+                            "runtime restart checkpoint changed"
+                        )
+                    stored_restart["restartAllocationIds"] = sorted(
+                        stopped_allocation_ids
+                    )
+                    stored_restart["updatedAt"] = int(time.time())
+
+                # Persist the exact old allocation set before mutating Nomad.
+                # A retry after a timeout will continue waiting for replacements
+                # instead of stopping the newly-created allocation again.
+                _mutate_control_state(checkpoint_restart)
+                record["restartAllocationIds"] = sorted(stopped_allocation_ids)
             for allocation in allocations:
                 if not isinstance(allocation, dict):
                     continue
                 if str(allocation.get("ClientStatus") or "").lower() != "running":
                     continue
                 allocation_id = str(allocation.get("ID") or "").strip()
-                if not allocation_id:
+                if allocation_id not in stopped_allocation_ids:
                     continue
                 client.request(
                     "POST",
                     f"/v1/allocation/{urllib.parse.quote(allocation_id, safe='')}/stop",
                     None,
                 )
-                stopped += 1
-            if stopped == 0:
-                raise _lae_runtime_unavailable(
-                    "runtime deployment has no restartable allocation"
-                )
-            return {"restartedAllocations": stopped}
+            stopped = len(stopped_allocation_ids)
+            # A lifecycle restart is a replacement operation, not a best-effort
+            # signal.  Do not report success while Nomad can still be running
+            # only the allocations we just stopped: that leaves LAE showing a
+            # successful restart even when no new runtime was created.
+            replacement_ids = _wait_for_nomad_job_replacement(
+                client,
+                job_slug,
+                stopped_allocation_ids,
+                min_running=stopped,
+            )
+            # DNS is derived delivery state outside the allocation. Reconcile
+            # it after the replacement exists so restart completion means the
+            # application can converge through its managed public routes too.
+            _lae_runtime_restore_routes(config, spec)
+            return {
+                "restartedAllocations": stopped,
+                "replacementAllocationIds": replacement_ids,
+            }
 
         if action == "delete":
             _lae_runtime_verified_job(config, state, record, required=False)
@@ -5929,10 +5984,15 @@ def handle_lae_runtime_deployment_lifecycle(
             }
             stored["submittedAt"] = int(time.time())
         elif action == "restart":
+            stored.pop("restartAllocationIds", None)
             stored["status"] = "deploying"
             stored["serviceStatuses"] = {
                 str(key): "starting"
                 for key in dict(stored.get("serviceStatuses") or {})
+            }
+            stored["routeStatuses"] = {
+                str(key): "pending"
+                for key in dict(stored.get("routeStatuses") or {})
             }
             stored["submittedAt"] = int(time.time())
         else:
