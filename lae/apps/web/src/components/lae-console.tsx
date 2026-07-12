@@ -26,6 +26,7 @@ import {
   SquareTerminal,
   Sun,
   Moon,
+  MoreHorizontal,
   Trash2,
   Undo2,
   X,
@@ -2187,32 +2188,87 @@ function ApplicationShore({
   onInspect: (application: ShoreApplication) => void;
 }) {
   const serviceCount = applications.reduce((total, app) => total + app.services, 0);
+  const runningCount = applications.filter((app) => app.tone === "healthy").length;
+  const pausedCount = applications.filter((app) => app.tone === "paused").length;
+  const attentionCount = applications.filter((app) =>
+    ["pending", "degraded", "failed"].includes(app.tone),
+  ).length;
   return (
     <section
       className="application-shore console-anchor"
       id="applications"
       aria-labelledby="applications-title"
     >
-      <div className="shore-title">
-        <span className="section-index">02</span>
-        <div>
-          <h2 id="applications-title">你的应用</h2>
-          <p>{loading ? "正在读取…" : `${applications.length} 个应用 · ${serviceCount} 个服务`}</p>
+      <header className="shore-title">
+        <div className="shore-heading">
+          <span className="section-index">02</span>
+          <div>
+            <h2 id="applications-title">应用目录</h2>
+            <p>{loading ? "正在同步 Luma runtime…" : `${applications.length} 个应用，${serviceCount} 个服务实例`}</p>
+          </div>
         </div>
-        <button type="button" onClick={onRefresh} disabled={loading}>
-          刷新 <RefreshCw size={14} />
+        <div className="shore-summary" aria-label="应用运行概览">
+          <span><small>运行中</small><strong>{loading ? "—" : runningCount}</strong></span>
+          <span><small>需关注</small><strong>{loading ? "—" : attentionCount}</strong></span>
+          <span><small>已暂停</small><strong>{loading ? "—" : pausedCount}</strong></span>
+        </div>
+        <button className="shore-refresh" type="button" onClick={onRefresh} disabled={loading}>
+          <RefreshCw className={loading ? "is-spinning" : undefined} size={14} />
+          {loading ? "同步中" : "刷新"}
         </button>
         {notice && <p className="shore-notice" role="status">{notice}</p>}
-      </div>
+      </header>
       <div className="application-ribbon">
-        {applications.map((app) => (
-          <article className="application-item" key={app.id}>
-            <span className={`app-status ${app.tone}`} />
-            <div><Link className="application-name-link" href={`/applications/${app.id}`}>{app.name}</Link><small>{app.domain}</small></div>
-            <span className="service-count">
-              {app.status} · {app.services} service{app.services > 1 ? "s" : ""}
+        {loading && (
+          <div className="application-loading" role="status" aria-live="polite">
+            <span className="application-loading-label">
+              <RefreshCw className="is-spinning" size={14} /> 正在读取应用运行状态
             </span>
-            <div className="app-actions">
+            {[0, 1, 2].map((index) => (
+              <span className="application-skeleton" key={index} aria-hidden="true">
+                <i /> <i /> <i /> <i />
+              </span>
+            ))}
+          </div>
+        )}
+        {!loading && applications.map((app, index) => {
+          const hasPublicDomain = app.domain !== "等待首次部署";
+          return (
+            <article className={`application-item tone-${app.tone}`} key={app.id}>
+            <div className="application-identity">
+              <span className="application-sequence">APP / {String(index + 1).padStart(2, "0")}</span>
+              <Link className="application-name-link" href={`/applications/${app.id}`}>{app.name}</Link>
+              <span className="application-runtime-note">
+                {app.lifecycleEnabled ? "Luma runtime 已连接" : "等待首个部署计划"}
+              </span>
+            </div>
+
+            <div className="application-runtime-cell">
+              <span className="cell-label">RUNTIME</span>
+              <span className={`runtime-pill ${app.tone}`}>
+                <span className={`app-status ${app.tone}`} />
+                <span className="service-count">
+                  {app.status} · {app.services} service{app.services > 1 ? "s" : ""}
+                </span>
+              </span>
+            </div>
+
+            <div className="application-endpoint">
+              <span className="cell-label">PUBLIC ENDPOINT</span>
+              {hasPublicDomain ? (
+                <a href={`https://${app.domain}`} target="_blank" rel="noreferrer">
+                  <Globe2 size={13} />
+                  <span>{app.domain}</span>
+                  <ExternalLink size={11} />
+                </a>
+              ) : (
+                <span className="endpoint-pending">
+                  <Globe2 size={13} /> 部署后自动分配
+                </span>
+              )}
+            </div>
+
+            <div className="app-actions" aria-label={`${app.name} 常用操作`}>
               <button
                 type="button"
                 disabled={!app.lifecycleEnabled}
@@ -2220,7 +2276,7 @@ function ApplicationShore({
                 aria-label={`${app.name} 运行观测`}
                 onClick={() => onInspect(app)}
               >
-                <Activity size={14} />
+                <Activity size={14} /> <span>观测</span>
               </button>
               <button
                 type="button"
@@ -2230,6 +2286,7 @@ function ApplicationShore({
                 onClick={() => onAction(app, app.tone === "paused" ? "resume" : "suspend")}
               >
                 {app.tone === "paused" ? <Play size={14} /> : <Pause size={14} />}
+                <span>{app.tone === "paused" ? "恢复" : "暂停"}</span>
               </button>
               <button
                 type="button"
@@ -2238,57 +2295,65 @@ function ApplicationShore({
                 aria-label={`${app.name} 重启`}
                 onClick={() => onAction(app, "restart")}
               >
-                <RotateCcw size={14} />
+                <RotateCcw size={14} /> <span>重启</span>
               </button>
-              <button
-                type="button"
-                disabled={!app.lifecycleEnabled || busyApplicationIds.has(app.id)}
-                title="检查源代码是否有可部署更新"
-                aria-label={`${app.name} 检查更新`}
-                onClick={() => onAction(app, "check-update")}
-              >
-                <GitFork size={14} />
-              </button>
-              <button
-                type="button"
-                disabled={
-                  !app.lifecycleEnabled ||
-                  !app.rollbackDeploymentId ||
-                  busyApplicationIds.has(app.id)
-                }
-                title={
-                  app.rollbackDeploymentId
-                    ? "回滚到上一健康版本"
-                    : "没有可回滚的健康版本"
-                }
-                aria-label={`${app.name} 回滚到上一健康版本`}
-                onClick={() => onConfirmAction(app, "rollback")}
-              >
-                <Undo2 size={14} />
-              </button>
-              <button
-                type="button"
-                disabled={busyApplicationIds.has(app.id)}
-                className="danger-action"
-                title="删除应用（默认保留持久卷）"
-                aria-label={`${app.name} 删除应用`}
-                onClick={() => onConfirmAction(app, "delete")}
-              >
-                <Trash2 size={14} />
-              </button>
+              <details className="app-more">
+                <summary title="更多操作" aria-label={`${app.name} 更多操作`}>
+                  <MoreHorizontal size={16} />
+                </summary>
+                <div className="app-more-menu">
+                  <span>版本与维护</span>
+                  <button
+                    type="button"
+                    disabled={!app.lifecycleEnabled || busyApplicationIds.has(app.id)}
+                    onClick={() => onAction(app, "check-update")}
+                  >
+                    <GitFork size={14} />
+                    <span><strong>检查更新</strong><small>重新诊断当前源码</small></span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      !app.lifecycleEnabled ||
+                      !app.rollbackDeploymentId ||
+                      busyApplicationIds.has(app.id)
+                    }
+                    onClick={() => onConfirmAction(app, "rollback")}
+                  >
+                    <Undo2 size={14} />
+                    <span><strong>回滚版本</strong><small>{app.rollbackDeploymentId ? "恢复上一健康部署" : "暂无健康历史版本"}</small></span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busyApplicationIds.has(app.id)}
+                    className="danger-action"
+                    onClick={() => onConfirmAction(app, "delete")}
+                  >
+                    <Trash2 size={14} />
+                    <span><strong>删除应用</strong><small>默认保留持久卷</small></span>
+                  </button>
+                </div>
+              </details>
             </div>
-          </article>
-        ))}
+
+            <footer className="application-item-footer">
+              <span>目标状态 <strong>{app.desiredState.toUpperCase()}</strong></span>
+              <Link href={`/applications/${app.id}`}>打开应用详情 <ChevronRight size={13} /></Link>
+            </footer>
+            </article>
+          );
+        })}
         {!loading && applications.length === 0 && (
           <div className="application-empty">
+            <span className="application-empty-icon"><Boxes size={24} strokeWidth={1.5} /></span>
             <div>
               <strong>{authenticated ? "还没有应用" : "先建立一个安全会话"}</strong>
-              <span>{notice || "创建应用后，诊断与部署进度会在这里成为真实记录。"}</span>
+              <span>{notice || "从模板、Git 仓库或静态产物开始；诊断、部署与运行状态会集中显示在这里。"}</span>
             </div>
             {authenticated ? (
-              <a href="#deployment">开始部署 <ArrowRight size={14} /></a>
+              <a className="application-empty-action" href="#deployment">创建第一个应用 <ArrowRight size={14} /></a>
             ) : (
-              <Link href="/login">注册或登录 <ArrowRight size={14} /></Link>
+              <Link className="application-empty-action" href="/login">注册或登录 <ArrowRight size={14} /></Link>
             )}
           </div>
         )}
