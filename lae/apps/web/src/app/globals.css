@@ -116,7 +116,7 @@ button:focus-visible, a:focus-visible, label:focus-within {
 .section-index { color: #6c7b71; font-family: "Newsreader Variable", serif; font-size: 18px; font-style: italic; }
 .lake h2, .application-shore h2 { margin: 0; font-family: "Newsreader Variable", serif; font-size: 20px; font-weight: 400; letter-spacing: -.015em; }
 .lake-note { color: #65736b; font-size: 9px; letter-spacing: .08em; }
-.water-field { position: relative; height: 418px; margin-top: 12px; border-radius: 18px; overflow: hidden; background: radial-gradient(ellipse at 48% 45%, rgba(119,153,127,.12), transparent 48%), linear-gradient(180deg, rgba(10,25,21,.16), rgba(2,12,10,.3)); }
+.water-field { position: relative; height: 418px; margin-top: 12px; border-radius: 18px; overflow: hidden; background: #fff; }
 .water-field::before { content: ""; position: absolute; inset: 8% 4%; border-radius: 50%; border: 1px solid rgba(190,210,185,.035); transform: rotate(-3deg); box-shadow: 0 0 80px rgba(161,196,151,.03); }
 .lake-status { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; gap: 9px; color: #7f9185; font-size: 10px; letter-spacing: .035em; }
 .water-line { position: absolute; height: 1px; border-top: 1px solid rgba(191,211,187,.055); border-radius: 50%; transform: rotate(-5deg); }
