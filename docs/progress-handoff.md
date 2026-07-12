@@ -6,14 +6,16 @@ This is a short handoff for the current control-plane implementation. Public doc
 
 ## Current Live Snapshot
 
-- Luma CLI, Control, the manager agent, and all six online non-manager agents
-  are live on `0.1.196`; 761/761 tests passed before release. Offline `blg`
-  remains on `0.1.175` and must be upgraded when it reconnects.
+- Luma Control and the manager agent are live on `0.1.200`; the six online
+  non-manager agents are live on `0.1.198` (the later changes are
+  manager-side restart reconciliation/rendering only). The `0.1.200`
+  productization suite passed 461/461 tests. Offline `blg` remains on
+  `0.1.175` and is intentionally untouched until it reconnects.
 - `manager` is the only control plane. `aly` is a stale historical name. The
   LAE platform is a 9-task group on `lab`; tenant runtime admission is limited
   to `manager + tecent`, while tenant-facing APIs never reveal placement.
-- LAE staging Job version 21 runs images built from exact commit
-  `7c1212c037e356c3e6af39829bbed0615bea234d`; all nine platform tasks and
+- LAE staging Job version 23 runs images built from exact commit
+  `2f2afd2ab84926d058cbff53c51a86e8816324a9`; all nine platform tasks and
   Web/API/Agent/artifact probes are healthy.
 - Two real FastAPI tenant applications run on `tecent`. A fresh template launch
   completed Agent diagnosis, Builder build, Runtime deployment, random-domain
@@ -21,14 +23,22 @@ This is a short handoff for the current control-plane implementation. Public doc
 - Luma `0.1.190` scopes Nomad service and Traefik router names by deployment;
   `0.1.192` registers edge upstreams through the runtime node's
   `luma_tailscale_ip` metadata; `0.1.196` adds BuildKit timeout cancellation
-  and release tag/package-version validation. Job v21, online fleet, and
-  Control/manager upgrades completed without manual application restarts.
+  and release tag/package-version validation; `0.1.198` refreshes the trusted
+  static adapter and preserves operator-owned manager config; `0.1.200` makes
+  restart wait for replacement allocations and reconcile routes/DNS/public
+  probes from the stored deployment plus actual allocation node. A real
+  `linkshell-gateway` restart completed in 4.83 seconds with route, DNS and
+  HTTP 200 evidence, followed by 12/12 successful public probes.
   A targeted LAE Web route sentinel passed, but longer probes still contain a
   few transient LAE 404/502/timeouts, so zero-downtime is not yet proven.
 - Update-check now excludes attempt-scoped snapshot/plan identifiers from its
   semantic digest. Two independent checks produced the same candidate plan;
   after redeploying that candidate, the next check returned source, plan, and
   aggregate `changed=false`.
+- A real HTML upload completed quarantine scan, Agent diagnosis, trusted static
+  build, SBOM/Trivy gate, Runtime deployment and six public content checks at a
+  random `*.itool.tech` hostname; its temporary application was then deleted
+  successfully. ZIP remains a separate required golden-source case.
 - Production remains blocked on dedicated runner/core pools, full source and
   lifecycle matrices, Docker/CNI/reconciliation fault injection, real SMTP,
   payment providers, isolation, backups, and recovery drills.

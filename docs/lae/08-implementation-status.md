@@ -16,10 +16,10 @@
 
 ### 当前结论（2026-07-12）
 
-- **发布与代码 gate：** Luma `0.1.196` 已发布；761/761 项全量测试在发布前通过，tag/package version mismatch gate 也已加入 release workflow。当前 Control、manager agent 与 6 个在线非 manager agent 均上报 `0.1.196`；离线 `blg` 保持 `0.1.175`，待恢复后补升级。LAE exact commit `7c1212c037e356c3e6af39829bbed0615bea234d` 已部署为平台 Job version 21，9 个 task 健康。
+- **发布与代码 gate：** Luma `0.1.200` 已发布，461/461 项 productization suite 通过；tag/package version mismatch gate 保持启用。当前 Control 与 manager agent 上报 `0.1.200`，6 个在线非 manager agent 上报 `0.1.198`（`0.1.199-0.1.200` 仅含 manager-side restart route reconcile/render 变更）；离线 `blg` 按当前决策保持 `0.1.175`。LAE exact commit `2f2afd2ab84926d058cbff53c51a86e8816324a9` 已部署为平台 Job version 23，9 个 task 健康。
 - **真实 Luma staging：** 9 个平台 task 全部健康，三个公网域名 TLS 有效；Web、API live/ready、Agent ready 和 artifact ready 探针均返回 200。Agent ready 显示 `mode=ai`、`configured=true`、无 configuration error。平台固定在 `lab`，租户 runtime 候选池为 `manager + tecent`。
-- **产品 E2E：** FastAPI 模板已真实走通 launch → Agent verdict → Builder build → Runtime deploy → random domain/TLS，且无需用户提供 Luma 文件；CLI 已真实完成更新检查、NDJSON cursor 续看、同 revision 重部署和 lifecycle/日志/指标操作。更新检查连续两次生成相同 candidate plan digest；刷新基线后复检得到 `sourceChanged=false`、`deploymentPlanChanged=false`、`changed=false`。Mailpit 捕获的注册 challenge、默认 deploy token 与 CLI 基础流程也已执行。HTML/ZIP、私有 Git、Compose 双 HTTP/volume 与全部安全负例矩阵仍待完成，Mailpit 不代表真实邮箱送达。
-- **P0 可用性：** `0.1.190` 修复跨 deployment service/router 名称碰撞，`0.1.192` 让 edge service 通过节点 `luma_tailscale_ip` metadata 注册可达 upstream，`0.1.196` 增加 BuildKit 超时取消、exact-ref release gate 和本轮 Builder 修复。平台 Job v21 与 Control/manager `0.1.196` 升级均完成且无需人工重启；针对 LAE Web 的 Control route sentinel 为 1/1 成功。更长的外部 sentinel 仍记录到少量 LAE 404/502/timeout，且全量 route sentinel 会把合法 404 endpoint 计为失败，因此“升级零中断”仍未达成，Docker restart/CNI 自愈、route reconciliation 故障注入继续阻塞 production。
+- **产品 E2E：** FastAPI 模板已真实走通 launch → Agent verdict → Builder build → Runtime deploy → random domain/TLS，且无需用户提供 Luma 文件；CLI 已真实完成更新检查、NDJSON cursor 续看、同 revision 重部署和 lifecycle/日志/指标操作。更新检查连续两次生成相同 candidate plan digest；刷新基线后复检得到 `sourceChanged=false`、`deploymentPlanChanged=false`、`changed=false`。HTML upload 也已真实完成 quarantine/scan → Agent diagnosis → trusted static adapter build → SBOM/Trivy → Runtime → random domain，并连续 6 次返回预期内容，随后 delete operation 成功。Mailpit 捕获的注册 challenge、默认 deploy token 与 CLI 基础流程也已执行。ZIP、私有 Git、Compose 双 HTTP/volume 与全部安全负例矩阵仍待完成，Mailpit 不代表真实邮箱送达。
+- **P0 可用性：** `0.1.198` 更新受信静态 adapter 到已修复 Go 基线并让 manager 更新深度保留 `providers/defaults/nodes`；`0.1.200` 将应用重启从 allocation stop 扩展为 replacement wait + CNI + route + DNS + public probe reconcile，并以高优先级 file route 覆盖旧 Nomad provider 的不可达私网 upstream。真实 `linkshell-gateway` 控制台等价重启在 4.83 秒内返回 `delivery.status=ready`，随后 12/12 公网探针为 200；manager DNS 配置经历多次更新后仍 `ready=true`。长时间多域 sentinel、Docker/CNI 故障注入与 LAE 平台升级窗口零失败证明仍未关闭。
 
 ## 2. 用户需求追踪
 
@@ -31,7 +31,7 @@
 | --- | --- | --- | --- |
 | R-001 | LAE 及 PostgreSQL、对象存储、registry、观测等全部由 Luma 部署 | In progress | 全部 Luma manifest/sidecar validate/render；staging deployment healthy；恢复演练通过 |
 | R-002 | 邮箱注册/登录，自动 personal tenant、Lite entitlement 和默认 deploy token | In progress | 邮件送达、过期/重放/限流、session、token once-display/revoke E2E |
-| R-003 | HTML/ZIP、GitHub、私有 Git、Dockerfile、Compose 来源可诊断和部署 | In progress | 每类 golden source 在 staging 完成 inspect -> env -> build -> deploy -> verify；非法样本稳定拒绝 |
+| R-003 | HTML/ZIP、GitHub、私有 Git、Dockerfile、Compose 来源可诊断和部署 | In progress | HTML golden source 已完成 inspect -> build -> deploy -> verify -> delete；ZIP、私有 Git、Dockerfile/Compose 与非法样本仍需同级证据 |
 | R-004 | Compose 支持多个公网 HTTP service、内部服务、worker、datastore 和 named volume | In progress | 双 HTTP 域名、逐 route probe、内部依赖、数据库持久化和端口冲突用例通过 |
 | R-005 | 暂不支持 `tcp-relay`，TCP/UDP/host port 在 LAE 与 Luma 双层拒绝 | In progress | contract、Agent policy、Luma policy 正反例测试与 staging 拒绝证据 |
 | R-006 | 独立 LAE Agent 公共端点，需要 session 或 deploy token | In progress | `POST /v1/analyses`、公开 GET、cursor event replay 与 cancel 已覆盖 Bearer scope、cookie CSRF、双凭据冲突、tenant fence、原子 enqueue、幂等 replay 和 late-success fence；仍需 SSE、限流、配额和审计 E2E |
@@ -60,7 +60,7 @@
 | Stateful recovery | Not started | PostgreSQL PITR、object/registry restore、Lite/Pro volume restore drill |
 | Abuse/compliance | Not started | 举报/封禁/申诉、内容治理、条款/隐私、地域和支付主体决策 |
 | Capacity/SLO | In progress | 最终 Job 已由 Nomad plan 做实时 CPU/memory feasibility；Luma 内部稳定区分 no-capacity/placement/volume，租户侧故意把容量和卷拓扑统一成不泄露维度的 `LAE_CAPACITY_UNAVAILABLE`；仍需 builder/runner/stateful 容量模型、load/soak/chaos 与告警 |
-| Upgrade/route continuity | In progress | 配置无变化不得重启 Docker；提交结果需绑定本次 `JobModifyIndex`、evaluation、deployment、JobVersion 和新 allocation health。平台 Job v21、Control/manager `0.1.196` 与 6 个在线非 manager agent 已完成升级；针对 LAE Web 的 route sentinel 通过，但长时间外部探针仍有少量 404/502/timeout，全量 sentinel 对合法 404 的判定也需改进。Docker restart/CNI 自愈、reconciliation 故障注入与更多 edge sentinel 仍未完成 |
+| Upgrade/route continuity | In progress | Control/manager `0.1.200`、在线非 manager agents `0.1.198`；真实 gateway restart 已证明 allocation replacement、route/DNS reconcile 和 HTTP 200，且 manager config/provider 跨更新持久。仍需长时间多域 sentinel、Docker/CNI 故障注入和 LAE 平台升级窗口零失败证据 |
 
 ## 4. 当前实施批次
 
