@@ -70,6 +70,7 @@ export type DashboardNode = {
   leader?: boolean;
   agentStatus?: string;
   agentOs?: string;
+  agentVersion?: string;
   agentLastSeen?: number;
   storageCapabilities?: string[];
   terminalConnected?: boolean;

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { NodeFleetMap } from "../components/NodeFleetMap";
 import { NodeTopology } from "../components/NodeTopology";
+import { SystemUpdatePanel } from "../components/SystemUpdatePanel";
 import { TrafficPaths } from "../components/TrafficPaths";
 import { Badge } from "../components/ui";
 import type { DashboardNode, Lang } from "../types";
@@ -35,6 +36,7 @@ export function NodesPage({
   onSelectNode,
   onTerminal,
   onRefresh,
+  controlVersion,
 }: {
   lang: Lang;
   vm: DashboardViewModel;
@@ -43,6 +45,7 @@ export function NodesPage({
   onSelectNode: (node: DashboardNode) => void;
   onTerminal: (node: DashboardNode) => void;
   onRefresh: () => Promise<void> | void;
+  controlVersion: string;
 }) {
   const zh = lang === "zh";
   const ready = vm.nodes.filter(readyNode).length;
@@ -79,6 +82,14 @@ export function NodesPage({
             { label: "Terminal", value: terminalNodes },
           ],
         }}
+      />
+
+      <SystemUpdatePanel
+        lang={lang}
+        token={token}
+        controlVersion={controlVersion}
+        nodes={vm.nodes}
+        onRefresh={onRefresh}
       />
 
       <section className="fleet-region-strip" aria-label={zh ? "区域" : "Regions"}>

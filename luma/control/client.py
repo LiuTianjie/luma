@@ -321,6 +321,7 @@ class ControlClient:
         node_id: str = "",
         os_name: str = "",
         arch: str = "",
+        version: str = "",
         capabilities: list[str] | None = None,
         metrics: Dict[str, Any] | None = None,
         container_stats: list[Dict[str, Any]] | None = None,
@@ -332,6 +333,7 @@ class ControlClient:
             "nodeId": node_id,
             "os": os_name,
             "arch": arch,
+            "version": version,
             "capabilities": capabilities or [],
             "waitSeconds": max(timeout - 5, 1),
         }
@@ -356,6 +358,7 @@ class ControlClient:
         active_task_id: str = "",
         os_name: str = "",
         arch: str = "",
+        version: str = "",
         capabilities: list[str] | None = None,
         metrics: Dict[str, Any] | None = None,
         container_stats: list[Dict[str, Any]] | None = None,
@@ -367,6 +370,7 @@ class ControlClient:
             "nodeId": node_id,
             "os": os_name,
             "arch": arch,
+            "version": version,
             "capabilities": capabilities or [],
         }
         if active_task_id:

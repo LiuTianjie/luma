@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.172"
+python -m pip install "luma-infra==0.1.173"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.172 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.173 sh
 ```
 
 Develop from source:
@@ -262,6 +262,7 @@ The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For p
 | manager | First control-plane install | `luma bootstrap manager --domain luma.example.com` |
 | manager | Update CLI and control plane | `luma update` |
 | logged-in client | Update ready non-manager node agents | `luma update fleet` |
+| browser on trusted device | Update Control and nodes, then verify every public route | `https://luma.example.com/dashboard/fleet` |
 | worker/home node | Join the cluster | `luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1` |
 | client laptop | Login to control plane | `luma login https://luma.example.com --token <management-token>` |
 | client laptop | Deploy a service | `luma deploy app.yaml` |
@@ -335,7 +336,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.172"
+python -m pip install "luma-infra==0.1.173"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -405,8 +406,8 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 
 | Question | What to do |
 | --- | --- |
-| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI, reconciles firewall/Traefik/control config and the Luma Control job, then refreshes the manager node agent when possible. It does not restart Docker/Nomad or redeploy app jobs. |
-| Update worker/home nodes | Run `luma update fleet` from a logged-in client after the manager has the current Control API. Fleet update skips the Nomad server (manager) node by default; update the manager separately with `luma update manager` on the manager. Nodes whose agent is too old to support fleet update are reported as skipped; run `luma update` once on those nodes. |
+| Update the whole Luma cluster | Prefer Dashboard → Nodes → Update center. Enter an immutable release tag, capture a public-route baseline, confirm the Control rollout, and let the page reconnect and probe routes again. Then update only stale non-manager nodes. A node succeeds only after its agent reconnects on the target version. Operations and per-node results persist across page closes and Control restarts. |
+| CLI update fallback | Use `luma update manager` and `luma update fleet` only when the Dashboard is unavailable or when adopting a historical agent that predates `luma-update`. Routine upgrades require no node SSH. |
 | View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, the orchestrator (Nomad) with its leader, and registered nodes with `role=client`. |
 | View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the management token on a trusted device. |
 | What happens if I run `luma update` on a joined node or client? | On a joined node it updates the CLI and refreshes the local node agent; on a client it updates only the CLI and skips manager control-plane refresh. |

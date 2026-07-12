@@ -29,7 +29,7 @@ from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
 from .control.context import list_contexts, load_current_context, save_context, use_context
 from .control.state import load_state, new_state, state_path
-from .agent import DEFAULT_AGENT_CONFIG, install_node_agent, run_node_agent, run_terminal_supervisor
+from .agent import DEFAULT_AGENT_CONFIG, _current_install_layout, install_node_agent, run_node_agent, run_terminal_supervisor
 from .envfile import load_env_file, parse_env_file
 from .errors import LumaError
 from .io import dump_yaml, write_yaml
@@ -167,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.172 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.173 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1554,7 +1554,11 @@ def cmd_update(args: argparse.Namespace) -> int:
         print("[skip] Luma CLI already updated in this run")
     else:
         print("[start] Update Luma CLI")
-        _run_luma_installer(install_ref=_effective_update_install_ref(args))
+        manager_refresh = args.update_command == "manager" or _manager_refresh_decision(args)[0]
+        _run_luma_installer(
+            install_ref=_effective_update_install_ref(args),
+            skip_node_agent_refresh=manager_refresh,
+        )
         print("[ok] Luma CLI updated")
         _reexec_after_luma_update()
     if args.update_command == "fleet":
@@ -1807,10 +1811,25 @@ def _manager_update_options_provided(args: argparse.Namespace) -> bool:
     return False
 
 
-def _run_luma_installer(*, install_ref: str | None = None) -> None:
+def _run_luma_installer(*, install_ref: str | None = None, skip_node_agent_refresh: bool = False) -> None:
     env = os.environ.copy()
     command, exact_ref = luma_installer_command(install_ref, environ=env)
     env["LUMA_INSTALL_REF"] = exact_ref
+    # A manager update can be launched from the root-owned node-agent terminal
+    # even though the supported Luma installation belongs to the operator. Keep
+    # the running executable's layout instead of silently creating /root/.local
+    # and rewriting the healthy systemd unit to that incomplete environment.
+    layout = _current_install_layout()
+    if layout:
+        user_home, install_home, bin_dir = layout
+        env.setdefault("LUMA_USER_HOME", str(user_home))
+        env.setdefault("LUMA_INSTALL_HOME", str(install_home))
+        env.setdefault("LUMA_BIN_DIR", str(bin_dir))
+    # Manager refresh already reinstalls the node agent after Control is healthy.
+    # Restarting it from the bootstrap installer can kill an update launched by
+    # that same service before the control image and routes are reconciled.
+    if skip_node_agent_refresh:
+        env["LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH"] = "1"
     subprocess.run(command, shell=True, check=True, env=env)
 
 
@@ -1837,10 +1856,53 @@ def _start_detached_manager_update(args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env[UPDATE_DETACHED_ENV] = "1"
     env["LUMA_UPDATE_STATUS_PATH"] = str(status_path)
+    env["LUMA_UPDATE_LOG_PATH"] = str(log_path)
     wrapper = (
         'umask 077; "$@"; code=$?; '
         'printf "%s\\n" "$code" > "$LUMA_UPDATE_STATUS_PATH"; exit "$code"'
     )
+    if _manager_update_needs_transient_unit():
+        # A terminal session is a child of luma-node-agent.service. Merely
+        # calling setsid() does not escape that service's cgroup, so refreshing
+        # the agent would SIGTERM the manager update half way through its own
+        # control rollout. Run it as a transient unit with its own cgroup.
+        log_file.close()
+        unit = f"luma-manager-update-{stamp}-{os.getpid()}"
+        unit_wrapper = (
+            'umask 077; exec >> "$LUMA_UPDATE_LOG_PATH" 2>&1; '
+            '"$@"; code=$?; printf "%s\\n" "$code" > "$LUMA_UPDATE_STATUS_PATH"; exit "$code"'
+        )
+        forwarded = (
+            UPDATE_DETACHED_ENV,
+            "LUMA_UPDATE_STATUS_PATH",
+            "LUMA_UPDATE_LOG_PATH",
+            "LUMA_CONTROL_IMAGE",
+            "LUMA_USER_HOME",
+            "LUMA_INSTALL_HOME",
+            "LUMA_BIN_DIR",
+            "LUMA_INSTALL_OWNER",
+            "LUMA_PIP_BUILD_ISOLATION",
+            "PIP_NO_INDEX",
+        )
+        invocation = [
+            "systemd-run",
+            f"--unit={unit}",
+            "--collect",
+            "--no-block",
+            "--property=Type=exec",
+        ]
+        invocation.extend(f"--setenv={key}={env[key]}" for key in forwarded if env.get(key) is not None)
+        invocation.extend(["sh", "-c", unit_wrapper, "luma-detached-update", *command, *raw_argv])
+        try:
+            subprocess.run(invocation, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except Exception:
+            log_path.unlink(missing_ok=True)
+            raise
+        print(f"[ok] Detached manager update started (unit {unit})")
+        print(f"[info] Log: {log_path}")
+        print(f"[info] Status: {status_path} (0 = succeeded; non-zero = failed)")
+        print(f"[info] Follow progress: tail -f {shlex.quote(str(log_path))}")
+        return 0
     try:
         process = subprocess.Popen(
             ["sh", "-c", wrapper, "luma-detached-update", *command, *raw_argv],
@@ -1861,6 +1923,16 @@ def _start_detached_manager_update(args: argparse.Namespace) -> int:
     print(f"[info] Status: {status_path} (0 = succeeded; non-zero = failed)")
     print(f"[info] Follow progress: tail -f {shlex.quote(str(log_path))}")
     return 0
+
+
+def _manager_update_needs_transient_unit() -> bool:
+    return bool(
+        sys.platform.startswith("linux")
+        and hasattr(os, "geteuid")
+        and os.geteuid() == 0
+        and os.environ.get("INVOCATION_ID")
+        and shutil.which("systemd-run")
+    )
 
 
 def _reexec_after_luma_update() -> None:

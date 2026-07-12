@@ -95,7 +95,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
     case "deployments":
       return <DeploymentsPage lang={lang} token={token} />;
     case "nodes":
-      return <NodesPage lang={lang} vm={vm} theme={theme} token={token} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
+      return <NodesPage lang={lang} vm={vm} theme={theme} token={token} controlVersion={payload.cluster?.version || ""} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
     case "lae":
       return <LaeAdminPage lang={lang} token={token} />;
     case "observability":

@@ -144,7 +144,7 @@ The package distribution name is `luma-infra`; the installed console command rem
 5. Create a tag to publish a versioned image, GitHub archive, and PyPI package:
 
 ```bash
-git tag v0.1.172
+git tag v0.1.173
 git push origin main --tags
 ```
 
@@ -153,16 +153,28 @@ The `Publish Python Package` workflow builds wheel and sdist, runs `twine check`
 6. CI users install with:
 
 ```bash
-python -m pip install "luma-infra==0.1.172"
+python -m pip install "luma-infra==0.1.173"
 ```
 
 Interactive users can still install with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.172 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.173 sh
 ```
 
 The installer downloads the GitHub archive for that tag, creates `~/.local/share/luma/venv`, installs the Python package, writes `~/.local/bin/luma`, and adds `~/.local/bin` to the user's shell profile when needed.
+
+### Roll Out A Published Release From Dashboard
+
+After both package and Control-image workflows succeed, open Dashboard → Nodes → Update center. Use the immutable tag as the release ref and the same-tag Control image. The supported order is:
+
+1. capture the public-route baseline;
+2. confirm the Control update and let the page reconnect automatically;
+3. verify the automatic post-update route sentinel;
+4. update only non-manager nodes whose reported agent version differs from the release;
+5. retry any failed or interrupted node from the same page.
+
+Manager updates run in an independent transient systemd unit, so refreshing the manager node agent cannot terminate the rollout that started it. Fleet operations and per-node progress are persisted by Control. A fleet node is successful only after the installer finishes and a new heartbeat reports the target release version. CLI update commands remain break-glass and first-adoption fallbacks; they are not required for normal releases.
 
 Users can uninstall the local CLI with:
 
@@ -183,7 +195,7 @@ The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you wa
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.172
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.173
 ```
 
 ## Latest Channel
@@ -199,7 +211,7 @@ This is convenient but less reproducible than a tag. For real users, prefer a ve
 For CI, prefer the pinned PyPI package:
 
 ```bash
-python -m pip install "luma-infra==0.1.172"
+python -m pip install "luma-infra==0.1.173"
 ```
 
 ## Custom Host Or Fork
@@ -209,7 +221,7 @@ Use these environment variables when the code is hosted somewhere else:
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.1.172 \
+  LUMA_INSTALL_REF=v0.1.173 \
   sh
 ```
 

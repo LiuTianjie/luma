@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import concurrent.futures
 import errno
 import functools
 import hashlib
@@ -142,7 +143,7 @@ from ..lae_admin_proxy import (
 )
 from .. import __version__
 from .metrics import load_history, record_samples, sustained_breach
-from .state import init_state, load_state, mutate_state, require_token
+from .state import init_state, load_state, mutate_state, require_token, save_state, state_dir
 # Re-exported from the secrets leaf module so existing imports of these names
 # from luma.control.server (callers and tests) keep working unchanged.
 from .secrets import (
@@ -219,6 +220,8 @@ ARTIFACT_DOWNLOADS = ArtifactLeaseManager(
 # deploy from racing on job slugs, domains, routes, storage baselines, or the
 # generated Nomad artifact.
 _DEPLOY_LOCK = threading.RLock()
+_FLEET_UPDATE_LOCK = threading.RLock()
+_FLEET_UPDATE_THREADS: dict[str, threading.Thread] = {}
 
 
 def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -8734,7 +8737,12 @@ def handle_certificate_retry(token: str, body: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
-def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+def handle_fleet_update(
+    token: str,
+    body: Dict[str, Any],
+    *,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     install_ref = str(body.get("installRef") or "").strip()
@@ -8742,25 +8750,56 @@ def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     include_manager = bool(body.get("includeManager"))
     per_node_timeout = int(body.get("timeout") or 900)
     per_node_timeout = min(max(per_node_timeout, 60), 3600)
+    wait_ready_seconds = min(max(int(body.get("waitReadySeconds") or 0), 0), 300)
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    raw_targets = body.get("nodeNames")
+    if raw_targets is not None and not isinstance(raw_targets, list):
+        raise LumaError("nodeNames must be a list")
+    target_names = {
+        str(value).strip()
+        for value in (raw_targets or [])
+        if str(value or "").strip()
+    }
+    unknown = sorted(target_names - {str(name) for name in nodes})
+    if unknown:
+        raise LumaError("unknown fleet update node(s): " + ", ".join(unknown))
+    candidates = sorted(target_names if raw_targets is not None else {str(name) for name in nodes})
     results: list[Dict[str, Any]] = []
-    for node_name in sorted(str(name) for name in nodes):
-        record = nodes.get(node_name)
+    for node_name in candidates:
+        current_state = load_state()
+        require_token(current_state, token, token_type="deploy")
+        current_nodes = current_state.get("nodes") if isinstance(current_state.get("nodes"), dict) else {}
+        record = current_nodes.get(node_name)
         if not isinstance(record, dict):
             continue
+        ready_deadline = time.monotonic() + wait_ready_seconds
+        while wait_ready_seconds and not _node_agent_is_ready(record) and time.monotonic() < ready_deadline:
+            time.sleep(min(2.0, max(ready_deadline - time.monotonic(), 0.1)))
+            current_state = load_state()
+            current_nodes = current_state.get("nodes") if isinstance(current_state.get("nodes"), dict) else {}
+            refreshed = current_nodes.get(node_name)
+            if isinstance(refreshed, dict):
+                record = refreshed
         agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
-        if not include_all and not _node_agent_is_ready(record):
+        if not include_all and raw_targets is None and not _node_agent_is_ready(record):
             continue
         item: Dict[str, Any] = {
             "nodeName": node_name,
             "region": str(record.get("region") or ""),
             "os": str(agent.get("os") or ""),
+            "agentVersionBefore": str(agent.get("version") or ""),
             "status": "pending",
         }
+        if progress:
+            progress(dict(item))
         if _node_record_is_manager(record) and not include_manager:
             item["status"] = "skipped"
-            item["message"] = "manager node is skipped by fleet update; run luma update manager on the manager"
+            item["message"] = (
+                "manager node is skipped by default and updated separately by the control-plane rollout"
+            )
             results.append(item)
+            if progress:
+                progress(dict(item))
             continue
         agent_status = _node_agent_status(record)
         capabilities = {str(value) for value in agent.get("capabilities") or []}
@@ -8768,15 +8807,21 @@ def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             item["status"] = "skipped"
             item["message"] = f"node agent is not ready; status={agent_status}"
             results.append(item)
+            if progress:
+                progress(dict(item))
             continue
         if "luma-update" not in capabilities:
             item["status"] = "skipped"
-            item["message"] = "node agent does not support fleet update; run luma update on this node once to refresh the agent"
+            item["message"] = (
+                "node agent does not support fleet update; managed fleet update capability is missing"
+            )
             results.append(item)
+            if progress:
+                progress(dict(item))
             continue
         try:
             result = _run_node_agent_task(
-                state,
+                current_state,
                 node_name,
                 "update-luma",
                 {"installRef": install_ref},
@@ -8790,21 +8835,349 @@ def handle_fleet_update(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 item["installRef"] = str(result.get("installRef"))
             if result.get("output"):
                 item["output"] = str(result.get("output"))
+            if wait_ready_seconds:
+                item["status"] = "verifying"
+                item["message"] = "Installer finished; waiting for the updated node agent to reconnect."
+                if progress:
+                    progress(dict(item))
+                completed_at = int(time.time())
+                expected_version = ""
+                if re.fullmatch(r"v[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?", install_ref):
+                    expected_version = install_ref[1:]
+                verify_deadline = time.monotonic() + wait_ready_seconds
+                verified_agent: Dict[str, Any] | None = None
+                while time.monotonic() < verify_deadline:
+                    time.sleep(min(2.0, max(verify_deadline - time.monotonic(), 0.1)))
+                    verified_state = load_state()
+                    verified_nodes = (
+                        verified_state.get("nodes")
+                        if isinstance(verified_state.get("nodes"), dict)
+                        else {}
+                    )
+                    verified_record = verified_nodes.get(node_name)
+                    if not isinstance(verified_record, dict) or not _node_agent_is_ready(verified_record):
+                        continue
+                    candidate_agent = (
+                        verified_record.get("agent")
+                        if isinstance(verified_record.get("agent"), dict)
+                        else {}
+                    )
+                    version_after = str(candidate_agent.get("version") or "")
+                    if int(candidate_agent.get("lastSeen") or 0) <= completed_at:
+                        continue
+                    if expected_version and version_after != expected_version:
+                        continue
+                    verified_agent = candidate_agent
+                    break
+                if verified_agent is None:
+                    item["status"] = "failed"
+                    item["message"] = (
+                        "Installer finished, but the updated node agent did not reconnect with the expected version "
+                        f"within {wait_ready_seconds} seconds. Retry this node from the update center."
+                    )
+                else:
+                    item["status"] = "succeeded"
+                    item["agentVersionAfter"] = str(verified_agent.get("version") or "")
+                    item["message"] = "Luma updated and the node agent reconnected successfully."
         except LumaError as exc:
             item["status"] = "failed"
             item["message"] = str(exc)
         results.append(item)
+        if progress:
+            progress(dict(item))
     succeeded = sum(1 for item in results if item.get("status") == "succeeded")
     failed = sum(1 for item in results if item.get("status") == "failed")
     skipped = sum(1 for item in results if item.get("status") == "skipped")
     return {
-        "clusterId": state["clusterId"],
+        "clusterId": str(state.get("clusterId") or ""),
         "installRef": install_ref,
         "total": len(results),
         "succeeded": succeeded,
         "failed": failed,
         "skipped": skipped,
         "results": results,
+    }
+
+
+def _fleet_update_operation_dir() -> Path:
+    return state_dir() / "fleet-updates"
+
+
+def _fleet_update_operation_path(operation_id: str) -> Path:
+    safe_id = str(operation_id or "").strip()
+    if not re.fullmatch(r"fleet-[0-9]{10,}-[a-f0-9]{8}", safe_id):
+        raise LumaError("invalid fleet update operation id")
+    return _fleet_update_operation_dir() / f"{safe_id}.json"
+
+
+def _fleet_update_operation_write(record: Dict[str, Any]) -> None:
+    record["updatedAt"] = int(time.time())
+    save_state(record, _fleet_update_operation_path(str(record.get("id") or "")))
+
+
+def _fleet_update_operation_read(operation_id: str) -> Dict[str, Any]:
+    path = _fleet_update_operation_path(operation_id)
+    if not path.exists():
+        raise LumaError("fleet update operation not found")
+    return load_state(path)
+
+
+def _fleet_update_public(record: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(record)
+    # Installer output is useful for server-side support but far too noisy for
+    # the dashboard and can contain host-local paths. The UI gets the bounded
+    # message and structured phase for every node instead.
+    nodes: list[Dict[str, Any]] = []
+    for raw in result.get("nodes") or []:
+        if not isinstance(raw, dict):
+            continue
+        item = {key: value for key, value in raw.items() if key != "output"}
+        nodes.append(item)
+    result["nodes"] = nodes
+    final = result.get("result") if isinstance(result.get("result"), dict) else None
+    if final:
+        public_final = dict(final)
+        public_final["results"] = [
+            {key: value for key, value in item.items() if key != "output"}
+            for item in public_final.get("results") or []
+            if isinstance(item, dict)
+        ]
+        result["result"] = public_final
+    return result
+
+
+def handle_fleet_update_operation_start(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    install_ref = str(body.get("installRef") or "").strip()
+    if not install_ref or len(install_ref) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", install_ref):
+        raise LumaError("installRef must be a Git tag, branch, or commit")
+    raw_targets = body.get("nodeNames")
+    if raw_targets is not None and not isinstance(raw_targets, list):
+        raise LumaError("nodeNames must be a list")
+    request_body: Dict[str, Any] = {
+        "installRef": install_ref,
+        "includeAll": True,
+        "includeManager": False,
+        "timeout": min(max(int(body.get("timeout") or 900), 60), 3600),
+        "waitReadySeconds": min(max(int(body.get("waitReadySeconds") or 30), 0), 300),
+    }
+    if raw_targets is not None:
+        request_body["nodeNames"] = [str(value).strip() for value in raw_targets if str(value or "").strip()]
+    now = int(time.time())
+    operation_id = f"fleet-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+    record: Dict[str, Any] = {
+        "schemaVersion": "luma.fleet-update/v1",
+        "id": operation_id,
+        "clusterId": str(state.get("clusterId") or ""),
+        "installRef": install_ref,
+        "status": "queued",
+        "createdAt": now,
+        "updatedAt": now,
+        "nodes": [],
+        "request": {key: value for key, value in request_body.items() if key != "timeout"},
+    }
+    _fleet_update_operation_write(record)
+
+    def update_node(event: Dict[str, Any]) -> None:
+        with _FLEET_UPDATE_LOCK:
+            current = _fleet_update_operation_read(operation_id)
+            current["status"] = "running"
+            nodes = [dict(item) for item in current.get("nodes") or [] if isinstance(item, dict)]
+            node_name = str(event.get("nodeName") or "")
+            public_event = {key: value for key, value in event.items() if key != "output"}
+            replaced = False
+            for index, item in enumerate(nodes):
+                if str(item.get("nodeName") or "") == node_name:
+                    nodes[index] = public_event
+                    replaced = True
+                    break
+            if not replaced:
+                nodes.append(public_event)
+            current["nodes"] = nodes
+            _fleet_update_operation_write(current)
+
+    def run() -> None:
+        try:
+            with _FLEET_UPDATE_LOCK:
+                current = _fleet_update_operation_read(operation_id)
+                current["status"] = "running"
+                current["startedAt"] = int(time.time())
+                _fleet_update_operation_write(current)
+            result = handle_fleet_update(token, request_body, progress=update_node)
+            with _FLEET_UPDATE_LOCK:
+                current = _fleet_update_operation_read(operation_id)
+                current["result"] = result
+                current["status"] = "succeeded" if not int(result.get("failed") or 0) and not int(result.get("skipped") or 0) else "attention"
+                current["finishedAt"] = int(time.time())
+                _fleet_update_operation_write(current)
+        except Exception as exc:
+            with _FLEET_UPDATE_LOCK:
+                current = _fleet_update_operation_read(operation_id)
+                current["status"] = "failed"
+                current["message"] = str(exc)
+                current["finishedAt"] = int(time.time())
+                _fleet_update_operation_write(current)
+        finally:
+            with _FLEET_UPDATE_LOCK:
+                _FLEET_UPDATE_THREADS.pop(operation_id, None)
+
+    thread = threading.Thread(target=run, name=f"luma-{operation_id}", daemon=True)
+    with _FLEET_UPDATE_LOCK:
+        _FLEET_UPDATE_THREADS[operation_id] = thread
+    thread.start()
+    return _fleet_update_public(record)
+
+
+def handle_fleet_update_operation_get(token: str, operation_id: str = "") -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    if operation_id:
+        with _FLEET_UPDATE_LOCK:
+            record = _fleet_update_operation_read(operation_id)
+            if str(record.get("status") or "") in {"queued", "running"} and operation_id not in _FLEET_UPDATE_THREADS:
+                record["status"] = "interrupted"
+                record["message"] = "Control restarted while the fleet update was running; retry the unfinished nodes from this page."
+                record["finishedAt"] = int(time.time())
+                _fleet_update_operation_write(record)
+        return _fleet_update_public(record)
+    root = _fleet_update_operation_dir()
+    records: list[Dict[str, Any]] = []
+    if root.exists():
+        for path in sorted(root.glob("fleet-*.json"), key=lambda value: value.stat().st_mtime, reverse=True)[:20]:
+            try:
+                records.append(_fleet_update_public(load_state(path)))
+            except (LumaError, OSError):
+                continue
+    return {"clusterId": str(state.get("clusterId") or ""), "operations": records}
+
+
+def _manager_update_target(state: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    managers = [
+        (str(name), record)
+        for name, record in nodes.items()
+        if isinstance(record, dict) and _node_record_is_manager(record)
+    ]
+    if len(managers) != 1:
+        raise LumaError(f"expected exactly one manager node, found {len(managers)}")
+    return managers[0]
+
+
+def _default_control_image_for_ref(install_ref: str) -> str:
+    if re.fullmatch(r"v[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?", install_ref):
+        return f"ghcr.io/liutianjie/luma-control:{install_ref}"
+    if re.fullmatch(r"[a-f0-9]{40}", install_ref):
+        return f"ghcr.io/liutianjie/luma-control:sha-{install_ref[:7]}"
+    return ""
+
+
+def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    install_ref = str(body.get("installRef") or "").strip()
+    if not install_ref or len(install_ref) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", install_ref):
+        raise LumaError("installRef must be a Git tag, branch, or commit")
+    control_image = str(body.get("controlImage") or _default_control_image_for_ref(install_ref)).strip()
+    if not control_image:
+        raise LumaError("controlImage is required for a branch or non-standard ref")
+    domain = str(state.get("domain") or "").strip()
+    if not domain:
+        raise LumaError("control domain is not configured")
+    node_name, _record = _manager_update_target(state)
+    result = _run_node_agent_task(
+        state,
+        node_name,
+        "start-manager-update",
+        {"installRef": install_ref, "controlImage": control_image, "domain": domain},
+        timeout=90,
+        required_capability="manager-update-v1",
+    )
+    return {
+        "clusterId": str(state.get("clusterId") or ""),
+        "managerNode": node_name,
+        **{key: value for key, value in result.items() if key != "taskId"},
+        "taskId": str(result.get("taskId") or ""),
+    }
+
+
+def handle_manager_update_status(token: str, update_id: str = "") -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    node_name, _record = _manager_update_target(state)
+    result = _run_node_agent_task(
+        state,
+        node_name,
+        "manager-update-status",
+        {"updateId": str(update_id or "")},
+        timeout=60,
+        required_capability="manager-update-v1",
+    )
+    result.pop("taskId", None)
+    return {"clusterId": str(state.get("clusterId") or ""), "managerNode": node_name, **result}
+
+
+def _probe_public_route(domain: str) -> Dict[str, Any]:
+    started = time.monotonic()
+    request = urllib.request.Request(
+        f"https://{domain}/",
+        method="GET",
+        headers={"User-Agent": f"Luma-Route-Sentinel/{__version__}"},
+    )
+    status = 0
+    error = ""
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            status = int(response.status or 0)
+    except urllib.error.HTTPError as exc:
+        status = int(exc.code or 0)
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        error = str(getattr(exc, "reason", exc))[:240]
+    latency_ms = int((time.monotonic() - started) * 1000)
+    # Authentication and redirects still prove that Traefik published the
+    # route. 404 and gateway errors are the upgrade regressions this sentinel
+    # is designed to catch.
+    ok = bool(status and status != 404 and status < 500)
+    return {"domain": domain, "status": status, "ok": ok, "latencyMs": latency_ms, "error": error}
+
+
+def handle_route_sentinel(token: str, body: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
+    config = load_config(config_path)
+    errors: list[str] = []
+    route_files = _dashboard_route_files(config, config_path, errors)
+    known_domains = {
+        str(route.get("domain") or "").strip().lower()
+        for route in route_files.values()
+        if isinstance(route, dict) and str(route.get("kind") or "") == "http" and str(route.get("domain") or "").strip()
+    }
+    requested = (body or {}).get("domains")
+    if requested is not None and not isinstance(requested, list):
+        raise LumaError("domains must be a list")
+    domains = sorted(
+        {
+            str(value).strip().lower()
+            for value in (requested or known_domains)
+            if str(value or "").strip().lower() in known_domains
+        }
+    )
+    if requested is not None:
+        unknown = sorted({str(value).strip().lower() for value in requested if str(value or "").strip()} - known_domains)
+        if unknown:
+            raise LumaError("unknown route domain(s): " + ", ".join(unknown))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(max(len(domains), 1), 12)) as executor:
+        results = list(executor.map(_probe_public_route, domains))
+    failed = sum(1 for item in results if not item.get("ok"))
+    return {
+        "clusterId": str(state.get("clusterId") or ""),
+        "checkedAt": int(time.time()),
+        "total": len(results),
+        "succeeded": len(results) - failed,
+        "failed": failed,
+        "results": results,
+        "errors": errors,
     }
 
 
@@ -11285,6 +11658,7 @@ def _registered_nodes_summary(nodes: Dict[str, Any]) -> list[Dict[str, Any]]:
             "labels": {str(key): str(value) for key, value in labels.items()},
             "agentStatus": _node_agent_status(raw),
             "agentOs": str(agent.get("os") or ""),
+            "agentVersion": str(agent.get("version") or ""),
             "agentLastSeen": int(agent.get("lastSeen") or 0),
             "storageCapabilities": [str(value) for value in agent.get("capabilities") or []],
             "metrics": _agent_metrics(metrics),
@@ -11477,6 +11851,7 @@ def _dashboard_nodes(
                 "leader": bool(orchestrator.get("leader")),
                 "agentStatus": agent_status,
                 "agentOs": str(registered.get("agentOs") or ""),
+                "agentVersion": str(registered.get("agentVersion") or ""),
                 "agentLastSeen": int(registered.get("agentLastSeen") or 0),
                 "storageCapabilities": capabilities,
                 "terminalConnected": terminal_connected,
@@ -13396,6 +13771,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "lae-runtime-lifecycle-v1",
                         "lae-runtime-observability-v1",
                         "nomad-variables-secrets-v1",
+                        "system-update-v1",
+                        "route-sentinel-v1",
                     ],
                 },
             )
@@ -13548,6 +13925,18 @@ class ControlHandler(BaseHTTPRequestHandler):
                         urllib.parse.urlparse(self.path).query,
                     ),
                 )
+                return
+            fleet_update_match = re.fullmatch(r"/v1/dashboard/updates/fleet/([^/]+)", parsed_path)
+            if fleet_update_match:
+                self._json(200, handle_fleet_update_operation_get(token, urllib.parse.unquote(fleet_update_match.group(1))))
+                return
+            if parsed_path == "/v1/dashboard/updates/fleet":
+                self._json(200, handle_fleet_update_operation_get(token))
+                return
+            if parsed_path == "/v1/dashboard/updates/manager":
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                update_id = str((query.get("updateId") or [""])[0])
+                self._json(200, handle_manager_update_status(token, update_id))
                 return
             if parsed_path == "/v1/dashboard":
                 self._json(200, handle_dashboard(token))
@@ -13902,6 +14291,15 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/fleet/update":
                 self._json(200, handle_fleet_update(token, body))
                 return
+            if self.path == "/v1/dashboard/updates/fleet":
+                self._json(202, handle_fleet_update_operation_start(token, body))
+                return
+            if self.path == "/v1/dashboard/updates/manager":
+                self._json(202, handle_manager_update_start(token, body))
+                return
+            if self.path == "/v1/dashboard/route-sentinel":
+                self._json(200, handle_route_sentinel(token, body))
+                return
             if self.path == "/v1/secrets":
                 self._json(200, handle_secret_set(token, body))
                 return
@@ -14224,6 +14622,8 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "lae-runtime-lifecycle-v1",
                 "lae-runtime-observability-v1",
                 "nomad-variables-secrets-v1",
+                "system-update-v1",
+                "route-sentinel-v1",
             ],
         },
     )
@@ -14390,6 +14790,27 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             )
             response.headers["Cache-Control"] = "no-store"
             return response
+        fleet_update_match = re.fullmatch(r"/v1/dashboard/updates/fleet/([^/]+)", parsed_path)
+        if fleet_update_match:
+            return _json_response(
+                200,
+                await run_in_threadpool(
+                    handle_fleet_update_operation_get,
+                    token,
+                    urllib.parse.unquote(fleet_update_match.group(1)),
+                ),
+            )
+        if parsed_path == "/v1/dashboard/updates/fleet":
+            return _json_response(200, await run_in_threadpool(handle_fleet_update_operation_get, token))
+        if parsed_path == "/v1/dashboard/updates/manager":
+            return _json_response(
+                200,
+                await run_in_threadpool(
+                    handle_manager_update_status,
+                    token,
+                    str(request.query_params.get("updateId") or ""),
+                ),
+            )
         if parsed_path == "/v1/dashboard":
             return _json_response(200, await run_in_threadpool(handle_dashboard, token))
         if parsed_path == "/v1/dashboard/logs":
@@ -14704,6 +15125,12 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             service = str(body.get("service") or "")
             timeout = int(body.get("timeout") or 600)
             return _json_response(200, await run_in_threadpool(handle_service_pull_diagnostics, token, service, timeout=timeout))
+        if path == "/v1/dashboard/updates/fleet":
+            return _json_response(202, await run_in_threadpool(handle_fleet_update_operation_start, token, body))
+        if path == "/v1/dashboard/updates/manager":
+            return _json_response(202, await run_in_threadpool(handle_manager_update_start, token, body))
+        if path == "/v1/dashboard/route-sentinel":
+            return _json_response(200, await run_in_threadpool(handle_route_sentinel, token, body))
         handler = routes.get(path)
         if handler:
             return _json_response(200, await run_in_threadpool(handler, token, body))

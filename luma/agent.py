@@ -9,6 +9,7 @@ import platform
 import pty
 import re
 import select
+import secrets
 import shutil
 import shlex
 import signal
@@ -25,6 +26,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping
 
+from . import __version__
 from .builder_build_executor import build_plan, builder_build_available
 from .builder_executor import (
     BuilderCleanupFailed,
@@ -109,6 +111,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "docker-image",
             "docker-egress-proxy",
             "luma-update",
+            "manager-update-v1",
             "nomad-join",
             "nomad-cni-repair",
             "terminal",
@@ -1328,6 +1331,7 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                     node_id=node_id,
                     os_name=node_agent_os(),
                     arch=node_agent_arch(),
+                    version=__version__,
                     capabilities=node_agent_capabilities(),
                     metrics=node_agent_metrics(),
                     container_stats=container_stats,
@@ -1530,6 +1534,7 @@ def _start_agent_task_heartbeat(
                     active_task_id=active_task_id,
                     os_name=node_agent_os(),
                     arch=node_agent_arch(),
+                    version=__version__,
                     capabilities=node_agent_capabilities(),
                     metrics=node_agent_metrics(),
                     timeout=_agent_task_heartbeat_timeout(interval),
@@ -1947,6 +1952,14 @@ def execute_agent_task(
         )
     if action == "update-luma":
         return update_luma_install(install_ref=str(payload.get("installRef") or ""), config_path=config_path)
+    if action == "start-manager-update":
+        return start_manager_control_update(
+            install_ref=str(payload.get("installRef") or ""),
+            control_image=str(payload.get("controlImage") or ""),
+            domain=str(payload.get("domain") or ""),
+        )
+    if action == "manager-update-status":
+        return manager_control_update_status(update_id=str(payload.get("updateId") or ""))
     if action == "build-image":
         return build_image(payload, progress=progress)
     if action == "analyze-source":
@@ -3127,6 +3140,204 @@ def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AG
         "message": f"Luma installer finished; {service_message}; {watchdog_message}",
         "output": _tail_text(output),
         "restartAgent": restart_agent,
+    }
+
+
+def _manager_update_root() -> Path:
+    return Path(os.environ.get("LUMA_MANAGER_UPDATE_ROOT") or "/opt/luma/manager-updates")
+
+
+def _manager_update_id(value: str) -> str:
+    update_id = str(value or "").strip()
+    if not re.fullmatch(r"manager-[0-9]{10,}-[a-f0-9]{8}", update_id):
+        raise LumaError("invalid manager update id")
+    return update_id
+
+
+def _manager_update_ref(value: str) -> str:
+    install_ref = str(value or "").strip()
+    if not install_ref or len(install_ref) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", install_ref):
+        raise LumaError("installRef must be a Git tag, branch, or commit")
+    return install_ref
+
+
+def _manager_update_domain(value: str) -> str:
+    domain = str(value or "").strip().lower().rstrip(".")
+    if not domain or len(domain) > 253 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", domain):
+        raise LumaError("invalid control domain")
+    return domain
+
+
+def _write_manager_update_json(path: Path, value: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def start_manager_control_update(*, install_ref: str, control_image: str, domain: str) -> Dict[str, Any]:
+    if node_agent_os() != "linux" or not shutil.which("systemd-run"):
+        raise LumaError("managed control-plane update requires Linux systemd")
+    safe_ref = _manager_update_ref(install_ref)
+    safe_image = _safe_docker_image_ref(control_image)
+    safe_domain = _manager_update_domain(domain)
+    executable = _installed_luma_executable()
+    if not executable or not Path(executable).exists():
+        raise LumaError("installed Luma executable is unavailable")
+    root = _manager_update_root()
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    # Fail closed while another manager rollout has no terminal status. The
+    # dashboard can reconnect to that operation instead of launching a race.
+    for meta_path in sorted(root.glob("manager-*.json"), reverse=True)[:20]:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        current_id = str(meta.get("id") or "")
+        if current_id and not (root / f"{current_id}.status").exists():
+            unit = str(meta.get("unit") or "")
+            active = subprocess.run(
+                ["systemctl", "is-active", "--quiet", unit],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode == 0
+            if active:
+                raise LumaError(f"manager update already running: {current_id}")
+    update_id = f"manager-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+    unit = f"luma-{update_id}"
+    log_path = root / f"{update_id}.log"
+    status_path = root / f"{update_id}.status"
+    meta_path = root / f"{update_id}.json"
+    layout = _current_install_layout()
+    environment = {
+        "LUMA_CONTROL_IMAGE": safe_image,
+        "LUMA_MANAGER_UPDATE_LOG_PATH": str(log_path),
+        "LUMA_MANAGER_UPDATE_STATUS_PATH": str(status_path),
+    }
+    if layout:
+        user_home, install_home, bin_dir = layout
+        environment.update(
+            {
+                "LUMA_USER_HOME": str(user_home),
+                "LUMA_INSTALL_HOME": str(install_home),
+                "LUMA_BIN_DIR": str(bin_dir),
+            }
+        )
+    _write_manager_update_json(
+        meta_path,
+        {
+            "schemaVersion": "luma.manager-update/v1",
+            "id": update_id,
+            "unit": unit,
+            "installRef": safe_ref,
+            "controlImage": safe_image,
+            "domain": safe_domain,
+            "createdAt": int(time.time()),
+        },
+    )
+    wrapper = (
+        'umask 077; exec >> "$LUMA_MANAGER_UPDATE_LOG_PATH" 2>&1; '
+        '"$@"; code=$?; printf "%s\\n" "$code" > "$LUMA_MANAGER_UPDATE_STATUS_PATH"; exit "$code"'
+    )
+    invocation = [
+        "systemd-run",
+        f"--unit={unit}",
+        "--collect",
+        "--no-block",
+        "--property=Type=exec",
+    ]
+    invocation.extend(f"--setenv={key}={value}" for key, value in environment.items())
+    invocation.extend(
+        [
+            "sh",
+            "-c",
+            wrapper,
+            "luma-manager-update",
+            executable,
+            "update",
+            "manager",
+            "--install-ref",
+            safe_ref,
+            "--domain",
+            safe_domain,
+        ]
+    )
+    completed = subprocess.run(invocation, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if completed.returncode != 0:
+        status_path.write_text(f"{completed.returncode}\n", encoding="utf-8")
+        status_path.chmod(0o600)
+        raise LumaError(f"unable to start manager update: {_tail_text(completed.stdout or '')}")
+    return {
+        "updateId": update_id,
+        "status": "running",
+        "installRef": safe_ref,
+        "controlImage": safe_image,
+        "createdAt": int(time.time()),
+        "message": "Control-plane update started; the dashboard will reconnect automatically during the rollout.",
+    }
+
+
+def manager_control_update_status(*, update_id: str = "") -> Dict[str, Any]:
+    root = _manager_update_root()
+    if update_id:
+        safe_id = _manager_update_id(update_id)
+        meta_path = root / f"{safe_id}.json"
+    else:
+        candidates = sorted(root.glob("manager-*.json"), key=lambda path: path.stat().st_mtime, reverse=True) if root.exists() else []
+        if not candidates:
+            return {"status": "none", "message": "No manager update has been recorded."}
+        meta_path = candidates[0]
+        safe_id = _manager_update_id(meta_path.stem)
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise LumaError("manager update not found") from exc
+    except (OSError, ValueError) as exc:
+        raise LumaError("manager update state is unreadable") from exc
+    status_path = root / f"{safe_id}.status"
+    log_path = root / f"{safe_id}.log"
+    status = "running"
+    exit_code: int | None = None
+    if status_path.exists():
+        try:
+            exit_code = int(status_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            exit_code = -1
+        status = "succeeded" if exit_code == 0 else "failed"
+    else:
+        unit = str(meta.get("unit") or "")
+        active = bool(unit) and subprocess.run(
+            ["systemctl", "is-active", "--quiet", unit],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        if not active:
+            status = "interrupted"
+    lines: list[str] = []
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
+    except OSError:
+        pass
+    return {
+        "updateId": safe_id,
+        "status": status,
+        "exitCode": exit_code,
+        "installRef": str(meta.get("installRef") or ""),
+        "controlImage": str(meta.get("controlImage") or ""),
+        "createdAt": int(meta.get("createdAt") or 0),
+        "log": lines,
     }
 
 

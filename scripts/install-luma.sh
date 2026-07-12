@@ -380,7 +380,11 @@ exec "$VENV_DIR/bin/python" -m luma.cli "\$@"
 EOF
   chmod +x "$BIN_DIR/luma"
   ensure_path
-  refresh_node_agent_service
+  if [ "${LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH:-0}" = "1" ]; then
+    echo "Luma node agent service refresh deferred"
+  else
+    refresh_node_agent_service
+  fi
   chown_install_paths
 fi
 

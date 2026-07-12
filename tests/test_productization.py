@@ -1128,6 +1128,8 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("systemctl daemon-reload", installer)
         self.assertIn("Luma node agent systemd restart scheduled", installer)
         self.assertIn("Luma node agent launchd reload scheduled", installer)
+        self.assertIn('LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH:-0', installer)
+        self.assertIn("Luma node agent service refresh deferred", installer)
 
     def test_installer_restores_user_install_ownership_after_root_update(self):
         root = Path(__file__).resolve().parents[1]
@@ -2344,7 +2346,7 @@ class CliTests(unittest.TestCase):
             )
 
         self.assertEqual(code, 0)
-        installer.assert_called_once_with(install_ref="main")
+        installer.assert_called_once_with(install_ref="main", skip_node_agent_refresh=True)
         reexec.assert_called_once()
         refresh.assert_called_once()
         self.assertEqual(refresh.call_args.args[2], "luma.example.com")
@@ -2370,6 +2372,22 @@ class CliTests(unittest.TestCase):
 
         self.assertIn("/v0.1.168/scripts/install-luma.sh", run.call_args.args[0])
         self.assertEqual(run.call_args.kwargs["env"]["LUMA_INSTALL_REF"], "v0.1.168")
+
+    def test_manager_installer_preserves_running_operator_layout_and_defers_agent_restart(self):
+        with patch("luma.cli._current_install_layout", return_value=(
+            Path("/home/tao"),
+            Path("/home/tao/.local/share/luma"),
+            Path("/home/tao/.local/bin"),
+        )), patch("luma.cli.subprocess.run") as run:
+            from luma.cli import _run_luma_installer
+
+            _run_luma_installer(install_ref="v0.1.173", skip_node_agent_refresh=True)
+
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["LUMA_USER_HOME"], "/home/tao")
+        self.assertEqual(env["LUMA_INSTALL_HOME"], "/home/tao/.local/share/luma")
+        self.assertEqual(env["LUMA_BIN_DIR"], "/home/tao/.local/bin")
+        self.assertEqual(env["LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH"], "1")
 
     def test_node_agent_update_pins_bootstrap_installer_and_archive_to_install_ref(self):
         executor = Mock()
@@ -2425,6 +2443,8 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(
             os.environ, {"XDG_STATE_HOME": tmp}, clear=False
         ), patch("luma.cli._current_luma_command", return_value=["/opt/luma/bin/luma"]), patch(
+            "luma.cli._manager_update_needs_transient_unit", return_value=False
+        ), patch(
             "luma.cli.subprocess.Popen", return_value=process
         ) as popen, patch("builtins.print"):
             code = _start_detached_manager_update(
@@ -2443,6 +2463,35 @@ class CliTests(unittest.TestCase):
         detached_env = popen.call_args.kwargs["env"]
         self.assertEqual(detached_env["LUMA_UPDATE_DETACHED"], "1")
         self.assertTrue(detached_env["LUMA_UPDATE_STATUS_PATH"].endswith(".status"))
+
+    def test_detached_manager_update_escapes_node_agent_systemd_cgroup(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {
+                "XDG_STATE_HOME": tmp,
+                "INVOCATION_ID": "agent-service-invocation",
+                "LUMA_CONTROL_IMAGE": "ghcr.io/example/luma-control:v9",
+                "CLOUDFLARE_API_TOKEN": "secret",
+            },
+            clear=False,
+        ), patch("luma.cli._current_luma_command", return_value=["/home/tao/.local/bin/luma"]), patch(
+            "luma.cli._manager_update_needs_transient_unit", return_value=True
+        ), patch("luma.cli.subprocess.run") as run, patch("builtins.print"):
+            from luma.cli import _start_detached_manager_update
+
+            code = _start_detached_manager_update(
+                Mock(_raw_argv=["update", "manager", "--detach", "--install-ref", "deadbeef"])
+            )
+
+        self.assertEqual(code, 0)
+        invocation = run.call_args.args[0]
+        self.assertEqual(invocation[0], "systemd-run")
+        self.assertIn("--collect", invocation)
+        self.assertIn("--no-block", invocation)
+        self.assertIn("--setenv=LUMA_UPDATE_DETACHED=1", invocation)
+        self.assertIn("--setenv=LUMA_CONTROL_IMAGE=ghcr.io/example/luma-control:v9", invocation)
+        self.assertNotIn("--setenv=CLOUDFLARE_API_TOKEN=secret", invocation)
+        self.assertIn("/home/tao/.local/bin/luma", invocation)
 
     def test_detach_is_rejected_for_fleet_update(self):
         with patch("luma.cli._run_luma_installer") as installer:
@@ -2535,7 +2584,7 @@ class CliTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
         self.assertEqual(code, 0)
-        installer.assert_called_once_with(install_ref=None)
+        installer.assert_called_once_with(install_ref=None, skip_node_agent_refresh=True)
         refresh.assert_called_once()
         self.assertEqual(refresh.call_args.args[2], "luma.example.com")
 
@@ -2566,7 +2615,7 @@ class CliTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
         self.assertEqual(code, 0)
-        installer.assert_called_once_with(install_ref=None)
+        installer.assert_called_once_with(install_ref=None, skip_node_agent_refresh=True)
         refresh.assert_called_once()
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("Manager control-plane refresh required", printed_text)
@@ -2585,7 +2634,7 @@ class CliTests(unittest.TestCase):
             code = main(["update"])
 
         self.assertEqual(code, 0)
-        installer.assert_called_once_with(install_ref=None)
+        installer.assert_called_once_with(install_ref=None, skip_node_agent_refresh=False)
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("[info] Role: joined node", printed_text)
         self.assertIn("[skip] Luma node agent skipped", printed_text)
@@ -2604,7 +2653,7 @@ class CliTests(unittest.TestCase):
             code = main(["update"])
 
         self.assertEqual(code, 0)
-        installer.assert_called_once_with(install_ref=None)
+        installer.assert_called_once_with(install_ref=None, skip_node_agent_refresh=False)
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("[info] Role: joined node", printed_text)
         self.assertIn("[skip] Luma node agent skipped", printed_text)
@@ -2664,7 +2713,7 @@ class CliTests(unittest.TestCase):
             code = main(["update"])
 
         self.assertEqual(code, 0)
-        installer.assert_called_once_with(install_ref=None)
+        installer.assert_called_once_with(install_ref=None, skip_node_agent_refresh=False)
         refresh.assert_not_called()
         printed_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in printed.call_args_list)
         self.assertIn("CLI updated", printed_text)
@@ -2688,7 +2737,7 @@ class CliTests(unittest.TestCase):
             code = main(["update", "fleet", "--install-ref", "main", "--timeout", "120"])
 
         self.assertEqual(code, 0)
-        installer.assert_called_once_with(install_ref="main")
+        installer.assert_called_once_with(install_ref="main", skip_node_agent_refresh=False)
         client.update_fleet.assert_called_once_with(install_ref="main", include_all=False, include_manager=False, timeout=120)
 
     def test_update_fleet_include_manager_flag_is_explicit(self):
@@ -4342,6 +4391,131 @@ class NomadBootstrapTests(unittest.TestCase):
             install_docker(remote)
 
 class ControlApiTests(unittest.TestCase):
+    def test_agent_manager_update_runs_in_independent_systemd_unit_and_reports_status(self):
+        from luma.agent import manager_control_update_status, start_manager_control_update
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "manager-updates"
+            executable = Path(tmp) / "home" / "tao" / ".local" / "bin" / "luma"
+            executable.parent.mkdir(parents=True)
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o755)
+            old_root = _set_env("LUMA_MANAGER_UPDATE_ROOT", str(root))
+            completed = Mock(returncode=0, stdout="")
+            try:
+                with patch("luma.agent.node_agent_os", return_value="linux"), patch(
+                    "luma.agent.shutil.which", return_value="/usr/bin/systemd-run"
+                ), patch("luma.agent._installed_luma_executable", return_value=str(executable)), patch(
+                    "luma.agent._current_install_layout",
+                    return_value=(Path(tmp) / "home" / "tao", Path(tmp) / "home" / "tao" / ".local" / "share" / "luma", executable.parent),
+                ), patch("luma.agent.subprocess.run", return_value=completed) as run:
+                    result = start_manager_control_update(
+                        install_ref="v0.1.173",
+                        control_image="ghcr.io/liutianjie/luma-control:v0.1.173",
+                        domain="luma.example.com",
+                    )
+                invocation = run.call_args.args[0]
+                self.assertEqual(invocation[0], "systemd-run")
+                self.assertIn("--property=Type=exec", invocation)
+                self.assertIn(str(executable), invocation)
+                self.assertIn("--setenv=LUMA_USER_HOME=" + str(Path(tmp) / "home" / "tao"), invocation)
+                self.assertNotIn("management-token", " ".join(invocation))
+
+                update_id = str(result["updateId"])
+                (root / f"{update_id}.status").write_text("0\n", encoding="utf-8")
+                (root / f"{update_id}.log").write_text("control healthy\n", encoding="utf-8")
+                status = manager_control_update_status(update_id=update_id)
+                self.assertEqual(status["status"], "succeeded")
+                self.assertEqual(status["log"], ["control healthy"])
+            finally:
+                _restore_env("LUMA_MANAGER_UPDATE_ROOT", old_root)
+
+    def test_manager_update_handler_uses_manager_agent_transient_update_capability(self):
+        from luma.control.server import handle_manager_update_start
+
+        state = {
+            "clusterId": "luma-test",
+            "domain": "luma.example.com",
+            "deployToken": "management-token",
+            "nodes": {
+                "manager": {
+                    "labels": {"role.nomad-manager": "true"},
+                    "agent": {"status": "online", "lastSeen": int(time.time()), "capabilities": ["manager-update-v1"]},
+                }
+            },
+        }
+        result = {
+            "taskId": "task-1",
+            "updateId": "manager-1783835000000-aabbccdd",
+            "status": "running",
+            "installRef": "v0.1.173",
+            "controlImage": "ghcr.io/liutianjie/luma-control:v0.1.173",
+        }
+        with patch("luma.control.server.load_state", return_value=state), patch(
+            "luma.control.server._run_node_agent_task", return_value=result
+        ) as run:
+            response = handle_manager_update_start("management-token", {"installRef": "v0.1.173"})
+
+        self.assertEqual(response["updateId"], "manager-1783835000000-aabbccdd")
+        self.assertEqual(response["managerNode"], "manager")
+        self.assertEqual(run.call_args.args[2], "start-manager-update")
+        self.assertEqual(run.call_args.kwargs["required_capability"], "manager-update-v1")
+        self.assertEqual(run.call_args.args[3]["domain"], "luma.example.com")
+
+    def test_async_fleet_update_persists_node_progress_and_recovers_by_id(self):
+        from luma.control.server import handle_fleet_update_operation_get, handle_fleet_update_operation_start
+        from luma.control.state import save_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                save_state({"clusterId": "luma-test", "deployToken": "management-token"})
+
+                def run_fleet(_token, request, *, progress=None):
+                    self.assertEqual(request["nodeNames"], ["lab"])
+                    if progress:
+                        progress({"nodeName": "lab", "status": "pending", "agentVersionBefore": "0.1.172"})
+                        progress({"nodeName": "lab", "status": "succeeded", "message": "updated"})
+                    return {"total": 1, "succeeded": 1, "failed": 0, "skipped": 0, "results": []}
+
+                with patch("luma.control.server.handle_fleet_update", side_effect=run_fleet):
+                    started = handle_fleet_update_operation_start(
+                        "management-token",
+                        {"installRef": "v0.1.173", "nodeNames": ["lab"]},
+                    )
+                    deadline = time.time() + 3
+                    current = started
+                    while current.get("status") in {"queued", "running"} and time.time() < deadline:
+                        time.sleep(0.02)
+                        current = handle_fleet_update_operation_get("management-token", str(started["id"]))
+
+                self.assertEqual(current["status"], "succeeded")
+                self.assertEqual(current["nodes"][0]["nodeName"], "lab")
+                self.assertEqual(current["nodes"][0]["status"], "succeeded")
+                self.assertNotIn("output", current["nodes"][0])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_dashboard_route_sentinel_reports_structured_route_health(self):
+        from luma.control.server import handle_route_sentinel
+
+        state = {"clusterId": "luma-test", "deployToken": "management-token"}
+        routes = {
+            "app": {"kind": "http", "domain": "app.example.com"},
+            "tcp": {"kind": "tcp", "domain": "tcp.example.com"},
+        }
+        with patch("luma.control.server.load_state", return_value=state), patch(
+            "luma.control.server.load_config", return_value=Mock()
+        ), patch("luma.control.server._dashboard_route_files", return_value=routes), patch(
+            "luma.control.server._probe_public_route",
+            return_value={"domain": "app.example.com", "status": 200, "ok": True, "latencyMs": 12, "error": ""},
+        ):
+            result = handle_route_sentinel("management-token", {})
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failed"], 0)
+
     def test_prune_agent_tasks_drops_old_terminal_keeps_active_and_recent(self):
         from luma.control.server import _prune_agent_tasks, AGENT_TASK_RETENTION_SECONDS
 
@@ -4668,6 +4842,82 @@ class ControlApiTests(unittest.TestCase):
                 by_name = {item["nodeName"]: item for item in result["results"]}
                 self.assertEqual(by_name["home-mac-mini"]["status"], "succeeded")
                 self.assertEqual(by_name["lab"]["status"], "skipped")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_fleet_update_explicit_empty_target_list_updates_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "lab": {
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "os": "linux",
+                            "capabilities": ["luma-update"],
+                        },
+                    },
+                }
+                save_state(state)
+
+                with patch("luma.control.server._run_node_agent_task") as run:
+                    result = handle_fleet_update(
+                        state["deployToken"],
+                        {"installRef": "v0.1.173", "includeAll": True, "nodeNames": []},
+                    )
+
+                run.assert_not_called()
+                self.assertEqual(result["total"], 0)
+                self.assertEqual(result["results"], [])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_fleet_update_verifies_new_agent_heartbeat_and_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "lab": {
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "version": "0.1.172",
+                            "os": "linux",
+                            "capabilities": ["luma-update"],
+                        },
+                    },
+                }
+                save_state(state)
+
+                def run_task(*_args, **_kwargs):
+                    current = load_state()
+                    current["nodes"]["lab"]["agent"]["lastSeen"] = int(time.time()) + 2
+                    current["nodes"]["lab"]["agent"]["version"] = "0.1.173"
+                    save_state(current)
+                    return {"taskId": "task-1", "message": "installer finished", "installRef": "v0.1.173"}
+
+                events = []
+                with patch("luma.control.server._run_node_agent_task", side_effect=run_task), patch(
+                    "luma.control.server.time.sleep", return_value=None
+                ):
+                    result = handle_fleet_update(
+                        state["deployToken"],
+                        {
+                            "installRef": "v0.1.173",
+                            "includeAll": True,
+                            "nodeNames": ["lab"],
+                            "waitReadySeconds": 5,
+                        },
+                        progress=events.append,
+                    )
+
+                self.assertEqual(result["succeeded"], 1)
+                self.assertEqual(result["results"][0]["agentVersionBefore"], "0.1.172")
+                self.assertEqual(result["results"][0]["agentVersionAfter"], "0.1.173")
+                self.assertIn("verifying", [event["status"] for event in events])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
@@ -5552,7 +5802,12 @@ class ControlApiTests(unittest.TestCase):
         self.assertIs(_node_record_for_name(nodes, "Mac.lan"), nodes["gaojiu"])
 
     def test_dashboard_nodes_accept_terminal_alias_connections(self):
-        from luma.control.server import _dashboard_nodes
+        from luma.control.server import _dashboard_nodes, _registered_nodes_summary, _update_agent_heartbeat
+
+        record = {}
+        _update_agent_heartbeat(record, {"version": "0.1.173", "capabilities": ["terminal"], "os": "linux"})
+        registered = _registered_nodes_summary({"bot": record})
+        self.assertEqual(registered[0]["agentVersion"], "0.1.173")
 
         rows = _dashboard_nodes(
             [
@@ -5562,6 +5817,7 @@ class ControlApiTests(unittest.TestCase):
                     "hostname": "global-sg-1",
                     "aliases": ["global-sg-1"],
                     "agentStatus": "ready",
+                    "agentVersion": "0.1.173",
                     "storageCapabilities": ["terminal"],
                 }
             ],
@@ -5572,6 +5828,7 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(rows[0]["name"], "bot")
         self.assertTrue(rows[0]["terminalConnected"])
         self.assertEqual(rows[0]["terminalStatus"], "connected")
+        self.assertEqual(rows[0]["agentVersion"], "0.1.173")
 
     def test_state_nodes_expands_aliases_for_internal_resolution(self):
         state = {
