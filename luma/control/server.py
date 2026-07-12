@@ -186,7 +186,8 @@ AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SE
 AGENT_TASK_RETENTION_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_RETENTION_SECONDS", str(24 * 3600)))
 BUILDER_TASK_RETENTION_SECONDS = int(os.environ.get("LUMA_BUILDER_TASK_RETENTION_SECONDS", str(7 * 24 * 3600)))
 BUILDER_TASK_IDEMPOTENCY_SECONDS = int(os.environ.get("LUMA_BUILDER_TASK_IDEMPOTENCY_SECONDS", str(24 * 3600)))
-BUILDER_TASK_EVENT_LIMIT = int(os.environ.get("LUMA_BUILDER_TASK_EVENT_LIMIT", "5000"))
+BUILDER_TASK_EVENT_LIMIT = int(os.environ.get("LUMA_BUILDER_TASK_EVENT_LIMIT", "1000"))
+BUILD_RUN_EVENT_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_EVENT_LIMIT", "1000"))
 LAE_RUNTIME_RECORD_RETENTION_SECONDS = int(
     os.environ.get("LUMA_LAE_RUNTIME_RECORD_RETENTION_SECONDS", str(30 * 24 * 3600))
 )
@@ -1703,6 +1704,9 @@ def _append_build_run_event(run_id: str, event: Dict[str, Any]) -> None:
             events = []
             run["events"] = events
         events.append({**safe_event, "ts": int(time.time())})
+        limit = max(int(BUILD_RUN_EVENT_LIMIT), 100)
+        if len(events) > limit:
+            del events[: len(events) - limit]
         run["updatedAt"] = int(time.time())
         status = str(safe_event.get("status") or "")
         if status == "fail":

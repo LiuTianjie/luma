@@ -41,6 +41,7 @@ from luma.builder_build_executor import (
     _retrieve_buildkit_provenance,
     _rootless_buildkit_addr,
     _run_command,
+    _syft_environment,
     _validate_build_lease,
     build_plan,
     builder_build_available,
@@ -356,6 +357,13 @@ class BuilderBuildExecutorTests(unittest.TestCase):
             self.assertEqual(command[provenance_option - 1], "--opt")
             self.assertNotIn("--attest=type=provenance,mode=max", command)
         self.assertFalse(any(command[0].endswith("cosign") for command in commands))
+        self.assertFalse(
+            any(
+                "--registry-insecure-skip-tls-verify" in command
+                for command in commands
+                if command[0].endswith("syft")
+            )
+        )
         self.assertIn("/base:", next(value for value in build_commands[0] if value.startswith("type=image,name=")))
         self.assertIn("/web:", next(value for value in build_commands[1] if value.startswith("type=image,name=")))
         self.assertEqual(set(result["images"]), {"base", "web"})
@@ -384,6 +392,22 @@ class BuilderBuildExecutorTests(unittest.TestCase):
                 statement["subject"][0]["digest"]["sha256"],
                 BUILDKIT_FIXTURES[key]["runnableDigest"].split(":", 1)[1],
             )
+
+    def test_syft_uses_supported_http_registry_environment(self):
+        original = {"PATH": "/tools", "DOCKER_CONFIG": "/tmp/docker"}
+        secure = _syft_environment(original, insecure=False)
+        insecure = _syft_environment(original, insecure=True)
+
+        self.assertEqual(secure, original)
+        self.assertEqual(insecure["SYFT_REGISTRY_INSECURE_SKIP_TLS_VERIFY"], "true")
+        self.assertEqual(insecure["SYFT_REGISTRY_INSECURE_USE_HTTP"], "true")
+        self.assertEqual(original, {"PATH": "/tools", "DOCKER_CONFIG": "/tmp/docker"})
+
+    def test_python_adapter_uses_scanned_alpine_runtime(self):
+        dockerfile = _TRUSTED_PYTHON_ADAPTER_DOCKERFILE.decode("utf-8")
+        self.assertIn("python:3.12.13-alpine3.23@sha256:efc8538b", dockerfile)
+        self.assertIn("adduser -D -u 10001", dockerfile)
+        self.assertNotIn("slim-bookworm", dockerfile)
 
     def test_buildkit_provenance_rejects_descriptor_subject_mismatch(self):
         fixture = _buildkit_fixture(

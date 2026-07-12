@@ -220,6 +220,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertIn('ENTRYPOINT ["lae-agent-runner"]', runner_dockerfile)
         self.assertIn("USER 10001:10001", runner_dockerfile)
         self.assertIn("@sha256:", runner_dockerfile)
+        self.assertIn("verify-agent-runner-contract.py", runner_dockerfile)
         self.assertNotIn(":latest", runner_dockerfile)
 
         init_script = (DEPLOY / "docker" / "artifact-init.sh").read_text(

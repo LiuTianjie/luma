@@ -949,6 +949,19 @@ EOF
     die "rootless bind probe modified its read-only metadata"
   local result_file="${output_dir}/result.json"
   [[ -f "$result_file" && ! -L "$result_file" ]] || die "rootless bind probe did not create analyzer output"
+  jq -e '
+    .schemaVersion == "lae.agent-analysis-result/v1" and
+    .status == "succeeded" and
+    .decision == "allow" and
+    .verdict == "deployable" and
+    (.diagnosticStatus == "succeeded" or .diagnosticStatus == "diagnostic_failed") and
+    (.diagnosticMode == "ai" or .diagnosticMode == "deterministic_fallback") and
+    (.diagnosticCode | type == "string" and length > 0) and
+    (.knowledgeVersion | type == "string" and length > 0) and
+    (.blockers | type == "array") and
+    (.artifacts | keys | sort == ["buildPlan", "deploymentPlan", "evidence"])
+  ' "$result_file" >/dev/null || \
+    die "rootless analyzer image does not implement the current LAE result contract"
   [[ "$(stat -c %u "$result_file")" == "$BUILDER_UID" ]] || \
     die "rootless bind probe output owner does not match the verified daemon UID"
   rm -rf -- "$BIND_PROBE_DIR"

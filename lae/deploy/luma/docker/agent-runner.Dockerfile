@@ -16,6 +16,10 @@ COPY . .
 # build args for tenant builds; do not let those leak into LAE's own images.
 RUN unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; \
     uv sync --frozen --no-dev --no-editable --package lae-agent-runner
+# Fail the image build if uv/Docker cache reuse leaves an older workspace
+# package in the supposedly new runner image. Builder and runner intentionally
+# use a closed result protocol, so a content-stale image must never be pushed.
+RUN /opt/lae/.venv/bin/python deploy/luma/verify-agent-runner-contract.py
 
 FROM python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b AS runtime
 

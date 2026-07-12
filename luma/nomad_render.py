@@ -34,6 +34,18 @@ from .service import ServiceSpec, tcp_entrypoint_name, tcp_relay_publish_port
 DEFAULT_CPU_MHZ = 100
 DEFAULT_MEMORY_MB = 256
 
+# Control owns persistent orchestration state, active WebSocket sessions, and
+# streamed Builder progress.  A tenant-sized 256 MiB hard limit is too small:
+# serializing a multi-megabyte control.json while a build stream is active can
+# exceed it and make every public Control route return 502 until Nomad restarts
+# the task.  Reserve enough for the steady state and retain bounded burst room.
+CONTROL_CPU_MHZ = 500
+CONTROL_MEMORY_MB = 1024
+# Nomad ignores MemoryMaxMB unless memory oversubscription is enabled. Keep the
+# hard reservation equal to the actual Control ceiling so an OOM fix cannot be
+# silently discarded by the scheduler.
+CONTROL_MEMORY_MAX_MB = 0
+
 EDGE_EXPOSURES = {"cn-edge", "external-edge"}
 HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
 
@@ -676,7 +688,11 @@ def render_control_job(
                     ],
                 },
                 "Env": environment,
-                "Resources": {"CPU": 200, "MemoryMB": 256},
+                "Resources": {
+                    "CPU": CONTROL_CPU_MHZ,
+                    "MemoryMB": CONTROL_MEMORY_MB,
+                    "MemoryMaxMB": CONTROL_MEMORY_MAX_MB,
+                },
             }],
         }],
         "Meta": {"luma.managed": "true"},

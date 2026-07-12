@@ -289,7 +289,7 @@ _TRUSTED_PYTHON_ADAPTER_PATH = ".lae/adapters/python-v1.Dockerfile"
 _TRUSTED_PYTHON_ADAPTER_RUNTIME_PATH = ".lae/adapters/python-v1-runtime.py"
 _TRUSTED_PYTHON_ADAPTER_DOCKERFILE = b"""# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
-FROM python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
+FROM python:3.12.13-alpine3.23@sha256:efc8538b7449b6d893de5d852c87a0dc2cffd0ec27b07dd98ba3e7edaadc26af
 
 LABEL tech.itool.lae.adapter="python-v1"
 
@@ -301,8 +301,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN groupadd --gid 10001 lae && \
-    useradd --uid 10001 --gid 10001 --create-home --home-dir /home/lae lae
+RUN addgroup -g 10001 lae && \
+    adduser -D -u 10001 -G lae -h /home/lae lae
 
 COPY --chmod=0444 .lae/adapters/python-v1-runtime.py /usr/local/lib/lae/lae_python_runtime.py
 COPY . /app
@@ -627,11 +627,12 @@ def build_plan(
                 "--output",
                 f"cyclonedx-json={sbom_path}",
             ]
-            if normalized["registry"]["insecure"]:
-                sbom_command.append("--registry-insecure-skip-tls-verify")
             sbom_result = _run_command(
                 sbom_command,
-                env=command_env,
+                env=_syft_environment(
+                    command_env,
+                    insecure=normalized["registry"]["insecure"],
+                ),
                 timeout=_remaining_seconds(deadline),
                 cancel_event=cancel_event,
             )
@@ -1853,6 +1854,22 @@ def _command_environment(docker_config: Path) -> Dict[str, str]:
     environment = {key: os.environ[key] for key in allowed if os.environ.get(key)}
     environment["DOCKER_CONFIG"] = str(docker_config)
     environment["BUILDKIT_PROGRESS"] = "plain"
+    return environment
+
+
+def _syft_environment(
+    command_environment: Mapping[str, str],
+    *,
+    insecure: bool,
+) -> Dict[str, str]:
+    environment = dict(command_environment)
+    if insecure:
+        # Syft 1.46 removed the former CLI flag. Its supported configuration
+        # surface is environment-based and needs both settings for an HTTP
+        # development/internal registry; skipping TLS verification alone still
+        # makes Syft attempt HTTPS.
+        environment["SYFT_REGISTRY_INSECURE_SKIP_TLS_VERIFY"] = "true"
+        environment["SYFT_REGISTRY_INSECURE_USE_HTTP"] = "true"
     return environment
 
 

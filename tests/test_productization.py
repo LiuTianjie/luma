@@ -11773,6 +11773,46 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_build_run_event_history_is_bounded(self):
+        from luma.control.server import (
+            _append_build_run_event,
+            _create_build_run,
+            handle_build_run_get,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(
+                    domain="luma.example.com",
+                    cluster_id="luma-test",
+                    overwrite=True,
+                )
+                run_id = _create_build_run(
+                    {"repoUrl": "https://github.com/acme/app"},
+                    source="https://github.com/acme/app",
+                    build_node="builder",
+                )
+                with patch("luma.control.server.BUILD_RUN_EVENT_LIMIT", 100):
+                    for index in range(125):
+                        _append_build_run_event(
+                            run_id,
+                            {
+                                "name": "Build image",
+                                "status": "progress",
+                                "message": f"line-{index}",
+                            },
+                        )
+
+                events = handle_build_run_get(state["deployToken"], run_id)["run"][
+                    "events"
+                ]
+                self.assertEqual(len(events), 100)
+                self.assertEqual(events[0]["message"], "line-25")
+                self.assertEqual(events[-1]["message"], "line-124")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_deployment_history_records_events_with_origin(self):
         from luma.control.server import _record_deployment_event, _deployment_origin, handle_deployment_history, handle_deployment_history_get
 

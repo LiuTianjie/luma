@@ -472,6 +472,10 @@ port: 3000
             job["Constraints"],
         )
         task = job["TaskGroups"][0]["Tasks"][0]
+        self.assertEqual(
+            task["Resources"],
+            {"CPU": 500, "MemoryMB": 1024, "MemoryMaxMB": 0},
+        )
         # bridge + port 8080 (reachable by Traefik, see migration notes)
         self.assertEqual(job["TaskGroups"][0]["Networks"][0]["Mode"], "bridge")
         self.assertEqual(job["TaskGroups"][0]["Networks"][0]["ReservedPorts"][0]["Value"], 8080)
