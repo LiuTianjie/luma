@@ -527,6 +527,13 @@ class PostgresDeploymentStateStore:
                         expires_at=now + timeout,
                     )
                     session.add(reservation)
+                    # There is no ORM relationship between the reservation and
+                    # checkpoint mappers. Flush the parent row explicitly so
+                    # PostgreSQL never observes the checkpoint FK first.
+                    # The flush remains inside this transaction, so retries are
+                    # still atomic and the uniqueness constraints remain the
+                    # concurrency authority.
+                    await session.flush()
                     checkpoint = DeploymentCheckpoint(
                         operation_id=operation.id,
                         tenant_id=context.tenant_ref,

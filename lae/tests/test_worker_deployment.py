@@ -45,6 +45,7 @@ from lae_worker import (  # noqa: E402
 )
 from lae_worker.deployment_postgres import (  # noqa: E402
     DeploymentContextInvalid,
+    PostgresDeploymentStateStore,
     TrustedRuntimeService,
     _environment_requirements,
 )
@@ -239,6 +240,65 @@ class FailBuildTaskCheckpointOnce:
         return await self.delegate.save(state, expected_version=expected_version)
 
 
+class StopAfterCheckpointFlush(RuntimeError):
+    pass
+
+
+class _AsyncContext:
+    def __init__(self, value) -> None:
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        del exc_type, exc, traceback
+
+
+class RecordingInitializeSession:
+    def __init__(self) -> None:
+        self.deployment = SimpleNamespace(
+            status="queued", started_at=None, updated_at=None
+        )
+        self.added: list[object] = []
+        self.flush_batches: list[tuple[str, ...]] = []
+        self.scalar_count = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        del exc_type, exc, traceback
+
+    def begin(self) -> _AsyncContext:
+        return _AsyncContext(self)
+
+    async def scalar(self, statement):
+        del statement
+        self.scalar_count += 1
+        return self.deployment if self.scalar_count == 1 else NOW
+
+    async def get(self, model, key, **kwargs):
+        del model, key, kwargs
+        return None
+
+    def add(self, value) -> None:
+        self.added.append(value)
+
+    async def flush(self) -> None:
+        self.flush_batches.append(tuple(type(value).__name__ for value in self.added))
+        self.added.clear()
+        if len(self.flush_batches) == 2:
+            raise StopAfterCheckpointFlush()
+
+
+class RecordingDeploymentStateStore(PostgresDeploymentStateStore):
+    @staticmethod
+    async def _require_owned_operation(session, operation, *, for_update):
+        del session, operation, for_update
+        return SimpleNamespace(phase=None)
+
+
 class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tenant_id = new_id("ten")
@@ -398,6 +458,25 @@ class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
             if result.status is DeploymentStepStatus.TERMINAL:
                 return result
         self.fail("deployment did not reach a terminal state")
+
+    async def test_checkpoint_flushes_quota_reservation_before_foreign_key(self) -> None:
+        session = RecordingInitializeSession()
+        store = RecordingDeploymentStateStore(lambda: session, luma_cluster_id="luma-test")
+
+        with self.assertRaises(StopAfterCheckpointFlush):
+            await store.initialize(
+                self.operation,
+                self.context(compose=False),
+                timeout=timedelta(minutes=5),
+            )
+
+        self.assertEqual(
+            session.flush_batches,
+            [
+                ("DeploymentQuotaReservation",),
+                ("DeploymentCheckpoint",),
+            ],
+        )
 
     async def test_single_service_activates_only_after_service_and_route_health(
         self,
