@@ -25,10 +25,19 @@ from luma.builder_build_executor import (
     BUILDKIT_ADDR_ENV,
     _CommandResult,
     _RuntimePrerequisites,
+    _TRUSTED_NODE_ADAPTER_DOCKERFILE,
+    _TRUSTED_NODE_ADAPTER_ENTRYPOINT,
+    _TRUSTED_NODE_ADAPTER_ENTRYPOINT_PATH,
+    _TRUSTED_NODE_ADAPTER_PATH,
+    _TRUSTED_PYTHON_ADAPTER_DOCKERFILE,
+    _TRUSTED_PYTHON_ADAPTER_PATH,
+    _TRUSTED_PYTHON_ADAPTER_RUNTIME,
+    _TRUSTED_PYTHON_ADAPTER_RUNTIME_PATH,
     _TRUSTED_STATIC_ADAPTER_DOCKERFILE,
     _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE,
     _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE_PATH,
     _TRUSTED_STATIC_ADAPTER_PATH,
+    _materialize_trusted_build_adapters,
     _retrieve_buildkit_provenance,
     _rootless_buildkit_addr,
     _run_command,
@@ -485,6 +494,43 @@ class BuilderBuildExecutorTests(unittest.TestCase):
         self.assertIn('USER 10001:10001', _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"))
         self.assertIn('request.URL.Path == "/healthz"', _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"))
         self.assertIn("EXPOSE 8080", _TRUSTED_STATIC_ADAPTER_DOCKERFILE.decode("utf-8"))
+
+    def test_exact_node_and_python_adapters_are_materialized(self):
+        fixtures = (
+            (
+                _TRUSTED_NODE_ADAPTER_PATH,
+                _TRUSTED_NODE_ADAPTER_DOCKERFILE,
+                _TRUSTED_NODE_ADAPTER_ENTRYPOINT_PATH,
+                _TRUSTED_NODE_ADAPTER_ENTRYPOINT,
+            ),
+            (
+                _TRUSTED_PYTHON_ADAPTER_PATH,
+                _TRUSTED_PYTHON_ADAPTER_DOCKERFILE,
+                _TRUSTED_PYTHON_ADAPTER_RUNTIME_PATH,
+                _TRUSTED_PYTHON_ADAPTER_RUNTIME,
+            ),
+        )
+        for adapter_path, dockerfile, support_path, support_content in fixtures:
+            with self.subTest(adapter=adapter_path), tempfile.TemporaryDirectory() as temporary:
+                source = Path(temporary)
+                (source / "README.md").write_text("tenant source\n", encoding="utf-8")
+                _materialize_trusted_build_adapters(
+                    source,
+                    [self._build("web", dockerfile=adapter_path)],
+                )
+                self.assertEqual((source / adapter_path).read_bytes(), dockerfile)
+                self.assertEqual((source / support_path).read_bytes(), support_content)
+                self.assertTrue((source / f"{adapter_path}.dockerignore").is_file())
+
+        node = _TRUSTED_NODE_ADAPTER_DOCKERFILE.decode("utf-8")
+        python = _TRUSTED_PYTHON_ADAPTER_DOCKERFILE.decode("utf-8")
+        self.assertIn("USER 10001:10001", node)
+        self.assertIn("npm run build", node)
+        self.assertIn("ENTRYPOINT", node)
+        self.assertIn("USER 10001:10001", python)
+        self.assertIn("requirements.txt", python)
+        self.assertIn("lae_python_runtime", python)
+        self.assertIn('scope.get("path") == "/healthz"', _TRUSTED_PYTHON_ADAPTER_RUNTIME.decode("utf-8"))
 
     def test_static_adapter_rejects_reserved_snapshot_path_and_symlink_conflicts(self):
         occupied_digest, _snapshot = self._install_snapshot(

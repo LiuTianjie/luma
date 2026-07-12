@@ -116,6 +116,30 @@ class AgentRunnerTests(unittest.TestCase):
             )
             self.assertEqual(descriptor["sizeBytes"], len(artifacts[filename]))
 
+    def test_platform_node_and_python_adapters_use_root_health_probe(self) -> None:
+        fixtures = (
+            (
+                {"package.json": '{"scripts":{"start":"node server.js"}}', "server.js": ""},
+                ".lae/adapters/node-v1.Dockerfile",
+                3000,
+            ),
+            (
+                {"requirements.txt": "fastapi\nuvicorn\n", "main.py": "app = object()\n"},
+                ".lae/adapters/python-v1.Dockerfile",
+                8000,
+            ),
+        )
+        for files, adapter, port in fixtures:
+            with self.subTest(adapter=adapter):
+                result, artifacts = self._run(files)
+                deployment = json.loads(artifacts["deployment-plan.json"])
+                build = json.loads(artifacts["build-plan-proposal.json"])["builds"][0]
+                self.assertEqual(result["decision"], "allow")
+                self.assertEqual(build["dockerfile"], adapter)
+                self.assertEqual(deployment["services"][0]["healthcheck"]["path"], "/")
+                self.assertEqual(deployment["routes"][0]["healthPath"], "/")
+                self.assertEqual(deployment["routes"][0]["containerPort"], port)
+
     def test_compose_supports_two_public_http_services_postgres_and_named_volume(
         self,
     ) -> None:

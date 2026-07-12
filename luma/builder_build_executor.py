@@ -187,6 +187,274 @@ _TRUSTED_STATIC_ADAPTER_ASSETS = {
     _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE_PATH: _TRUSTED_STATIC_ADAPTER_DOCKERIGNORE,
 }
 
+_TRUSTED_NODE_ADAPTER_PATH = ".lae/adapters/node-v1.Dockerfile"
+_TRUSTED_NODE_ADAPTER_ENTRYPOINT_PATH = ".lae/adapters/node-v1-entrypoint.sh"
+_TRUSTED_NODE_ADAPTER_DOCKERFILE = b"""# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+
+FROM node:22.21.0-bookworm-slim@sha256:f9f7f95dcf1f007b007c4dcd44ea8f7773f931b71dc79d57c216e731c87a090b
+
+LABEL tech.itool.lae.adapter="node-v1"
+
+WORKDIR /app
+
+RUN groupadd --gid 10001 lae && \
+    useradd --uid 10001 --gid 10001 --create-home --home-dir /home/lae lae
+
+COPY --chmod=0555 .lae/adapters/node-v1-entrypoint.sh /usr/local/bin/lae-node-entrypoint
+COPY . /app
+
+RUN rm -rf /app/.lae && \
+    corepack enable && \
+    if [ -f pnpm-lock.yaml ]; then \
+      corepack pnpm install --frozen-lockfile; \
+    elif [ -f yarn.lock ]; then \
+      corepack yarn install --immutable || corepack yarn install --frozen-lockfile; \
+    elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then \
+      npm ci --include=dev; \
+    else \
+      npm install --include=dev; \
+    fi && \
+    if node -e 'const p=require("./package.json");process.exit(p.scripts&&p.scripts.build?0:1)'; then \
+      if [ -f pnpm-lock.yaml ]; then corepack pnpm run build; \
+      elif [ -f yarn.lock ]; then corepack yarn run build; \
+      else npm run build; fi; \
+    fi
+
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    HOSTNAME=0.0.0.0
+
+USER 10001:10001
+
+EXPOSE 3000
+
+ENTRYPOINT ["/usr/local/bin/lae-node-entrypoint"]
+"""
+_TRUSTED_NODE_ADAPTER_ENTRYPOINT = b"""#!/bin/sh
+set -eu
+
+export HOST="${HOST:-0.0.0.0}"
+export HOSTNAME="${HOSTNAME:-0.0.0.0}"
+if [ -z "${PORT:-}" ]; then
+  if node -e 'const p=require("./package.json");const d={...(p.dependencies||{}),...(p.devDependencies||{})};process.exit(d.vite||d.astro?0:1)'; then
+    PORT=4173
+  else
+    PORT=3000
+  fi
+fi
+export PORT
+
+has_script() {
+  node -e 'const p=require("./package.json");process.exit(p.scripts&&p.scripts[process.argv[1]]?0:1)' "$1"
+}
+
+run_script() {
+  script="$1"
+  shift
+  if [ -f pnpm-lock.yaml ]; then
+    exec corepack pnpm run "$script" "$@"
+  elif [ -f yarn.lock ]; then
+    exec corepack yarn run "$script" "$@"
+  else
+    exec npm run "$script" -- "$@"
+  fi
+}
+
+if has_script start; then
+  run_script start
+fi
+if has_script preview; then
+  run_script preview --host 0.0.0.0 --port "$PORT"
+fi
+for entrypoint in server.js index.js app.js src/server.js src/index.js; do
+  if [ -f "$entrypoint" ]; then
+    exec node "$entrypoint"
+  fi
+done
+
+echo "LAE node-v1 could not find a start or preview script, or a conventional server entrypoint" >&2
+exit 64
+"""
+_TRUSTED_NODE_ADAPTER_DOCKERIGNORE_PATH = _TRUSTED_NODE_ADAPTER_PATH + ".dockerignore"
+_TRUSTED_NODE_ADAPTER_DOCKERIGNORE = (
+    b"# LAE node-v1 consumes the complete signed source snapshot.\n"
+)
+_TRUSTED_NODE_ADAPTER_ASSETS = {
+    _TRUSTED_NODE_ADAPTER_PATH: _TRUSTED_NODE_ADAPTER_DOCKERFILE,
+    _TRUSTED_NODE_ADAPTER_DOCKERIGNORE_PATH: _TRUSTED_NODE_ADAPTER_DOCKERIGNORE,
+    _TRUSTED_NODE_ADAPTER_ENTRYPOINT_PATH: _TRUSTED_NODE_ADAPTER_ENTRYPOINT,
+}
+
+_TRUSTED_PYTHON_ADAPTER_PATH = ".lae/adapters/python-v1.Dockerfile"
+_TRUSTED_PYTHON_ADAPTER_RUNTIME_PATH = ".lae/adapters/python-v1-runtime.py"
+_TRUSTED_PYTHON_ADAPTER_DOCKERFILE = b"""# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+
+FROM python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
+
+LABEL tech.itool.lae.adapter="python-v1"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PORT=8000 \
+    PYTHONPATH=/usr/local/lib/lae:/app
+
+WORKDIR /app
+
+RUN groupadd --gid 10001 lae && \
+    useradd --uid 10001 --gid 10001 --create-home --home-dir /home/lae lae
+
+COPY --chmod=0444 .lae/adapters/python-v1-runtime.py /usr/local/lib/lae/lae_python_runtime.py
+COPY . /app
+
+RUN rm -rf /app/.lae && \
+    if [ -f requirements.txt ]; then \
+      python -m pip install --no-cache-dir --requirement requirements.txt; \
+    elif [ -f pyproject.toml ]; then \
+      python -m pip install --no-cache-dir .; \
+    elif [ -f Pipfile ]; then \
+      python -m pip install --no-cache-dir pipenv && \
+      if [ -f Pipfile.lock ]; then \
+        PIPENV_IGNORE_VIRTUALENVS=1 pipenv install --system --deploy; \
+      else \
+        PIPENV_IGNORE_VIRTUALENVS=1 pipenv install --system --skip-lock; \
+      fi; \
+    else \
+      echo "LAE python-v1 requires requirements.txt, pyproject.toml, or Pipfile" >&2; \
+      exit 64; \
+    fi && \
+    (python -c 'import uvicorn' || python -m pip install --no-cache-dir 'uvicorn==0.35.0') && \
+    (command -v gunicorn >/dev/null 2>&1 || python -m pip install --no-cache-dir 'gunicorn==23.0.0')
+
+USER 10001:10001
+
+EXPOSE 8000
+
+ENTRYPOINT ["python", "-m", "lae_python_runtime"]
+"""
+_TRUSTED_PYTHON_ADAPTER_RUNTIME = b'''from __future__ import annotations
+
+import importlib
+import inspect
+import os
+import shutil
+import sys
+from collections.abc import Callable
+from typing import Any
+
+
+_CANDIDATES = (
+    "main:app",
+    "main:application",
+    "main:api",
+    "app:app",
+    "app:application",
+    "application:app",
+    "src.main:app",
+    "src.app:app",
+)
+
+
+def _load(spec: str) -> Any:
+    module_name, separator, attribute = spec.partition(":")
+    if not separator or not module_name or not attribute:
+        raise RuntimeError("invalid LAE Python application target")
+    module = importlib.import_module(module_name)
+    target = getattr(module, attribute)
+    if not callable(target):
+        raise RuntimeError("LAE Python application target is not callable")
+    return target
+
+
+def _discover() -> tuple[str, str]:
+    for spec in _CANDIDATES:
+        try:
+            target = _load(spec)
+        except (ImportError, AttributeError):
+            continue
+        call = getattr(target, "__call__", None)
+        kind = "asgi" if inspect.iscoroutinefunction(call) else "wsgi"
+        return spec, kind
+    raise RuntimeError(
+        "LAE python-v1 could not find a callable app in main.py, app.py, application.py, src/main.py, or src/app.py"
+    )
+
+
+class _ASGIHealth:
+    def __init__(self, target: Callable[..., Any]):
+        self.target = target
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") == "http" and scope.get("path") == "/healthz":
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain; charset=utf-8"), (b"cache-control", b"no-store")]})
+            await send({"type": "http.response.body", "body": b"ok\\n"})
+            return
+        await self.target(scope, receive, send)
+
+
+class _WSGIHealth:
+    def __init__(self, target: Callable[..., Any]):
+        self.target = target
+
+    def __call__(self, environ: dict[str, Any], start_response: Any) -> Any:
+        if environ.get("PATH_INFO") == "/healthz":
+            start_response("200 OK", [("Content-Type", "text/plain; charset=utf-8"), ("Cache-Control", "no-store"), ("Content-Length", "3")])
+            return [b"ok\\n"]
+        return self.target(environ, start_response)
+
+
+_target_spec = os.environ.get("LAE_PYTHON_TARGET", "")
+_target_kind = os.environ.get("LAE_PYTHON_KIND", "")
+if _target_spec:
+    _target = _load(_target_spec)
+    application = _ASGIHealth(_target) if _target_kind == "asgi" else _WSGIHealth(_target)
+
+
+def _port() -> int:
+    try:
+        value = int(os.environ.get("PORT", "8000"))
+    except ValueError as exc:
+        raise RuntimeError("PORT must be an integer") from exc
+    if not 1 <= value <= 65535:
+        raise RuntimeError("PORT must be between 1 and 65535")
+    return value
+
+
+def main() -> None:
+    target, kind = _discover()
+    os.environ["LAE_PYTHON_TARGET"] = target
+    os.environ["LAE_PYTHON_KIND"] = kind
+    port = str(_port())
+    if kind == "asgi":
+        os.execv(
+            sys.executable,
+            [sys.executable, "-m", "uvicorn", "lae_python_runtime:application", "--host", "0.0.0.0", "--port", port],
+        )
+    gunicorn = shutil.which("gunicorn")
+    if not gunicorn:
+        raise RuntimeError("LAE python-v1 requires gunicorn for a WSGI application")
+    os.execv(gunicorn, [gunicorn, "lae_python_runtime:application", "--bind", f"0.0.0.0:{port}", "--workers", "1"])
+
+
+if __name__ == "__main__":
+    main()
+'''
+_TRUSTED_PYTHON_ADAPTER_DOCKERIGNORE_PATH = _TRUSTED_PYTHON_ADAPTER_PATH + ".dockerignore"
+_TRUSTED_PYTHON_ADAPTER_DOCKERIGNORE = (
+    b"# LAE python-v1 consumes the complete signed source snapshot.\n"
+)
+_TRUSTED_PYTHON_ADAPTER_ASSETS = {
+    _TRUSTED_PYTHON_ADAPTER_PATH: _TRUSTED_PYTHON_ADAPTER_DOCKERFILE,
+    _TRUSTED_PYTHON_ADAPTER_DOCKERIGNORE_PATH: _TRUSTED_PYTHON_ADAPTER_DOCKERIGNORE,
+    _TRUSTED_PYTHON_ADAPTER_RUNTIME_PATH: _TRUSTED_PYTHON_ADAPTER_RUNTIME,
+}
+
+_TRUSTED_ADAPTER_ASSETS = {
+    _TRUSTED_STATIC_ADAPTER_PATH: _TRUSTED_STATIC_ADAPTER_ASSETS,
+    _TRUSTED_NODE_ADAPTER_PATH: _TRUSTED_NODE_ADAPTER_ASSETS,
+    _TRUSTED_PYTHON_ADAPTER_PATH: _TRUSTED_PYTHON_ADAPTER_ASSETS,
+}
+
 
 @dataclass(frozen=True)
 class _RuntimePrerequisites:
@@ -819,16 +1087,17 @@ def _materialize_trusted_build_adapters(source: Path, builds: Iterable[Dict[str,
     its write through a symlink.
     """
 
-    requested = {
-        str(build.get("dockerfile") or "")
-        for build in builds
-    }
-    if _TRUSTED_STATIC_ADAPTER_PATH not in requested:
+    requested = {str(build.get("dockerfile") or "") for build in builds}
+    assets: Dict[str, bytes] = {}
+    for adapter_path, adapter_assets in _TRUSTED_ADAPTER_ASSETS.items():
+        if adapter_path in requested:
+            assets.update(adapter_assets)
+    if not assets:
         return
 
     root = source.resolve(strict=True)
     targets: list[tuple[Path, bytes]] = []
-    for relative, content in _TRUSTED_STATIC_ADAPTER_ASSETS.items():
+    for relative, content in assets.items():
         relative_path = PurePosixPath(relative)
         current = source
         for part in relative_path.parent.parts:

@@ -1225,9 +1225,10 @@ class Analyzer:
         if port is not None:
             service["port"] = port
         if role == "http" and port is not None:
+            health_path = "/healthz" if self.adapter == "static-html" else "/"
             service["healthcheck"] = {
                 "type": "http",
-                "path": "/healthz",
+                "path": health_path,
                 "intervalSeconds": 10,
             }
             self.routes.append(
@@ -1237,7 +1238,7 @@ class Analyzer:
                     "primary": True,
                     "hostnameRef": f"domain_{key}",
                     "containerPort": port,
-                    "healthPath": "/healthz",
+                    "healthPath": health_path,
                 }
             )
         self.services.append(service)
