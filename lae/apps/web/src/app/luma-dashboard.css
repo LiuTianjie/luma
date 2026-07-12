@@ -320,7 +320,18 @@ summary:focus-visible {
 .console-shell .lake-heading h2 { margin: 0; color: var(--text); font-family: inherit; font-size: 15px; font-weight: 700; }
 .console-shell .lake-note { color: var(--text-subtle); font-size: 9px; }
 .console-shell .section-index { color: var(--text-subtle); font-size: 9px; }
-.console-shell .water-field { position: relative; height: auto; min-height: 470px; margin-top: 14px; display: grid; align-content: start; gap: 8px; }
+.console-shell .water-field {
+  position: relative;
+  height: auto;
+  min-height: 0;
+  margin-top: 14px;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
 .console-shell .water-field::before,
 .console-shell .water-line { display: none; }
 .console-shell .template-float { position: relative; left: auto !important; top: auto !important; width: 100%; height: auto; min-height: 88px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text); background: var(--surface); display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; text-align: left; }
