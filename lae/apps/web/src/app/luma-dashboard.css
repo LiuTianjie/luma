@@ -322,7 +322,7 @@ summary:focus-visible {
 .console-shell .template-float { position: relative; left: auto !important; top: auto !important; width: 100%; height: auto; min-height: 88px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text); background: var(--surface); display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; text-align: left; }
 .console-shell .template-float:hover,
 .console-shell .template-float.is-selected { border-color: var(--accent); background: var(--accent-soft); box-shadow: none; transform: none; }
-.console-shell .template-icon { width: 36px; height: 36px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--accent); background: var(--well); display: grid; place-items: center; }
+.console-shell .template-icon { position: static; inset: auto; width: 36px; height: 36px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--accent); background: var(--well); display: grid; place-items: center; }
 .console-shell .template-label { position: static; min-width: 0; padding: 0; border: 0; color: var(--text); background: transparent; opacity: 1; transform: none; box-shadow: none; }
 .console-shell .template-label strong,
 .console-shell .template-label small,
