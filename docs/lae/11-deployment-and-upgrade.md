@@ -27,7 +27,7 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：Luma `0.1.171` 与 LAE staging ref `20469a4` 已 live；最终产品 E2E、批量 404/502 P0 与故障恢复验收仍在收尾
+> 状态：Luma CLI/Control `0.1.192` 与 LAE Web ref `fcff4c8` 已 live；模板到 Runtime 的首条真实 E2E 与升级 route 连续性回归通过，完整来源、生命周期与故障注入验收仍在收尾
 > 日期：2026-07-12
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
@@ -54,13 +54,18 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 storage class 和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-12，Luma CLI、Control 与 live fleet 已统一为 `0.1.171`；该 release
-曾通过 719/719 gate。LAE staging 当前 job version 4 使用 commit tag `20469a4`，平台
-9 个 task、TLS、Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider
-已配置。Mailpit 注册/token/CLI/template/analysis 已跑；真实邮箱送达、最新
-provider-backed verdict、tenant Runtime deploy/lifecycle 最终 E2E 仍待完成。另有控制面
-升级或其他应用发布后既有 route 批量 404/502 的 live P0，当前 working tree 修复尚未
-形成 release，因此不代表 production-ready。
+截至 2026-07-12，Luma CLI、Control 与 manager agent 为 `0.1.192`；该 release
+通过 757/757 gate。其余在线 agent 仍为 `0.1.175`-`0.1.188`，只有涉及对应 agent
+协议时才是本轮强制升级目标，文档不得把当前 fleet 写成统一版本。LAE staging
+当前 job version 18 使用 Web ref `fcff4c8` 的 immutable digest，平台 9 个 task、
+TLS、Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider 已配置。
+
+真实 FastAPI 模板已完成 Agent 诊断、Builder 构建、Runtime 部署、随机域名和有效
+TLS；两个租户应用当前均运行在 `tecent`。`0.1.190`-`0.1.192` Control 升级和
+LAE Web Job v18 更新期间，两条未参与变更的租户 route 连续返回 200，无需人工
+重启。该证据关闭已复现路径的 staging 回归，但 Docker daemon/CNI 故障注入、
+Compose 双 HTTP、volume、全部 lifecycle 与跨节点重调度仍是 production gate。
+Mailpit 也仍不能证明真实邮箱送达。
 
 ## 2. 发布输入与不变量
 
@@ -81,13 +86,16 @@ STAGING_SIDECAR=lae/deploy/luma/luma.compose.staging.itool.yml
 必须同时满足：
 
 - `FULL_SHA` 已推到远端，Control workflow 的 `headSha` 与之完全相等；
-- manager 和 fleet 安装同一个 `FULL_SHA`，不使用移动中的 branch 安装 CLI；
+- manager 与本次协议所需的最小节点集合安装同一个 `FULL_SHA`，不使用移动中的 branch
+  安装 CLI；未参与本次协议的旧 agent 可以留待 fleet 窗口，但必须如实记录版本，
+  不得宣称已统一；
 - Control 使用 `CONTROL_IMAGE`，不使用 `latest`；
 - 平台 import 使用固定不再移动的 ref。正式 release 直接使用 `v*` tag；
   预发布可创建并保留 `staging/<short-sha>` tag；
 - Analyzer 使用完整 `repository@sha256:...`，Worker 与 Control 两端逐字相同；
-- 构建配置固定为 target pull `100.66.177.70:5000`、builder-local push
-  `localhost:5000`，二者不能互换；
+- 构建配置必须与本次 live `luma build config` 完全一致；当前 target pull 与
+  Builder push 均为 `100.66.177.70:5000`。旧 `localhost:5000` endpoint 已无监听，
+  不能继续从旧文档复制；
 - production sidecar `lae/deploy/luma/luma.compose.yml` 不参与 staging import。
 
 预发布 ref 示例（这是 Git 写操作，只在候选 commit 已评审后执行）：
@@ -144,15 +152,16 @@ ready、`lab`/`builder`/`tecent` 不 ready、registry host 为空、
 `builder-registry-nfs` 或 `lae-staging-runtime-nfs` 不可用时停止。不要通过删除
 node pin、改成 unmanaged volume 或扩大 runtime allowlist 让验证变绿。
 
-构建配置必须逐字为以下值。`registry-host` 面向 `lab`、`manager`、`tecent` 等
-target 拉取镜像；`push-host` 面向 builder 本机推送，不能都写成 Tailscale 地址，
-也不能都写成 localhost：
+构建配置必须逐字为以下当前 live 值。`registry-host` 面向 `lab`、`manager`、
+`tecent` 等 target 拉取镜像；registry 当前直接绑定 Builder Tailscale 地址，因此
+`push-host` 使用同一 endpoint。若后续拓扑改变，先以只读 `luma build config` 和
+registry 实际监听为准，再通过受控变更更新本节：
 
 ```bash
 .venv/bin/luma build config \
   --node builder --default-node builder \
   --registry-host 100.66.177.70:5000 \
-  --push-host localhost:5000
+  --push-host 100.66.177.70:5000
 .venv/bin/luma build config
 ```
 
@@ -396,8 +405,12 @@ exact deployment/`JobVersion`，并等待该版本每个 required task group 的
 `JobModifyIndex` 对应的当前版本与 allocation 已健康。failed/blocked/canceled、
 superseded 和 timeout 必须 fail closed。
 
-当前 live `0.1.171` 的批量 404/502 P0 在新 release、升级回归与故障注入证据完成前
-保持开放，并阻塞 production rollout。
+当前 live `0.1.192` 已通过 manager 多次升级、全新租户应用发布与 LAE Web Job v18
+更新的 sentinel 回归，既有 route 未再出现批量 404/502。已复现的 service/router
+名称碰撞和跨节点 private-IP upstream 已分别通过 deployment-scoped 名称与
+`luma_tailscale_ip` service address 修复。Docker daemon restart 后 CNI 自愈、
+route reconciliation 故障注入和更多 edge 类型 sentinel 尚未完成，因此 production
+rollout 继续以这些剩余项目为门禁，而不是继续把当前 live 标成“修复尚未发布”。
 
 ## 7. 导入并部署 LAE staging
 

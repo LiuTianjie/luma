@@ -17,26 +17,29 @@ subscription, usage, and mock-checkout flows.
 
 Current verification snapshot (2026-07-12):
 
-- Luma CLI, Control, and the live fleet are on `0.1.171`; that release passed
-  719/719 tests with `ResourceWarning` treated as an error. The current working
-  tree also contains unreleased rollout/route reliability work and must pass a
-  new immutable-release gate before it is treated as live.
-- Current LAE working tree `make check`: 355 tests passed and 23 conditional
-  integration tests were skipped; the Web typecheck and Next.js production
-  build passed. Its reserved `.invalid` staging preview-auth flow is not live
-  until a new immutable platform ref is imported.
-- A real `luma import` built and pushed 6 images, registered 9 staging services,
-  and created staging DNS. The current staging job uses commit tag `20469a4`.
-  Platform services are pinned to `lab`; tenant runtime placement is limited
-  to `manager + tecent`.
+- Luma CLI and Control are live on `0.1.192`; that release passed 757/757 tests
+  with `ResourceWarning` treated as an error. The manager agent is also
+  `0.1.192`; the remaining online node agents are intentionally recorded as a
+  heterogeneous `0.1.175`-`0.1.188` fleet and must not be described as
+  uniformly upgraded.
+- The LAE Web scaffold check, TypeScript check and Next.js production build
+  passed at commit `fcff4c8`. Its immutable Web image is live in
+  `lae-platform-staging` Job version 18; all 9 platform tasks are healthy on
+  `lab`.
+- Tenant placement remains limited to `manager + tecent`. Two real FastAPI
+  applications are running on `tecent`; a fresh template launch completed
+  Agent diagnosis, Builder build, Runtime deployment, random-domain routing
+  and valid TLS without a manual manifest or runtime patch.
 
 The 9 platform tasks, TLS, and base Web/API/Agent/artifact probes are healthy;
 Agent readiness reports the AI provider configured. Mailpit registration,
 deploy-token, CLI, template and analysis flows have run, but Mailpit does not
-deliver to a user's real mailbox and the latest provider-backed verdict is not
-yet a complete acceptance record. Tenant Runtime deployment and lifecycle E2E
-and the cross-application 404/502 upgrade incident are still open. This is not
-a production-readiness claim. Real payment providers, production SMTP,
+deliver to a user's real mailbox and the complete provider-backed verdict and
+lifecycle matrices remain open. The `0.1.190`-`0.1.192` Control upgrades and
+the Web Job v18 rollout preserved both tenant routes, closing the reproduced
+upgrade regression for this staging path; Docker/CNI fault injection and wider
+sentinel coverage remain production gates. This is not a production-readiness
+claim. Real payment providers, production SMTP,
 dedicated production runners and stateful infrastructure, recovery drills,
 capacity controls, and abuse/compliance controls remain launch blockers.
 

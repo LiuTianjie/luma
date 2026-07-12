@@ -1,6 +1,6 @@
 # Luma Application Engine（LAE）产品与工程设计
 
-> 状态：Draft v0.6；Luma CLI、Control 与 live fleet 已统一到 `0.1.171`；staging 的 9 个平台 task、TLS 与基础探针健康，Agent ready 显示 AI provider 已配置，但租户 Runtime 部署/生命周期最终 E2E 仍待完成
+> 状态：Draft v0.7；Luma CLI 与 Control 已运行 `0.1.192`，9 个 LAE 平台 task 健康；真实模板 → Agent → Builder → Runtime → 随机域名/TLS 首次纵向 E2E 已通过，完整来源、生命周期、安全与故障矩阵仍待完成
 > 日期：2026-07-12
 > 目标：在 Luma 之上建设面向普通用户和 AI Agent 的多租户应用部署平台；LAE 自身及其依赖全部由 Luma 部署和管理。
 
@@ -44,15 +44,15 @@ LAE 不能只是给现有 Luma Dashboard 增加注册页。正确边界是：
 
 本设计不是从空白假设出发。2026-07-12 当前 staging 的分层事实是：
 
-- 当前 live CLI、Control 与在线节点已统一到 Luma `0.1.171`。后续版本仍必须按 manager → fleet 顺序升级同一不可变 ref。`manager` 是唯一控制面；`aly` 是过时历史节点，不进入升级或任何 LAE placement。
+- 当前 live CLI 与 Control 为 Luma `0.1.192`，manager agent 同为 `0.1.192`；其余在线 agent 仍分布在 `0.1.175`-`0.1.188`，不能写成 fleet 已统一。后续涉及 agent 协议的版本仍必须按 manager → 所需节点 → fleet 顺序升级同一不可变 ref。`manager` 是唯一控制面；`aly` 是过时历史节点，不进入升级或任何 LAE placement。
 - LAE 平台 staging 固定在 `lab`；租户 runtime allowlist 是 `manager + tecent`，其中 `manager` 显式具备 runtime role。生产仍应使用专用平台与 runner pool，不能把当前共享节点布局当成生产拓扑。
-- 默认构建节点是 `builder`，位于内部 `home` region；该值不属于 LAE 租户协议，公开 analysis/upload/template/Web/CLI 只接受 `cn | global`。内部 registry 拉取地址为 `100.66.177.70:5000`，Builder 本机推送地址为 `localhost:5000`，平台构建使用 direct 模式；真实 `scripts/setup-lae-builder.sh --check` 已通过。
-- 当前 staging 的 9 个平台 task 均健康，三个公网域名 TLS 有效，Web、API live/ready、Agent ready 与 artifact ready 探针均返回 200；Agent ready 报告 `mode=ai`、`configured=true`。Mailpit 内的注册、默认 deploy token、CLI、模板与 analysis 已跑；这不等于真实用户邮箱可收信，也不等于最新 AI/四态 verdict 已完成 provider-backed E2E。租户 source → Builder → Runtime 部署、随机域名、观测与 lifecycle 动作矩阵仍待最终 E2E，不能把平台健康外推为产品全功能已验收。
+- 默认构建节点是 `builder`，位于内部 `home` region；该值不属于 LAE 租户协议，公开 analysis/upload/template/Web/CLI 只接受 `cn | global`。当前 Control 中 registry pull/push 地址均为 `100.66.177.70:5000`，内部 registry 使用 HTTP insecure 配置，平台构建使用 direct 模式；旧文档中的 Builder `localhost:5000` push 地址已经失效。
+- 当前 staging 的 9 个平台 task 均健康，三个平台公网域名 TLS 有效，Web、API live/ready、Agent ready 与 artifact ready 探针均返回 200；Agent ready 报告 `mode=ai`、`configured=true`。FastAPI 模板已在无人工补写 manifest 的情况下走通 Agent 诊断、Builder 构建、Runtime 部署、随机域名与 TLS，当前两个真实租户应用均运行在 `tecent`。Mailpit 内的注册、默认 deploy token、CLI、模板与 analysis 已跑；这仍不等于真实用户邮箱可收信，也不等于所有 source、AI 四态 verdict、观测与 lifecycle 动作矩阵已完成验收。
 - 现有 Luma `build-image` 已在 builder 临时目录 clone Git、执行 buildx、推送 registry，并能发现仓库内 Compose sidecar 后构建多个 service；凭据在 task lease 时注入。
 - legacy builder 没有“只分析不构建”的 action，也不能直接消费 LAE 生成的多服务 `BuildPlan`，其 Docker/buildx 共享宿主执行形态不满足公网多租户隔离。Builder v2 因此采用不可变 source snapshot、`analyze-source`、显式多 build plan、短期凭据 lease 和 rootless sandbox；其中 analyzer 已拒绝 default/rootful Docker daemon，其他公开门槛见实施状态文档。
 - 已有能力包括单服务/Compose 部署、预览、GitHub/Gitea 凭据、仓库构建、内部 registry、NDJSON 进度、部署历史、日志、指标、更新、重启和回滚。
 - 当前 Compose 会渲染成一个 Nomad group：所有 service 同节点、同 region、共享 network namespace、单 group 副本；LAE 必须检查端口唯一和整组容量，不能把逐服务 HA 当成现有能力。
-- LAE Runtime 已增加 Luma 内部 placement admission：按 region、Nomad/Luma readiness、runtime capability、builder-only 排除、managed volume 兼容和 prior allocation 生成候选约束，并用 Nomad plan 检查整组容量；当前 staging 候选为 `manager + tecent`，真实节点故障/无容量/volume affinity 仍需验收。
+- LAE Runtime 已增加 Luma 内部 placement admission：按 region、Nomad/Luma readiness、runtime capability、builder-only 排除、managed volume 兼容和 prior allocation 生成候选约束，并用 Nomad plan 检查整组容量；当前 staging 候选为 `manager + tecent`。公网 HTTP service 使用节点 `luma_tailscale_ip` metadata 注册 upstream，service/router 名包含 deployment slug，避免跨应用 Compose 名称碰撞；真实节点故障、无容量和 volume affinity 仍需验收。
 - 现有认证只有一枚全局 management token 和一枚 node join token；`control.json` 是单集群状态文件，不是多租户数据库。
 - scoped secret、Git token 和 registry password 当前会进入控制面状态；这不满足公网多租户密钥隔离要求。
 - 部署写操作当前由进程内全局锁串行化；它可以支撑低并发运维，但不能直接当作公共平台并发执行层。

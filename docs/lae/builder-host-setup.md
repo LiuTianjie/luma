@@ -1,6 +1,6 @@
 # LAE Builder 主机准备与验收
 
-> 状态：Luma `0.1.171` 已通过 gate 并运行于 live `builder`；既有构建链路已完成真实 `--check` 和平台 import。配置幂等、Docker restart 后 CNI/route 恢复、隔离/压力/故障与恢复证据未全部关闭，本文不构成 production-ready 证明。
+> 状态：Luma Control `0.1.192` 已 live，当前 `builder` agent 为 `0.1.188`；既有构建链路已完成真实 `--check`、平台 import 和 FastAPI tenant build。配置幂等、隔离/压力/故障与恢复证据未全部关闭，本文不构成 production-ready 证明。
 
 LAE Builder v2 只在显式准备过的 Ubuntu 专用节点上启用。仓库默认不会让普通 Luma 节点宣告 `builder-analyze-v1` 或 `builder-build-v1`：只有操作员执行准备脚本、所有运行时门槛通过、node agent 重新加载环境后，能力探测才可能成功。
 
@@ -60,13 +60,13 @@ sudo scripts/setup-lae-builder.sh \
 说明：
 
 - 仅当内部 registry 确实是 HTTP 或使用不受信任 TLS 时传 `--registry-insecure`。该开关同时约束 pull/push host，并写入 rootless Docker、BuildKit 与 node-agent policy；
-- 现有 Luma registry 常见形态是“跨节点 pull host + Builder 本机 `localhost` push host”，因此两个地址不能暗中互相推导；
+- pull/push host 必须分别从当前 Control build config 读取，不能暗中互相推导；它们可以不同，也可以在 registry 直接绑定 Builder Tailscale 地址时相同；
 - 默认允许解析 `docker.io` 与 `ghcr.io` 的外部基础镜像。要收窄或替换，重复传小写、按字典序排列且不重复的 `--external-registry HOST`；
-- rootless BuildKit 需要访问显式的本机 push endpoint，因此专用 Builder 主机不得在 loopback 暴露非必要敏感服务。进一步的 Builder 出口/主机防火墙隔离仍是 staging 上线门槛。
+- rootless BuildKit 需要访问显式 push endpoint，因此专用 Builder 主机不得在该 endpoint 暴露非必要敏感服务。进一步的 Builder 出口/主机防火墙隔离仍是 staging 上线门槛。
 
 脚本只为 rootless Docker 管理本次指定的 insecure registry 条目：它用 `/var/lib/luma/builder/rootless-docker-managed-registries.json` 记录自己拥有的条目，更新时移除旧的 managed 值并保留运维人员原有的其他 Docker daemon 配置。
 
-当前共享 staging 的实际参数是：pull host `100.66.177.70:5000`，Builder 本机 push host `localhost:5000`，内部 registry 使用 insecure HTTP，平台镜像构建使用 direct 网络。两类地址必须继续分开：target node 不能用 Builder 的 loopback，Builder push 也不应绕一圈访问自己的 Tailscale 地址。
+当前共享 staging 的实时参数是：pull host 与 push host 均为 `100.66.177.70:5000`，内部 registry 使用 insecure HTTP，平台镜像构建使用 direct 网络。旧的 `localhost:5000` push endpoint 已无监听并会连接失败；发布前必须以 `luma build config` 的当前值为准。target node 仍不得使用 Builder loopback。
 
 Direct 模式还要求 BuildKit container 中不能残留历史代理环境。当前版本会比较持久化 Buildx container 的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 与本次请求，不匹配就删除并重建，防止旧 `aly` proxy 或变更前的 manager proxy 继续影响 base image pull。若出现 `short read`、`unexpected EOF`、`ECONNRESET` 或依赖下载异常，先检查实际 BuildKit container env 和 direct 连通性，不要只重试 import；LAE 平台 Dockerfile 已在依赖安装步骤显式 `unset` 大小写代理变量，租户构建则仍应服从单独的出口策略。
 
@@ -109,7 +109,7 @@ sudo scripts/setup-lae-builder.sh --check \
 
 ## 6. 尚需 staging 关闭的证据
 
-当前 `builder` 上使用 pull `100.66.177.70:5000`、push `localhost:5000` 的真实 `--check` 已通过，证明固定工具链、rootless socket、runner digest、registry endpoint 和 bind probe 在该时点一致。脚本落库与单次 `--check` 仍不等于 Builder 已可公开承载用户代码，至少还要完成并保存：
+历史 `--check` 已证明固定工具链、rootless socket、runner digest、registry endpoint 和 bind probe 在当时一致；当前 Control 已把 pull/push 都配置为 `100.66.177.70:5000`，必须用这组实时参数重跑并归档新的 `--check`。脚本落库与单次 `--check` 仍不等于 Builder 已可公开承载用户代码，至少还要完成并保存：
 
 1. setup 首跑与二次幂等重跑的完整输出，并归档本次及后续 `--check` 的 audit/manifest；
 2. rootless Docker/BuildKit peer UID、cgroup CPU/内存/PID/磁盘限制和并发压测；尤其要验证 root node-agent 创建的 `0700` 单任务目录能以最小范围 ACL/chown 提供给 UID 1000 的 analyzer bind mount，不能把整棵源码目录改成 world-readable；

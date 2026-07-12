@@ -1,8 +1,29 @@
 # Luma Progress Handoff
 
-Date: 2026-05-30
+Date: 2026-07-12
 
 This is a short handoff for the current control-plane implementation. Public docs such as `README.md`, `docs/how-to-use-luma.md`, and `docs/bootstrap.md` are authoritative for end-user commands.
+
+## Current Live Snapshot
+
+- Luma CLI, Control, and the manager agent are live on `0.1.192`; the release
+  passed 757/757 tests. Other online agents remain on `0.1.175`-`0.1.188`, so
+  fleet-wide version convergence must not be assumed.
+- `manager` is the only control plane. `aly` is a stale historical name. The
+  LAE platform is a 9-task group on `lab`; tenant runtime admission is limited
+  to `manager + tecent`, while tenant-facing APIs never reveal placement.
+- LAE staging Job version 18 runs the immutable Web image from commit
+  `fcff4c8`; platform Web/API/artifact probes and TLS are healthy.
+- Two real FastAPI tenant applications run on `tecent`. A fresh template launch
+  completed Agent diagnosis, Builder build, Runtime deployment, random-domain
+  publication, and valid TLS without a user-supplied Luma manifest.
+- Luma `0.1.190` scopes Nomad service and Traefik router names by deployment;
+  `0.1.192` registers edge upstreams through the runtime node's
+  `luma_tailscale_ip` metadata. Control upgrades, a fresh tenant deployment,
+  and the LAE Web Job v18 rollout preserved both existing tenant routes.
+- Production remains blocked on dedicated runner/core pools, full source and
+  lifecycle matrices, Docker/CNI/reconciliation fault injection, real SMTP,
+  payment providers, isolation, backups, and recovery drills.
 
 ## Current Direction
 
