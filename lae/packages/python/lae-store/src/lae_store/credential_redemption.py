@@ -263,6 +263,17 @@ class PostgresCredentialRedemptionBroker:
                 ):
                     raise CredentialLeaseRejected(_GENERIC_REJECTION)
 
+                assert task is not None
+                if task.luma_task_id is None:
+                    # Luma may lease the Builder task immediately after the
+                    # create response, before the Worker can checkpoint the
+                    # returned upstream ID. The authenticated, fully bound
+                    # redemption request closes that callback race by setting
+                    # the same immutable ID under this row lock. A different
+                    # ID remains rejected by _valid_graph above.
+                    task.luma_task_id = request.builder_task_id
+                    task.updated_at = now
+
                 expiry = min(
                     int(lease.expires_at.timestamp()),
                     int(now.timestamp()) + CREDENTIAL_REDEMPTION_MAX_TTL_SECONDS,
@@ -361,8 +372,12 @@ class PostgresCredentialRedemptionBroker:
             or not hmac.compare_digest(task.operation_id, request.external_operation_id)
             or not hmac.compare_digest(task.id, lease.builder_task_id)
             or not hmac.compare_digest(task.credential_lease_id, request.lease_id)
-            or task.luma_task_id is None
-            or not hmac.compare_digest(task.luma_task_id, request.builder_task_id)
+            or (
+                task.luma_task_id is not None
+                and not hmac.compare_digest(
+                    task.luma_task_id, request.builder_task_id
+                )
+            )
             or not hmac.compare_digest(task.luma_principal_id, request.principal_ref)
             or operation is None
             or operation.status not in {"queued", "running"}

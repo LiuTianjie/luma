@@ -681,7 +681,7 @@ class PostgreSQLSourceConnectionTests(unittest.IsolatedAsyncioTestCase):
             )
         assert public_task is not None and public_lease is not None
         public_luma_task_id = "builder-" + "4" * 24
-        await self._bind_luma_task(public_task.id, public_luma_task_id)
+        self.assertIsNone(public_task.luma_task_id)
         public_request = CredentialRedemptionRequest(
             lease_id=public_lease.id,
             builder_task_id=public_luma_task_id,
@@ -695,6 +695,11 @@ class PostgreSQLSourceConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(anonymous.kind, "none")
         self.assertFalse(anonymous.username)
         self.assertFalse(anonymous.password)
+        async with self.sessions() as session:
+            late_bound_task = await session.get(BuilderTask, public_task.id)
+        assert late_bound_task is not None
+        self.assertEqual(late_bound_task.luma_task_id, public_luma_task_id)
+        self.assertEqual(late_bound_task.checkpoint_version, 0)
         with self.assertRaises(CredentialLeaseRejected):
             await broker.redeem(public_request)
         self.assertNotIn("exact-private-pat-canary", durable)
