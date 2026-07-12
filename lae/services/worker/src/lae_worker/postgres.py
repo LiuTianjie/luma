@@ -147,6 +147,15 @@ def _mapping(value: object, *, fields: set[str]) -> Mapping[str, Any]:
     return value
 
 
+def _optional_result_string(
+    value: Mapping[str, Any], key: str, default: str
+) -> str:
+    item = value.get(key, default)
+    if not isinstance(item, str) or not item:
+        raise AnalyzeOrchestrationError()
+    return item
+
+
 def _deserialize_result(
     value: object,
 ) -> tuple[AnalysisDigestReferences | None, AnalysisRecording | None]:
@@ -160,20 +169,34 @@ def _deserialize_result(
     references: AnalysisDigestReferences | None = None
     raw_references = value.get("digestReferences")
     if raw_references is not None:
-        raw = _mapping(
-            raw_references,
-            fields={
-                "resolvedCommit",
-                "sourceTreeDigest",
-                "sourceSnapshotId",
-                "sourceSnapshotDigest",
-                "deploymentPlanDigest",
-                "buildPlanDigest",
-                "evidenceDigest",
-                "policyVersion",
-                "artifactDescriptors",
-            },
-        )
+        required_reference_fields = {
+            "resolvedCommit",
+            "sourceTreeDigest",
+            "sourceSnapshotId",
+            "sourceSnapshotDigest",
+            "deploymentPlanDigest",
+            "buildPlanDigest",
+            "evidenceDigest",
+            "policyVersion",
+            "artifactDescriptors",
+        }
+        diagnostic_reference_fields = {
+            "verdict",
+            "diagnosticStatus",
+            "diagnosticMode",
+            "diagnosticCode",
+            "knowledgeVersion",
+            "blockers",
+        }
+        if (
+            not isinstance(raw_references, Mapping)
+            or not required_reference_fields.issubset(raw_references)
+            or not set(raw_references).issubset(
+                required_reference_fields | diagnostic_reference_fields
+            )
+        ):
+            raise AnalyzeOrchestrationError()
+        raw = raw_references
         raw_artifacts = raw["artifactDescriptors"]
         artifacts_map = _mapping(
             raw_artifacts, fields={"evidence", "deploymentPlan", "buildPlan"}
@@ -191,6 +214,9 @@ def _deserialize_result(
                     size_bytes=descriptor["sizeBytes"],
                 )
             )
+        raw_blockers = raw.get("blockers", [])
+        if not isinstance(raw_blockers, list):
+            raise AnalyzeOrchestrationError()
         references = AnalysisDigestReferences(
             resolved_commit=raw["resolvedCommit"],
             source_tree_digest=raw["sourceTreeDigest"],
@@ -201,6 +227,20 @@ def _deserialize_result(
             evidence_digest=raw["evidenceDigest"],
             policy_version=raw["policyVersion"],
             artifacts=tuple(descriptors),
+            verdict=_optional_result_string(raw, "verdict", "diagnostic_failed"),
+            diagnostic_status=_optional_result_string(
+                raw, "diagnosticStatus", "diagnostic_failed"
+            ),
+            diagnostic_mode=_optional_result_string(
+                raw, "diagnosticMode", "deterministic_fallback"
+            ),
+            diagnostic_code=_optional_result_string(
+                raw, "diagnosticCode", "LEGACY_ANALYSIS_RESULT"
+            ),
+            knowledge_version=_optional_result_string(
+                raw, "knowledgeVersion", "legacy"
+            ),
+            blockers=tuple(raw_blockers),
         )
 
     recording: AnalysisRecording | None = None

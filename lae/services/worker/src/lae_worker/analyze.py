@@ -38,6 +38,8 @@ _REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$")
 _IMAGE_DIGEST = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_DIAGNOSTIC_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,95}$")
+_BLOCKER_CODE = re.compile(r"^[A-Z][A-Z0-9_]{2,127}$")
 _SECRET_QUERY_KEY = re.compile(
     r"(?:authorization|password|passwd|secret|token|credential|private.?key)",
     re.IGNORECASE,
@@ -330,6 +332,12 @@ class AnalysisDigestReferences:
         if self.diagnostic_status not in {"succeeded", "diagnostic_failed"}:
             raise AnalyzeOrchestrationError()
         if self.diagnostic_mode not in {"ai", "deterministic_fallback"}:
+            raise AnalyzeOrchestrationError()
+        if not _DIAGNOSTIC_IDENTIFIER.fullmatch(
+            self.diagnostic_code
+        ) or not _DIAGNOSTIC_IDENTIFIER.fullmatch(self.knowledge_version):
+            raise AnalyzeOrchestrationError()
+        if _parse_blockers(list(self.blockers)) != self.blockers:
             raise AnalyzeOrchestrationError()
         if self.verdict == "unsupported" and not self.blockers:
             raise AnalyzeOrchestrationError()
@@ -1165,7 +1173,10 @@ def _parse_blockers(value: Any) -> tuple[dict[str, str], ...]:
             "remediation",
         }:
             raise AnalyzeOrchestrationError()
-        if not all(isinstance(item[key], str) and item[key] for key in item):
+        if not all(
+            isinstance(item[key], str) and item[key] and len(item[key]) <= 1024
+            for key in item
+        ) or not _BLOCKER_CODE.fullmatch(item["code"]):
             raise AnalyzeOrchestrationError()
         result.append(dict(item))
     return tuple(result)

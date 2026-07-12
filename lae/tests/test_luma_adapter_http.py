@@ -132,6 +132,12 @@ class HttpLumaAdapterTests(unittest.TestCase):
             "evidenceDigest": evidence_digest,
             "policyVersion": "2026-07-11",
             "agentImageDigest": "registry.internal/lae-agent@sha256:" + ("a" * 64),
+            "verdict": "deployable",
+            "diagnosticStatus": "succeeded",
+            "diagnosticMode": "ai",
+            "diagnosticCode": "AI_ANALYSIS_SUCCEEDED",
+            "knowledgeVersion": "2026-07-11.1",
+            "blockers": [],
             "artifacts": {
                 "evidence": {
                     "digest": evidence_digest,
@@ -271,6 +277,8 @@ class HttpLumaAdapterTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, public_text)
         self.assertEqual(created.task.result["sourceSnapshotId"], "snapshot-a")
+        self.assertEqual(created.task.result["verdict"], "deployable")
+        self.assertEqual(created.task.result["diagnosticMode"], "ai")
 
     def test_events_preflight_context_and_resume_from_cursor_without_upstream_messages(
         self,
@@ -506,6 +514,17 @@ class HttpLumaAdapterTests(unittest.TestCase):
         mismatched_analyze_digest["artifacts"]["evidence"]["digest"] = "sha256:" + (
             "9" * 64
         )
+        missing_analyze_verdict = self.analyze_result()
+        missing_analyze_verdict.pop("verdict")
+        inconsistent_analyze_blockers = self.analyze_result()
+        inconsistent_analyze_blockers["blockers"] = [
+            {
+                "code": "HTTP_ENTRYPOINT_MISSING",
+                "path": "Dockerfile",
+                "field": "command",
+                "remediation": "Expose one HTTP entrypoint.",
+            }
+        ]
 
         incomplete_build = self.build_result()
         incomplete_build.pop("provenanceDigests")
@@ -527,6 +546,12 @@ class HttpLumaAdapterTests(unittest.TestCase):
                 "analyze-descriptor-digest-mismatch",
                 "analyze-source",
                 mismatched_analyze_digest,
+            ),
+            ("analyze-missing-verdict", "analyze-source", missing_analyze_verdict),
+            (
+                "analyze-inconsistent-blockers",
+                "analyze-source",
+                inconsistent_analyze_blockers,
             ),
             ("build-incomplete", "build-plan", incomplete_build),
             ("build-wrong-media", "build-plan", wrong_build_media),

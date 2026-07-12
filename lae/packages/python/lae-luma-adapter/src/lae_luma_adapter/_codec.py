@@ -36,6 +36,8 @@ _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IMAGE_DIGEST_RE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _BUILD_KEY_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+_DIAGNOSTIC_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,95}$")
+_BLOCKER_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,127}$")
 
 _TASK_MESSAGES = {
     "queued": "Builder task queued.",
@@ -70,6 +72,12 @@ _SAFE_RESULTS = {
             "buildPlanDigest",
             "evidenceDigest",
             "policyVersion",
+            "verdict",
+            "diagnosticStatus",
+            "diagnosticMode",
+            "diagnosticCode",
+            "knowledgeVersion",
+            "blockers",
             "artifacts",
         }
     ),
@@ -403,14 +411,63 @@ def _safe_analyze_result(
             ):
                 raise protocol_error()
             safe[key] = value
+        elif key == "verdict":
+            if value not in {
+                "deployable",
+                "needs_input",
+                "unsupported",
+                "diagnostic_failed",
+            }:
+                raise protocol_error()
+            safe[key] = value
+        elif key == "diagnosticStatus":
+            if value not in {"succeeded", "diagnostic_failed"}:
+                raise protocol_error()
+            safe[key] = value
+        elif key == "diagnosticMode":
+            if value not in {"ai", "deterministic_fallback"}:
+                raise protocol_error()
+            safe[key] = value
+        elif key in {"diagnosticCode", "knowledgeVersion"}:
+            if not isinstance(value, str) or not _DIAGNOSTIC_IDENTIFIER_RE.fullmatch(
+                value
+            ):
+                raise protocol_error()
+            safe[key] = value
+        elif key == "blockers":
+            safe[key] = _safe_analyze_blockers(value)
         elif key == "agentImageDigest":
             if not isinstance(value, str) or not _IMAGE_DIGEST_RE.fullmatch(value):
                 raise protocol_error()
         elif key == "artifacts":
             safe[key] = _safe_analyze_artifact_map(value, result=result)
+    if "verdict" in safe and "blockers" in safe:
+        blockers = safe["blockers"]
+        if (safe["verdict"] == "unsupported") != bool(blockers):
+            raise protocol_error()
     if require_complete and set(safe) != _SAFE_RESULTS["analyze-source"]:
         raise protocol_error()
     return safe
+
+
+def _safe_analyze_blockers(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list) or len(value) > 128:
+        raise protocol_error()
+    blockers: list[dict[str, str]] = []
+    required = {"code", "path", "field", "remediation"}
+    for item in value:
+        if not isinstance(item, dict) or set(item) != required:
+            raise protocol_error()
+        blocker: dict[str, str] = {}
+        for key in ("code", "path", "field", "remediation"):
+            text = item.get(key)
+            if not isinstance(text, str) or not text or len(text) > 1024:
+                raise protocol_error()
+            blocker[key] = text
+        if not _BLOCKER_CODE_RE.fullmatch(blocker["code"]):
+            raise protocol_error()
+        blockers.append(blocker)
+    return blockers
 
 
 def _safe_build_result(

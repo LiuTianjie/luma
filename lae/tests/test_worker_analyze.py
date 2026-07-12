@@ -39,6 +39,7 @@ from lae_store import (  # noqa: E402
     new_id,
 )
 from lae_worker import (  # noqa: E402
+    AnalysisDigestReferences,
     AnalysisRecording,
     ArtifactDescriptor,
     ArtifactIngestingAnalysisRecorder,
@@ -57,6 +58,7 @@ from lae_worker import (  # noqa: E402
     StepStatus,
     build_worker_from_env,
 )
+from lae_worker.postgres import _deserialize_result, _serialize_result  # noqa: E402
 
 
 NOW = datetime(2026, 7, 11, tzinfo=timezone.utc)
@@ -273,6 +275,75 @@ class FailTaskCheckpointOnce:
         return await self.delegate.save(state, expected_version=expected_version)
 
 
+class AnalysisCheckpointCodecTests(unittest.TestCase):
+    @staticmethod
+    def references() -> AnalysisDigestReferences:
+        evidence = "sha256:" + "e" * 64
+        deployment = "sha256:" + "d" * 64
+        build = "sha256:" + "f" * 64
+        return AnalysisDigestReferences(
+            resolved_commit="1" * 40,
+            source_tree_digest="sha256:" + "b" * 64,
+            source_snapshot_id="snapshot-checkpoint-codec",
+            source_snapshot_digest="sha256:" + "c" * 64,
+            deployment_plan_digest=deployment,
+            build_plan_digest=build,
+            evidence_digest=evidence,
+            policy_version="2026-07-11",
+            artifacts=(
+                ArtifactDescriptor(
+                    "evidence",
+                    evidence,
+                    "application/vnd.lae.evidence+json",
+                    100,
+                ),
+                ArtifactDescriptor(
+                    "deploymentPlan",
+                    deployment,
+                    "application/vnd.lae.deployment-plan+json",
+                    200,
+                ),
+                ArtifactDescriptor(
+                    "buildPlan",
+                    build,
+                    "application/vnd.lae.build-plan-candidate+json",
+                    300,
+                ),
+            ),
+            verdict="deployable",
+            diagnostic_status="succeeded",
+            diagnostic_mode="ai",
+            diagnostic_code="AI_ANALYSIS_SUCCEEDED",
+            knowledge_version="2026-07-11.1",
+        )
+
+    def test_ai_diagnostic_fields_survive_checkpoint_round_trip(self) -> None:
+        references = self.references()
+        encoded = _serialize_result(references, None)
+        decoded, recording = _deserialize_result(encoded)
+        self.assertEqual(decoded, references)
+        self.assertIsNone(recording)
+
+    def test_legacy_checkpoint_defaults_remain_readable(self) -> None:
+        encoded = _serialize_result(self.references(), None)
+        assert encoded is not None
+        raw = encoded["digestReferences"]
+        assert isinstance(raw, dict)
+        for key in (
+            "verdict",
+            "diagnosticStatus",
+            "diagnosticMode",
+            "diagnosticCode",
+            "knowledgeVersion",
+            "blockers",
+        ):
+            raw.pop(key)
+        decoded, _ = _deserialize_result(encoded)
+        assert decoded is not None
+        self.assertEqual(decoded.verdict, "diagnostic_failed")
+        self.assertEqual(decoded.diagnostic_code, "LEGACY_ANALYSIS_RESULT")
+
+
 class AnalyzeWorkerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.operation_id = new_id("op")
@@ -382,6 +453,12 @@ class AnalyzeWorkerTests(unittest.IsolatedAsyncioTestCase):
             "evidenceDigest": evidence,
             "policyVersion": "2026-07-11",
             "agentImageDigest": "registry.internal/lae-agent@sha256:" + "a" * 64,
+            "verdict": "deployable",
+            "diagnosticStatus": "succeeded",
+            "diagnosticMode": "ai",
+            "diagnosticCode": "AI_ANALYSIS_SUCCEEDED",
+            "knowledgeVersion": "2026-07-11.1",
+            "blockers": [],
             "artifacts": {
                 "evidence": {
                     "digest": evidence,
@@ -420,6 +497,8 @@ class AnalyzeWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["artifactState"], "descriptor-only")
         self.assertFalse(result["planStored"])
         self.assertEqual(result["deploymentPlanDigest"], "sha256:" + "d" * 64)
+        self.assertEqual(result["verdict"], "deployable")
+        self.assertEqual(result["diagnosticMode"], "ai")
         self.assertNotIn("deploymentPlan", result)
         self.assertNotIn("updateCheck", result)
 
@@ -454,6 +533,12 @@ class AnalyzeWorkerTests(unittest.IsolatedAsyncioTestCase):
             "evidenceDigest": descriptors["evidence"].digest,
             "policyVersion": "2026-07-11",
             "agentImageDigest": "registry.internal/lae-agent@sha256:" + "a" * 64,
+            "verdict": "deployable",
+            "diagnosticStatus": "succeeded",
+            "diagnosticMode": "ai",
+            "diagnosticCode": "AI_ANALYSIS_SUCCEEDED",
+            "knowledgeVersion": "2026-07-11.1",
+            "blockers": [],
             "artifacts": {
                 name: descriptor.to_result()
                 for name, descriptor in descriptors.items()

@@ -85,6 +85,12 @@ class FakeLumaAdapterTests(unittest.TestCase):
             "evidenceDigest": evidence_digest,
             "policyVersion": "2026-07-11",
             "agentImageDigest": "registry.internal/lae-agent@sha256:" + ("a" * 64),
+            "verdict": "deployable",
+            "diagnosticStatus": "succeeded",
+            "diagnosticMode": "ai",
+            "diagnosticCode": "AI_ANALYSIS_SUCCEEDED",
+            "knowledgeVersion": "2026-07-11.1",
+            "blockers": [],
             "artifacts": {
                 "evidence": {
                     "digest": evidence_digest,
