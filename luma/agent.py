@@ -76,6 +76,16 @@ def _docker_binary() -> str | None:
     return None
 
 
+def _crane_binary() -> str | None:
+    crane = shutil.which("crane")
+    if crane:
+        return crane
+    for candidate in ("/usr/local/bin/crane", "/opt/homebrew/bin/crane"):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 _BUILDX_AVAILABLE: bool | None = None
 
 
@@ -132,6 +142,12 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
         # build-plan has a separate, stricter rootless BuildKit + supply-chain
         # gate.  Never advertise the aggregate builder-task-v1 capability.
         capabilities.append("builder-build-v1")
+    if os_value == "linux" and _crane_binary():
+        # The hardened LAE Builder setup installs crane. Control uses this
+        # narrow capability to cache its own release image in the internal
+        # registry before a manager rollout, avoiding a dockerd -> GHCR
+        # dependency during the short control-plane replacement window.
+        capabilities.append("control-image-mirror-v1")
     return capabilities
 
 
@@ -1964,6 +1980,16 @@ def execute_agent_task(
         )
     if action == "manager-update-status":
         return manager_control_update_status(update_id=str(payload.get("updateId") or ""))
+    if action == "mirror-control-image":
+        return mirror_control_image(
+            source_image=_required(payload, "sourceImage"),
+            push_image=_required(payload, "pushImage"),
+            destination_image=_required(payload, "destinationImage"),
+            proxy=str(payload.get("proxy") or ""),
+            insecure=bool(payload.get("insecure")),
+            timeout=int(payload.get("timeout") or 900),
+            progress=progress,
+        )
     if action == "build-image":
         return build_image(payload, progress=progress)
     if action == "analyze-source":
@@ -3076,6 +3102,95 @@ def _safe_docker_image_ref(value: str) -> str:
     if any(ch.isspace() for ch in image) or any(ch in image for ch in ("'", '"', "`", "$", ";", "|", "&", "<", ">")):
         raise LumaError(f"invalid docker image reference: {value}")
     return image
+
+
+def _image_registry_host(image: str) -> str:
+    first = image.split("/", 1)[0]
+    if first == "localhost" or "." in first or ":" in first:
+        return first
+    return "registry-1.docker.io"
+
+
+def mirror_control_image(
+    *,
+    source_image: str,
+    push_image: str,
+    destination_image: str,
+    proxy: str = "",
+    insecure: bool = False,
+    timeout: int = 900,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    """Copy a Control release through the Builder into Luma's pull registry.
+
+    The action receives only validated argv values and never invokes a shell.
+    It is intentionally narrower than a general registry-copy primitive: the
+    destination repository must be ``luma-control`` and the public pull ref is
+    returned separately from the builder-local push ref.
+    """
+
+    crane = _crane_binary()
+    if not crane:
+        raise LumaError("control image mirror requires crane on the builder node")
+    source = _safe_docker_image_ref(source_image)
+    push = _safe_docker_image_ref(push_image)
+    destination = _safe_docker_image_ref(destination_image)
+    if not _docker_image_repository(push).endswith("/luma-control"):
+        raise LumaError("control image mirror destination repository must be luma-control")
+    if not _docker_image_repository(destination).endswith("/luma-control"):
+        raise LumaError("control image public repository must be luma-control")
+    if push.rsplit(":", 1)[-1] != destination.rsplit(":", 1)[-1]:
+        raise LumaError("control image push and pull tags must match")
+    timeout = min(max(int(timeout or 900), 60), 1800)
+    env = dict(os.environ)
+    proxy_value = str(proxy or "").strip()
+    if proxy_value:
+        parsed_proxy = urllib.parse.urlparse(proxy_value)
+        if parsed_proxy.scheme not in {"http", "https"} or not parsed_proxy.hostname:
+            raise LumaError("control image mirror proxy must be an HTTP(S) URL")
+        env["HTTP_PROXY"] = proxy_value
+        env["HTTPS_PROXY"] = proxy_value
+    no_proxy = ["localhost", "127.0.0.1", "::1", _image_registry_host(push), _image_registry_host(destination)]
+    env["NO_PROXY"] = ",".join(dict.fromkeys(value for value in no_proxy if value))
+
+    def emit(line: str) -> None:
+        value = str(line or "").strip()
+        if value and progress:
+            progress({"type": "status", "line": value, "ts": int(time.time())})
+
+    command = [crane, "copy", source, push]
+    if insecure:
+        command.append("--insecure")
+    emit(f"Caching {source} on the internal Builder registry.")
+    result: LocalResult | None = None
+    transient_markers = ("eof", "timeout", "connection reset", "temporary", "tls handshake", "unexpected status code 5")
+    for attempt in range(1, 4):
+        result = _run_process_streaming(command, env=env, timeout=timeout, on_line=emit)
+        if result.code == 0:
+            break
+        output = str(result.output or "").strip()
+        if attempt >= 3 or not any(marker in output.lower() for marker in transient_markers):
+            raise LumaError(f"control image mirror failed: {_tail_text(output)}")
+        emit(f"Registry transfer was interrupted; retrying ({attempt + 1}/3).")
+        time.sleep(2**attempt)
+    if result is None or result.code != 0:
+        raise LumaError("control image mirror failed")
+
+    digest_command = [crane, "digest", push]
+    if insecure:
+        digest_command.append("--insecure")
+    digest_result = _run_process_streaming(digest_command, env=env, timeout=120, on_line=None)
+    digest = str(digest_result.output or "").strip().splitlines()[-1] if digest_result.output else ""
+    if digest_result.code != 0 or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+        raise LumaError(f"control image mirror verification failed: {_tail_text(digest_result.output or '')}")
+    emit(f"Internal Control image verified at {digest}.")
+    return {
+        "sourceImage": source,
+        "pushImage": push,
+        "destinationImage": destination,
+        "digest": digest,
+        "message": "Control image cached and verified in the internal registry.",
+    }
 
 
 def _docker_image_pull_error(*, image: str, output: str, platform: str = "") -> str:

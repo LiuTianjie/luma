@@ -35,6 +35,26 @@ export type ManagerUpdate = {
   log?: string[];
 };
 
+export type ControlImagePreparation = {
+  id?: string;
+  installRef?: string;
+  sourceImage?: string;
+  destinationImage?: string;
+  builderNode?: string;
+  status?: "none" | "queued" | "running" | "succeeded" | "failed" | "interrupted" | string;
+  createdAt?: number;
+  updatedAt?: number;
+  finishedAt?: number;
+  message?: string;
+  log?: string[];
+  result?: {
+    sourceImage?: string;
+    destinationImage?: string;
+    digest?: string;
+    message?: string;
+  };
+};
+
 export type RouteSentinelResult = {
   domain?: string;
   status?: number;
@@ -74,6 +94,15 @@ export async function getManagerUpdate(token: string, updateId = "", signal?: Ab
 
 export async function startManagerUpdate(token: string, installRef: string, controlImage: string) {
   return apiPost<ManagerUpdate>("/v1/dashboard/updates/manager", token, { installRef, controlImage });
+}
+
+export async function getControlImagePreparation(token: string, id = "", signal?: AbortSignal) {
+  const suffix = id ? `/${encodeURIComponent(id)}` : "";
+  return apiGet<ControlImagePreparation>(`/v1/dashboard/updates/control-image${suffix}`, token, signal);
+}
+
+export async function startControlImagePreparation(token: string, installRef: string, controlImage: string) {
+  return apiPost<ControlImagePreparation>("/v1/dashboard/updates/control-image", token, { installRef, controlImage });
 }
 
 export async function runRouteSentinel(token: string) {

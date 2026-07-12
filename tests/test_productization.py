@@ -787,6 +787,9 @@ class ProductConfigTests(unittest.TestCase):
         self.assertNotIn("nomad-cni-repair", node_agent_capabilities("darwin"))
         self.assertIn("terminal", node_agent_capabilities("linux"))
         self.assertIn("terminal", node_agent_capabilities("darwin"))
+        with patch("luma.agent._crane_binary", return_value="/usr/local/bin/crane"):
+            self.assertIn("control-image-mirror-v1", node_agent_capabilities("linux"))
+            self.assertNotIn("control-image-mirror-v1", node_agent_capabilities("darwin"))
 
     def test_node_agent_diagnostics_reports_docker_mirrors_proxy_nomad_and_pull_errors(self):
         executor = Mock()
@@ -4478,6 +4481,102 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[2], "start-manager-update")
         self.assertEqual(run.call_args.kwargs["required_capability"], "manager-update-v1")
         self.assertEqual(run.call_args.args[3]["domain"], "luma.example.com")
+
+    def test_agent_mirrors_control_image_with_proxy_and_verifies_digest(self):
+        from luma.agent import mirror_control_image
+        from luma.local import LocalResult
+
+        digest = "sha256:" + "a" * 64
+        events = []
+        with patch("luma.agent._crane_binary", return_value="/usr/local/bin/crane"), patch(
+            "luma.agent._run_process_streaming",
+            side_effect=[LocalResult(0, "copy complete"), LocalResult(0, digest + "\n")],
+        ) as run:
+            result = mirror_control_image(
+                source_image="ghcr.io/liutianjie/luma-control:v0.1.175",
+                push_image="localhost:5000/luma-control:v0.1.175",
+                destination_image="100.66.177.70:5000/luma-control:v0.1.175",
+                proxy="http://100.106.154.3:7890",
+                insecure=True,
+                progress=events.append,
+            )
+
+        copy_command = run.call_args_list[0].args[0]
+        self.assertEqual(copy_command[:2], ["/usr/local/bin/crane", "copy"])
+        self.assertIn("--insecure", copy_command)
+        self.assertEqual(run.call_args_list[0].kwargs["env"]["HTTPS_PROXY"], "http://100.106.154.3:7890")
+        self.assertIn("localhost:5000", run.call_args_list[0].kwargs["env"]["NO_PROXY"])
+        self.assertEqual(result["destinationImage"], "100.66.177.70:5000/luma-control:v0.1.175")
+        self.assertEqual(result["digest"], digest)
+        self.assertTrue(any("verified" in str(event.get("line") or "").lower() for event in events))
+
+    def test_async_control_image_preparation_persists_progress_and_internal_ref(self):
+        from luma.control.server import handle_control_image_prepare_get, handle_control_image_prepare_start
+        from luma.control.state import save_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            old_insecure = _set_env("LUMA_LAE_BUILDER_REGISTRY_INSECURE", "1")
+            try:
+                save_state(
+                    {
+                        "clusterId": "luma-test",
+                        "deployToken": "management-token",
+                        "build": {
+                            "defaultNode": "builder",
+                            "nodes": ["builder"],
+                            "registryHost": "100.66.177.70:5000",
+                            "pushHost": "localhost:5000",
+                        },
+                        "nodes": {
+                            "builder": {
+                                "roles": ["builder"],
+                                "agent": {
+                                    "status": "online",
+                                    "lastSeen": int(time.time()),
+                                    "capabilities": ["docker-build", "control-image-mirror-v1"],
+                                },
+                            }
+                        },
+                    }
+                )
+
+                def mirror(_state, node, action, payload, **kwargs):
+                    self.assertEqual(node, "builder")
+                    self.assertEqual(action, "mirror-control-image")
+                    self.assertEqual(payload["pushImage"], "localhost:5000/luma-control:v0.1.175")
+                    self.assertEqual(kwargs["required_capability"], "control-image-mirror-v1")
+                    kwargs["progress"]({"line": "copying layers"})
+                    return {
+                        "taskId": "task-1",
+                        "destinationImage": payload["destinationImage"],
+                        "digest": "sha256:" + "b" * 64,
+                        "message": "cached",
+                    }
+
+                with patch("luma.control.server.load_config", return_value=Mock()), patch(
+                    "luma.control.server._egress_proxy_for_node", return_value="http://proxy:7890"
+                ), patch("luma.control.server._run_node_agent_task", side_effect=mirror):
+                    started = handle_control_image_prepare_start(
+                        "management-token",
+                        {
+                            "installRef": "v0.1.175",
+                            "controlImage": "ghcr.io/liutianjie/luma-control:v0.1.175",
+                        },
+                    )
+                    deadline = time.time() + 3
+                    current = started
+                    while current.get("status") in {"queued", "running"} and time.time() < deadline:
+                        time.sleep(0.02)
+                        current = handle_control_image_prepare_get("management-token", str(started["id"]))
+
+                self.assertEqual(current["status"], "succeeded")
+                self.assertEqual(current["result"]["destinationImage"], "100.66.177.70:5000/luma-control:v0.1.175")
+                self.assertIn("copying layers", current["log"])
+                self.assertNotIn("proxy", current["plan"])
+            finally:
+                _restore_env("LUMA_LAE_BUILDER_REGISTRY_INSECURE", old_insecure)
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
     def test_async_fleet_update_persists_node_progress_and_recovers_by_id(self):
         from luma.control.server import handle_fleet_update_operation_get, handle_fleet_update_operation_start

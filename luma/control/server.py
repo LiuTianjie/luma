@@ -222,6 +222,8 @@ ARTIFACT_DOWNLOADS = ArtifactLeaseManager(
 _DEPLOY_LOCK = threading.RLock()
 _FLEET_UPDATE_LOCK = threading.RLock()
 _FLEET_UPDATE_THREADS: dict[str, threading.Thread] = {}
+_CONTROL_IMAGE_PREPARE_LOCK = threading.RLock()
+_CONTROL_IMAGE_PREPARE_THREADS: dict[str, threading.Thread] = {}
 
 
 def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -9086,6 +9088,216 @@ def _default_control_image_for_ref(install_ref: str) -> str:
     return ""
 
 
+def _control_image_prepare_dir() -> Path:
+    return state_dir() / "control-image-preparations"
+
+
+def _control_image_prepare_path(operation_id: str) -> Path:
+    safe_id = str(operation_id or "").strip()
+    if not re.fullmatch(r"image-[0-9]{10,}-[a-f0-9]{8}", safe_id):
+        raise LumaError("invalid control image preparation id")
+    return _control_image_prepare_dir() / f"{safe_id}.json"
+
+
+def _control_image_prepare_write(record: Dict[str, Any]) -> None:
+    record["updatedAt"] = int(time.time())
+    save_state(record, _control_image_prepare_path(str(record.get("id") or "")))
+
+
+def _control_image_prepare_read(operation_id: str) -> Dict[str, Any]:
+    path = _control_image_prepare_path(operation_id)
+    if not path.exists():
+        raise LumaError("control image preparation not found")
+    return load_state(path)
+
+
+def _control_image_prepare_tag(install_ref: str, source_image: str) -> str:
+    if re.fullmatch(r"v[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?", install_ref):
+        return install_ref
+    if re.fullmatch(r"[a-f0-9]{40}", install_ref):
+        return f"sha-{install_ref[:7]}"
+    tail = source_image.rsplit("/", 1)[-1]
+    tag = tail.rsplit(":", 1)[-1] if ":" in tail and "@" not in tail else ""
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag):
+        raise LumaError("controlImage must have a tag when preparing a branch or non-standard release")
+    return tag
+
+
+def _control_image_prepare_plan(state: Dict[str, Any], install_ref: str, source_image: str) -> Dict[str, Any]:
+    source = str(source_image or "").strip()
+    if not source or any(ch.isspace() for ch in source) or any(ch in source for ch in ("'", '"', "`", "$", ";", "|", "&", "<", ">")):
+        raise LumaError("controlImage is invalid")
+    build = _build_config(state)
+    pull_host_raw = str(build.get("registryHost") or "").strip()
+    if not pull_host_raw:
+        raise LumaError("internal build registryHost is not configured; configure Builder registry settings before updating Control")
+    pull_host = normalize_registry_host(pull_host_raw)
+    source_host = normalize_registry_host(registry_host_from_image(source))
+    if source_host == pull_host:
+        return {
+            "sourceImage": source,
+            "destinationImage": source,
+            "alreadyInternal": True,
+        }
+    push_host_raw = str(build.get("pushHost") or "").strip()
+    if not push_host_raw:
+        raise LumaError("internal build pushHost is not configured; configure Builder registry settings before updating Control")
+    push_host = normalize_registry_host(push_host_raw)
+    build_node = _require_build_node(
+        state,
+        str(build.get("defaultNode") or DEFAULT_BUILD_NODE_NAME).strip(),
+        purpose="control image preparation",
+    )
+    tag = _control_image_prepare_tag(install_ref, source)
+    insecure_raw = str(os.environ.get("LUMA_LAE_BUILDER_REGISTRY_INSECURE") or "").strip()
+    if insecure_raw not in {"0", "1"}:
+        raise LumaError("LUMA_LAE_BUILDER_REGISTRY_INSECURE must be explicitly set to 0 or 1")
+    config = load_config(_control_config_path())
+    return {
+        "sourceImage": source,
+        "pushImage": f"{push_host}/luma-control:{tag}",
+        "destinationImage": f"{pull_host}/luma-control:{tag}",
+        "builderNode": build_node,
+        "proxy": _egress_proxy_for_node(config, state, build_node),
+        "insecure": insecure_raw == "1",
+        "alreadyInternal": False,
+    }
+
+
+def _control_image_prepare_public(record: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(record)
+    plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+    if plan:
+        result["plan"] = {key: value for key, value in plan.items() if key != "proxy"}
+    return result
+
+
+def handle_control_image_prepare_start(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    install_ref = str(body.get("installRef") or "").strip()
+    if not install_ref or len(install_ref) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", install_ref):
+        raise LumaError("installRef must be a Git tag, branch, or commit")
+    source_image = str(body.get("controlImage") or _default_control_image_for_ref(install_ref)).strip()
+    if not source_image:
+        raise LumaError("controlImage is required for a branch or non-standard ref")
+    plan = _control_image_prepare_plan(state, install_ref, source_image)
+    now = int(time.time())
+    operation_id = f"image-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+    record: Dict[str, Any] = {
+        "schemaVersion": "luma.control-image-preparation/v1",
+        "id": operation_id,
+        "clusterId": str(state.get("clusterId") or ""),
+        "installRef": install_ref,
+        "sourceImage": source_image,
+        "destinationImage": str(plan.get("destinationImage") or source_image),
+        "builderNode": str(plan.get("builderNode") or ""),
+        "status": "queued",
+        "message": "Waiting for the Builder to cache the Control image.",
+        "createdAt": now,
+        "updatedAt": now,
+        "plan": {key: value for key, value in plan.items() if key != "proxy"},
+        "log": [],
+    }
+    if plan.get("alreadyInternal"):
+        record.update(
+            {
+                "status": "succeeded",
+                "message": "Control image already uses the internal registry.",
+                "finishedAt": now,
+                "result": {
+                    "sourceImage": source_image,
+                    "destinationImage": source_image,
+                    "message": "Control image already uses the internal registry.",
+                },
+            }
+        )
+        _control_image_prepare_write(record)
+        return _control_image_prepare_public(record)
+    _control_image_prepare_write(record)
+
+    def update_progress(event: Dict[str, Any]) -> None:
+        message = str(event.get("message") or event.get("line") or "").strip()
+        if not message:
+            return
+        with _CONTROL_IMAGE_PREPARE_LOCK:
+            current = _control_image_prepare_read(operation_id)
+            current["status"] = "running"
+            current["message"] = message[:1000]
+            lines = [str(value) for value in current.get("log") or []]
+            lines.append(message[:4000])
+            current["log"] = lines[-80:]
+            _control_image_prepare_write(current)
+
+    def run() -> None:
+        try:
+            with _CONTROL_IMAGE_PREPARE_LOCK:
+                current = _control_image_prepare_read(operation_id)
+                current["status"] = "running"
+                current["startedAt"] = int(time.time())
+                _control_image_prepare_write(current)
+            result = _run_node_agent_task(
+                state,
+                str(plan.get("builderNode") or ""),
+                "mirror-control-image",
+                {
+                    "sourceImage": str(plan.get("sourceImage") or ""),
+                    "pushImage": str(plan.get("pushImage") or ""),
+                    "destinationImage": str(plan.get("destinationImage") or ""),
+                    "proxy": str(plan.get("proxy") or ""),
+                    "insecure": bool(plan.get("insecure")),
+                    "timeout": 900,
+                },
+                timeout=960,
+                required_capability="control-image-mirror-v1",
+                progress=update_progress,
+            )
+            with _CONTROL_IMAGE_PREPARE_LOCK:
+                current = _control_image_prepare_read(operation_id)
+                current["status"] = "succeeded"
+                current["message"] = str(result.get("message") or "Control image cached in the internal registry.")
+                current["result"] = {key: value for key, value in result.items() if key != "taskId"}
+                current["finishedAt"] = int(time.time())
+                _control_image_prepare_write(current)
+        except Exception as exc:
+            with _CONTROL_IMAGE_PREPARE_LOCK:
+                current = _control_image_prepare_read(operation_id)
+                current["status"] = "failed"
+                current["message"] = str(exc)[:2000]
+                current["finishedAt"] = int(time.time())
+                _control_image_prepare_write(current)
+        finally:
+            with _CONTROL_IMAGE_PREPARE_LOCK:
+                _CONTROL_IMAGE_PREPARE_THREADS.pop(operation_id, None)
+
+    thread = threading.Thread(target=run, name=f"luma-{operation_id}", daemon=True)
+    with _CONTROL_IMAGE_PREPARE_LOCK:
+        _CONTROL_IMAGE_PREPARE_THREADS[operation_id] = thread
+    thread.start()
+    return _control_image_prepare_public(record)
+
+
+def handle_control_image_prepare_get(token: str, operation_id: str = "") -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    with _CONTROL_IMAGE_PREPARE_LOCK:
+        if operation_id:
+            record = _control_image_prepare_read(operation_id)
+        else:
+            root = _control_image_prepare_dir()
+            candidates = sorted(root.glob("image-*.json"), key=lambda path: path.stat().st_mtime, reverse=True) if root.exists() else []
+            if not candidates:
+                return {"status": "none", "message": "No Control image preparation has been recorded."}
+            record = load_state(candidates[0])
+        record_id = str(record.get("id") or "")
+        if str(record.get("status") or "") in {"queued", "running"} and record_id not in _CONTROL_IMAGE_PREPARE_THREADS:
+            record["status"] = "interrupted"
+            record["message"] = "Control restarted while the image was being prepared; retry from this page."
+            record["finishedAt"] = int(time.time())
+            _control_image_prepare_write(record)
+        return _control_image_prepare_public(record)
+
+
 def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -13786,6 +13998,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "lae-runtime-observability-v1",
                         "nomad-variables-secrets-v1",
                         "system-update-v1",
+                        "control-image-preparation-v1",
                         "route-sentinel-v1",
                     ],
                 },
@@ -13943,6 +14156,13 @@ class ControlHandler(BaseHTTPRequestHandler):
             fleet_update_match = re.fullmatch(r"/v1/dashboard/updates/fleet/([^/]+)", parsed_path)
             if fleet_update_match:
                 self._json(200, handle_fleet_update_operation_get(token, urllib.parse.unquote(fleet_update_match.group(1))))
+                return
+            control_image_match = re.fullmatch(r"/v1/dashboard/updates/control-image/([^/]+)", parsed_path)
+            if control_image_match:
+                self._json(200, handle_control_image_prepare_get(token, urllib.parse.unquote(control_image_match.group(1))))
+                return
+            if parsed_path == "/v1/dashboard/updates/control-image":
+                self._json(200, handle_control_image_prepare_get(token))
                 return
             if parsed_path == "/v1/dashboard/updates/fleet":
                 self._json(200, handle_fleet_update_operation_get(token))
@@ -14308,6 +14528,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/dashboard/updates/fleet":
                 self._json(202, handle_fleet_update_operation_start(token, body))
                 return
+            if self.path == "/v1/dashboard/updates/control-image":
+                self._json(202, handle_control_image_prepare_start(token, body))
+                return
             if self.path == "/v1/dashboard/updates/manager":
                 self._json(202, handle_manager_update_start(token, body))
                 return
@@ -14637,6 +14860,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "lae-runtime-observability-v1",
                 "nomad-variables-secrets-v1",
                 "system-update-v1",
+                "control-image-preparation-v1",
                 "route-sentinel-v1",
             ],
         },
@@ -14816,6 +15040,18 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             )
         if parsed_path == "/v1/dashboard/updates/fleet":
             return _json_response(200, await run_in_threadpool(handle_fleet_update_operation_get, token))
+        control_image_match = re.fullmatch(r"/v1/dashboard/updates/control-image/([^/]+)", parsed_path)
+        if control_image_match:
+            return _json_response(
+                200,
+                await run_in_threadpool(
+                    handle_control_image_prepare_get,
+                    token,
+                    urllib.parse.unquote(control_image_match.group(1)),
+                ),
+            )
+        if parsed_path == "/v1/dashboard/updates/control-image":
+            return _json_response(200, await run_in_threadpool(handle_control_image_prepare_get, token))
         if parsed_path == "/v1/dashboard/updates/manager":
             return _json_response(
                 200,
@@ -15141,6 +15377,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_service_pull_diagnostics, token, service, timeout=timeout))
         if path == "/v1/dashboard/updates/fleet":
             return _json_response(202, await run_in_threadpool(handle_fleet_update_operation_start, token, body))
+        if path == "/v1/dashboard/updates/control-image":
+            return _json_response(202, await run_in_threadpool(handle_control_image_prepare_start, token, body))
         if path == "/v1/dashboard/updates/manager":
             return _json_response(202, await run_in_threadpool(handle_manager_update_start, token, body))
         if path == "/v1/dashboard/route-sentinel":

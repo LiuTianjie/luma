@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.174 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.175 sh
 ```
 
 从源码开发：
@@ -371,7 +371,7 @@ luma secret set DATABASE_URL --scope app
 
 | 问题 | 做法 |
 | --- | --- |
-| 更新整个 Luma 集群 | 首选 Dashboard 的「节点 → 升级中心」：填写不可变 release tag，先记录全部公网路由基线，二次确认后升级 Control；页面会在 Control 替换期间自动重连并再次检查路由。随后只更新版本未对齐的非 manager 节点，每台节点安装后必须带目标版本重新心跳才算成功。操作和逐节点结果会持久化，关页或 Control 重启后仍可恢复。 |
+| 更新整个 Luma 集群 | 首选 Dashboard 的「节点 → 升级中心」：填写不可变 release tag，先记录全部公网路由基线。二次确认后由 Builder 先把 Control 镜像缓存到内网 registry 并校验，再启动 manager 更新；页面会自动重连并复查路由。随后只更新版本未对齐的非 manager 节点。镜像、Control 和逐节点结果都会持久化，关页或 Control 重启后仍可查看与重试。 |
 | 命令行升级兜底 | 只有 Dashboard 不可用或首次接入不支持 `luma-update` 的历史 agent 时，才在 manager 使用 `luma update manager`、在 client 使用 `luma update fleet`。正常日常升级无需 SSH 到节点。 |
 | 查看整个集群状态 | 任意已登录 client 运行 `luma status`，会输出控制面、DNS、编排器（Nomad）及其 leader、注册节点（role=client）。 |
 | 在 client 或 worker 上运行 `luma update` 会怎样 | 只更新本地 CLI，不刷新 manager 控制面。 |

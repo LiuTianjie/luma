@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, LoaderCircle, RefreshCw, Route, ServerCog, XCircle } from "lucide-react";
 import type { DashboardNode, Lang } from "../types";
 import {
+  getControlImagePreparation,
   getFleetUpdate,
   getManagerUpdate,
   listFleetUpdates,
   runRouteSentinel,
+  startControlImagePreparation,
   startFleetUpdate,
   startManagerUpdate,
+  type ControlImagePreparation,
   type FleetUpdateOperation,
   type ManagerUpdate,
   type RouteSentinel,
@@ -57,10 +60,11 @@ export function SystemUpdatePanel({
   const [installRef, setInstallRef] = useState(initialRef);
   const [controlImage, setControlImage] = useState(defaultControlImage(initialRef));
   const [manager, setManager] = useState<ManagerUpdate | null>(null);
+  const [imagePreparation, setImagePreparation] = useState<ControlImagePreparation | null>(null);
   const [fleet, setFleet] = useState<FleetUpdateOperation | null>(null);
   const [sentinel, setSentinel] = useState<RouteSentinel | null>(null);
   const [baseline, setBaseline] = useState<RouteSentinel | null>(null);
-  const [busy, setBusy] = useState<"manager" | "fleet" | "sentinel" | "">("");
+  const [busy, setBusy] = useState<"manager" | "image" | "fleet" | "sentinel" | "">("");
   const [confirm, setConfirm] = useState<"manager" | "fleet" | "">("");
   const [error, setError] = useState("");
   const [reconnecting, setReconnecting] = useState(false);
@@ -93,9 +97,11 @@ export function SystemUpdatePanel({
     const controller = new AbortController();
     void Promise.all([
       getManagerUpdate(token, "", controller.signal).catch(() => null),
+      getControlImagePreparation(token, "", controller.signal).catch(() => null),
       listFleetUpdates(token, controller.signal).catch(() => ({ operations: [] })),
-    ]).then(([managerResult, fleetResult]) => {
+    ]).then(([managerResult, imageResult, fleetResult]) => {
       if (managerResult && managerResult.status !== "none") setManager(managerResult);
+      if (imageResult && imageResult.status !== "none") setImagePreparation(imageResult);
       const latest = fleetResult.operations?.[0];
       if (latest) setFleet(latest);
     });
@@ -104,8 +110,9 @@ export function SystemUpdatePanel({
 
   useEffect(() => {
     const managerRunning = manager?.status === "running";
+    const imageRunning = imagePreparation?.status === "queued" || imagePreparation?.status === "running";
     const fleetRunning = fleet?.status === "queued" || fleet?.status === "running";
-    if (!managerRunning && !fleetRunning) return;
+    if (!managerRunning && !imageRunning && !fleetRunning) return;
     const timer = window.setInterval(() => {
       if (managerRunning) {
         void getManagerUpdate(token, manager?.updateId || "")
@@ -115,6 +122,18 @@ export function SystemUpdatePanel({
             if (result.status === "succeeded") {
               void probeRoutes();
               void onRefresh();
+            }
+          })
+          .catch(() => setReconnecting(true));
+      }
+      if (imageRunning && imagePreparation?.id) {
+        void getControlImagePreparation(token, imagePreparation.id)
+          .then((result) => {
+            setImagePreparation(result);
+            setReconnecting(false);
+            if (result.status === "succeeded") {
+              const preparedImage = result.result?.destinationImage || result.destinationImage;
+              if (preparedImage) setControlImage(preparedImage);
             }
           })
           .catch(() => setReconnecting(true));
@@ -130,7 +149,7 @@ export function SystemUpdatePanel({
       }
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [fleet?.id, fleet?.status, manager?.status, manager?.updateId, onRefresh, probeRoutes, token]);
+  }, [fleet?.id, fleet?.status, imagePreparation?.id, imagePreparation?.status, manager?.status, manager?.updateId, onRefresh, probeRoutes, token]);
 
   const requestManagerUpdate = async () => {
     if (confirm !== "manager") {
@@ -139,10 +158,23 @@ export function SystemUpdatePanel({
       setConfirm("manager");
       return;
     }
-    setBusy("manager");
+    setBusy("image");
     setError("");
     try {
-      const result = await startManagerUpdate(token, installRef.trim(), controlImage.trim());
+      let prepared = await startControlImagePreparation(token, installRef.trim(), controlImage.trim());
+      setImagePreparation(prepared);
+      for (let attempt = 0; ["queued", "running"].includes(prepared.status || "") && attempt < 450; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        prepared = await getControlImagePreparation(token, prepared.id || "");
+        setImagePreparation(prepared);
+      }
+      if (prepared.status !== "succeeded") {
+        throw new Error(prepared.message || (zh ? "内网镜像准备失败" : "Internal image preparation failed"));
+      }
+      const preparedImage = prepared.result?.destinationImage || prepared.destinationImage || controlImage.trim();
+      setControlImage(preparedImage);
+      setBusy("manager");
+      const result = await startManagerUpdate(token, installRef.trim(), preparedImage);
       setManager(result);
       setConfirm("");
     } catch (nextError) {
@@ -208,9 +240,9 @@ export function SystemUpdatePanel({
           {busy === "sentinel" ? <LoaderCircle className="spin" size={16} /> : <Route size={16} />}
           {zh ? "检查全部公网路由" : "Check public routes"}
         </button>
-        <button type="button" className={confirm === "manager" ? "danger" : "secondary"} disabled={!installRef.trim() || !controlImage.trim() || Boolean(busy) || manager?.status === "running"} onClick={() => void requestManagerUpdate()}>
-          {busy === "manager" ? <LoaderCircle className="spin" size={16} /> : <ServerCog size={16} />}
-          {confirm === "manager" ? (zh ? "确认升级 Control" : "Confirm Control update") : (zh ? "升级 Control" : "Update Control")}
+        <button type="button" className={confirm === "manager" ? "danger" : "secondary"} disabled={!installRef.trim() || !controlImage.trim() || Boolean(busy) || manager?.status === "running" || imagePreparation?.status === "queued" || imagePreparation?.status === "running"} onClick={() => void requestManagerUpdate()}>
+          {busy === "manager" || busy === "image" ? <LoaderCircle className="spin" size={16} /> : <ServerCog size={16} />}
+          {busy === "image" || imagePreparation?.status === "queued" || imagePreparation?.status === "running" ? (zh ? "正在准备内网镜像" : "Preparing internal image") : confirm === "manager" ? (zh ? "确认升级 Control" : "Confirm Control update") : (zh ? "升级 Control" : "Update Control")}
         </button>
         <button type="button" className={confirm === "fleet" ? "primary" : "secondary"} disabled={!installRef.trim() || staleNodes.length === 0 || Boolean(busy) || fleet?.status === "running" || fleet?.status === "queued"} onClick={() => void requestFleetUpdate()}>
           {busy === "fleet" ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
@@ -233,6 +265,12 @@ export function SystemUpdatePanel({
         <article>
           <header><span>{zh ? "控制面" : "Control plane"}</span><strong className={`update-status ${manager?.status || "idle"}`}>{manager ? statusIcon(manager.status) : null}{manager?.status || (zh ? "未开始" : "idle")}</strong></header>
           <p>{manager?.message || manager?.installRef || (zh ? "先运行路由基线，再滚动替换 Control。" : "Capture a route baseline, then roll Control.")}</p>
+          {imagePreparation && imagePreparation.status !== "none" ? (
+            <div className={`system-update-image-progress ${imagePreparation.status || "idle"}`}>
+              {statusIcon(imagePreparation.status)}
+              <span><b>{zh ? "内网镜像" : "Internal image"}</b><small>{imagePreparation.message || imagePreparation.destinationImage || "-"}</small></span>
+            </div>
+          ) : null}
           {manager?.log?.length ? <pre><code>{manager.log.slice(-8).join("\n")}</code></pre> : null}
         </article>
         <article>

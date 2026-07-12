@@ -94,6 +94,8 @@ Luma validates pulls for the target node platform and deploys the digest returne
 
 ## Fleet update fails
 
+If Dashboard → Nodes → Update center reports that Control image preparation failed, keep the release ref unchanged and open the persisted image task in the same panel. The message distinguishes a missing Builder capability, missing `registryHost` / `pushHost`, an external registry transfer failure, and internal digest verification failure. Fix the displayed configuration or network condition, then press Update Control again; do not SSH to the manager or restart applications. The manager rollout is not started until the internal image is verified.
+
 If `luma update fleet` reports `HOME: parameter not set` or `HOME: unbound variable`, the node is running an older installer path from a service environment without `HOME`. Update the manager/CLI to a version with the installer HOME fallback, then rerun fleet update.
 
 If a node reports `unsupported node agent task action: update-luma` or `node agent does not support fleet update`, that node's agent is too old to update itself through fleet tasks. Run once on that node:

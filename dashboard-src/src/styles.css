@@ -4358,6 +4358,38 @@ dd {
 .update-status.running,
 .update-status.queued { color: var(--accent); }
 
+.system-update-image-progress {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.system-update-image-progress > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.system-update-image-progress small {
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-update-image-progress.succeeded { color: var(--success, #52c788); }
+.system-update-image-progress.failed,
+.system-update-image-progress.interrupted { color: var(--danger, #ef7777); }
+.system-update-image-progress.running,
+.system-update-image-progress.queued { color: var(--accent); }
+
 .system-update-progress-grid pre {
   max-height: 150px;
   overflow: auto;
