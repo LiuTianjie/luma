@@ -27,7 +27,7 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：Luma CLI/Control `0.1.192` 与 LAE Web ref `fcff4c8` 已 live；模板到 Runtime 的首条真实 E2E 与升级 route 连续性回归通过，完整来源、生命周期与故障注入验收仍在收尾
+> 状态：Luma CLI/Control/全部在线 agent `0.1.196` 与 LAE exact ref `7c1212c037e356c3e6af39829bbed0615bea234d` 已 live；平台 Job v21、模板到 Runtime、稳定更新检查和主要 lifecycle 已完成真实 E2E，完整来源、安全负例与故障注入验收仍在收尾
 > 日期：2026-07-12
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
@@ -54,17 +54,19 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 storage class 和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-12，Luma CLI、Control 与 manager agent 为 `0.1.192`；该 release
-通过 757/757 gate。其余在线 agent 仍为 `0.1.175`-`0.1.188`，只有涉及对应 agent
-协议时才是本轮强制升级目标，文档不得把当前 fleet 写成统一版本。LAE staging
-当前 job version 18 使用 Web ref `fcff4c8` 的 immutable digest，平台 9 个 task、
-TLS、Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider 已配置。
+截至 2026-07-12，Luma CLI、Control、manager agent 与 6 个在线非 manager agent
+均为 `0.1.196`；离线 `blg` 保持 `0.1.175`，恢复后必须补升级。`0.1.196` 发布前
+通过 761/761 gate，release workflow 会拒绝 tag 与 package version 不一致。LAE
+staging 当前 Job version 21 使用 exact ref
+`7c1212c037e356c3e6af39829bbed0615bea234d` 构建的镜像，平台 9 个 task、TLS、
+Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider 已配置。
 
 真实 FastAPI 模板已完成 Agent 诊断、Builder 构建、Runtime 部署、随机域名和有效
-TLS；两个租户应用当前均运行在 `tecent`。`0.1.190`-`0.1.192` Control 升级和
-LAE Web Job v18 更新期间，两条未参与变更的租户 route 连续返回 200，无需人工
-重启。该证据关闭已复现路径的 staging 回归，但 Docker daemon/CNI 故障注入、
-Compose 双 HTTP、volume、全部 lifecycle 与跨节点重调度仍是 production gate。
+TLS；更新检查已证明等价快照的计划摘要稳定，刷新基线后正确返回无变化。平台 Job
+v21、fleet 与 Control/manager `0.1.196` 升级均无需人工重启。针对 LAE Web 的
+Control route sentinel 为 1/1 成功，但更长的外部探针仍出现少量 LAE 404/502/timeout，
+且全量 sentinel 会把 API 根路径等合法 404 误判为失败。Docker daemon/CNI 故障注入、
+Compose 双 HTTP、volume、跨节点重调度和 route sentinel 语义修正仍是 production gate；
 Mailpit 也仍不能证明真实邮箱送达。
 
 ## 2. 发布输入与不变量
@@ -405,12 +407,13 @@ exact deployment/`JobVersion`，并等待该版本每个 required task group 的
 `JobModifyIndex` 对应的当前版本与 allocation 已健康。failed/blocked/canceled、
 superseded 和 timeout 必须 fail closed。
 
-当前 live `0.1.192` 已通过 manager 多次升级、全新租户应用发布与 LAE Web Job v18
-更新的 sentinel 回归，既有 route 未再出现批量 404/502。已复现的 service/router
+当前 live `0.1.196` 已通过在线 fleet、manager Control 与 LAE Job v21 更新，既有
+route 未再出现需要人工重启才能恢复的批量 404/502。已复现的 service/router
 名称碰撞和跨节点 private-IP upstream 已分别通过 deployment-scoped 名称与
-`luma_tailscale_ip` service address 修复。Docker daemon restart 后 CNI 自愈、
+`luma_tailscale_ip` service address 修复。但长时间外部探针仍有少量瞬时失败，
+全量 sentinel 对合法 404 的健康语义也不正确。Docker daemon restart 后 CNI 自愈、
 route reconciliation 故障注入和更多 edge 类型 sentinel 尚未完成，因此 production
-rollout 继续以这些剩余项目为门禁，而不是继续把当前 live 标成“修复尚未发布”。
+rollout 继续以这些剩余项目为门禁。
 
 ## 7. 导入并部署 LAE staging
 
@@ -439,6 +442,14 @@ proxy/`NO_PROXY`。出现旧 `aly` proxy、base pull EOF、内部 HTTP registry 
 或 HTTPS 探测时，按 [运维 SOP 3.2](./10-operations-troubleshooting-sop.md#32-repository-importbuildkit-或内部-registry-失败)
 处理，不要盲目重复 import。
 
+Luma `0.1.194+` 的 Builder 可以直接把 40/64 位完整 commit 做 shallow fetch 后以
+detached HEAD 构建，并在内部 HTTP registry 的 BuildKit image exporter 上显式启用
+insecure transport。完成一次 legacy tag 引导并把 Builder 升到该版本后，正式候选
+应优先把 `$FULL_SHA` 直接传给 `--ref`；验收时要求 build run 的 resolved commit 与
+它逐字相等。宿主 `daemon.json` 已声明 insecure registry 不能替代这项 BuildKit
+验证。`0.1.196` 还会在 import 超时或取消时终止 Builder 侧 BuildKit 进程；发布门禁
+必须确认取消后的 build run 到达终态，不能留下继续占用并发槽的后台构建。
+
 部署后依次验证：
 
 ```bash
@@ -464,6 +475,11 @@ update-check 的验收必须读取终态 Operation 中闭合的 `updateCheck`，
 baseline/candidate digest 一致；它不能自动切换 current deployment。Luma Dashboard
 的 LAE“调度位置”视图也已实现，但必须在本节部署后验证其候选、preferred node 和
 实时 Nomad allocation 关联，不能把代码测试视为 staging 证据。
+
+同一 source tree 的稳定性验收必须连续执行两次 check-update，要求 candidate plan
+digest 相等；再用其中一个 analysis 部署并执行第三次 check-update，要求 baseline 与
+candidate 的 source/plan digest 均相等，三个变化字段均为 false。`sourceSnapshotId`、
+`planId`、task ID 和 fetch attempt ID 都是执行身份，不能进入 DeploymentPlan 语义摘要。
 
 ## 8. 回退矩阵
 

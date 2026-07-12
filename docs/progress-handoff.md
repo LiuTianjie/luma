@@ -6,21 +6,29 @@ This is a short handoff for the current control-plane implementation. Public doc
 
 ## Current Live Snapshot
 
-- Luma CLI, Control, and the manager agent are live on `0.1.192`; the release
-  passed 757/757 tests. Other online agents remain on `0.1.175`-`0.1.188`, so
-  fleet-wide version convergence must not be assumed.
+- Luma CLI, Control, the manager agent, and all six online non-manager agents
+  are live on `0.1.196`; 761/761 tests passed before release. Offline `blg`
+  remains on `0.1.175` and must be upgraded when it reconnects.
 - `manager` is the only control plane. `aly` is a stale historical name. The
   LAE platform is a 9-task group on `lab`; tenant runtime admission is limited
   to `manager + tecent`, while tenant-facing APIs never reveal placement.
-- LAE staging Job version 18 runs the immutable Web image from commit
-  `fcff4c8`; platform Web/API/artifact probes and TLS are healthy.
+- LAE staging Job version 21 runs images built from exact commit
+  `7c1212c037e356c3e6af39829bbed0615bea234d`; all nine platform tasks and
+  Web/API/Agent/artifact probes are healthy.
 - Two real FastAPI tenant applications run on `tecent`. A fresh template launch
   completed Agent diagnosis, Builder build, Runtime deployment, random-domain
   publication, and valid TLS without a user-supplied Luma manifest.
 - Luma `0.1.190` scopes Nomad service and Traefik router names by deployment;
   `0.1.192` registers edge upstreams through the runtime node's
-  `luma_tailscale_ip` metadata. Control upgrades, a fresh tenant deployment,
-  and the LAE Web Job v18 rollout preserved both existing tenant routes.
+  `luma_tailscale_ip` metadata; `0.1.196` adds BuildKit timeout cancellation
+  and release tag/package-version validation. Job v21, online fleet, and
+  Control/manager upgrades completed without manual application restarts.
+  A targeted LAE Web route sentinel passed, but longer probes still contain a
+  few transient LAE 404/502/timeouts, so zero-downtime is not yet proven.
+- Update-check now excludes attempt-scoped snapshot/plan identifiers from its
+  semantic digest. Two independent checks produced the same candidate plan;
+  after redeploying that candidate, the next check returned source, plan, and
+  aggregate `changed=false`.
 - Production remains blocked on dedicated runner/core pools, full source and
   lifecycle matrices, Docker/CNI/reconciliation fault injection, real SMTP,
   payment providers, isolation, backups, and recovery drills.
