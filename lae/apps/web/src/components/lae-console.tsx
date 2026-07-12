@@ -224,6 +224,84 @@ const stateCopy: Record<FlowState, { eyebrow: string; title: string; note: strin
   live: { eyebrow: "LIVE · 05", title: "部署完成", note: "应用已进入列表，域名在更新与重启时保持稳定。" },
 };
 
+const operationKindCopy: Record<string, string> = {
+  "application.create": "创建应用",
+  "application.environment-update": "更新环境变量",
+  "application.check-update": "检查更新",
+  "application.suspend": "暂停应用",
+  "application.resume": "恢复应用",
+  "application.restart": "重启应用",
+  "application.rollback": "回滚版本",
+  "application.delete": "删除应用",
+  "source.connection-create": "连接代码源",
+  "source.connection-rotate": "轮换代码源凭据",
+  "source.connection-revoke": "撤销代码源连接",
+  "source.upload.scan": "扫描上传产物",
+  "source.analyze": "诊断应用",
+  "deployment.create": "部署应用",
+};
+
+const operationStatusCopy: Record<string, string> = {
+  queued: "等待执行",
+  running: "执行中",
+  succeeded: "已完成",
+  failed: "失败",
+  canceled: "已取消",
+};
+
+const operationPhaseCopy: Record<string, string> = {
+  "source.fetch": "拉取源码",
+  "source.upload": "接收产物",
+  "source.upload.scan": "安全扫描",
+  "source.analyze": "分析项目",
+  "analysis.topology": "识别服务拓扑",
+  "analysis.policy": "校验部署策略",
+  build: "构建镜像",
+  "build.prepare": "准备构建",
+  "build.execute": "执行构建",
+  deploy: "部署服务",
+  "deploy.prepare": "准备运行环境",
+  "deploy.apply": "应用部署计划",
+  verify: "验证公网服务",
+  "application.lifecycle": "执行应用操作",
+};
+
+const operationEventCopy: Record<string, string> = {
+  "operation.queued": "操作已进入执行队列",
+  "operation.started": "操作已开始",
+  "operation.reclaimed": "工作进程恢复后已继续执行",
+  "operation.cancel-requested": "已请求取消操作",
+  "operation.canceled": "操作已取消",
+  "operation.succeeded": "操作已完成",
+  "operation.failed": "操作执行失败",
+  "operation.progress": "执行进度已更新",
+  "builder.analyze.progress": "项目分析进度已更新",
+  "compose.detected": "已识别 Compose 服务拓扑",
+  "build.service.completed": "服务镜像构建完成",
+  "deployment.ready": "公网服务验证通过",
+};
+
+function operationKindLabel(kind: string) {
+  return operationKindCopy[kind] || "平台操作";
+}
+
+function operationProgressLabel(phase: string | null, status: string) {
+  return (phase && operationPhaseCopy[phase]) || operationStatusCopy[status] || "状态更新";
+}
+
+function operationEventLabel(event: OperationEvent) {
+  const base = operationEventCopy[event.type] || "操作进度已更新";
+  if (event.type === "compose.detected") {
+    const services = typeof event.data.services === "number" ? event.data.services : null;
+    const routes = typeof event.data.routes === "number" ? event.data.routes : null;
+    if (services !== null && routes !== null) return `${base}：${services} 个服务，${routes} 个公网入口`;
+  }
+  if (event.type === "build.service.completed" && typeof event.data.service === "string") {
+    return `${event.data.service} 镜像构建完成`;
+  }
+  return base;
+}
+
 export function LaeConsole() {
   const reduceMotion = useReducedMotion();
   const [theme, setTheme] = useState<"light" | "dark">("dark");
@@ -1138,22 +1216,7 @@ export function LaeConsole() {
 
               {activeSection === "deployment" && (
                 <>
-                  <div className="overview-strip" aria-label="工作区概览">
-                    <article><span>运行中</span><strong>{shoreApplications.filter((item) => item.tone === "healthy").length}</strong><small>applications</small></article>
-                    <article><span>应用总数</span><strong>{catalogLoading ? "—" : shoreApplications.length}</strong><small>tenant catalog</small></article>
-                    <article><span>已验证模板</span><strong>{templatesLoading ? "—" : templates.length}</strong><small>agent passed</small></article>
-                    <article><span>来源</span><strong>3</strong><small>Git · File · Compose</small></article>
-                  </div>
-
                   <div className="main-grid console-anchor" id="deployment">
-                    <TemplateLake
-                      templates={templates}
-                      selected={selectedTemplate}
-                      onSelect={setSelectedTemplate}
-                      loading={templatesLoading}
-                      notice={templatesNotice}
-                      reduced={Boolean(reduceMotion)}
-                    />
                     <DeploymentInstrument
                       flow={flow}
                       source={source}
@@ -1171,10 +1234,17 @@ export function LaeConsole() {
                       onFile={selectFile}
                       onAnalyzeGit={beginGitDiagnosis}
                       onAnalyzeUpload={beginUploadDiagnosis}
-                      onLaunchTemplate={beginTemplateDiagnosis}
                       onSaveEnvironment={saveEnvironment}
                       onDeploy={deploy}
                       onReset={resetFlow}
+                      reduced={Boolean(reduceMotion)}
+                    />
+                    <TemplateLake
+                      templates={templates}
+                      selected={selectedTemplate}
+                      onLaunch={beginTemplateDiagnosis}
+                      loading={templatesLoading}
+                      notice={templatesNotice}
                       reduced={Boolean(reduceMotion)}
                     />
                   </div>
@@ -1296,26 +1366,29 @@ function Header({
 function TemplateLake({
   templates,
   selected,
-  onSelect,
+  onLaunch,
   loading,
   notice,
   reduced,
 }: {
   templates: Template[];
   selected: Template | null;
-  onSelect: (template: Template) => void;
+  onLaunch: (template: Template) => void | Promise<void>;
   loading: boolean;
   notice: string | null;
   reduced: boolean;
 }) {
   return (
-    <section className="lake" aria-labelledby="template-title">
+    <section className="lake starter-shelf" aria-labelledby="template-title">
       <div className="lake-heading">
         <div>
-          <span className="section-index">01</span>
-          <h2 id="template-title">应用模板</h2>
+          <span className="section-index">STARTERS</span>
+          <div>
+            <h2 id="template-title">从一个可靠的起点开始</h2>
+            <p>模板已经通过 LAE Agent 验证，点击后直接创建诊断任务。</p>
+          </div>
         </div>
-        <span className="lake-note">模板同样执行完整诊断</span>
+        <span className="lake-note">{loading ? "同步模板目录" : `${templates.length} 个已验证模板`}</span>
       </div>
       <div className="water-field">
         {!templates.length && (
@@ -1338,8 +1411,8 @@ function TemplateLake({
                 duration: 0.18,
                 delay: Math.min(index * 0.035, 0.18),
               }}
-              onClick={() => onSelect(template)}
-              aria-pressed={active}
+              onClick={() => void onLaunch(template)}
+              aria-current={active ? "step" : undefined}
             >
               <span className="template-icon"><Icon size={22} strokeWidth={1.45} /></span>
               <span className="template-label">
@@ -1347,24 +1420,10 @@ function TemplateLake({
                 <small>{template.stack}</small>
                 <em>{template.description}</em>
               </span>
-              <ArrowRight size={14} />
+              <span className="template-action">部署 <ArrowRight size={13} /></span>
             </motion.button>
           );
         })}
-        <AnimatePresence>
-          {selected && (
-            <motion.div
-              className="selected-current"
-              initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 6 }}
-              transition={{ duration: 0.38, ease: [0.4, 0, 0.2, 1] }}
-            >
-              <Sparkles size={14} strokeWidth={1.5} />
-              <span><strong>{selected.name}</strong> 已选中，继续开始诊断</span>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
     </section>
   );
@@ -1387,7 +1446,6 @@ function DeploymentInstrument({
   onFile,
   onAnalyzeGit,
   onAnalyzeUpload,
-  onLaunchTemplate,
   onSaveEnvironment,
   onDeploy,
   onReset,
@@ -1409,7 +1467,6 @@ function DeploymentInstrument({
   onFile: (file: File | null) => void;
   onAnalyzeGit: (input: GitSourceInput) => Promise<void>;
   onAnalyzeUpload: (input: { name: string; slug: string; file: File }) => Promise<void>;
-  onLaunchTemplate: (template: Template) => Promise<void>;
   onSaveEnvironment: (
     values: Record<string, { value: string }>,
   ) => Promise<void>;
@@ -1436,104 +1493,127 @@ function DeploymentInstrument({
   return (
     <section className="instrument" aria-labelledby="deployment-title" aria-live="polite">
       <div className="instrument-topline">
-        <span>{copy.eyebrow}</span>
+        <span>DEPLOYMENT WORKBENCH · {copy.eyebrow}</span>
         <span>{locked ? "IN PROGRESS" : flow === "live" ? "VERIFIED" : "READY FOR INPUT"}</span>
       </div>
-      <ol className="phase-track" aria-label={`部署阶段：${phases[phaseIndex]}`}>
-        {phases.map((phase, index) => (
-          <li
-            key={phase}
-            className={index < phaseIndex ? "is-complete" : index === phaseIndex ? "is-current" : ""}
-            aria-current={index === phaseIndex ? "step" : undefined}
-          >
-            <span>{index < phaseIndex ? <Check size={10} /> : index + 1}</span>
-            <small>{phase}</small>
-          </li>
-        ))}
-      </ol>
+      <div className="instrument-layout">
+        <nav className="deployment-steps" aria-label={`部署阶段：${phases[phaseIndex]}`}>
+          <ol className="phase-track">
+            {phases.map((phase, index) => (
+              <li
+                key={phase}
+                className={index < phaseIndex ? "is-complete" : index === phaseIndex ? "is-current" : ""}
+                aria-current={index === phaseIndex ? "step" : undefined}
+              >
+                <span>{index < phaseIndex ? <Check size={10} /> : index + 1}</span>
+                <div><small>0{index + 1}</small><strong>{phase}</strong></div>
+              </li>
+            ))}
+          </ol>
+        </nav>
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={flow}
-          className="instrument-copy"
-          initial={reduced ? false : { opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -7 }}
-          transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
-        >
-          <h2 id="deployment-title">{copy.title}</h2>
-          <p>{copy.note}</p>
-        </motion.div>
-      </AnimatePresence>
+        <div className="deployment-stage">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={flow}
+              className="instrument-copy"
+              initial={reduced ? false : { opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -7 }}
+              transition={{ duration: 0.26, ease: [0.4, 0, 0.2, 1] }}
+            >
+              <span>{copy.eyebrow}</span>
+              <h2 id="deployment-title">{copy.title}</h2>
+              <p>{copy.note}</p>
+            </motion.div>
+          </AnimatePresence>
 
-      {flow === "idle" ? (
-        <div className="source-list">
-          <SourceButton icon={GitFork} title="GitHub 仓库" note="连接账户或粘贴公开地址" onClick={() => onSource("github")} />
-          <SourceButton icon={LockKeyhole} title="私有 Git" note="HTTPS token 仅以短期凭据租约使用" onClick={() => onSource("git")} />
-          <label className="source-row" htmlFor={fileInputId}>
-            <span className="source-icon"><FileArchive size={18} strokeWidth={1.55} /></span>
-            <span><strong>静态产物</strong><small>HTML 或打包后的 ZIP</small></span>
-            <ArrowRight size={16} strokeWidth={1.5} />
-            <input
-              id={fileInputId}
-              type="file"
-              accept=".html,.zip,text/html,application/zip"
-              onChange={(event) => onFile(event.currentTarget.files?.[0] || null)}
-            />
-          </label>
-          {template && (
-            <button className="template-launch" type="button" onClick={() => void onLaunchTemplate(template)}>
-              <Sparkles size={15} />
-              一键诊断 {template.name}
-              <ArrowRight size={15} />
-            </button>
+          {flow === "idle" ? (
+            <div className="source-list">
+              <SourceButton icon={GitFork} title="GitHub 仓库" note="公开仓库或已连接账户" onClick={() => onSource("github")} />
+              <SourceButton icon={LockKeyhole} title="私有 Git" note="HTTPS 凭据短期租约" onClick={() => onSource("git")} />
+              <label className="source-row" htmlFor={fileInputId}>
+                <span className="source-icon"><FileArchive size={18} strokeWidth={1.55} /></span>
+                <span><strong>上传产物</strong><small>HTML 或静态 ZIP</small></span>
+                <ArrowRight size={16} strokeWidth={1.5} />
+                <input
+                  id={fileInputId}
+                  type="file"
+                  accept=".html,.zip,text/html,application/zip"
+                  onChange={(event) => onFile(event.currentTarget.files?.[0] || null)}
+                />
+              </label>
+              <div className="source-row source-compose">
+                <span className="source-icon"><Boxes size={18} strokeWidth={1.55} /></span>
+                <span><strong>Compose 项目</strong><small>从 Git 导入，支持多个公网 HTTP 服务</small></span>
+                <span className="source-badge">AUTO</span>
+              </div>
+            </div>
+          ) : flow === "configuring" ? (
+            configuration ? (
+              <EnvironmentConfigurationForm
+                configuration={configuration}
+                saving={environmentSaving}
+                onSubmit={onSaveEnvironment}
+              />
+            ) : (
+              <SourceConfiguration
+                source={source}
+                selectedFile={selectedFile}
+                authenticated={authenticated}
+                onAnalyzeGit={onAnalyzeGit}
+                onAnalyzeUpload={onAnalyzeUpload}
+              />
+            )
+          ) : flow === "ready" && plan ? (
+            <DeploymentPlanReview configuration={plan} />
+          ) : flow === "live" && liveDeployment ? (
+            <DeploymentHandoff deployment={liveDeployment} />
+          ) : (
+            <Diagnosis flow={flow} source={source} events={events} />
           )}
+
+          {error && <div className="flow-error" role="alert">{error}</div>}
+
+          <div className="instrument-actions">
+            {flow === "ready" && (
+              <motion.button className="primary-action" type="button" onClick={onDeploy} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
+                部署到 Luma <ArrowRight size={17} />
+              </motion.button>
+            )}
+            {flow === "live" && (
+              <a className="primary-action" href="#applications-title">
+                查看应用 <Globe2 size={17} />
+              </a>
+            )}
+            {flow !== "idle" && !locked && (
+              <button className="secondary-action" type="button" onClick={onReset}>
+                <RotateCcw size={14} /> 重新选择
+              </button>
+            )}
+          </div>
         </div>
-      ) : flow === "configuring" ? (
-        configuration ? (
-          <EnvironmentConfigurationForm
-            configuration={configuration}
-            saving={environmentSaving}
-            onSubmit={onSaveEnvironment}
-          />
-        ) : (
-          <SourceConfiguration
-            source={source}
-            selectedFile={selectedFile}
-            authenticated={authenticated}
-            onAnalyzeGit={onAnalyzeGit}
-            onAnalyzeUpload={onAnalyzeUpload}
-          />
-        )
-      ) : flow === "ready" && plan ? (
-        <DeploymentPlanReview configuration={plan} />
-      ) : flow === "live" && liveDeployment ? (
-        <DeploymentHandoff deployment={liveDeployment} />
-      ) : (
-        <Diagnosis flow={flow} source={source} events={events} />
-      )}
 
-      {error && <div className="flow-error" role="alert">{error}</div>}
-
-      <div className="instrument-actions">
-        {flow === "ready" && (
-          <motion.button className="primary-action" type="button" onClick={onDeploy} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
-            部署到 Luma <ArrowRight size={17} />
-          </motion.button>
-        )}
-        {flow === "live" && (
-          <a className="primary-action" href="#applications-title">
-            查看应用 <Globe2 size={17} />
-          </a>
-        )}
-        {flow !== "idle" && !locked && (
-          <button className="secondary-action" type="button" onClick={onReset}>
-            <RotateCcw size={14} /> 重新选择
-          </button>
-        )}
+        <aside className="deployment-contract" aria-label="部署契约">
+          <div className="contract-heading"><span>DELIVERY CONTRACT</span><ServerCog size={16} /></div>
+          <dl>
+            <div><dt>运行区域</dt><dd>CN · Luma managed</dd></div>
+            <div><dt>公网入口</dt><dd>HTTPS · *.itool.tech</dd></div>
+            <div><dt>服务模型</dt><dd>{plan?.kind === "compose" ? `${plan.services.length} services` : "HTTP / Compose"}</dd></div>
+            <div><dt>配置文件</dt><dd>由 LAE 保存并绑定应用</dd></div>
+          </dl>
+          <div className="contract-boundaries">
+            <span><Check size={12} /> 多个公网 HTTP 服务</span>
+            <span><Check size={12} /> Builder 拉取与构建</span>
+            <span className="is-disabled"><X size={12} /> 自定义域名</span>
+            <span className="is-disabled"><X size={12} /> TCP relay</span>
+          </div>
+          {template && source === "template" && (
+            <div className="contract-source"><Sparkles size={13} /><span>{template.name}</span></div>
+          )}
+          <div className="trust-note"><LockKeyhole size={12} /> 源码、变量与凭据不会进入 LAE 日志</div>
+        </aside>
       </div>
-
-      <div className="trust-note"><LockKeyhole size={12} /> 源码与凭据不会进入 LAE 日志</div>
     </section>
   );
 }
@@ -2223,8 +2303,8 @@ function ApplicationShore({
         <div className="shore-heading">
           <span className="section-index">02</span>
           <div>
-            <h2 id="applications-title">应用目录</h2>
-            <p>{loading ? "正在同步 Luma runtime…" : `${applications.length} 个应用，${serviceCount} 个服务实例`}</p>
+            <h2 id="applications-title">应用运行清单</h2>
+            <p>{loading ? "正在同步 Luma runtime…" : `${applications.length} 个应用 · ${serviceCount} 个 HTTP 服务`}</p>
           </div>
         </div>
         <div className="shore-summary" aria-label="应用运行概览">
@@ -2255,111 +2335,113 @@ function ApplicationShore({
           const hasPublicDomain = app.domain !== "等待首次部署";
           return (
             <article className={`application-item tone-${app.tone}`} key={app.id}>
-            <div className="application-identity">
-              <span className="application-sequence">APP / {String(index + 1).padStart(2, "0")}</span>
-              <Link className="application-name-link" href={`/applications/${app.id}`}>{app.name}</Link>
-              <span className="application-runtime-note">
-                {app.lifecycleEnabled ? "Luma runtime 已连接" : "等待首个部署计划"}
-              </span>
-            </div>
-
-            <div className="application-runtime-cell">
-              <span className="cell-label">RUNTIME</span>
-              <span className={`runtime-pill ${app.tone}`}>
+              <div className="application-sequence" aria-hidden="true">
+                <span>{String(index + 1).padStart(2, "0")}</span>
                 <span className={`app-status ${app.tone}`} />
-                <span className="service-count">
-                  {app.status} · {app.services} service{app.services > 1 ? "s" : ""}
-                </span>
-              </span>
-            </div>
+              </div>
 
-            <div className="application-endpoint">
-              <span className="cell-label">PUBLIC ENDPOINT</span>
-              {hasPublicDomain ? (
-                <a href={`https://${app.domain}`} target="_blank" rel="noreferrer">
-                  <Globe2 size={13} />
-                  <span>{app.domain}</span>
-                  <ExternalLink size={11} />
-                </a>
-              ) : (
-                <span className="endpoint-pending">
-                  <Globe2 size={13} /> 部署后自动分配
-                </span>
-              )}
-            </div>
-
-            <div className="app-actions" aria-label={`${app.name} 常用操作`}>
-              <button
-                type="button"
-                disabled={!app.lifecycleEnabled}
-                title="查看实时日志与最近一小时指标"
-                aria-label={`${app.name} 运行观测`}
-                onClick={() => onInspect(app)}
-              >
-                <Activity size={14} /> <span>观测</span>
-              </button>
-              <button
-                type="button"
-                disabled={!app.lifecycleEnabled || busyApplicationIds.has(app.id)}
-                title={app.tone === "paused" ? "恢复应用" : "暂停并保留域名、配置与卷"}
-                aria-label={`${app.name} ${app.tone === "paused" ? "恢复" : "暂停"}`}
-                onClick={() => onAction(app, app.tone === "paused" ? "resume" : "suspend")}
-              >
-                {app.tone === "paused" ? <Play size={14} /> : <Pause size={14} />}
-                <span>{app.tone === "paused" ? "恢复" : "暂停"}</span>
-              </button>
-              <button
-                type="button"
-                disabled={!app.lifecycleEnabled || app.tone === "paused" || busyApplicationIds.has(app.id)}
-                title="重启当前版本"
-                aria-label={`${app.name} 重启`}
-                onClick={() => onAction(app, "restart")}
-              >
-                <RotateCcw size={14} /> <span>重启</span>
-              </button>
-              <details className="app-more">
-                <summary title="更多操作" aria-label={`${app.name} 更多操作`}>
-                  <MoreHorizontal size={16} />
-                </summary>
-                <div className="app-more-menu">
-                  <span>版本与维护</span>
-                  <button
-                    type="button"
-                    disabled={!app.lifecycleEnabled || busyApplicationIds.has(app.id)}
-                    onClick={() => onAction(app, "check-update")}
-                  >
-                    <GitFork size={14} />
-                    <span><strong>检查更新</strong><small>重新诊断当前源码</small></span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={
-                      !app.lifecycleEnabled ||
-                      !app.rollbackDeploymentId ||
-                      busyApplicationIds.has(app.id)
-                    }
-                    onClick={() => onConfirmAction(app, "rollback")}
-                  >
-                    <Undo2 size={14} />
-                    <span><strong>回滚版本</strong><small>{app.rollbackDeploymentId ? "恢复上一健康部署" : "暂无健康历史版本"}</small></span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busyApplicationIds.has(app.id)}
-                    className="danger-action"
-                    onClick={() => onConfirmAction(app, "delete")}
-                  >
-                    <Trash2 size={14} />
-                    <span><strong>删除应用</strong><small>默认保留持久卷</small></span>
-                  </button>
+              <div className="application-identity">
+                <div className="application-title-line">
+                  <Link className="application-name-link" href={`/applications/${app.id}`}>{app.name}</Link>
+                  <span className={`runtime-pill ${app.tone}`}>
+                    <span className={`app-status ${app.tone}`} />
+                    <span className="service-count">
+                      {app.status} · {app.services} service{app.services > 1 ? "s" : ""}
+                    </span>
+                  </span>
                 </div>
-              </details>
-            </div>
+                <div className="application-meta-line">
+                  {hasPublicDomain ? (
+                    <a className="application-endpoint" href={`https://${app.domain}`} target="_blank" rel="noreferrer">
+                      <Globe2 size={13} />
+                      <span>{app.domain}</span>
+                      <ExternalLink size={11} />
+                    </a>
+                  ) : (
+                    <span className="endpoint-pending">
+                      <Globe2 size={13} /> 部署完成后自动分配 *.itool.tech
+                    </span>
+                  )}
+                  <span className="application-target">
+                    DESIRED <strong>{app.desiredState.toUpperCase()}</strong>
+                  </span>
+                </div>
+                <span className="application-runtime-note">
+                  {app.lifecycleEnabled ? "Luma runtime 已连接" : "等待诊断与首个部署计划"}
+                </span>
+              </div>
 
-            <footer className="application-item-footer">
-              <span>目标状态 <strong>{app.desiredState.toUpperCase()}</strong></span>
-              <Link href={`/applications/${app.id}`}>打开应用详情 <ChevronRight size={13} /></Link>
-            </footer>
+              <div className="app-actions" aria-label={`${app.name} 常用操作`}>
+                <Link className="application-manage-link" href={`/applications/${app.id}`}>
+                  管理 <ChevronRight size={13} />
+                </Link>
+                <span className="app-action-divider" />
+                <button
+                  type="button"
+                  disabled={!app.lifecycleEnabled}
+                  title="查看实时日志与最近一小时指标"
+                  aria-label={`${app.name} 运行观测`}
+                  onClick={() => onInspect(app)}
+                >
+                  <Activity size={14} /> <span>观测</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!app.lifecycleEnabled || busyApplicationIds.has(app.id)}
+                  title={app.tone === "paused" ? "恢复应用" : "暂停并保留域名、配置与卷"}
+                  aria-label={`${app.name} ${app.tone === "paused" ? "恢复" : "暂停"}`}
+                  onClick={() => onAction(app, app.tone === "paused" ? "resume" : "suspend")}
+                >
+                  {app.tone === "paused" ? <Play size={14} /> : <Pause size={14} />}
+                  <span>{app.tone === "paused" ? "恢复" : "暂停"}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!app.lifecycleEnabled || app.tone === "paused" || busyApplicationIds.has(app.id)}
+                  title="重启当前版本"
+                  aria-label={`${app.name} 重启`}
+                  onClick={() => onAction(app, "restart")}
+                >
+                  <RotateCcw size={14} /> <span>重启</span>
+                </button>
+                <details className="app-more">
+                  <summary title="更多操作" aria-label={`${app.name} 更多操作`}>
+                    <MoreHorizontal size={16} />
+                  </summary>
+                  <div className="app-more-menu">
+                    <span>版本与维护</span>
+                    <button
+                      type="button"
+                      disabled={!app.lifecycleEnabled || busyApplicationIds.has(app.id)}
+                      onClick={() => onAction(app, "check-update")}
+                    >
+                      <GitFork size={14} />
+                      <span><strong>检查更新</strong><small>重新诊断当前源码</small></span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        !app.lifecycleEnabled ||
+                        !app.rollbackDeploymentId ||
+                        busyApplicationIds.has(app.id)
+                      }
+                      onClick={() => onConfirmAction(app, "rollback")}
+                    >
+                      <Undo2 size={14} />
+                      <span><strong>回滚版本</strong><small>{app.rollbackDeploymentId ? "恢复上一健康部署" : "暂无健康历史版本"}</small></span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyApplicationIds.has(app.id)}
+                      className="danger-action"
+                      onClick={() => onConfirmAction(app, "delete")}
+                    >
+                      <Trash2 size={14} />
+                      <span><strong>删除应用</strong><small>默认保留持久卷</small></span>
+                    </button>
+                  </div>
+                </details>
+              </div>
             </article>
           );
         })}
@@ -2418,7 +2500,7 @@ function ConsoleUtilities({
             {recentEvents.map((event) => (
               <li key={event.eventId} className={event.level === "error" ? "is-error" : ""}>
                 <span>{String(event.cursor).padStart(2, "0")}</span>
-                <div><strong>{event.message}</strong><small>{event.phase || event.status}</small></div>
+                <div><strong>{operationEventLabel(event)}</strong><small>{operationProgressLabel(event.phase, event.status)}</small></div>
               </li>
             ))}
           </ol>
@@ -2427,7 +2509,7 @@ function ConsoleUtilities({
             {operations.slice(0, 5).map((operation) => (
               <li key={operation.id} className={operation.status === "failed" ? "is-error" : ""}>
                 <span>{operation.kind.split(".")[0].slice(0, 2).toUpperCase()}</span>
-                <div><strong>{operation.kind}</strong><small>{operation.phase || operation.status} · {shortReference(operation.id)}</small></div>
+                <div><strong>{operationKindLabel(operation.kind)}</strong><small>{operationProgressLabel(operation.phase, operation.status)} · {shortReference(operation.id)}</small></div>
                 <button type="button" onClick={() => onRecover(operation)} disabled={recoveryBusy !== null}>
                   {recoveryBusy === operation.id ? <RefreshCw className="stage-spin" size={12} /> : <Activity size={12} />}
                   {operation.terminal ? "查看" : "恢复"}
@@ -2457,10 +2539,30 @@ function ConsoleUtilities({
             </div>
             <SquareTerminal size={18} strokeWidth={1.4} />
           </div>
-          <p className="cli-description">Deploy token 授权后，CLI 与控制台走同一套诊断和部署协议，并持续输出机器可读进度。</p>
-          <div className="cli-command" aria-label="LAE CLI 示例命令">
-            <code><span>$</span> lae login --token-stdin</code>
-            <code><span>$</span> lae inspect --app &lt;id&gt; --repo &lt;url&gt; --ref &lt;ref&gt; --idempotency-key &lt;key&gt;</code>
+          <div className="cli-intro">
+            <p className="cli-description">Deploy token 授权后，CLI 与控制台使用同一套诊断、部署和生命周期协议。所有长操作都能输出 NDJSON，并凭 operation ID 断线续看。</p>
+            <span>STAGING · workspace distribution</span>
+          </div>
+          <div className="cli-workflow" aria-label="LAE CLI 完整工作流">
+            <article>
+              <span>01</span><strong>建立会话</strong><small>Token 不进入命令历史</small>
+              <code>lae login --token-stdin</code>
+            </article>
+            <article>
+              <span>02</span><strong>创建并诊断</strong><small>Git、文件与 Compose 使用同一 verdict</small>
+              <code>lae apps create --name &lt;name&gt; --slug &lt;slug&gt; --idempotency-key &lt;key&gt;<br />lae inspect --app &lt;id&gt; --repo &lt;url&gt; --ref &lt;ref&gt; --idempotency-key &lt;key&gt; --format ndjson</code>
+            </article>
+            <article>
+              <span>03</span><strong>补齐配置</strong><small>按 schema 安全写入环境变量</small>
+              <code>lae env set &lt;app&gt; &lt;NAME&gt; --value-stdin --expected-version &lt;v&gt; --idempotency-key &lt;key&gt;</code>
+            </article>
+            <article>
+              <span>04</span><strong>部署并续看</strong><small>保存 operation ID 与 cursor</small>
+              <code>lae deploy --app &lt;id&gt; --analysis &lt;id&gt; --environment-version &lt;v&gt; --wait --idempotency-key &lt;key&gt; --format ndjson<br />lae operation watch &lt;operation-id&gt; --after &lt;cursor&gt; --format ndjson</code>
+            </article>
+          </div>
+          <div className="cli-surface">
+            <span>apps</span><span>env</span><span>source-connections</span><span>uploads</span><span>templates</span><span>billing</span><span>operation watch</span>
           </div>
           <Link className="utility-link" href="/account">
             管理 Deploy token <ArrowRight size={14} />

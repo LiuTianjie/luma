@@ -40,6 +40,7 @@ class RuntimeReadBinding:
     operation_ref: str
     revision_ref: str
     deployment_ref: str
+    runtime_deployment_ref: str
     service_key: str
 
     def context(self, *, request_id: str | None = None) -> RuntimeCallContext:
@@ -93,7 +94,7 @@ class PostgresObservabilityBindingStore:
             application, deployment = row
             if (
                 deployment.revision_id != application.current_revision_id
-                or deployment.luma_external_ref != deployment.id
+                or not deployment.luma_external_ref
             ):
                 raise ObservabilityUnavailable("runtime binding is incomplete")
 
@@ -138,6 +139,7 @@ class PostgresObservabilityBindingStore:
                 operation_ref=deployment.operation_id,
                 revision_ref=deployment.revision_id,
                 deployment_ref=deployment.id,
+                runtime_deployment_ref=deployment.luma_external_ref,
                 service_key=selected,
             )
 
@@ -161,7 +163,7 @@ class ApplicationObservabilityService:
             result = await asyncio.to_thread(
                 self._runtime.tail_runtime_logs,
                 binding.context(request_id=request_id),
-                binding.deployment_ref,
+                binding.runtime_deployment_ref,
                 binding.service_key,
                 tail=tail,
             )
@@ -191,7 +193,7 @@ class ApplicationObservabilityService:
             result = await asyncio.to_thread(
                 self._runtime.get_runtime_metrics_history,
                 binding.context(request_id=request_id),
-                binding.deployment_ref,
+                binding.runtime_deployment_ref,
                 binding.service_key,
                 window_seconds=window_seconds,
             )

@@ -19,10 +19,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from .errors import IdempotencyKeyReused, ResourceNotFound
 from .ids import new_id, require_opaque_id
 from .models import (
+    Application,
+    ApplicationRoute,
+    ApplicationService,
+    ApplicationVolume,
     BillingOrder,
     BillingPaymentEvent,
+    Operation,
     PlanVersion,
     Subscription,
+    Upload,
 )
 from .repositories import IdempotencyInput, Principal, TenantScope
 from .tokens import keyed_request_hash, keyed_secret_hash
@@ -275,6 +281,7 @@ class BillingSubscriptionRecord:
 class BillingUsageRecord:
     subscription: BillingSubscriptionRecord
     as_of: datetime
+    usage: Mapping[str, int] = field(default_factory=dict)
 
     @property
     def counters(self) -> dict[str, dict[str, int | None]]:
@@ -284,13 +291,14 @@ class BillingUsageRecord:
             "servicesPerApp": "servicesPerApp",
             "publicHttpRoutesPerApp": "publicHttpRoutesPerApp",
             "persistentVolumeBytes": "persistentVolumeBytes",
+            "uploadBytes": "uploadBytes",
             "concurrentAnalyses": "concurrentAnalyses",
             "concurrentBuilds": "concurrentBuilds",
             "concurrentDeployments": "concurrentDeployments",
         }
         return {
             public: {
-                "used": 0,
+                "used": int(self.usage.get(public, 0)),
                 "limit": value if isinstance(value, int) and not isinstance(value, bool) else None,
             }
             for public, key in mapping.items()
@@ -486,7 +494,119 @@ class PostgresBillingStore:
         subscription = await self.get_subscription(scope)
         async with self._sessions() as session:
             now = await _db_now(session)
-        return BillingUsageRecord(subscription=subscription, as_of=now)
+            applications = int(
+                await session.scalar(
+                    select(func.count(Application.id)).where(
+                        Application.tenant_id == scope.tenant_id,
+                        Application.deleted_at.is_(None),
+                    )
+                )
+                or 0
+            )
+            service_counts = (
+                select(
+                    ApplicationService.application_id.label("application_id"),
+                    func.count(ApplicationService.id).label("used"),
+                )
+                .join(
+                    Application,
+                    (Application.tenant_id == ApplicationService.tenant_id)
+                    & (Application.id == ApplicationService.application_id),
+                )
+                .where(
+                    ApplicationService.tenant_id == scope.tenant_id,
+                    ApplicationService.desired_state != "deleted",
+                    Application.deleted_at.is_(None),
+                )
+                .group_by(ApplicationService.application_id)
+                .subquery()
+            )
+            services_per_app = int(
+                await session.scalar(select(func.max(service_counts.c.used))) or 0
+            )
+            route_counts = (
+                select(
+                    ApplicationRoute.application_id.label("application_id"),
+                    func.count(ApplicationRoute.id).label("used"),
+                )
+                .join(
+                    Application,
+                    (Application.tenant_id == ApplicationRoute.tenant_id)
+                    & (Application.id == ApplicationRoute.application_id),
+                )
+                .where(
+                    ApplicationRoute.tenant_id == scope.tenant_id,
+                    Application.deleted_at.is_(None),
+                )
+                .group_by(ApplicationRoute.application_id)
+                .subquery()
+            )
+            routes_per_app = int(
+                await session.scalar(select(func.max(route_counts.c.used))) or 0
+            )
+            persistent_volume_bytes = int(
+                await session.scalar(
+                    select(func.coalesce(func.sum(ApplicationVolume.requested_bytes), 0))
+                    .join(
+                        Application,
+                        (Application.tenant_id == ApplicationVolume.tenant_id)
+                        & (Application.id == ApplicationVolume.application_id),
+                    )
+                    .where(
+                        ApplicationVolume.tenant_id == scope.tenant_id,
+                        ApplicationVolume.status != "deleted",
+                        Application.deleted_at.is_(None),
+                    )
+                )
+                or 0
+            )
+            upload_bytes = int(
+                await session.scalar(
+                    select(
+                        func.coalesce(
+                            func.sum(
+                                func.coalesce(Upload.actual_bytes, Upload.expected_bytes)
+                            ),
+                            0,
+                        )
+                    ).where(
+                        Upload.tenant_id == scope.tenant_id,
+                        Upload.deleted_at.is_(None),
+                        Upload.status.notin_(("deleted", "expired")),
+                    )
+                )
+                or 0
+            )
+            active_operations = dict(
+                (
+                    await session.execute(
+                        select(Operation.kind, func.count(Operation.id))
+                        .where(
+                            Operation.tenant_id == scope.tenant_id,
+                            Operation.status.in_(("queued", "running")),
+                        )
+                        .group_by(Operation.kind)
+                    )
+                ).all()
+            )
+        active_analyses = int(active_operations.get("source.analyze", 0))
+        active_deployments = int(active_operations.get("deployment.create", 0))
+        return BillingUsageRecord(
+            subscription=subscription,
+            as_of=now,
+            usage=MappingProxyType(
+                {
+                    "applications": applications,
+                    "servicesPerApp": services_per_app,
+                    "publicHttpRoutesPerApp": routes_per_app,
+                    "persistentVolumeBytes": persistent_volume_bytes,
+                    "uploadBytes": upload_bytes,
+                    "concurrentAnalyses": active_analyses,
+                    "concurrentBuilds": active_deployments,
+                    "concurrentDeployments": active_deployments,
+                }
+            ),
+        )
 
     async def create_checkout(
         self,

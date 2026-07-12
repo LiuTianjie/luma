@@ -153,8 +153,8 @@ def _usage_body(usage: BillingUsageRecord) -> dict[str, Any]:
     return {
         "asOf": _timestamp(usage.as_of),
         "ledger": {
-            "connected": False,
-            "mode": "placeholder-zero-only",
+            "connected": True,
+            "mode": "live-resource-counters",
             "billingImpact": False,
         },
         "plan": {
@@ -163,8 +163,8 @@ def _usage_body(usage: BillingUsageRecord) -> dict[str, Any]:
         },
         "counters": usage.counters,
         "notice": (
-            "Usage ledger is not connected; zero values are placeholders and "
-            "are not used for charging or quota deduction."
+            "Resource counters are live. Staging mock billing does not create "
+            "real charges, but plan limits remain enforceable."
         ),
     }
 

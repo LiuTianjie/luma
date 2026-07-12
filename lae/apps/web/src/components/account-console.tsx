@@ -106,6 +106,10 @@ const COUNTER_COPY: Record<
   servicesPerApp: { label: "单应用服务", icon: Layers3 },
   publicHttpRoutesPerApp: { label: "公网 HTTP", icon: Gauge },
   persistentVolumeBytes: { label: "持久存储", icon: HardDrive, bytes: true },
+  uploadBytes: { label: "上传存储", icon: HardDrive, bytes: true },
+  artifactStorageBytes: { label: "构建产物存储", icon: HardDrive, bytes: true },
+  maxUploadBytes: { label: "单文件上限", icon: HardDrive, bytes: true },
+  maxUnpackedBytes: { label: "解包后上限", icon: HardDrive, bytes: true },
   concurrentAnalyses: { label: "并发诊断", icon: Gauge },
   concurrentBuilds: { label: "并发构建", icon: Gauge },
   concurrentDeployments: { label: "并发部署", icon: Gauge },
@@ -743,7 +747,9 @@ function SubscriptionSummary({ subscription }: { subscription: BillingSubscripti
 function UsageSoundings({ usage }: { usage: BillingUsage }) {
   const entries = Object.entries(usage.counters);
   const usageNotice = usage.ledger.connected
-    ? usage.notice
+    ? usage.ledger.billingImpact
+      ? usage.notice
+      : "资源用量为实时快照；staging 模拟结算不会产生真实扣费。"
     : "用量账本尚未接通；以下数值为占位快照，不参与计费或额度扣减。";
   return (
     <div className="usage-soundings">

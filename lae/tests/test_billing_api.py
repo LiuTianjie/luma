@@ -258,7 +258,7 @@ class BillingApiTests(unittest.TestCase):
         self.client.cookies.set(SESSION_COOKIE, self.auth.session_token)
         self.client.cookies.set(CSRF_COOKIE, self.auth.csrf_token)
 
-    def test_plan_usage_and_subscription_are_explicitly_non_billing_placeholders(self) -> None:
+    def test_plan_usage_and_subscription_expose_live_non_charging_counters(self) -> None:
         plans = self.client.get("/v1/plans")
         self.assertEqual(plans.status_code, 200)
         self.assertEqual([p["code"] for p in plans.json()["plans"]], ["lite", "pro", "ultra"])
@@ -275,7 +275,8 @@ class BillingApiTests(unittest.TestCase):
             "/v1/billing/subscription", headers=self.bearer
         )
         self.assertEqual(usage.status_code, 200)
-        self.assertFalse(usage.json()["ledger"]["connected"])
+        self.assertTrue(usage.json()["ledger"]["connected"])
+        self.assertEqual(usage.json()["ledger"]["mode"], "live-resource-counters")
         self.assertFalse(usage.json()["ledger"]["billingImpact"])
         self.assertTrue(
             all(item["used"] == 0 for item in usage.json()["counters"].values())

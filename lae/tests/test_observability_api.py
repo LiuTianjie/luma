@@ -84,12 +84,14 @@ class ObservabilityApiTests(unittest.IsolatedAsyncioTestCase):
         self.operation_id = new_id("op")
         self.revision_id = new_id("rev")
         self.deployment_id = new_id("dep")
+        self.runtime_deployment_id = "lae-run-test"
         self.binding = RuntimeReadBinding(
             tenant_ref=self.tenant_id,
             application_ref=self.application_id,
             operation_ref=self.operation_id,
             revision_ref=self.revision_id,
             deployment_ref=self.deployment_id,
+            runtime_deployment_ref=self.runtime_deployment_id,
             service_key="web",
         )
         self.bindings = _Bindings(self.binding)
@@ -109,11 +111,14 @@ class ObservabilityApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["logs"], ["ready", "request complete"])
         self.assertNotIn("lumaName", body)
         context, deployment_ref, service_key, tail = self.runtime.log_calls[0]
-        self.assertEqual(deployment_ref, self.deployment_id)
+        self.assertEqual(deployment_ref, self.runtime_deployment_id)
         self.assertEqual(service_key, "web")
         self.assertEqual(tail, 50)
         self.assertEqual(context.headers()["X-LAE-Tenant-Id"], self.tenant_id)
         self.assertEqual(context.headers()["X-LAE-Revision-Id"], self.revision_id)
+        self.assertEqual(
+            context.headers()["X-LAE-Deployment-Id"], self.deployment_id
+        )
 
     async def test_metrics_are_bounded_to_same_runtime_binding(self) -> None:
         body = await self.service.metrics(
