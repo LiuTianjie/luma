@@ -183,7 +183,12 @@ def redeem_builder_credential(
 
     response = _post_redemption(config, body)
     try:
-        return _validate_response(response, expected=body, now=current_time)
+        # The broker computes its expiry after receiving the request. Validate
+        # against the response time, not the pre-network timestamp, otherwise
+        # crossing a one-second boundary can reject an exact max-TTL lease as
+        # if it were 301 seconds long.
+        validation_time = int(now) if now is not None else _unix_time()
+        return _validate_response(response, expected=body, now=validation_time)
     except CredentialBrokerError:
         raise
     except Exception:
@@ -209,8 +214,9 @@ def redeem_builder_object_source(
         raise ObjectSourceBrokerError("object source broker redemption failed")
     response = _post_object_source_redemption(config, body)
     try:
+        validation_time = int(now) if now is not None else _unix_time()
         return _validate_object_source_response(
-            response, expected=body, now=current_time
+            response, expected=body, now=validation_time
         )
     except ObjectSourceBrokerError:
         raise

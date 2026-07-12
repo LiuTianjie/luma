@@ -12,6 +12,7 @@ class AdapterErrorCode(StrEnum):
     IDEMPOTENCY_CONFLICT = "LAE_IDEMPOTENCY_KEY_REUSED"
     CURSOR_EXPIRED = "LAE_LUMA_CURSOR_EXPIRED"
     CAPACITY_UNAVAILABLE = "LAE_CAPACITY_UNAVAILABLE"
+    RUNTIME_DEPLOY_FAILED = "LAE_RUNTIME_DEPLOY_FAILED"
     UPSTREAM_UNAVAILABLE = "LAE_LUMA_UNAVAILABLE"
     PROTOCOL_ERROR = "LAE_LUMA_PROTOCOL_ERROR"
 
@@ -23,6 +24,7 @@ _SAFE_MESSAGES = {
     AdapterErrorCode.IDEMPOTENCY_CONFLICT: "The idempotency key is already bound to another request.",
     AdapterErrorCode.CURSOR_EXPIRED: "The builder task event cursor has expired.",
     AdapterErrorCode.CAPACITY_UNAVAILABLE: "No compatible Luma capacity is currently available.",
+    AdapterErrorCode.RUNTIME_DEPLOY_FAILED: "Luma could not start the application revision.",
     AdapterErrorCode.UPSTREAM_UNAVAILABLE: "Luma is currently unavailable.",
     AdapterErrorCode.PROTOCOL_ERROR: "Luma returned an invalid response.",
 }

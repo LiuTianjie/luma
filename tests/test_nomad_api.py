@@ -270,7 +270,7 @@ class NomadApiTests(unittest.TestCase):
                 )
                 with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
                     with self.assertRaisesRegex(
-                        LumaError,
+                        nomad_api.NomadRolloutError,
                         rf"rollout {status}.*deployment-123.*scheduler stopped rollout",
                     ):
                         nomad_api.deploy_to_nomad(
@@ -309,7 +309,7 @@ class NomadApiTests(unittest.TestCase):
             side_effect=monotonic,
         ), mock.patch.object(nomad_api.time, "sleep", side_effect=sleep):
             with self.assertRaisesRegex(
-                LumaError,
+                nomad_api.NomadRolloutError,
                 r"timed out.*evaluation eval-pending.*last status: pending",
             ):
                 nomad_api.deploy_to_nomad(

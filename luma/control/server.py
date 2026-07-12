@@ -87,7 +87,7 @@ from ..config import LumaConfig, load_config
 from ..errors import LumaError
 from ..io import load_yaml
 from ..local import LocalExecutor
-from ..nomad_api import NomadApi, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary
+from ..nomad_api import NomadApi, NomadRolloutError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary
 from ..nomad_render import render_nomad_job, render_compose_job
 from ..registry import (
     docker_registry_auth_header,
@@ -116,6 +116,7 @@ from ..lae_runtime import (
     RuntimeBinding,
     canonical_hash as _lae_runtime_hash,
     conflict as _lae_runtime_conflict,
+    deployment_failed as _lae_runtime_deployment_failed,
     forbidden as _lae_runtime_forbidden,
     invalid as _lae_runtime_invalid,
     normalize_idempotency_key as _normalize_lae_runtime_idempotency_key,
@@ -4469,6 +4470,18 @@ def handle_lae_runtime_deployment_create(
 
         _mutate_control_state(fail_runtime)
         raise
+    except NomadRolloutError as exc:
+        def fail_rollout(current: Dict[str, Any]) -> None:
+            stored = _lae_runtime_state(current)["deployments"].get(
+                str(record["runtimeDeploymentRef"])
+            )
+            if isinstance(stored, dict):
+                stored["status"] = "failed"
+                stored["retryable"] = False
+                stored["updatedAt"] = int(time.time())
+
+        _mutate_control_state(fail_rollout)
+        raise _lae_runtime_deployment_failed() from exc
     except (LumaError, OSError, TimeoutError) as exc:
         def fail_unavailable(current: Dict[str, Any]) -> None:
             stored = _lae_runtime_state(current)["deployments"].get(

@@ -359,6 +359,34 @@ class _ErrorOpener:
 
 
 class HttpRuntimeTests(unittest.TestCase):
+    def test_terminal_runtime_deployment_failure_is_non_retryable(self) -> None:
+        adapter = HttpLumaRuntimeAdapter(
+            "https://luma.internal.example",
+            RuntimeServicePrincipal("lae-runtime", "runtime-only-token"),
+            opener=_ErrorOpener(
+                422,
+                {
+                    "requestId": "req-0123456789ab",
+                    "errorInfo": {
+                        "code": "runtime_deployment_failed",
+                        "message": "internal allocation detail",
+                        "requestId": "req-0123456789ab",
+                    },
+                },
+            ),  # type: ignore[arg-type]
+        )
+
+        with self.assertRaises(LumaAdapterError) as caught:
+            adapter.deploy_revision(
+                context(), manifest(), idempotency_key="deploy-terminal-error"
+            )
+
+        self.assertEqual(
+            caught.exception.code, AdapterErrorCode.RUNTIME_DEPLOY_FAILED
+        )
+        self.assertFalse(caught.exception.retryable)
+        self.assertNotIn("allocation", str(caught.exception))
+
     def test_409_uses_closed_upstream_code_instead_of_assuming_idempotency(self) -> None:
         cases = (
             (

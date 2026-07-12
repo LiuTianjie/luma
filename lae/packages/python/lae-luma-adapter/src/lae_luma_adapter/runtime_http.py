@@ -511,6 +511,8 @@ class HttpLumaRuntimeAdapter:
         # a managed-volume placement conflict. The status alone is therefore
         # insufficient. Only these closed upstream codes influence mapping;
         # messages and arbitrary fields are never retained or exposed.
+        if upstream_code == "runtime_deployment_failed" and status in {409, 422, 503}:
+            return AdapterErrorCode.RUNTIME_DEPLOY_FAILED, False
         if status == 409 and upstream_code == "volume_placement_incompatible":
             return AdapterErrorCode.CAPACITY_UNAVAILABLE, False
         if status in {401, 403}:

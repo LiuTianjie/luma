@@ -239,6 +239,27 @@ class BuilderCredentialBrokerTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://broker.internal/v1/credential-leases/redeem")
         self.assertNotIn(BROKER_AUTH_CANARY, self._state_text())
 
+    def test_max_ttl_is_validated_at_response_time(self):
+        binding = self._binding()
+        response = self._broker_response(
+            binding,
+            kind="none",
+            expires_at=1_000_301,
+        )
+        with self._configured_broker(), patch.object(
+            credential_broker,
+            "_post_redemption",
+            return_value=response,
+        ), patch.object(
+            credential_broker,
+            "_unix_time",
+            side_effect=(1_000_000, 1_000_001),
+        ):
+            result = credential_broker.redeem_builder_credential(binding)
+
+        self.assertEqual(result.kind, "none")
+        self.assertEqual(result.expires_at, 1_000_301)
+
     def test_broker_token_file_rejects_symlinks_and_world_readable_permissions(self):
         binding = self._binding()
         token_file = self.root / "unsafe-broker.token"

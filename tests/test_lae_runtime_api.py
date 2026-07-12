@@ -572,6 +572,33 @@ class LaeRuntimeApiTests(unittest.TestCase):
             second["deployment"]["deploymentRef"],
         )
 
+    def test_terminal_nomad_rollout_returns_non_retryable_runtime_failure(self) -> None:
+        volume_ref = self.prepare_volume()
+        with patch.object(
+            control_server,
+            "_execute_lae_runtime_deployment",
+            side_effect=control_server.NomadRolloutError(
+                "internal allocation and node details must stay private"
+            ),
+        ), TestClient(create_app()) as client:
+            failed = client.post(
+                "/v1/lae/runtime/deployments",
+                json=self.deployment_body(volume_ref=volume_ref),
+                headers=self.headers(idempotency_key="deploy-terminal-failure"),
+            )
+
+        self.assertEqual(failed.status_code, 422, failed.text)
+        payload = failed.json()
+        self.assertEqual(
+            payload["errorInfo"]["code"], "runtime_deployment_failed"
+        )
+        self.assertNotIn("allocation", failed.text)
+        state = load_state()
+        records = list(state["laeRuntime"]["deployments"].values())
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["status"], "failed")
+        self.assertFalse(records[0]["retryable"])
+
     def test_closed_schema_rejects_tcp_custom_domain_unknown_fields_and_mount_drift(self) -> None:
         volume_ref = self.prepare_volume()
         body = self.deployment_body(volume_ref=volume_ref)

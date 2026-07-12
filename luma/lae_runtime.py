@@ -65,6 +65,14 @@ def unavailable(message: str) -> LumaRuntimeError:
     return LumaRuntimeError(message, status=503, code="service_unavailable")
 
 
+def deployment_failed() -> LumaRuntimeError:
+    return LumaRuntimeError(
+        "Luma could not start the application revision",
+        status=422,
+        code="runtime_deployment_failed",
+    )
+
+
 def invalid(message: str = "LAE runtime request is invalid") -> LumaRuntimeError:
     return LumaRuntimeError(message, status=422, code="invalid_request")
 

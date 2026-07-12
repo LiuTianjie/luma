@@ -221,6 +221,21 @@ class BuilderObjectSourceBrokerTests(unittest.TestCase):
         self.assertNotIn(BROKER_AUTH_CANARY, captured["configRepr"])
         self.assertNotIn(BROKER_AUTH_CANARY, self._state_text())
 
+    def test_max_ttl_is_validated_at_response_time(self):
+        binding = self._binding()
+        with self._configured_broker(), patch.object(
+            credential_broker,
+            "_post_object_source_redemption",
+            return_value=self._broker_response(binding, expires_at=1_000_301),
+        ), patch.object(
+            credential_broker,
+            "_unix_time",
+            side_effect=(1_000_000, 1_000_001),
+        ):
+            result = credential_broker.redeem_builder_object_source(binding)
+
+        self.assertEqual(result.expires_at, 1_000_301)
+
     def test_response_schema_binding_ttl_method_and_host_are_fail_closed(self):
         binding = self._binding()
 

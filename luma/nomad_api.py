@@ -30,6 +30,15 @@ NOMAD_ROLLOUT_TIMEOUT_SECONDS = 900.0
 NOMAD_ROLLOUT_POLL_INTERVAL_SECONDS = 1.0
 
 
+class NomadRolloutError(LumaError):
+    """A submitted rollout reached a terminal failure for this revision.
+
+    This is distinct from transport and correlation failures: callers may
+    safely stop retrying the same immutable deployment while still treating a
+    Nomad API outage as transient.
+    """
+
+
 def nomad_addr(config: LumaConfig, state: Dict[str, Any]) -> str:
     """Resolve the Nomad HTTP endpoint.
 
@@ -265,9 +274,9 @@ def _rollout_timeout(
     timeout_seconds: float,
     waiting_for: str,
     last_status: str,
-) -> LumaError:
+) -> NomadRolloutError:
     detail = f"; last status: {last_status}" if last_status else ""
-    return LumaError(
+    return NomadRolloutError(
         f"Nomad rollout timed out for {slug} after {timeout_seconds:g}s "
         f"while waiting for {waiting_for}{detail}"
     )
@@ -415,9 +424,9 @@ def _rollout_terminal_error(
     object_id: str,
     status: str,
     description: str,
-) -> LumaError:
+) -> NomadRolloutError:
     detail = f": {description}" if description else ""
-    return LumaError(
+    return NomadRolloutError(
         f"Nomad rollout {status} for {slug}: {kind} {object_id}{detail}"
     )
 

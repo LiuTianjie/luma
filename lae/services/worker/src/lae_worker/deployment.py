@@ -1590,6 +1590,8 @@ def _deployment_status(phase: str) -> str:
 
 
 def _map_luma_error(error: LumaAdapterError) -> DeploymentOrchestrationError:
+    if error.code is AdapterErrorCode.RUNTIME_DEPLOY_FAILED:
+        return DeploymentRuntimeFailed()
     if error.code in {
         AdapterErrorCode.INVALID_REQUEST,
         AdapterErrorCode.PROTOCOL_ERROR,
