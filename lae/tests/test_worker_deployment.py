@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+from sqlalchemy.sql.elements import Null
+
 LAE_ROOT = Path(__file__).resolve().parents[1]
 for relative in (
     "packages/python/lae-core/src",
@@ -299,6 +301,28 @@ class RecordingDeploymentStateStore(PostgresDeploymentStateStore):
         return SimpleNamespace(phase=None)
 
 
+class StopAfterSaveUpdate(RuntimeError):
+    pass
+
+
+class RecordingSaveSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        del exc_type, exc, traceback
+
+    def begin(self) -> _AsyncContext:
+        return _AsyncContext(self)
+
+    async def scalar(self, statement):
+        self.statement = statement
+        raise StopAfterSaveUpdate()
+
+
 class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tenant_id = new_id("ten")
@@ -477,6 +501,24 @@ class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
                 ("DeploymentCheckpoint",),
             ],
         )
+
+    async def test_empty_checkpoint_descriptor_uses_sql_null(self) -> None:
+        state = await InMemoryDeploymentStateStore(self.operations).initialize(
+            self.operation,
+            self.context(compose=False),
+            timeout=timedelta(minutes=5),
+        )
+        session = RecordingSaveSession()
+        store = PostgresDeploymentStateStore(lambda: session, luma_cluster_id="luma-test")
+
+        with self.assertRaises(StopAfterSaveUpdate):
+            await store.save(state, expected_version=state.version)
+
+        self.assertIsNotNone(session.statement)
+        values = {
+            column.key: value for column, value in session.statement._values.items()
+        }
+        self.assertIsInstance(values["result_descriptor_json"], Null)
 
     async def test_single_service_activates_only_after_service_and_route_health(
         self,

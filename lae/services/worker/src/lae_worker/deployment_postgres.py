@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Mapping, Protocol
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, null, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from lae_luma_adapter import RuntimeDeployment, RuntimeVolumeBinding
@@ -601,7 +601,13 @@ class PostgresDeploymentStateStore:
                         "luma_deployment_ref": state.luma_deployment_ref,
                         "runtime_status": state.runtime_status,
                         "runtime_cancel_forwarded": state.runtime_cancel_forwarded,
-                        "result_descriptor_json": descriptor,
+                        # JSONB maps Python None to the JSON literal `null` by
+                        # default. The checkpoint contract permits SQL NULL or
+                        # an object, so emit an explicit SQL NULL while the
+                        # descriptor is empty.
+                        "result_descriptor_json": (
+                            null() if descriptor is None else descriptor
+                        ),
                         "updated_at": func.now(),
                     }
                     updated = await session.scalar(
