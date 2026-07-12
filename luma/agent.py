@@ -1991,7 +1991,7 @@ def execute_agent_task(
             progress=progress,
         )
     if action == "build-image":
-        return build_image(payload, progress=progress)
+        return build_image(payload, progress=progress, cancel_event=cancel_event)
     if action == "analyze-source":
         return analyze_source(payload, progress=progress, cancel_event=cancel_event)
     if action == "build-plan":
@@ -2301,6 +2301,7 @@ def _run_process_streaming(
     env: Dict[str, str] | None = None,
     timeout: int | None = None,
     on_line: Callable[[str], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> LocalResult:
     process = subprocess.Popen(
         command,
@@ -2321,13 +2322,28 @@ def _run_process_streaming(
         if text and on_line:
             on_line(text)
 
+    def kill_process_group() -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
     try:
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                kill_process_group()
+                flush_line()
+                output_parts.append("\nprocess canceled")
+                return LocalResult(code=130, output="".join(output_parts).strip())
             if deadline and time.monotonic() > deadline:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                kill_process_group()
                 flush_line()
                 message = f"process timed out after {timeout}s"
                 output_parts.append("\n" + message)
@@ -2361,10 +2377,9 @@ def _run_process_streaming(
         return LocalResult(code=process.wait(), output="".join(output_parts))
     finally:
         if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            kill_process_group()
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 def _docker_image_inspect_command(image: str, *, docker_config: str) -> str:
@@ -2759,6 +2774,7 @@ def _docker_buildx_build(
     proxy: str,
     build_timeout: int,
     progress: Callable[[Dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     tag_sha = f"{push_host}/{repo}:{sha}"
     tag_latest = f"{push_host}/{repo}:latest"
@@ -2801,9 +2817,12 @@ def _docker_buildx_build(
             env=env,
             timeout=build_timeout,
             on_line=on_build_line,
+            cancel_event=cancel_event,
         )
 
     result = run_build()
+    if result.code == 130 or (cancel_event is not None and cancel_event.is_set()):
+        raise BuilderTaskCanceled("build-image task canceled")
     if result.code == 124:
         raise LumaError(f"docker buildx build timed out after {build_timeout}s")
     if result.code != 0 and _buildx_missing_builder_error(result.output or "", builder):
@@ -2857,6 +2876,7 @@ def _build_compose_images(
     build_timeout: int,
     payload: Dict[str, Any],
     progress: Callable[[Dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Dict[str, Any]:
     import yaml
 
@@ -2892,6 +2912,8 @@ def _build_compose_images(
     images: Dict[str, str] = {}
     single_build = len(build_services) == 1
     for service_name, service_body, spec in build_services:
+        if cancel_event is not None and cancel_event.is_set():
+            raise BuilderTaskCanceled("build-image task canceled")
         context_rel = str(payload.get("context") or spec.get("context") or ".").strip() or "."
         context_dir = _safe_repo_path_from(compose_path.parent, src, context_rel)
         dockerfile_rel = str(payload.get("dockerfile") or spec.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
@@ -2915,6 +2937,7 @@ def _build_compose_images(
             proxy=proxy,
             build_timeout=build_timeout,
             progress=progress,
+            cancel_event=cancel_event,
         )
         service_body["image"] = image
         service_body.pop("build", None)
@@ -2935,7 +2958,12 @@ def _build_compose_images(
     return result
 
 
-def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]], None] | None = None) -> Dict[str, Any]:
+def build_image(
+    payload: Dict[str, Any],
+    *,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> Dict[str, Any]:
     from . import gitops
 
     repo_url = _required(payload, "repoUrl")
@@ -2956,8 +2984,12 @@ def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]],
         raise LumaError("docker buildx is not available on build node")
 
     with tempfile.TemporaryDirectory(prefix="luma-build-") as workdir:
+        if cancel_event is not None and cancel_event.is_set():
+            raise BuilderTaskCanceled("build-image task canceled")
         src = Path(workdir) / "src"
         gitops.clone(repo_url, src, ref=ref, proxy=proxy, token=git_token, username=git_username)
+        if cancel_event is not None and cancel_event.is_set():
+            raise BuilderTaskCanceled("build-image task canceled")
         sha = gitops.head_commit(src)
 
         docker_config = Path(workdir) / "docker-config"
@@ -2983,6 +3015,7 @@ def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]],
                 build_timeout=build_timeout,
                 payload=payload,
                 progress=progress,
+                cancel_event=cancel_event,
             )
 
         manifest_path = deployment_manifest[1] if deployment_manifest else None
@@ -3034,6 +3067,7 @@ def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]],
             proxy=proxy or "",
             build_timeout=build_timeout,
             progress=progress,
+            cancel_event=cancel_event,
         )
 
     return {

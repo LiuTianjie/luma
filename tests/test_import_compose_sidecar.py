@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from luma.agent import _select_luma_compose_manifest, build_image
+from luma.agent import (
+    _run_process_streaming,
+    _select_luma_compose_manifest,
+    build_image,
+    execute_agent_task,
+)
 from luma.cli import build_parser
 from luma.control.client import ControlClient
 from luma.control.server import create_app, handle_build_deploy
@@ -43,6 +50,46 @@ volumes:
 
 
 class ImportComposeSidecarTests(unittest.TestCase):
+    def test_build_image_dispatch_receives_agent_cancellation(self) -> None:
+        cancel_event = threading.Event()
+        captured: dict[str, object] = {}
+
+        def fake_build(
+            payload: dict[str, object],
+            *,
+            progress: object,
+            cancel_event: threading.Event,
+        ) -> dict[str, object]:
+            captured.update(payload=payload, progress=progress, cancel_event=cancel_event)
+            return {"message": "ok"}
+
+        with patch("luma.agent.build_image", side_effect=fake_build):
+            result = execute_agent_task(
+                {"action": "build-image", "payload": {"repoUrl": "https://example.invalid/repo.git"}},
+                cancel_event=cancel_event,
+            )
+
+        self.assertEqual(result, {"message": "ok"})
+        self.assertIs(captured["cancel_event"], cancel_event)
+
+    def test_streaming_build_process_is_killed_when_canceled(self) -> None:
+        cancel_event = threading.Event()
+        timer = threading.Timer(0.1, cancel_event.set)
+        timer.start()
+        started = time.monotonic()
+        try:
+            result = _run_process_streaming(
+                ["python3", "-c", "import time; time.sleep(30)"],
+                timeout=60,
+                cancel_event=cancel_event,
+            )
+        finally:
+            timer.cancel()
+
+        self.assertEqual(result.code, 130)
+        self.assertIn("process canceled", result.output)
+        self.assertLess(time.monotonic() - started, 2)
+
     def test_staging_runbook_uses_explicit_sidecar(self) -> None:
         root = Path(__file__).resolve().parents[1]
         deployment_readme = (
