@@ -78,6 +78,22 @@ class E2EFixtureTests(unittest.TestCase):
         self.assertIn("COMPOSE_HOST_PORT", blockers)
         self.assertIn("COMPOSE_DOCKER_SOCKET", blockers)
 
+    def test_static_upload_fixture_produces_one_http_service(self) -> None:
+        result, plan = self._analyze("static-site")
+
+        self.assertEqual(result["decision"], "allow")
+        self.assertEqual(plan["kind"], "service")
+        self.assertEqual(plan["environment"], [])
+        self.assertEqual(plan["blockers"], [])
+        self.assertEqual(
+            [(service["key"], service["role"], service["port"]) for service in plan["services"]],
+            [("web", "http", 8080)],
+        )
+        self.assertEqual(
+            [(route["serviceKey"], route["healthPath"]) for route in plan["routes"]],
+            [("web", "/healthz")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
