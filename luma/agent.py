@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import fcntl
 import json
 import os
@@ -1994,6 +1995,7 @@ def execute_agent_task(
             proxy=str(payload.get("proxy") or ""),
             insecure=bool(payload.get("insecure")),
             timeout=int(payload.get("timeout") or 900),
+            registry_auth=payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None,
             progress=progress,
         )
     if action == "mirror-system-image":
@@ -2005,6 +2007,7 @@ def execute_agent_task(
             proxy=str(payload.get("proxy") or ""),
             insecure=bool(payload.get("insecure")),
             timeout=int(payload.get("timeout") or 900),
+            registry_auth=payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None,
             progress=progress,
         )
     if action == "build-image":
@@ -3177,6 +3180,7 @@ def mirror_control_image(
     timeout: int = 900,
     progress: Callable[[Dict[str, Any]], None] | None = None,
     platform: str = "",
+    registry_auth: Dict[str, Any] | None = None,
     _system_image: bool = False,
 ) -> Dict[str, Any]:
     """Copy a Control release through the Builder into Luma's pull registry.
@@ -3228,46 +3232,60 @@ def mirror_control_image(
         if value and progress:
             progress({"type": "status", "line": value, "ts": int(time.time())})
 
-    selected_platform = str(platform or "").strip()
-    if selected_platform and not re.fullmatch(
-        r"linux/(?:amd64|arm64)", selected_platform
-    ):
-        raise LumaError("image mirror platform must be linux/amd64 or linux/arm64")
-    command = [crane, "copy", source, push]
-    if selected_platform:
-        command.extend(["--platform", selected_platform])
-    if insecure:
-        command.append("--insecure")
-    emit(f"Caching {source} on the internal Builder registry.")
-    result: LocalResult | None = None
-    transient_markers = ("eof", "timeout", "connection reset", "temporary", "tls handshake", "unexpected status code 5")
-    for attempt in range(1, 4):
-        result = _run_process_streaming(command, env=env, timeout=timeout, on_line=emit)
-        if result.code == 0:
-            break
-        output = str(result.output or "").strip()
-        if attempt >= 3 or not any(marker in output.lower() for marker in transient_markers):
-            raise LumaError(f"control image mirror failed: {_tail_text(output)}")
-        emit(f"Registry transfer was interrupted; retrying ({attempt + 1}/3).")
-        time.sleep(2**attempt)
-    if result is None or result.code != 0:
-        raise LumaError("control image mirror failed")
+    auth_context = (
+        tempfile.TemporaryDirectory(prefix="luma-crane-auth-")
+        if registry_auth
+        else contextlib.nullcontext("")
+    )
+    with auth_context as auth_dir:
+        if auth_dir:
+            auth_path = Path(auth_dir)
+            _write_docker_auth_config(
+                auth_path,
+                _auth_for_host(registry_auth, _image_registry_host(push)),
+            )
+            env["DOCKER_CONFIG"] = str(auth_path)
 
-    digest_command = [crane, "digest", push]
-    if insecure:
-        digest_command.append("--insecure")
-    digest_result = _run_process_streaming(digest_command, env=env, timeout=120, on_line=None)
-    digest = str(digest_result.output or "").strip().splitlines()[-1] if digest_result.output else ""
-    if digest_result.code != 0 or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
-        raise LumaError(f"control image mirror verification failed: {_tail_text(digest_result.output or '')}")
-    emit(f"Internal Control image verified at {digest}.")
-    return {
-        "sourceImage": source,
-        "pushImage": push,
-        "destinationImage": destination,
-        "digest": digest,
-        "message": "Control image cached and verified in the internal registry.",
-    }
+        selected_platform = str(platform or "").strip()
+        if selected_platform and not re.fullmatch(
+            r"linux/(?:amd64|arm64)", selected_platform
+        ):
+            raise LumaError("image mirror platform must be linux/amd64 or linux/arm64")
+        command = [crane, "copy", source, push]
+        if selected_platform:
+            command.extend(["--platform", selected_platform])
+        if insecure:
+            command.append("--insecure")
+        emit(f"Caching {source} on the internal Builder registry.")
+        result: LocalResult | None = None
+        transient_markers = ("eof", "timeout", "connection reset", "temporary", "tls handshake", "unexpected status code 5")
+        for attempt in range(1, 4):
+            result = _run_process_streaming(command, env=env, timeout=timeout, on_line=emit)
+            if result.code == 0:
+                break
+            output = str(result.output or "").strip()
+            if attempt >= 3 or not any(marker in output.lower() for marker in transient_markers):
+                raise LumaError(f"control image mirror failed: {_tail_text(output)}")
+            emit(f"Registry transfer was interrupted; retrying ({attempt + 1}/3).")
+            time.sleep(2**attempt)
+        if result is None or result.code != 0:
+            raise LumaError("control image mirror failed")
+
+        digest_command = [crane, "digest", push]
+        if insecure:
+            digest_command.append("--insecure")
+        digest_result = _run_process_streaming(digest_command, env=env, timeout=120, on_line=None)
+        digest = str(digest_result.output or "").strip().splitlines()[-1] if digest_result.output else ""
+        if digest_result.code != 0 or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+            raise LumaError(f"control image mirror verification failed: {_tail_text(digest_result.output or '')}")
+        emit(f"Internal Control image verified at {digest}.")
+        return {
+            "sourceImage": source,
+            "pushImage": push,
+            "destinationImage": destination,
+            "digest": digest,
+            "message": "Control image cached and verified in the internal registry.",
+        }
 
 
 def mirror_system_image(
@@ -3279,6 +3297,7 @@ def mirror_system_image(
     proxy: str = "",
     insecure: bool = False,
     timeout: int = 900,
+    registry_auth: Dict[str, Any] | None = None,
     progress: Callable[[Dict[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     if not re.fullmatch(r"linux/(?:amd64|arm64)", str(platform or "")):
@@ -3290,6 +3309,7 @@ def mirror_system_image(
         proxy=proxy,
         insecure=insecure,
         timeout=timeout,
+        registry_auth=registry_auth,
         progress=progress,
         platform=platform,
         _system_image=True,

@@ -4641,6 +4641,34 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(result["digest"], digest)
         self.assertTrue(any("verified" in str(event.get("line") or "").lower() for event in events))
 
+    def test_agent_mirror_uses_ephemeral_registry_auth_config(self):
+        from luma.agent import mirror_control_image
+        from luma.local import LocalResult
+
+        digest = "sha256:" + "c" * 64
+        observed: list[dict[str, Any]] = []
+
+        def run(_command, **kwargs):
+            docker_config = Path(kwargs["env"]["DOCKER_CONFIG"])
+            observed.append(json.loads((docker_config / "config.json").read_text(encoding="utf-8")))
+            return LocalResult(0, "copy complete" if len(observed) == 1 else digest + "\n")
+
+        with patch("luma.agent._crane_binary", return_value="/usr/local/bin/crane"), patch(
+            "luma.agent._run_process_streaming", side_effect=run
+        ) as process:
+            mirror_control_image(
+                source_image="ghcr.io/liutianjie/luma-control:v0.1.212",
+                push_image="registry.example.com/luma-control:v0.1.212",
+                destination_image="registry.example.com/luma-control:v0.1.212",
+                registry_auth={"username": "lae", "password": "registry-secret", "serveraddress": "registry.example.com"},
+            )
+
+        self.assertEqual(len(observed), 2)
+        self.assertIn("registry.example.com", observed[0]["auths"])
+        docker_config_path = Path(process.call_args_list[0].kwargs["env"]["DOCKER_CONFIG"])
+        self.assertFalse(docker_config_path.exists())
+        self.assertNotIn("registry-secret", repr(process.call_args_list))
+
     def test_agent_mirrors_system_image_for_one_runtime_platform(self):
         from luma.agent import mirror_system_image
         from luma.local import LocalResult
@@ -11876,6 +11904,31 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual((leased.get("registryAuth") or {}).get("username"), "u")
         # original stored payload is untouched (no mutation back into state)
         self.assertNotIn("gitToken", stored_payload)
+        self.assertNotIn("registryAuth", stored_payload)
+
+    def test_mirror_registry_credentials_injected_at_lease_not_stored(self):
+        from luma.control.server import _agent_task_lease_payload
+
+        state = {
+            "registries": {
+                "registry.example.com": {
+                    "username": "lae",
+                    "password": "registry-secret",
+                    "serverAddress": "registry.example.com",
+                }
+            }
+        }
+        stored_payload = {
+            "sourceImage": "ghcr.io/liutianjie/luma-control:v1",
+            "pushImage": "registry.example.com/luma-control:v1",
+        }
+
+        leased = _agent_task_lease_payload(
+            state,
+            {"action": "mirror-control-image", "payload": stored_payload},
+        )
+
+        self.assertEqual(leased["registryAuth"]["password"], "registry-secret")
         self.assertNotIn("registryAuth", stored_payload)
 
     def test_build_image_credentials_fall_back_to_legacy_github_token_secret(self):

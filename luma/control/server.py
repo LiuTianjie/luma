@@ -2310,6 +2310,14 @@ def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Di
         registry_auth = registry_auth_for_image(registries, image)
         if registry_auth:
             payload["registryAuth"] = registry_auth
+    if task.get("action") in {"mirror-control-image", "mirror-system-image"} and not payload.get("registryAuth"):
+        # Registry credentials are leased ephemerally to the agent. They must
+        # never be persisted in agentTasks/control-image operation records.
+        push_image = str(payload.get("pushImage") or "")
+        registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+        registry_auth = registry_auth_for_image(registries, push_image)
+        if registry_auth:
+            payload["registryAuth"] = registry_auth
     if task.get("action") == "join-nomad" and not payload.get("tailscaleAuthKey"):
         secrets_state = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
         tailscale_authkey = str(secrets_state.get("TAILSCALE_AUTHKEY") or "") or os.environ.get("TAILSCALE_AUTHKEY") or ""
