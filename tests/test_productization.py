@@ -791,7 +791,9 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("terminal", node_agent_capabilities("darwin"))
         with patch("luma.agent._crane_binary", return_value="/usr/local/bin/crane"):
             self.assertIn("control-image-mirror-v1", node_agent_capabilities("linux"))
+            self.assertIn("system-image-mirror-v1", node_agent_capabilities("linux"))
             self.assertNotIn("control-image-mirror-v1", node_agent_capabilities("darwin"))
+            self.assertNotIn("system-image-mirror-v1", node_agent_capabilities("darwin"))
 
     def test_node_agent_diagnostics_reports_docker_mirrors_proxy_nomad_and_pull_errors(self):
         executor = Mock()
@@ -1245,14 +1247,22 @@ class ProductConfigTests(unittest.TestCase):
         remote.run_result.return_value = Mock(code=0, output="Linux\n")
         remote.sudo.return_value = ""
 
-        result = configure_tailscale_watchdog(remote)
+        result = configure_tailscale_watchdog(
+            remote, peers=["100.69.154.50", "not-a-tailnet-address"]
+        )
 
         self.assertEqual(result, "Tailscale watchdog installed")
         command = remote.sudo.call_args.args[0]
         self.assertIn("luma-tailscale-watchdog.service", command)
         self.assertIn("luma-tailscale-watchdog.timer", command)
         self.assertIn("tailscale ping --timeout=3s --c 2", command)
-        self.assertIn("port=${LUMA_TAILSCALE_WATCHDOG_PORT:-4647}", command)
+        self.assertIn("port=${LUMA_TAILSCALE_WATCHDOG_PORT:-0}", command)
+        self.assertIn(
+            "LUMA_TAILSCALE_WATCHDOG_PEERS=100.69.154.50", command
+        )
+        self.assertNotIn("not-a-tailnet-address", command)
+        self.assertIn('log "tailnet ping failed: $addr"', command)
+        self.assertIn('if [ "$port" -gt 0 ]', command)
         self.assertIn("threshold=${LUMA_TAILSCALE_WATCHDOG_THRESHOLD:-3}", command)
         self.assertIn("systemctl restart tailscaled", command)
         self.assertIn("systemctl enable --now luma-tailscale-watchdog.timer", command)
@@ -4510,12 +4520,17 @@ class ControlApiTests(unittest.TestCase):
                         install_ref="v0.1.173",
                         control_image="ghcr.io/liutianjie/luma-control:v0.1.173",
                         domain="luma.example.com",
+                        watchdog_peers=["100.69.154.50"],
                     )
                 invocation = run.call_args.args[0]
                 self.assertEqual(invocation[0], "systemd-run")
                 self.assertIn("--property=Type=exec", invocation)
                 self.assertIn(str(executable), invocation)
                 self.assertIn("--setenv=LUMA_USER_HOME=" + str(Path(tmp) / "home" / "tao"), invocation)
+                self.assertIn(
+                    "--setenv=LUMA_TAILSCALE_WATCHDOG_PEERS=100.69.154.50",
+                    invocation,
+                )
                 self.assertNotIn("management-token", " ".join(invocation))
 
                 update_id = str(result["updateId"])
@@ -4538,7 +4553,15 @@ class ControlApiTests(unittest.TestCase):
                 "manager": {
                     "labels": {"role.nomad-manager": "true"},
                     "agent": {"status": "online", "lastSeen": int(time.time()), "capabilities": ["manager-update-v1"]},
-                }
+                },
+                "lab": {
+                    "tailscaleIP": "100.69.154.50",
+                    "agent": {
+                        "status": "online",
+                        "lastSeen": int(time.time()),
+                        "capabilities": [],
+                    },
+                },
             },
         }
         result = {
@@ -4558,6 +4581,10 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[2], "start-manager-update")
         self.assertEqual(run.call_args.kwargs["required_capability"], "manager-update-v1")
         self.assertEqual(run.call_args.args[3]["domain"], "luma.example.com")
+        self.assertEqual(
+            run.call_args.args[3]["tailscaleWatchdogPeers"],
+            ["100.69.154.50"],
+        )
 
     def test_agent_mirrors_control_image_with_proxy_and_verifies_digest(self):
         from luma.agent import mirror_control_image
@@ -4586,6 +4613,29 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(result["destinationImage"], "100.66.177.70:5000/luma-control:v0.1.175")
         self.assertEqual(result["digest"], digest)
         self.assertTrue(any("verified" in str(event.get("line") or "").lower() for event in events))
+
+    def test_agent_mirrors_system_image_for_one_runtime_platform(self):
+        from luma.agent import mirror_system_image
+        from luma.local import LocalResult
+
+        digest = "sha256:" + "b" * 64
+        with patch("luma.agent._crane_binary", return_value="/usr/local/bin/crane"), patch(
+            "luma.agent._run_process_streaming",
+            side_effect=[LocalResult(0, "copy complete"), LocalResult(0, digest + "\n")],
+        ) as run:
+            result = mirror_system_image(
+                source_image="registry:2",
+                push_image="localhost:5000/luma-system/registry-runtime:test",
+                destination_image="100.66.177.70:5000/luma-system/registry-runtime:test",
+                platform="linux/amd64",
+                insecure=True,
+            )
+
+        copy_command = run.call_args_list[0].args[0]
+        self.assertIn("--platform", copy_command)
+        self.assertEqual(copy_command[copy_command.index("--platform") + 1], "linux/amd64")
+        self.assertEqual(result["digest"], digest)
+        self.assertIn("System image", result["message"])
 
     def test_async_control_image_preparation_persists_progress_and_internal_ref(self):
         from luma.control.server import handle_control_image_prepare_get, handle_control_image_prepare_start
@@ -11976,13 +12026,13 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "home",
                         "tailscaleIP": "100.66.177.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build", "docker-image"]},
                     },
                     "blg": {
                         "name": "blg",
                         "region": "cn",
                         "tailscaleIP": "100.84.163.118",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build", "docker-image"]},
                     },
                 }
                 state["build"] = {"defaultNode": "builder", "nodes": ["builder"], "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
@@ -13038,7 +13088,7 @@ class GithubImportTests(unittest.TestCase):
                         "name": "builder",
                         "region": "cn",
                         "tailscaleIP": "100.66.177.70",
-                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build"]},
+                        "agent": {"status": "online", "lastSeen": now, "os": "linux", "capabilities": ["docker-build", "docker-image"]},
                     },
                     "tecent": {
                         "name": "tecent",
@@ -13252,7 +13302,7 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual(result["affectedAllocationIds"], [])
         self.assertIn("already configured", result["message"])
 
-    def test_registry_serve_requires_declared_builder_node(self):
+    def test_registry_serve_requires_ready_linux_docker_node(self):
         from luma.control.server import handle_registry_serve
         from luma.errors import LumaError
 
@@ -13281,8 +13331,101 @@ class GithubImportTests(unittest.TestCase):
                 state["build"] = {"defaultNode": "builder", "nodes": ["builder"]}
                 save_state(state)
 
-                with self.assertRaisesRegex(LumaError, "declared, ready builder node"):
+                with self.assertRaisesRegex(LumaError, "docker-image capability"):
                     handle_registry_serve(state["deployToken"], {"node": "blg"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_registry_serve_secure_domain_uses_tls_auth_without_docker_restarts(self):
+        from luma.control.server import handle_registry_serve
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                (root / "luma.yaml").write_text("providers: {}\n", encoding="utf-8")
+                state = init_state(
+                    domain="luma.example.com",
+                    cluster_id="luma-test",
+                    overwrite=True,
+                )
+                now = int(time.time())
+                state["nodes"] = {
+                    "manager": {
+                        "name": "manager",
+                        "region": "cn",
+                        "tailscaleIP": "100.106.154.3",
+                        "labels": {"role.nomad-manager": "true"},
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": now,
+                            "os": "linux",
+                            "capabilities": ["docker-image"],
+                        },
+                    }
+                }
+                save_state(state)
+                password = "p" * 64
+                deployed = {}
+
+                def fake_deployment(_token, body, **_kwargs):
+                    deployed.update(yaml.safe_load(body["manifest"]))
+                    return {"service": "registry", "steps": []}
+
+                with patch(
+                    "luma.control.server._mirror_registry_runtime_image",
+                    return_value="100.66.177.70:5000/luma-system/registry-runtime:test@sha256:"
+                    + "a" * 64,
+                ), patch(
+                    "luma.control.server.handle_deployment",
+                    side_effect=fake_deployment,
+                ), patch(
+                    "luma.control.server._verify_authenticated_registry",
+                    return_value={"status": 200, "authenticated": True},
+                ), patch(
+                    "luma.control.server.handle_registry_set"
+                ) as registry_set, patch(
+                    "luma.control.server.handle_build_config_set"
+                ) as build_config, patch(
+                    "luma.control.server._run_node_agent_task"
+                ) as agent_task:
+                    result = handle_registry_serve(
+                        state["deployToken"],
+                        {
+                            "node": "manager",
+                            "domain": "registry.example.com",
+                            "username": "lae",
+                            "password": password,
+                        },
+                    )
+
+                self.assertEqual(deployed["exposure"], "cn-edge")
+                self.assertEqual(deployed["domain"], "registry.example.com")
+                self.assertNotIn("publishPort", deployed)
+                serialized = yaml.safe_dump(deployed)
+                self.assertIn("basicauth.users=lae:{SHA}", serialized)
+                self.assertNotIn(password, serialized)
+                agent_task.assert_not_called()
+                registry_set.assert_called_once_with(
+                    state["deployToken"],
+                    {
+                        "host": "registry.example.com",
+                        "username": "lae",
+                        "password": password,
+                    },
+                )
+                build_config.assert_called_once_with(
+                    state["deployToken"],
+                    {
+                        "registryHost": "registry.example.com",
+                        "pushHost": "registry.example.com",
+                    },
+                )
+                self.assertTrue(result["secure"])
+                self.assertTrue(result["authenticated"])
+                self.assertTrue(result["activated"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

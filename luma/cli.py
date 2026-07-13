@@ -115,12 +115,16 @@ def build_parser() -> argparse.ArgumentParser:
     registry_remove = registry_sub.add_parser("remove")
     registry_remove.add_argument("host")
     _add_control_arguments(registry_remove)
-    registry_serve = registry_sub.add_parser("serve", help="Deploy an in-cluster Docker registry on a build node and wire insecure-registries to every node")
-    registry_serve.add_argument("--node", required=True, help="Build node that hosts the registry (must be docker-build capable)")
+    registry_serve = registry_sub.add_parser("serve", help="Deploy a managed registry on a Linux Luma node")
+    registry_serve.add_argument("--node", required=True, help="Ready Linux node that hosts the registry")
     registry_serve.add_argument("--port", type=int, default=5000, help="Host port the registry listens on (default: 5000)")
     registry_serve.add_argument("--image", default="", help="Registry image (default: registry:2)")
     registry_serve.add_argument("--name", default="", help="Service name (default: luma-registry)")
-    registry_serve.add_argument("--storage-class", dest="storage_class", default="", help="storageClass for the registry data volume (default: local)")
+    registry_serve.add_argument("--storage-class", dest="storage_class", default="", help="Optional storageClass; otherwise use a node-local Docker volume")
+    registry_serve.add_argument("--domain", default="", help="TLS hostname for a secure registry; avoids Docker daemon restarts")
+    registry_serve.add_argument("--username", default="", help="Basic Auth username for --domain")
+    registry_serve.add_argument("--password-stdin", action="store_true", help="Read the secure registry password from stdin")
+    registry_serve.add_argument("--no-activate", action="store_true", help="Do not make the new secure registry the Builder push/pull registry")
     _add_control_arguments(registry_serve)
     _add_output_arguments(registry_serve)
     registry_serve.add_argument("--timeout", type=int, default=1800)
@@ -167,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.205 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.206 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1389,12 +1393,25 @@ def cmd_registry(args: argparse.Namespace) -> int:
     if args.registry_command == "serve":
         output_format = _output_format(args)
         quiet = _quiet(args) or output_format != "text"
+        registry_password = ""
+        if args.domain:
+            if not args.username:
+                raise LumaError("--username is required with --domain")
+            registry_password = (
+                sys.stdin.read().strip()
+                if args.password_stdin
+                else getpass.getpass(f"{args.domain} password: ")
+            )
         serve_kwargs: Dict[str, Any] = dict(
             node=args.node,
             port=args.port,
             image=args.image,
             name=args.name,
             storage_class=args.storage_class,
+            domain=args.domain,
+            username=args.username,
+            password=registry_password,
+            activate=not args.no_activate,
             timeout=args.timeout,
         )
         if not quiet:

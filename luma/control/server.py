@@ -7568,38 +7568,197 @@ def _reconcile_allocations_after_docker_restart(
     }
 
 
+def _require_registry_node(state: Dict[str, Any], node_name: str) -> Dict[str, Any]:
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    if not isinstance(record, dict):
+        raise LumaError(f"unknown Luma node: {node_name}")
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    if str(agent.get("os") or "") != "linux" or not _node_agent_is_ready(
+        record, required_capability="docker-image"
+    ):
+        raise LumaError(
+            f"registry node must be a ready Linux node with docker-image capability: {node_name}"
+        )
+    return record
+
+
+def _mirror_registry_runtime_image(
+    state: Dict[str, Any],
+    config: LumaConfig,
+    source_image: str,
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> str:
+    build = _build_config(state)
+    build_node = _require_build_node(
+        state,
+        str(build.get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
+        purpose="registry system image mirror",
+    )
+    push_host = normalize_registry_host(str(build.get("pushHost") or ""))
+    pull_host = normalize_registry_host(str(build.get("registryHost") or ""))
+    tag = hashlib.sha256(source_image.encode("utf-8")).hexdigest()[:20]
+    push_image = f"{push_host}/luma-system/registry-runtime:{tag}"
+    destination_image = f"{pull_host}/luma-system/registry-runtime:{tag}"
+    insecure_raw = str(
+        os.environ.get("LUMA_LAE_BUILDER_REGISTRY_INSECURE") or ""
+    ).strip()
+    if insecure_raw not in {"0", "1"}:
+        raise LumaError(
+            "LUMA_LAE_BUILDER_REGISTRY_INSECURE must be explicitly set to 0 or 1"
+        )
+    step = {
+        "name": "Mirror registry runtime image",
+        "status": "start",
+        "message": f"{source_image} via {build_node}",
+    }
+    _emit_progress(progress, step)
+    result = _run_node_agent_task(
+        state,
+        build_node,
+        "mirror-system-image",
+        {
+            "sourceImage": source_image,
+            "pushImage": push_image,
+            "destinationImage": destination_image,
+            "platform": "linux/amd64",
+            "proxy": _egress_proxy_for_node(config, state, build_node),
+            "insecure": insecure_raw == "1",
+            "timeout": 900,
+        },
+        timeout=960,
+        required_capability="system-image-mirror-v1",
+    )
+    digest = str(result.get("digest") or "").strip()
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+        raise LumaError("registry system image mirror returned no verified digest")
+    _emit_progress(
+        progress,
+        {
+            "name": "Mirror registry runtime image",
+            "status": "ok",
+            "message": digest,
+        },
+    )
+    return f"{destination_image}@{digest}"
+
+
+def _registry_basic_auth_labels(
+    service_name: str, username: str, password: str
+) -> list[str]:
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", username):
+        raise LumaError("registry username is invalid")
+    if len(password) < 32 or len(password) > 512:
+        raise LumaError("registry password must contain between 32 and 512 characters")
+    middleware = f"{slugify(service_name)}-auth"
+    verifier = base64.b64encode(
+        hashlib.sha1(password.encode("utf-8")).digest()
+    ).decode("ascii")
+    return [
+        f"traefik.http.middlewares.{middleware}.basicauth.users={username}:{{SHA}}{verifier}",
+        f"traefik.http.routers.{slugify(service_name)}.middlewares={middleware}",
+    ]
+
+
+def _verify_authenticated_registry(
+    domain: str, username: str, password: str, *, timeout: int = 90
+) -> Dict[str, Any]:
+    deadline = time.monotonic() + max(10, int(timeout))
+    authorization = base64.b64encode(
+        f"{username}:{password}".encode("utf-8")
+    ).decode("ascii")
+    last_error = ""
+    while time.monotonic() < deadline:
+        request = urllib.request.Request(
+            f"https://{domain}/v2/",
+            headers={"Authorization": f"Basic {authorization}"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=8) as response:
+                if int(response.status) == 200:
+                    return {"status": 200, "authenticated": True}
+                last_error = f"HTTP {response.status}"
+        except urllib.error.HTTPError as exc:
+            last_error = f"HTTP {exc.code}"
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            last_error = str(exc)
+        time.sleep(2)
+    raise LumaError(
+        f"authenticated registry endpoint did not become ready: {domain}: {last_error}"
+    )
+
+
 def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callable[[dict[str, str]], None] | None = None) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
     build_node = str(body.get("node") or body.get("buildNode") or "").strip()
     if not build_node:
-        raise LumaError("node is required (the docker-build node that hosts the registry)")
-    build_node = _require_build_node(state, build_node, purpose="registry serve")
+        raise LumaError("node is required (the Linux node that hosts the registry)")
+    record = _require_registry_node(state, build_node)
     port = int(body.get("port") or 5000)
     image = str(body.get("image") or "registry:2").strip()
     name = str(body.get("name") or "luma-registry").strip()
+    domain = str(body.get("domain") or "").strip().lower().rstrip(".")
+    username = str(body.get("username") or "").strip()
+    password = str(body.get("password") or "")
+    secure_public = bool(domain)
+    if secure_public and (
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", domain)
+        or not username
+        or not password
+    ):
+        raise LumaError(
+            "public registry requires a valid domain, username, and password"
+        )
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    record = _node_record_for_name(nodes, build_node)
-    if not record:
-        names = ", ".join(sorted(str(n) for n in nodes)) or "none"
-        raise LumaError(f"unknown Luma node: {build_node}. Registered nodes: {names}")
     region = str(record.get("region") or (record.get("labels") or {}).get("region") or "cn").strip() or "cn"
-    registry_host = f"{_nomad_route_host_for_node(state, build_node)}:{port}"
+    if secure_public and region not in {"cn", "global"}:
+        raise LumaError(
+            "public TLS registry must run on a cn or global edge node"
+        )
+    registry_host = domain if secure_public else f"{_nomad_route_host_for_node(state, build_node)}:{port}"
 
     steps: list[dict[str, str]] = []
+    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
+    runtime_image = image
+    if secure_public:
+        current_registry = str(_build_config(state).get("registryHost") or "")
+        if not current_registry or normalize_registry_host(
+            registry_host_from_image(image)
+        ) != normalize_registry_host(current_registry):
+            runtime_image = _mirror_registry_runtime_image(
+                state, config, image, progress=progress
+            )
 
     manifest = {
         "name": name,
-        "image": image,
+        "image": runtime_image,
         "region": region,
-        "exposure": "none",
+        "exposure": (
+            "cn-edge"
+            if secure_public and region == "cn"
+            else "external-edge"
+            if secure_public
+            else "none"
+        ),
         "node": build_node,
         "port": port,
-        "publishPort": port,
         "volumes": [f"{name}-data:/var/lib/registry"],
-        "storage": {f"{name}-data": {"storageClass": str(body.get("storageClass") or "local")}},
     }
+    storage_class = str(body.get("storageClass") or "").strip()
+    if storage_class:
+        manifest["storage"] = {
+            f"{name}-data": {"storageClass": storage_class}
+        }
+    if secure_public:
+        manifest["domain"] = domain
+        manifest["labels"] = _registry_basic_auth_labels(
+            name, username, password
+        )
+    else:
+        manifest["publishPort"] = port
     manifest_text = yaml.safe_dump(manifest, sort_keys=False, allow_unicode=False)
 
     # Configure insecure-registries on every ready Linux node so any of them can
@@ -7614,8 +7773,7 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
     skipped: list[str] = []
     docker_recoveries: list[Dict[str, Any]] = []
     registry_no_proxy = _merge_no_proxy(EGRESS_NO_PROXY, *_no_proxy_entries_for_registry(registry_host))
-    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
-    for node_name in sorted(str(n) for n in nodes):
+    for node_name in ([] if secure_public else sorted(str(n) for n in nodes)):
         node_record = nodes.get(node_name)
         if not isinstance(node_record, dict):
             continue
@@ -7670,23 +7828,51 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
             skipped.append(f"{node_name} ({configuration_error})")
         else:
             configured.append(node_name)
-    insecure_step = {
-        "name": "Configure insecure-registries",
+    registry_transport_step = {
+        "name": (
+            "Configure authenticated TLS registry"
+            if secure_public
+            else "Configure insecure-registries"
+        ),
         "status": "ok",
-        "message": f"configured: {', '.join(configured) or 'none'}; skipped: {', '.join(skipped) or 'none'}",
+        "message": (
+            f"https://{domain} uses Traefik Basic Auth; Docker daemon restarts are not required"
+            if secure_public
+            else f"configured: {', '.join(configured) or 'none'}; skipped: {', '.join(skipped) or 'none'}"
+        ),
     }
-    steps.append(insecure_step)
-    _emit_progress(progress, insecure_step)
+    steps.append(registry_transport_step)
+    _emit_progress(progress, registry_transport_step)
 
     deploy_body = {"manifest": manifest_text, "sourceName": f"{name} (luma registry serve)"}
     deploy_result = handle_deployment(token, deploy_body, progress=progress)
     if isinstance(deploy_result, dict):
         steps.extend(s for s in (deploy_result.get("steps") or []) if isinstance(s, dict))
 
+    verification: Dict[str, Any] = {}
+    activated = False
+    if secure_public:
+        verification = _verify_authenticated_registry(
+            domain, username, password
+        )
+        handle_registry_set(
+            token,
+            {"host": domain, "username": username, "password": password},
+        )
+        if bool(body.get("activate", True)):
+            handle_build_config_set(
+                token,
+                {"registryHost": domain, "pushHost": domain},
+            )
+            activated = True
+
     return {
         "service": name,
         "registryHost": registry_host,
-        "pushHost": f"localhost:{port}",
+        "pushHost": domain if secure_public else f"localhost:{port}",
+        "secure": secure_public,
+        "authenticated": bool(verification.get("authenticated")),
+        "activated": activated,
         "configuredNodes": configured,
         "skippedNodes": skipped,
         "dockerRestartRecoveries": docker_recoveries,
@@ -9517,11 +9703,27 @@ def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, A
     if not domain:
         raise LumaError("control domain is not configured")
     node_name, _record = _manager_update_target(state)
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    watchdog_peers = sorted(
+        {
+            str(record.get("tailscaleIP") or "").strip()
+            for name, record in nodes.items()
+            if str(name) != node_name
+            and isinstance(record, dict)
+            and _node_agent_is_ready(record)
+            and str(record.get("tailscaleIP") or "").strip()
+        }
+    )
     result = _run_node_agent_task(
         state,
         node_name,
         "start-manager-update",
-        {"installRef": install_ref, "controlImage": control_image, "domain": domain},
+        {
+            "installRef": install_ref,
+            "controlImage": control_image,
+            "domain": domain,
+            "tailscaleWatchdogPeers": watchdog_peers,
+        },
         timeout=90,
         required_capability="manager-update-v1",
     )

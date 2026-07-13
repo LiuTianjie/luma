@@ -822,9 +822,39 @@ def configure_public_port_guards(remote: Executor, *, restrict_nomad_public: boo
     return "Public port guards installed"
 
 
-def configure_tailscale_watchdog(remote: Executor) -> str:
+def configure_tailscale_watchdog(
+    remote: Executor, *, peers: list[str] | tuple[str, ...] | None = None
+) -> str:
     if _is_darwin(remote):
         return "Tailscale watchdog skipped on macOS"
+    requested_peers = peers
+    if requested_peers is None:
+        requested_peers = [
+            value.strip()
+            for value in os.environ.get(
+                "LUMA_TAILSCALE_WATCHDOG_PEERS", ""
+            ).split(",")
+            if value.strip()
+        ]
+    safe_peers = sorted(
+        {
+            value
+            for value in requested_peers
+            if re.fullmatch(r"100(?:\.[0-9]{1,3}){3}", value)
+            or re.fullmatch(r"fd7a:115c:a1e0:[0-9a-fA-F:]+", value)
+        }
+    )
+    peers_value = ",".join(safe_peers)
+    watchdog_environment = (
+        "install -d -m 755 /etc/default; "
+        "cat > /etc/default/luma-tailscale-watchdog <<'EOF'\n"
+        f"LUMA_TAILSCALE_WATCHDOG_PEERS={peers_value}\n"
+        "LUMA_TAILSCALE_WATCHDOG_PORT=0\n"
+        "EOF\n"
+        "chmod 600 /etc/default/luma-tailscale-watchdog; "
+        if safe_peers
+        else ""
+    )
     remote.sudo(
         "set -euo pipefail; "
         "if ! command -v systemctl >/dev/null 2>&1 || ! command -v tailscale >/dev/null 2>&1; then "
@@ -836,7 +866,7 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "#!/bin/sh\n"
         "set -eu\n"
         "threshold=${LUMA_TAILSCALE_WATCHDOG_THRESHOLD:-3}\n"
-        "port=${LUMA_TAILSCALE_WATCHDOG_PORT:-4647}\n"
+        "port=${LUMA_TAILSCALE_WATCHDOG_PORT:-0}\n"
         "peers=${LUMA_TAILSCALE_WATCHDOG_PEERS:-}\n"
         "state_dir=/run/luma\n"
         "state_file=$state_dir/tailscale-watchdog.failures\n"
@@ -873,12 +903,15 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "  [ -n \"$addr\" ] || continue\n"
         "  addr=${addr%%:*}\n"
         "  is_tailnet_addr \"$addr\" || continue\n"
-        "  if tailscale ping --timeout=3s --c 2 \"$addr\" >/dev/null 2>&1; then\n"
-        "    checked=$((checked + 1))\n"
-        "    if ! tcp_probe \"$addr\"; then\n"
-        "      bad=$((bad + 1))\n"
-        "      log \"tailnet TCP probe failed: $addr:$port\"\n"
-        "    fi\n"
+        "  checked=$((checked + 1))\n"
+        "  if ! tailscale ping --timeout=3s --c 2 \"$addr\" >/dev/null 2>&1; then\n"
+        "    bad=$((bad + 1))\n"
+        "    log \"tailnet ping failed: $addr\"\n"
+        "    continue\n"
+        "  fi\n"
+        "  if [ \"$port\" -gt 0 ] && ! tcp_probe \"$addr\"; then\n"
+        "    bad=$((bad + 1))\n"
+        "    log \"tailnet TCP probe failed: $addr:$port\"\n"
         "  fi\n"
         "done\n"
         "if [ \"$checked\" -eq 0 ]; then\n"
@@ -902,7 +935,8 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "fi\n"
         "EOF\n"
         f"chmod 755 {ROOT}/watchdog/tailscale-watchdog.sh; "
-        "cat > /etc/systemd/system/luma-tailscale-watchdog.service <<'EOF'\n"
+        + watchdog_environment
+        + "cat > /etc/systemd/system/luma-tailscale-watchdog.service <<'EOF'\n"
         "[Unit]\n"
         "Description=Luma Tailscale TCP watchdog\n"
         "After=network-online.target tailscaled.service nomad.service\n"

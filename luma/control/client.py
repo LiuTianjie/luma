@@ -711,6 +711,10 @@ class ControlClient:
         image: str = "",
         name: str = "",
         storage_class: str = "",
+        domain: str = "",
+        username: str = "",
+        password: str = "",
+        activate: bool = True,
         timeout: int = 1800,
     ) -> Dict[str, Any]:
         return self.request("POST", "/v1/registry/serve", self._registry_serve_body(locals()), timeout=timeout)
@@ -723,6 +727,10 @@ class ControlClient:
         image: str = "",
         name: str = "",
         storage_class: str = "",
+        domain: str = "",
+        username: str = "",
+        password: str = "",
+        activate: bool = True,
         timeout: int = 1800,
     ) -> Iterator[Dict[str, Any]]:
         return self.stream("POST", "/v1/registry/serve/stream", self._registry_serve_body(locals()), timeout=timeout)
@@ -730,9 +738,17 @@ class ControlClient:
     @staticmethod
     def _registry_serve_body(values: Dict[str, Any]) -> Dict[str, Any]:
         body: Dict[str, Any] = {"node": values["node"], "port": int(values.get("port") or 5000)}
-        for src, dst in (("image", "image"), ("name", "name"), ("storage_class", "storageClass")):
+        for src, dst in (
+            ("image", "image"),
+            ("name", "name"),
+            ("storage_class", "storageClass"),
+            ("domain", "domain"),
+            ("username", "username"),
+            ("password", "password"),
+        ):
             if values.get(src):
                 body[dst] = str(values[src])
+        body["activate"] = bool(values.get("activate", True))
         return body
 
     def remove_service(

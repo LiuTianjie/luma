@@ -148,6 +148,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
         # registry before a manager rollout, avoiding a dockerd -> GHCR
         # dependency during the short control-plane replacement window.
         capabilities.append("control-image-mirror-v1")
+        capabilities.append("system-image-mirror-v1")
     return capabilities
 
 
@@ -1977,6 +1978,10 @@ def execute_agent_task(
             install_ref=str(payload.get("installRef") or ""),
             control_image=str(payload.get("controlImage") or ""),
             domain=str(payload.get("domain") or ""),
+            watchdog_peers=[
+                str(value)
+                for value in payload.get("tailscaleWatchdogPeers") or []
+            ],
         )
     if action == "manager-update-status":
         return manager_control_update_status(update_id=str(payload.get("updateId") or ""))
@@ -1985,6 +1990,17 @@ def execute_agent_task(
             source_image=_required(payload, "sourceImage"),
             push_image=_required(payload, "pushImage"),
             destination_image=_required(payload, "destinationImage"),
+            proxy=str(payload.get("proxy") or ""),
+            insecure=bool(payload.get("insecure")),
+            timeout=int(payload.get("timeout") or 900),
+            progress=progress,
+        )
+    if action == "mirror-system-image":
+        return mirror_system_image(
+            source_image=_required(payload, "sourceImage"),
+            push_image=_required(payload, "pushImage"),
+            destination_image=_required(payload, "destinationImage"),
+            platform=str(payload.get("platform") or "linux/amd64"),
             proxy=str(payload.get("proxy") or ""),
             insecure=bool(payload.get("insecure")),
             timeout=int(payload.get("timeout") or 900),
@@ -3159,6 +3175,8 @@ def mirror_control_image(
     insecure: bool = False,
     timeout: int = 900,
     progress: Callable[[Dict[str, Any]], None] | None = None,
+    _system_image: bool = False,
+    _platform: str = "",
 ) -> Dict[str, Any]:
     """Copy a Control release through the Builder into Luma's pull registry.
 
@@ -3174,10 +3192,22 @@ def mirror_control_image(
     source = _safe_docker_image_ref(source_image)
     push = _safe_docker_image_ref(push_image)
     destination = _safe_docker_image_ref(destination_image)
-    if not _docker_image_repository(push).endswith("/luma-control"):
-        raise LumaError("control image mirror destination repository must be luma-control")
-    if not _docker_image_repository(destination).endswith("/luma-control"):
-        raise LumaError("control image public repository must be luma-control")
+    push_repository = _docker_image_repository(push)
+    destination_repository = _docker_image_repository(destination)
+    if _system_image:
+        if "/luma-system/" not in push_repository:
+            raise LumaError(
+                "system image mirror destination repository must use luma-system"
+            )
+        if "/luma-system/" not in destination_repository:
+            raise LumaError(
+                "system image public repository must use luma-system"
+            )
+    else:
+        if not push_repository.endswith("/luma-control"):
+            raise LumaError("control image mirror destination repository must be luma-control")
+        if not destination_repository.endswith("/luma-control"):
+            raise LumaError("control image public repository must be luma-control")
     if push.rsplit(":", 1)[-1] != destination.rsplit(":", 1)[-1]:
         raise LumaError("control image push and pull tags must match")
     timeout = min(max(int(timeout or 900), 60), 1800)
@@ -3198,6 +3228,8 @@ def mirror_control_image(
             progress({"type": "status", "line": value, "ts": int(time.time())})
 
     command = [crane, "copy", source, push]
+    if _platform:
+        command.extend(["--platform", _platform])
     if insecure:
         command.append("--insecure")
     emit(f"Caching {source} on the internal Builder registry.")
@@ -3230,6 +3262,34 @@ def mirror_control_image(
         "digest": digest,
         "message": "Control image cached and verified in the internal registry.",
     }
+
+
+def mirror_system_image(
+    *,
+    source_image: str,
+    push_image: str,
+    destination_image: str,
+    platform: str = "linux/amd64",
+    proxy: str = "",
+    insecure: bool = False,
+    timeout: int = 900,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    if not re.fullmatch(r"linux/(?:amd64|arm64)", str(platform or "")):
+        raise LumaError("system image mirror platform must be linux/amd64 or linux/arm64")
+    result = mirror_control_image(
+        source_image=source_image,
+        push_image=push_image,
+        destination_image=destination_image,
+        proxy=proxy,
+        insecure=insecure,
+        timeout=timeout,
+        progress=progress,
+        _system_image=True,
+        _platform=platform,
+    )
+    result["message"] = "System image cached and verified in the internal registry."
+    return result
 
 
 def _docker_image_pull_error(*, image: str, output: str, platform: str = "") -> str:
@@ -3355,7 +3415,13 @@ def _write_manager_update_json(path: Path, value: Dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def start_manager_control_update(*, install_ref: str, control_image: str, domain: str) -> Dict[str, Any]:
+def start_manager_control_update(
+    *,
+    install_ref: str,
+    control_image: str,
+    domain: str,
+    watchdog_peers: list[str] | tuple[str, ...] = (),
+) -> Dict[str, Any]:
     if node_agent_os() != "linux" or not shutil.which("systemd-run"):
         raise LumaError("managed control-plane update requires Linux systemd")
     safe_ref = _manager_update_ref(install_ref)
@@ -3396,6 +3462,20 @@ def start_manager_control_update(*, install_ref: str, control_image: str, domain
         "LUMA_MANAGER_UPDATE_LOG_PATH": str(log_path),
         "LUMA_MANAGER_UPDATE_STATUS_PATH": str(status_path),
     }
+    safe_watchdog_peers = sorted(
+        {
+            str(value).strip()
+            for value in watchdog_peers
+            if re.fullmatch(r"100(?:\.[0-9]{1,3}){3}", str(value).strip())
+            or re.fullmatch(
+                r"fd7a:115c:a1e0:[0-9a-fA-F:]+", str(value).strip()
+            )
+        }
+    )
+    if safe_watchdog_peers:
+        environment["LUMA_TAILSCALE_WATCHDOG_PEERS"] = ",".join(
+            safe_watchdog_peers
+        )
     if layout:
         user_home, install_home, bin_dir = layout
         environment.update(
