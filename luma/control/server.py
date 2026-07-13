@@ -88,7 +88,7 @@ from ..errors import LumaError
 from ..io import load_yaml
 from ..local import LocalExecutor
 from ..nomad_api import NomadApi, NomadRolloutError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary
-from ..nomad_render import render_nomad_job, render_compose_job
+from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job
 from ..registry import (
     docker_registry_auth_header,
     public_registry_url,
@@ -8398,7 +8398,15 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         )
         routes_root = _resolve_control_path(config.routes_root, config_path)
         route_target: Path | None = None
-        if service.exposure in {"tailscale-relay", "tcp-relay"}:
+        if service.exposure in EDGE_EXPOSURES:
+            route_target = _resolve_control_path(route_path(config, service), config_path)
+            _deploy_step(
+                steps,
+                "Remove stale file-provider route",
+                lambda: _remove_nomad_provider_shadow_route(route_target),
+                progress=progress,
+            )
+        elif service.exposure in {"tailscale-relay", "tcp-relay"}:
             route_target = _resolve_control_path(route_path(config, service), config_path)
             route_target.parent.mkdir(parents=True, exist_ok=True)
             route_service = service
@@ -8595,7 +8603,11 @@ def _remove_service_deployment(
     dry_run = bool(body.get("dryRun"))
     _require_nomad_engine(service.engine or str(config.defaults.get("engine") or "nomad"))
     stack_target = _generated_stack_remove_target(config, service, config_path)
-    route_target = _resolve_control_path(route_path(config, service), config_path) if service.exposure in {"tailscale-relay", "tcp-relay"} else None
+    route_target = (
+        _resolve_control_path(route_path(config, service), config_path)
+        if service.exposure in {*EDGE_EXPOSURES, "tailscale-relay", "tcp-relay"}
+        else None
+    )
     files = [str(stack_target)]
     if route_target:
         files.append(str(route_target))
@@ -8677,7 +8689,7 @@ def _remove_compose_deployment(
     route_targets = [
         _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
         for service_name, service in deployment.services.items()
-        if service.exposure in {"tailscale-relay", "tcp-relay"}
+        if service.exposure in {*EDGE_EXPOSURES, "tailscale-relay", "tcp-relay"}
     ]
     files = [str(stack_target), *[str(path) for path in route_targets]]
     dns_results = []
@@ -9034,7 +9046,15 @@ def _reconcile_application_delivery(
     probe_results: list[str] = []
     runtime_nodes = sorted({str(value).strip() for value in (allocation_node_names or set()) if str(value).strip()})
 
+    file_route_exposures = {"tailscale-relay", "tcp-relay"}
+    managed_route_exposures = {*EDGE_EXPOSURES, *file_route_exposures}
+
     def bind_runtime_node(service: ServiceSpec) -> ServiceSpec:
+        # Nomad-provider edge routes already carry their replacement
+        # allocation address. Only file-provider relays need one concrete node
+        # written into a static upstream.
+        if service.exposure not in file_route_exposures:
+            return service
         if service.node or not runtime_nodes:
             return service
         if len(runtime_nodes) != 1:
@@ -9044,30 +9064,23 @@ def _reconcile_application_delivery(
             )
         return replace(service, node=runtime_nodes[0])
 
-    file_route_exposures = {"cn-edge", "external-edge", "tailscale-relay", "tcp-relay"}
-
     def reconcile_service(service: ServiceSpec, route_target: Path | None) -> None:
         route_service = service
-        if service.exposure in file_route_exposures:
+        if service.exposure in EDGE_EXPOSURES:
             if route_target is None:
                 raise LumaError(f"route target is required for {service.name}")
-            if service.exposure in {"tailscale-relay", "tcp-relay"}:
-                route_service = resolve_nomad_static_route_target(
-                    service,
-                    state,
-                    prefer_publish_port=service.exposure == "tailscale-relay",
-                )
-            else:
-                if not service.node:
-                    raise LumaError(f"{service.exposure} delivery reconcile requires a resolved node")
-                relay = dict(service.relay)
-                relay["host"] = _nomad_route_host_for_node(state, service.node)
-                relay["port"] = int(service.publish_port or service.port or 0)
-                route_service = replace(service, relay=relay)
+            route_results.append(_remove_nomad_provider_shadow_route(route_target))
+        elif service.exposure in file_route_exposures:
+            if route_target is None:
+                raise LumaError(f"route target is required for {service.name}")
+            route_service = resolve_nomad_static_route_target(
+                service,
+                state,
+                prefer_publish_port=service.exposure == "tailscale-relay",
+            )
             route_text = (
                 render_tailscale_route(config, route_service)
                 if service.exposure == "tailscale-relay"
-                or service.exposure in {"cn-edge", "external-edge"}
                 else render_tcp_route(config, route_service)
             )
             route_target.parent.mkdir(parents=True, exist_ok=True)
@@ -9082,7 +9095,7 @@ def _reconcile_application_delivery(
         service = bind_runtime_node(service)
         route_target = (
             _resolve_control_path(route_path(config, service), config_path)
-            if service.exposure in file_route_exposures
+            if service.exposure in managed_route_exposures
             else None
         )
         reconcile_service(service, route_target)
@@ -9095,7 +9108,7 @@ def _reconcile_application_delivery(
             service_spec = bind_runtime_node(_compose_service_as_service_spec(deployment, service))
             route_target = (
                 _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
-                if service.exposure in file_route_exposures
+                if service.exposure in managed_route_exposures
                 else None
             )
             reconcile_service(service_spec, route_target)
@@ -10145,6 +10158,15 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
 
         routes_root = _resolve_control_path(config.routes_root, config_path)
         for service_name, service in deployment.services.items():
+            if service.exposure in EDGE_EXPOSURES:
+                route_target = _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
+                _deploy_step(
+                    steps,
+                    f"Remove stale file-provider route {service_name}",
+                    lambda route_target=route_target: _remove_nomad_provider_shadow_route(route_target),
+                    progress=progress,
+                )
+                continue
             if service.exposure not in {"tailscale-relay", "tcp-relay"} or not service.domain or not service.port:
                 continue
             route_target = _resolve_control_path(compose_route_path(config, deployment, service_name), config_path)
@@ -11703,6 +11725,29 @@ def _remove_generated_files(stack_target: Path, *route_targets: Path | None) -> 
     if removed:
         return f"Generated files removed: {', '.join(removed)}"
     return f"Generated files not found: {', '.join(missing)}"
+
+
+def _remove_nomad_provider_shadow_route(path: Path) -> str:
+    """Remove a historical file-provider route for a Nomad edge service.
+
+    ``cn-edge`` and ``external-edge`` are discovered through Traefik's Nomad
+    provider.  A file-provider route with the same router name takes precedence
+    and freezes the upstream at the allocation address/port that happened to be
+    current when the file was written.  After an allocation recreate that stale
+    file produces 404/502 responses even though the replacement task is healthy.
+
+    Deleting the derived file is the reconciliation operation: Traefik then uses
+    the allocation-aware Nomad service registration and follows every future
+    dynamic-port change without another Control-side rewrite.
+    """
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return f"Nomad provider route active; no file-provider shadow: {path}"
+    except IsADirectoryError as exc:
+        raise LumaError(f"route shadow path is not a file: {path}") from exc
+    _fsync_directory(path.parent)
+    return f"Removed stale file-provider route: {path}"
 
 
 def _write_route_file(path: Path, text: str, *, routes_root: Path, validate: bool = True) -> str:

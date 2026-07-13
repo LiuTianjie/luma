@@ -6091,7 +6091,24 @@ class ControlApiTests(unittest.TestCase):
             old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
             try:
                 state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}), encoding="utf-8")
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump(
+                        {
+                            "defaults": {
+                                "stackRoot": str(root / "stacks"),
+                                "routesRoot": str(root / "routes"),
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                routes = root / "routes"
+                routes.mkdir()
+                stale_route = routes / "api.yml"
+                stale_route.write_text(
+                    "http:\n  routers:\n    api: {}\n  services:\n    api: {}\n",
+                    encoding="utf-8",
+                )
                 manifest = yaml.safe_dump(
                     {
                         "name": "api",
@@ -6121,8 +6138,10 @@ class ControlApiTests(unittest.TestCase):
 
                 self.assertEqual(probe.call_count, 2)
                 restart.assert_not_called()
+                self.assertFalse(stale_route.exists())
                 self.assertIn("Recovered public route after provider reconciliation", result["probe"])
                 steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Remove stale file-provider route=ok:Removed stale file-provider route", steps)
                 self.assertIn("Reconcile Traefik provider=ok:waiting for Nomad provider convergence", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
@@ -7233,7 +7252,7 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_application_restart_rebuilds_missing_http_route_from_deployment_record(self):
+    def test_application_restart_removes_stale_http_file_route_for_nomad_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -7283,6 +7302,13 @@ class ControlApiTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
+                routes = root / "routes"
+                routes.mkdir()
+                stale_route = routes / "linkshell-gateway.yml"
+                stale_route.write_text(
+                    "http:\n  routers:\n    linkshell-gateway: {}\n  services:\n    linkshell-gateway: {}\n",
+                    encoding="utf-8",
+                )
                 api = Mock()
                 api.request.side_effect = [
                     [
@@ -7303,17 +7329,18 @@ class ControlApiTests(unittest.TestCase):
                 ):
                     result = handle_application_restart(state["deployToken"], {"stack": "linkshell-gateway"})
 
-                route = yaml.safe_load((root / "routes" / "linkshell-gateway.yml").read_text(encoding="utf-8"))
-                upstream = route["http"]["services"]["linkshell-gateway"]["loadBalancer"]["servers"][0]["url"]
-                self.assertEqual(upstream, "http://100.64.29.91:8787")
-                self.assertEqual(route["http"]["routers"]["linkshell-gateway"]["priority"], 1000)
+                self.assertFalse(stale_route.exists())
                 self.assertEqual(result["delivery"]["status"], "ready")
+                self.assertEqual(
+                    result["delivery"]["routes"],
+                    [f"Removed stale file-provider route: {stale_route}"],
+                )
                 self.assertEqual(result["delivery"]["probes"], ["Public route reachable"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_application_restart_rebuilds_all_compose_http_routes(self):
+    def test_application_restart_removes_all_stale_compose_edge_routes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
@@ -7372,6 +7399,15 @@ class ControlApiTests(unittest.TestCase):
                     yaml.safe_dump({"defaults": {"engine": "nomad", "routesRoot": str(root / "routes")}}),
                     encoding="utf-8",
                 )
+                routes = root / "routes"
+                routes.mkdir()
+                web_route = routes / "multi-http-web.yml"
+                admin_route = routes / "multi-http-admin.yml"
+                for route in (web_route, admin_route):
+                    route.write_text(
+                        "http:\n  routers:\n    stale: {}\n  services:\n    stale: {}\n",
+                        encoding="utf-8",
+                    )
                 api = Mock()
                 api.request.side_effect = [
                     [{"ID": "alloc-old", "ClientStatus": "running", "TaskStates": {"web": {}, "admin": {}}}],
@@ -7385,16 +7421,8 @@ class ControlApiTests(unittest.TestCase):
                 ):
                     result = handle_application_restart(state["deployToken"], {"stack": "multi-http"})
 
-                web_route = yaml.safe_load((root / "routes" / "multi-http-web.yml").read_text(encoding="utf-8"))
-                admin_route = yaml.safe_load((root / "routes" / "multi-http-admin.yml").read_text(encoding="utf-8"))
-                self.assertEqual(
-                    web_route["http"]["services"]["multi-http-web"]["loadBalancer"]["servers"][0]["url"],
-                    "http://100.64.29.91:13000",
-                )
-                self.assertEqual(
-                    admin_route["http"]["services"]["multi-http-admin"]["loadBalancer"]["servers"][0]["url"],
-                    "http://100.64.29.91:13001",
-                )
+                self.assertFalse(web_route.exists())
+                self.assertFalse(admin_route.exists())
                 self.assertEqual(len(result["delivery"]["routes"]), 2)
                 self.assertEqual(len(result["delivery"]["probes"]), 2)
             finally:
@@ -11127,7 +11155,21 @@ class ControlApiTests(unittest.TestCase):
                 }
                 save_state(state)
                 (root / "luma.yaml").write_text(
-                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    yaml.safe_dump(
+                        {
+                            "defaults": {
+                                "stackRoot": str(root / "stacks"),
+                                "routesRoot": str(root / "routes"),
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                routes = root / "routes"
+                routes.mkdir()
+                stale_route = routes / "price-app.yml"
+                stale_route.write_text(
+                    "http:\n  routers:\n    price-app: {}\n  services:\n    price-app: {}\n",
                     encoding="utf-8",
                 )
                 compose = yaml.safe_dump({"services": {"app": {"image": "nginx:alpine"}}})
@@ -11149,7 +11191,7 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.deploy_to_nomad", return_value="Nomad job deployed") as deploy, patch(
                     "luma.control.server.sync_dns", return_value="DNS skipped"
                 ), patch("luma.control.server._probe_public_route", return_value="Public route reachable"):
-                    handle_compose_deployment(
+                    result = handle_compose_deployment(
                         state["deployToken"],
                         {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True},
                     )
@@ -11157,6 +11199,9 @@ class ControlApiTests(unittest.TestCase):
                 stack_text = deploy.call_args.args[1]
                 self.assertIn('"Address": "100.64.29.91"', stack_text)
                 self.assertNotIn('"AddressMode": "host"', stack_text)
+                self.assertFalse(stale_route.exists())
+                steps = "\n".join(f"{step['name']}={step['status']}:{step['message']}" for step in result["steps"])
+                self.assertIn("Remove stale file-provider route app=ok:Removed stale file-provider route", steps)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
