@@ -237,6 +237,12 @@ set -eu
 
 export HOST="${HOST:-0.0.0.0}"
 export HOSTNAME="${HOSTNAME:-0.0.0.0}"
+# Vite applies host-header validation to preview servers. LAE owns every
+# generated public hostname below itool.tech, so allow that managed suffix
+# without requiring tenant repositories to carry platform-specific Vite
+# configuration. Export after container env resolution so a tenant variable
+# cannot broaden the allowlist to arbitrary hosts.
+export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=".itool.tech"
 if [ -z "${PORT:-}" ]; then
   if node -e 'const p=require("./package.json");const d={...(p.dependencies||{}),...(p.devDependencies||{})};process.exit(d.vite||d.astro?0:1)'; then
     PORT=4173

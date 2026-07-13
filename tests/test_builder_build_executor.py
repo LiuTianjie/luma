@@ -581,6 +581,10 @@ class BuilderBuildExecutorTests(unittest.TestCase):
         self.assertIn("mkdir -p /app/node_modules/.vite-temp /home/lae/.cache", node)
         self.assertIn("chown -R 10001:10001 /app/node_modules/.vite-temp /home/lae/.cache", node)
         self.assertIn("ENTRYPOINT", node)
+        self.assertIn(
+            'export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=".itool.tech"',
+            _TRUSTED_NODE_ADAPTER_ENTRYPOINT.decode("utf-8"),
+        )
         self.assertIn("USER 10001:10001", python)
         self.assertIn("requirements.txt", python)
         self.assertIn("lae_python_runtime", python)
