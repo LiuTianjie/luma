@@ -1123,9 +1123,10 @@ class DeploymentStepRunner:
         context: DeploymentContext,
         state: DeploymentOrchestrationState,
     ) -> DeploymentStepResult:
-        # Secret refs are intentionally not checkpointed. They are minted
-        # again immediately before deploy and never appear in events/logs.
-        await self._secrets.issue_refs(operation, context)
+        # Secret refs are intentionally minted exactly once, immediately
+        # before the runtime deploy call. A preflight issue here can expire
+        # while managed storage is prepared; replaying its idempotency key then
+        # returns the expired consume-once ref and prevents deployment.
         await self._states.save(
             replace(state, phase="volumes"), expected_version=state.version
         )

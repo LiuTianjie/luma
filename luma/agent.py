@@ -3902,7 +3902,16 @@ def _macos_remove_nfs_command(name: str) -> str:
 
 def _volume_path_command(path: str) -> str:
     safe_path = _safe_absolute_path(path)
-    return f"set -euo pipefail; install -d -m 755 {shlex.quote(safe_path)}"
+    # A managed volume can be mounted by arbitrary non-root image UIDs. The
+    # per-application path is the isolation boundary, so its root must be
+    # writable without assuming an image-specific uid/gid. Reconcile existing
+    # paths as well as new ones so an upgrade repairs previously created 0755
+    # roots.
+    return (
+        "set -euo pipefail; "
+        f"install -d -m 0777 {shlex.quote(safe_path)}; "
+        f"chmod 0777 {shlex.quote(safe_path)}"
+    )
 
 
 def _remove_volume_path_command(root: str, relative: str) -> str:

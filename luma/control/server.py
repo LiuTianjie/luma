@@ -11197,7 +11197,10 @@ def _prepare_managed_volume_path(storage_class: StorageClassSpec, sub_path: str,
             "prepared": str(result.get("message") or "volume path ready"),
             "taskId": str(result.get("taskId") or ""),
         }
-    command = f"install -d -m 755 {shlex.quote(str(full_path))}"
+    command = (
+        f"install -d -m 0777 {shlex.quote(str(full_path))}; "
+        f"chmod 0777 {shlex.quote(str(full_path))}"
+    )
     try:
         _run_host_prep_command(command)
     except LumaError as exc:

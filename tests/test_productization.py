@@ -2752,6 +2752,14 @@ class CliTests(unittest.TestCase):
         self.assertIn("target.unlink(missing_ok=True)", command)
         self.assertIn("already exists with different options", command)
 
+    def test_managed_volume_path_is_writable_by_arbitrary_container_uid(self):
+        from luma.agent import _volume_path_command
+
+        command = _volume_path_command("/srv/luma/lae/tenant/app/volume")
+
+        self.assertIn("install -d -m 0777", command)
+        self.assertIn("chmod 0777", command)
+
     def test_update_refreshes_manager_even_when_control_version_matches_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp) / "state"

@@ -133,6 +133,16 @@ class StaticContextLoader:
         return self.context
 
 
+class CountingRuntimeSecretProvider(FakeRuntimeSecretProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.issue_count = 0
+
+    async def issue_refs(self, operation, context):
+        self.issue_count += 1
+        return await super().issue_refs(operation, context)
+
+
 def build_result(keys: tuple[str, ...], snapshot_digest: str) -> dict[str, object]:
     images = {
         key: f"registry.internal/apps/{key}@sha256:" + str(index + 1) * 64
@@ -446,6 +456,7 @@ class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
         route_failure=False,
         runtime_failure=False,
         clock=None,
+        secrets=None,
     ):
         keys = tuple(service.build_key for service in context.services)
         builder = AutoBuilder(
@@ -466,7 +477,7 @@ class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
             states=store,
             builder=builder,  # type: ignore[arg-type]
             runtime=runtime,  # type: ignore[arg-type]
-            secrets=FakeRuntimeSecretProvider(),
+            secrets=secrets or FakeRuntimeSecretProvider(),
             renderer=RuntimeManifestRenderer(),
             config=self.config,
             worker_id=self.worker_id,
@@ -545,6 +556,16 @@ class DeploymentWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(store.reservations[self.operation_id], "consumed")
         self.assertEqual(len(store.volume_bindings[self.operation_id]), 1)
+
+    async def test_runtime_secrets_are_minted_once_immediately_before_deploy(self) -> None:
+        context = self.context(compose=True)
+        secrets = CountingRuntimeSecretProvider()
+        runner, _store, _builder = self.runner(context, secrets=secrets)
+
+        result = await self.execute(runner)
+
+        self.assertEqual(result.operation.status, "succeeded")
+        self.assertEqual(secrets.issue_count, 1)
 
     async def test_build_deploy_and_route_failures_preserve_old_current(self) -> None:
         for mode in ("build", "deploy", "route"):
