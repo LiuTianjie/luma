@@ -6854,6 +6854,11 @@ class ControlApiTests(unittest.TestCase):
                         },
                     ],
                     {},
+                    {
+                        "ID": "myapp",
+                        "TaskGroups": [{"Name": "api", "Count": 1, "Tasks": [{"Name": "api"}]}],
+                    },
+                    {"EvalID": "eval-recovery"},
                     [
                         {
                             "ID": "alloc-new",
@@ -6868,13 +6873,163 @@ class ControlApiTests(unittest.TestCase):
 
                 self.assertEqual(result["mode"], "recreate")
                 self.assertEqual(result["replacementAllocations"], ["alloc-new"])
+                self.assertEqual(result["recovery"]["strategy"], "force-evaluate")
                 api.request.assert_any_call("POST", "/v1/allocation/alloc-pending/stop", None)
+                api.request.assert_any_call(
+                    "POST",
+                    "/v1/job/myapp/evaluate",
+                    {"JobID": "myapp", "EvalOptions": {"ForceReschedule": True}},
+                )
                 self.assertNotIn(
                     call("POST", "/v1/allocation/alloc-history/stop", None),
                     api.request.call_args_list,
                 )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_restart_recovers_unknown_allocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                api = Mock()
+                api.request.side_effect = [
+                    [
+                        {
+                            "ID": "alloc-unknown",
+                            "ClientStatus": "unknown",
+                            "DesiredStatus": "run",
+                            "TaskStates": {"api": {}},
+                        }
+                    ],
+                    {},
+                    [
+                        {
+                            "ID": "alloc-new",
+                            "ClientStatus": "running",
+                            "DesiredStatus": "run",
+                            "TaskStates": {"api": {}},
+                        }
+                    ],
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api):
+                    result = handle_application_restart(state["deployToken"], {"stack": "myapp"})
+
+                self.assertEqual(result["replacementAllocations"], ["alloc-new"])
+                api.request.assert_any_call("POST", "/v1/allocation/alloc-unknown/stop", None)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_restart_forces_evaluation_when_allocations_are_gone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                api = Mock()
+                api.request.side_effect = [
+                    [],
+                    {"ID": "myapp", "TaskGroups": [{"Name": "api", "Count": 1}]},
+                    {"EvalID": "eval-recovery"},
+                    [{"ID": "alloc-new", "ClientStatus": "running", "DesiredStatus": "run"}],
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api):
+                    result = handle_application_restart(state["deployToken"], {"stack": "myapp"})
+
+                self.assertEqual(result["replacementAllocations"], ["alloc-new"])
+                self.assertEqual(result["recovery"]["evaluationId"], "eval-recovery")
+                api.request.assert_any_call(
+                    "POST",
+                    "/v1/job/myapp/evaluate",
+                    {"JobID": "myapp", "EvalOptions": {"ForceReschedule": True}},
+                )
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_restart_reports_blocked_pinned_node_instead_of_missing_allocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                api = Mock()
+                api.request.side_effect = [
+                    [],
+                    {"ID": "myapp", "TaskGroups": [{"Name": "api", "Count": 1}]},
+                    {"EvalID": "eval-blocked"},
+                    [],
+                    {
+                        "ID": "eval-blocked",
+                        "Status": "blocked",
+                        "FailedTGAllocs": {
+                            "api": {
+                                "ConstraintFiltered": {
+                                    "${meta.region} = home": 3,
+                                    "${meta.luma_node_name} = blg": 4,
+                                }
+                            }
+                        },
+                    },
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api):
+                    with self.assertRaisesRegex(
+                        LumaError,
+                        "requested node blg is unavailable, down, or scheduling-ineligible",
+                    ):
+                        handle_application_restart(state["deployToken"], {"stack": "myapp"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_restart_restores_gc_job_from_saved_deployment_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                manifest = yaml.safe_dump(
+                    {
+                        "name": "myapp",
+                        "image": "example/myapp:1",
+                        "region": "home",
+                        "exposure": "none",
+                    }
+                )
+                state["deployments"] = {
+                    "services": {
+                        "myapp": {
+                            "kind": "service",
+                            "name": "myapp",
+                            "slug": "myapp",
+                            "manifest": manifest,
+                            "sourceName": "deploy/myapp.luma.yml",
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad"}}),
+                    encoding="utf-8",
+                )
+                api = Mock()
+                api.request.side_effect = [
+                    LumaError("Nomad API error 404: job not found"),
+                    [{"ID": "alloc-restored", "ClientStatus": "running", "DesiredStatus": "run"}],
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api), patch(
+                    "luma.control.server.handle_deployment",
+                    return_value={"service": "myapp", "probe": "ready"},
+                ) as deploy:
+                    result = handle_application_restart(state["deployToken"], {"stack": "myapp"})
+
+                self.assertEqual(result["replacementAllocations"], ["alloc-restored"])
+                self.assertEqual(result["recovery"], {"strategy": "stored-deployment", "kind": "service"})
+                deploy.assert_called_once()
+                self.assertEqual(deploy.call_args.args[0], state["deployToken"])
+                self.assertEqual(deploy.call_args.args[1]["manifest"], manifest)
+                self.assertEqual(deploy.call_args.args[1]["origin"], "application-restart-recovery")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_application_restart_refreshes_nomad_cni_hostports_after_allocation_recreate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -7941,6 +8096,68 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(service["desired"], 1)
                 self.assertEqual(service["pending"], 1)
                 self.assertEqual(service["nodes"], ["lab"])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_dashboard_keeps_configured_node_visible_without_allocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["deployments"] = {
+                    "services": {
+                        "api": {
+                            "kind": "service",
+                            "name": "api",
+                            "slug": "api",
+                            "manifest": yaml.safe_dump(
+                                {
+                                    "name": "api",
+                                    "image": "example/api:1",
+                                    "region": "home",
+                                    "node": "blg",
+                                    "exposure": "tailscale-relay",
+                                    "domain": "api.example.com",
+                                    "port": 8080,
+                                }
+                            ),
+                            "status": "failed_partial",
+                        }
+                    },
+                    "compose": {},
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad"}}),
+                    encoding="utf-8",
+                )
+                nomad_services = [
+                    {
+                        "name": "api",
+                        "jobId": "api",
+                        "status": "pending",
+                        "running": 0,
+                        "desired": 1,
+                        "pending": 1,
+                        "region": "home",
+                        "compose": False,
+                        "tasks": [],
+                    }
+                ]
+                with patch(
+                    "luma.control.server.nomad_status_summary",
+                    return_value={"available": True, "leader": "127.0.0.1:4647", "nodes": []},
+                ), patch("luma.control.server.nomad_services_summary", return_value=nomad_services), patch(
+                    "luma.control.server._service_stats_by_name", return_value={}
+                ):
+                    result = handle_dashboard(state["deployToken"])
+
+                service = result["services"][0]
+                self.assertEqual(service["node"], "blg")
+                self.assertEqual(service["nodes"], ["blg"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

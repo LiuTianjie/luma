@@ -8744,6 +8744,7 @@ def _remove_compose_deployment(
 SYSTEM_STACKS = {"traefik", "egress", "luma-control"}
 
 
+@_serialize_deploy
 def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -8757,32 +8758,62 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         raise LumaError(f"system stack cannot be restarted from application management: {stack}")
     config = load_config(_control_config_path())
     api = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
-    allocations = api.request("GET", f"/v1/job/{urllib.parse.quote(stack, safe='')}/allocations")
+    job_path = f"/v1/job/{urllib.parse.quote(stack, safe='')}"
+    try:
+        allocations = api.request("GET", f"{job_path}/allocations")
+    except LumaError as exc:
+        if "Nomad API error 404" not in str(exc):
+            raise
+        if mode != "recreate":
+            raise LumaError(
+                f"application job is missing: {stack}; use application-level restart to restore it"
+            ) from exc
+        return _restore_application_from_deployment_record(
+            token,
+            state,
+            api,
+            stack,
+            service_name=service_name,
+        )
     if not isinstance(allocations, list):
         raise LumaError(f"Nomad returned invalid allocations for job: {stack}")
     restarted = []
     recreated_allocation_ids: set[str] = set()
+    known_allocation_ids: set[str] = set()
     application_node_names: set[str] = set()
     recreated_node_names: set[str] = set()
     recreated_host_ports: set[int] = set()
+    force_evaluation = False
+    stop_evaluation_id = ""
     for alloc in allocations:
         if not isinstance(alloc, dict):
             continue
         client_status = str(alloc.get("ClientStatus") or alloc.get("client_status") or "").lower()
-        desired_status = str(alloc.get("DesiredStatus") or alloc.get("desired_status") or "run").lower()
+        desired_value = alloc.get("DesiredStatus") or alloc.get("desired_status")
+        desired_status = str(
+            desired_value
+            or ("stop" if client_status in {"complete", "failed", "lost"} else "run")
+        ).lower()
+        alloc_id = str(alloc.get("ID") or alloc.get("id") or "").strip()
+        if alloc_id:
+            known_allocation_ids.add(alloc_id)
         if mode == "recreate":
             # Application-level restart is also the recovery action for an
             # allocation stuck before task start (image pull, setup, etc.). A
-            # pending allocation still owns the desired slot and must be
-            # stopped so Nomad creates a fresh replacement. Terminal/history
-            # allocations and allocations already being stopped are ignored.
-            if desired_status == "stop" or client_status not in {"running", "pending"}:
+            # pending or disconnected/unknown allocation still owns the
+            # desired slot and must be stopped so Nomad creates a fresh
+            # replacement. A terminal allocation without an existing
+            # replacement needs a forced evaluation instead.
+            if desired_status == "stop":
+                continue
+            if client_status not in {"running", "pending", "unknown"}:
+                if not str(alloc.get("NextAllocation") or alloc.get("next_allocation") or "").strip():
+                    force_evaluation = True
                 continue
         elif client_status != "running":
             # Nomad's in-place task restart endpoint only applies to a running
             # allocation. Recovery of pending allocations belongs to recreate.
             continue
-        alloc_id = str(alloc.get("ID") or alloc.get("ID") or "").strip()
         if not alloc_id:
             continue
         allocation_node_name = _luma_node_name_for_nomad_allocation(state, alloc)
@@ -8792,7 +8823,9 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         if mode == "recreate":
             if service_name and service_name not in task_states:
                 continue
-            api.request("POST", f"/v1/allocation/{urllib.parse.quote(alloc_id, safe='')}/stop", None)
+            stop_result = api.request("POST", f"/v1/allocation/{urllib.parse.quote(alloc_id, safe='')}/stop", None)
+            if isinstance(stop_result, dict) and stop_result.get("EvalID"):
+                stop_evaluation_id = str(stop_result.get("EvalID") or "").strip()
             restarted.append({"allocId": alloc_id, "task": service_name or "*", "mode": mode})
             recreated_allocation_ids.add(alloc_id)
             node_name = allocation_node_name
@@ -8805,9 +8838,27 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
             payload = {"TaskName": task_name} if task_name else {}
             api.request("POST", f"/v1/client/allocation/{urllib.parse.quote(alloc_id, safe='')}/restart", payload)
             restarted.append({"allocId": alloc_id, "task": task_name or "*", "mode": mode})
-    if not restarted:
+    if mode == "task" and not restarted:
         suffix = f"/{service_name}" if service_name else ""
-        raise LumaError(f"application allocation not found: {stack}{suffix}")
+        raise LumaError(
+            f"application has no running allocation to restart in place: {stack}{suffix}; "
+            "use application-level restart to recover it"
+        )
+    job: Dict[str, Any] | None = None
+    forced_evaluation_id = ""
+    if mode == "recreate" and (not restarted or force_evaluation):
+        raw_job = api.request("GET", job_path)
+        if not isinstance(raw_job, dict):
+            raise LumaError(f"Nomad returned invalid job definition: {stack}")
+        job = raw_job
+        evaluation = api.request(
+            "POST",
+            f"{job_path}/evaluate",
+            {"JobID": stack, "EvalOptions": {"ForceReschedule": True}},
+        )
+        forced_evaluation_id = str(evaluation.get("EvalID") or "").strip() if isinstance(evaluation, dict) else ""
+        if not forced_evaluation_id:
+            raise LumaError(f"Nomad did not create a recovery evaluation for application: {stack}")
     result = {
         "clusterId": state["clusterId"],
         "stack": stack,
@@ -8815,23 +8866,138 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         "mode": mode,
         "restarted": restarted,
     }
-    if recreated_allocation_ids:
-        result["replacementAllocations"] = _wait_for_nomad_job_replacement(
-            api,
+    try:
+        if mode == "recreate":
+            old_allocation_ids = known_allocation_ids or recreated_allocation_ids
+            expected = (
+                _nomad_job_desired_allocation_count(job, service_name=service_name)
+                if job is not None
+                else len(recreated_allocation_ids)
+            )
+            result["replacementAllocations"] = _wait_for_nomad_job_replacement(
+                api,
+                stack,
+                old_allocation_ids,
+                min_running=max(1, expected),
+                evaluation_id=forced_evaluation_id or stop_evaluation_id,
+            )
+            if forced_evaluation_id:
+                result["recovery"] = {
+                    "strategy": "force-evaluate",
+                    "evaluationId": forced_evaluation_id,
+                }
+        cni_hostports = _refresh_nomad_cni_hostports_for_nodes(state, recreated_node_names, ports=sorted(recreated_host_ports))
+        if recreated_node_names or cni_hostports.get("results") or cni_hostports.get("skipped"):
+            result["cniHostports"] = cni_hostports
+        result["delivery"] = _reconcile_application_delivery(
+            state,
+            config,
             stack,
-            recreated_allocation_ids,
-            min_running=len(recreated_allocation_ids),
+            allocation_node_names=application_node_names,
         )
-    cni_hostports = _refresh_nomad_cni_hostports_for_nodes(state, recreated_node_names, ports=sorted(recreated_host_ports))
-    if recreated_node_names or cni_hostports.get("results") or cni_hostports.get("skipped"):
-        result["cniHostports"] = cni_hostports
-    result["delivery"] = _reconcile_application_delivery(
-        state,
-        config,
-        stack,
-        allocation_node_names=application_node_names,
-    )
+    except Exception as exc:
+        if mode == "recreate":
+            _mark_application_restart_outcome(stack, status="failed_partial", error=str(exc))
+        raise
+    if mode == "recreate":
+        _mark_application_restart_outcome(stack, status="active")
     return result
+
+
+def _nomad_job_desired_allocation_count(job: Dict[str, Any] | None, *, service_name: str = "") -> int:
+    if not isinstance(job, dict):
+        return 1
+    groups = [group for group in job.get("TaskGroups") or [] if isinstance(group, dict)]
+    if service_name:
+        matching = [
+            group
+            for group in groups
+            if str(group.get("Name") or "") == service_name
+            or any(
+                isinstance(task, dict) and str(task.get("Name") or "") == service_name
+                for task in group.get("Tasks") or []
+            )
+        ]
+        if matching:
+            groups = matching
+    return max(1, sum(max(0, int(group.get("Count") or 1)) for group in groups))
+
+
+def _mark_application_restart_outcome(stack: str, *, status: str, error: str = "") -> None:
+    slug = slugify(stack)
+
+    def mutate(state: Dict[str, Any]) -> None:
+        deployments = _deployments_state(state)
+        record = deployments["services"].get(slug) or deployments["compose"].get(slug)
+        if not isinstance(record, dict):
+            return
+        record["status"] = status
+        record["lastError"] = error
+        record["updatedAt"] = int(time.time())
+
+    mutate_state(mutate)
+
+
+def _restore_application_from_deployment_record(
+    token: str,
+    state: Dict[str, Any],
+    api: NomadApi,
+    stack: str,
+    *,
+    service_name: str = "",
+) -> Dict[str, Any]:
+    """Recreate a GC'd Nomad job from Luma's saved deployment source of truth."""
+    record = _service_deployment_record(state, stack)
+    kind = "service"
+    if not isinstance(record, dict):
+        record = _compose_deployment_record(state, stack)
+        kind = "compose"
+    if not isinstance(record, dict):
+        raise LumaError(
+            f"application deployment record not found: {stack}; deploy or import it once before restart"
+        )
+    manifest = record.get("manifest")
+    if not isinstance(manifest, str) or not manifest.strip():
+        raise LumaError(f"saved application deployment manifest is missing: {stack}")
+    deploy_body: Dict[str, Any] = {
+        "manifest": manifest,
+        "sourceName": str(record.get("sourceName") or f"{stack}.yaml"),
+        "origin": "application-restart-recovery",
+    }
+    if isinstance(record.get("gitSource"), dict):
+        deploy_body["gitSource"] = dict(record["gitSource"])
+    if kind == "compose":
+        compose_content = record.get("composeContent")
+        if not isinstance(compose_content, str) or not compose_content.strip():
+            raise LumaError(f"saved application compose content is missing: {stack}")
+        deploy_body["composeContent"] = compose_content
+        deployment_result = handle_compose_deployment(token, deploy_body)
+    else:
+        deployment_result = handle_deployment(token, deploy_body)
+    allocations = api.request(
+        "GET",
+        f"/v1/job/{urllib.parse.quote(stack, safe='')}/allocations",
+    )
+    if not isinstance(allocations, list):
+        raise LumaError(f"Nomad returned invalid allocations after restoring job: {stack}")
+    replacements = sorted(
+        str(allocation.get("ID") or allocation.get("id") or "").strip()
+        for allocation in allocations
+        if _nomad_allocation_is_running(allocation)
+    )
+    replacements = [allocation_id for allocation_id in replacements if allocation_id]
+    if not replacements:
+        raise LumaError(f"restored application has no running allocation: {stack}")
+    return {
+        "clusterId": state["clusterId"],
+        "stack": stack,
+        "service": service_name,
+        "mode": "recreate",
+        "restarted": [],
+        "replacementAllocations": replacements,
+        "recovery": {"strategy": "stored-deployment", "kind": kind},
+        "delivery": {"status": "ready", "deployment": deployment_result},
+    }
 
 
 def _reconcile_application_delivery(
@@ -11976,6 +12142,7 @@ def _wait_for_nomad_job_replacement(
     *,
     min_running: int = 1,
     timeout: int = PUBLIC_ROUTE_SETTLE_TIMEOUT_SECONDS,
+    evaluation_id: str = "",
 ) -> list[str]:
     old_ids = {str(value).strip() for value in old_allocation_ids if str(value).strip()}
     deadline = time.monotonic() + max(1, int(timeout))
@@ -11993,11 +12160,56 @@ def _wait_for_nomad_job_replacement(
         last = [value for value in last if value]
         if len(last) >= max(1, int(min_running)):
             return last
+        if evaluation_id:
+            evaluation = api.request(
+                "GET",
+                f"/v1/evaluation/{urllib.parse.quote(evaluation_id, safe='')}",
+            )
+            if isinstance(evaluation, dict):
+                status = str(evaluation.get("Status") or "").lower()
+                if status == "blocked":
+                    raise LumaError(_nomad_blocked_evaluation_message(job_id, evaluation))
+                if status in {"cancelled", "failed"}:
+                    description = str(evaluation.get("StatusDescription") or status)
+                    raise LumaError(
+                        f"application recovery evaluation {evaluation_id} {status}: {description}"
+                    )
         if time.monotonic() >= deadline:
             raise LumaError(
                 f"Nomad job {job_id} did not replace {len(old_ids)} allocation(s) within {timeout}s"
             )
         time.sleep(1)
+
+
+def _nomad_blocked_evaluation_message(job_id: str, evaluation: Dict[str, Any]) -> str:
+    failed = evaluation.get("FailedTGAllocs") if isinstance(evaluation.get("FailedTGAllocs"), dict) else {}
+    constraints: list[str] = []
+    requested_node = ""
+    for detail in failed.values():
+        if not isinstance(detail, dict):
+            continue
+        filtered = detail.get("ConstraintFiltered") if isinstance(detail.get("ConstraintFiltered"), dict) else {}
+        for reason, count in filtered.items():
+            reason_text = str(reason)
+            constraints.append(f"{reason_text} ({count} node(s))")
+            match = re.search(r"\$\{meta\.luma_node_name\}\s*=\s*(\S+)", reason_text)
+            if match:
+                requested_node = match.group(1)
+    evaluation_id = str(evaluation.get("ID") or "").strip()
+    if requested_node:
+        message = (
+            f"application {job_id} cannot be scheduled: requested node {requested_node} "
+            "is unavailable, down, or scheduling-ineligible"
+        )
+    elif constraints:
+        message = f"application {job_id} cannot be scheduled: all candidate nodes were filtered"
+    else:
+        message = f"application {job_id} cannot be scheduled: Nomad evaluation is blocked"
+    if constraints:
+        message += f"; constraints: {', '.join(sorted(set(constraints)))}"
+    if evaluation_id:
+        message += f"; evaluation {evaluation_id}"
+    return message
 
 
 def _recover_traefik_ingress() -> str:
@@ -12687,6 +12899,12 @@ def _dashboard_service_from_nomad_job(
     pending = task_rollup["pending"] if task_rollup else int(svc.get("pending") or 0)
     failed = task_rollup["failed"] if task_rollup else int(svc.get("failed") or 0)
     nodes = task_rollup["nodes"] if task_rollup else [str(node) for node in svc.get("nodes") or [] if node]
+    configured_node = str(config.get("node") or "")
+    if not nodes and configured_node:
+        # A blocked job has no allocation and therefore no runtime NodeName,
+        # but the saved manifest is still the authoritative placement intent.
+        # Keep it visible instead of rendering a misleading "-" in the UI.
+        nodes = [configured_node]
     route_id = str(route.get("id") or config.get("routeId") or "")
     item: Dict[str, Any] = {
         "name": name,
@@ -12705,6 +12923,7 @@ def _dashboard_service_from_nomad_job(
         "desired": desired,
         "failed": failed,
         "pending": pending,
+        "node": configured_node,
         "nodes": nodes,
         "tasks": svc.get("tasks") if isinstance(svc.get("tasks"), list) else [],
         "storage": svc.get("storage") if isinstance(svc.get("storage"), list) else [],
