@@ -3495,6 +3495,13 @@ def update_luma_install(
     output = completed.stdout or ""
     if completed.returncode != 0:
         raise LumaError(f"Luma installer failed with exit code {completed.returncode}: {_tail_text(output)}")
+    version_match = re.search(r"^Luma version:\s*([^\s]+)\s*$", output, re.MULTILINE)
+    if version_match is None:
+        raise LumaError(
+            "Luma installer completed without reporting the installed version; "
+            "the update cannot be verified"
+        )
+    installed_version = version_match.group(1)
     emit("Package installed; refreshing the node agent service definition.")
     os_value = node_agent_os()
     executable = _installed_luma_executable()
@@ -3523,6 +3530,7 @@ def update_luma_install(
     emit(f"Update prepared successfully; {watchdog_message}.")
     return {
         "installRef": exact_ref,
+        "installedVersion": installed_version,
         "message": f"Luma installer finished; {service_message}; {watchdog_message}",
         "output": _tail_text(output),
         "restartAgent": restart_agent,

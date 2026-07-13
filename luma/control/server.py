@@ -9763,6 +9763,9 @@ def handle_fleet_update(
             item["taskId"] = str(result.get("taskId") or "")
             if result.get("installRef"):
                 item["installRef"] = str(result.get("installRef"))
+            installed_version = str(result.get("installedVersion") or "").strip()
+            if installed_version:
+                item["installedVersion"] = installed_version
             if result.get("output"):
                 item["output"] = str(result.get("output"))
             if wait_ready_seconds:
@@ -9774,6 +9777,13 @@ def handle_fleet_update(
                 expected_version = ""
                 if re.fullmatch(r"v[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?", install_ref):
                     expected_version = install_ref[1:]
+                elif installed_version:
+                    expected_version = installed_version
+                else:
+                    raise LumaError(
+                        "Installer did not report the installed version for this commit/branch update; "
+                        "update this node with a release tag once before retrying an untagged ref."
+                    )
                 verify_deadline = time.monotonic() + wait_ready_seconds
                 verified_agent: Dict[str, Any] | None = None
                 while time.monotonic() < verify_deadline:

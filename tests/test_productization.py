@@ -491,7 +491,7 @@ class ProductConfigTests(unittest.TestCase):
 
     def test_node_agent_update_refreshes_linux_service_before_restart(self):
         executor = Mock()
-        completed = Mock(returncode=0, stdout="installer ok")
+        completed = Mock(returncode=0, stdout="installer ok\nLuma version: 0.1.222\n")
         with patch("luma.agent.subprocess.run", return_value=completed), patch("luma.agent.LocalExecutor", return_value=executor), patch(
             "luma.agent.node_agent_os", return_value="linux"
         ), patch("luma.agent._installed_luma_executable", return_value="/root/.local/bin/luma"):
@@ -508,7 +508,7 @@ class ProductConfigTests(unittest.TestCase):
 
     def test_node_agent_update_schedules_macos_launchd_reload(self):
         executor = Mock()
-        completed = Mock(returncode=0, stdout="installer ok")
+        completed = Mock(returncode=0, stdout="installer ok\nLuma version: 0.1.222\n")
         with patch("luma.agent.subprocess.run", return_value=completed), patch("luma.agent.LocalExecutor", return_value=executor), patch(
             "luma.agent.node_agent_os", return_value="darwin"
         ), patch("luma.agent._installed_luma_executable", return_value="/Users/tao/.local/bin/luma"):
@@ -524,7 +524,7 @@ class ProductConfigTests(unittest.TestCase):
 
     def test_node_agent_update_reuses_current_user_install_layout_for_root_launchd(self):
         executor = Mock()
-        completed = Mock(returncode=0, stdout="installer ok")
+        completed = Mock(returncode=0, stdout="installer ok\nLuma version: 0.1.222\n")
         run = Mock(return_value=completed)
         with patch("luma.agent.subprocess.run", run), patch("luma.agent.LocalExecutor", return_value=executor), patch(
             "luma.agent.node_agent_os", return_value="darwin"
@@ -778,7 +778,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertTrue(all(item["type"] == "output" for item in seen))
 
     def test_node_agent_can_update_luma_install(self):
-        completed = Mock(returncode=0, stdout="installed\n")
+        completed = Mock(returncode=0, stdout="installed\nLuma version: 0.1.222\n")
         events = []
         with patch("luma.agent.subprocess.run", return_value=completed) as run, patch("luma.agent.LocalExecutor") as executor, patch(
             "luma.agent.node_agent_os", return_value="linux"
@@ -793,6 +793,7 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("install-luma.sh", run.call_args.args[0])
         self.assertEqual(run.call_args.kwargs["env"]["LUMA_INSTALL_REF"], "main")
         self.assertEqual(result["installRef"], "main")
+        self.assertEqual(result["installedVersion"], "0.1.222")
         self.assertEqual(result["message"], "Luma installer finished; node agent service refreshed; Tailscale watchdog installed")
         self.assertTrue(result["restartAgent"])
         self.assertEqual(
@@ -804,6 +805,15 @@ class ProductConfigTests(unittest.TestCase):
                 "Update prepared successfully; Tailscale watchdog installed.",
             ],
         )
+
+    def test_node_agent_update_rejects_installer_without_version_proof(self):
+        completed = Mock(returncode=0, stdout="installer completed without version\n")
+        with patch("luma.agent.subprocess.run", return_value=completed), patch(
+            "luma.agent.LocalExecutor"
+        ) as executor:
+            with self.assertRaisesRegex(LumaError, "without reporting the installed version"):
+                update_luma_install(install_ref="bad-ref")
+        executor.assert_not_called()
 
     def test_node_agent_can_join_nomad_node(self):
         with patch("luma.bootstrap.install_nomad_node", return_value=["Nomad agent ready"]) as install_nomad, patch(
@@ -2489,6 +2499,25 @@ class CliTests(unittest.TestCase):
             command,
         )
         self.assertNotIn("/main/scripts/install-luma.sh", command)
+        self.assertNotIn("| sh", command)
+        self.assertIn("curl -fsSL", command)
+        self.assertIn('-o "$installer"', command)
+
+    def test_installer_bootstrap_propagates_download_failure(self):
+        from luma.installer import luma_installer_command
+
+        with patch("luma.installer.LUMA_INSTALLER_RAW_BASE", "http://127.0.0.1:1"):
+            command, _exact_ref = luma_installer_command("missing-ref", environ={})
+
+        completed = subprocess.run(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+        )
+        self.assertNotEqual(completed.returncode, 0)
 
     def test_local_update_pins_bootstrap_installer_and_archive_to_install_ref(self):
         with patch("luma.cli.subprocess.run") as run:
@@ -2517,7 +2546,7 @@ class CliTests(unittest.TestCase):
 
     def test_node_agent_update_pins_bootstrap_installer_and_archive_to_install_ref(self):
         executor = Mock()
-        completed = Mock(returncode=0, stdout="installer ok")
+        completed = Mock(returncode=0, stdout="installer ok\nLuma version: 0.1.222\n")
         with patch("luma.agent.subprocess.run", return_value=completed) as run, patch(
             "luma.agent.LocalExecutor", return_value=executor
         ), patch("luma.agent.node_agent_os", return_value="linux"), patch(
@@ -5476,6 +5505,54 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(result["results"][0]["agentVersionAfter"], "0.1.173")
                 self.assertIn("installing", [event["status"] for event in events])
                 self.assertIn("verifying", [event["status"] for event in events])
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_fleet_commit_update_verifies_reported_installed_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "lab": {
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "version": "0.1.221",
+                            "os": "linux",
+                            "capabilities": ["luma-update"],
+                        },
+                    },
+                }
+                save_state(state)
+
+                def run_task(*_args, **_kwargs):
+                    current = load_state()
+                    current["nodes"]["lab"]["agent"]["lastSeen"] = int(time.time()) + 2
+                    current["nodes"]["lab"]["agent"]["version"] = "0.1.222"
+                    save_state(current)
+                    return {
+                        "taskId": "task-1",
+                        "message": "installer finished",
+                        "installRef": "a" * 40,
+                        "installedVersion": "0.1.222",
+                    }
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=run_task), patch(
+                    "luma.control.server.time.sleep", return_value=None
+                ):
+                    result = handle_fleet_update(
+                        state["deployToken"],
+                        {
+                            "installRef": "a" * 40,
+                            "nodeNames": ["lab"],
+                            "waitReadySeconds": 5,
+                        },
+                    )
+
+                self.assertEqual(result["succeeded"], 1)
+                self.assertEqual(result["results"][0]["installedVersion"], "0.1.222")
+                self.assertEqual(result["results"][0]["agentVersionAfter"], "0.1.222")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

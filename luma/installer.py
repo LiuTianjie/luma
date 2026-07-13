@@ -30,4 +30,14 @@ def luma_installer_command(
     # other path-sensitive bytes, then shell-quote the complete URL.
     encoded_ref = urllib.parse.quote(exact_ref, safe="/-._~")
     installer_url = f"{LUMA_INSTALLER_RAW_BASE}/{encoded_ref}/scripts/install-luma.sh"
-    return f"curl -fsSL {shlex.quote(installer_url)} | sh", exact_ref
+    # Do not use ``curl | sh`` here. POSIX shells report the pipeline's final
+    # command status, so a failed curl followed by an empty, successful ``sh``
+    # was previously reported as a completed update. Download first and only
+    # execute after curl has returned zero.
+    script = (
+        "installer=$(mktemp); "
+        "trap 'rm -f \"$installer\"' EXIT HUP INT TERM; "
+        f"curl -fsSL {shlex.quote(installer_url)} -o \"$installer\" && "
+        "sh \"$installer\""
+    )
+    return f"sh -c {shlex.quote(script)}", exact_ref

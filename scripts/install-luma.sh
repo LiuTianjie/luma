@@ -402,6 +402,12 @@ EOF
 fi
 
 echo "Luma installed in $VENV_DIR"
+installed_version="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$SOURCE_DIR/luma/__init__.py" | head -n 1)"
+[ -n "$installed_version" ] || {
+  echo "Installed Luma source does not declare a version." >&2
+  exit 1
+}
+echo "Luma version: $installed_version"
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
   echo "Command shim: $BIN_DIR/luma"
   echo "Open a new shell or run: exec \$SHELL -l"
