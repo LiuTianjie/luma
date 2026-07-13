@@ -10,7 +10,12 @@ from pathlib import Path
 from sqlalchemy import func, select
 
 LAE_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(LAE_ROOT / "packages" / "python" / "lae-store" / "src"))
+for relative in (
+    "packages/python/lae-luma-adapter/src",
+    "packages/python/lae-store/src",
+    "services/worker/src",
+):
+    sys.path.insert(0, str(LAE_ROOT / relative))
 
 try:  # Optional outside migration/integration CI jobs.
     from alembic import command
@@ -28,6 +33,7 @@ from lae_store import (  # noqa: E402
     keyed_request_hash,
     new_id,
 )
+from lae_store.repositories import TenantRepository  # noqa: E402
 from lae_store.deployment_admission import (  # noqa: E402
     DEPLOYMENT_CREATE_ROUTE,
     CreateDeploymentAdmission,
@@ -64,6 +70,13 @@ from lae_store.models import (  # noqa: E402
     Tenant,
     TenantMember,
     User,
+)
+from lae_worker.deployment_postgres import (  # noqa: E402
+    PostgresDeploymentContextLoader,
+    TrustedBuildPlan,
+    TrustedRuntimeRoute,
+    TrustedRuntimeService,
+    TrustedRuntimeVolume,
 )
 
 DSN = os.environ.get("LAE_TEST_POSTGRES_DSN", "")
@@ -206,6 +219,7 @@ class DeploymentAdmissionPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
         source_revision_id = new_id("src")
         analysis_id = new_id("ana")
         artifact_id = new_id("art")
+        build_artifact_id = new_id("art")
         operation_id = new_id("op")
         now = datetime.now(timezone.utc)
         async with self.sessions() as session:
@@ -253,6 +267,24 @@ class DeploymentAdmissionPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
                         verified_at=now,
                     )
                 )
+                session.add(
+                    Artifact(
+                        id=build_artifact_id,
+                        tenant_id=self.tenant_id,
+                        kind="build-plan-candidate",
+                        digest="sha256:" + "5" * 64,
+                        media_type=(
+                            "application/vnd.lae.build-plan-candidate+json"
+                        ),
+                        size_bytes=256,
+                        storage_key=(
+                            f"tenants/{self.tenant_id}/analysis-artifacts/"
+                            "build-plan-candidate/plan.json"
+                        ),
+                        upload_status="verified",
+                        verified_at=now,
+                    )
+                )
                 await session.flush()
                 session.add(
                     Analysis(
@@ -284,6 +316,14 @@ class DeploymentAdmissionPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
                         analysis_id=analysis_id,
                         name="deploymentPlan",
                         artifact_id=artifact_id,
+                    )
+                )
+                session.add(
+                    AnalysisArtifact(
+                        tenant_id=self.tenant_id,
+                        analysis_id=analysis_id,
+                        name="buildPlan",
+                        artifact_id=build_artifact_id,
                     )
                 )
         return source_revision_id, analysis_id, artifact_id
@@ -541,6 +581,71 @@ class DeploymentAdmissionPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(artifact.analysis_id, self.analysis_id)
         self.assertEqual(artifact.source_snapshot_digest, "sha256:" + "3" * 64)
+
+        admitted = await self.store.admit(
+            CreateDeploymentAdmission(
+                scope=self.scope,
+                application_id=self.application_id,
+                analysis_id=self.analysis_id,
+                environment_version=0,
+            ),
+            principal=self.principal,
+            idempotency=self.idempotency("needs-configuration-deploy"),
+            artifact=artifact,
+            plan=self.prepared_plan(),
+        )
+
+        class Materializer:
+            async def materialize(self, *_args, **_kwargs):
+                return TrustedBuildPlan(
+                    signed_build_plan={"schemaVersion": "lae.build-plan/v1"},
+                    credential_lease_id="bcred_" + "a" * 32,
+                    service_build_keys={
+                        "admin": "admin",
+                        "database": "database",
+                        "web": "web",
+                    },
+                    kind="compose",
+                    services=(
+                        TrustedRuntimeService(
+                            "admin", "http", "admin", None, (), "0.25", 256,
+                            (), 9090, "/", 10,
+                        ),
+                        TrustedRuntimeService(
+                            "database", "datastore", "database", None, (),
+                            "0.25", 256, (), None, None, None,
+                        ),
+                        TrustedRuntimeService(
+                            "web", "http", "web", None, (), "0.25", 256,
+                            (), 8080, "/", 10,
+                        ),
+                    ),
+                    routes=(
+                        TrustedRuntimeRoute("admin", 9090, "/"),
+                        TrustedRuntimeRoute("web", 8080, "/"),
+                    ),
+                    volumes=(
+                        TrustedRuntimeVolume(
+                            "database",
+                            64 * 1024 * 1024,
+                            ("database",),
+                            "/var/lib/database",
+                            "ReadWriteOnce",
+                        ),
+                    ),
+                )
+
+        async with self.sessions() as session:
+            operation = await TenantRepository(session, self.scope).get_operation(
+                admitted.operation_id
+            )
+        context = await PostgresDeploymentContextLoader(
+            self.sessions, Materializer(), region="cn"
+        ).load(operation)
+        self.assertEqual(context.analysis_ref, self.analysis_id)
+        self.assertEqual({service.key for service in context.services}, {
+            "admin", "database", "web"
+        })
 
         async with self.sessions() as session:
             async with session.begin():

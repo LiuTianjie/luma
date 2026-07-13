@@ -213,7 +213,13 @@ class PostgresDeploymentContextLoader:
                             Deployment.application_id == operation.target_id,
                             Application.deleted_at.is_(None),
                             AppRevision.status == "candidate",
-                            Analysis.status == "deployable",
+                            # Admission accepts a stored ``needs_configuration``
+                            # analysis after its required environment has been
+                            # supplied. The worker must load that same immutable
+                            # plan instead of forcing a redundant re-analysis.
+                            Analysis.status.in_(
+                                ("deployable", "needs_configuration")
+                            ),
                             Analysis.artifact_state == "stored",
                             Analysis.plan_stored.is_(True),
                             Artifact.kind == "build-plan-candidate",
