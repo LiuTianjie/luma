@@ -10276,6 +10276,24 @@ def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, A
     domain = str(state.get("domain") or "").strip()
     if not domain:
         raise LumaError("control domain is not configured")
+    control_environment_raw = body.get("controlEnvironment")
+    if control_environment_raw is None:
+        control_environment: Dict[str, str] = {}
+    elif isinstance(control_environment_raw, dict):
+        from ..nomad_render import CONTROL_JOB_ENV_ALLOWLIST, control_job_environment
+
+        unknown = sorted(set(control_environment_raw) - CONTROL_JOB_ENV_ALLOWLIST)
+        if unknown:
+            raise LumaError(
+                f"controlEnvironment key is not allowlisted: {unknown[0]}"
+            )
+        control_environment = control_job_environment(
+            {str(name): str(value) for name, value in control_environment_raw.items()}
+        )
+        if set(control_environment) != set(control_environment_raw):
+            raise LumaError("controlEnvironment values must not be empty")
+    else:
+        raise LumaError("controlEnvironment must be an object")
     node_name, _record = _manager_update_target(state)
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     watchdog_peers = sorted(
@@ -10296,6 +10314,7 @@ def handle_manager_update_start(token: str, body: Dict[str, Any]) -> Dict[str, A
             "installRef": install_ref,
             "controlImage": control_image,
             "domain": domain,
+            "controlEnvironment": control_environment,
             "tailscaleWatchdogPeers": watchdog_peers,
         },
         timeout=90,

@@ -2074,6 +2074,11 @@ def execute_agent_task(
             install_ref=str(payload.get("installRef") or ""),
             control_image=str(payload.get("controlImage") or ""),
             domain=str(payload.get("domain") or ""),
+            control_environment=(
+                payload.get("controlEnvironment")
+                if isinstance(payload.get("controlEnvironment"), dict)
+                else {}
+            ),
             watchdog_peers=[
                 str(value)
                 for value in payload.get("tailscaleWatchdogPeers") or []
@@ -3583,6 +3588,7 @@ def start_manager_control_update(
     install_ref: str,
     control_image: str,
     domain: str,
+    control_environment: Mapping[str, str] | None = None,
     watchdog_peers: list[str] | tuple[str, ...] = (),
 ) -> Dict[str, Any]:
     if node_agent_os() != "linux" or not shutil.which("systemd-run"):
@@ -3614,6 +3620,13 @@ def start_manager_control_update(
             ).returncode == 0
             if active:
                 raise LumaError(f"manager update already running: {current_id}")
+    installed_control_environment: dict[str, str] = {}
+    if control_environment:
+        from .bootstrap import install_control_environment
+
+        installed_control_environment = install_control_environment(
+            control_environment
+        )
     update_id = f"manager-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
     unit = f"luma-{update_id}"
     log_path = root / f"{update_id}.log"
@@ -3658,6 +3671,7 @@ def start_manager_control_update(
             "controlImage": safe_image,
             "domain": safe_domain,
             "createdAt": int(time.time()),
+            "controlEnvironmentKeys": sorted(installed_control_environment),
         },
     )
     wrapper = (

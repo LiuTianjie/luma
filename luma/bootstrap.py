@@ -6,10 +6,11 @@ import json
 import ipaddress
 import os
 import re
+import secrets
 import shlex
 import time
 from pathlib import Path
-from typing import Any, Callable, Union
+from typing import Any, Callable, Mapping, Union
 
 from .config import LumaConfig, NodeConfig
 from .cloudflare import sync_control_dns
@@ -168,6 +169,78 @@ def _parse_control_environment_file(content: bytes) -> dict[str, str]:
     # Reuse the renderer's per-key validation and normalization so persisted
     # settings have exactly the same contract as invocation-time settings.
     return control_job_environment(parsed)
+
+
+def install_control_environment(
+    values: Mapping[str, str],
+    *,
+    path: Path = Path(CONTROL_ENV_FILE),
+) -> dict[str, str]:
+    """Merge validated non-secret Control settings into the manager file.
+
+    This is used by the root-owned node agent during a managed Control update.
+    The fixed destination and strict allowlist prevent the update API from
+    becoming an arbitrary file-write or secret-persistence primitive.
+    """
+
+    from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, control_job_environment
+
+    if not isinstance(values, Mapping):
+        raise LumaError("controlEnvironment must be an object")
+    supplied = {str(name): str(value) for name, value in values.items()}
+    unknown = sorted(set(supplied) - CONTROL_JOB_ENV_ALLOWLIST)
+    if unknown:
+        raise LumaError(f"controlEnvironment key is not allowlisted: {unknown[0]}")
+    if any(not value for value in supplied.values()):
+        raise LumaError("controlEnvironment values must not be empty")
+    updates = control_job_environment(supplied)
+
+    current: dict[str, str] = {}
+    if path.exists() or path.is_symlink():
+        metadata = path.lstat()
+        if path.is_symlink() or not path.is_file():
+            raise LumaError("Luma Control environment file must be a regular file")
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o777 not in {0o400, 0o600}:
+            raise LumaError("Luma Control environment file ownership or mode is invalid")
+        if metadata.st_size > CONTROL_ENV_FILE_MAX_BYTES:
+            raise LumaError("Luma Control environment file is too large")
+        current = _parse_control_environment_file(path.read_bytes())
+
+    merged = {**current, **updates}
+    content = "".join(f"{name}={merged[name]}\n" for name in sorted(merged)).encode()
+    if len(content) > CONTROL_ENV_FILE_MAX_BYTES:
+        raise LumaError("Luma Control environment file is too large")
+
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory_metadata = directory.lstat()
+    if (
+        directory.is_symlink()
+        or not directory.is_dir()
+        or directory_metadata.st_uid != os.geteuid()
+        or directory_metadata.st_mode & 0o022
+    ):
+        raise LumaError("Luma Control environment directory is not private")
+    temporary = directory / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return merged
 
 
 def _persisted_control_environment(

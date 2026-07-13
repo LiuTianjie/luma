@@ -4780,6 +4780,8 @@ class ControlApiTests(unittest.TestCase):
     def test_manager_update_handler_uses_manager_agent_transient_update_capability(self):
         from luma.control.server import handle_manager_update_start
 
+        analyzer = "100.66.177.70:5000/lae/agent-runner@sha256:" + "a" * 64
+
         state = {
             "clusterId": "luma-test",
             "domain": "luma.example.com",
@@ -4809,7 +4811,15 @@ class ControlApiTests(unittest.TestCase):
         with patch("luma.control.server.load_state", return_value=state), patch(
             "luma.control.server._run_node_agent_task", return_value=result
         ) as run:
-            response = handle_manager_update_start("management-token", {"installRef": "v0.1.173"})
+            response = handle_manager_update_start(
+                "management-token",
+                {
+                    "installRef": "v0.1.173",
+                    "controlEnvironment": {
+                        "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": analyzer
+                    },
+                },
+            )
 
         self.assertEqual(response["updateId"], "manager-1783835000000-aabbccdd")
         self.assertEqual(response["managerNode"], "manager")
@@ -4817,9 +4827,44 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["required_capability"], "manager-update-v1")
         self.assertEqual(run.call_args.args[3]["domain"], "luma.example.com")
         self.assertEqual(
+            run.call_args.args[3]["controlEnvironment"],
+            {"LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": analyzer},
+        )
+        self.assertEqual(
             run.call_args.args[3]["tailscaleWatchdogPeers"],
             ["100.69.154.50"],
         )
+
+    def test_manager_control_environment_is_validated_merged_and_persisted(self):
+        from luma.bootstrap import install_control_environment
+
+        first_digest = "100.66.177.70:5000/lae/agent-runner@sha256:" + "a" * 64
+        second_digest = "100.66.177.70:5000/lae/agent-runner@sha256:" + "b" * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "control" / "control.env"
+            installed = install_control_environment(
+                {
+                    "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": first_digest,
+                    "LUMA_LAE_RUNTIME_STORAGE_CLASS": "runtime-nfs",
+                },
+                path=path,
+            )
+            self.assertEqual(
+                installed["LUMA_BUILDER_ANALYZE_IMAGE_DIGEST"], first_digest
+            )
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+            merged = install_control_environment(
+                {"LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": second_digest}, path=path
+            )
+            self.assertEqual(
+                merged,
+                {
+                    "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": second_digest,
+                    "LUMA_LAE_RUNTIME_STORAGE_CLASS": "runtime-nfs",
+                },
+            )
+            self.assertNotIn("export ", path.read_text(encoding="utf-8"))
 
     def test_agent_mirrors_control_image_with_proxy_and_verifies_digest(self):
         from luma.agent import mirror_control_image
