@@ -3989,6 +3989,21 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertFalse(any("docker image inspect" in cmd for cmd in docker_commands))
         self.assertFalse(any("docker build" in cmd for cmd in docker_commands))
 
+    def test_control_image_pull_retries_transient_registry_ingress_failure(self):
+        remote = Mock()
+        remote.sudo.side_effect = [
+            Exception('Head "https://registry.example/v2/control/manifests/v1": EOF'),
+            Exception("unexpected status code 502 Bad Gateway"),
+            "",
+        ]
+
+        with patch("luma.bootstrap.time.sleep") as sleep:
+            result = _ensure_control_image(remote, "registry.example/control:v1")
+
+        self.assertEqual(result, "Control image pulled: registry.example/control:v1")
+        self.assertEqual(remote.sudo.call_count, 3)
+        self.assertEqual([item.args[0] for item in sleep.call_args_list], [2, 4])
+
     def test_control_image_pulls_published_image_during_bootstrap(self):
         remote = Mock()
         remote.sudo.return_value = ""
@@ -4273,6 +4288,8 @@ class NomadBootstrapTests(unittest.TestCase):
         ) as install_config, patch("luma.bootstrap.install_control_state", return_value="state") as install_state, patch(
             "luma.bootstrap.deploy_control_stack", return_value=["control"]
         ) as deploy_control, patch(
+            "luma.bootstrap._prefetch_control_image_for_manager_refresh", return_value="control image prefetched"
+        ) as prefetch, patch(
             "luma.bootstrap.configure_firewall", return_value="firewall"
         ) as configure_fw, patch(
             "luma.bootstrap._deploy_nomad_job", return_value="traefik deployed"
@@ -4291,6 +4308,7 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertIn("traefik ready", result)
         self.assertIn("metadata", result)
         self.assertIn("watchdog", result)
+        self.assertIn("control image prefetched", result)
         self.assertIn("config", result)
         self.assertIn("state", result)
         self.assertIn("control", result)
@@ -4300,6 +4318,8 @@ class NomadBootstrapTests(unittest.TestCase):
         install_config.assert_called_once()
         install_state.assert_called_once()
         deploy_control.assert_called_once()
+        self.assertTrue(deploy_control.call_args.kwargs["control_image_prepared"])
+        prefetch.assert_called_once()
         configure_fw.assert_called_once()
         self.assertEqual(configure_fw.call_args.kwargs["tcp_ports"], [3306])
         deploy_nomad.assert_called_once()
@@ -4343,7 +4363,9 @@ class NomadBootstrapTests(unittest.TestCase):
             "luma.bootstrap.install_control_config", return_value="config"
         ), patch("luma.bootstrap.install_control_state", return_value="state"), patch(
             "luma.bootstrap.deploy_control_stack", return_value=["control"]
-        ) as deploy_control, patch("luma.bootstrap.configure_firewall", return_value="firewall"), patch(
+        ) as deploy_control, patch(
+            "luma.bootstrap._prefetch_control_image_for_manager_refresh", return_value="control image prefetched"
+        ), patch("luma.bootstrap.configure_firewall", return_value="firewall"), patch(
             "luma.bootstrap._deploy_nomad_job", return_value="traefik deployed"
         ), patch("luma.bootstrap._wait_nomad_job", return_value="traefik ready"), patch(
             "luma.bootstrap.sync_nomad_tailscale_service_metadata", return_value="metadata"
@@ -4354,6 +4376,7 @@ class NomadBootstrapTests(unittest.TestCase):
 
         deploy_control.assert_called_once()
         self.assertEqual(deploy_control.call_args.kwargs["node_name"], "aly")
+        self.assertTrue(deploy_control.call_args.kwargs["control_image_prepared"])
         self.assertIn("aly", state["nodes"])
         self.assertNotIn("iZ0jl8auywzycory05d9cuZ", state["nodes"])
         self.assertEqual(state["nodes"]["aly"]["displayName"], "aly")
@@ -4395,7 +4418,9 @@ class NomadBootstrapTests(unittest.TestCase):
             "luma.bootstrap.install_control_config", return_value="config"
         ), patch("luma.bootstrap.install_control_state", return_value="state"), patch(
             "luma.bootstrap.deploy_control_stack", return_value=["control"]
-        ) as deploy_control, patch("luma.bootstrap.configure_firewall", return_value="firewall"), patch(
+        ) as deploy_control, patch(
+            "luma.bootstrap._prefetch_control_image_for_manager_refresh", return_value="control image prefetched"
+        ), patch("luma.bootstrap.configure_firewall", return_value="firewall"), patch(
             "luma.bootstrap._deploy_nomad_job", return_value="traefik deployed"
         ), patch("luma.bootstrap._wait_nomad_job", return_value="traefik ready"), patch(
             "luma.bootstrap.sync_nomad_tailscale_service_metadata", return_value="metadata"
@@ -4406,6 +4431,7 @@ class NomadBootstrapTests(unittest.TestCase):
 
         deploy_control.assert_called_once()
         self.assertEqual(deploy_control.call_args.kwargs["node_name"], "aly")
+        self.assertTrue(deploy_control.call_args.kwargs["control_image_prepared"])
         self.assertIn("aly", state["nodes"])
         self.assertNotIn("iZ0jl8auywzycory05d9cuZ", state["nodes"])
         self.assertEqual(state["nodes"]["aly"]["displayName"], "aly")

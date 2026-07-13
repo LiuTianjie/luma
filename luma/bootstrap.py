@@ -28,6 +28,7 @@ CONTROL_ENV_FILE_MAX_BYTES = 64 * 1024
 DEFAULT_TRAEFIK_IMAGE = "docker.1panel.live/library/traefik:v3.6"
 DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
+CONTROL_IMAGE_PULL_RETRY_DELAYS = (2, 4, 8, 12, 20)
 EGRESS_PROXY_URL = "http://127.0.0.1:7890"
 EGRESS_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
 DEFAULT_EGRESS_PULL_REGISTRIES = {
@@ -236,13 +237,15 @@ def deploy_control_stack(
     emit: Progress | None = None,
     require_pull_egress: bool = True,
     node_name: str | None = None,
+    control_image_prepared: bool = False,
 ) -> list[str]:
     results: list[str] = []
     engine = str(config.defaults.get("engine") or "nomad")
     image = _control_image(config)
-    if require_pull_egress and _control_image_pull_requires_egress(image):
-        _step(results, emit, "Ensure control image pull egress", lambda: _ensure_control_image_pull_egress(remote, image))
-    _step(results, emit, "Pull Luma control image", lambda: _ensure_control_image(remote, image))
+    if not control_image_prepared:
+        if require_pull_egress and _control_image_pull_requires_egress(image):
+            _step(results, emit, "Ensure control image pull egress", lambda: _ensure_control_image_pull_egress(remote, image))
+        _step(results, emit, "Pull Luma control image", lambda: _ensure_control_image(remote, image))
     deploy_image = image
     if image_uses_mutable_latest_tag(image):
         resolved: dict[str, str] = {}
@@ -389,23 +392,63 @@ def _wait_nomad_job(remote: Executor, job_id: str, *, timeout: int = 120) -> str
 
 def _ensure_control_image(remote: Executor, image: str) -> str:
     image_arg = shlex.quote(image)
-    try:
-        _docker(
-            remote,
-            f"docker pull {image_arg}",
+    last_error: Exception | None = None
+    for attempt in range(len(CONTROL_IMAGE_PULL_RETRY_DELAYS) + 1):
+        try:
+            _docker(
+                remote,
+                f"docker pull {image_arg}",
+            )
+            return f"Control image pulled: {image}"
+        except Exception as exc:
+            last_error = exc
+            if attempt >= len(CONTROL_IMAGE_PULL_RETRY_DELAYS) or not _control_image_pull_error_is_transient(exc):
+                break
+            time.sleep(CONTROL_IMAGE_PULL_RETRY_DELAYS[attempt])
+    detail = str(last_error or "")
+    suffix = f" Docker error: {detail}" if detail else ""
+    raise LumaError(
+        f"failed to pull Luma Control image: {image}. "
+        "Publish the image or set LUMA_CONTROL_IMAGE/defaults.images.lumaControl to a pullable image tag. "
+        "If this manager cannot reach the registry directly, configure EGRESS_SUBSCRIPTION_URL "
+        "and rerun without --skip-egress."
+        f"{suffix}"
+    ) from last_error
+
+
+def _control_image_pull_error_is_transient(exc: Exception) -> bool:
+    detail = f" {str(exc).lower()} "
+    return any(
+        marker in detail
+        for marker in (
+            " eof ",
+            "connection reset",
+            "connection refused",
+            "unexpected status code 502",
+            "unexpected status code 503",
+            "unexpected status code 504",
+            " 502 bad gateway",
+            " 503 service unavailable",
+            " 504 gateway timeout",
+            "i/o timeout",
+            "tls handshake timeout",
+            "temporary failure",
+            "context deadline exceeded",
+            "no route to host",
         )
-    except Exception as exc:
-        detail = str(exc)
-        suffix = f" Docker error: {detail}" if detail else ""
-        raise LumaError(
-            f"failed to pull Luma Control image: {image}. "
-            "Publish the image or set LUMA_CONTROL_IMAGE/defaults.images.lumaControl to a pullable image tag. "
-            "If this manager cannot reach the registry directly, configure EGRESS_SUBSCRIPTION_URL "
-            "and rerun without --skip-egress."
-            f"{suffix}"
-        ) from exc
-    else:
-        return f"Control image pulled: {image}"
+    )
+
+
+def _prefetch_control_image_for_manager_refresh(remote: Executor, config: LumaConfig) -> str:
+    """Cache Control before refreshing ingress that may serve its registry."""
+    image = _control_image(config)
+    messages: list[str] = []
+    if _control_image_pull_requires_egress(image):
+        egress = _ensure_control_image_pull_egress(remote, image)
+        if egress:
+            messages.append(egress)
+    messages.append(_ensure_control_image(remote, image))
+    return "; ".join(messages)
 
 
 def _resolve_control_image(remote: Executor, image: str) -> tuple[str, str]:
@@ -1297,6 +1340,12 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         raise LumaError("Nomad is the only supported deployment engine")
     tcp_ports = _state_tcp_relay_ports(state)
     manager_node_name = _remember_local_manager_node(state, node, None, remote)
+    _step(
+        results,
+        emit,
+        "Prefetch Luma control image",
+        lambda: _prefetch_control_image_for_manager_refresh(remote, config),
+    )
     _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
     _step(
         results,
@@ -1331,7 +1380,14 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         results,
         emit,
         "Refresh Luma control API",
-        lambda: deploy_control_stack(remote, config, domain, emit=emit, node_name=manager_node_name),
+        lambda: deploy_control_stack(
+            remote,
+            config,
+            domain,
+            emit=emit,
+            node_name=manager_node_name,
+            control_image_prepared=True,
+        ),
         fix="Check luma-control service logs and rerun luma update manager",
     )
     return results
