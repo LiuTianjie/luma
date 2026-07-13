@@ -750,8 +750,12 @@ class LaeRuntimeApiTests(unittest.TestCase):
         self.assertIn("nomadVar", postgres["Templates"][0]["EmbeddedTmpl"])
         mount = postgres["Config"]["mount"][0]
         self.assertEqual(mount["target"], "/var/lib/postgresql/data")
+        options = mount["volume_options"]["driver_config"]["options"]
+        self.assertIsInstance(options, list)
+        self.assertEqual(len(options), 1)
+        self.assertEqual(set(options[0]), {"type", "o", "device"})
         self.assertEqual(
-            mount["volume_options"]["driver_config"]["options"]["type"],
+            options[0]["type"],
             "nfs",
         )
         serialized = json.dumps(parsed).lower()

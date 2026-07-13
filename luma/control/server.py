@@ -4067,7 +4067,12 @@ def _lae_runtime_render_job(
                 "no_copy": False,
                 "driver_config": {
                     "name": str(driver.get("driver") or "local"),
-                    "options": dict(driver.get("driver_opts") or {}),
+                    # Nomad's Docker driver accepts ``options`` as a map in
+                    # HCL, but the task-driver JSON representation requires
+                    # maps to be wrapped in a single-element list. Sending a
+                    # bare object is accepted by the jobs API and then fails
+                    # on the client before container creation.
+                    "options": [dict(driver.get("driver_opts") or {})],
                 },
             }
         refs = refs_by_service.get(service_key, [])
