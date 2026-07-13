@@ -4449,6 +4449,28 @@ class NomadBootstrapTests(unittest.TestCase):
             commands,
         )
 
+    def test_manager_metadata_sync_defers_unreachable_nodes_during_update(self):
+        remote = Mock()
+        remote.run_result.side_effect = [
+            Mock(
+                code=0,
+                output=json.dumps(
+                    [
+                        {
+                            "ID": "node-lab",
+                            "Status": "ready",
+                            "Address": "100.69.154.50",
+                        }
+                    ]
+                ),
+            ),
+            Mock(code=1, output="Unexpected response code: 404 (No path to node)"),
+        ]
+
+        result = sync_nomad_tailscale_service_metadata(remote, strict=False)
+
+        self.assertIn("1 unreachable node(s) deferred", result)
+
     def test_verify_nomad_node_accepts_tailscale_http_address(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="ready\n")

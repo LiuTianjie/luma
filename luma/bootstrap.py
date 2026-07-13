@@ -1198,7 +1198,9 @@ def _state_tcp_relay_ports(state: dict[str, object]) -> list[int]:
     return sorted(ports)
 
 
-def sync_nomad_tailscale_service_metadata(remote: Executor) -> str:
+def sync_nomad_tailscale_service_metadata(
+    remote: Executor, *, strict: bool = True
+) -> str:
     """Publish every ready Nomad client's mesh address as dynamic metadata.
 
     Static metadata is written by new Luma node installs. This manager-side
@@ -1217,6 +1219,7 @@ def sync_nomad_tailscale_service_metadata(remote: Executor) -> str:
 
     applied = 0
     skipped = 0
+    deferred = 0
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict) or str(row.get("Status") or "").lower() != "ready":
@@ -1238,12 +1241,17 @@ def sync_nomad_tailscale_service_metadata(remote: Executor) -> str:
         )
         updated = remote.run_result(command, timeout=30)
         if updated.code != 0:
-            raise LumaError(
-                f"unable to publish Tailscale service address for Nomad node {node_id}: "
-                f"{updated.output.strip()}"
-            )
+            if strict:
+                raise LumaError(
+                    f"unable to publish Tailscale service address for Nomad node {node_id}: "
+                    f"{updated.output.strip()}"
+                )
+            deferred += 1
+            continue
         applied += 1
     suffix = f"; {skipped} ready node(s) skipped without a valid mesh address" if skipped else ""
+    if deferred:
+        suffix += f"; {deferred} unreachable node(s) deferred for the next reconciliation"
     return f"Nomad Tailscale service metadata applied to {applied} ready node(s){suffix}"
 
 
@@ -1256,11 +1264,12 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         raise LumaError("Nomad is the only supported deployment engine")
     tcp_ports = _state_tcp_relay_ports(state)
     manager_node_name = _remember_local_manager_node(state, node, None, remote)
+    _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
     _step(
         results,
         emit,
         "Sync Nomad Tailscale service metadata",
-        lambda: sync_nomad_tailscale_service_metadata(remote),
+        lambda: sync_nomad_tailscale_service_metadata(remote, strict=False),
     )
     http_port, https_port = _traefik_ports(config)
     _step(
@@ -1283,7 +1292,6 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
             return _wait_nomad_job(remote, "traefik")
 
         _step(results, emit, "Refresh Traefik ingress", _deploy_traefik_nomad)
-    _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
     _step(
