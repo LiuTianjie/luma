@@ -281,6 +281,27 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertEqual(staging_api["LAE_AUTH_PREVIEW_MODE"], "public")
         self.assertTrue(staging_api["LAE_AUTH_PREVIEW_EMAIL"].endswith(".invalid"))
 
+    def test_staging_private_object_io_does_not_hairpin_through_public_edge(self):
+        staging = self.load("luma.compose.staging.yml").compose["services"]
+        api = staging["api"]["environment"]
+        worker = staging["worker"]["environment"]
+
+        for environment in (api, worker):
+            self.assertEqual(
+                environment["LAE_ARTIFACT_S3_ENDPOINT"],
+                "http://artifact-store:9000",
+            )
+            self.assertEqual(
+                environment["LAE_ARTIFACT_S3_ALLOWED_HOSTS"], "artifact-store"
+            )
+        self.assertEqual(
+            worker["LAE_UPLOAD_S3_ENDPOINT"], "http://artifact-store:9000"
+        )
+        self.assertEqual(
+            api["LAE_UPLOAD_S3_ENDPOINT"],
+            "https://lae-artifacts-staging.itool.tech",
+        )
+
     def test_env_example_covers_references_without_secret_values(self):
         referenced: set[str] = set()
         for compose_name in ("docker-compose.yml", "docker-compose.staging.yml"):

@@ -159,16 +159,21 @@ class JsonClient:
 
     @staticmethod
     def _response(stream: Any) -> Response:
+        status = int(getattr(stream, "status", stream.code))
         raw = stream.read(MAX_RESPONSE_BYTES + 1)
         if len(raw) > MAX_RESPONSE_BYTES:
             raise AcceptanceFailure("API returned an oversized response")
         try:
             decoded = json.loads(raw.decode("utf-8")) if raw else {}
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            if status in RETRYABLE_HTTP_STATUSES:
+                raise ApiFailure(status, "LAE_API_INVALID_RESPONSE", True) from error
             raise AcceptanceFailure("API returned invalid JSON") from error
         if not isinstance(decoded, dict):
+            if status in RETRYABLE_HTTP_STATUSES:
+                raise ApiFailure(status, "LAE_API_INVALID_RESPONSE", True)
             raise AcceptanceFailure("API returned a non-object response")
-        return Response(int(getattr(stream, "status", stream.code)), decoded, stream.headers)
+        return Response(status, decoded, stream.headers)
 
     def remember_response_cookies(self, response: Response) -> None:
         for header in response.headers.get_all("Set-Cookie", []):
