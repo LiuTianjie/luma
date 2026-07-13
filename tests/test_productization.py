@@ -3823,6 +3823,19 @@ class CliTests(unittest.TestCase):
         self.assertEqual(body["manifest"], "name: api\nregion: cn\nexposure: none\n")
         self.assertEqual(body["envSecrets"], {"DATABASE_URL": "postgres://secret"})
 
+    def test_control_client_cancels_repository_import_build(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        response = MagicMock()
+        response.read.return_value = b'{"run":{"id":"build-1","status":"canceling"}}'
+        response.__enter__.return_value = response
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            result = client.cancel_build("build-1")
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://luma.example.com/v1/builds/build-1/cancel")
+        self.assertEqual(json.loads(request.data.decode("utf-8")), {})
+        self.assertEqual(result["run"]["status"], "canceling")
+
     def test_control_client_direct_build_proxy_mode_is_capability_gated_and_explicit(self):
         client = ControlClient("https://luma.example.com", "secret")
         health_response = MagicMock()
@@ -12809,6 +12822,93 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_build_run_cancel_signals_legacy_agent_task_and_fences_success(self):
+        from luma.control.server import (
+            _complete_build_run,
+            _create_build_run,
+            handle_build_run_cancel,
+            handle_build_run_get,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                run_id = _create_build_run(
+                    {"repoUrl": "https://github.com/acme/app"},
+                    source="https://github.com/acme/app",
+                    build_node="builder",
+                )
+                current = load_state()
+                created_at = current["buildRuns"][run_id]["createdAt"]
+                current["agentTasks"] = {
+                    "task-legacy": {
+                        "id": "task-legacy",
+                        "nodeName": "builder",
+                        "action": "build-image",
+                        "payload": {"repoUrl": "https://github.com/acme/app"},
+                        "status": "running",
+                        "createdAt": created_at,
+                        "updatedAt": created_at,
+                    }
+                }
+                save_state(current)
+
+                canceled = handle_build_run_cancel(state["deployToken"], run_id, {})
+
+                self.assertFalse(canceled["replayed"])
+                self.assertEqual(canceled["run"]["status"], "canceling")
+                persisted = load_state()
+                self.assertEqual(persisted["buildRuns"][run_id]["agentTaskId"], "task-legacy")
+                self.assertEqual(persisted["agentTasks"]["task-legacy"]["buildRunId"], run_id)
+                self.assertTrue(persisted["agentTasks"]["task-legacy"]["cancelRequestedAt"])
+
+                # A late success response cannot revive a run after the user
+                # requested cancellation.
+                _complete_build_run(run_id, "succeeded", result={"service": "app"})
+                detail = handle_build_run_get(state["deployToken"], run_id)["run"]
+                self.assertEqual(detail["status"], "canceled")
+                self.assertEqual(detail["message"], "build canceled")
+                self.assertEqual(detail["result"], {})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_build_run_cancel_stops_queued_task_immediately(self):
+        from luma.control.server import _create_build_run, handle_build_run_cancel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                run_id = _create_build_run(
+                    {"repoUrl": "https://github.com/acme/app"},
+                    source="https://github.com/acme/app",
+                    build_node="builder",
+                )
+                current = load_state()
+                created_at = current["buildRuns"][run_id]["createdAt"]
+                current["buildRuns"][run_id]["agentTaskId"] = "task-queued"
+                current["agentTasks"] = {
+                    "task-queued": {
+                        "id": "task-queued",
+                        "nodeName": "builder",
+                        "action": "build-image",
+                        "payload": {"repoUrl": "https://github.com/acme/app"},
+                        "status": "queued",
+                        "createdAt": created_at,
+                        "updatedAt": created_at,
+                        "buildRunId": run_id,
+                    }
+                }
+                save_state(current)
+
+                result = handle_build_run_cancel(state["deployToken"], run_id, {})
+
+                self.assertEqual(result["run"]["status"], "canceled")
+                self.assertEqual(load_state()["agentTasks"]["task-queued"]["status"], "canceled")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_git_import_records_source_and_application_update_rebuilds_it(self):
         from luma.control.server import handle_application_update, handle_build_deploy, handle_deployment_config
 
@@ -13071,7 +13171,21 @@ class GithubImportTests(unittest.TestCase):
                 state["build"] = {"defaultNode": "builder", "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"}
                 save_state(state)
                 sidecar = "name: app-stack\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n"
-                compose = "services:\n  web:\n    image: 100.66.177.70:5000/acme/app/web:abc123\n"
+                compose = (
+                    "services:\n"
+                    "  web:\n"
+                    "    image: 100.66.177.70:5000/acme/app/web:abc123\n"
+                    "  worker:\n"
+                    "    image: acme/app:local\n"
+                )
+                source_compose = (
+                    "services:\n"
+                    "  web:\n"
+                    "    image: acme/app:local\n"
+                    "    build: .\n"
+                    "  worker:\n"
+                    "    image: acme/app:local\n"
+                )
 
                 with patch(
                     "luma.control.server._run_node_agent_task",
@@ -13080,17 +13194,38 @@ class GithubImportTests(unittest.TestCase):
                         "manifest": sidecar,
                         "composeContent": compose,
                         "images": {"web": "100.66.177.70:5000/acme/app/web:abc123"},
+                        "imageAliases": {
+                            "acme/app:local": "100.66.177.70:5000/acme/app/web:abc123"
+                        },
                         "image": "100.66.177.70:5000/acme/app/web:abc123",
                     },
                 ), patch("luma.control.server.handle_compose_deployment", return_value={"deployment": "app-stack", "steps": []}) as deploy:
                     result = handle_build_deploy(
                         state["deployToken"],
-                        {"repoUrl": "https://github.com/acme/app", "ref": "main", "domain": "ignored.example.com", "exposure": "cn-edge", "port": 3000},
+                        {
+                            "repoUrl": "https://github.com/acme/app",
+                            "ref": "main",
+                            "domain": "ignored.example.com",
+                            "exposure": "cn-edge",
+                            "port": 3000,
+                            # Repository-import callers may submit the source
+                            # Compose for preview, but the Builder copy has the
+                            # immutable image rewrites and must win.
+                            "composeContent": source_compose,
+                        },
                     )
 
                 deploy_body = deploy.call_args.args[1]
                 self.assertEqual(deploy_body["manifest"], sidecar)
-                self.assertEqual(deploy_body["composeContent"].strip(), compose.strip())
+                deployed_compose = yaml.safe_load(deploy_body["composeContent"])
+                self.assertEqual(
+                    deployed_compose["services"]["web"]["image"],
+                    "100.66.177.70:5000/acme/app/web:abc123",
+                )
+                self.assertEqual(
+                    deployed_compose["services"]["worker"]["image"],
+                    "100.66.177.70:5000/acme/app/web:abc123",
+                )
                 self.assertEqual(deploy_body["sourceName"], "https://github.com/acme/app")
                 self.assertNotIn("envSecrets", deploy_body)
                 self.assertEqual(result["deployment"], "app-stack")
@@ -13285,6 +13420,56 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual(compose["services"]["web"]["image"], "100.66.177.70:5000/acme/app:abc123")
         self.assertNotIn("build", compose["services"]["web"])
         self.assertEqual(compose["services"]["redis"]["image"], "redis:7-alpine")
+
+    def test_build_image_rewrites_services_reusing_a_built_compose_image(self):
+        from luma.agent import build_image
+
+        def fake_clone(_url, dest, **_kwargs):
+            (dest / "web").mkdir(parents=True)
+            (dest / "luma.compose.yml").write_text(
+                "name: app-stack\ncompose: docker-compose.yml\nregion: home\n",
+                encoding="utf-8",
+            )
+            (dest / "docker-compose.yml").write_text(
+                "x-app-image: &app-image registry.example/acme/app:latest\n"
+                "services:\n"
+                "  web:\n"
+                "    image: *app-image\n"
+                "    build:\n"
+                "      context: ./web\n"
+                "      dockerfile: Dockerfile\n"
+                "      x-luma-repo: acme/app\n"
+                "  worker:\n"
+                "    image: *app-image\n",
+                encoding="utf-8",
+            )
+            (dest / "web" / "Dockerfile").write_text("FROM busybox\n", encoding="utf-8")
+
+        completed = Mock(code=0, output="built\n")
+        with patch("luma.gitops.clone", side_effect=fake_clone), patch(
+            "luma.gitops.head_commit", return_value="abc123"
+        ), patch("luma.agent._docker_binary", return_value="docker"), patch(
+            "luma.agent._docker_buildx_available", return_value=True
+        ), patch("luma.agent._ensure_buildx_builder", return_value="luma-builder"), patch(
+            "luma.agent._run_process_streaming", return_value=completed
+        ):
+            result = build_image(
+                {
+                    "repoUrl": "https://github.com/acme/app",
+                    "registryHost": "100.66.177.70:5000",
+                    "pushHost": "localhost:5000",
+                    "repo": "acme/app",
+                }
+            )
+
+        compose = yaml.safe_load(result["composeContent"])
+        expected = "100.66.177.70:5000/acme/app:abc123"
+        self.assertEqual(compose["services"]["web"]["image"], expected)
+        self.assertEqual(compose["services"]["worker"]["image"], expected)
+        self.assertEqual(
+            result["imageAliases"],
+            {"registry.example/acme/app:latest": expected},
+        )
 
     def test_build_image_treats_docker_compose_luma_yml_as_compose_manifest(self):
         from luma.agent import build_image

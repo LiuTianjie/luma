@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.218 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.219 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -356,6 +356,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_arguments(build_retry)
     build_retry.add_argument("--timeout", type=int, default=2400)
     build_retry.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for the retried import")
+    build_cancel = build_sub.add_parser("cancel", help="Cancel an active repository import build")
+    build_cancel.add_argument("id")
+    _add_control_arguments(build_cancel)
+    _add_output_arguments(build_cancel)
     build_config = build_sub.add_parser("config", help="Declare builder nodes and internal registry defaults")
     build_config.add_argument("--node", action="append", dest="nodes", default=[], help="Declared builder node; repeat for multiple builders")
     build_config.add_argument("--default-node", default="", help="Default builder node for luma import")
@@ -2898,6 +2902,14 @@ def cmd_build(args: argparse.Namespace) -> int:
             print(f"Build run: {result.get('buildRunId')}")
         if result.get("image"):
             print(f"Image built: {result.get('image')}")
+        return 0
+    if args.build_command == "cancel":
+        result = client.cancel_build(args.id)
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        run = result.get("run") if isinstance(result.get("run"), dict) else {}
+        print(f"Build {run.get('id') or args.id}: {run.get('status') or 'canceling'}")
         return 0
     if args.build_command == "config":
         nodes = [str(value).strip() for value in args.nodes if str(value).strip()]

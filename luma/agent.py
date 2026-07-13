@@ -2916,12 +2916,16 @@ def _build_compose_images(
         raise LumaError("docker-compose.yml requires a non-empty services mapping")
 
     build_services: list[tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+    build_source_images: Dict[str, str] = {}
     for service_name, service_body in services.items():
         if not isinstance(service_body, dict):
             raise LumaError(f"compose service {service_name} must be a mapping")
         spec = _compose_build_spec(service_body)
         if spec is not None:
             build_services.append((str(service_name), service_body, spec))
+            declared_image = str(service_body.get("image") or "").strip()
+            if declared_image:
+                build_source_images[str(service_name)] = declared_image
         elif not isinstance(service_body.get("image"), str) or not service_body.get("image"):
             raise LumaError(f"compose service {service_name} requires image or build")
 
@@ -2930,6 +2934,8 @@ def _build_compose_images(
     buildx_env["DOCKER_CONFIG"] = str(docker_config)
     builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, env=buildx_env)
     images: Dict[str, str] = {}
+    shared_image_replacements: Dict[str, str] = {}
+    ambiguous_shared_images: set[str] = set()
     single_build = len(build_services) == 1
     for service_name, service_body, spec in build_services:
         if cancel_event is not None and cancel_event.is_set():
@@ -2962,12 +2968,40 @@ def _build_compose_images(
         service_body["image"] = image
         service_body.pop("build", None)
         images[service_name] = image
+        source_image = build_source_images.get(service_name, "")
+        if source_image:
+            previous = shared_image_replacements.get(source_image)
+            if previous and previous != image:
+                ambiguous_shared_images.add(source_image)
+            else:
+                shared_image_replacements[source_image] = image
+
+    # Compose stacks commonly build an image once and reuse it from worker or
+    # sidecar services that only declare ``image:``.  Repository import must
+    # keep those consumers on the exact immutable image produced above; leaving
+    # the original tag in place can send a worker back to an obsolete/public
+    # registry even though its sibling was built into the in-cluster registry.
+    built_service_names = set(images)
+    for service_name, service_body in services.items():
+        if str(service_name) in built_service_names or not isinstance(service_body, dict):
+            continue
+        source_image = str(service_body.get("image") or "").strip()
+        if not source_image or source_image in ambiguous_shared_images:
+            continue
+        replacement = shared_image_replacements.get(source_image)
+        if replacement:
+            service_body["image"] = replacement
 
     result = {
         "kind": "compose",
         "manifest": sidecar_text,
         "composeContent": yaml.safe_dump(compose_data, sort_keys=False, allow_unicode=False),
         "images": images,
+        "imageAliases": {
+            source_image: replacement
+            for source_image, replacement in shared_image_replacements.items()
+            if source_image not in ambiguous_shared_images
+        },
         "image": next(iter(images.values()), ""),
         "sha": sha,
         "message": f"Built and pushed {len(images)} compose image(s)" if images else "Compose images already declared",

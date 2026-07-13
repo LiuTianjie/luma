@@ -1724,7 +1724,7 @@ def _append_build_run_event(run_id: str, event: Dict[str, Any]) -> None:
             del events[: len(events) - limit]
         run["updatedAt"] = int(time.time())
         status = str(safe_event.get("status") or "")
-        if status == "fail":
+        if status == "fail" and str(run.get("status") or "") not in {"canceling", "canceled"}:
             run["status"] = "failed"
             run["message"] = str(safe_event.get("message") or "")
 
@@ -1738,12 +1738,18 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
         run = _build_runs(state).get(run_id)
         if not isinstance(run, dict):
             return
-        run["status"] = status
+        current_status = str(run.get("status") or "")
+        final_status = "canceled" if current_status in {"canceling", "canceled"} and status != "canceled" else status
+        run["status"] = final_status
         run["updatedAt"] = now
         run["completedAt"] = now
-        if message:
+        if final_status == "canceled":
+            run["message"] = "build canceled"
+            run["canceledAt"] = now
+            run.pop("result", None)
+        elif message:
             run["message"] = message
-        if isinstance(result, dict):
+        if final_status != "canceled" and isinstance(result, dict):
             run["result"] = _build_run_result_summary(result)
 
     _mutate_control_state(mutate)
@@ -1764,6 +1770,9 @@ def _restart_build_run(run_id: str, body: Dict[str, Any], *, source: str, build_
         run["message"] = ""
         run.pop("result", None)
         run.pop("completedAt", None)
+        run.pop("canceledAt", None)
+        run.pop("cancelRequestedAt", None)
+        run.pop("agentTaskId", None)
         run["updatedAt"] = now
 
     _mutate_control_state(mutate)
@@ -2467,6 +2476,26 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
                 },
                 now=now,
             )
+        build_run_id = str(task.get("buildRunId") or "")
+        build_run = _build_runs(state).get(build_run_id) if build_run_id else None
+        if isinstance(build_run, dict) and effective_status in {"failed", "canceled"}:
+            canceled = effective_status == "canceled" or str(build_run.get("status") or "") in {"canceling", "canceled"}
+            build_run["status"] = "canceled" if canceled else "failed"
+            build_run["message"] = "build canceled" if canceled else (effective_message or "build failed")
+            build_run["updatedAt"] = now
+            build_run["completedAt"] = now
+            if canceled:
+                build_run["canceledAt"] = now
+            events = build_run.get("events") if isinstance(build_run.get("events"), list) else []
+            events.append(
+                {
+                    "name": "Build image",
+                    "status": "canceled" if canceled else "fail",
+                    "message": build_run["message"],
+                    "ts": now,
+                }
+            )
+            build_run["events"] = events[-max(int(BUILD_RUN_EVENT_LIMIT), 100) :]
 
     _mutate_control_state(mutate)
     state = load_state()
@@ -2532,8 +2561,16 @@ def _run_node_agent_task(
     timeout: int | None = None,
     required_capability: str | None = "nfs-host",
     progress: Callable[[dict[str, str]], None] | None = None,
+    build_run_id: str = "",
 ) -> Dict[str, Any]:
-    task_id = _queue_node_agent_task(state, node_name, action, payload, required_capability=required_capability)
+    task_id = _queue_node_agent_task(
+        state,
+        node_name,
+        action,
+        payload,
+        required_capability=required_capability,
+        build_run_id=build_run_id,
+    )
     return _wait_node_agent_task(task_id, node_name, action, timeout=timeout, progress=progress)
 
 
@@ -2544,6 +2581,7 @@ def _queue_node_agent_task(
     payload: Dict[str, Any],
     *,
     required_capability: str | None = "nfs-host",
+    build_run_id: str = "",
 ) -> str:
     task_id = f"task-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
 
@@ -2561,7 +2599,7 @@ def _queue_node_agent_task(
             )
         now = int(time.time())
         _prune_agent_tasks(current, now=now)
-        _agent_tasks(current)[task_id] = {
+        task = {
             "id": task_id,
             "nodeName": node_name,
             "action": action,
@@ -2571,6 +2609,16 @@ def _queue_node_agent_task(
             "createdAt": now,
             "updatedAt": now,
         }
+        if build_run_id:
+            run = _build_runs(current).get(build_run_id)
+            if not isinstance(run, dict):
+                raise LumaError(f"build run not found: {build_run_id}")
+            if str(run.get("status") or "") in {"canceling", "canceled"}:
+                raise LumaError("build canceled")
+            task["buildRunId"] = build_run_id
+            run["agentTaskId"] = task_id
+            run["updatedAt"] = now
+        _agent_tasks(current)[task_id] = task
 
     _mutate_control_state(mutate)
     return task_id
@@ -6528,6 +6576,113 @@ def handle_build_run_get(token: str, build_id: str) -> Dict[str, Any]:
     return {"run": _build_run_public(run)}
 
 
+def _build_run_agent_task(
+    state: Dict[str, Any], run: Dict[str, Any]
+) -> tuple[str, Dict[str, Any] | None]:
+    tasks = _agent_tasks(state)
+    linked_id = str(run.get("agentTaskId") or "")
+    linked = tasks.get(linked_id)
+    if linked_id and isinstance(linked, dict):
+        return linked_id, linked
+
+    # Build runs created by older Control versions were not linked to their
+    # node-agent task. Match only the same source/node and a very small creation
+    # window so an upgraded manager can still cancel an in-flight legacy build
+    # without ever touching a different repository import.
+    source = str(run.get("source") or "")
+    node_name = str(run.get("buildNode") or "")
+    created_at = int(run.get("createdAt") or 0)
+    candidates: list[tuple[int, int, str, Dict[str, Any]]] = []
+    for task_id, task in tasks.items():
+        if not isinstance(task, dict) or str(task.get("action") or "") != "build-image":
+            continue
+        payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+        if node_name and str(task.get("nodeName") or "") != node_name:
+            continue
+        if source and str(payload.get("repoUrl") or "") != source:
+            continue
+        task_created_at = int(task.get("createdAt") or 0)
+        distance = abs(task_created_at - created_at)
+        if created_at and task_created_at and distance > 30:
+            continue
+        candidates.append((distance, -task_created_at, str(task_id), task))
+    if not candidates:
+        return "", None
+    _distance, _created, task_id, task = min(candidates, key=lambda item: item[:3])
+    return task_id, task
+
+
+def _build_run_cancel_requested(build_id: str) -> bool:
+    state = load_state()
+    run = _build_runs(state).get(build_id)
+    return isinstance(run, dict) and str(run.get("status") or "") in {"canceling", "canceled"}
+
+
+def handle_build_run_cancel(
+    token: str, build_id: str, body: Dict[str, Any] | None = None
+) -> Dict[str, Any]:
+    if body not in (None, {}):
+        raise LumaError("build cancel request body must be empty")
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    now = int(time.time())
+
+    def mutate(current: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+        require_token(current, token, token_type="deploy")
+        run = _build_runs(current).get(build_id)
+        if not isinstance(run, dict):
+            raise LumaError(f"build run not found: {build_id}")
+        run_status = str(run.get("status") or "")
+        if run_status in {"succeeded", "failed", "canceled", "canceling"}:
+            return _build_run_public(run), True
+
+        task_id, task = _build_run_agent_task(current, run)
+        task_status = str(task.get("status") or "") if isinstance(task, dict) else ""
+        if isinstance(task, dict) and task_status not in {"queued", "running", "canceled"}:
+            raise LumaError("build phase is already complete and cannot be canceled")
+
+        message = "build canceled before it started" if task_status in {"", "queued"} else "build cancellation requested"
+        if isinstance(task, dict):
+            task["buildRunId"] = build_id
+            run["agentTaskId"] = task_id
+            if task_status == "queued":
+                task.update(
+                    {
+                        "status": "canceled",
+                        "message": message,
+                        "result": {},
+                        "completedAt": now,
+                        "updatedAt": now,
+                    }
+                )
+            elif task_status == "running":
+                task["cancelRequestedAt"] = now
+                task["updatedAt"] = now
+
+        terminal = task_status in {"", "queued", "canceled"}
+        run["status"] = "canceled" if terminal else "canceling"
+        run["message"] = "build canceled" if terminal else message
+        run["cancelRequestedAt"] = now
+        run["updatedAt"] = now
+        if terminal:
+            run["completedAt"] = now
+            run["canceledAt"] = now
+        events = run.get("events") if isinstance(run.get("events"), list) else []
+        events.append(
+            {
+                "name": "Build image",
+                "status": "canceled" if terminal else "canceling",
+                "message": run["message"],
+                "ts": now,
+            }
+        )
+        run["events"] = events[-max(int(BUILD_RUN_EVENT_LIMIT), 100) :]
+        return _build_run_public(run), False
+
+    run, replayed = _mutate_control_state(mutate)
+    return {"run": run, "replayed": replayed}
+
+
 def handle_deployment_history(token: str) -> Dict[str, Any]:
     """Return the append-only deployment-event log (native + compose deploys, CLI and
     dashboard), most recent first, for the Deployments timeline. Steps are omitted from
@@ -7279,6 +7434,58 @@ def _build_proxy_for_request(
     return _egress_proxy_for_node(config, state, build_node)
 
 
+def _compose_import_image_aliases(build_result: Dict[str, Any]) -> Dict[str, str]:
+    """Validate the image-alias contract returned by a current Builder."""
+
+    explicit = build_result.get("imageAliases")
+    if not isinstance(explicit, dict):
+        raise LumaError(
+            "Builder result is missing imageAliases; upgrade the Builder node"
+        )
+    aliases: Dict[str, str] = {}
+    for source, target in explicit.items():
+        source_text = str(source or "").strip()
+        target_text = str(target or "").strip()
+        if (
+            not source_text
+            or not target_text
+            or len(source_text) > 512
+            or len(target_text) > 512
+        ):
+            raise LumaError("Builder returned an invalid imageAliases mapping")
+        aliases[source_text] = target_text
+    return aliases
+
+
+def _rewrite_compose_import_images(
+    compose_content: str,
+    *,
+    build_result: Dict[str, Any],
+) -> str:
+    aliases = _compose_import_image_aliases(build_result)
+    if not aliases:
+        return compose_content
+    try:
+        compose = yaml.safe_load(compose_content) or {}
+    except yaml.YAMLError as exc:
+        raise LumaError(f"invalid Builder Compose YAML: {exc}") from exc
+    services = (
+        compose.get("services")
+        if isinstance(compose, dict) and isinstance(compose.get("services"), dict)
+        else None
+    )
+    if services is None:
+        raise LumaError("Builder Compose result requires a services mapping")
+    for service in services.values():
+        if not isinstance(service, dict):
+            continue
+        source_image = str(service.get("image") or "").strip()
+        replacement = aliases.get(source_image)
+        if replacement:
+            service["image"] = replacement
+    return yaml.safe_dump(compose, sort_keys=False, allow_unicode=False)
+
+
 
 
 def handle_build_deploy(
@@ -7372,9 +7579,12 @@ def handle_build_deploy(
                 timeout=int(body.get("buildTimeout") or 1800) + 120,
                 required_capability="docker-build",
                 progress=run_progress,
+                build_run_id=build_run_id,
             ),
             progress=run_progress,
         )
+        if _build_run_cancel_requested(build_run_id):
+            raise LumaError("build canceled")
         built_image = str(build_result.get("image") or "").strip()
         built_images = build_result.get("images") if isinstance(build_result.get("images"), dict) else {}
         if not built_image and not built_images:
@@ -7394,9 +7604,21 @@ def handle_build_deploy(
             raise LumaError("no Luma deployment manifest found in repository and no manifest provided")
 
         if str(build_result.get("kind") or "") == "compose" or repo_compose_content or body.get("composeContent"):
-            compose_content = str(body.get("composeContent") or "").strip() or repo_compose_content
+            # The Builder result is authoritative for repository imports.  It
+            # replaces every service that consumes a built Compose image with
+            # the immutable internal-registry reference.  Reusing a
+            # caller-supplied/source copy here would silently discard that
+            # rewrite and make sibling workers pull the original logical or
+            # retired external tag.
+            compose_content = repo_compose_content or str(
+                body.get("composeContent") or ""
+            ).strip()
             if not compose_content:
                 raise LumaError("luma.compose.yml found but composeContent is missing")
+            compose_content = _rewrite_compose_import_images(
+                compose_content,
+                build_result=build_result,
+            )
             ignored_overrides = [key for key in ("exposure", "domain", "port") if body.get(key)]
             if ignored_overrides:
                 step = {
@@ -7465,10 +7687,18 @@ def handle_build_deploy(
         _complete_build_run(build_run_id, "succeeded", result=result if isinstance(result, dict) else {})
         return result
     except LumaError as exc:
-        _complete_build_run(build_run_id, "failed", message=str(exc))
+        _complete_build_run(
+            build_run_id,
+            "canceled" if _build_run_cancel_requested(build_run_id) else "failed",
+            message=str(exc),
+        )
         raise
     except Exception as exc:
-        _complete_build_run(build_run_id, "failed", message=str(exc))
+        _complete_build_run(
+            build_run_id,
+            "canceled" if _build_run_cancel_requested(build_run_id) else "failed",
+            message=str(exc),
+        )
         raise
 
 
@@ -15221,6 +15451,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             if build_retry_match:
                 self._json(200, handle_build_run_retry(token, urllib.parse.unquote(build_retry_match.group(1)), body))
                 return
+            build_cancel_match = re.fullmatch(r"/v1/builds/([^/]+)/cancel", self.path)
+            if build_cancel_match:
+                self._json(200, handle_build_run_cancel(token, urllib.parse.unquote(build_cancel_match.group(1)), body))
+                return
             build_retry_stream_match = re.fullmatch(r"/v1/builds/([^/]+)/retry/stream", self.path)
             if build_retry_stream_match:
                 self._stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)), body)
@@ -16112,6 +16346,9 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         build_retry_match = re.fullmatch(r"/v1/builds/([^/]+)/retry", path)
         if build_retry_match:
             return _json_response(200, await run_in_threadpool(handle_build_run_retry, token, urllib.parse.unquote(build_retry_match.group(1)), body))
+        build_cancel_match = re.fullmatch(r"/v1/builds/([^/]+)/cancel", path)
+        if build_cancel_match:
+            return _json_response(200, await run_in_threadpool(handle_build_run_cancel, token, urllib.parse.unquote(build_cancel_match.group(1)), body))
         build_retry_stream_match = re.fullmatch(r"/v1/builds/([^/]+)/retry/stream", path)
         if build_retry_stream_match:
             return _asgi_stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)), body)

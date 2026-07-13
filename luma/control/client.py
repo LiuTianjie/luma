@@ -681,6 +681,13 @@ class ControlClient:
             body["envSecrets"] = env_secrets
         return self.request("POST", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}/retry", body, timeout=timeout)
 
+    def cancel_build(self, build_id: str) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            f"/v1/builds/{urllib.parse.quote(build_id, safe='')}/cancel",
+            {},
+        )
+
     def configure_build(
         self,
         *,

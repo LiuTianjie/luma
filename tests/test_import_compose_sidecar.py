@@ -319,6 +319,7 @@ class ImportComposeSidecarTests(unittest.TestCase):
                         "manifest": "name: app-staging\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web:\n    exposure: none\n",
                         "composeContent": "services:\n  web:\n    image: registry.internal/acme/app:abc123\n",
                         "images": {"web": "registry.internal/acme/app:abc123"},
+                        "imageAliases": {},
                         "image": "registry.internal/acme/app:abc123",
                         "composeSidecar": "deploy/luma.compose.staging.yml",
                     }
@@ -352,6 +353,7 @@ class ImportComposeSidecarTests(unittest.TestCase):
                     "manifest": "name: production\ncompose: docker-compose.yml\nregion: cn\n",
                     "composeContent": "services:\n  web:\n    image: registry.internal/acme/app:abc123\n",
                     "images": {"web": "registry.internal/acme/app:abc123"},
+                    "imageAliases": {},
                     "image": "registry.internal/acme/app:abc123",
                 }
                 with patch(
