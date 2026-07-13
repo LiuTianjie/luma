@@ -8730,7 +8730,18 @@ def handle_application_restart(token: str, body: Dict[str, Any]) -> Dict[str, An
         if not isinstance(alloc, dict):
             continue
         client_status = str(alloc.get("ClientStatus") or alloc.get("client_status") or "").lower()
-        if client_status and client_status != "running":
+        desired_status = str(alloc.get("DesiredStatus") or alloc.get("desired_status") or "run").lower()
+        if mode == "recreate":
+            # Application-level restart is also the recovery action for an
+            # allocation stuck before task start (image pull, setup, etc.). A
+            # pending allocation still owns the desired slot and must be
+            # stopped so Nomad creates a fresh replacement. Terminal/history
+            # allocations and allocations already being stopped are ignored.
+            if desired_status == "stop" or client_status not in {"running", "pending"}:
+                continue
+        elif client_status != "running":
+            # Nomad's in-place task restart endpoint only applies to a running
+            # allocation. Recovery of pending allocations belongs to recreate.
             continue
         alloc_id = str(alloc.get("ID") or alloc.get("ID") or "").strip()
         if not alloc_id:

@@ -2,6 +2,12 @@ import type { DeployStep } from "./deploy/types";
 import type { ServiceHistoryPayload, ServiceRollbackPayload } from "./types";
 import { apiPost, authHeaders, consumeNdjson } from "./apiClient";
 
+export type ApplicationRestartResult = {
+  mode: "recreate" | "task";
+  restarted: Array<{ allocId: string; task: string; mode: "recreate" | "task" }>;
+  replacementAllocations?: string[];
+};
+
 export async function restartApplication({
   token,
   stack,
@@ -11,7 +17,13 @@ export async function restartApplication({
   stack: string;
   service?: string;
 }) {
-  return apiPost("/v1/applications/restart", token, { stack, service });
+  return apiPost<ApplicationRestartResult>("/v1/applications/restart", token, {
+    stack,
+    service,
+    // Keep application restart semantics explicit across mixed dashboard and
+    // Control versions. A whole-app restart must create a new allocation.
+    mode: service ? "task" : "recreate",
+  });
 }
 
 export async function updateApplicationStream(

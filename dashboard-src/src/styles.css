@@ -2482,6 +2482,16 @@ tbody tr.is-selected {
   color: var(--green);
 }
 
+.application-action-notice {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--green-line);
+  border-radius: var(--radius-sm);
+  background: var(--green-soft);
+  color: var(--green);
+}
+
 /* Observability */
 .observability-grid {
   grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);

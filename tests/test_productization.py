@@ -14,7 +14,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 import yaml
 
@@ -1263,6 +1263,11 @@ class ProductConfigTests(unittest.TestCase):
         self.assertNotIn("not-a-tailnet-address", command)
         self.assertIn('log "tailnet ping failed: $addr"', command)
         self.assertIn('if [ "$port" -gt 0 ]', command)
+        self.assertIn("control_state=/opt/luma/control/control.json", command)
+        self.assertIn("state.get('nodes')", command)
+        self.assertIn('300', command)
+        self.assertIn("local_ips=$(tailscale ip", command)
+        self.assertNotIn("addr=${addr%%:*}", command)
         self.assertIn("threshold=${LUMA_TAILSCALE_WATCHDOG_THRESHOLD:-3}", command)
         self.assertIn("systemctl restart tailscaled", command)
         self.assertIn("systemctl enable --now luma-tailscale-watchdog.timer", command)
@@ -6796,6 +6801,50 @@ class ControlApiTests(unittest.TestCase):
                 api.request.assert_any_call("GET", "/v1/job/myapp/allocations")
                 api.request.assert_any_call("POST", "/v1/allocation/alloc-api/stop", None)
                 api.request.assert_any_call("POST", "/v1/allocation/alloc-worker/stop", None)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_restart_recreates_pending_allocation_for_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                api = Mock()
+                api.request.side_effect = [
+                    [
+                        {
+                            "ID": "alloc-pending",
+                            "ClientStatus": "pending",
+                            "DesiredStatus": "run",
+                            "TaskStates": {"api": {}},
+                        },
+                        {
+                            "ID": "alloc-history",
+                            "ClientStatus": "failed",
+                            "DesiredStatus": "run",
+                            "TaskStates": {"api": {}},
+                        },
+                    ],
+                    {},
+                    [
+                        {
+                            "ID": "alloc-new",
+                            "ClientStatus": "running",
+                            "DesiredStatus": "run",
+                            "TaskStates": {"api": {}},
+                        }
+                    ],
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api):
+                    result = handle_application_restart(state["deployToken"], {"stack": "myapp"})
+
+                self.assertEqual(result["mode"], "recreate")
+                self.assertEqual(result["replacementAllocations"], ["alloc-new"])
+                api.request.assert_any_call("POST", "/v1/allocation/alloc-pending/stop", None)
+                self.assertNotIn(
+                    call("POST", "/v1/allocation/alloc-history/stop", None),
+                    api.request.call_args_list,
+                )
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
