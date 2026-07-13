@@ -684,6 +684,36 @@ port: 3000
         self.assertFalse(any("accesslog.filepath" in a for a in args))
         self.assertFalse(any("providers.swarm" in a for a in args))
 
+    def test_traefik_job_uses_cloudflare_dns01_and_wildcard_without_exposing_token(self):
+        job = render_traefik_job(
+            image="traefik:v3.6",
+            acme_email="ops@example.com",
+            acme_dns_provider="cloudflare",
+            acme_dns_token_file="/opt/luma/traefik/cloudflare-dns-token",
+            acme_domains=["itool.tech"],
+            as_json=False,
+        )["Job"]
+        task = job["TaskGroups"][0]["Tasks"][0]
+        args = task["Config"]["args"]
+        self.assertIn(
+            "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare",
+            args,
+        )
+        self.assertFalse(any("httpchallenge" in value for value in args))
+        self.assertIn("--entrypoints.websecure.http.tls.domains[0].main=itool.tech", args)
+        self.assertIn("--entrypoints.websecure.http.tls.domains[0].sans=*.itool.tech", args)
+        self.assertEqual(
+            task["Env"],
+            {"CF_DNS_API_TOKEN_FILE": "/run/secrets/cloudflare-dns-token"},
+        )
+        secret_mount = next(
+            mount for mount in task["Config"]["mount"]
+            if mount["target"] == "/run/secrets/cloudflare-dns-token"
+        )
+        self.assertEqual(secret_mount["source"], "/opt/luma/traefik/cloudflare-dns-token")
+        self.assertTrue(secret_mount["readonly"])
+        self.assertNotIn("CF_DNS_API_TOKEN", task["Env"])
+
     def test_egress_job_static_proxy_port_and_config_bind(self):
         job = render_egress_job(image="metacubex/mihomo:latest", as_json=False)["Job"]
         net = job["TaskGroups"][0]["Networks"][0]

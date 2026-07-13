@@ -25,6 +25,7 @@ from .remote import RemoteExecutor
 
 ROOT = "/opt/luma"
 CONTROL_ENV_FILE = f"{ROOT}/control/control.env"
+TRAEFIK_DNS_TOKEN_FILE = f"{ROOT}/traefik/cloudflare-dns-token"
 CONTROL_ENV_FILE_MAX_BYTES = 64 * 1024
 DEFAULT_TRAEFIK_IMAGE = "docker.1panel.live/library/traefik:v3.6"
 DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
@@ -112,6 +113,27 @@ def _acme_email(config: LumaConfig) -> str:
         or str(dns.get("acmeEmail") or "").strip()
         or (f"admin@{zone}" if zone and zone != "example.com" else "admin@example.com")
     )
+
+
+def _install_traefik_dns_secret(
+    remote: Executor,
+    config: LumaConfig,
+    *,
+    state: Mapping[str, object] | None = None,
+) -> str:
+    provider = config.acme_dns_provider
+    if not provider:
+        return "Traefik ACME uses HTTP-01"
+    if provider != "cloudflare":
+        return f"Traefik ACME DNS provider is externally managed: {provider}"
+    token_env = str(config.dns.get("apiTokenEnv") or "CLOUDFLARE_API_TOKEN")
+    persisted = state.get("secrets") if isinstance(state, Mapping) else None
+    persisted_token = persisted.get(token_env) if isinstance(persisted, Mapping) else None
+    token = str(os.environ.get(token_env) or persisted_token or "").strip()
+    if not token:
+        raise LumaError(f"missing Cloudflare API token env var for Traefik DNS-01: {token_env}")
+    remote.write_secret(token + "\n", TRAEFIK_DNS_TOKEN_FILE, mode="600")
+    return "Traefik Cloudflare DNS-01 secret installed"
 
 
 def _control_image(config: LumaConfig) -> str:
@@ -1282,6 +1304,13 @@ def _bootstrap_node_nomad(
         _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
 
     if "edge" in roles or profile.name == "single-node":
+        _step(
+            results,
+            emit,
+            "Install Traefik ACME DNS secret",
+            lambda: _install_traefik_dns_secret(remote, config),
+        )
+
         def _deploy_traefik_nomad() -> str:
             from .nomad_render import render_traefik_job
             job = render_traefik_job(
@@ -1289,6 +1318,9 @@ def _bootstrap_node_nomad(
                 nomad_addr="http://127.0.0.1:4646",
                 acme_email=_acme_email(config),
                 cert_resolver=config.cert_resolver,
+                acme_dns_provider=config.acme_dns_provider,
+                acme_dns_token_file=TRAEFIK_DNS_TOKEN_FILE if config.acme_dns_provider == "cloudflare" else "",
+                acme_domains=config.acme_domains,
                 tcp_entrypoints=sorted({int(p) for p in (tcp_ports or [])}),
             )
             _deploy_nomad_job(remote, job, "traefik")
@@ -1530,6 +1562,13 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         lambda: configure_firewall(remote, http_port=http_port, https_port=https_port, tcp_ports=tcp_ports, engine="nomad"),
     )
     if "edge" in node.roles:
+        _step(
+            results,
+            emit,
+            "Install Traefik ACME DNS secret",
+            lambda: _install_traefik_dns_secret(remote, config, state=state),
+        )
+
         def _deploy_traefik_nomad() -> str:
             from .nomad_render import render_traefik_job
             job = render_traefik_job(
@@ -1537,6 +1576,9 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
                 nomad_addr=str(state.get("nomadAddr") or config.defaults.get("nomadAddr") or "http://127.0.0.1:4646"),
                 acme_email=_acme_email(config),
                 cert_resolver=config.cert_resolver,
+                acme_dns_provider=config.acme_dns_provider,
+                acme_dns_token_file=TRAEFIK_DNS_TOKEN_FILE if config.acme_dns_provider == "cloudflare" else "",
+                acme_domains=config.acme_domains,
                 tcp_entrypoints=tcp_ports,
             )
             _deploy_nomad_job(remote, job, "traefik")

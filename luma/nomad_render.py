@@ -282,6 +282,9 @@ def render_traefik_job(
     nomad_addr: str = "http://127.0.0.1:4646",
     acme_email: str = "",
     cert_resolver: str = "letsencrypt",
+    acme_dns_provider: str = "",
+    acme_dns_token_file: str = "",
+    acme_domains: list[str] | None = None,
     tcp_entrypoints: list[int] | None = None,
     as_json: bool = True,
 ) -> str | Dict[str, Any]:
@@ -317,9 +320,17 @@ def render_traefik_job(
         args.extend([
             f"--certificatesresolvers.{cert_resolver}.acme.email={acme_email}",
             f"--certificatesresolvers.{cert_resolver}.acme.storage=/letsencrypt/acme.json",
-            f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge=true",
-            f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge.entrypoint=web",
         ])
+        if acme_dns_provider:
+            args.extend([
+                f"--certificatesresolvers.{cert_resolver}.acme.dnschallenge=true",
+                f"--certificatesresolvers.{cert_resolver}.acme.dnschallenge.provider={acme_dns_provider}",
+            ])
+        else:
+            args.extend([
+                f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge=true",
+                f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge.entrypoint=web",
+            ])
     args.append("--api.dashboard=true")
     job = {
         "ID": "traefik", "Name": "traefik", "Type": "service", "Datacenters": ["dc1"],
@@ -343,6 +354,23 @@ def render_traefik_job(
         }],
         "Meta": {"luma.managed": "true"},
     }
+    task = job["TaskGroups"][0]["Tasks"][0]
+    if acme_dns_provider == "cloudflare" and acme_dns_token_file:
+        task["Env"] = {"CF_DNS_API_TOKEN_FILE": "/run/secrets/cloudflare-dns-token"}
+        task["Config"]["mount"].append({
+            "type": "bind",
+            "target": "/run/secrets/cloudflare-dns-token",
+            "source": acme_dns_token_file,
+            "readonly": True,
+        })
+    for index, domain in enumerate(acme_domains or []):
+        clean = str(domain).strip().strip(".")
+        if not clean:
+            continue
+        args.extend([
+            f"--entrypoints.websecure.http.tls.domains[{index}].main={clean}",
+            f"--entrypoints.websecure.http.tls.domains[{index}].sans=*.{clean}",
+        ])
     wrapped = {"Job": job}
     return json.dumps(wrapped, indent=2, ensure_ascii=False) if as_json else wrapped
 
