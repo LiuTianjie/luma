@@ -35,12 +35,13 @@ STORAGE_CLASSES = {
     },
 }
 LIVE_STAGING_STORAGE_CLASSES = {
-    "builder-registry-nfs": {
+    "lae-staging-runtime-nfs": {
         "provider": "nfs",
         "mode": "managed",
         "node": "builder",
         "path": "/srv/luma",
-        "regions": ["home"],
+        "regions": ["cn"],
+        "nodes": ["manager", "tecent"],
     }
 }
 
@@ -119,13 +120,13 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             allow_build_services=True,
         )
         self.assertEqual(deployment.name, "lae-platform-staging")
-        self.assertEqual(deployment.region, "home")
+        self.assertEqual(deployment.region, "cn")
         self.assertEqual(
             {volume.storage_class for volume in deployment.volumes.values()},
-            {"builder-registry-nfs"},
+            {"lae-staging-runtime-nfs"},
         )
         self.assertEqual(
-            {service.node for service in deployment.services.values()}, {"lab"}
+            {service.node for service in deployment.services.values()}, {"manager"}
         )
         self.assertEqual(
             {service.name for service in compose_public_services(deployment)},
@@ -137,8 +138,8 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             as_json=False,
             resolve_secrets=False,
         )["Job"]
-        self.assertIn("lab", str(rendered["Constraints"]))
-        self.assertIn("home", str(rendered["Constraints"]))
+        self.assertIn("manager", str(rendered["Constraints"]))
+        self.assertIn("cn", str(rendered["Constraints"]))
 
     def test_only_signed_s3_data_plane_is_public_beside_web_and_api(self):
         for sidecar_name in ("luma.compose.yml", "luma.compose.staging.yml"):
