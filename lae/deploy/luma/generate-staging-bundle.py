@@ -314,11 +314,12 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
         "LUMA_LAE_ADMIN_API_URL": public_api_url,
         "LUMA_LAE_ADMIN_TIMEOUT_SECONDS": "10",
         "LUMA_LAE_ADMIN_TOKEN_FILE": "/opt/luma/control/lae-admin.token",
-        "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY": "1",
+        "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY": "0",
+        "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY": "1",
         "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON": json.dumps(
             registries, separators=(",", ":")
         ),
-        "LUMA_LAE_BUILDER_REGISTRY_INSECURE": "1",
+        "LUMA_LAE_BUILDER_REGISTRY_INSECURE": "0",
         "LUMA_LAE_PLAN_SIGNING_KEYS_FILE": "/opt/luma/control/lae-plan-signing.json",
         "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE": "/opt/luma/control/lae-runtime-principals.json",
         "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": json.dumps(

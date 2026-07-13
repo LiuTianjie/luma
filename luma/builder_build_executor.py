@@ -43,6 +43,7 @@ BUILDER_REGISTRY_PULL_HOST_ENV = "LUMA_BUILDER_REGISTRY_PULL_HOST"
 BUILDER_REGISTRY_PUSH_HOST_ENV = "LUMA_BUILDER_REGISTRY_PUSH_HOST"
 BUILDER_REGISTRY_INSECURE_ENV = "LUMA_BUILDER_REGISTRY_INSECURE"
 BUILDER_ALLOW_ANONYMOUS_REGISTRY_ENV = "LUMA_BUILDER_ALLOW_ANONYMOUS_REGISTRY"
+BUILDER_ALLOW_BASIC_REGISTRY_ENV = "LUMA_BUILDER_ALLOW_BASIC_REGISTRY"
 BUILDER_TRIVY_CACHE_ENV = "LUMA_BUILDER_TRIVY_CACHE_DIR"
 BUILDER_WORK_ROOT_ENV = "LUMA_BUILDER_WORK_ROOT"
 BUILDER_EXTERNAL_REGISTRIES_ENV = "LUMA_BUILDER_EXTERNAL_REGISTRIES_JSON"
@@ -59,6 +60,8 @@ _REGISTRY_LEASE_FIELDS = frozenset(
         "authMode",
     }
 )
+_REGISTRY_LEASE_BASIC_FIELDS = _REGISTRY_LEASE_FIELDS | {"registryAuth"}
+_REGISTRY_AUTH_FIELDS = frozenset({"username", "password", "serveraddress"})
 _LEASE_FIELDS = frozenset(
     {
         "builderTaskId",
@@ -490,9 +493,9 @@ def builder_build_available(os_name: str) -> bool:
     There is intentionally no Docker/buildx fallback.  Advertising this
     capability means rootless BuildKit, SBOM generation, provenance retrieval,
     and an offline-ready vulnerability database are all usable.  Registry
-    credentials and build secrets are not silently borrowed from legacy Control
-    state; the current lane is explicitly anonymous-registry-only until a
-    dedicated short-lived build credential broker exists.
+    credentials and build secrets are not inherited from the host environment.
+    Registry access must be explicitly enabled as either anonymous or a
+    task-scoped Basic credential lease.
     """
 
     if str(os_name or "").lower() != "linux":
@@ -501,7 +504,9 @@ def builder_build_available(os_name: str) -> bool:
         return False
     if str(os.environ.get(BUILDER_BUILD_ENABLED_ENV) or "").strip() != "1":
         return False
-    if str(os.environ.get(BUILDER_ALLOW_ANONYMOUS_REGISTRY_ENV) or "").strip() != "1":
+    anonymous_enabled = str(os.environ.get(BUILDER_ALLOW_ANONYMOUS_REGISTRY_ENV) or "").strip() == "1"
+    basic_enabled = str(os.environ.get(BUILDER_ALLOW_BASIC_REGISTRY_ENV) or "").strip() == "1"
+    if not anonymous_enabled and not basic_enabled:
         return False
     try:
         _local_registry_policy()
@@ -583,8 +588,7 @@ def build_plan(
         _verify_runtime_registry_policy(normalized["registry"])
         docker_config = work / "docker-config"
         docker_config.mkdir(mode=0o700)
-        (docker_config / "config.json").write_text('{"auths":{}}', encoding="utf-8")
-        os.chmod(docker_config / "config.json", 0o600)
+        _write_registry_docker_config(docker_config / "config.json", normalized["registry"])
         command_env = _command_environment(docker_config)
 
         images: Dict[str, str] = {}
@@ -916,14 +920,24 @@ def _validate_registry_lease(
     builds: Iterable[Dict[str, Any]],
     external_images: Iterable[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != _REGISTRY_LEASE_FIELDS:
+    if not isinstance(value, dict) or set(value) not in {
+        _REGISTRY_LEASE_FIELDS,
+        _REGISTRY_LEASE_BASIC_FIELDS,
+    }:
         raise LumaError("build-plan registry lease has a closed schema")
     if value.get("schemaVersion") != _REGISTRY_LEASE_SCHEMA_VERSION:
         raise LumaError("build-plan registry lease schemaVersion is unsupported")
     pull_host = _registry_host(value.get("pullHost"), "pullHost")
     push_host = _registry_host(value.get("pushHost"), "pushHost")
-    if value.get("authMode") != "anonymous":
-        raise LumaError("build registry credential broker is unavailable; authMode must be anonymous")
+    auth_mode = value.get("authMode")
+    registry_auth = None
+    if auth_mode == "anonymous":
+        if "registryAuth" in value:
+            raise LumaError("anonymous build registry lease must not include registryAuth")
+    elif auth_mode == "basic":
+        registry_auth = _validate_registry_auth(value.get("registryAuth"), push_host=push_host)
+    else:
+        raise LumaError("build registry authMode must be anonymous or basic")
     if not isinstance(value.get("insecure"), bool):
         raise LumaError("build-plan registry lease insecure must be a boolean")
     raw_repositories = value.get("repositories")
@@ -950,15 +964,57 @@ def _validate_registry_lease(
     }
     if not requested_external_registries.issubset(set(external_registries)):
         raise LumaError("build-plan external image registry is not allowlisted in the lease")
-    return {
+    normalized = {
         "schemaVersion": _REGISTRY_LEASE_SCHEMA_VERSION,
         "pullHost": pull_host,
         "pushHost": push_host,
         "repositories": repositories,
         "externalRegistries": external_registries,
         "insecure": bool(value["insecure"]),
-        "authMode": "anonymous",
+        "authMode": auth_mode,
     }
+    if registry_auth is not None:
+        normalized["registryAuth"] = registry_auth
+    return normalized
+
+
+def _validate_registry_auth(value: Any, *, push_host: str) -> Dict[str, str]:
+    if not isinstance(value, dict) or set(value) != _REGISTRY_AUTH_FIELDS:
+        raise LumaError("build registry Basic auth has a closed schema")
+    username = value.get("username")
+    password = value.get("password")
+    server_address = value.get("serveraddress")
+    if not isinstance(username, str) or not username or len(username) > 512:
+        raise LumaError("build registry Basic auth username is invalid")
+    if not isinstance(password, str) or not password or len(password) > 4096:
+        raise LumaError("build registry Basic auth password is invalid")
+    if any(character in username or character in password for character in ("\0", "\n", "\r")):
+        raise LumaError("build registry Basic auth credential is invalid")
+    auth_host = _registry_host(server_address, "registryAuth.serveraddress")
+    if auth_host != push_host:
+        raise LumaError("build registry Basic auth does not match pushHost")
+    return {
+        "username": username,
+        "password": password,
+        "serveraddress": auth_host,
+    }
+
+
+def _write_registry_docker_config(path: Path, registry: Mapping[str, Any]) -> None:
+    auths: Dict[str, Dict[str, str]] = {}
+    if registry.get("authMode") == "basic":
+        auth = registry.get("registryAuth")
+        if not isinstance(auth, dict):
+            raise LumaError("build registry Basic auth is unavailable")
+        encoded = base64.b64encode(
+            f"{auth['username']}:{auth['password']}".encode("utf-8")
+        ).decode("ascii")
+        auths[str(auth["serveraddress"])] = {"auth": encoded}
+    path.write_text(
+        json.dumps({"auths": auths}, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.chmod(path, 0o600)
 
 
 def _topological_builds(builds: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
@@ -1794,14 +1850,19 @@ def _local_registry_policy() -> Dict[str, Any]:
 
 
 def _verify_runtime_registry_policy(registry: Dict[str, Any]) -> None:
-    if str(os.environ.get(BUILDER_ALLOW_ANONYMOUS_REGISTRY_ENV) or "").strip() != "1":
-        raise LumaError("anonymous build registry is not enabled on this node")
     local = _local_registry_policy()
     for field in ("pullHost", "pushHost", "insecure"):
         if registry.get(field) != local[field]:
             raise LumaError(f"build registry lease {field} does not match node policy")
-    if registry.get("authMode") != "anonymous":
-        raise LumaError("build registry credential broker is unavailable")
+    auth_mode = registry.get("authMode")
+    if auth_mode == "anonymous":
+        if str(os.environ.get(BUILDER_ALLOW_ANONYMOUS_REGISTRY_ENV) or "").strip() != "1":
+            raise LumaError("anonymous build registry is not enabled on this node")
+    elif auth_mode == "basic":
+        if str(os.environ.get(BUILDER_ALLOW_BASIC_REGISTRY_ENV) or "").strip() != "1":
+            raise LumaError("Basic build registry leases are not enabled on this node")
+    else:
+        raise LumaError("build registry authentication mode is unsupported")
     if registry.get("externalRegistries") != _local_external_registry_allowlist():
         raise LumaError("external registry lease does not match node policy")
 

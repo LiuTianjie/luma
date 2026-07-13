@@ -157,6 +157,18 @@ class StagingBundleTests(unittest.TestCase):
             self.assertIn("LUMA_LAE_PLAN_SIGNING_KEYS_FILE", control_environment)
             self.assertNotIn("LUMA_LAE_PLAN_SIGNING_KEYS_JSON", control_environment)
             self.assertIn(
+                "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY=0",
+                control_environment,
+            )
+            self.assertIn(
+                "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY=1",
+                control_environment,
+            )
+            self.assertIn(
+                "LUMA_LAE_BUILDER_REGISTRY_INSECURE=0",
+                control_environment,
+            )
+            self.assertIn(
                 "LUMA_LAE_RUNTIME_STORAGE_CLASS=lae-staging-runtime-nfs",
                 control_environment,
             )

@@ -1347,13 +1347,11 @@ def _builder_build_registry_lease(
     """Derive an ephemeral, platform-owned registry target for build-plan.
 
     This value is created only for the node lease and is never copied into
-    ``agentTasks``.  Until a dedicated short-lived build credential broker is
-    wired, LAE builds are restricted to an explicitly enabled anonymous
-    internal registry; legacy ``state.registries`` credentials are never used.
+    ``agentTasks``.  Staging can explicitly lease the platform registry's
+    Basic credential to a trusted builder; the credential remains absent from
+    durable task state and build results.  Anonymous registries remain an
+    independently gated mode.
     """
-
-    if str(os.environ.get("LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY") or "").strip() != "1":
-        raise LumaError("LAE anonymous build registry is not explicitly enabled")
     build_config = _build_config(state)
     pull_host_raw = str(build_config.get("registryHost") or "").strip()
     push_host_raw = str(build_config.get("pushHost") or "").strip()
@@ -1393,15 +1391,31 @@ def _builder_build_registry_lease(
     denied_registries = sorted(requested_external_registries - set(external_registries))
     if denied_registries:
         raise LumaError("signedBuildPlan external image registry is not allowlisted by Luma Control")
-    return {
+    registry_lease = {
         "schemaVersion": "luma.builder-registry-lease/v1",
         "pullHost": pull_host,
         "pushHost": push_host,
         "repositories": repositories,
         "externalRegistries": external_registries,
         "insecure": insecure_raw == "1",
-        "authMode": "anonymous",
     }
+    allow_basic = str(os.environ.get("LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY") or "").strip() == "1"
+    if allow_basic:
+        registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+        registry_auth = registry_auth_for_image(registries, f"{push_host}/lae/lease-probe:task")
+        if not registry_auth:
+            raise LumaError("LAE Basic build registry credential is not configured")
+        auth_host = normalize_registry_host(public_registry_url(registry_auth.get("serveraddress") or ""))
+        if auth_host != push_host:
+            raise LumaError("LAE Basic build registry credential does not match pushHost")
+        registry_lease["authMode"] = "basic"
+        registry_lease["registryAuth"] = registry_auth
+        return registry_lease
+
+    if str(os.environ.get("LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY") or "").strip() != "1":
+        raise LumaError("LAE build registry authentication mode is not explicitly enabled")
+    registry_lease["authMode"] = "anonymous"
+    return registry_lease
 
 
 def _lae_external_registry_allowlist() -> list[str]:

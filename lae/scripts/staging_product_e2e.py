@@ -236,13 +236,23 @@ def issue_preview_deploy_token(
         deadline=deadline,
     ).body
     email = preview.get("email")
+    purpose = preview.get("purpose")
     magic_token = preview.get("magicToken")
-    if not isinstance(email, str) or not isinstance(magic_token, str):
+    if (
+        not isinstance(email, str)
+        or purpose not in {"login", "register"}
+        or not isinstance(magic_token, str)
+    ):
         raise AcceptanceFailure("preview authentication response is incomplete")
+    verify_path = (
+        "/auth/login/verify"
+        if purpose == "login"
+        else "/auth/email/verify"
+    )
     verified = request_with_retry(
         client,
         "POST",
-        "/auth/login/verify",
+        verify_path,
         {"email": email, "magicToken": magic_token},
         deadline=deadline,
     )

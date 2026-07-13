@@ -80,6 +80,7 @@ CONTROL_JOB_LAE_CONFIG_ENV_NAMES = frozenset(
     {
         "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST",
         "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY",
+        "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY",
         "LUMA_LAE_BUILDER_REGISTRY_INSECURE",
         "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON",
         "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON",
@@ -178,6 +179,7 @@ def _control_job_lae_config(name: str, value: str) -> str:
         return candidate
     if name in {
         "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY",
+        "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY",
         "LUMA_LAE_BUILDER_REGISTRY_INSECURE",
     }:
         if candidate not in {"0", "1"}:

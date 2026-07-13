@@ -55,6 +55,7 @@ RUNNER_IMAGE=""
 REGISTRY_PULL_HOST=""
 REGISTRY_PUSH_HOST=""
 REGISTRY_INSECURE="0"
+REGISTRY_AUTH_MODE="anonymous"
 BUILDKIT_SHA256=""
 EXTERNAL_REGISTRIES=("docker.io" "ghcr.io")
 EXTERNAL_REGISTRIES_EXPLICIT="0"
@@ -78,6 +79,7 @@ Usage:
     --buildkit-sha256 SHA256 \
     [--agent-controller-env-file ROOT_ONLY_ENV] \
     [--registry-insecure] \
+    [--registry-basic-auth] \
     [--external-registry HOST[:PORT] ...]
 
 Required trust inputs:
@@ -87,6 +89,8 @@ Required trust inputs:
   --buildkit-sha256       SHA-256 of buildkit-v0.31.1.linux-amd64.tar.gz.
   --agent-controller-env-file  Optional root-only bundle artifact containing
                           controller URL, scoped token, and AI_REQUIRED.
+  --registry-basic-auth   Accept a task-scoped Basic credential lease. The
+                          credential itself is never accepted or stored here.
 
 Modes:
   default                 Configure the local host idempotently, then verify it.
@@ -168,6 +172,10 @@ while (($#)); do
       ;;
     --registry-insecure)
       REGISTRY_INSECURE="1"
+      shift
+      ;;
+    --registry-basic-auth)
+      REGISTRY_AUTH_MODE="basic"
       shift
       ;;
     --external-registry)
@@ -323,7 +331,7 @@ init_audit() {
   chown root:root "$AUDIT_LOG"
   chmod 0600 "$AUDIT_LOG"
   AUDIT_READY="1"
-  audit "start mode=${MODE} builder_user=${BUILDER_USER} runner_image=${RUNNER_IMAGE} registry_pull=${REGISTRY_PULL_HOST} registry_push=${REGISTRY_PUSH_HOST} registry_insecure=${REGISTRY_INSECURE}"
+  audit "start mode=${MODE} builder_user=${BUILDER_USER} runner_image=${RUNNER_IMAGE} registry_pull=${REGISTRY_PULL_HOST} registry_push=${REGISTRY_PUSH_HOST} registry_insecure=${REGISTRY_INSECURE} registry_auth_mode=${REGISTRY_AUTH_MODE}"
 }
 
 install_system_dependencies() {
@@ -787,7 +795,8 @@ LUMA_BUILDER_BUILDKIT_ADDR=unix://$(runtime_dir)/buildkit/buildkitd.sock
 LUMA_BUILDER_REGISTRY_PULL_HOST=${REGISTRY_PULL_HOST}
 LUMA_BUILDER_REGISTRY_PUSH_HOST=${REGISTRY_PUSH_HOST}
 LUMA_BUILDER_REGISTRY_INSECURE=${REGISTRY_INSECURE}
-LUMA_BUILDER_ALLOW_ANONYMOUS_REGISTRY=1
+LUMA_BUILDER_ALLOW_ANONYMOUS_REGISTRY=$([[ "$REGISTRY_AUTH_MODE" == "anonymous" ]] && printf 1 || printf 0)
+LUMA_BUILDER_ALLOW_BASIC_REGISTRY=$([[ "$REGISTRY_AUTH_MODE" == "basic" ]] && printf 1 || printf 0)
 LUMA_BUILDER_TRIVY_CACHE_DIR=${TRIVY_CACHE_DIR}
 EOF
 }
@@ -880,11 +889,19 @@ registry_scheme() {
 }
 
 verify_registry() {
-  local host
+  local host status
   for host in "$REGISTRY_PULL_HOST" "$REGISTRY_PUSH_HOST"; do
-    curl --fail --silent --show-error --max-time 10 \
-      --proto '=http,https' "$(registry_scheme)://${host}/v2/" >/dev/null || \
-      die "registry v2 endpoint is unavailable or does not allow anonymous access: ${host}"
+    status=$(curl --silent --show-error --max-time 10 --output /dev/null \
+      --write-out '%{http_code}' --proto '=http,https' \
+      "$(registry_scheme)://${host}/v2/") || \
+      die "registry v2 endpoint is unavailable: ${host}"
+    if [[ "$REGISTRY_AUTH_MODE" == "anonymous" ]]; then
+      [[ "$status" == "200" ]] || \
+        die "registry v2 endpoint does not allow anonymous access: ${host}"
+    else
+      [[ "$status" == "200" || "$status" == "401" ]] || \
+        die "registry v2 endpoint returned unexpected HTTP ${status}: ${host}"
+    fi
   done
 }
 
@@ -1011,6 +1028,7 @@ RUNNER_IMAGE=${RUNNER_IMAGE}
 REGISTRY_PULL_HOST=${REGISTRY_PULL_HOST}
 REGISTRY_PUSH_HOST=${REGISTRY_PUSH_HOST}
 REGISTRY_INSECURE=${REGISTRY_INSECURE}
+REGISTRY_AUTH_MODE=${REGISTRY_AUTH_MODE}
 NODE_AGENT_ENV_SHA256=$(sha256sum "$ENV_FILE" | awk '{print $1}')
 EOF
   write_if_changed "$tmp" "$MANIFEST_FILE" 0640 root root

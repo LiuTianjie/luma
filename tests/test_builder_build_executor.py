@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 
 from luma.builder_build_executor import (
     BUILDER_ALLOW_ANONYMOUS_REGISTRY_ENV,
+    BUILDER_ALLOW_BASIC_REGISTRY_ENV,
     BUILDER_BUILD_ENABLED_ENV,
     BUILDER_EXTERNAL_REGISTRIES_ENV,
     BUILDER_REGISTRY_INSECURE_ENV,
@@ -44,6 +45,8 @@ from luma.builder_build_executor import (
     _syft_environment,
     _validate_build_lease,
     _validate_scan_report,
+    _verify_runtime_registry_policy,
+    _write_registry_docker_config,
     build_plan,
     builder_build_available,
 )
@@ -157,6 +160,7 @@ class BuilderBuildExecutorTests(unittest.TestCase):
                 BUILDER_TASKS_ENABLED_ENV: "1",
                 BUILDER_BUILD_ENABLED_ENV: "1",
                 BUILDER_ALLOW_ANONYMOUS_REGISTRY_ENV: "1",
+                BUILDER_ALLOW_BASIC_REGISTRY_ENV: "0",
                 BUILDER_REGISTRY_PULL_HOST_ENV: "100.66.177.70:5000",
                 BUILDER_REGISTRY_PUSH_HOST_ENV: "localhost:5000",
                 BUILDER_REGISTRY_INSECURE_ENV: "1",
@@ -897,6 +901,117 @@ class BuilderBuildExecutorTests(unittest.TestCase):
         self.assertNotIn(SECRET_SENTINEL, json.dumps(leased, sort_keys=True))
         self.assertNotIn("registryAuth", leased)
         self.assertEqual(leased["registry"]["authMode"], "anonymous")
+
+    def test_basic_registry_credential_is_leased_only_to_the_builder_task(self):
+        digest, _snapshot = self._install_snapshot({"Dockerfile": "FROM scratch\n"})
+        build = self._build("web")
+        public_payload = self._payload(digest, [build])
+        request = {
+            "schemaVersion": "luma.builder-task/v1",
+            "kind": "build-plan",
+            "externalOperationId": "operation-build-test",
+            "tenantRef": "tenant-build-test",
+            "applicationRef": "application-build-test",
+            "payload": {
+                key: public_payload[key]
+                for key in (
+                    "sourceSnapshotId",
+                    "sourceSnapshotDigest",
+                    "signedBuildPlan",
+                    "credentialLeaseId",
+                    "limits",
+                )
+            },
+        }
+        password = "registry-basic-password-task-only"
+        state = {
+            "build": {
+                "registryHost": "registry.itool.tech",
+                "pushHost": "registry.itool.tech",
+            },
+            "registries": {
+                "registry.itool.tech": {
+                    "username": "lae",
+                    "password": password,
+                    "serverAddress": "registry.itool.tech",
+                },
+            },
+            "builderTasks": {
+                "builder-parent": {
+                    "id": "builder-parent",
+                    "kind": "build-plan",
+                    "principalRef": "lae-service",
+                    "request": request,
+                }
+            },
+        }
+        task = {
+            "action": "build-plan",
+            "builderTaskId": "builder-parent",
+            "payload": {
+                "builderTaskId": "builder-parent",
+                "schemaVersion": request["schemaVersion"],
+                "externalOperationId": request["externalOperationId"],
+                "tenantRef": request["tenantRef"],
+                "applicationRef": request["applicationRef"],
+                **request["payload"],
+            },
+        }
+        durable_before = json.dumps(state["builderTasks"], sort_keys=True)
+        self.assertNotIn(password, durable_before)
+        with patch.dict(
+            os.environ,
+            {
+                "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY": "0",
+                "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY": "1",
+                "LUMA_LAE_BUILDER_REGISTRY_INSECURE": "0",
+            },
+            clear=False,
+        ):
+            leased = control_server._agent_task_lease_payload(state, task)
+
+        self.assertEqual(leased["registry"]["authMode"], "basic")
+        self.assertEqual(leased["registry"]["registryAuth"]["password"], password)
+        self.assertEqual(json.dumps(state["builderTasks"], sort_keys=True), durable_before)
+        self.assertNotIn(password, json.dumps(task, sort_keys=True))
+
+        with patch.dict(
+            os.environ,
+            {
+                BUILDER_ALLOW_ANONYMOUS_REGISTRY_ENV: "0",
+                BUILDER_ALLOW_BASIC_REGISTRY_ENV: "1",
+                BUILDER_REGISTRY_PULL_HOST_ENV: "registry.itool.tech",
+                BUILDER_REGISTRY_PUSH_HOST_ENV: "registry.itool.tech",
+                BUILDER_REGISTRY_INSECURE_ENV: "0",
+                BUILDER_EXTERNAL_REGISTRIES_ENV: "[]",
+            },
+            clear=False,
+        ):
+            normalized = _validate_build_lease(leased)
+            _verify_runtime_registry_policy(normalized["registry"])
+        config_path = self.root / "basic-registry-config.json"
+        _write_registry_docker_config(config_path, normalized["registry"])
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        encoded = config["auths"]["registry.itool.tech"]["auth"]
+        self.assertEqual(base64.b64decode(encoded).decode("utf-8"), f"lae:{password}")
+        self.assertNotIn(password, config_path.read_text(encoding="utf-8"))
+        self.assertEqual(stat.S_IMODE(config_path.stat().st_mode), 0o600)
+
+    def test_basic_registry_lease_rejects_mismatched_or_implicit_auth(self):
+        digest, _snapshot = self._install_snapshot({"Dockerfile": "FROM scratch\n"})
+        payload = self._payload(digest, [self._build("web")])
+        payload["registry"]["authMode"] = "basic"
+        payload["registry"]["registryAuth"] = {
+            "username": "lae",
+            "password": "secret",
+            "serveraddress": "attacker.invalid",
+        }
+        with self.assertRaisesRegex(LumaError, "does not match pushHost"):
+            _validate_build_lease(payload)
+
+        payload["registry"]["authMode"] = "anonymous"
+        with self.assertRaisesRegex(LumaError, "must not include registryAuth"):
+            _validate_build_lease(payload)
 
     def test_build_args_and_secret_mounts_fail_closed_without_broker(self):
         digest, _snapshot = self._install_snapshot({"Dockerfile": "FROM scratch\n"})

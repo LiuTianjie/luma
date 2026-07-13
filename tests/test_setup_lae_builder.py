@@ -32,6 +32,7 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
         self.assertIn("--runner-image IMAGE@sha256:DIGEST", result.stdout)
         self.assertIn("--registry-host HOST[:PORT]", result.stdout)
         self.assertIn("--registry-push-host HOST[:PORT]", result.stdout)
+        self.assertIn("--registry-basic-auth", result.stdout)
         self.assertIn("--buildkit-sha256 SHA256", result.stdout)
 
     def test_tool_versions_and_checksum_roots_are_pinned(self):
@@ -83,7 +84,8 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
             "buildctl does not support attestations",
             "Trivy DB metadata is invalid",
             "local runner image does not expose the required RepoDigest",
-            "registry v2 endpoint is unavailable or does not allow anonymous access",
+            "registry v2 endpoint does not allow anonymous access",
+            "LUMA_BUILDER_ALLOW_BASIC_REGISTRY=",
             "verified_rootless_bind_probe",
             "rootless analyzer image does not implement the current LAE result contract",
             '.schemaVersion == "lae.agent-analysis-result/v1"',
