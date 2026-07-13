@@ -390,21 +390,45 @@ def _wait_nomad_job(remote: Executor, job_id: str, *, timeout: int = 120) -> str
         f"Check `nomad job status {job_id}` and alloc logs."
     )
 
-def _ensure_control_image(remote: Executor, image: str) -> str:
+def _ensure_control_image(
+    remote: Executor,
+    image: str,
+    *,
+    registry_auth: dict[str, str] | None = None,
+) -> str:
     image_arg = shlex.quote(image)
-    last_error: Exception | None = None
-    for attempt in range(len(CONTROL_IMAGE_PULL_RETRY_DELAYS) + 1):
-        try:
-            _docker(
-                remote,
-                f"docker pull {image_arg}",
+    docker_config_dir = ""
+    docker_prefix = ""
+    if registry_auth:
+        server = str(registry_auth.get("serverAddress") or registry_host_from_image(image)).strip()
+        username = str(registry_auth.get("username") or "")
+        password = str(registry_auth.get("password") or "")
+        if server and username and password:
+            docker_config_dir = f"/run/luma/control-image-auth-{os.getpid()}"
+            auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+            remote.write_secret(
+                json.dumps({"auths": {server: {"auth": auth}}}, separators=(",", ":")),
+                f"{docker_config_dir}/config.json",
+                mode="600",
             )
-            return f"Control image pulled: {image}"
-        except Exception as exc:
-            last_error = exc
-            if attempt >= len(CONTROL_IMAGE_PULL_RETRY_DELAYS) or not _control_image_pull_error_is_transient(exc):
-                break
-            time.sleep(CONTROL_IMAGE_PULL_RETRY_DELAYS[attempt])
+            docker_prefix = f"DOCKER_CONFIG={shlex.quote(docker_config_dir)} "
+    last_error: Exception | None = None
+    try:
+        for attempt in range(len(CONTROL_IMAGE_PULL_RETRY_DELAYS) + 1):
+            try:
+                _docker(
+                    remote,
+                    f"{docker_prefix}docker pull {image_arg}",
+                )
+                return f"Control image pulled: {image}"
+            except Exception as exc:
+                last_error = exc
+                if attempt >= len(CONTROL_IMAGE_PULL_RETRY_DELAYS) or not _control_image_pull_error_is_transient(exc):
+                    break
+                time.sleep(CONTROL_IMAGE_PULL_RETRY_DELAYS[attempt])
+    finally:
+        if docker_config_dir:
+            remote.sudo(f"rm -rf {shlex.quote(docker_config_dir)}", check=False)
     detail = str(last_error or "")
     suffix = f" Docker error: {detail}" if detail else ""
     raise LumaError(
@@ -439,7 +463,12 @@ def _control_image_pull_error_is_transient(exc: Exception) -> bool:
     )
 
 
-def _prefetch_control_image_for_manager_refresh(remote: Executor, config: LumaConfig) -> str:
+def _prefetch_control_image_for_manager_refresh(
+    remote: Executor,
+    config: LumaConfig,
+    *,
+    state: dict[str, object] | None = None,
+) -> str:
     """Cache Control before refreshing ingress that may serve its registry."""
     image = _control_image(config)
     messages: list[str] = []
@@ -450,8 +479,34 @@ def _prefetch_control_image_for_manager_refresh(remote: Executor, config: LumaCo
         egress = _ensure_control_image_pull_egress(remote, image)
         if egress:
             messages.append(egress)
-    messages.append(_ensure_control_image(remote, image))
+    messages.append(
+        _ensure_control_image(
+            remote,
+            image,
+            registry_auth=_control_image_registry_auth(state or {}, image),
+        )
+    )
     return "; ".join(messages)
+
+
+def _control_image_registry_auth(state: dict[str, object], image: str) -> dict[str, str] | None:
+    registry = registry_host_from_image(image).strip().lower()
+    records = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    for raw_name, raw_record in records.items():
+        if not isinstance(raw_record, dict):
+            continue
+        server = str(raw_record.get("serverAddress") or raw_name).strip()
+        if server.lower().removeprefix("https://").removeprefix("http://").rstrip("/") != registry:
+            continue
+        username = str(raw_record.get("username") or "")
+        password = str(raw_record.get("password") or "")
+        if username and password:
+            return {
+                "serverAddress": registry,
+                "username": username,
+                "password": password,
+            }
+    return None
 
 
 def _ensure_control_registry_direct_route(remote: Executor, image: str) -> str:
@@ -1385,7 +1440,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         results,
         emit,
         "Prefetch Luma control image",
-        lambda: _prefetch_control_image_for_manager_refresh(remote, config),
+        lambda: _prefetch_control_image_for_manager_refresh(remote, config, state=state),
     )
     _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
     _step(

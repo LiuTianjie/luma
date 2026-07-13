@@ -4060,6 +4060,31 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertTrue(any("docker pull ghcr.io/liutianjie/luma-control:latest" in cmd for cmd in docker_commands))
         self.assertFalse(any("docker build" in cmd for cmd in docker_commands))
 
+    def test_control_image_pull_uses_ephemeral_registry_auth_and_deletes_it(self):
+        remote = Mock()
+        remote.sudo.return_value = ""
+
+        result = _ensure_control_image(
+            remote,
+            "registry.itool.tech/luma-control:v1",
+            registry_auth={
+                "serverAddress": "registry.itool.tech",
+                "username": "luma-pull",
+                "password": "secret-value",
+            },
+        )
+
+        self.assertEqual(result, "Control image pulled: registry.itool.tech/luma-control:v1")
+        config = json.loads(remote.write_secret.call_args.args[0])
+        encoded = config["auths"]["registry.itool.tech"]["auth"]
+        self.assertEqual(base64.b64decode(encoded).decode(), "luma-pull:secret-value")
+        self.assertNotIn("secret-value", " ".join(str(call.args) for call in remote.sudo.call_args_list))
+        pull_command = remote.sudo.call_args_list[0].args[0]
+        self.assertIn("DOCKER_CONFIG=/run/luma/control-image-auth-", pull_command)
+        self.assertIn("docker pull registry.itool.tech/luma-control:v1", pull_command)
+        self.assertIn("rm -rf /run/luma/control-image-auth-", remote.sudo.call_args_list[-1].args[0])
+        self.assertFalse(remote.sudo.call_args_list[-1].kwargs["check"])
+
     def test_control_latest_image_resolves_to_pulled_repo_digest(self):
         remote = Mock()
         remote.run_result.return_value = Mock(code=0, output="Status = running\n")
