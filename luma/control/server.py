@@ -4179,10 +4179,13 @@ def _install_lae_runtime_variables(
 ) -> None:
     if not variable_items:
         return
-    if not str(state.get("nomadToken") or ""):
-        raise _lae_runtime_unavailable(
-            "Nomad Variables require an authenticated control plane"
-        )
+    # A Nomad management token is required only when Nomad ACLs are enabled.
+    # ACL-disabled clusters legitimately use the Variables API without a
+    # token, just like the plan and deploy paths below.  Rejecting an empty
+    # token here made LAE the sole deployment path that could not operate on
+    # an otherwise healthy ACL-disabled Luma cluster.  Let Nomad remain the
+    # authority: an ACL-enabled server will reject the unauthenticated write
+    # and the error is converted to the same closed LAE availability error.
     client = NomadApi(
         nomad_addr(config, state), token=str(state.get("nomadToken") or "")
     )

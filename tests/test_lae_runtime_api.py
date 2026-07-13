@@ -45,6 +45,41 @@ from lae_luma_adapter import (  # noqa: E402
 
 
 class NomadVariableBoundaryTests(unittest.TestCase):
+    def test_runtime_variable_install_allows_acl_disabled_nomad(self) -> None:
+        api = MagicMock()
+        with (
+            patch.object(control_server, "nomad_addr", return_value="http://nomad.internal"),
+            patch.object(control_server, "NomadApi", return_value=api) as api_type,
+        ):
+            control_server._install_lae_runtime_variables(
+                MagicMock(),
+                {},
+                {"nomad/jobs/app/group/task": {"DATABASE_URL": "secret"}},
+            )
+
+        api_type.assert_called_once_with("http://nomad.internal", token="")
+        api.put_variable.assert_called_once_with(
+            "nomad/jobs/app/group/task", {"DATABASE_URL": "secret"}
+        )
+
+    def test_runtime_variable_install_converts_nomad_acl_rejection(self) -> None:
+        api = MagicMock()
+        api.put_variable.side_effect = LumaError("Nomad API error 403")
+        canary = "runtime-variable-canary-value"
+        with (
+            patch.object(control_server, "nomad_addr", return_value="http://nomad.internal"),
+            patch.object(control_server, "NomadApi", return_value=api),
+            self.assertRaises(control_server.LumaRuntimeError) as caught,
+        ):
+            control_server._install_lae_runtime_variables(
+                MagicMock(),
+                {},
+                {"nomad/jobs/app/group/task": {"DATABASE_URL": canary}},
+            )
+
+        self.assertEqual(caught.exception.status, 503)
+        self.assertNotIn(canary, str(caught.exception))
+
     def test_variable_values_are_only_in_put_body_and_never_in_public_errors(self) -> None:
         api = NomadApi("http://nomad.internal", token="nomad-token")
         canary = "nomad-variable-secret-canary"
