@@ -5,13 +5,14 @@ import os
 import secrets
 import fcntl
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, TypeVar
 
 from ..errors import LumaError
 
 
 DEFAULT_STATE_DIR = Path("/opt/luma/control")
 STATE_FILE = "control.json"
+T = TypeVar("T")
 
 
 def state_dir() -> Path:
@@ -72,6 +73,28 @@ def mutate_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
         state = load_state()
         result = mutator(state)
         save_state(state)
+        return result
+
+
+def mutate_state_if_changed(
+    mutator: Callable[[Dict[str, Any]], tuple[T, bool]],
+) -> T:
+    """Mutate Control state while allowing an explicit no-write result.
+
+    Long-polling paths must still hold the state lock while deciding whether a
+    task can be claimed, but an idle poll must not rewrite and fsync the entire
+    state file.  The callback therefore returns ``(result, changed)`` and the
+    durable write happens only when ``changed`` is true.
+    """
+
+    lock_path = state_path().with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = load_state()
+        result, changed = mutator(state)
+        if changed:
+            save_state(state)
         return result
 
 

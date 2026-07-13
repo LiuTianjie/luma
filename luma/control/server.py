@@ -144,7 +144,15 @@ from ..lae_admin_proxy import (
 )
 from .. import __version__
 from .metrics import load_history, record_samples, sustained_breach
-from .state import init_state, load_state, mutate_state, require_token, save_state, state_dir
+from .state import (
+    init_state,
+    load_state,
+    mutate_state,
+    mutate_state_if_changed,
+    require_token,
+    save_state,
+    state_dir,
+)
 # Re-exported from the secrets leaf module so existing imports of these names
 # from luma.control.server (callers and tests) keep working unchanged.
 from .secrets import (
@@ -184,11 +192,14 @@ AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SE
 # control.json before it is garbage-collected. Without this, agentTasks grows
 # without bound — every remote-node deploy adds an entry that is never deleted,
 # and the whole file is re-serialized + fsynced on every heartbeat.
-AGENT_TASK_RETENTION_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_RETENTION_SECONDS", str(24 * 3600)))
+AGENT_TASK_RETENTION_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_RETENTION_SECONDS", str(15 * 60)))
+AGENT_TASK_PROGRESS_LIMIT = int(os.environ.get("LUMA_NODE_AGENT_TASK_PROGRESS_LIMIT", "300"))
 BUILDER_TASK_RETENTION_SECONDS = int(os.environ.get("LUMA_BUILDER_TASK_RETENTION_SECONDS", str(7 * 24 * 3600)))
 BUILDER_TASK_IDEMPOTENCY_SECONDS = int(os.environ.get("LUMA_BUILDER_TASK_IDEMPOTENCY_SECONDS", str(24 * 3600)))
 BUILDER_TASK_EVENT_LIMIT = int(os.environ.get("LUMA_BUILDER_TASK_EVENT_LIMIT", "1000"))
-BUILD_RUN_EVENT_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_EVENT_LIMIT", "1000"))
+BUILD_RUN_EVENT_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_EVENT_LIMIT", "300"))
+BUILD_RUN_MESSAGE_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_MESSAGE_LIMIT", "4000"))
+BUILD_RUN_SUMMARY_MESSAGE_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_SUMMARY_MESSAGE_LIMIT", "500"))
 LAE_RUNTIME_RECORD_RETENTION_SECONDS = int(
     os.environ.get("LUMA_LAE_RUNTIME_RECORD_RETENTION_SECONDS", str(30 * 24 * 3600))
 )
@@ -1708,7 +1719,11 @@ def _create_build_run(body: Dict[str, Any], *, source: str, build_node: str) -> 
 
 
 def _append_build_run_event(run_id: str, event: Dict[str, Any]) -> None:
-    safe_event = {str(key): str(value) for key, value in event.items() if value is not None}
+    safe_event = {
+        str(key): str(value)[:BUILD_RUN_MESSAGE_LIMIT]
+        for key, value in event.items()
+        if value is not None
+    }
 
     def mutate(state: Dict[str, Any]) -> None:
         run = _build_runs(state).get(run_id)
@@ -1748,7 +1763,7 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
             run["canceledAt"] = now
             run.pop("result", None)
         elif message:
-            run["message"] = message
+            run["message"] = str(message)[:BUILD_RUN_MESSAGE_LIMIT]
         if final_status != "canceled" and isinstance(result, dict):
             run["result"] = _build_run_result_summary(result)
 
@@ -1789,6 +1804,15 @@ def _build_run_result_summary(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def _prune_build_runs(state: Dict[str, Any], *, limit: int = 100) -> None:
     runs = _build_runs(state)
+    event_limit = max(int(BUILD_RUN_EVENT_LIMIT), 100)
+    for run in runs.values():
+        if not isinstance(run, dict):
+            continue
+        events = run.get("events") if isinstance(run.get("events"), list) else []
+        if len(events) > event_limit:
+            run["events"] = events[-event_limit:]
+        if run.get("message"):
+            run["message"] = str(run.get("message"))[:BUILD_RUN_MESSAGE_LIMIT]
     if len(runs) <= limit:
         return
     ordered = sorted(
@@ -1876,6 +1900,15 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
     now = int(time.time()) if now is None else now
     cutoff = now - AGENT_TASK_RETENTION_SECONDS
     tasks = _agent_tasks(state)
+    progress_limit = max(int(AGENT_TASK_PROGRESS_LIMIT), 50)
+    for task in tasks.values():
+        if not isinstance(task, dict):
+            continue
+        progress = task.get("progress") if isinstance(task.get("progress"), list) else []
+        if len(progress) > progress_limit:
+            task["progress"] = progress[-progress_limit:]
+        if task.get("message"):
+            task["message"] = str(task.get("message"))[:BUILD_RUN_MESSAGE_LIMIT]
     terminal = {"succeeded", "failed", "timeout", "canceled"}
     stale = [
         task_id
@@ -1890,6 +1923,12 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
 
 def _mutate_control_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
     return mutate_state(mutator)
+
+
+def _mutate_control_state_if_changed(
+    mutator: Callable[[Dict[str, Any]], tuple[Any, bool]],
+) -> Any:
+    return mutate_state_if_changed(mutator)
 
 
 def handle_node_agent_token(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -2117,19 +2156,24 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     config = load_config(_control_config_path())
     wait_seconds = min(max(int(body.get("waitSeconds") or 0), 0), 30)
     deadline = time.time() + wait_seconds
+    first_poll = True
     while True:
-        def mutate(
-            state: Dict[str, Any],
-        ) -> tuple[
-            Dict[str, Any],
-            CredentialLeaseBinding | ObjectSourceLeaseBinding | None,
-        ] | None:
+        persist_heartbeat = first_poll
+
+        def mutate(state: Dict[str, Any]) -> tuple[Any, bool]:
             nonlocal normalized_container_stats
             nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
             entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
             canonical_node_name = entry[0] if entry else node_name
             record = _require_node_agent_token(state, token, node_name, node_id=node_id)
-            normalized_container_stats = _update_agent_heartbeat(record, body, config=config, state=state)
+            changed = False
+            if persist_heartbeat:
+                _prune_agent_tasks(state)
+                _prune_build_runs(state)
+                normalized_container_stats = _update_agent_heartbeat(
+                    record, body, config=config, state=state
+                )
+                changed = True
             tasks = _agent_tasks(state)
             now = int(time.time())
             for task_id in sorted(tasks):
@@ -2158,6 +2202,7 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                             task["message"] = "builder task canceled before lease"
                             task["completedAt"] = now
                             task["updatedAt"] = now
+                            changed = True
                         continue
                 # Ephemeral source fields must never survive a prior crash or
                 # manual state corruption. Remove them from the durable child
@@ -2217,10 +2262,11 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                     leased_task["payload"].pop("gitUsername", None)
                     leased_task["payload"].pop("objectUrl", None)
                     leased_task["payload"].pop("objectAllowedHost", None)
-                return leased_task, redemption_binding
-            return None
+                return (leased_task, redemption_binding), True
+            return None, changed
 
-        candidate = _mutate_control_state(mutate)
+        candidate = _mutate_control_state_if_changed(mutate)
+        first_poll = False
         if candidate is not None:
             leased, redemption_binding = candidate
             if redemption_binding is not None:
@@ -2281,6 +2327,8 @@ def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, A
 
     def mutate(state: Dict[str, Any]) -> None:
         nonlocal canonical_node_name, normalized_container_stats
+        _prune_agent_tasks(state)
+        _prune_build_runs(state)
         nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
         entry = _node_record_entry_for_name_or_id(nodes, node_name, node_id)
         canonical_node_name = entry[0] if entry else node_name
@@ -2528,7 +2576,7 @@ def handle_node_agent_progress(token: str, body: Dict[str, Any]) -> Dict[str, An
         stored_events = [sanitize_builder_task_progress_event(event) for event in events] if builder_task is not None else events
         progress = task.get("progress") if isinstance(task.get("progress"), list) else []
         progress.extend(stored_events)
-        task["progress"] = progress[-5000:]
+        task["progress"] = progress[-max(int(AGENT_TASK_PROGRESS_LIMIT), 50) :]
         task["updatedAt"] = int(time.time())
         if builder_task is not None and not _builder_task_terminal(str(builder_task.get("status") or "")):
             for event in stored_events:
@@ -6829,7 +6877,7 @@ def _build_run_public_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         "providerId": str(request.get("providerId") or ""),
         "repository": str(request.get("repository") or ""),
         "ref": str(request.get("ref") or ""),
-        "message": str(run.get("message") or ""),
+        "message": str(run.get("message") or "")[:BUILD_RUN_SUMMARY_MESSAGE_LIMIT],
         "createdAt": int(run.get("createdAt") or 0),
         "updatedAt": int(run.get("updatedAt") or 0),
         "completedAt": int(run.get("completedAt") or 0),
@@ -6838,6 +6886,7 @@ def _build_run_public_summary(run: Dict[str, Any]) -> Dict[str, Any]:
 
 def _build_run_public(run: Dict[str, Any]) -> Dict[str, Any]:
     result = _build_run_public_summary(run)
+    result["message"] = str(run.get("message") or "")[:BUILD_RUN_MESSAGE_LIMIT]
     result["request"] = run.get("request") if isinstance(run.get("request"), dict) else {}
     result["events"] = [event for event in run.get("events") or [] if isinstance(event, dict)]
     result["result"] = run.get("result") if isinstance(run.get("result"), dict) else {}

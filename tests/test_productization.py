@@ -316,8 +316,7 @@ class ProductConfigTests(unittest.TestCase):
 
         self.assertFalse(restart)
         progress_calls = client.progress_agent_task.call_args_list
-        self.assertGreaterEqual(len(progress_calls), 3)
-        self.assertLessEqual(len(progress_calls), 4)
+        self.assertEqual(len(progress_calls), 5)
         reported = [
             event["line"]
             for call in progress_calls
@@ -5027,7 +5026,11 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(unpublished["status"], 404)
 
     def test_prune_agent_tasks_drops_old_terminal_keeps_active_and_recent(self):
-        from luma.control.server import _prune_agent_tasks, AGENT_TASK_RETENTION_SECONDS
+        from luma.control.server import (
+            AGENT_TASK_PROGRESS_LIMIT,
+            AGENT_TASK_RETENTION_SECONDS,
+            _prune_agent_tasks,
+        )
 
         now = 1_000_000
         old = now - AGENT_TASK_RETENTION_SECONDS - 10
@@ -5037,7 +5040,12 @@ class ControlApiTests(unittest.TestCase):
                 "old-done": {"status": "succeeded", "completedAt": old},
                 "old-failed": {"status": "failed", "completedAt": old},
                 "old-timeout": {"status": "timeout", "updatedAt": old},
-                "recent-done": {"status": "succeeded", "completedAt": recent},
+                "recent-done": {
+                    "status": "succeeded",
+                    "completedAt": recent,
+                    "message": "x" * 10_000,
+                    "progress": [{"line": str(index)} for index in range(500)],
+                },
                 "old-queued": {"status": "queued", "createdAt": old},      # active: keep
                 "old-running": {"status": "running", "updatedAt": old},    # active: keep
             }
@@ -5046,6 +5054,45 @@ class ControlApiTests(unittest.TestCase):
         survivors = set(state["agentTasks"])
         # old terminal tasks gone; active tasks and recent terminal survive
         self.assertEqual(survivors, {"recent-done", "old-queued", "old-running"})
+        recent_task = state["agentTasks"]["recent-done"]
+        self.assertEqual(len(recent_task["progress"]), AGENT_TASK_PROGRESS_LIMIT)
+        self.assertEqual(recent_task["progress"][0]["line"], "200")
+        self.assertEqual(len(recent_task["message"]), 4000)
+
+    def test_agent_idle_long_poll_persists_only_initial_heartbeat(self):
+        from luma.control import state as control_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker": {
+                        "nodeId": "worker-node-id",
+                        "labels": {"luma.node.name": "worker", "luma.node.id": "worker-node-id"},
+                    }
+                }
+                save_state(state)
+                issued = handle_node_agent_token(
+                    state["deployToken"],
+                    {"nodeName": "worker", "nodeId": "worker-node-id"},
+                )
+                original_save = control_state.save_state
+                with patch("luma.control.state.save_state", wraps=original_save) as save:
+                    lease = handle_node_agent_lease(
+                        issued["agentToken"],
+                        {
+                            "nodeName": "worker",
+                            "nodeId": "worker-node-id",
+                            "os": "linux",
+                            "capabilities": [],
+                            "waitSeconds": 2,
+                        },
+                    )
+                self.assertIsNone(lease["task"])
+                self.assertEqual(save.call_count, 1)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -12801,6 +12848,47 @@ class GithubImportTests(unittest.TestCase):
                 self.assertEqual(len(events), 100)
                 self.assertEqual(events[0]["message"], "line-25")
                 self.assertEqual(events[-1]["message"], "line-124")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_build_run_history_compacts_large_legacy_output(self):
+        from luma.control.server import (
+            _prune_build_runs,
+            handle_build_run_get,
+            handle_build_run_list,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(
+                    domain="luma.example.com",
+                    cluster_id="luma-test",
+                    overwrite=True,
+                )
+                state["buildRuns"] = {
+                    "build-legacy": {
+                        "id": "build-legacy",
+                        "status": "failed",
+                        "message": "x" * 10_000,
+                        "events": [
+                            {"name": "Build image", "status": "progress", "message": f"line-{index}"}
+                            for index in range(500)
+                        ],
+                        "createdAt": 1,
+                        "updatedAt": 2,
+                    }
+                }
+                with patch("luma.control.server.BUILD_RUN_EVENT_LIMIT", 100):
+                    _prune_build_runs(state)
+                save_state(state)
+
+                detail = handle_build_run_get(state["deployToken"], "build-legacy")["run"]
+                summary = handle_build_run_list(state["deployToken"])["runs"][0]
+                self.assertEqual(len(detail["events"]), 100)
+                self.assertEqual(detail["events"][0]["message"], "line-400")
+                self.assertEqual(len(detail["message"]), 4000)
+                self.assertEqual(len(summary["message"]), 500)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

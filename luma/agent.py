@@ -1392,7 +1392,7 @@ class _AgentTaskProgressReporter:
         task_id: str,
         node_name: str,
         node_id: str,
-        batch_size: int = 100,
+        batch_size: int = 50,
         flush_interval: float = 0.25,
     ) -> None:
         self.client = client
