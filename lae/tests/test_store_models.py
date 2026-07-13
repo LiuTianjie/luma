@@ -142,10 +142,10 @@ class StoreModelTests(unittest.TestCase):
                 dialect=postgresql.dialect()
             )
         )
-        self.assertIn("status IN ('ready','retained')", ddl)
         self.assertIn(
-            "luma_volume_ref IS NOT NULL AND provisioned_at IS NOT NULL", ddl
+            "(luma_volume_ref IS NULL) = (provisioned_at IS NULL)", ddl
         )
+        self.assertIn("status <> 'ready' OR luma_volume_ref IS NOT NULL", ddl)
 
     def test_environment_schema_has_no_plaintext_column(self) -> None:
         columns = set(ApplicationEnvironmentVariable.__table__.columns.keys())

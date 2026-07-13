@@ -25,8 +25,8 @@ def upgrade() -> None:
     op.create_check_constraint(
         op.f("ck_application_volumes_provisioning_binding"),
         "application_volumes",
-        "(status IN ('ready','retained')) = "
-        "(luma_volume_ref IS NOT NULL AND provisioned_at IS NOT NULL)",
+        "((luma_volume_ref IS NULL) = (provisioned_at IS NULL)) AND "
+        "(status <> 'ready' OR luma_volume_ref IS NOT NULL)",
     )
 
 
@@ -36,8 +36,7 @@ def downgrade() -> None:
     # binding needed by an operator to recover/delete retained data.
     op.execute(
         "UPDATE application_volumes SET status = 'ready' "
-        "WHERE status = 'retained' AND luma_volume_ref IS NOT NULL "
-        "AND provisioned_at IS NOT NULL"
+        "WHERE luma_volume_ref IS NOT NULL AND provisioned_at IS NOT NULL"
     )
     op.drop_constraint(
         op.f("ck_application_volumes_provisioning_binding"),

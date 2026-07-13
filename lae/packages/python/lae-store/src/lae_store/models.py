@@ -539,8 +539,8 @@ class ApplicationVolume(TimestampMixin, Base):
             name="luma_volume_ref",
         ),
         CheckConstraint(
-            "(status IN ('ready','retained')) = "
-            "(luma_volume_ref IS NOT NULL AND provisioned_at IS NOT NULL)",
+            "((luma_volume_ref IS NULL) = (provisioned_at IS NULL)) AND "
+            "(status <> 'ready' OR luma_volume_ref IS NOT NULL)",
             name="provisioning_binding",
         ),
         Index("ix_application_volumes_tenant_app", "tenant_id", "application_id"),
