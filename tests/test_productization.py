@@ -12175,6 +12175,25 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual(_egress_proxy_for_node(config, state, "build-1"), "")
         self.assertEqual(_egress_proxy_for_node(config, state, "home-worker"), "http://100.106.154.3:7890")
 
+    def test_runtime_config_marks_manager_for_local_ingress_addressing(self):
+        from luma.control.server import _config_with_state_nodes
+
+        config = LumaConfig({"nodes": {}}, None)
+        state = {
+            "nodes": {
+                "manager": {
+                    "name": "manager",
+                    "status": "manager",
+                    "region": "cn",
+                    "tailscaleIP": "100.106.154.3",
+                }
+            }
+        }
+
+        runtime = _config_with_state_nodes(config, state)
+
+        self.assertTrue(runtime.nodes["manager"].raw["lumaLocalIngress"])
+
     def test_build_run_records_failed_import_events(self):
         from luma.control.server import handle_build_deploy, handle_build_run_list, handle_build_run_get
         from luma.errors import LumaError

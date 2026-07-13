@@ -145,6 +145,42 @@ port: 3000
         self.assertTrue(job["Update"]["AutoRevert"])
         self.assertEqual(job["Update"]["MaxParallel"], 1)
 
+    def test_cn_edge_pinned_to_local_ingress_manager_advertises_host_address(self):
+        service = self.load(
+            """
+name: registry
+image: registry:2
+region: cn
+node: manager
+exposure: cn-edge
+domain: registry.example.com
+port: 5000
+"""
+        )
+        config = LumaConfig(
+            {
+                "nodes": {
+                    "manager": {
+                        "host": "manager",
+                        "region": "cn",
+                        "tailscaleIP": "100.106.154.3",
+                        "lumaLocalIngress": True,
+                    }
+                }
+            },
+            None,
+        )
+
+        job = render_nomad_job(config, service, as_json=False)["Job"]
+        svc = job["TaskGroups"][0]["Services"][0]
+
+        self.assertNotIn("Address", svc)
+        self.assertEqual(svc["AddressMode"], "host")
+        self.assertNotIn(
+            {"LTarget": "${meta.luma_tailscale_ip}", "Operand": "is_set"},
+            job["Constraints"],
+        )
+
     def test_single_replica_dynamic_edge_uses_canary_before_promoting(self):
         job = self.render(
             """

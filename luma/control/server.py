@@ -10935,6 +10935,8 @@ def _config_with_state_nodes(config: LumaConfig, state: Dict[str, Any]) -> LumaC
         region = str(record.get("region") or labels.get("region") or "")
         if region:
             merged["region"] = region
+        if _node_record_is_manager(record):
+            merged["lumaLocalIngress"] = True
         for field in ("tailscaleIP", "tailscaleIp", "tailscaleName", "advertiseAddr", "publicIp", "public_ip"):
             value = str(record.get(field) or "").strip()
             if value:

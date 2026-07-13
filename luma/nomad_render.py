@@ -50,6 +50,7 @@ EDGE_EXPOSURES = {"cn-edge", "external-edge"}
 HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
 NOMAD_TAILSCALE_META_KEY = "luma_tailscale_ip"
 NOMAD_TAILSCALE_SERVICE_ADDRESS = f"${{meta.{NOMAD_TAILSCALE_META_KEY}}}"
+NOMAD_LOCAL_HOST_SERVICE_ADDRESS = "__luma_nomad_host__"
 
 CONTROL_JOB_FILE_ENV_NAMES = frozenset(
     {
@@ -997,6 +998,14 @@ def _set_edge_service_address(block: Dict[str, Any], address: str) -> None:
     # (for example 10.0.0.10 on Tencent), which the manager-side Traefik cannot
     # reach. Pinned nodes can use their resolved configured address; otherwise
     # interpolate the Tailscale address published by every Luma Nomad client.
+    if address == NOMAD_LOCAL_HOST_SERVICE_ADDRESS:
+        # Traefik and the workload share the manager host. Let Nomad advertise
+        # the actual host-network address bound to the dynamic port; overriding
+        # it with the manager's Tailscale address produces a guaranteed 502
+        # when the port binds to a provider/bridge host-network address.
+        block.pop("Address", None)
+        block["AddressMode"] = "host"
+        return
     block["Address"] = address or NOMAD_TAILSCALE_SERVICE_ADDRESS
     block.pop("AddressMode", None)
 
@@ -1015,6 +1024,8 @@ def _node_service_address(config: LumaConfig, node_name: str) -> str:
     if node is None:
         return ""
     raw = node.raw or {}
+    if bool(raw.get("lumaLocalIngress") or raw.get("localIngress")):
+        return NOMAD_LOCAL_HOST_SERVICE_ADDRESS
     for key in ("tailscaleIP", "tailscaleIp", "tailscaleName", "advertiseAddr"):
         value = _clean_service_address(raw.get(key))
         if value:
