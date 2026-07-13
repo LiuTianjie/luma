@@ -12167,7 +12167,16 @@ def _wait_for_nomad_job_replacement(
             )
             if isinstance(evaluation, dict):
                 status = str(evaluation.get("Status") or "").lower()
-                if status == "blocked":
+                failed_task_groups = evaluation.get("FailedTGAllocs")
+                # Nomad commonly completes the job-register evaluation and
+                # records the unschedulable work in FailedTGAllocs while a
+                # queued-allocs child evaluation becomes blocked. Treat the
+                # placement failure as terminal here instead of waiting for
+                # the replacement timeout just because the parent says
+                # "complete".
+                if status == "blocked" or (
+                    isinstance(failed_task_groups, dict) and bool(failed_task_groups)
+                ):
                     raise LumaError(_nomad_blocked_evaluation_message(job_id, evaluation))
                 if status in {"cancelled", "failed"}:
                     description = str(evaluation.get("StatusDescription") or status)

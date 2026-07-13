@@ -7073,6 +7073,40 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_application_restart_reports_placement_failure_from_completed_parent_evaluation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                api = Mock()
+                api.request.side_effect = [
+                    [],
+                    {"ID": "myapp", "TaskGroups": [{"Name": "api", "Count": 1}]},
+                    {"EvalID": "eval-parent"},
+                    [],
+                    {
+                        "ID": "eval-parent",
+                        "Status": "complete",
+                        "BlockedEval": "eval-child",
+                        "FailedTGAllocs": {
+                            "api": {
+                                "ConstraintFiltered": {
+                                    "${meta.region} = home": 3,
+                                    "${meta.luma_node_name} = blg": 3,
+                                }
+                            }
+                        },
+                    },
+                ]
+                with patch("luma.control.server.NomadApi", return_value=api):
+                    with self.assertRaisesRegex(
+                        LumaError,
+                        "requested node blg is unavailable, down, or scheduling-ineligible",
+                    ):
+                        handle_application_restart(state["deployToken"], {"stack": "myapp"})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_application_restart_restores_gc_job_from_saved_deployment_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
