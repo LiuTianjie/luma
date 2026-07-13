@@ -16,6 +16,10 @@ import { FormEvent, useEffect, useState } from "react";
 type Mode = "register" | "login";
 type Step = "request" | "verify" | "magic" | "complete";
 type DeliveryMode = "loading" | "email" | "preview" | "unavailable";
+type DeliveryCapabilities = {
+  mode: DeliveryMode;
+  previewAccess: boolean;
+};
 
 const API_ROOT = (process.env.NEXT_PUBLIC_LAE_API_URL || "/v1").replace(/\/$/, "");
 
@@ -30,12 +34,16 @@ export function AuthPortal() {
   const [deployToken, setDeployToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("loading");
+  const [previewAccess, setPreviewAccess] = useState(false);
 
   useEffect(() => {
     let active = true;
     void readAuthConfig()
-      .then((nextMode) => {
-        if (active) setDeliveryMode(nextMode);
+      .then((capabilities) => {
+        if (active) {
+          setDeliveryMode(capabilities.mode);
+          setPreviewAccess(capabilities.previewAccess);
+        }
       })
       .catch(() => {
         // A rolling deployment may briefly pair the new Web with the previous
@@ -295,6 +303,21 @@ export function AuthPortal() {
                   <button className="auth-submit" type="submit" disabled={loading}>
                     {loading ? "正在发送…" : "继续"}<ArrowRight size={16} />
                   </button>
+                  {previewAccess && (
+                    <button
+                      className="auth-preview-shortcut"
+                      type="button"
+                      disabled={loading}
+                      onClick={enterPreview}
+                    >
+                      <FlaskConical size={15} />
+                      <span>
+                        <strong>使用预览身份</strong>
+                        <small>跳过邮件，仅进入共享 staging 空间</small>
+                      </span>
+                      <ArrowRight size={14} />
+                    </button>
+                  )}
                 </form>
               )}
 
@@ -368,7 +391,7 @@ async function request(path: string, body: Record<string, string>) {
   return value as Record<string, unknown>;
 }
 
-async function readAuthConfig(): Promise<DeliveryMode> {
+async function readAuthConfig(): Promise<DeliveryCapabilities> {
   const response = await fetch(`${API_ROOT}/auth/config`, {
     credentials: "include",
     cache: "no-store",
@@ -382,8 +405,14 @@ async function readAuthConfig(): Promise<DeliveryMode> {
   if (typeof delivery !== "object" || delivery === null || Array.isArray(delivery)) {
     throw new Error("identity delivery config invalid");
   }
-  const mode = (delivery as Record<string, unknown>).mode;
-  return mode === "preview" || mode === "email" || mode === "unavailable"
-    ? mode
-    : "unavailable";
+  const record = delivery as Record<string, unknown>;
+  const mode = record.mode;
+  const normalizedMode =
+    mode === "preview" || mode === "email" || mode === "unavailable"
+      ? mode
+      : "unavailable";
+  return {
+    mode: normalizedMode,
+    previewAccess: record.previewAccess === true,
+  };
 }

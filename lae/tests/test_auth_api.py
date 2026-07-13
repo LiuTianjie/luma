@@ -271,6 +271,7 @@ class AuthApiTests(unittest.TestCase):
             downstream_mail,
             minimum_start_duration=0,
             preview_email="preview@lae.invalid",
+            external_mailbox_enabled=False,
         )
         with TestClient(
             create_app(preview_service), base_url="https://lae.example.test"
@@ -303,6 +304,28 @@ class AuthApiTests(unittest.TestCase):
             )
             self.assertTrue(issued.json()["magicToken"].startswith("lae_em_"))
             self.assertEqual(len(downstream_mail.deliveries), 1)
+
+        hybrid_service = AuthService(
+            DistinctPreviewBackend(),
+            RecordingEmailSender(),
+            minimum_start_duration=0,
+            preview_email="preview@lae.invalid",
+            external_mailbox_enabled=True,
+        )
+        with TestClient(
+            create_app(hybrid_service), base_url="https://lae.example.test"
+        ) as hybrid_client:
+            config = hybrid_client.get("/v1/auth/config")
+            self.assertEqual(
+                config.json(),
+                {
+                    "emailDelivery": {
+                        "mode": "email",
+                        "externalMailbox": True,
+                        "previewAccess": True,
+                    }
+                },
+            )
 
     def test_verify_requires_exactly_one_method_and_uses_stable_error_envelope(self) -> None:
         for payload in (

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import stat
 import subprocess
 import sys
@@ -59,15 +60,22 @@ class StagingBundleTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
             environment = _dotenv(output / "lae-platform-staging.env")
-            required = {
+            global_names = {
                 line.split("=", 1)[0]
-                for line in (LAE_ROOT / "deploy/luma/.env.example")
+                for line in (LAE_ROOT / "deploy/luma/.global-secrets.example")
                 .read_text(encoding="utf-8")
                 .splitlines()
                 if line and not line.startswith("#")
             }
+            compose_text = (
+                LAE_ROOT / "deploy/luma/docker-compose.staging.yml"
+            ).read_text(encoding="utf-8")
+            required = set(
+                re.findall(r"(?<!\$)\$\{([A-Z][A-Z0-9_]*)\}", compose_text)
+            ) - global_names
             self.assertTrue(required.issubset(environment))
             self.assertTrue(all(environment[name] for name in required))
+            self.assertTrue(global_names.isdisjoint(environment))
             self.assertEqual(environment["LAE_ANALYZER_IMAGE_DIGEST"], ANALYZER)
             self.assertEqual(
                 environment["LAE_AGENT_LLM_BASE_URL"],

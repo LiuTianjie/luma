@@ -11,11 +11,6 @@ volumes:
     path: lae/staging/artifacts/v1
     accessMode: ReadWriteOnce
     initialize: empty
-  mailpit-data:
-    storageClass: builder-registry-nfs
-    path: lae/staging/mailpit/v1
-    accessMode: ReadWriteOnce
-    initialize: empty
   postgres-data:
     storageClass: builder-registry-nfs
     path: lae/staging/postgres/v1
@@ -51,4 +46,3 @@ services:
     port: 9000
   artifact-init: {node: lab, exposure: none}
   valkey: {node: lab, exposure: none}
-  mailpit: {node: lab, exposure: none}

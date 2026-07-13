@@ -102,10 +102,14 @@ class AuthService:
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
         preview_email: str | None = None,
+        external_mailbox_enabled: bool = True,
     ) -> None:
         if not 0 <= minimum_start_duration <= 5:
             raise ValueError("minimum_start_duration must be between 0 and 5 seconds")
+        if not isinstance(external_mailbox_enabled, bool):
+            raise ValueError("external_mailbox_enabled must be a boolean")
         self._backend = backend
+        self._external_mailbox_enabled = external_mailbox_enabled
         self._preview_email: str | None = None
         self._preview_capture: _PreviewEmailCapture | None = None
         self._preview_lock = asyncio.Lock()
@@ -128,6 +132,10 @@ class AuthService:
     @property
     def preview_enabled(self) -> bool:
         return self._preview_capture is not None
+
+    @property
+    def external_mailbox_enabled(self) -> bool:
+        return self._external_mailbox_enabled
 
     async def request_preview_challenge(
         self,

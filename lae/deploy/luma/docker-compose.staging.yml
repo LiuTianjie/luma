@@ -42,6 +42,7 @@ services:
       LAE_ARTIFACT_S3_SECRET_KEY: ${LAE_S3_API_SECRET_KEY}
       LAE_AUTH_HMAC_KEY: ${LAE_AUTH_HMAC_KEY}
       LAE_AUTH_HMAC_KEY_VERSION: "1"
+      LAE_AUTH_EXTERNAL_MAILBOX: "1"
       LAE_AUTH_PREVIEW_EMAIL: preview@lae.invalid
       LAE_AUTH_PREVIEW_MODE: public
       LAE_BILLING_DRIVER: mock
@@ -51,7 +52,7 @@ services:
       LAE_DATABASE_URL: ${LAE_DATABASE_URL}
       LAE_DEPLOYMENT_IDEMPOTENCY_HMAC_KEY: ${LAE_DEPLOYMENT_IDEMPOTENCY_HMAC_KEY}
       LAE_EMAIL_DRIVER: smtp
-      LAE_EMAIL_FROM: no-reply@staging.itool.tech
+      LAE_EMAIL_FROM: ${ITOOL_TECH_SMTP_USER}
       LAE_ENVIRONMENT: staging
       LAE_ENVIRONMENT_AEAD_KEYS: ${LAE_ENVIRONMENT_AEAD_KEYS}
       LAE_ENVIRONMENT_AEAD_KEY_VERSION: "1"
@@ -69,10 +70,12 @@ services:
       LAE_OBJECT_SOURCE_BROKER_TOKEN: ${LAE_OBJECT_SOURCE_BROKER_TOKEN}
       LAE_PUBLIC_LOGIN_URL: https://lae-staging.itool.tech/login
       LAE_RUN_MIGRATIONS: "1"
-      LAE_SMTP_HOST: mailpit
-      LAE_SMTP_PORT: "1025"
-      LAE_SMTP_SECURITY: plain
+      LAE_SMTP_HOST: ${ITOOL_TECH_SMTP_HOST}
+      LAE_SMTP_PASSWORD: ${ITOOL_TECH_SMTP_PASS}
+      LAE_SMTP_PORT: ${ITOOL_TECH_SMTP_PORT}
+      LAE_SMTP_SECURITY: tls
       LAE_SMTP_TIMEOUT_SECONDS: "10"
+      LAE_SMTP_USERNAME: ${ITOOL_TECH_SMTP_USER}
       LAE_SOURCE_CONNECTION_AEAD_KEYS: ${LAE_SOURCE_CONNECTION_AEAD_KEYS}
       LAE_SOURCE_CONNECTION_HMAC_KEYS: ${LAE_SOURCE_CONNECTION_HMAC_KEYS}
       LAE_SOURCE_CONNECTION_IDEMPOTENCY_HMAC_KEY: ${LAE_SOURCE_CONNECTION_IDEMPOTENCY_HMAC_KEY}
@@ -90,8 +93,6 @@ services:
       LAE_WORKER_STATE_HMAC_KEY_VERSION: "1"
     depends_on:
       artifact-init:
-        condition: service_healthy
-      mailpit:
         condition: service_healthy
       postgres:
         condition: service_healthy
@@ -299,28 +300,6 @@ services:
         limits: {cpus: "0.50", memory: 512M}
         reservations: {cpus: "0.10", memory: 128M}
 
-  mailpit:
-    image: axllent/mailpit:v1.30.4@sha256:5a49a77c5bdbe7c5474450b4f46348d09949df3695257729c93a30369382d4f6
-    platform: linux/amd64
-    environment:
-      MP_DATABASE: /data/mailpit.db
-      MP_DISABLE_WAL: "true"
-      MP_MAX_MESSAGES: "1000"
-      MP_SMTP_AUTH_ACCEPT_ANY: "0"
-      MP_SMTP_AUTH_ALLOW_INSECURE: "0"
-    volumes: [mailpit-data:/data]
-    healthcheck:
-      test: [CMD, /mailpit, readyz]
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits: {cpus: "0.25", memory: 256M}
-        reservations: {cpus: "0.05", memory: 64M}
-
 volumes:
   artifact-data:
-  mailpit-data:
   postgres-data:

@@ -430,6 +430,12 @@ button:focus-visible, a:focus-visible, label:focus-within {
 .auth-preview-note strong, .auth-preview-note span { display: block; }
 .auth-preview-note strong { margin-bottom: 4px; color: #aebaac; font-size: 9px; font-weight: 560; }
 .auth-preview-note span { color: #68776e; font-size: 8px; line-height: 1.65; }
+.auth-preview-shortcut { width: 100%; min-height: 52px; margin-top: 10px; padding: 8px 12px; border: 1px solid rgba(190,215,176,.1); border-radius: 13px; color: #8fa382; background: rgba(178,205,162,.035); display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; text-align: left; cursor: pointer; transition: border-color var(--quick), background var(--quick), color var(--quick); }
+.auth-preview-shortcut:hover:not(:disabled) { border-color: rgba(190,215,176,.2); color: #b9c8b2; background: rgba(178,205,162,.065); }
+.auth-preview-shortcut:disabled { cursor: wait; opacity: .5; }
+.auth-preview-shortcut span, .auth-preview-shortcut strong, .auth-preview-shortcut small { display: block; }
+.auth-preview-shortcut strong { color: inherit; font-size: 9px; font-weight: 560; }
+.auth-preview-shortcut small { margin-top: 3px; color: #68776e; font-size: 8px; line-height: 1.4; }
 .auth-magic-progress > span { width: 44px; height: 44px; margin: 0 0 25px; border: 1px solid rgba(190,218,175,.18); border-top-color: #b8d2a9; border-radius: 50%; display: block; animation: auth-orbit 1.2s linear infinite; }
 @keyframes auth-orbit { to { transform: rotate(360deg); } }
 .auth-success-mark { width: 48px; height: 48px; margin-bottom: 24px; border: 1px solid rgba(178,210,159,.27); border-radius: 50%; color: #b7d8a2; background: rgba(166,201,145,.07); display: grid; place-items: center; box-shadow: 0 0 35px rgba(166,201,145,.08); }

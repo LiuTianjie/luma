@@ -207,7 +207,6 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
             + "@postgres:5432/lae"
         ),
         "LAE_DEPLOYMENT_IDEMPOTENCY_HMAC_KEY": _base64_key(),
-        "LAE_EMAIL_FROM": "no-reply@staging.itool.tech",
         "LAE_ENVIRONMENT_AEAD_KEYS": json.dumps(
             {"1": _base64_key()}, separators=(",", ":")
         ),
@@ -238,9 +237,6 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
         "LAE_S3_API_SECRET_KEY": secrets.token_urlsafe(36),
         "LAE_S3_WORKER_ACCESS_KEY": "LAEWORKER" + secrets.token_hex(5).upper(),
         "LAE_S3_WORKER_SECRET_KEY": secrets.token_urlsafe(36),
-        "LAE_SMTP_HOST": "mailpit",
-        "LAE_SMTP_PASSWORD": secrets.token_urlsafe(24),
-        "LAE_SMTP_USERNAME": "lae-staging",
         "LAE_SOURCE_CONNECTION_AEAD_KEYS": json.dumps(
             {"1": _base64_key()}, separators=(",", ":")
         ),

@@ -398,6 +398,19 @@ def _runtime_auth_service() -> tuple[AuthService, Any]:
         raise AuthConfigurationError("LAE_DATABASE_URL is not configured")
     environment = os.environ.get("LAE_ENVIRONMENT", "development").strip().lower()
     driver = os.environ.get("LAE_EMAIL_DRIVER", "console").strip().lower()
+    external_mailbox_value = os.environ.get("LAE_AUTH_EXTERNAL_MAILBOX")
+    if external_mailbox_value is None:
+        external_mailbox_enabled = environment in {"production", "prod"}
+    else:
+        normalized_external_mailbox = external_mailbox_value.strip().lower()
+        if normalized_external_mailbox in {"1", "true"}:
+            external_mailbox_enabled = True
+        elif normalized_external_mailbox in {"0", "false"}:
+            external_mailbox_enabled = False
+        else:
+            raise AuthConfigurationError(
+                "LAE_AUTH_EXTERNAL_MAILBOX must be 0/1/false/true"
+            )
     if driver == "console":
         if environment in {"production", "prod"}:
             raise AuthConfigurationError(
@@ -413,11 +426,23 @@ def _runtime_auth_service() -> tuple[AuthService, Any]:
             raise AuthConfigurationError("SMTP email configuration is invalid") from exc
     else:
         raise AuthConfigurationError("email driver is not supported")
+    if external_mailbox_enabled and driver != "smtp":
+        raise AuthConfigurationError(
+            "external mailbox delivery requires the SMTP adapter"
+        )
     key_ring = _key_ring_from_env()
     engine = create_postgres_engine(dsn)
     backend = PostgresAuthStore(create_session_factory(engine), key_ring)
     preview_email = preview_email_from_env(os.environ, environment=environment)
-    return AuthService(backend, email_sender, preview_email=preview_email), engine
+    return (
+        AuthService(
+            backend,
+            email_sender,
+            preview_email=preview_email,
+            external_mailbox_enabled=external_mailbox_enabled,
+        ),
+        engine,
+    )
 
 
 def _runtime_analysis_request_store(
@@ -1119,20 +1144,25 @@ def create_app(
     @app.get("/v1/auth/config")
     async def auth_config() -> JSONResponse:
         service = runtime["auth"]
+        preview_access = service is not None and bool(
+            getattr(service, "preview_enabled", False)
+        )
+        external_mailbox = service is not None and bool(
+            getattr(service, "external_mailbox_enabled", True)
+        )
         mode = (
-            "preview"
-            if service is not None
-            and bool(getattr(service, "preview_enabled", False))
-            else "email"
-            if service is not None
+            "email"
+            if external_mailbox
+            else "preview"
+            if preview_access
             else "unavailable"
         )
         response = JSONResponse(
             {
                 "emailDelivery": {
                     "mode": mode,
-                    "externalMailbox": mode == "email",
-                    "previewAccess": mode == "preview",
+                    "externalMailbox": external_mailbox,
+                    "previewAccess": preview_access,
                 }
             }
         )

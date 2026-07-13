@@ -156,10 +156,6 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             self.assertEqual(artifact.exposure, "cn-edge")
             self.assertEqual(artifact.port, 9000)
             self.assertIn("artifacts", artifact.domain or "")
-            if "mailpit" in deployment.services:
-                self.assertEqual(deployment.services["mailpit"].exposure, "none")
-                self.assertIsNone(deployment.services["mailpit"].domain)
-
     def test_compose_has_no_host_or_public_port_escape_hatches(self):
         for compose_name in ("docker-compose.yml", "docker-compose.staging.yml"):
             compose = load_yaml(DEPLOY / compose_name)
@@ -252,12 +248,11 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertNotIn("*", production_store["MINIO_API_CORS_ALLOW_ORIGIN"])
         self.assertNotIn("*", staging_store["MINIO_API_CORS_ALLOW_ORIGIN"])
 
-    def test_managed_storage_and_mailpit_environment_boundary(self):
+    def test_managed_storage_and_external_email_environment_boundary(self):
         production = self.load("luma.compose.yml")
         staging = self.load("luma.compose.staging.yml")
-        self.assertNotIn("mailpit", production.compose["services"])
-        self.assertIn("mailpit", staging.compose["services"])
         for deployment in (production, staging):
+            self.assertNotIn("mailpit", deployment.compose["services"])
             for volume in deployment.volumes.values():
                 self.assertIsNotNone(volume.storage_class)
                 self.assertEqual(volume.initialize, "empty")
@@ -267,6 +262,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertEqual(production_api["LAE_ENVIRONMENT"], "production")
         self.assertEqual(production_api["LAE_BILLING_DRIVER"], "disabled")
         self.assertEqual(production_api["LAE_EMAIL_DRIVER"], "smtp")
+        self.assertEqual(str(production_api["LAE_AUTH_EXTERNAL_MAILBOX"]), "1")
         self.assertEqual(production_api["LAE_SMTP_SECURITY"], "tls")
         self.assertEqual(str(production_api["LAE_SMTP_PORT"]), "465")
         self.assertEqual(production_api["LAE_AUTH_PREVIEW_MODE"], "disabled")
@@ -275,8 +271,13 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         staging_api = staging.compose["services"]["api"]["environment"]
         self.assertEqual(staging_api["LAE_ENVIRONMENT"], "staging")
         self.assertEqual(staging_api["LAE_BILLING_DRIVER"], "mock")
-        self.assertEqual(staging_api["LAE_SMTP_HOST"], "mailpit")
-        self.assertEqual(staging_api["LAE_SMTP_SECURITY"], "plain")
+        self.assertEqual(str(staging_api["LAE_AUTH_EXTERNAL_MAILBOX"]), "1")
+        self.assertEqual(staging_api["LAE_EMAIL_FROM"], "${ITOOL_TECH_SMTP_USER}")
+        self.assertEqual(staging_api["LAE_SMTP_HOST"], "${ITOOL_TECH_SMTP_HOST}")
+        self.assertEqual(staging_api["LAE_SMTP_PASSWORD"], "${ITOOL_TECH_SMTP_PASS}")
+        self.assertEqual(staging_api["LAE_SMTP_PORT"], "${ITOOL_TECH_SMTP_PORT}")
+        self.assertEqual(staging_api["LAE_SMTP_SECURITY"], "tls")
+        self.assertEqual(staging_api["LAE_SMTP_USERNAME"], "${ITOOL_TECH_SMTP_USER}")
         self.assertEqual(staging_api["LAE_AUTH_PREVIEW_MODE"], "public")
         self.assertTrue(staging_api["LAE_AUTH_PREVIEW_EMAIL"].endswith(".invalid"))
 
@@ -289,12 +290,13 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             )
 
         values: dict[str, str] = {}
-        for line in (DEPLOY / ".env.example").read_text(encoding="utf-8").splitlines():
-            if not line or line.startswith("#"):
-                continue
-            name, separator, value = line.partition("=")
-            self.assertEqual(separator, "=", line)
-            values[name] = value
+        for example_name in (".env.example", ".global-secrets.example"):
+            for line in (DEPLOY / example_name).read_text(encoding="utf-8").splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                name, separator, value = line.partition("=")
+                self.assertEqual(separator, "=", line)
+                values[name] = value
 
         self.assertTrue(referenced.issubset(values.keys()))
         sensitive = {
@@ -329,6 +331,10 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             "LAE_UPLOAD_HMAC_KEY",
             "LAE_VALKEY_PASSWORD",
             "LAE_WORKER_STATE_HMAC_KEY",
+            "ITOOL_TECH_SMTP_HOST",
+            "ITOOL_TECH_SMTP_PASS",
+            "ITOOL_TECH_SMTP_PORT",
+            "ITOOL_TECH_SMTP_USER",
         }
         self.assertEqual({name: values[name] for name in sensitive}, dict.fromkeys(sensitive, ""))
 

@@ -860,6 +860,14 @@ summary:focus-visible {
 .auth-shell .auth-preview-note { margin: 0 0 14px; padding: 11px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text-muted); background: var(--well); display: grid; grid-template-columns: auto 1fr; gap: 9px; }
 .auth-shell .auth-preview-note strong { margin-bottom: 3px; color: var(--text); font-size: 10px; }
 .auth-shell .auth-preview-note span { color: var(--text-subtle); font-size: 9px; line-height: 1.55; }
+.auth-shell .auth-preview-shortcut { width: 100%; min-height: 48px; margin-top: 10px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text-muted); background: var(--well); display: grid; grid-template-columns: auto 1fr auto; gap: 9px; align-items: center; text-align: left; cursor: pointer; transition: border-color var(--motion-fast), background var(--motion-fast), color var(--motion-fast); }
+.auth-shell .auth-preview-shortcut:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); background: var(--surface); }
+.auth-shell .auth-preview-shortcut:disabled { cursor: wait; opacity: .55; }
+.auth-shell .auth-preview-shortcut span,
+.auth-shell .auth-preview-shortcut strong,
+.auth-shell .auth-preview-shortcut small { display: block; }
+.auth-shell .auth-preview-shortcut strong { color: inherit; font-size: 10px; font-weight: 600; }
+.auth-shell .auth-preview-shortcut small { margin-top: 2px; color: var(--text-subtle); font-size: 9px; line-height: 1.4; }
 .auth-shell .auth-magic-progress > span { width: 22px; height: 22px; margin: 0 0 16px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; display: block; }
 .auth-shell .auth-success-mark { width: 36px; height: 36px; margin-bottom: 15px; border: 1px solid var(--green-line); border-radius: var(--radius-md); color: var(--green); background: var(--green-soft); display: grid; place-items: center; box-shadow: none; }
 .auth-shell .auth-error { min-height: 30px; padding-top: 10px; color: var(--red); font-size: 10px; }
