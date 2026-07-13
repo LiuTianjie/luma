@@ -59,6 +59,8 @@ REGISTRY_AUTH_MODE="anonymous"
 BUILDKIT_SHA256=""
 EXTERNAL_REGISTRIES=("docker.io" "ghcr.io")
 EXTERNAL_REGISTRIES_EXPLICIT="0"
+EXTERNAL_RESOLVER_PROXY=""
+EXTERNAL_RESOLVER_NO_PROXY=""
 TEMP_DIR=""
 BIND_PROBE_DIR=""
 AUDIT_READY="0"
@@ -78,6 +80,8 @@ Usage:
     --registry-push-host HOST[:PORT] \
     --buildkit-sha256 SHA256 \
     [--agent-controller-env-file ROOT_ONLY_ENV] \
+    [--external-resolver-proxy HTTP_URL] \
+    [--external-resolver-no-proxy CSV] \
     [--registry-insecure] \
     [--registry-basic-auth] \
     [--external-registry HOST[:PORT] ...]
@@ -89,6 +93,10 @@ Required trust inputs:
   --buildkit-sha256       SHA-256 of buildkit-v0.31.1.linux-amd64.tar.gz.
   --agent-controller-env-file  Optional root-only bundle artifact containing
                           controller URL, scoped token, and AI_REQUIRED.
+  --external-resolver-proxy  Explicit HTTP(S) proxy used only by crane while
+                          resolving allowlisted public image tags.
+  --external-resolver-no-proxy  Optional comma-separated bypass list for that
+                          short-lived resolver process.
   --registry-basic-auth   Accept a task-scoped Basic credential lease. The
                           credential itself is never accepted or stored here.
 
@@ -170,6 +178,16 @@ while (($#)); do
       AGENT_CONTROLLER_ENV_FILE=$2
       shift 2
       ;;
+    --external-resolver-proxy)
+      require_arg "$1" "${2-}"
+      EXTERNAL_RESOLVER_PROXY=$2
+      shift 2
+      ;;
+    --external-resolver-no-proxy)
+      require_arg "$1" "${2-}"
+      EXTERNAL_RESOLVER_NO_PROXY=$2
+      shift 2
+      ;;
     --registry-insecure)
       REGISTRY_INSECURE="1"
       shift
@@ -235,6 +253,16 @@ validate_inputs() {
   validate_registry_host "$REGISTRY_PUSH_HOST" "--registry-push-host"
   validate_sha256 "$BUILDKIT_SHA256" || \
     die "--buildkit-sha256 must explicitly pin ${BUILDKIT_ASSET} with 64 lowercase hex characters"
+  if [[ -n "$EXTERNAL_RESOLVER_PROXY" ]]; then
+    [[ "$EXTERNAL_RESOLVER_PROXY" =~ ^https?://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?/?$ ]] || \
+      die "--external-resolver-proxy must be an HTTP(S) origin without credentials or path"
+    [[ "$EXTERNAL_RESOLVER_PROXY" != *@* ]] || \
+      die "--external-resolver-proxy must not contain credentials"
+  elif [[ -n "$EXTERNAL_RESOLVER_NO_PROXY" ]]; then
+    die "--external-resolver-no-proxy requires --external-resolver-proxy"
+  fi
+  [[ ${#EXTERNAL_RESOLVER_NO_PROXY} -le 4096 && "$EXTERNAL_RESOLVER_NO_PROXY" != *[[:space:]]* ]] || \
+    die "--external-resolver-no-proxy is invalid"
   ((${#EXTERNAL_REGISTRIES[@]} > 0)) || die "at least one --external-registry is required"
   ((${#EXTERNAL_REGISTRIES[@]} <= 32)) || die "at most 32 --external-registry values are allowed"
   local host previous=""
@@ -790,6 +818,8 @@ LUMA_BUILDER_ANALYZE_DOCKER_HOST=$(rootless_docker_host)
 LUMA_BUILDER_SNAPSHOT_ROOT=${SNAPSHOT_ROOT}
 LUMA_BUILDER_WORK_ROOT=${WORK_ROOT}
 LUMA_BUILDER_EXTERNAL_REGISTRIES_JSON='$(external_registries_json)'
+LUMA_BUILDER_EXTERNAL_RESOLVER_PROXY=${EXTERNAL_RESOLVER_PROXY}
+LUMA_BUILDER_EXTERNAL_RESOLVER_NO_PROXY=${EXTERNAL_RESOLVER_NO_PROXY}
 LUMA_BUILDER_BUILD_ENABLED=1
 LUMA_BUILDER_BUILDKIT_ADDR=unix://$(runtime_dir)/buildkit/buildkitd.sock
 LUMA_BUILDER_REGISTRY_PULL_HOST=${REGISTRY_PULL_HOST}

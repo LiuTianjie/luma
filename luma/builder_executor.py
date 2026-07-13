@@ -38,6 +38,8 @@ BUILDER_ANALYZE_DOCKER_HOST_ENV = "LUMA_BUILDER_ANALYZE_DOCKER_HOST"
 BUILDER_SNAPSHOT_ROOT_ENV = "LUMA_BUILDER_SNAPSHOT_ROOT"
 BUILDER_WORK_ROOT_ENV = "LUMA_BUILDER_WORK_ROOT"
 BUILDER_EXTERNAL_REGISTRIES_ENV = "LUMA_BUILDER_EXTERNAL_REGISTRIES_JSON"
+BUILDER_EXTERNAL_RESOLVER_PROXY_ENV = "LUMA_BUILDER_EXTERNAL_RESOLVER_PROXY"
+BUILDER_EXTERNAL_RESOLVER_NO_PROXY_ENV = "LUMA_BUILDER_EXTERNAL_RESOLVER_NO_PROXY"
 DEFAULT_SNAPSHOT_ROOT = Path("/var/lib/luma/builder/snapshots")
 DEFAULT_MAX_SOURCE_FILES = 200_000
 MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024
@@ -1917,7 +1919,7 @@ def _resolve_build_plan_proposal(
     crane = ""
     resolved_images: list[Dict[str, str]] = []
     with tempfile.TemporaryDirectory(prefix="luma-crane-cli-") as crane_home:
-        environment = _isolated_docker_environment(Path(crane_home))
+        environment = _external_registry_environment(Path(crane_home))
         for item in external_images:
             _raise_if_canceled(cancel_event)
             parsed = parse_external_image_reference(item.get("ref"))
@@ -2268,6 +2270,57 @@ def _isolated_docker_environment(config_directory: Path) -> Dict[str, str]:
         "DOCKER_CONFIG": str(config_directory),
         "LANG": "C.UTF-8",
     }
+
+
+def _external_registry_environment(config_directory: Path) -> Dict[str, str]:
+    """Return a credential-empty crane environment with explicit egress only.
+
+    Source analysis must not inherit the node agent's ambient proxy or Docker
+    credentials.  Mainland builders may still need an operator-owned HTTP
+    egress path to resolve public image tags, so that path is configured with
+    dedicated variables and is scoped to the short-lived ``crane`` process.
+    It never mutates the Docker daemon or the analyzer container.
+    """
+
+    environment = _isolated_docker_environment(config_directory)
+    proxy = str(os.environ.get(BUILDER_EXTERNAL_RESOLVER_PROXY_ENV) or "").strip()
+    no_proxy = str(
+        os.environ.get(BUILDER_EXTERNAL_RESOLVER_NO_PROXY_ENV) or ""
+    ).strip()
+    if not proxy:
+        if no_proxy:
+            raise LumaError(
+                f"{BUILDER_EXTERNAL_RESOLVER_NO_PROXY_ENV} requires "
+                f"{BUILDER_EXTERNAL_RESOLVER_PROXY_ENV}"
+            )
+        return environment
+    try:
+        parsed = urllib.parse.urlsplit(proxy)
+        port = parsed.port
+    except ValueError as exc:
+        raise LumaError("builder external resolver proxy is invalid") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        raise LumaError("builder external resolver proxy is invalid")
+    if (
+        len(no_proxy) > 4096
+        or any(character.isspace() for character in no_proxy)
+        or any(ord(character) < 33 or ord(character) > 126 for character in no_proxy)
+    ):
+        raise LumaError("builder external resolver NO_PROXY is invalid")
+    environment["HTTP_PROXY"] = proxy.rstrip("/")
+    environment["HTTPS_PROXY"] = proxy.rstrip("/")
+    if no_proxy:
+        environment["NO_PROXY"] = no_proxy
+    return environment
 
 
 def _require_git_runtime() -> str:

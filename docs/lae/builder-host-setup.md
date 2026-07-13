@@ -30,6 +30,8 @@ LAE Builder v2 只在显式准备过的 Ubuntu 专用节点上启用。仓库默
 
 node agent 仍以 root 创建、拉取、快照化源码，immutable snapshot store 始终保持 `root:root 0700`，不会递归 chown 给 daemon。只有马上运行 analyzer 时，executor 才先后完成 socket `lstat`、runtime directory owner、Linux `SO_PEERCRED` daemon UID/GID、Docker `SecurityOptions=rootless` 和本地 runner repo digest 证明；随后仅把当次 disposable task workspace 交给该 UID/GID。source/input 最终为 owner-only `0500/0400`，output 为 `0700`，bind mount 仍分别声明 readonly/readonly/read-write；容器内 UID 0 只映射到已验证的非 root daemon UID，且仍有 `--cap-drop ALL`、只读 rootfs、无网络和资源限制。runner 完成后 output 收紧为 `0700/0600`，发现 symlink、异常 owner 或 ownership syscall 失败都会 fail closed，部分修改会回滚，最终整个临时 task 目录由 root 清理。
 
+公开镜像解析还可显式配置 `LUMA_BUILDER_EXTERNAL_RESOLVER_PROXY` 与 `LUMA_BUILDER_EXTERNAL_RESOLVER_NO_PROXY`。它们只注入短生命周期、无凭据目录的 `crane digest` 进程；executor 不继承 node agent ambient proxy，不修改 rootless/rootful Docker daemon，也不把代理传入 analyzer 容器。
+
 ## 2. 固定工具链与校验链
 
 | 工具 | 固定版本 | 校验方式 |
@@ -54,6 +56,8 @@ sudo scripts/setup-lae-builder.sh \
   --registry-host '<pull-host>:<port>' \
   --registry-push-host '<push-host>:<port>' \
   --buildkit-sha256 '<buildkit-release-asset-sha256>' \
+  --external-resolver-proxy 'http://<operator-egress-host>:<port>' \
+  --external-resolver-no-proxy 'localhost,127.0.0.1,100.64.0.0/10' \
   --registry-insecure
 ```
 
@@ -62,6 +66,7 @@ sudo scripts/setup-lae-builder.sh \
 - 仅当内部 registry 确实是 HTTP 或使用不受信任 TLS 时传 `--registry-insecure`。该开关同时约束 pull/push host，并写入 rootless Docker、BuildKit 与 node-agent policy；
 - pull/push host 必须分别从当前 Control build config 读取，不能暗中互相推导；它们可以不同，也可以在 registry 直接绑定 Builder Tailscale 地址时相同；
 - 默认允许解析 `docker.io` 与 `ghcr.io` 的外部基础镜像。要收窄或替换，重复传小写、按字典序排列且不重复的 `--external-registry HOST`；
+- 大陆 Builder 无法直连公开 registry 时使用 `--external-resolver-proxy`；不得改用户 Compose、全局 Docker daemon 或 analyzer 网络来绕过解析失败；
 - rootless BuildKit 需要访问显式 push endpoint，因此专用 Builder 主机不得在该 endpoint 暴露非必要敏感服务。进一步的 Builder 出口/主机防火墙隔离仍是 staging 上线门槛。
 
 脚本只为 rootless Docker 管理本次指定的 insecure registry 条目：它用 `/var/lib/luma/builder/rootless-docker-managed-registries.json` 记录自己拥有的条目，更新时移除旧的 managed 值并保留运维人员原有的其他 Docker daemon 配置。

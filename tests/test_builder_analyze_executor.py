@@ -22,6 +22,8 @@ from luma.builder_executor import (
     BUILDER_ANALYZE_IMAGE_ENV,
     BUILDER_ANALYZE_DOCKER_HOST_ENV,
     BUILDER_EXTERNAL_REGISTRIES_ENV,
+    BUILDER_EXTERNAL_RESOLVER_NO_PROXY_ENV,
+    BUILDER_EXTERNAL_RESOLVER_PROXY_ENV,
     BUILDER_SNAPSHOT_ROOT_ENV,
     BUILDER_TASKS_ENABLED_ENV,
     BUILDER_WORK_ROOT_ENV,
@@ -31,6 +33,7 @@ from luma.builder_executor import (
     _clone_source,
     _create_deterministic_snapshot,
     _download_object_source,
+    _external_registry_environment,
     _materialize_object_source,
     _harden_rootless_output_tree,
     _prepare_rootless_bind_workspace,
@@ -222,6 +225,49 @@ class BuilderAnalyzeExecutorTests(unittest.TestCase):
         }
         payload.update(overrides)
         return payload
+
+    def test_external_resolver_uses_only_explicit_scoped_proxy(self):
+        inherited = {
+            "HTTP_PROXY": "http://ambient.invalid:3128",
+            "HTTPS_PROXY": "http://ambient.invalid:3128",
+            "NO_PROXY": "ambient.invalid",
+            BUILDER_EXTERNAL_RESOLVER_PROXY_ENV: "http://100.106.154.3:7890",
+            BUILDER_EXTERNAL_RESOLVER_NO_PROXY_ENV: "localhost,127.0.0.1,100.64.0.0/10",
+        }
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            os.environ, inherited, clear=True
+        ):
+            environment = _external_registry_environment(Path(temporary))
+        self.assertEqual(environment["HTTP_PROXY"], "http://100.106.154.3:7890")
+        self.assertEqual(environment["HTTPS_PROXY"], "http://100.106.154.3:7890")
+        self.assertEqual(
+            environment["NO_PROXY"], "localhost,127.0.0.1,100.64.0.0/10"
+        )
+        self.assertNotIn("ambient.invalid", json.dumps(environment))
+        self.assertEqual(
+            set(environment),
+            {"PATH", "HOME", "DOCKER_CONFIG", "LANG", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"},
+        )
+
+    def test_external_resolver_rejects_credentialed_proxy(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            os.environ,
+            {BUILDER_EXTERNAL_RESOLVER_PROXY_ENV: "http://user:secret@proxy.invalid:7890"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(LumaError, "proxy is invalid"):
+                _external_registry_environment(Path(temporary))
+
+    def test_external_resolver_does_not_inherit_ambient_proxy(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            os.environ,
+            {"HTTPS_PROXY": "http://ambient.invalid:3128"},
+            clear=True,
+        ):
+            environment = _external_registry_environment(Path(temporary))
+        self.assertNotIn("HTTP_PROXY", environment)
+        self.assertNotIn("HTTPS_PROXY", environment)
+        self.assertNotIn("NO_PROXY", environment)
 
     def test_local_git_full_commit_and_snapshot_are_deterministic(self):
         with tempfile.TemporaryDirectory() as temporary:
