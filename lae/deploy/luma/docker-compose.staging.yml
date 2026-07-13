@@ -73,7 +73,9 @@ services:
       LAE_SMTP_HOST: ${ITOOL_TECH_SMTP_HOST}
       LAE_SMTP_PASSWORD: ${ITOOL_TECH_SMTP_PASS}
       LAE_SMTP_PORT: ${ITOOL_TECH_SMTP_PORT}
-      LAE_SMTP_SECURITY: tls
+      # iTool SMTP uses submission port 587, which upgrades the connection
+      # with STARTTLS. Implicit TLS is reserved for port 465.
+      LAE_SMTP_SECURITY: starttls
       LAE_SMTP_TIMEOUT_SECONDS: "10"
       LAE_SMTP_USERNAME: ${ITOOL_TECH_SMTP_USER}
       LAE_SOURCE_CONNECTION_AEAD_KEYS: ${LAE_SOURCE_CONNECTION_AEAD_KEYS}

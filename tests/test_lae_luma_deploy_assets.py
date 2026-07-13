@@ -276,7 +276,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertEqual(staging_api["LAE_SMTP_HOST"], "${ITOOL_TECH_SMTP_HOST}")
         self.assertEqual(staging_api["LAE_SMTP_PASSWORD"], "${ITOOL_TECH_SMTP_PASS}")
         self.assertEqual(staging_api["LAE_SMTP_PORT"], "${ITOOL_TECH_SMTP_PORT}")
-        self.assertEqual(staging_api["LAE_SMTP_SECURITY"], "tls")
+        self.assertEqual(staging_api["LAE_SMTP_SECURITY"], "starttls")
         self.assertEqual(staging_api["LAE_SMTP_USERNAME"], "${ITOOL_TECH_SMTP_USER}")
         self.assertEqual(staging_api["LAE_AUTH_PREVIEW_MODE"], "public")
         self.assertTrue(staging_api["LAE_AUTH_PREVIEW_EMAIL"].endswith(".invalid"))
