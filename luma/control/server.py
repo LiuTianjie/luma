@@ -7693,7 +7693,7 @@ def _registry_basic_auth_labels(
 
 
 def _verify_authenticated_registry(
-    domain: str, username: str, password: str, *, timeout: int = 90
+    domain: str, username: str, password: str, *, timeout: int = 300
 ) -> Dict[str, Any]:
     deadline = time.monotonic() + max(10, int(timeout))
     authorization = base64.b64encode(
