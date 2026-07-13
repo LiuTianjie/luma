@@ -55,6 +55,7 @@ class PlacementDecision:
     requested_memory_mib: int
     stateful: bool
     candidate_node_ids: tuple[str, ...]
+    candidate_node_names: tuple[str, ...] = ()
     preferred_node_id: str = ""
     preferred_failure_domain_key: str = ""
     preferred_failure_domain: str = ""
@@ -81,6 +82,7 @@ class PlacementDecision:
             {
                 "summary": summary,
                 "candidateNodeIds": sorted(self.candidate_node_ids),
+                "candidateNodeNames": sorted(self.candidate_node_names),
                 "preferredNodeId": self.preferred_node_id,
                 "preferredFailureDomainKey": (
                     self.preferred_failure_domain_key
@@ -102,6 +104,7 @@ class PlacementDecision:
         return {
             "schemaVersion": PLACEMENT_SCHEMA_VERSION,
             "candidateNodeIds": list(self.candidate_node_ids),
+            "candidateNodeNames": list(self.candidate_node_names),
             **(
                 {"preferredNodeId": self.preferred_node_id}
                 if self.preferred_node_id
@@ -263,6 +266,14 @@ def plan_lae_placement(
         raise PlacementFailure(REASON_VOLUME_INCOMPATIBLE)
 
     candidate_ids = tuple(sorted({candidate.node_id for candidate in candidates}))
+    candidate_names = tuple(
+        sorted(
+            {
+                _candidate_storage_name(candidate, storage_class=storage_class)
+                for candidate in candidates
+            }
+        )
+    )
     preferred_node_id = prior_node_id if prior_node_id in candidate_ids else ""
     preferred_domain_key = ""
     preferred_domain = ""
@@ -286,11 +297,39 @@ def plan_lae_placement(
         requested_memory_mib=requested_memory_mib,
         stateful=stateful,
         candidate_node_ids=candidate_ids,
+        candidate_node_names=candidate_names,
         preferred_node_id=preferred_node_id,
         preferred_failure_domain_key=preferred_domain_key,
         preferred_failure_domain=preferred_domain,
         continuity=continuity,
     )
+
+
+def _candidate_storage_name(
+    candidate: _Candidate,
+    *,
+    storage_class: Mapping[str, Any] | None,
+) -> str:
+    """Return the stable Luma name used for internal storage admission.
+
+    A storage class may list an operator-facing alias while the registered
+    record is keyed by a hostname. The Nomad UUID remains authoritative for
+    scheduling; this name only proves storage-class compatibility.
+    """
+
+    allowed = {
+        str(value).strip()
+        for value in (storage_class or {}).get("nodes") or []
+        if str(value).strip()
+    }
+    if allowed:
+        matches = allowed & {candidate.registered_name, *candidate.aliases}
+        if not matches:
+            raise PlacementFailure(REASON_VOLUME_INCOMPATIBLE)
+        if candidate.registered_name in matches:
+            return candidate.registered_name
+        return sorted(matches)[0]
+    return candidate.registered_name
 
 
 def validate_nomad_plan(plan: Any) -> None:

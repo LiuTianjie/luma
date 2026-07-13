@@ -24,6 +24,24 @@ Local upload does not accept dynamic source, Dockerfile, or Compose. Put those s
 - Managed named volumes and application-contained databases, including Lite subject to quota. This is persistent storage, not a managed-database SLA.
 - Dockerfile and Compose for Lite, Pro, and Ultra, subject to the same security policy and per-plan quotas.
 
+## Compose image ownership
+
+- Keep internal Registry coordinates platform-owned. Never add the retired
+  `registry.itool.tech`, a Builder IP, `localhost:5000`, `registryHost`, or
+  `pushHost` to user Compose, Luma sidecars, or manifest candidates.
+- When several services run the same repository-built image, declare one
+  unique `build:` owner and give every consumer the exact same logical image
+  tag, preferably through a YAML anchor such as `app:local`. LAE binds those
+  consumers to the owner's `buildKey`; they are not external images.
+- Do not copy the same `build:` block onto every consumer and do not invent an
+  internal image URL. Luma Builder chooses the internal repository and returns
+  the immutable runtime digest.
+- Treat an image-only service that does not exactly match a unique build owner
+  as an external prebuilt image. Preserve its explicit non-`latest` public
+  reference; direct deploy semantics pull exactly the user-declared image.
+- Accept legacy source that still shares an old image tag with a unique build
+  owner, but recommend replacing that source tag with a neutral logical tag.
+
 ## Always block
 
 - Public TCP/UDP or `tcp-relay`.

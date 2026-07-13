@@ -109,5 +109,70 @@ class PreviewAuthenticationTest(unittest.TestCase):
         self.assertTrue(captured.exception.retryable)
 
 
+class _BillingClient:
+    def __init__(self, current: str) -> None:
+        self.current = current
+        self.calls: list[tuple[str, str, object, dict[str, object]]] = []
+
+    def request(self, method: str, path: str, body=None, **kwargs):
+        self.calls.append((method, path, body, kwargs))
+        if method == "GET" and path == "/billing/subscription":
+            return MODULE.Response(
+                200,
+                {"subscription": {"plan": {"code": self.current}}},
+                {},
+            )
+        if method == "POST" and path == "/billing/checkout-sessions":
+            self.current = str(body["plan"])
+            return MODULE.Response(
+                201,
+                {"order": {"id": "order-test", "provider": "mock"}},
+                {},
+            )
+        if method == "POST" and path == "/billing/mock/orders/order-test/approve":
+            return MODULE.Response(200, {"accepted": True}, {})
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+class PreviewBillingTest(unittest.TestCase):
+    def test_explicit_mock_upgrade_uses_session_checkout_and_verifies_subscription(self) -> None:
+        client = _BillingClient("lite")
+        MODULE.ensure_preview_mock_subscription(
+            client,
+            plan="ultra",
+            deadline=time.monotonic() + 2,
+        )
+
+        self.assertEqual(
+            [(method, path) for method, path, _body, _kwargs in client.calls],
+            [
+                ("GET", "/billing/subscription"),
+                ("POST", "/billing/checkout-sessions"),
+                ("POST", "/billing/mock/orders/order-test/approve"),
+                ("GET", "/billing/subscription"),
+            ],
+        )
+        checkout = client.calls[1]
+        approval = client.calls[2]
+        self.assertEqual(checkout[2], {"plan": "ultra", "interval": "monthly"})
+        self.assertTrue(checkout[3]["csrf"])
+        self.assertTrue(approval[3]["csrf"])
+        self.assertTrue(checkout[3]["idempotency_key"].startswith("e2e-checkout-"))
+        self.assertTrue(approval[3]["idempotency_key"].startswith("e2e-approve-"))
+
+    def test_already_active_preview_plan_does_not_create_an_order(self) -> None:
+        client = _BillingClient("ultra")
+        MODULE.ensure_preview_mock_subscription(
+            client,
+            plan="ultra",
+            deadline=time.monotonic() + 2,
+        )
+
+        self.assertEqual(
+            [(method, path) for method, path, _body, _kwargs in client.calls],
+            [("GET", "/billing/subscription")],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

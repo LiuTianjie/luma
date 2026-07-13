@@ -24,6 +24,7 @@ from luma.lae_runtime import (
     canonical_hash,
 )
 from luma.errors import LumaError
+from luma.lae_placement import PlacementDecision
 from luma.nomad_api import NomadApi
 
 LAE_ADAPTER_SRC = (
@@ -657,6 +658,27 @@ class LaeRuntimeApiTests(unittest.TestCase):
         volumes = control_server._lae_runtime_validate_volumes(
             state, str(principal["id"]), self.binding, manifest
         )
+        state["storageClasses"]["lae-runtime-nfs"]["nodes"] = [
+            "runtime-a",
+            "runtime-b",
+        ]
+        placement = PlacementDecision(
+            region="cn",
+            requested_cpu_mhz=1250,
+            requested_memory_mib=1792,
+            stateful=True,
+            candidate_node_ids=("nomad-a", "nomad-b"),
+            candidate_node_names=("runtime-a", "runtime-b"),
+        )
+        with self.assertRaisesRegex(LumaError, "must set node"):
+            control_server._lae_runtime_compose_spec(
+                state,
+                self.binding,
+                manifest,
+                images,
+                volumes,
+                job_slug=control_server._lae_runtime_job_slug(self.binding),
+            )
         spec = control_server._lae_runtime_compose_spec(
             state,
             self.binding,
@@ -664,6 +686,7 @@ class LaeRuntimeApiTests(unittest.TestCase):
             images,
             volumes,
             job_slug=control_server._lae_runtime_job_slug(self.binding),
+            placement=placement,
         )
         config = control_server.load_config(self.config_path)
         values = RUNTIME_SECRETS.resolve_manifest(
@@ -679,6 +702,7 @@ class LaeRuntimeApiTests(unittest.TestCase):
             spec,
             values,
             runtime_deployment_ref="lae-run-test",
+            placement=placement,
         )
         self.assertNotIn(canary, job_json)
         self.assertNotIn(canary, self.state_dir.joinpath("control.json").read_text())

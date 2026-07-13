@@ -21,7 +21,11 @@ class SkillAssetTests(unittest.TestCase):
         )
         pack = json.loads(pack_path.read_text(encoding="utf-8"))
         self.assertEqual(pack["schemaVersion"], "lae.knowledge-pack/v1")
-        self.assertEqual(pack["knowledgeVersion"], "2026-07-11.1")
+        self.assertEqual(pack["knowledgeVersion"], "2026-07-14.1")
+        image_semantics = pack["manifest"]["compose"]["imageSemantics"]
+        self.assertIn("registry.itool.tech", image_semantics["internalRegistry"])
+        self.assertIn("buildKey", image_semantics["sharedBuildImage"])
+        self.assertIn("explicit external image", image_semantics["externalImage"])
         policy = (SKILL / "references" / "policy.md").read_text(encoding="utf-8")
         self.assertIn("knowledge-pack.json", policy)
         for key in (
@@ -65,6 +69,8 @@ class SkillAssetTests(unittest.TestCase):
             "Do not ask them to paste the value into the conversation",
             "Do not attempt public TCP/UDP",
             "Never complete payment for the user",
+            "Never add a platform registry host to repository source",
+            "Do not duplicate `build:` across consumers",
         ):
             self.assertIn(expected, combined)
 

@@ -61,6 +61,8 @@ EXTERNAL_REGISTRIES=("docker.io" "ghcr.io")
 EXTERNAL_REGISTRIES_EXPLICIT="0"
 EXTERNAL_RESOLVER_PROXY=""
 EXTERNAL_RESOLVER_NO_PROXY=""
+BUILDKIT_EGRESS_PROXY=""
+BUILDKIT_EGRESS_NO_PROXY=""
 TEMP_DIR=""
 BIND_PROBE_DIR=""
 AUDIT_READY="0"
@@ -82,6 +84,8 @@ Usage:
     [--agent-controller-env-file ROOT_ONLY_ENV] \
     [--external-resolver-proxy HTTP_URL] \
     [--external-resolver-no-proxy CSV] \
+    [--buildkit-egress-proxy HTTP_URL] \
+    [--buildkit-egress-no-proxy CSV] \
     [--registry-insecure] \
     [--registry-basic-auth] \
     [--external-registry HOST[:PORT] ...]
@@ -97,6 +101,10 @@ Required trust inputs:
                           resolving allowlisted public image tags.
   --external-resolver-no-proxy  Optional comma-separated bypass list for that
                           short-lived resolver process.
+  --buildkit-egress-proxy  Explicit HTTP(S) proxy used only by the dedicated
+                          rootless BuildKit daemon for public base images.
+  --buildkit-egress-no-proxy  Optional comma-separated bypass list for
+                          Builder-local and private registry endpoints.
   --registry-basic-auth   Accept a task-scoped Basic credential lease. The
                           credential itself is never accepted or stored here.
 
@@ -188,6 +196,16 @@ while (($#)); do
       EXTERNAL_RESOLVER_NO_PROXY=$2
       shift 2
       ;;
+    --buildkit-egress-proxy)
+      require_arg "$1" "${2-}"
+      BUILDKIT_EGRESS_PROXY=$2
+      shift 2
+      ;;
+    --buildkit-egress-no-proxy)
+      require_arg "$1" "${2-}"
+      BUILDKIT_EGRESS_NO_PROXY=$2
+      shift 2
+      ;;
     --registry-insecure)
       REGISTRY_INSECURE="1"
       shift
@@ -251,6 +269,16 @@ validate_inputs() {
     die "--runner-image must be an exact lowercase repository@sha256:<64 hex> reference"
   validate_registry_host "$REGISTRY_PULL_HOST" "--registry-host"
   validate_registry_host "$REGISTRY_PUSH_HOST" "--registry-push-host"
+  case "$REGISTRY_PULL_HOST" in
+    localhost|localhost:*|127.0.0.1|127.0.0.1:*|'[::1]'|'[::1]':*)
+      die "--registry-host must be reachable from rootless containers; loopback is not the Builder host"
+      ;;
+  esac
+  case "$REGISTRY_PUSH_HOST" in
+    localhost|localhost:*|127.0.0.1|127.0.0.1:*|'[::1]'|'[::1]':*)
+      die "--registry-push-host must be reachable from rootless BuildKit; loopback is not the Builder host"
+      ;;
+  esac
   validate_sha256 "$BUILDKIT_SHA256" || \
     die "--buildkit-sha256 must explicitly pin ${BUILDKIT_ASSET} with 64 lowercase hex characters"
   if [[ -n "$EXTERNAL_RESOLVER_PROXY" ]]; then
@@ -263,6 +291,16 @@ validate_inputs() {
   fi
   [[ ${#EXTERNAL_RESOLVER_NO_PROXY} -le 4096 && "$EXTERNAL_RESOLVER_NO_PROXY" != *[[:space:]]* ]] || \
     die "--external-resolver-no-proxy is invalid"
+  if [[ -n "$BUILDKIT_EGRESS_PROXY" ]]; then
+    [[ "$BUILDKIT_EGRESS_PROXY" =~ ^https?://(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?/?$ ]] || \
+      die "--buildkit-egress-proxy must be an HTTP(S) origin without credentials or path"
+    [[ "$BUILDKIT_EGRESS_PROXY" != *@* ]] || \
+      die "--buildkit-egress-proxy must not contain credentials"
+  elif [[ -n "$BUILDKIT_EGRESS_NO_PROXY" ]]; then
+    die "--buildkit-egress-no-proxy requires --buildkit-egress-proxy"
+  fi
+  [[ ${#BUILDKIT_EGRESS_NO_PROXY} -le 4096 && "$BUILDKIT_EGRESS_NO_PROXY" != *[[:space:]]* ]] || \
+    die "--buildkit-egress-no-proxy is invalid"
   ((${#EXTERNAL_REGISTRIES[@]} > 0)) || die "at least one --external-registry is required"
   ((${#EXTERNAL_REGISTRIES[@]} <= 32)) || die "at most 32 --external-registry values are allowed"
   local host previous=""
@@ -744,8 +782,12 @@ Wants=network-online.target
 Type=simple
 RuntimeDirectory=buildkit
 RuntimeDirectoryMode=0700
-# Host loopback remains reachable because the existing Luma registry push
-# endpoint is commonly localhost:5000; registry hosts are still explicit.
+Environment=HTTP_PROXY=${BUILDKIT_EGRESS_PROXY}
+Environment=HTTPS_PROXY=${BUILDKIT_EGRESS_PROXY}
+Environment=NO_PROXY=${BUILDKIT_EGRESS_NO_PROXY}
+Environment=http_proxy=${BUILDKIT_EGRESS_PROXY}
+Environment=https_proxy=${BUILDKIT_EGRESS_PROXY}
+Environment=no_proxy=${BUILDKIT_EGRESS_NO_PROXY}
 ExecStart=${rootlesskit} --net=slirp4netns --copy-up=/etc ${BUILDKIT_INSTALL_ROOT}/bin/buildkitd --config $(builder_home)/.config/buildkit/buildkitd.toml --addr unix://$(runtime_dir)/buildkit/buildkitd.sock --root $(builder_home)/.local/share/luma-buildkit
 Restart=on-failure
 RestartSec=3

@@ -1,13 +1,13 @@
 {
   "schemaVersion": "lae.knowledge-pack/v1",
-  "knowledgeVersion": "2026-07-11.1",
+  "knowledgeVersion": "2026-07-14.1",
   "product": {
     "capabilities": ["single HTTP service", "Compose with multiple public HTTP services", "internal services", "managed named volumes", "static artifacts", "platform-assigned random itool.tech domain"],
     "limitations": ["no public TCP or UDP relay", "no host network or host port", "no host bind or Docker socket", "no privileged mode or devices", "no user custom domain initially", "linux/amd64 only"]
   },
   "manifest": {
     "service": {"required": ["name", "region", "image-or-build"], "region": "cn", "publicExposure": "cn-edge", "publicProtocol": "http", "domainAssignment": "platform-random-itool-tech", "example": {"name": "api", "region": "cn", "exposure": "cn-edge", "port": 8000, "build": {"context": ".", "dockerfile": "Dockerfile"}}},
-    "compose": {"source": "standard Compose file", "sidecarOwns": ["region", "public HTTP routes", "placement", "managed volume classes"], "multiplePublicHttp": true, "example": {"name": "app-stack", "compose": "compose.yml", "region": "cn", "services": {"web": {"exposure": "cn-edge", "port": 3000}, "admin": {"exposure": "cn-edge", "port": 8080}, "database": {"exposure": "none"}}}}
+    "compose": {"source": "standard Compose file", "sidecarOwns": ["region", "public HTTP routes", "placement", "managed volume classes"], "multiplePublicHttp": true, "imageSemantics": {"internalRegistry": "Platform-owned. Never emit registry.itool.tech, Builder IPs, localhost:5000, registryHost or pushHost in repository Compose or manifest candidates.", "sharedBuildImage": "Use one unique build owner and the exact same logical image tag, preferably app:local through a YAML anchor, for image-only consumers. Bind consumers to the owner's buildKey.", "externalImage": "An image-only service that does not match a unique repository build remains an explicit external image and must use a versioned non-latest public reference.", "directDeploy": "Preserve explicit prebuilt image references; only repository import build outputs receive platform-owned immutable internal image coordinates."}, "example": {"name": "app-stack", "compose": "compose.yml", "region": "cn", "services": {"web": {"exposure": "cn-edge", "port": 3000}, "admin": {"exposure": "cn-edge", "port": 8080}, "database": {"exposure": "none"}}}}
   },
   "security": {
     "deny": ["privileged containers", "host namespace modes", "host-side published ports", "host bind mounts", "Docker socket mounts", "device mounts", "public TCP or UDP", "floating external image latest", "source path escape"],

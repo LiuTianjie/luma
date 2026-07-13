@@ -58,6 +58,8 @@ sudo scripts/setup-lae-builder.sh \
   --buildkit-sha256 '<buildkit-release-asset-sha256>' \
   --external-resolver-proxy 'http://<operator-egress-host>:<port>' \
   --external-resolver-no-proxy 'localhost,127.0.0.1,100.64.0.0/10' \
+  --buildkit-egress-proxy 'http://<operator-egress-host>:<port>' \
+  --buildkit-egress-no-proxy 'localhost,127.0.0.1,10.0.0.0/8,100.64.0.0/10,<builder-registry-host>' \
   --registry-insecure
 ```
 
@@ -65,15 +67,17 @@ sudo scripts/setup-lae-builder.sh \
 
 - 仅当内部 registry 确实是 HTTP 或使用不受信任 TLS 时传 `--registry-insecure`。该开关同时约束 pull/push host，并写入 rootless Docker、BuildKit 与 node-agent policy；
 - pull/push host 必须分别从当前 Control build config 读取，不能暗中互相推导；它们可以不同，也可以在 registry 直接绑定 Builder Tailscale 地址时相同；
+- rootless Docker/BuildKit 中的 `localhost` 是各自的网络命名空间，不是 Builder 宿主机；脚本会拒绝 loopback registry host。Builder 自建 registry 必须使用 Builder 的局域网或 Tailscale 地址；
 - 默认允许解析 `docker.io` 与 `ghcr.io` 的外部基础镜像。要收窄或替换，重复传小写、按字典序排列且不重复的 `--external-registry HOST`；
-- 大陆 Builder 无法直连公开 registry 时使用 `--external-resolver-proxy`；不得改用户 Compose、全局 Docker daemon 或 analyzer 网络来绕过解析失败；
+- 大陆 Builder 无法直连公开 registry 时，`--external-resolver-proxy` 只负责 `crane digest`，`--buildkit-egress-proxy` 只负责专用 rootless BuildKit 拉公开基础镜像；两者都不得改用户 Compose、系统 Docker daemon、rootless Docker daemon或 analyzer 网络；
+- `--buildkit-egress-no-proxy` 必须覆盖内部 registry 及内网/Tailscale 网段，确保构建产物直推 Builder registry，不绕公网代理；
 - rootless BuildKit 需要访问显式 push endpoint，因此专用 Builder 主机不得在该 endpoint 暴露非必要敏感服务。进一步的 Builder 出口/主机防火墙隔离仍是 staging 上线门槛。
 
 脚本只为 rootless Docker 管理本次指定的 insecure registry 条目：它用 `/var/lib/luma/builder/rootless-docker-managed-registries.json` 记录自己拥有的条目，更新时移除旧的 managed 值并保留运维人员原有的其他 Docker daemon 配置。
 
 当前共享 staging 的实时参数是：pull host 与 push host 均为 `100.66.177.70:5000`，内部 registry 使用 insecure HTTP，平台镜像构建使用 direct 网络。旧的 `localhost:5000` push endpoint 已无监听并会连接失败；发布前必须以 `luma build config` 的当前值为准。target node 仍不得使用 Builder loopback。
 
-Direct 模式还要求 BuildKit container 中不能残留历史代理环境。当前版本会比较持久化 Buildx container 的 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 与本次请求，不匹配就删除并重建，防止旧 `aly` proxy 或变更前的 manager proxy 继续影响 base image pull。若出现 `short read`、`unexpected EOF`、`ECONNRESET` 或依赖下载异常，先检查实际 BuildKit container env 和 direct 连通性，不要只重试 import；LAE 平台 Dockerfile 已在依赖安装步骤显式 `unset` 大小写代理变量，租户构建则仍应服从单独的出口策略。
+BuildKit 出口是 Builder 专用 user service 的显式环境，不修改任何 Docker daemon。变更 setup 参数会重写 unit 并重启该 BuildKit；若出现 `short read`、`unexpected EOF`、`ECONNRESET` 或依赖下载异常，先检查 `luma-buildkit.service` 的实际环境、内部 registry 是否命中 `NO_PROXY`，不要只重试 import。代理只解决 Builder 基础镜像/构建网络，不会被写进用户 Compose。
 
 ## 4. `--check` 验收
 

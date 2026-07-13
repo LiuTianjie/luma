@@ -294,6 +294,73 @@ def revoke_preview_deploy_token(
     emit("deploy_token_revoked", tokenId=token_id)
 
 
+def ensure_preview_mock_subscription(
+    client: JsonClient,
+    *,
+    plan: str,
+    deadline: float,
+) -> None:
+    """Explicitly upgrade only the reserved preview session via mock billing."""
+    subscription = request_with_retry(
+        client,
+        "GET",
+        "/billing/subscription",
+        deadline=deadline,
+    ).body.get("subscription")
+    current = (
+        subscription.get("plan", {}).get("code")
+        if isinstance(subscription, dict)
+        and isinstance(subscription.get("plan"), dict)
+        else None
+    )
+    if not isinstance(current, str):
+        raise AcceptanceFailure("preview subscription response is incomplete")
+    if current == plan:
+        emit("preview_subscription_ready", plan=plan, changed=False)
+        return
+
+    checkout = request_with_retry(
+        client,
+        "POST",
+        "/billing/checkout-sessions",
+        {"plan": plan, "interval": "monthly"},
+        idempotency_key=idempotency("checkout"),
+        csrf=True,
+        expected=frozenset({201}),
+        deadline=deadline,
+    ).body.get("order")
+    if not isinstance(checkout, dict):
+        raise AcceptanceFailure("preview checkout response is incomplete")
+    order_id = checkout.get("id")
+    if not isinstance(order_id, str) or checkout.get("provider") != "mock":
+        raise AcceptanceFailure("preview checkout is not a mock order")
+    approved = request_with_retry(
+        client,
+        "POST",
+        f"/billing/mock/orders/{order_id}/approve",
+        {},
+        idempotency_key=idempotency("approve"),
+        csrf=True,
+        deadline=deadline,
+    ).body
+    if approved.get("accepted") is not True:
+        raise AcceptanceFailure("preview mock checkout was not accepted")
+    refreshed = request_with_retry(
+        client,
+        "GET",
+        "/billing/subscription",
+        deadline=deadline,
+    ).body.get("subscription")
+    active = (
+        refreshed.get("plan", {}).get("code")
+        if isinstance(refreshed, dict) and isinstance(refreshed.get("plan"), dict)
+        else None
+    )
+    if active != plan:
+        raise AcceptanceFailure("preview subscription did not activate the selected plan")
+    emit("preview_subscription_ready", plan=plan, changed=True, orderId=order_id)
+
+
 def idempotency(prefix: str) -> str:
     return f"e2e-{prefix}-{uuid.uuid4().hex[:16]}"
 
@@ -651,6 +718,16 @@ def run(args: argparse.Namespace) -> None:
         token, ephemeral_token_id = issue_preview_deploy_token(
             session_client, deadline=deadline
         )
+        if args.mock_upgrade_preview:
+            ensure_preview_mock_subscription(
+                session_client,
+                plan=args.mock_upgrade_preview,
+                deadline=deadline,
+            )
+    elif args.mock_upgrade_preview:
+        raise AcceptanceFailure(
+            "--mock-upgrade-preview requires the reserved interactive preview session"
+        )
     api = JsonClient(
         args.api_base,
         bearer_token=token,
@@ -845,6 +922,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--request-timeout", type=float, default=30)
     result.add_argument(
         "--public-probe", choices=("required", "warn", "skip"), default="warn"
+    )
+    result.add_argument(
+        "--mock-upgrade-preview",
+        choices=("pro", "ultra"),
+        help=(
+            "Explicitly approve a staging-only mock checkout for the reserved "
+            "preview identity; unavailable with LAE_DEPLOY_TOKEN."
+        ),
     )
     result.add_argument("--keep-golden", action="store_true")
     return result

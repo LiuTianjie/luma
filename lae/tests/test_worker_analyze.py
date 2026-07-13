@@ -316,7 +316,7 @@ class AnalysisCheckpointCodecTests(unittest.TestCase):
             diagnostic_status="succeeded",
             diagnostic_mode="ai",
             diagnostic_code="AI_ANALYSIS_SUCCEEDED",
-            knowledge_version="2026-07-11.1",
+            knowledge_version="2026-07-14.1",
         )
 
     def test_ai_diagnostic_fields_survive_checkpoint_round_trip(self) -> None:
@@ -443,7 +443,7 @@ class PostgresAnalysisRecorderShapeTests(unittest.TestCase):
         self.assertEqual(analysis.diagnostic_status, "succeeded")
         self.assertEqual(analysis.diagnostic_mode, "ai")
         self.assertEqual(analysis.diagnostic_code, "AI_ANALYSIS_SUCCEEDED")
-        self.assertEqual(analysis.knowledge_version, "2026-07-11.1")
+        self.assertEqual(analysis.knowledge_version, "2026-07-14.1")
         self.assertEqual(analysis.blockers, [])
 
 
@@ -560,7 +560,7 @@ class AnalyzeWorkerTests(unittest.IsolatedAsyncioTestCase):
             "diagnosticStatus": "succeeded",
             "diagnosticMode": "ai",
             "diagnosticCode": "AI_ANALYSIS_SUCCEEDED",
-            "knowledgeVersion": "2026-07-11.1",
+            "knowledgeVersion": "2026-07-14.1",
             "blockers": [],
             "artifacts": {
                 "evidence": {
@@ -640,7 +640,7 @@ class AnalyzeWorkerTests(unittest.IsolatedAsyncioTestCase):
             "diagnosticStatus": "succeeded",
             "diagnosticMode": "ai",
             "diagnosticCode": "AI_ANALYSIS_SUCCEEDED",
-            "knowledgeVersion": "2026-07-11.1",
+            "knowledgeVersion": "2026-07-14.1",
             "blockers": [],
             "artifacts": {
                 name: descriptor.to_result()

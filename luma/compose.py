@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from .config import LumaConfig
 from .errors import LumaError
@@ -536,6 +536,7 @@ def resolve_storage_mounts(
     deployment: ComposeDeploymentSpec,
     *,
     node_records: Dict[str, Any] | None = None,
+    admitted_nodes: Sequence[str] = (),
 ) -> List[Dict[str, Any]]:
     usage = _compose_service_volume_usage(deployment.compose)
     mounts: List[Dict[str, Any]] = []
@@ -547,7 +548,13 @@ def resolve_storage_mounts(
             if not volume or not volume.storage_class:
                 continue
             storage_class = deployment.storage_classes[volume.storage_class]
-            _validate_storage_class_service_use(storage_class, service_name=service_name, region=region, explicit_node=override.node if override else None)
+            _validate_storage_class_service_use(
+                storage_class,
+                service_name=service_name,
+                region=region,
+                explicit_node=override.node if override else None,
+                admitted_nodes=admitted_nodes,
+            )
             endpoint, network_path = _storage_endpoint_for_region(storage_class, region, node_records)
             mounts.append(
                 {
@@ -571,17 +578,25 @@ def _validate_storage_class_service_use(
     service_name: str,
     region: str,
     explicit_node: str | None,
+    admitted_nodes: Sequence[str] = (),
 ) -> None:
     if storage_class.regions and region not in storage_class.regions:
         raise LumaError(
             f"compose service {service_name} region {region} is not allowed by storageClass {storage_class.name}"
         )
     if storage_class.nodes:
+        admitted = {
+            str(value).strip() for value in admitted_nodes if str(value).strip()
+        }
         if explicit_node and explicit_node not in storage_class.nodes:
             raise LumaError(
                 f"compose service {service_name} node {explicit_node} is not allowed by storageClass {storage_class.name}"
             )
-        if len(storage_class.nodes) > 1 and not explicit_node:
+        if admitted and not admitted.issubset(set(storage_class.nodes)):
+            raise LumaError(
+                f"compose service {service_name} placement is not allowed by storageClass {storage_class.name}"
+            )
+        if len(storage_class.nodes) > 1 and not explicit_node and not admitted:
             raise LumaError(
                 f"compose service {service_name} must set node because storageClass {storage_class.name} allows multiple nodes"
             )

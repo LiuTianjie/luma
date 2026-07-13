@@ -12,6 +12,10 @@ Use the `lae` CLI as the only deployment boundary. Never call Luma management AP
 - Keep deploy tokens, Git credentials, OTPs, payment data, and environment values out of prompts, command arguments, repositories, and logs.
 - Ask the user to enter secrets in their own terminal through stdin, an environment variable, or an OS credential store. Do not echo them. A private Git credential must use `--secret-stdin`; set `LAE_DEPLOY_TOKEN` locally because one stdin stream cannot carry both values.
 - Run `inspect` before every new deployment or source update. Use `inspect-file` for `.html`/`.zip` sources. Do not bypass a blocker or edit generated LAE/Luma deployment files by hand.
+- Never add a platform registry host to repository source. In particular, do
+  not write the retired `registry.itool.tech`, a Builder IP,
+  `localhost:5000`, `registryHost`, or `pushHost` into Compose or generated
+  manifests. LAE/Luma owns internal image coordinates.
 - Treat only the public analysis verdict `deployable` as ready to deploy. For
   `needs_input`, collect only the named values through safe terminal input and
   reuse the same stored analysis after configuration. For `unsupported`,
@@ -42,6 +46,30 @@ If the CLI or required command is unavailable, stop with a concise installation/
 - For one HTML file or an already-built static `.zip`, use `inspect-file`. Give it exactly one regular, non-symlink file; the CLI streams SHA-256 and size without unpacking locally.
 - For Dockerfile, Compose, frameworks requiring a build, private source, or multiple services, use a Git connection/repository flow.
 - For a template, use its immutable template/version reference; templates still require inspection.
+
+For a Compose stack that builds one image and runs it with multiple commands,
+give one service the `build:` block and let every consumer use the exact same
+logical `image:` tag. Prefer a YAML anchor and a repository-local tag such as
+`app:local`:
+
+```yaml
+x-app-image: &app-image app:local
+services:
+  api:
+    image: *app-image
+    build: {context: ., dockerfile: Dockerfile}
+  worker:
+    image: *app-image
+```
+
+LAE maps the image-only consumer to the unique build owner and injects the
+immutable Builder Registry result. Do not duplicate `build:` across consumers.
+An image-only service that does not match a repository build is an explicit
+external image; preserve the user's versioned non-`latest` reference rather
+than rewriting it.
+Luma resolves allowlisted public image references through its Builder resolver
+and pins their digests. Do not add proxy variables, mirror hosts, or Builder
+addresses to user Compose; resolver egress is platform infrastructure.
 
 Create a pending application first for any new source:
 

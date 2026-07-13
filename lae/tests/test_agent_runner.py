@@ -246,6 +246,83 @@ volumes:
             set(),
         )
 
+    def test_compose_reuses_one_built_image_for_image_only_consumers(self) -> None:
+        references = (
+            "serverx-taskiq-browser-test:local",
+            "registry.itool.tech/gaojiuatech/serverx-taskiq-browser-test:latest",
+        )
+        for reference in references:
+            with self.subTest(reference=reference):
+                result, artifacts = self._run(
+                    {
+                        "compose.yaml": f"""
+x-app-image: &app-image {reference}
+services:
+  renderer:
+    image: *app-image
+    build:
+      context: .
+      dockerfile: Dockerfile
+      x-luma-repo: legacy/ignored-by-lae
+    expose: [9100]
+  worker:
+    image: *app-image
+    depends_on: [renderer]
+    command: [python, worker.py]
+""",
+                        "Dockerfile": "FROM python:3.13-slim\n",
+                        "worker.py": "print('worker')\n",
+                    }
+                )
+                self.assertEqual(result["decision"], "allow")
+                deployment = json.loads(artifacts["deployment-plan.json"])
+                proposal = json.loads(artifacts["build-plan-proposal.json"])
+                services = {item["key"]: item for item in deployment["services"]}
+                self.assertEqual(len(proposal["builds"]), 1)
+                self.assertEqual(proposal["builds"][0]["key"], "renderer")
+                self.assertEqual(proposal["externalImages"], [])
+                self.assertEqual(
+                    services["renderer"]["image"],
+                    {"source": "build", "buildKey": "renderer"},
+                )
+                self.assertEqual(
+                    services["worker"]["image"],
+                    {"source": "build", "buildKey": "renderer"},
+                )
+                evidence = json.loads(artifacts["evidence.json"])
+                self.assertTrue(
+                    any(
+                        item.get("rule") == "compose-shared-build-image"
+                        and item.get("name") == "worker"
+                        and item.get("buildKey") == "renderer"
+                        for item in evidence["findings"]
+                    )
+                )
+
+    def test_compose_rejects_ambiguous_shared_build_image_owners(self) -> None:
+        result, artifacts = self._run(
+            {
+                "compose.yaml": """
+services:
+  first:
+    image: app:local
+    build: {context: ./first}
+  second:
+    image: app:local
+    build: {context: ./second}
+  worker:
+    image: app:local
+""",
+                "first/Dockerfile": "FROM scratch\n",
+                "second/Dockerfile": "FROM scratch\n",
+            }
+        )
+        self.assertEqual(result["decision"], "deny")
+        blockers = json.loads(artifacts["deployment-plan.json"])["blockers"]
+        self.assertTrue(
+            any("COMPOSE_BUILD_IMAGE_AMBIGUOUS" in blocker for blocker in blockers)
+        )
+
     def test_compose_external_images_require_public_explicit_versions(self) -> None:
         digest = "sha256:" + "b" * 64
         valid_references = (
@@ -574,7 +651,7 @@ services:
                 "schemaVersion": "lae.ai-analysis-response/v1",
                 "status": "succeeded",
                 "model": "test-model",
-                "knowledgeVersion": "2026-07-11.1",
+                "knowledgeVersion": "2026-07-14.1",
                 "proposal": {
                     "deploymentPlan": plan,
                     "manifestCandidate": manifest_candidate_from_plan(plan),
@@ -617,7 +694,7 @@ services:
         self.assertNotIn(".env", prompt_paths)
         self.assertNotIn("private-key.pem", prompt_paths)
         evidence = json.loads(artifacts["evidence.json"])
-        self.assertEqual(evidence["ai"]["knowledgeVersion"], "2026-07-11.1")
+        self.assertEqual(evidence["ai"]["knowledgeVersion"], "2026-07-14.1")
 
     def test_required_ai_failure_is_diagnostic_failed_not_unsupported(self) -> None:
         environment = {

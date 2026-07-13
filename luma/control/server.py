@@ -3578,6 +3578,7 @@ def _lae_runtime_compose_spec(
     volume_records: Dict[str, Dict[str, Any]],
     *,
     job_slug: str,
+    placement: PlacementDecision | None = None,
 ) -> ComposeDeploymentSpec:
     runtime_storage_class = ""
     if manifest["volumes"]:
@@ -3695,7 +3696,11 @@ def _lae_runtime_compose_spec(
     )
     # This validates region/storage reachability and rejects any accidental
     # local/host backend before a job is rendered.
-    resolve_storage_mounts(spec, node_records=_state_nodes(state))
+    resolve_storage_mounts(
+        spec,
+        node_records=_state_nodes(state),
+        admitted_nodes=(placement.candidate_node_names if placement else ()),
+    )
     return spec
 
 
@@ -4014,7 +4019,9 @@ def _lae_runtime_render_job(
         refs_by_service.setdefault(str(item["serviceKey"]), []).append(item)
 
     storage_mounts = resolve_storage_mounts(
-        spec, node_records=_state_nodes(state)
+        spec,
+        node_records=_state_nodes(state),
+        admitted_nodes=(placement.candidate_node_names if placement else ()),
     )
     endpoint_by_volume = {
         str(item["volume"]): str(item["endpoint"])
@@ -4259,6 +4266,7 @@ def _execute_lae_runtime_deployment(
         images,
         volume_records,
         job_slug=job_slug,
+        placement=placement,
     )
     _lae_runtime_storage_class(
         state, region=str(manifest["region"])
@@ -5394,6 +5402,28 @@ def _lae_runtime_bound_compose_spec(
         binding,
         manifest,
     )
+    placement_state = record.get("placement")
+    placement: PlacementDecision | None = None
+    if isinstance(placement_state, dict):
+        candidate_ids = tuple(
+            str(value)
+            for value in placement_state.get("candidateNodeIds") or []
+            if str(value)
+        )
+        candidate_names = tuple(
+            str(value)
+            for value in placement_state.get("candidateNodeNames") or []
+            if str(value)
+        )
+        if candidate_ids and candidate_names:
+            placement = PlacementDecision(
+                region=str(manifest.get("region") or ""),
+                requested_cpu_mhz=0,
+                requested_memory_mib=0,
+                stateful=bool(manifest.get("volumes")),
+                candidate_node_ids=candidate_ids,
+                candidate_node_names=candidate_names,
+            )
     return _lae_runtime_compose_spec(
         state,
         binding,
@@ -5401,6 +5431,7 @@ def _lae_runtime_bound_compose_spec(
         {str(key): str(value) for key, value in images.items()},
         volume_records,
         job_slug=str(record["jobSlug"]),
+        placement=placement,
     )
 
 

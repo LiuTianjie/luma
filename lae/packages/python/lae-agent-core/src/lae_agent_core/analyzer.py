@@ -433,6 +433,11 @@ class Analyzer:
                 self._block("COMPOSE_SERVICE_KEY_COLLISION", relative, "services")
             normalized_owners.setdefault(normalized, raw_name)
             key_map[raw_name] = _unique_key(raw_name, used_keys)
+        build_image_keys = self._compose_build_image_keys(
+            relative,
+            raw_services,
+            key_map,
+        )
         for raw_name in sorted(key_map):
             raw_service = raw_services[raw_name]
             if not isinstance(raw_service, Mapping):
@@ -444,6 +449,7 @@ class Analyzer:
                 key_map[raw_name],
                 raw_service,
                 key_map,
+                build_image_keys,
             )
         build_keys = {build["key"] for build in self.builds}
         for build in self.builds:
@@ -454,6 +460,48 @@ class Analyzer:
             )
         self._analyze_compose_volumes(relative, value, raw_services, key_map)
         self._ensure_unique_http_ports(relative)
+
+    def _compose_build_image_keys(
+        self,
+        compose_path: str,
+        raw_services: Mapping[str, Any],
+        key_map: Mapping[str, str],
+    ) -> dict[str, str]:
+        """Map a Compose image tag to its unique in-repository build owner.
+
+        Compose commonly builds one image and reuses that exact logical tag
+        from workers or sidecars that only declare ``image:``.  Those consumers
+        are build outputs, not external images that LAE should resolve or pull.
+        """
+
+        owners: dict[str, set[str]] = {}
+        owner_fields: dict[str, list[str]] = {}
+        for raw_name in sorted(key_map):
+            raw_service = raw_services.get(raw_name)
+            if not isinstance(raw_service, Mapping) or raw_service.get("build") is None:
+                continue
+            raw_image = raw_service.get("image")
+            if raw_image is None:
+                continue
+            field = f"services.{raw_name}.image"
+            if (
+                not isinstance(raw_image, str)
+                or not _is_safe_compose_build_image_reference(raw_image.strip())
+            ):
+                self._block("COMPOSE_BUILD_IMAGE_REFERENCE_INVALID", compose_path, field)
+                continue
+            image = raw_image.strip()
+            owners.setdefault(image, set()).add(key_map[raw_name])
+            owner_fields.setdefault(image, []).append(field)
+
+        result: dict[str, str] = {}
+        for image, build_keys in owners.items():
+            if len(build_keys) == 1:
+                result[image] = next(iter(build_keys))
+                continue
+            for field in owner_fields[image]:
+                self._block("COMPOSE_BUILD_IMAGE_AMBIGUOUS", compose_path, field)
+        return result
 
     def _inspect_top_level_compose(
         self, value: Mapping[str, Any], relative: str
@@ -524,6 +572,7 @@ class Analyzer:
         key: str,
         value: Mapping[str, Any],
         key_map: Mapping[str, str],
+        build_image_keys: Mapping[str, str],
     ) -> None:
         prefix = f"services.{raw_name}"
         self._inspect_compose_security(compose_path, prefix, value)
@@ -555,11 +604,26 @@ class Analyzer:
                         compose_path,
                         f"{prefix}.depends_on.{dependency_name}.condition",
                     )
-        image, build = self._compose_image_and_build(compose_path, prefix, key, value)
+        image, build = self._compose_image_and_build(
+            compose_path,
+            prefix,
+            key,
+            value,
+            build_image_keys,
+        )
         if build is not None:
             self.builds.append(build)
             self.service_contexts.append(
                 ServiceContext(key=key, context=build["context"])
+            )
+        elif image["source"] == "build":
+            self.evidence.append(
+                {
+                    "path": compose_path,
+                    "rule": "compose-shared-build-image",
+                    "name": key,
+                    "buildKey": image["buildKey"],
+                }
             )
         elif image["source"] == "external" and is_safe_external_image_reference(
             image["ref"]
@@ -837,6 +901,7 @@ class Analyzer:
         prefix: str,
         key: str,
         value: Mapping[str, Any],
+        build_image_keys: Mapping[str, str],
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         raw_build = value.get("build")
         if raw_build is not None:
@@ -951,6 +1016,10 @@ class Analyzer:
                 )
             return {"source": "build", "buildKey": key}, build
         raw_image = value.get("image")
+        if isinstance(raw_image, str):
+            build_key = build_image_keys.get(raw_image.strip())
+            if build_key is not None:
+                return {"source": "build", "buildKey": build_key}, None
         if isinstance(raw_image, str) and _is_safe_image_reference(raw_image.strip()):
             return {"source": "external", "ref": raw_image.strip()}, None
         if isinstance(raw_image, str) and raw_image.strip():
@@ -1467,6 +1536,8 @@ class Analyzer:
         prefix: str,
     ) -> None:
         for field_name in sorted(set(value) - allowed, key=str):
+            if isinstance(field_name, str) and field_name.startswith("x-"):
+                continue
             self._block("COMPOSE_FIELD_UNSUPPORTED", path, f"{prefix}.{field_name}")
 
 
@@ -2072,6 +2143,30 @@ def _normalize_source_path(value: str) -> str | None:
 
 def _is_safe_image_reference(value: str) -> bool:
     return is_safe_external_image_reference(value)
+
+
+def _is_safe_compose_build_image_reference(value: str) -> bool:
+    """Validate a local logical tag without treating it as an external pull.
+
+    The external-image policy intentionally rejects ``latest`` and untagged
+    references.  A Compose build owner may still use either form as a local
+    tag, so normalize only for syntax validation while keeping the original
+    exact string as the consumer-to-build mapping key.
+    """
+
+    if not value or "@" in value:
+        return False
+    last_slash = value.rfind("/")
+    last_component = value[last_slash + 1 :]
+    if ":" in last_component:
+        repository, tag = last_component.rsplit(":", 1)
+        if not repository or not tag:
+            return False
+        safe_tag = "local" if tag.lower() == "latest" else tag
+        candidate = value[: last_slash + 1] + repository + ":" + safe_tag
+    else:
+        candidate = value + ":local"
+    return is_safe_external_image_reference(candidate)
 
 
 def _is_safe_source_entry(root: Path, relative: str, *, directory: bool) -> bool:

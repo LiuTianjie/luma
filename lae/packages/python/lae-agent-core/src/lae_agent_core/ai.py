@@ -21,7 +21,7 @@ from .canonical import canonical_bytes
 AI_REQUEST_SCHEMA = "lae.ai-analysis-request/v1"
 AI_RESPONSE_SCHEMA = "lae.ai-analysis-response/v1"
 MANIFEST_CANDIDATE_SCHEMA = "lae.luma-manifest-candidate/v1"
-KNOWLEDGE_VERSION = "2026-07-11.1"
+KNOWLEDGE_VERSION = "2026-07-14.1"
 MAX_AI_REQUEST_BYTES = 256 * 1024
 MAX_AI_RESPONSE_BYTES = 1024 * 1024
 MAX_PROMPT_FILES = 16

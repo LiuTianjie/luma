@@ -89,7 +89,7 @@ class FakeLumaAdapterTests(unittest.TestCase):
             "diagnosticStatus": "succeeded",
             "diagnosticMode": "ai",
             "diagnosticCode": "AI_ANALYSIS_SUCCEEDED",
-            "knowledgeVersion": "2026-07-11.1",
+            "knowledgeVersion": "2026-07-14.1",
             "blockers": [],
             "artifacts": {
                 "evidence": {

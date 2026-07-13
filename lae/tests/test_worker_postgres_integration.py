@@ -267,7 +267,7 @@ class PostgreSQLAnalyzePersistenceTests(unittest.IsolatedAsyncioTestCase):
             diagnostic_status="succeeded",
             diagnostic_mode="ai",
             diagnostic_code="AI_ANALYSIS_SUCCEEDED",
-            knowledge_version="2026-07-11.1",
+            knowledge_version="2026-07-14.1",
             blockers=(),
             artifacts=(
                 ArtifactDescriptor(

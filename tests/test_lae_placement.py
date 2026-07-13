@@ -201,6 +201,7 @@ class LaePlacementTests(unittest.TestCase):
             allowed_runtime_nodes=["runtime"],
         )
         self.assertEqual(decision.candidate_node_ids, ("node-runtime",))
+        self.assertEqual(decision.candidate_node_names, ("runtime",))
         self.assertEqual(decision.requested_cpu_mhz, 750)
         self.assertEqual(decision.requested_memory_mib, 768)
         job = {
@@ -576,12 +577,15 @@ class LaePlacementTests(unittest.TestCase):
             "secret-zone",
             "failure_domain",
             "candidateNodeIds",
+            "candidateNodeNames",
             "preferredNodeId",
         ):
             self.assertNotIn(forbidden, safe)
         internal = decision.internal_state()
         self.assertIn("candidateNodeIds", internal)
+        self.assertIn("candidateNodeNames", internal)
         self.assertNotIn("candidateNodeIds", internal["summary"])
+        self.assertNotIn("candidateNodeNames", internal["summary"])
 
     def test_public_runtime_projection_redacts_internal_placement(self) -> None:
         record = {

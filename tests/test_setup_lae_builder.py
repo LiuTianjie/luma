@@ -33,6 +33,7 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
         self.assertIn("--registry-host HOST[:PORT]", result.stdout)
         self.assertIn("--registry-push-host HOST[:PORT]", result.stdout)
         self.assertIn("--registry-basic-auth", result.stdout)
+        self.assertIn("--buildkit-egress-proxy HTTP_URL", result.stdout)
         self.assertIn("--buildkit-sha256 SHA256", result.stdout)
 
     def test_tool_versions_and_checksum_roots_are_pinned(self):
@@ -63,6 +64,7 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
         )
         self.assertIn('validate_registry_host "$REGISTRY_PULL_HOST" "--registry-host"', self.source)
         self.assertIn('validate_registry_host "$REGISTRY_PUSH_HOST" "--registry-push-host"', self.source)
+        self.assertIn("loopback is not the Builder host", self.source)
         self.assertIn('validate_sha256 "$BUILDKIT_SHA256"', self.source)
         self.assertIn('die "--external-registry values must be sorted and unique"', self.source)
         self.assertNotRegex(self.source, re.compile(r"BUILDKIT_SHA256=\"[0-9a-f]{64}\""))
@@ -81,6 +83,8 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
             "rootlesskit} --net=slirp4netns",
             "Docker daemon did not report rootless security mode",
             "rootless BuildKit has no available worker",
+            "Environment=HTTP_PROXY=${BUILDKIT_EGRESS_PROXY}",
+            "Environment=NO_PROXY=${BUILDKIT_EGRESS_NO_PROXY}",
             "buildctl does not support attestations",
             "Trivy DB metadata is invalid",
             "local runner image does not expose the required RepoDigest",
