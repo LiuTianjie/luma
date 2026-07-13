@@ -43,6 +43,7 @@ from luma.bootstrap import (
     _deploy_nomad_job,
     _ensure_control_image,
     _ensure_control_image_pull_egress,
+    _ensure_control_registry_direct_route,
     _is_tailscale_manager_addr,
     _last_command_value,
     _nomad_tmpfs_compat_status,
@@ -72,7 +73,7 @@ from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
-from luma.egress import minimal_mihomo_config_from_bytes
+from luma.egress import ensure_mihomo_direct_domains, minimal_mihomo_config_from_bytes
 from luma.errors import LumaError
 from luma.local import LocalExecutor
 from luma.profiles import PROFILES
@@ -1522,6 +1523,23 @@ class EgressConfigTests(unittest.TestCase):
         self.assertEqual(group["proxies"], ["proxy-a"])
         self.assertEqual(group["url"], "https://www.gstatic.com/generate_204")
         self.assertEqual(group["interval"], 300)
+
+    def test_internal_registry_direct_rule_precedes_catch_all_proxy(self):
+        current = yaml.safe_dump({"mixed-port": 7890, "rules": ["MATCH,EGRESS"]})
+
+        updated, changed = ensure_mihomo_direct_domains(
+            current,
+            ["registry.itool.tech", "registry.itool.tech"],
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            yaml.safe_load(updated)["rules"],
+            ["DOMAIN,registry.itool.tech,DIRECT", "MATCH,EGRESS"],
+        )
+        unchanged, changed_again = ensure_mihomo_direct_domains(updated, ["registry.itool.tech"])
+        self.assertFalse(changed_again)
+        self.assertEqual(unchanged, updated)
 
 
 class CliTests(unittest.TestCase):
@@ -4003,6 +4021,32 @@ class NomadBootstrapTests(unittest.TestCase):
         self.assertEqual(result, "Control image pulled: registry.example/control:v1")
         self.assertEqual(remote.sudo.call_count, 3)
         self.assertEqual([item.args[0] for item in sleep.call_args_list], [2, 4])
+
+    def test_control_image_prefetch_routes_internal_registry_direct_in_egress(self):
+        remote = Mock()
+        installed = yaml.safe_dump({"mixed-port": 7890, "rules": ["MATCH,EGRESS"]})
+        remote.run_result.return_value = Mock(code=0, output="401")
+        remote.sudo.return_value = base64.b64encode(installed.encode()).decode()
+        remote.run.return_value = ""
+
+        with patch("luma.bootstrap._docker_daemon_uses_egress_proxy", return_value=True), patch(
+            "luma.bootstrap._wait_nomad_job", return_value="egress ready"
+        ):
+            result = _ensure_control_registry_direct_route(
+                remote,
+                "registry.itool.tech/luma-control:v1",
+            )
+
+        self.assertEqual(result, "Internal registry now bypasses external egress: registry.itool.tech")
+        written = yaml.safe_load(remote.write_secret.call_args.args[0])
+        self.assertEqual(
+            written["rules"],
+            ["DOMAIN,registry.itool.tech,DIRECT", "MATCH,EGRESS"],
+        )
+        remote.run.assert_called_once_with(
+            "nomad job restart -yes -on-error=fail egress",
+            timeout=180,
+        )
 
     def test_control_image_pulls_published_image_during_bootstrap(self):
         remote = Mock()

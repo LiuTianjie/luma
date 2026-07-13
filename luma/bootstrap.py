@@ -13,7 +13,7 @@ from typing import Any, Callable, Union
 
 from .config import LumaConfig, NodeConfig
 from .cloudflare import sync_control_dns
-from .egress import minimal_mihomo_config_from_url
+from .egress import ensure_mihomo_direct_domains, minimal_mihomo_config_from_url
 from .errors import LumaError
 from .io import dump_yaml, load_yaml
 from .local import LocalExecutor
@@ -443,12 +443,53 @@ def _prefetch_control_image_for_manager_refresh(remote: Executor, config: LumaCo
     """Cache Control before refreshing ingress that may serve its registry."""
     image = _control_image(config)
     messages: list[str] = []
+    direct_route = _ensure_control_registry_direct_route(remote, image)
+    if direct_route:
+        messages.append(direct_route)
     if _control_image_pull_requires_egress(image):
         egress = _ensure_control_image_pull_egress(remote, image)
         if egress:
             messages.append(egress)
     messages.append(_ensure_control_image(remote, image))
     return "; ".join(messages)
+
+
+def _ensure_control_registry_direct_route(remote: Executor, image: str) -> str:
+    """Keep an internal registry out of the manager's external proxy path."""
+    registry = registry_host_from_image(image).strip().lower()
+    if not registry or _control_image_pull_requires_egress(image):
+        return ""
+    if not _docker_daemon_uses_egress_proxy(remote):
+        return ""
+    probe = remote.run_result(
+        "curl --noproxy '*' --silent --show-error --output /dev/null "
+        "--write-out '%{http_code}' --max-time 20 "
+        f"{shlex.quote('https://' + registry + '/v2/')}",
+        timeout=25,
+    )
+    status = probe.output.strip().splitlines()[-1] if probe.output.strip() else ""
+    if probe.code != 0 or status not in {"200", "401"}:
+        return ""
+    config_path = f"{ROOT}/egress-gateway/config.yaml"
+    encoded = remote.sudo(
+        f"test -f {shlex.quote(config_path)} && base64 {shlex.quote(config_path)} | tr -d '\\n'",
+    ).strip()
+    if not encoded:
+        raise LumaError(
+            f"Docker uses the Luma egress proxy but its config is missing: {config_path}"
+        )
+    try:
+        config_text = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+        raise LumaError("installed egress config is unreadable") from exc
+    domain = registry.rsplit(":", 1)[0] if registry.count(":") == 1 else registry
+    updated, changed = ensure_mihomo_direct_domains(config_text, [domain])
+    if not changed:
+        return f"Internal registry already bypasses external egress: {registry}"
+    remote.write_secret(updated, config_path)
+    remote.run("nomad job restart -yes -on-error=fail egress", timeout=180)
+    _wait_nomad_job(remote, "egress", timeout=120)
+    return f"Internal registry now bypasses external egress: {registry}"
 
 
 def _resolve_control_image(remote: Executor, image: str) -> tuple[str, str]:
