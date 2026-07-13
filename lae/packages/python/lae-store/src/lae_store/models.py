@@ -539,7 +539,7 @@ class ApplicationVolume(TimestampMixin, Base):
             name="luma_volume_ref",
         ),
         CheckConstraint(
-            "(status = 'ready') = "
+            "(status IN ('ready','retained')) = "
             "(luma_volume_ref IS NOT NULL AND provisioned_at IS NOT NULL)",
             name="provisioning_binding",
         ),

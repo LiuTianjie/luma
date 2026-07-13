@@ -136,6 +136,17 @@ class StoreModelTests(unittest.TestCase):
         for model, name in expected:
             self.assertIn(name, {index.name for index in model.__table__.indexes})
 
+    def test_retained_volume_keeps_its_provisioned_luma_binding(self) -> None:
+        ddl = str(
+            CreateTable(ApplicationVolume.__table__).compile(
+                dialect=postgresql.dialect()
+            )
+        )
+        self.assertIn("status IN ('ready','retained')", ddl)
+        self.assertIn(
+            "luma_volume_ref IS NOT NULL AND provisioned_at IS NOT NULL", ddl
+        )
+
     def test_environment_schema_has_no_plaintext_column(self) -> None:
         columns = set(ApplicationEnvironmentVariable.__table__.columns.keys())
         self.assertIn("value_ciphertext", columns)
