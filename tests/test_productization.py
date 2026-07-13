@@ -291,6 +291,78 @@ class ProductConfigTests(unittest.TestCase):
         client.complete_agent_task.assert_called_once()
         self.assertEqual(client.complete_agent_task.call_args.kwargs["status"], "succeeded")
 
+    def test_node_agent_batches_progress_without_blocking_task_output(self):
+        client = Mock()
+        task = {"id": "task-build", "action": "build-image", "payload": {}}
+
+        def fake_execute_agent_task(_task, *, progress, **_kwargs):
+            for index in range(250):
+                progress({"type": "output", "line": f"build line {index}"})
+            return {"message": "image built"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "agent.json"
+            config.write_text(json.dumps({"busyHeartbeatIntervalSeconds": 60}), encoding="utf-8")
+            with patch("luma.agent.execute_agent_task", side_effect=fake_execute_agent_task), patch(
+                "luma.agent.node_agent_metrics", return_value={}
+            ):
+                restart = _complete_agent_task(
+                    client,
+                    node_name="builder",
+                    node_id="builder-node",
+                    task=task,
+                    config_path=config,
+                )
+
+        self.assertFalse(restart)
+        progress_calls = client.progress_agent_task.call_args_list
+        self.assertGreaterEqual(len(progress_calls), 3)
+        self.assertLessEqual(len(progress_calls), 4)
+        reported = [
+            event["line"]
+            for call in progress_calls
+            for event in call.kwargs["events"]
+        ]
+        self.assertEqual(reported, [f"build line {index}" for index in range(250)])
+        client.complete_agent_task.assert_called_once_with(
+            task_id="task-build",
+            node_name="builder",
+            node_id="builder-node",
+            status="succeeded",
+            message="image built",
+            result={"message": "image built"},
+        )
+
+    def test_progress_outage_does_not_block_terminal_task_result(self):
+        client = Mock()
+        client.progress_agent_task.side_effect = LumaError("control unavailable")
+
+        def fake_execute_agent_task(_task, *, progress, **_kwargs):
+            for index in range(250):
+                progress({"type": "output", "line": f"build line {index}"})
+            return {"message": "image built"}
+
+        with patch("luma.agent.execute_agent_task", side_effect=fake_execute_agent_task), patch(
+            "luma.agent.node_agent_metrics", return_value={}
+        ), patch("sys.stderr"):
+            restart = _complete_agent_task(
+                client,
+                node_name="builder",
+                node_id="builder-node",
+                task={"id": "task-build-outage", "action": "build-image", "payload": {}},
+            )
+
+        self.assertFalse(restart)
+        self.assertEqual(client.progress_agent_task.call_count, 2)
+        client.complete_agent_task.assert_called_once_with(
+            task_id="task-build-outage",
+            node_name="builder",
+            node_id="builder-node",
+            status="succeeded",
+            message="image built",
+            result={"message": "image built"},
+        )
+
     def test_terminal_shell_prefers_zsh_on_macos(self):
         from luma.agent import _terminal_shell
 

@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import pty
+import queue
 import re
 import select
 import secrets
@@ -1375,15 +1376,123 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
             stats_sampler.stop()
 
 
+class _AgentTaskProgressReporter:
+    """Batch task progress without blocking the task's stdout reader.
+
+    BuildKit can emit hundreds of lines in a few seconds. Sending one Control
+    request per line applies network latency directly to the child process and
+    can eventually fill its stdout pipe. A single background sender preserves
+    ordering while collapsing bursts into bounded requests.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        task_id: str,
+        node_name: str,
+        node_id: str,
+        batch_size: int = 100,
+        flush_interval: float = 0.25,
+    ) -> None:
+        self.client = client
+        self.task_id = task_id
+        self.node_name = node_name
+        self.node_id = node_id
+        self.batch_size = max(int(batch_size), 1)
+        self.flush_interval = max(float(flush_interval), 0.01)
+        self.events: queue.Queue[Dict[str, Any]] = queue.Queue()
+        self.stop = threading.Event()
+        self.closed = threading.Event()
+        self.thread = threading.Thread(
+            target=self._run,
+            name=f"luma-agent-task-progress-{node_name}",
+            daemon=True,
+        )
+        self.thread.start()
+
+    def submit(self, event: Dict[str, Any]) -> None:
+        if not self.closed.is_set():
+            self.events.put(dict(event))
+
+    def close(self) -> None:
+        if self.closed.is_set():
+            return
+        self.closed.set()
+        self.stop.set()
+        self.thread.join(timeout=15)
+
+    def _run(self) -> None:
+        while not self.stop.is_set() or not self.events.empty():
+            try:
+                first = self.events.get(timeout=self.flush_interval)
+            except queue.Empty:
+                continue
+            batch = [first]
+            deadline = time.monotonic() + self.flush_interval
+            while len(batch) < self.batch_size:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    batch.append(self.events.get(timeout=remaining))
+                except queue.Empty:
+                    break
+            if not self._send(batch):
+                # Progress is observational and must never hold the task's
+                # terminal result hostage during a Control outage. Drop the
+                # remaining queued output after bounded retries; the terminal
+                # report still carries the task outcome.
+                while True:
+                    try:
+                        self.events.get_nowait()
+                    except queue.Empty:
+                        return
+
+    def _send(self, events: list[Dict[str, Any]]) -> bool:
+        for attempt in range(2):
+            try:
+                self.client.progress_agent_task(
+                    task_id=self.task_id,
+                    node_name=self.node_name,
+                    node_id=self.node_id,
+                    events=events,
+                    timeout=5,
+                )
+                return True
+            except Exception as exc:
+                if attempt == 1:
+                    print(
+                        f"luma: node agent task progress batch failed: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return False
+                time.sleep(0.25 * (attempt + 1))
+        return False
+
+
 def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dict[str, Any], config_path: Path = DEFAULT_AGENT_CONFIG) -> bool:
     task_id = str(task.get("id") or "")
     cancel_event = threading.Event()
+    progress_reporter = _AgentTaskProgressReporter(
+        client,
+        task_id=task_id,
+        node_name=node_name,
+        node_id=node_id,
+    )
 
-    def progress(event: Dict[str, Any]) -> None:
-        try:
-            client.progress_agent_task(task_id=task_id, node_name=node_name, node_id=node_id, events=[event])
-        except Exception as exc:
-            print(f"luma: node agent task progress failed: {exc}", file=sys.stderr, flush=True)
+    def report_result(*, status: str, message: str, result: Dict[str, Any]) -> None:
+        progress_reporter.close()
+        _report_agent_task_result(
+            client,
+            task_id=task_id,
+            node_name=node_name,
+            node_id=node_id,
+            status=status,
+            message=message,
+            result=result,
+        )
 
     heartbeat_stop, heartbeat_thread = _start_agent_task_heartbeat(
         client,
@@ -1431,24 +1540,21 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
                 finally:
                     export.close()
             else:
-                result = execute_agent_task(task, config_path=config_path, progress=progress, cancel_event=cancel_event)
+                result = execute_agent_task(
+                    task,
+                    config_path=config_path,
+                    progress=progress_reporter.submit,
+                    cancel_event=cancel_event,
+                )
         except BuilderCleanupFailed:
-            _report_agent_task_result(
-                client,
-                task_id=task_id,
-                node_name=node_name,
-                node_id=node_id,
+            report_result(
                 status="failed",
                 message="builder sandbox cleanup failed",
                 result={},
             )
             return False
         except BuilderTaskCanceled as exc:
-            _report_agent_task_result(
-                client,
-                task_id=task_id,
-                node_name=node_name,
-                node_id=node_id,
+            report_result(
                 status="canceled",
                 message=str(exc),
                 result={},
@@ -1465,39 +1571,28 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
                 failure_message = "builder artifact export failed"
             else:
                 failure_message = str(exc)
-            _report_agent_task_result(
-                client,
-                task_id=task_id,
-                node_name=node_name,
-                node_id=node_id,
+            report_result(
                 status=status,
                 message="builder task canceled" if status == "canceled" else failure_message,
                 result={},
             )
             return False
         if cancel_event.is_set():
-            _report_agent_task_result(
-                client,
-                task_id=task_id,
-                node_name=node_name,
-                node_id=node_id,
+            report_result(
                 status="canceled",
                 message="builder task canceled",
                 result={},
             )
             return False
         restart = bool(result.get("restartAgent"))
-        _report_agent_task_result(
-            client,
-            task_id=task_id,
-            node_name=node_name,
-            node_id=node_id,
+        report_result(
             status="succeeded",
             message=str(result.get("message") or "ok"),
             result=result,
         )
         return restart
     finally:
+        progress_reporter.close()
         _stop_agent_task_heartbeat(heartbeat_stop, heartbeat_thread)
 
 

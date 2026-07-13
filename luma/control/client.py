@@ -418,6 +418,7 @@ class ControlClient:
         node_name: str,
         node_id: str = "",
         events: list[Dict[str, Any]] | None = None,
+        timeout: int = 5,
     ) -> Dict[str, Any]:
         return self.request(
             "POST",
@@ -428,6 +429,7 @@ class ControlClient:
                 "nodeId": node_id,
                 "events": events or [],
             },
+            timeout=timeout,
         )
 
     def update_fleet(self, *, install_ref: str = "", include_all: bool = False, include_manager: bool = False, timeout: int = 900) -> Dict[str, Any]:
