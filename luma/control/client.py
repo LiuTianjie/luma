@@ -689,6 +689,7 @@ class ControlClient:
         default_node: str = "",
         registry_host: str = "",
         push_host: str = "",
+        direct_egress_nodes: list[str] | None = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {}
         if node:
@@ -701,6 +702,8 @@ class ControlClient:
             body["registryHost"] = registry_host
         if push_host:
             body["pushHost"] = push_host
+        if direct_egress_nodes is not None:
+            body["directEgressNodes"] = direct_egress_nodes
         return self.request("POST", "/v1/builds/config", body)
 
     def registry_serve(

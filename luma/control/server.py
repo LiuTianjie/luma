@@ -6597,6 +6597,9 @@ def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         nodes = [node]
     nodes = [value for value in nodes if value]
     default_node = str(body.get("defaultNode") or (nodes[0] if nodes else "")).strip()
+    direct_egress_raw = body.get("directEgressNodes")
+    if direct_egress_raw is not None and not isinstance(direct_egress_raw, list):
+        raise LumaError("directEgressNodes must be a list")
 
     def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
         require_token(state, token, token_type="deploy")
@@ -6612,6 +6615,20 @@ def handle_build_config_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
             build["nodes"] = nodes
         if default_node:
             build["defaultNode"] = default_node
+        if direct_egress_raw is not None:
+            direct_egress_nodes: list[str] = []
+            for value in direct_egress_raw:
+                name = str(value or "").strip()
+                if not name:
+                    continue
+                entry = _node_record_entry_for_name_or_id(registered, name)
+                if entry is None:
+                    raise LumaError(f"unknown Luma node: {name}")
+                direct_egress_nodes.append(entry[0])
+            if direct_egress_nodes:
+                build["directEgressNodes"] = sorted(set(direct_egress_nodes))
+            else:
+                build.pop("directEgressNodes", None)
         for key in ("registryHost", "pushHost"):
             if body.get(key) is not None:
                 value = str(body.get(key) or "").strip()
@@ -6871,10 +6888,24 @@ def _egress_proxy_for_node(config: Any, state: Dict[str, Any], node_name: str) -
     # through the manager's egress gateway (same as image pulls and node join);
     # global nodes have direct internet, so no proxy.
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-    record = _node_record_for_name(nodes, node_name)
-    if not record:
+    entry = _node_record_entry_for_name_or_id(nodes, node_name)
+    if not entry:
         return ""
+    canonical_name, record = entry
     labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
+    build = state.get("build") if isinstance(state.get("build"), dict) else {}
+    configured_direct = build.get("directEgressNodes") if isinstance(build.get("directEgressNodes"), list) else []
+    if any(
+        (candidate := _node_record_entry_for_name_or_id(nodes, str(value or "").strip()))
+        and candidate[0] == canonical_name
+        for value in configured_direct
+    ) or str(labels.get("luma.egress.direct") or labels.get("egress.direct") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return ""
     region = str(record.get("region") or labels.get("region") or "").strip()
     if region not in {"cn", "home"}:
         return ""
@@ -12341,6 +12372,7 @@ def _build_summary(state: Dict[str, Any]) -> Dict[str, Any]:
         "defaultNode": str(config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
         "registryHost": str(config.get("registryHost") or ""),
         "pushHost": str(config.get("pushHost") or "localhost:5000"),
+        "directEgressNodes": [str(value) for value in config.get("directEgressNodes") or []],
         "nodes": nodes,
     }
 

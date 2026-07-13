@@ -12147,15 +12147,33 @@ class GithubImportTests(unittest.TestCase):
 
                 result = handle_build_config_set(
                     state["deployToken"],
-                    {"nodes": ["builder"], "defaultNode": "builder", "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000"},
+                    {"nodes": ["builder"], "defaultNode": "builder", "registryHost": "100.66.177.70:5000", "pushHost": "localhost:5000", "directEgressNodes": ["builder"]},
                 )
 
                 self.assertEqual(result["build"]["defaultNode"], "builder")
                 self.assertEqual(result["build"]["nodes"][0]["name"], "builder")
+                self.assertEqual(result["build"]["directEgressNodes"], ["builder"])
                 status = handle_control_status(state["deployToken"])
                 self.assertEqual(status["build"]["registryHost"], "100.66.177.70:5000")
+                self.assertEqual(status["build"]["directEgressNodes"], ["builder"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_direct_egress_builder_bypasses_manager_proxy(self):
+        from luma.control.server import _egress_proxy_for_node
+
+        state = {
+            "managerAddr": "100.106.154.3",
+            "build": {"directEgressNodes": ["builder"]},
+            "nodes": {
+                "builder": {"name": "builder", "region": "home", "aliases": ["build-1"]},
+                "home-worker": {"name": "home-worker", "region": "home"},
+            },
+        }
+        config = LumaConfig({"defaults": {"nomadServer": "100.106.154.3:4647"}}, None)
+
+        self.assertEqual(_egress_proxy_for_node(config, state, "build-1"), "")
+        self.assertEqual(_egress_proxy_for_node(config, state, "home-worker"), "http://100.106.154.3:7890")
 
     def test_build_run_records_failed_import_events(self):
         from luma.control.server import handle_build_deploy, handle_build_run_list, handle_build_run_get

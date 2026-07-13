@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.209 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.210 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -361,6 +361,8 @@ def build_parser() -> argparse.ArgumentParser:
     build_config.add_argument("--default-node", default="", help="Default builder node for luma import")
     build_config.add_argument("--registry-host", default="", help="Registry host that target nodes pull from, for example 100.66.177.70:5000")
     build_config.add_argument("--push-host", default="", help="Registry host used from the builder itself, usually localhost:5000")
+    build_config.add_argument("--direct-egress-node", action="append", dest="direct_egress_nodes", default=None, help="Builder node with reliable direct internet access; repeat for multiple nodes")
+    build_config.add_argument("--clear-direct-egress", action="store_true", help="Clear the direct-egress builder node list")
     _add_control_arguments(build_config)
     _add_output_arguments(build_config)
 
@@ -2900,13 +2902,17 @@ def cmd_build(args: argparse.Namespace) -> int:
     if args.build_command == "config":
         nodes = [str(value).strip() for value in args.nodes if str(value).strip()]
         default_node = str(args.default_node or (nodes[0] if nodes else "")).strip()
-        if not nodes and not default_node and not args.registry_host and not args.push_host:
-            raise LumaError("build config requires --node, --default-node, --registry-host, or --push-host")
+        direct_egress_nodes = [] if args.clear_direct_egress else args.direct_egress_nodes
+        if args.clear_direct_egress and args.direct_egress_nodes:
+            raise LumaError("--clear-direct-egress cannot be combined with --direct-egress-node")
+        if not nodes and not default_node and not args.registry_host and not args.push_host and direct_egress_nodes is None:
+            raise LumaError("build config requires a builder, registry, or direct-egress option")
         result = client.configure_build(
             nodes=nodes or None,
             default_node=default_node,
             registry_host=args.registry_host,
             push_host=args.push_host,
+            direct_egress_nodes=direct_egress_nodes,
         )
         if output_format != "text":
             _print_success(args, result)
@@ -2916,6 +2922,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"  Default node: {build.get('defaultNode') or '-'}")
         print(f"  Registry host: {build.get('registryHost') or '-'}")
         print(f"  Push host: {build.get('pushHost') or '-'}")
+        print(f"  Direct egress: {', '.join(build.get('directEgressNodes') or []) or '-'}")
         rows = []
         for node in build.get("nodes") or []:
             if isinstance(node, dict):
