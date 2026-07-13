@@ -9540,6 +9540,12 @@ def _control_image_prepare_plan(state: Dict[str, Any], install_ref: str, source_
         str(build.get("defaultNode") or DEFAULT_BUILD_NODE_NAME).strip(),
         purpose="control image preparation",
     )
+    _manager_name, manager_record = _manager_update_target(state)
+    platform = _nomad_node_platform_from_record(manager_record) or "linux/amd64"
+    if platform not in {"linux/amd64", "linux/arm64"}:
+        raise LumaError(
+            f"manager platform is not supported for Control image preparation: {platform}"
+        )
     tag = _control_image_prepare_tag(install_ref, source)
     insecure_raw = str(os.environ.get("LUMA_LAE_BUILDER_REGISTRY_INSECURE") or "").strip()
     if insecure_raw not in {"0", "1"}:
@@ -9550,6 +9556,7 @@ def _control_image_prepare_plan(state: Dict[str, Any], install_ref: str, source_
         "pushImage": f"{push_host}/luma-control:{tag}",
         "destinationImage": f"{pull_host}/luma-control:{tag}",
         "builderNode": build_node,
+        "platform": platform,
         "proxy": _egress_proxy_for_node(config, state, build_node),
         "insecure": insecure_raw == "1",
         "alreadyInternal": False,
@@ -9636,6 +9643,7 @@ def handle_control_image_prepare_start(token: str, body: Dict[str, Any]) -> Dict
                     "sourceImage": str(plan.get("sourceImage") or ""),
                     "pushImage": str(plan.get("pushImage") or ""),
                     "destinationImage": str(plan.get("destinationImage") or ""),
+                    "platform": str(plan.get("platform") or ""),
                     "proxy": str(plan.get("proxy") or ""),
                     "insecure": bool(plan.get("insecure")),
                     "timeout": 900,

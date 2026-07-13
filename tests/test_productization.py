@@ -4656,6 +4656,16 @@ class ControlApiTests(unittest.TestCase):
                             "pushHost": "localhost:5000",
                         },
                         "nodes": {
+                            "manager": {
+                                "labels": {"role.nomad-manager": "true"},
+                                "agent": {
+                                    "status": "online",
+                                    "lastSeen": int(time.time()),
+                                    "os": "linux",
+                                    "arch": "amd64",
+                                    "capabilities": ["manager-update-v1"],
+                                },
+                            },
                             "builder": {
                                 "roles": ["builder"],
                                 "agent": {
@@ -4672,6 +4682,7 @@ class ControlApiTests(unittest.TestCase):
                     self.assertEqual(node, "builder")
                     self.assertEqual(action, "mirror-control-image")
                     self.assertEqual(payload["pushImage"], "localhost:5000/luma-control:v0.1.175")
+                    self.assertEqual(payload["platform"], "linux/amd64")
                     self.assertEqual(kwargs["required_capability"], "control-image-mirror-v1")
                     kwargs["progress"]({"line": "copying layers"})
                     return {

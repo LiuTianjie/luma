@@ -1990,6 +1990,7 @@ def execute_agent_task(
             source_image=_required(payload, "sourceImage"),
             push_image=_required(payload, "pushImage"),
             destination_image=_required(payload, "destinationImage"),
+            platform=str(payload.get("platform") or ""),
             proxy=str(payload.get("proxy") or ""),
             insecure=bool(payload.get("insecure")),
             timeout=int(payload.get("timeout") or 900),
@@ -3175,8 +3176,8 @@ def mirror_control_image(
     insecure: bool = False,
     timeout: int = 900,
     progress: Callable[[Dict[str, Any]], None] | None = None,
+    platform: str = "",
     _system_image: bool = False,
-    _platform: str = "",
 ) -> Dict[str, Any]:
     """Copy a Control release through the Builder into Luma's pull registry.
 
@@ -3227,9 +3228,14 @@ def mirror_control_image(
         if value and progress:
             progress({"type": "status", "line": value, "ts": int(time.time())})
 
+    selected_platform = str(platform or "").strip()
+    if selected_platform and not re.fullmatch(
+        r"linux/(?:amd64|arm64)", selected_platform
+    ):
+        raise LumaError("image mirror platform must be linux/amd64 or linux/arm64")
     command = [crane, "copy", source, push]
-    if _platform:
-        command.extend(["--platform", _platform])
+    if selected_platform:
+        command.extend(["--platform", selected_platform])
     if insecure:
         command.append("--insecure")
     emit(f"Caching {source} on the internal Builder registry.")
@@ -3285,8 +3291,8 @@ def mirror_system_image(
         insecure=insecure,
         timeout=timeout,
         progress=progress,
+        platform=platform,
         _system_image=True,
-        _platform=platform,
     )
     result["message"] = "System image cached and verified in the internal registry."
     return result
