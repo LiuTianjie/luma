@@ -2386,6 +2386,143 @@ tbody tr.is-selected {
   font-size: 0.75rem;
 }
 
+.secret-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.secret-groups-toolbar {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+  color: var(--text-subtle);
+  font-size: 0.75rem;
+}
+
+.secret-groups-toolbar > div {
+  display: flex;
+  gap: 4px;
+}
+
+.secret-groups-toolbar button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 0.75rem;
+}
+
+.secret-group {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  transition: border-color var(--motion-fast) var(--ease-standard), box-shadow var(--motion-fast) var(--ease-standard);
+}
+
+.secret-group.expanded {
+  border-color: var(--line-strong);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.secret-group-trigger {
+  display: grid;
+  width: 100%;
+  min-height: 58px;
+  grid-template-columns: 30px minmax(0, 1fr) auto auto;
+  gap: 11px;
+  align-items: center;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.secret-group-trigger:hover {
+  background: var(--well);
+}
+
+.secret-group-mark {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--well);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.secret-group-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.secret-group-copy strong,
+.secret-group-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.secret-group-copy strong {
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.secret-group-copy small {
+  color: var(--text-subtle);
+  font-size: 0.75rem;
+}
+
+.secret-group-count {
+  min-width: 28px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--well);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.secret-group-chevron {
+  color: var(--text-subtle);
+  transition: transform var(--motion-fast) var(--ease-standard);
+}
+
+.secret-group.expanded .secret-group-chevron {
+  transform: rotate(180deg);
+}
+
+.secret-group-table {
+  border-width: 1px 0 0;
+  border-radius: 0;
+}
+
+.secret-group-table th {
+  position: static;
+  background: var(--well);
+}
+
+.secret-groups-empty {
+  min-height: 120px;
+  padding: 42px 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text-subtle);
+  text-align: center;
+}
+
 .credentials-aside {
   position: sticky;
   top: 90px;
