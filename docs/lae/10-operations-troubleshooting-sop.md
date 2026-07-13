@@ -137,22 +137,26 @@ ssh <manager> 'nomad job status luma-registry'
   commit 错当成 branch，而不是精确 fetch/checkout；
 - registry `/v2/` 的 HTTP 探针成功，Docker 却尝试 HTTPS、走公网代理或返回 502；
 - BuildKit 推送时报 `http: server gave HTTP response to HTTPS client`；
+- 公网 Registry push 的大层在精确 `60.000s` 后返回 `499 Client Closed Request`
+  或 `504 Gateway Timeout`，而同一镜像的小层成功；
 - build 已 push，但 `lab`、`manager` 或 `tecent` 无法拉取产物。
 
 **Checks**
 
-当前 staging 的构建分发不变量是：target 与 builder 都访问实际监听的
-`100.66.177.70:5000`，`luma build config` 中 `registryHost` 与 `pushHost` 当前相同。
-旧 `localhost:5000` 已无监听。职责仍不同，但地址必须以实时 Control 配置和 registry
-监听为准，不能根据旧拓扑猜测。
+当前 staging 的普通 Repository Import 使用带 Basic Auth/TLS 的
+`registry.itool.tech`，实时 `status.build.registryHost` 与 `pushHost` 应相同；
+`100.66.177.70:5000` 是 builder 上的内部 origin，旧 `localhost:5000` 已无监听。
+LAE Builder 的短期 registry lease 与普通 Luma Import 的持久 registry credential
+职责不同；地址必须以实时 Control 配置和 registry 监听为准，不能根据旧拓扑猜测。
 
 ```bash
 .venv/bin/luma version
-.venv/bin/luma build config
+.venv/bin/luma status --format json
+.venv/bin/luma registry list --format json
 .venv/bin/luma build list --format json
 .venv/bin/luma build logs <build-run-id> --format json
-curl --fail --silent --show-error --max-time 8 \
-  http://100.66.177.70:5000/v2/
+curl --silent --show-error --max-time 8 --output /dev/null \
+  --write-out 'registry_http=%{http_code}\n' https://registry.itool.tech/v2/
 ssh builder 'docker buildx ls && docker buildx inspect luma-builder'
 ssh builder 'docker buildx inspect luma-builder-egress'
 ssh <runtime-node> \
@@ -168,6 +172,22 @@ egress proxy。任何 `aly` IP、过期 proxy URL，或内部 registry 不在 `N
 BuildKit：后者不继承宿主 `daemon.json`。Luma `0.1.194+` 会在 image exporter 上
 显式设置 `registry.insecure=true`，否则即使宿主 Docker 配置正确，push 仍可能错误
 升级为 HTTPS。
+
+如果大层只在精确 60 秒失败，先查 Traefik access log 的
+`RequestHost=registry.itool.tech`、`RequestMethod=PUT`、`Duration`、
+`RequestContentSize`、`DownstreamStatus` 和 `OriginStatus`。多个大 PUT 都在
+`60000000000ns` 左右终止，而 Registry allocation 没有重启，说明是 ingress
+entrypoint 的整请求体 read timeout，不是镜像损坏或认证失败。当前 Luma 渲染的
+Traefik 必须包含：
+
+```text
+--entrypoints.websecure.transport.respondingTimeouts.readTimeout=6h
+```
+
+这里按“最大单层”计时，不按整个镜像累计。不得用反复重试、删除 Registry blob
+或把 TLS 改回内部 HTTP 来规避；也不要配置为无限超时。更新 Traefik 后应先确认新
+allocation healthy 和参数生效，再重跑原 import，以真实大层 push + digest pull
+作为验收。
 
 **Safe action — 仅限已批准的 staging 恢复**
 
@@ -187,14 +207,14 @@ BuildKit：后者不继承宿主 `daemon.json`。Luma `0.1.194+` 会在 image ex
    ```bash
    .venv/bin/luma build config \
      --node builder --default-node builder \
-     --registry-host 100.66.177.70:5000 \
-     --push-host 100.66.177.70:5000
+     --registry-host registry.itool.tech \
+     --push-host registry.itool.tech
    ```
 
-5. 如果 target Docker 把 `100.66.177.70:5000` 当 HTTPS registry 或经代理访问，
-   通过 `luma registry serve`/节点配置恢复 `insecure-registries` 与 `NO_PROXY`，按
-   节点逐个验证后再 retry；不要把 `registryHost` 改成 `localhost:5000`，也不要
-   临时暴露公网 registry。
+5. 确认 `luma registry list` 中 `registry.itool.tech` 已配置，Builder 和目标节点
+   通过 Luma 注入相同 registry host 的凭据；该地址必须走 HTTPS，不能标成
+   insecure。内部 `100.66.177.70:5000` 只用于 origin/救援诊断并保持在
+   `NO_PROXY`，不得临时改成公开构建产物的 canonical 地址。
 
 **Verify**
 
@@ -202,11 +222,12 @@ BuildKit：后者不继承宿主 `daemon.json`。Luma `0.1.194+` 会在 image ex
   proxy 地址；
 - 完整 commit import 的 resolved commit 与请求逐字相等，checkout 为 detached，
   build 日志不再出现 `Remote branch ... not found`；
-- push 日志包含内部 registry manifest digest，且不再尝试 HTTPS；
-- builder、`lab`、`manager`、`tecent` 都能从 `100.66.177.70:5000` 按同一 digest
-  查找/拉取；
+- push 日志包含 `registry.itool.tech` 的 manifest digest，且没有降级到 HTTP；
+- builder、`lab`、`manager`、`tecent` 都能以已配置凭据从
+  `registry.itool.tech` 按同一 digest 查找/拉取；
 - deploy 使用 immutable digest，未退回 mutable `latest`；
-- `luma build config` 仍显示 pull/push 两个正确地址。
+- `luma status --format json` 的 `build.registryHost` 与 `build.pushHost` 仍为
+  `registry.itool.tech`。
 
 **Escalate**
 

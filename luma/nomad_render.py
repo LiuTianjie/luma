@@ -46,6 +46,15 @@ CONTROL_MEMORY_MB = 1024
 # silently discarded by the scheduler.
 CONTROL_MEMORY_MAX_MB = 0
 
+# Traefik's default entrypoint read timeout is 60 seconds and covers the whole
+# request body. BuildKit may finalize a large registry layer with one PUT, so a
+# valid push can exceed that limit even while bytes are continuously flowing.
+# Keep a finite boundary for public ingress, but make it large enough for a
+# multi-gigabyte *single layer* on a slow CI uplink. Six hours also matches the
+# practical upper bound of common CI jobs; unlike ``0`` it does not turn an
+# authenticated registry requirement into an unbounded public slow-body slot.
+TRAEFIK_WEBSECURE_READ_TIMEOUT = "6h"
+
 EDGE_EXPOSURES = {"cn-edge", "external-edge"}
 HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
 NOMAD_TAILSCALE_META_KEY = "luma_tailscale_ip"
@@ -295,6 +304,10 @@ def render_traefik_job(
         "--accesslog.format=json",
         "--entrypoints.web.address=:80",
         "--entrypoints.websecure.address=:443",
+        (
+            "--entrypoints.websecure.transport.respondingTimeouts.readTimeout="
+            f"{TRAEFIK_WEBSECURE_READ_TIMEOUT}"
+        ),
         "--entrypoints.web.http.redirections.entrypoint.to=websecure",
         "--entrypoints.web.http.redirections.entrypoint.scheme=https",
     ]

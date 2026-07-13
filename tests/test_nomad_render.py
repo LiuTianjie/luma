@@ -677,6 +677,10 @@ port: 3000
         self.assertIn("--providers.nomad.watch=true", args)
         self.assertIn("--accesslog=true", args)
         self.assertIn("--accesslog.format=json", args)
+        self.assertIn(
+            "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=6h",
+            args,
+        )
         self.assertFalse(any("accesslog.filepath" in a for a in args))
         self.assertFalse(any("providers.swarm" in a for a in args))
 
