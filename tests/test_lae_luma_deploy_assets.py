@@ -60,6 +60,26 @@ def config() -> LumaConfig:
 
 
 class LaeLumaDeployAssetTests(unittest.TestCase):
+    def test_control_bundle_install_is_versioned_and_atomic(self):
+        script = (ROOT / "scripts/install-lae-control-bundle.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("bundleFingerprint", script)
+        self.assertIn("os.replace(temporary, target)", script)
+        self.assertIn("LUMA_LAE_SERVICE_PRINCIPALS_FILE", script)
+        self.assertIn("LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE", script)
+        self.assertIn('atomic("control.env"', script)
+        self.assertNotIn("source $", script)
+
+        runner = (ROOT / "scripts/update-lae-builder-runner.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("@sha256:", runner)
+        self.assertIn("docker --host", runner)
+        self.assertIn("RepoDigests", runner)
+        self.assertIn("matches != 1", runner)
+        self.assertNotIn("docker daemon", runner.lower())
+
     def load(self, sidecar_name: str):
         return load_compose_deployment(
             DEPLOY / sidecar_name,

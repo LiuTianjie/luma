@@ -153,6 +153,7 @@ def _serve(host: str, port: int) -> None:
                 self._write(404, _error("LAE_AGENT_ROUTE_NOT_FOUND", retryable=False))
                 return
             if not token or not authorized(token, self.headers.get("Authorization")):
+                emit_json(component_payload("lae-agent-controller", status="request_failed", diagnosticCode="LAE_AGENT_UNAUTHORIZED"))
                 self._write(401, _error("LAE_AGENT_UNAUTHORIZED", retryable=False))
                 return
             if provider is None or knowledge is None:
@@ -186,6 +187,7 @@ def _serve(host: str, port: int) -> None:
                     self._write(400, _error("AI_REQUEST_INVALID", retryable=False))
                     return
                 if not _valid_request(value, knowledge_version=knowledge["knowledgeVersion"]):
+                    emit_json(component_payload("lae-agent-controller", status="request_failed", diagnosticCode="AI_REQUEST_INVALID"))
                     self._write(400, _error("AI_REQUEST_INVALID", retryable=False))
                     return
                 try:
@@ -195,6 +197,7 @@ def _serve(host: str, port: int) -> None:
                         circuit["failures"] += 1
                         if circuit["failures"] >= 5:
                             circuit["openUntil"] = time.monotonic() + 60
+                    emit_json(component_payload("lae-agent-controller", status="request_failed", diagnosticCode=exc.code))
                     self._write(502, _error(exc.code, retryable=True))
                     return
                 with rate_lock:
@@ -210,6 +213,7 @@ def _serve(host: str, port: int) -> None:
                         "proposal": proposal,
                     },
                 )
+                emit_json(component_payload("lae-agent-controller", status="request_succeeded", diagnosticCode="AI_ANALYSIS_SUCCEEDED"))
             finally:
                 semaphore.release()
 

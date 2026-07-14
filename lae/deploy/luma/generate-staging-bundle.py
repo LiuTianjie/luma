@@ -5,6 +5,11 @@ The command never prints secret values and refuses to overwrite an existing
 directory.  The resulting directory is an operator hand-off artifact, not a
 repository asset: copy only the documented files to the manager and import the
 generated ``lae-platform-staging.env`` through Luma's secret store.
+
+This is initialization/credential-rotation tooling, not a release command.
+Normal releases must reuse the existing private bundle via
+``prepare-staging-release.py`` so application data keys and Control principals
+cannot drift independently.
 """
 
 from __future__ import annotations

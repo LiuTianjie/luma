@@ -13,6 +13,7 @@ from pathlib import Path
 
 LAE_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = LAE_ROOT / "deploy/luma/generate-staging-bundle.py"
+PREPARE_SCRIPT = LAE_ROOT / "deploy/luma/prepare-staging-release.py"
 ANALYZER = "100.66.177.70:5000/lae/agent-runner@sha256:" + "a" * 64
 
 
@@ -25,6 +26,101 @@ def _dotenv(path: Path) -> dict[str, str]:
 
 
 class StagingBundleTests(unittest.TestCase):
+    def test_release_preflight_reuses_credentials_and_rejects_cluster_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "bundle"
+            api_key = Path(temporary) / "ark-api-key"
+            api_key.write_text("test-provider-key", encoding="utf-8")
+            api_key.chmod(0o600)
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--output-dir",
+                    str(output),
+                    "--analyzer-image-digest",
+                    ANALYZER,
+                    "--cluster-id",
+                    "old-cluster",
+                    "--llm-model",
+                    "test-model",
+                    "--llm-api-key-file",
+                    str(api_key),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            before = _dotenv(output / "lae-platform-staging.env")
+            (output / "builder-agent-ai.env").unlink()
+            control_path = output / "lae-control.env"
+            control_path.write_text(
+                "".join(
+                    "export " + line + "\n"
+                    for line in control_path.read_text(encoding="utf-8").splitlines()
+                ),
+                encoding="utf-8",
+            )
+            control_path.chmod(0o600)
+            replacement = "100.66.177.70:5000/lae/agent-runner@sha256:" + "b" * 64
+            rejected = subprocess.run(
+                [
+                    sys.executable,
+                    str(PREPARE_SCRIPT),
+                    "--bundle-dir",
+                    str(output),
+                    "--cluster-id",
+                    "live-cluster",
+                    "--analyzer-image-digest",
+                    replacement,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(rejected.returncode, 2)
+            self.assertNotIn(before["LAE_LUMA_SERVICE_TOKEN"], rejected.stderr)
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(PREPARE_SCRIPT),
+                    "--bundle-dir",
+                    str(output),
+                    "--cluster-id",
+                    "live-cluster",
+                    "--analyzer-image-digest",
+                    replacement,
+                    "--update",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            result = json.loads(completed.stdout)
+            self.assertTrue(result["ok"])
+            after = _dotenv(output / "lae-platform-staging.env")
+            self.assertEqual(after["LAE_LUMA_CLUSTER_ID"], "live-cluster")
+            self.assertEqual(after["LAE_ANALYZER_IMAGE_DIGEST"], replacement)
+            normalized_control = _dotenv(output / "lae-control.env")
+            self.assertEqual(
+                normalized_control["LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON"],
+                '["manager","tecent"]',
+            )
+            self.assertEqual(
+                normalized_control["LUMA_LAE_RUNTIME_STORAGE_CLASS"],
+                "lae-staging-runtime-nfs",
+            )
+            for name in (
+                "LAE_LUMA_SERVICE_TOKEN",
+                "LAE_LUMA_RUNTIME_SERVICE_TOKEN",
+                "LAE_CREDENTIAL_BROKER_TOKEN",
+                "LAE_OBJECT_SOURCE_BROKER_TOKEN",
+                "LAE_ADMIN_API_TOKEN",
+                "LAE_AUTH_HMAC_KEY",
+                "LAE_DATABASE_URL",
+            ):
+                self.assertEqual(after[name], before[name])
+
     def test_bundle_is_private_complete_separated_and_never_prints_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "bundle"

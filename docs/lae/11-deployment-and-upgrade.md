@@ -200,7 +200,8 @@ luma storage set lae-staging-runtime-nfs \
   --eligible-node manager --eligible-node tecent
 ```
 
-再得到已发布且 Builder 可拉取的 Analyzer 完整 digest，并生成一次性 bundle：
+首次初始化或批准的整包密钥轮换时，先得到已发布且 Builder 可拉取的 Analyzer 完整
+digest，再生成一次性 bundle：
 
 ```bash
 umask 077
@@ -223,9 +224,37 @@ python lae/deploy/luma/generate-staging-bundle.py \
   --runtime-node tecent
 ```
 
+普通代码发布**禁止重新运行 bundle 生成器**。必须复用受控保存的既有私有 bundle，
+只更新 live cluster binding 与本次不可变 Analyzer digest；命令会校验平台、Control、
+Builder、broker、runtime 和 signing 的交叉绑定，并迁移早期 `export` 格式，但不会打印
+或重新生成已有密钥：
+
+```bash
+python lae/deploy/luma/prepare-staging-release.py \
+  --bundle-dir "$BUNDLE_DIR" \
+  --cluster-id "$CLUSTER_ID" \
+  --analyzer-image-digest "$ANALYZER_IMAGE_DIGEST" \
+  --runtime-storage-class lae-staging-runtime-nfs \
+  --runtime-node manager --runtime-node tecent \
+  --update
+```
+
+没有 `--update` 时该命令是只读发布门禁；cluster、digest、文件闭集、权限或任一跨端
+credential binding 不一致都会 fail closed。不得用测试 cluster、占位 digest 或新生成
+bundle 覆盖已存在的 deployment scope。
+
 脚本只打印文件名，不打印 secret；目录为 `0700`、文件为 `0600`，且已存在时
 拒绝覆盖。禁止 `cat`、日志上传或提交 bundle。通过批准的加密通道把目录复制到
-manager 后，只安装 Control 需要的文件：
+manager 后，通过版本化、原子安装脚本安装 Control 需要的文件。脚本把每组 principal、
+broker 和 signing 文件写为带 bundle fingerprint 的不可变文件，最后才原子切换
+`control.env`；旧组文件保留用于回退，避免逐文件覆盖造成半轮换窗口：
+
+```bash
+sudo scripts/install-lae-control-bundle.sh "$BUNDLE_DIR"
+luma update manager --install-ref "$LUMA_RELEASE_REF" --domain luma.itool.tech
+```
+
+以下逐文件命令只用于理解文件边界，不再作为标准发布 SOP：
 
 ```bash
 BUNDLE_DIR="$HOME/lae-staging-bundle-$SHORT_SHA"

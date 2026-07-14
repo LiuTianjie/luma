@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -164,11 +165,26 @@ def request_ai_analysis(
         },
         method="POST",
     )
-    try:
-        with _NO_REDIRECT_OPENER.open(http_request, timeout=config.timeout_seconds) as response:
-            body = response.read(MAX_AI_RESPONSE_BYTES + 1)
-    except (OSError, urllib.error.HTTPError, urllib.error.URLError) as exc:
-        raise AIDiagnosticError("AI_CONTROLLER_UNAVAILABLE") from exc
+    body: bytes | None = None
+    last_error: BaseException | None = None
+    for attempt in range(3):
+        try:
+            with _NO_REDIRECT_OPENER.open(
+                http_request, timeout=config.timeout_seconds
+            ) as response:
+                body = response.read(MAX_AI_RESPONSE_BYTES + 1)
+            break
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in {429, 502, 503, 504} or attempt == 2:
+                break
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+            if attempt == 2:
+                break
+        time.sleep(0.5 * (2**attempt))
+    if body is None:
+        raise AIDiagnosticError("AI_CONTROLLER_UNAVAILABLE") from last_error
     if len(body) > MAX_AI_RESPONSE_BYTES:
         raise AIDiagnosticError("AI_RESPONSE_TOO_LARGE")
     try:

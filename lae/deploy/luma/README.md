@@ -13,7 +13,8 @@
 | `docker-compose.staging.yml` | Staging 拓扑；额外包含内部 Mailpit |
 | `luma.compose.staging.yml` | Staging sidecar；Mailpit 仍是 `exposure:none` |
 | `luma.compose.staging.itool.yml` | 当前共享集群的隔离 staging overlay；平台固定到 `lab`，经 `tailscale-relay` 发布，并使用 `builder-registry-nfs` 独立 path；不是 production 默认 |
-| `generate-staging-bundle.py` | 一次性生成 `0700/0600` 的平台 secret、Control principal/broker/signing 与非敏感 Control env bundle；拒绝覆盖 |
+| `generate-staging-bundle.py` | 仅首次初始化/批准整包轮换：一次性生成 `0700/0600` 的平台 secret、Control principal/broker/signing 与非敏感 Control env bundle；拒绝覆盖 |
+| `prepare-staging-release.py` | 普通发布复用既有 bundle，只更新并校验 live cluster、不可变 Analyzer digest 和 runtime placement；不会轮换已有密钥 |
 | `docker/{web,api,worker,agent-controller}.Dockerfile` | Luma Repository Import 从仓库根 context 构建的四个平台服务镜像 |
 | `docker/agent-runner.Dockerfile` | Builder 执行 `analyze-source` 时使用的固定 digest、rootless LAE Analyzer 沙箱镜像；不属于平台 Compose service |
 | `.env.example` | 变量名和非敏感默认值；不包含 secret 值 |

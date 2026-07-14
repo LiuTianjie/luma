@@ -334,6 +334,11 @@ Luma Builder/供应链负责人。
 
 **Safe action**
 
+- 普通 LAE 发布必须先运行 `prepare-staging-release.py`；禁止重新生成整包密钥。Control
+  使用 `install-lae-control-bundle.sh` 版本化安装并最后原子切换 `control.env`，Builder
+  使用 `update-lae-builder-runner.sh` 只更新 rootless Analyzer digest，不修改 Docker
+  daemon。切换前用同一 bundle 的 Builder principal 请求不存在 task，结果必须是 404
+  而不是 401。
 - 权限或文件损坏时，从批准的 secret manager/配置备份原子恢复文件，保持同目录、regular file、`0600`；不要把 token 改成 inline 环境变量。
 - URL/timeout 错误需要 Luma Control 配置变更时先在 staging 更新并验证，再走 manager 变更流程。
 - 轮换必须同时协调 LAE API 端与 Luma Control 端，见第 15 节；单边轮换会造成短时全失败。
