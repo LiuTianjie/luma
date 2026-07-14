@@ -14269,18 +14269,19 @@ class GithubImportTests(unittest.TestCase):
                 config_text = config_path.read_text(encoding="utf-8")
             return Mock(returncode=0, stdout="created\n")
 
-        with patch("luma.agent.subprocess.run", side_effect=fake_run):
+        with tempfile.TemporaryDirectory() as tmp, patch("luma.agent.subprocess.run", side_effect=fake_run):
             builder = _ensure_buildx_builder(
                 "docker",
                 proxy="",
                 no_proxy="localhost,100.66.177.70:5000",
                 registry_host="100.66.177.70:5000",
+                env={"BUILDX_CONFIG": tmp},
             )
 
         self.assertEqual(builder, "luma-builder")
-        create_cmd = calls[1]
+        self.assertEqual(calls[1][:3], ["docker", "rm", "-f"])
+        create_cmd = calls[2]
         self.assertIn("--buildkitd-config", create_cmd)
-        self.assertIn("env.LUMA_INSECURE_REGISTRY_HOST=100.66.177.70:5000", create_cmd)
         self.assertEqual(
             config_text,
             '[registry."100.66.177.70:5000"]\n  http = true\n  insecure = true\n',
@@ -14299,23 +14300,36 @@ class GithubImportTests(unittest.TestCase):
                 return Mock(returncode=0, stdout="Name: luma-builder\n")
             if cmd[:2] == ["docker", "inspect"]:
                 docker_inspect_count += 1
-                values = [] if docker_inspect_count == 1 else [
-                    "LUMA_INSECURE_REGISTRY_HOST=100.66.177.70:5000"
-                ]
-                return Mock(returncode=0, stdout=json.dumps(values))
+                return Mock(returncode=0, stdout=json.dumps([]))
             return Mock(returncode=0, stdout="ok\n")
 
-        with patch("luma.agent.subprocess.run", side_effect=fake_run):
+        with tempfile.TemporaryDirectory() as tmp, patch("luma.agent.subprocess.run", side_effect=fake_run):
+            Path(tmp, ".luma-builder.luma-registry").write_text("old.registry:5000\n", encoding="utf-8")
             builder = _ensure_buildx_builder(
                 "docker",
                 proxy="",
                 no_proxy="localhost,100.66.177.70:5000",
                 registry_host="100.66.177.70:5000",
+                env={"BUILDX_CONFIG": tmp},
             )
 
         self.assertEqual(builder, "luma-builder")
         self.assertEqual(calls[2], ["docker", "buildx", "rm", "-f", "luma-builder"])
-        self.assertEqual(calls[3][:5], ["docker", "buildx", "create", "--name", "luma-builder"])
+        self.assertEqual(calls[3][:3], ["docker", "rm", "-f"])
+        self.assertEqual(calls[4][:5], ["docker", "buildx", "create", "--name", "luma-builder"])
+
+    def test_buildx_environment_separates_ephemeral_auth_from_persistent_state(self):
+        from luma.agent import _buildx_environment
+
+        with tempfile.TemporaryDirectory() as tmp:
+            auth = Path(tmp, "task-auth")
+            state = Path(tmp, "persistent-buildx")
+            with patch.dict(os.environ, {"LUMA_BUILDX_CONFIG": str(state)}):
+                env = _buildx_environment(auth)
+
+            self.assertEqual(env["DOCKER_CONFIG"], str(auth))
+            self.assertEqual(env["BUILDX_CONFIG"], str(state))
+            self.assertEqual(state.stat().st_mode & 0o777, 0o700)
 
     def test_buildx_builder_reuses_matching_proxy_driver_options(self):
         from luma.agent import _ensure_buildx_builder

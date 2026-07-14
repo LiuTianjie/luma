@@ -43,6 +43,7 @@ from .local import LocalExecutor, LocalResult
 from .service import slugify
 
 DEFAULT_AGENT_CONFIG = Path("/opt/luma/node-agent/agent.json")
+DEFAULT_BUILDX_CONFIG = Path.home() / ".local" / "state" / "luma" / "buildx"
 DEFAULT_AGENT_SERVICE = "luma-node-agent"
 DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS = 30
 DEFAULT_BUSY_HEARTBEAT_INTERVAL_SECONDS = 30.0
@@ -2641,13 +2642,15 @@ def _ensure_buildx_builder(
         timeout=30,
     )
     needs_create = inspect.returncode != 0
-    if not needs_create and not _buildx_builder_proxy_matches(
-        docker,
-        name,
-        proxy=proxy,
-        no_proxy=no_proxy,
-        registry_host=registry_host,
-        env=env,
+    if not needs_create and (
+        not _buildx_builder_proxy_matches(
+            docker,
+            name,
+            proxy=proxy,
+            no_proxy=no_proxy,
+            env=env,
+        )
+        or not _buildx_registry_marker_matches(name, registry_host=registry_host, env=env)
     ):
         # Builder names distinguish proxy/no-proxy in the common case, but the
         # egress proxy URL and NO_PROXY list can change while the named builder
@@ -2690,7 +2693,21 @@ def _ensure_buildx_builder(
             )
             buildkit_config.flush()
             create_cmd += ["--buildkitd-config", buildkit_config.name]
-            create_cmd += ["--driver-opt", f"env.LUMA_INSECURE_REGISTRY_HOST={registry_host}"]
+            # A task-scoped DOCKER_CONFIG used to discard Buildx metadata while
+            # leaving this deterministic BuildKit container behind.  Remove
+            # only that orphan container before re-creating the builder; keep
+            # its named state volume so cache survives.  This never touches
+            # dockerd configuration or application containers.
+            if _buildx_config_root(env) is not None:
+                subprocess.run(
+                    [docker, "rm", "-f", f"buildx_buildkit_{name}0"],
+                    text=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    env=env,
+                    timeout=60,
+                )
         if proxy:
             create_cmd += [
                 "--driver-opt", f"env.HTTP_PROXY={proxy}",
@@ -2730,10 +2747,10 @@ def _ensure_buildx_builder(
             name,
             proxy=proxy,
             no_proxy=no_proxy,
-            registry_host=registry_host,
             env=env,
         ):
             raise LumaError(f"failed to create buildx builder {name} with the requested network settings")
+        _write_buildx_registry_marker(name, registry_host=registry_host, env=env)
     return name
 
 
@@ -2743,7 +2760,6 @@ def _buildx_builder_proxy_matches(
     *,
     proxy: str,
     no_proxy: str,
-    registry_host: str = "",
     env: Mapping[str, str] | None = None,
 ) -> bool:
     """Return whether BuildKit's persisted container env matches this build."""
@@ -2779,16 +2795,9 @@ def _buildx_builder_proxy_matches(
         if not isinstance(item, str):
             return False
         key, separator, value = item.partition("=")
-        if separator and key.upper() in {
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "NO_PROXY",
-            "LUMA_INSECURE_REGISTRY_HOST",
-        }:
+        if separator and key.upper() in {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"}:
             options[key.upper()] = value
 
-    if options.get("LUMA_INSECURE_REGISTRY_HOST", "") != registry_host:
-        return False
     proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
     if not proxy:
         return all(key not in options for key in proxy_keys)
@@ -2797,6 +2806,67 @@ def _buildx_builder_proxy_matches(
         and options.get("HTTPS_PROXY") == proxy
         and options.get("NO_PROXY") == no_proxy
     )
+
+
+def _buildx_config_root(env: Mapping[str, str] | None) -> Path | None:
+    value = str((env or {}).get("BUILDX_CONFIG") or "").strip()
+    return Path(value) if value else None
+
+
+def _buildx_registry_marker_path(name: str, env: Mapping[str, str] | None) -> Path | None:
+    root = _buildx_config_root(env)
+    return root / f".{name}.luma-registry" if root is not None else None
+
+
+def _buildx_registry_marker_matches(
+    name: str,
+    *,
+    registry_host: str,
+    env: Mapping[str, str] | None,
+) -> bool:
+    if not registry_host:
+        return True
+    marker = _buildx_registry_marker_path(name, env)
+    if marker is None:
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").strip() == registry_host
+    except OSError:
+        return False
+
+
+def _write_buildx_registry_marker(
+    name: str,
+    *,
+    registry_host: str,
+    env: Mapping[str, str] | None,
+) -> None:
+    if not registry_host:
+        return
+    marker = _buildx_registry_marker_path(name, env)
+    if marker is None:
+        raise LumaError("BUILDX_CONFIG is required for internal registry builds")
+    marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(marker.parent, 0o700)
+    tmp = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(registry_host + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, marker)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _buildx_environment(docker_config: Path) -> dict[str, str]:
+    """Keep registry auth ephemeral while persisting non-secret Buildx state."""
+    env = dict(os.environ)
+    env["DOCKER_CONFIG"] = str(docker_config)
+    root = Path(str(os.environ.get("LUMA_BUILDX_CONFIG") or DEFAULT_BUILDX_CONFIG)).expanduser()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
+    env["BUILDX_CONFIG"] = str(root)
+    return env
 
 
 def _buildx_driver_opt(value: str) -> str:
@@ -3087,8 +3157,7 @@ def _build_compose_images(
             raise LumaError(f"compose service {service_name} requires image or build")
 
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-    buildx_env = dict(os.environ)
-    buildx_env["DOCKER_CONFIG"] = str(docker_config)
+    buildx_env = _buildx_environment(docker_config)
     builder = _ensure_buildx_builder(
         docker,
         proxy=proxy or "",
@@ -3267,8 +3336,7 @@ def build_image(
         # creation in _ensure_buildx_builder). Keep the in-cluster registry and
         # localhost out of the proxy so --push stays on the internal network.
         no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-        buildx_env = dict(os.environ)
-        buildx_env["DOCKER_CONFIG"] = str(docker_config)
+        buildx_env = _buildx_environment(docker_config)
         builder = _ensure_buildx_builder(
             docker,
             proxy=proxy or "",
