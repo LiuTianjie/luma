@@ -370,7 +370,9 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("pg_dump --format=custom", backup_script)
-        self.assertIn("pg_restore --exit-on-error", backup_script)
+        self.assertIn(
+            "pg_restore --single-transaction --exit-on-error", backup_script
+        )
         self.assertIn("pg_isready --quiet", backup_script)
         self.assertIn("LAE_BACKUP_DEPENDENCY_TIMEOUT_SECONDS", backup_script)
         self.assertIn("sha256sum -c SHA256SUMS", backup_script)

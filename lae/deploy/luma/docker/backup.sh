@@ -96,7 +96,11 @@ run_restore_drill() {
 
   (cd "$snapshot" && sha256sum -c SHA256SUMS >/dev/null)
   createdb "$database"
-  pg_restore --exit-on-error --no-owner --no-privileges \
+  # The restore database is disposable and isolated. Restoring every archive
+  # object in its own transaction turns catalog fsync latency on managed NFS
+  # into minutes of idle-looking work. A single transaction is both atomic and
+  # materially faster; pg_restore also aborts immediately on the first error.
+  pg_restore --single-transaction --exit-on-error --no-owner --no-privileges \
     --dbname "$database" "$snapshot/postgres.dump" >/dev/null
   psql --dbname "$database" --no-psqlrc --tuples-only --no-align \
     --command "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';" \
