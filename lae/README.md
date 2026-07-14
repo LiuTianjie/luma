@@ -20,7 +20,7 @@ Current verification snapshot (2026-07-14):
 - Luma CLI, Control and manager agent are live on `0.1.233`; 813 pytest cases
   and 130 subtests passed. Non-manager agents were not fleet-upgraded in this
   release and must not be described as uniformly current.
-- All 9 `lae-platform-staging` services built from exact commit `403ba74` are
+- All 9 `lae-platform-staging` services built from exact commit `c7873e6` are
   healthy on `manager`. Builder work and the internal registry run on
   `builder`; tenant placement remains limited to `manager + tecent`.
 - The product acceptance flow completed a four-service Compose deployment with

@@ -27,7 +27,7 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：Luma CLI/Control/manager agent 包版本 `0.1.233` 已 live，manager Control 已运行 exact commit `d0ffc7a` 的候选镜像；非 manager fleet 本轮未全量升级。LAE exact ref `403ba74f2d1ec8b0d140d028a2437652588ee5fa` 的 9 个 service（Nomad job v52）、四服务 Compose 双 HTTPS/双持久卷产品 E2E、四模板真实 smoke/自动下架恢复与 clean-room CLI/Skill E2E 已通过，完整来源、安全负例与数据恢复故障注入仍在收尾
+> 状态：Luma CLI/Control/manager agent 包版本 `0.1.233` 已 live，manager Control 已运行 exact commit `d0ffc7a` 的候选镜像；非 manager fleet 本轮未全量升级。LAE exact ref `c7873e6caf08344e683da9d9c2992445792bab55` 的 9 个 service（Nomad job v53）、四服务 Compose 双 HTTPS/双持久卷产品 E2E、四模板真实 smoke/自动下架恢复与 clean-room CLI/Skill E2E 已通过，完整来源、安全负例与数据恢复故障注入仍在收尾
 > 日期：2026-07-14
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
@@ -59,7 +59,7 @@ worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`，离线 
 （25 项按环境跳过）、contracts 和 compile。release workflow 继续拒绝
 tag 与 package version 不一致。manager Control 当前镜像为
 `100.66.177.70:5000/luma-control@sha256:dca605433652e74232ef6d08b5327c3b6342ef1aa5dd435f6f37fb3aff03d06c`，
-LAE staging 使用 exact ref `403ba74f2d1ec8b0d140d028a2437652588ee5fa` 构建的镜像，平台 9 个 service（Nomad job v52）、wildcard DNS-01 TLS、
+LAE staging 使用 exact ref `c7873e6caf08344e683da9d9c2992445792bab55` 构建的镜像，平台 9 个 service（Nomad job v53）、wildcard DNS-01 TLS、
 Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider 已配置。
 
 真实四服务 Compose 已完成 Agent 诊断、环境配置、Builder 构建、双 HTTPS route、
