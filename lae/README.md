@@ -35,8 +35,10 @@ Current verification snapshot (2026-07-14):
 The 9 platform tasks, wildcard DNS-01 TLS, and base Web/API/Agent/artifact
 probes are healthy; Agent readiness reports the AI provider configured.
 Mailpit/preview authentication does not deliver to a user's real mailbox.
-Docker/CNI fault injection, wider sentinel coverage, ZIP/private-Git evidence
-and recovery drills remain production gates. This is not a
+ZIP and real private-Git source lanes now have public-API-to-HTTPS evidence;
+the private-Git run also reclaimed the same operation after a Worker restart.
+Docker/CNI fault injection, wider sentinel coverage, rollback/failure retention,
+and stateful restore drills remain production gates. This is not a
 production-readiness claim. Real payment providers, production SMTP,
 dedicated production runners and stateful infrastructure, recovery drills,
 capacity controls, and abuse/compliance controls remain launch blockers.

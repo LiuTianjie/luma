@@ -87,8 +87,8 @@ docker compose -f lae/deploy/luma/docker-compose.staging.yml config --no-interpo
 worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`，离线 `blg` 保持
 `0.1.175`。LAE staging 的 9 个 task、wildcard DNS-01 TLS 与 Web/API/Agent/artifact
 探针健康；四服务 Compose 双 HTTPS/双持久卷产品 E2E 与 clean-room CLI/Skill E2E
-均已通过。Mailpit/preview 仍不能证明真实邮箱送达，ZIP、真实私有 Git与完整安全负例
-矩阵仍待完成。
+均已通过。ZIP 和真实私有 Git也已完成 source → Agent → Builder → Runtime → HTTPS → cleanup，
+其中私有 Git覆盖 Worker 重启后的同一 Operation reclaim。Mailpit/preview 仍不能证明真实邮箱送达，完整安全负例矩阵仍待完成。
 
 `luma build list/logs` 展示的是 Repository Import build run，不是 LAE Builder v2 service-principal task。不要用它证明 LAE analysis/build 成功。LAE task 先看 LAE Operation；需要内部关联时再使用第 8 节的安全投影。
 
