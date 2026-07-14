@@ -4012,6 +4012,22 @@ def _lae_runtime_render_job(
     if len(groups) != 1 or not isinstance(groups[0], dict):
         raise _lae_runtime_unavailable("Luma runtime renderer is unavailable")
     group = groups[0]
+    # Tenant images are intentionally pulled from the Builder-owned registry on
+    # first placement.  That cold pull can take materially longer than the
+    # generic Compose three-minute healthy deadline, especially for multi-GB
+    # images or a runtime node connected over the tailnet.  Once Nomad marks an
+    # allocation unhealthy for missing HealthyDeadline it never promotes that
+    # allocation later, even if every task subsequently starts.  Give LAE
+    # runtime jobs an explicit cold-pull window while keeping the operation
+    # bounded by ProgressDeadline and LAE's own verification timeout.
+    update = group.get("Update") if isinstance(group.get("Update"), dict) else {}
+    update.update(
+        {
+            "HealthyDeadline": 1_800_000_000_000,  # 30m in ns
+            "ProgressDeadline": 2_400_000_000_000,  # 40m in ns
+        }
+    )
+    group["Update"] = update
     group_name = str(group.get("Name") or spec.slug)
     tasks = group.get("Tasks") if isinstance(group.get("Tasks"), list) else []
     task_names: Dict[str, str] = {}
@@ -4179,6 +4195,66 @@ def _lae_runtime_nomad_job_version(
     return version
 
 
+def _lae_runtime_submit_nomad_job(
+    config: LumaConfig,
+    state: Dict[str, Any],
+    stack_text: str,
+    *,
+    job_slug: str,
+) -> Dict[str, Any]:
+    """Register an exact LAE revision without blocking the Control request.
+
+    LAE already observes the immutable revision task names, metadata, service
+    health, and public routes through ``GET /runtime/deployments/{ref}``.  The
+    generic management deploy path instead waits synchronously for Nomad's
+    rollout barrier, which kept the runtime record in ``preparing`` for up to
+    15 minutes and made every status request return 503.  Persist the exact
+    registration correlation immediately and let the dedicated observer own
+    convergence.
+    """
+
+    try:
+        parsed = json.loads(stack_text)
+    except json.JSONDecodeError as exc:
+        raise _lae_runtime_unavailable("Luma runtime renderer is unavailable") from exc
+    job = parsed.get("Job") if isinstance(parsed, dict) else None
+    if not isinstance(job, dict) or str(job.get("ID") or "") != job_slug:
+        raise _lae_runtime_unavailable("Luma runtime renderer is unavailable")
+    client = NomadApi(
+        nomad_addr(config, state), token=str(state.get("nomadToken") or "")
+    )
+    response = client.request("POST", "/v1/jobs", {"Job": job})
+    if not isinstance(response, dict):
+        raise _lae_runtime_unavailable("Nomad runtime submission is unavailable")
+    modify_index = response.get("JobModifyIndex")
+    if (
+        isinstance(modify_index, bool)
+        or not isinstance(modify_index, int)
+        or modify_index <= 0
+    ):
+        raise _lae_runtime_unavailable("Nomad runtime submission is unavailable")
+    detail = client.request(
+        "GET", f"/v1/job/{urllib.parse.quote(job_slug, safe='')}"
+    )
+    if not isinstance(detail, dict):
+        raise _lae_runtime_unavailable("Nomad runtime submission is unavailable")
+    observed_index = detail.get("JobModifyIndex")
+    version = detail.get("Version")
+    if (
+        observed_index != modify_index
+        or isinstance(version, bool)
+        or not isinstance(version, int)
+        or version < 0
+    ):
+        raise _lae_runtime_unavailable("Nomad runtime submission correlation failed")
+    evaluation_id = str(response.get("EvalID") or "").strip()
+    return {
+        "nomadVersion": version,
+        "nomadJobModifyIndex": modify_index,
+        **({"nomadEvaluationId": evaluation_id} if evaluation_id else {}),
+    }
+
+
 def _install_lae_runtime_variables(
     config: LumaConfig,
     state: Dict[str, Any],
@@ -4321,12 +4397,16 @@ def _execute_lae_runtime_deployment(
                 ),
                 secrets=dns_secrets,
             )
-        deploy_to_nomad(config, stack_text, state, slug=job_slug)
+        submission = _lae_runtime_submit_nomad_job(
+            config,
+            state,
+            stack_text,
+            job_slug=job_slug,
+        )
     except BaseException:
         # Variables remain for an idempotent retry. They are encrypted in Nomad
         # and bound to the not-yet-running revision-specific task identities.
         raise
-    current_version = _lae_runtime_nomad_job_version(config, state, job_slug)
     sidecar_text, compose_content, normal_body = _lae_runtime_safe_compose_payload(
         spec
     )
@@ -4353,7 +4433,7 @@ def _execute_lae_runtime_deployment(
         },
         "variablePaths": variable_paths,
         "previousNomadVersion": previous_version,
-        "nomadVersion": current_version,
+        **submission,
         "composeManifest": sidecar_text,
         "composeContent": compose_content,
         # Control-state only. The LAE public projection intentionally omits it.
@@ -4752,7 +4832,7 @@ def _observe_lae_runtime_deployment(
                 "Nomad runtime status is unavailable"
             ) from exc
     deadline = int(record.get("submittedAt") or record.get("createdAt") or 0) + int(
-        os.environ.get("LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS", "600")
+        os.environ.get("LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS", "2400")
     )
     timed_out = int(time.time()) >= deadline
     if detail is None:
@@ -4878,11 +4958,34 @@ def handle_lae_runtime_deployment_get(
     is_current = isinstance(application, dict) and str(
         application.get("currentRuntimeDeploymentRef") or ""
     ) == str(runtime_deployment_ref)
-    observed = (
-        _observe_lae_runtime_deployment(state, dict(record))
-        if is_current
-        else dict(record)
-    )
+    if is_current and str(record.get("status") or "") == "preparing":
+        # A Control restart intentionally forgets in-memory deployment threads.
+        # The immutable manifest, image map, volume records, idempotency key and
+        # runtime identity remain in durable state, so resume the same submit
+        # instead of leaving the application permanently stuck in preparing.
+        if all(
+            isinstance(record.get(key), dict)
+            for key in ("manifest", "images", "volumeRecords")
+        ):
+            _start_lae_runtime_deployment(
+                token=token,
+                audience=audience,
+                binding=binding,
+                record=dict(record),
+            )
+            observed = dict(record)
+        else:
+            observed = {
+                **record,
+                "status": "failed",
+                "retryable": False,
+            }
+    else:
+        observed = (
+            _observe_lae_runtime_deployment(state, dict(record))
+            if is_current
+            else dict(record)
+        )
     if observed != record:
         def update_observation(current: Dict[str, Any]) -> Dict[str, Any]:
             current_principal = _require_lae_runtime_principal(

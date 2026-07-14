@@ -39,8 +39,14 @@ _PUBLIC_PHASES = frozenset(
         "deploy",
         "deploy.prepare",
         "deploy.apply",
+        "deploy.build",
+        "deploy.render",
+        "deploy.volumes",
+        "deploy.runtime",
+        "deploy.verify",
         "verify",
         "application.lifecycle",
+        "application.lifecycle.runtime",
     }
 )
 _PUBLIC_STATUSES = frozenset(status.value for status in OperationStatus)
@@ -60,6 +66,14 @@ _PUBLIC_EVENT_MESSAGES = {
     "compose.detected": "Application topology detected",
     "build.service.completed": "Service image build completed",
     "deployment.ready": "Deployment verification succeeded",
+    "deployment.build.started": "Application build started",
+    "deployment.build.succeeded": "Application build completed",
+    "deployment.manifest.validated": "Deployment topology validated",
+    "deployment.volumes.prepared": "Managed volumes prepared",
+    "deployment.runtime.started": "Luma deployment started",
+    "deployment.health.ready": "Required services and public routes are healthy",
+    "application.lifecycle.runtime-submitted": "Application lifecycle action submitted",
+    "application.lifecycle.cancel-too-late": "Cancellation arrived after the runtime action started",
 }
 
 
@@ -100,6 +114,32 @@ def _public_event_data(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
         step = data.get("step")
         if isinstance(step, int) and not isinstance(step, bool) and step >= 0:
             public["step"] = step
+    elif event_type in {"deployment.build.started", "deployment.runtime.started"}:
+        replayed = data.get("replayed")
+        if isinstance(replayed, bool):
+            public["replayed"] = replayed
+    elif event_type in {
+        "deployment.build.succeeded",
+        "deployment.manifest.validated",
+        "deployment.volumes.prepared",
+        "deployment.health.ready",
+    }:
+        for key in (
+            "serviceCount",
+            "requiredServiceCount",
+            "publicHttpRouteCount",
+            "volumeCount",
+        ):
+            value = data.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                public[key] = value
+    elif event_type in {
+        "application.lifecycle.runtime-submitted",
+        "application.lifecycle.cancel-too-late",
+    }:
+        action = data.get("action")
+        if action in {"restart", "suspend", "resume", "delete", "check-update"}:
+            public["action"] = action
     elif event_type == "compose.detected":
         for key in ("services", "routes", "volumes"):
             value = data.get(key)

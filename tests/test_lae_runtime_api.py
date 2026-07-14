@@ -685,6 +685,48 @@ class LaeRuntimeApiTests(unittest.TestCase):
             release.set()
             timer.cancel()
 
+    def test_preparing_deployment_resumes_after_control_restart(self) -> None:
+        volume_ref = self.prepare_volume()
+        started = threading.Event()
+        release = threading.Event()
+        runtime_ref = ""
+
+        def blocked_execution(**kwargs: object) -> dict[str, object]:
+            started.set()
+            self.assertTrue(release.wait(timeout=5))
+            return self.fake_execution(**kwargs)
+
+        try:
+            with patch.object(
+                control_server,
+                "_execute_lae_runtime_deployment",
+                side_effect=blocked_execution,
+            ):
+                accepted = control_server.handle_lae_runtime_deployment_create(
+                    self.runtime_token,
+                    RUNTIME_AUDIENCE,
+                    self.binding,
+                    self.deployment_body(volume_ref=volume_ref),
+                    idempotency_key="deploy-resume-after-restart",
+                )
+                self.assertTrue(started.wait(timeout=1))
+                runtime_ref = str(accepted["deployment"]["deploymentRef"])
+                with patch.object(
+                    control_server, "_start_lae_runtime_deployment"
+                ) as resume:
+                    fetched = control_server.handle_lae_runtime_deployment_get(
+                        self.runtime_token,
+                        RUNTIME_AUDIENCE,
+                        self.binding,
+                        runtime_ref,
+                    )
+                resume.assert_called_once()
+                self.assertEqual(fetched["deployment"]["status"], "preparing")
+        finally:
+            release.set()
+            if runtime_ref:
+                self.wait_runtime_deployment(runtime_ref)
+
     def test_closed_schema_rejects_tcp_custom_domain_unknown_fields_and_mount_drift(self) -> None:
         volume_ref = self.prepare_volume()
         body = self.deployment_body(volume_ref=volume_ref)
@@ -794,6 +836,9 @@ class LaeRuntimeApiTests(unittest.TestCase):
         self.assertEqual([items["POSTGRES_PASSWORD"] for items in variable_items.values()], [canary])
         self.assertEqual(len(paths), 1)
         parsed = json.loads(job_json)["Job"]
+        update = parsed["TaskGroups"][0]["Update"]
+        self.assertEqual(update["HealthyDeadline"], 1_800_000_000_000)
+        self.assertEqual(update["ProgressDeadline"], 2_400_000_000_000)
         tasks = parsed["TaskGroups"][0]["Tasks"]
         postgres = next(task for task in tasks if task["Name"].startswith("postgres-r"))
         self.assertNotIn("Env", postgres)
@@ -811,6 +856,33 @@ class LaeRuntimeApiTests(unittest.TestCase):
         serialized = json.dumps(parsed).lower()
         for forbidden in ("tcp-relay", "host_path", "privileged", "network_mode"):
             self.assertNotIn(forbidden, serialized)
+
+    def test_runtime_nomad_submit_persists_exact_registration_correlation(self) -> None:
+        client = MagicMock()
+        client.request.side_effect = [
+            {"EvalID": "eval-runtime-1", "JobModifyIndex": 42},
+            {
+                "ID": "lae-runtime-job",
+                "JobModifyIndex": 42,
+                "Version": 7,
+            },
+        ]
+        with patch.object(control_server, "NomadApi", return_value=client):
+            result = control_server._lae_runtime_submit_nomad_job(
+                control_server.load_config(self.config_path),
+                load_state(),
+                json.dumps({"Job": {"ID": "lae-runtime-job"}}),
+                job_slug="lae-runtime-job",
+            )
+        self.assertEqual(
+            result,
+            {
+                "nomadVersion": 7,
+                "nomadJobModifyIndex": 42,
+                "nomadEvaluationId": "eval-runtime-1",
+            },
+        )
+        self.assertEqual(client.request.call_count, 2)
 
     def test_asgi_full_runtime_flow_and_management_token_rejection(self) -> None:
         with TestClient(create_app()) as client:
@@ -843,6 +915,7 @@ class LaeRuntimeApiTests(unittest.TestCase):
                 )
             self.assertEqual(deployed.status_code, 202, deployed.text)
             runtime_ref = deployed.json()["deployment"]["deploymentRef"]
+            self.wait_runtime_deployment(runtime_ref)
 
             def healthy(_state: object, record: dict[str, object]) -> dict[str, object]:
                 return {

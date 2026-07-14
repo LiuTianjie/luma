@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from dataclasses import replace
@@ -572,6 +573,36 @@ class PublicResourceApiTests(unittest.TestCase):
             "untrusted.internal.stdout",
         ):
             self.assertNotIn(forbidden, serialized)
+
+    def test_deployment_progress_preserves_public_phase_and_safe_counts(self) -> None:
+        event = PublicOperationEventRecord(
+            event_id=new_id("evt"),
+            operation_id=self.store.deployment_operation_id,
+            cursor=3,
+            type="deployment.manifest.validated",
+            phase="deploy.render",
+            status="running",
+            level="info",
+            data={
+                "serviceCount": 4,
+                "publicHttpRouteCount": 2,
+                "volumeCount": 2,
+                "imageRef": "registry.internal/must-not-escape",
+            },
+            created_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+        ).public_body()
+        self.assertEqual(event["type"], "deployment.manifest.validated")
+        self.assertEqual(event["phase"], "deploy.render")
+        self.assertEqual(event["message"], "Deployment topology validated")
+        self.assertEqual(
+            event["data"],
+            {
+                "serviceCount": 4,
+                "publicHttpRouteCount": 2,
+                "volumeCount": 2,
+            },
+        )
+        self.assertNotIn("registry.internal", json.dumps(event))
 
     def test_cancel_is_state_idempotent_bearer_needs_no_csrf_cookie_needs_csrf(
         self,
