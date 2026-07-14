@@ -17,8 +17,8 @@ subscription, usage, and mock-checkout flows.
 
 Current verification snapshot (2026-07-15):
 
-- Luma `v0.1.256` is released. Control/manager and the online
-  `bot/builder/lab/m4/tecent` agents report `0.1.256`; `gaojiu` is offline,
+- Luma `v0.1.257` is released. Control/manager and the online
+  `bot/builder/lab/m4/tecent` agents report `0.1.257`; `gaojiu` is offline,
   `blg` is intentionally untouched, and historical `aly` is excluded.
 - All 10 `lae-platform-staging` services built from exact commit
   `4548f6ab27ef115e7918a8f3078d93cca7d81476` are healthy on `manager`.

@@ -110,6 +110,37 @@ replicas: 2
             "traefik.http.routers.app.rule=Host(`app.example.com`)", svc["Tags"]
         )
 
+    def test_cn_edge_binds_matching_router_to_reusable_wildcard_certificate(self):
+        service = self.load(
+            """
+name: app
+image: ghcr.io/acme/app:latest
+region: cn
+exposure: cn-edge
+domain: random.itool.tech
+port: 3000
+"""
+        )
+        config = LumaConfig(
+            {
+                "defaults": {
+                    "entrypoint": "websecure",
+                    "certResolver": "letsencrypt",
+                    "acmeDnsProvider": "cloudflare",
+                    "acmeDomains": ["itool.tech"],
+                }
+            },
+            None,
+        )
+        job = render_nomad_job(config, service, as_json=False)["Job"]
+        tags = job["TaskGroups"][0]["Services"][0]["Tags"]
+        self.assertIn(
+            "traefik.http.routers.app.tls.domains[0].main=*.itool.tech", tags
+        )
+        self.assertIn(
+            "traefik.http.routers.app.tls.domains[0].sans=itool.tech", tags
+        )
+
     def test_cn_edge_with_pinned_node_advertises_tailscale_address(self):
         service = self.load(
             """

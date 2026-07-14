@@ -723,6 +723,9 @@ def render_compose_job(
                     f"traefik.http.routers.{service_id}.service={service_id}",
                 ],
             }
+            service_block["Tags"].extend(
+                _router_tls_domain_tags(config, service_id, str(override.domain))
+            )
             if health_check is not None:
                 service_block["Checks"] = [health_check]
             _set_edge_service_address(service_block, service_address)
@@ -1133,6 +1136,7 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
         f"traefik.http.routers.{name}.entrypoints={config.entrypoint}",
         f"traefik.http.routers.{name}.tls.certresolver={config.cert_resolver}",
     ]
+    tags.extend(_router_tls_domain_tags(config, name, str(service.domain)))
     tags.extend(str(t) for t in service.labels)
     block: Dict[str, Any] = {
         "Name": name,
@@ -1145,6 +1149,25 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
     if check is not None:
         block["Checks"] = [check]
     return block
+
+
+def _router_tls_domain_tags(
+    config: LumaConfig, router_name: str, hostname: str
+) -> List[str]:
+    """Bind generated host routes to the configured reusable wildcard cert."""
+
+    clean_host = str(hostname or "").strip().lower().strip(".")
+    for configured in config.acme_domains:
+        domain = str(configured).strip().lower().strip(".")
+        if not domain or not (
+            clean_host == domain or clean_host.endswith(f".{domain}")
+        ):
+            continue
+        return [
+            f"traefik.http.routers.{router_name}.tls.domains[0].main=*.{domain}",
+            f"traefik.http.routers.{router_name}.tls.domains[0].sans={domain}",
+        ]
+    return []
 
 
 def _set_edge_service_address(block: Dict[str, Any], address: str) -> None:
