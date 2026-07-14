@@ -27,7 +27,7 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：Luma `0.1.234` 已发布到 Control/manager 与五个在线非 manager 节点；`0.1.235` installer egress 修复候选通过全量回归，待发布并重试 `tecent`。LAE exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 的 9 个 service（Nomad job v54）、四服务 Compose、HTML/ZIP/私有 Git、四模板、clean-room CLI/Skill 与 PostgreSQL 进程恢复已通过；真实邮件、安全负例与备份还原仍在收尾
+> 状态：Luma `v0.1.237` 已发布到 Control/manager 与全部在线非 manager 节点 `bot/builder/gaojiu/lab/m4/tecent`；离线 `blg` 按当前决策不处理。LAE exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 的 9 个 service（Nomad job v54）、四服务 Compose、HTML/ZIP/私有 Git、四模板、clean-room CLI/Skill、PostgreSQL 进程恢复与路由基线复放已通过；真实邮件、安全负例与备份还原仍在收尾
 > 日期：2026-07-14
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
@@ -53,12 +53,12 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 storage class 和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-14，Luma `0.1.235` 候选通过 818 项 pytest 与 130 项 subtest；当前 live
-Control/manager 与 `bot/builder/gaojiu/lab/m4` 为 `0.1.234`，`tecent` 为 `0.1.228`，离线 `blg` 保持
-`0.1.175`。LAE 通过 429 项测试
+截至 2026-07-14，Luma `v0.1.237` exact ref `0d4974a8aa974cd73fbbb41ba1ce36fb792ea810`
+通过 822 项 pytest 与 130 项 subtest；当前 live Control/manager 与
+`bot/builder/gaojiu/lab/m4/tecent` 全部为 `0.1.237`，离线 `blg` 保持 `0.1.175`。LAE 通过 429 项测试
 （25 项按环境跳过）、contracts 和 compile。release workflow 继续拒绝
 tag 与 package version 不一致。manager Control 当前镜像为
-`100.66.177.70:5000/luma-control@sha256:dca605433652e74232ef6d08b5327c3b6342ef1aa5dd435f6f37fb3aff03d06c`，
+`100.66.177.70:5000/luma-control@sha256:cf9381d24cd1dc7fb7f1870d97e440779844d2f97a6f070130c44e81e92ffc6a`，
 LAE staging 使用 exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 构建的镜像，平台 9 个 service（Nomad job v54）、wildcard DNS-01 TLS、
 Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider 已配置。
 
@@ -437,8 +437,11 @@ change 失败。
 systemd `ExecStart` 推导既有安装用户/目录，在单次 installer 进程中设置受控
 `HTTP(S)_PROXY` 和私网 `NO_PROXY`，下载与执行同一个 40 字符候选 ref；installer 会原子
 替换同一安装并刷新 node-agent service。禁止修改 Docker daemon、禁止 `curl | sh`、
-禁止改用 mutable `main`。新 agent 上报 `luma-update-proxy-v1` 后，后续全部恢复为正常
-Update Center 流程，Control 按节点 region/direct-egress 只为 installer 子进程注入代理。
+禁止改用 mutable `main`。新 agent 上报 `luma-update-proxy-v1` 与
+`luma-update-egress-fallback-v1` 后，后续全部恢复为正常 Update Center 流程。Control
+按节点 region/direct-egress 只为 installer 子进程注入代理；代理失败或超时时只对同一
+immutable ref 做一次无代理重试，不改变 Docker daemon、systemd/launchd 全局环境或
+宿主代理。当前 direct egress 节点为 `builder/gaojiu/lab/m4`，`tecent` 使用 manager egress。
 
 必须确认 `builder` 更新成功。显式 sidecar import 有三层保护：CLI 在 build 前检查
 Control capability，Control 要求 Builder 回显同一路径，Builder 在 clone 后拒绝
@@ -465,11 +468,13 @@ exact deployment/`JobVersion`，并等待该版本每个 required task group 的
 `JobModifyIndex` 对应的当前版本与 allocation 已健康。failed/blocked/canceled、
 superseded 和 timeout 必须 fail closed。
 
-当前 live `0.1.234` 已通过 manager Control 更新和 LAE 产品 E2E，既有 route 未再
-出现需要人工重启才能恢复的批量 404/502。已复现的 service/router
+当前 live `0.1.237` 已通过 manager Control 更新、六节点 fleet 更新和 LAE 产品 E2E，
+既有 route 未再出现需要人工重启才能恢复的批量 404/502。升级前健康的 11 条 route 已在
+Control 恢复后按原集合复放并 11/11 成功；随后按真实健康端点连续采样 120 秒，LAE
+Web/API/Agent/Artifact 与 Gateway 各 83/83、零失败。已复现的 service/router
 名称碰撞和跨节点 private-IP upstream 已分别通过 deployment-scoped 名称与
-`luma_tailscale_ip` service address 修复。但长时间外部探针仍有少量瞬时失败，
-全量 sentinel 对合法 404 的健康语义也不正确。Docker daemon restart 后 CNI 自愈、
+`luma_tailscale_ip` service address 修复。应用所有的 JSON/HTML 404 已与 Traefik 默认
+纯文本 404 区分，遗留 route 文件也不再进入 active inventory。Docker daemon restart 后 CNI 自愈、
 route reconciliation 故障注入和更多 edge 类型 sentinel 尚未完成，因此 production
 rollout 继续以这些剩余项目为门禁。
 

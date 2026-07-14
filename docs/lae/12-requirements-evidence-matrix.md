@@ -15,12 +15,13 @@
 
 2026-07-14 的 live 基线：
 
-- Luma `0.1.234` 已发布到 Control/manager 与五个在线非 manager 节点；`tecent` 保持 `0.1.228`，其 installer egress 缺陷已在 `0.1.235` 修复并通过全量回归；离线 `blg` 保持 `0.1.175`。
+- Luma `v0.1.237` exact ref `0d4974a8aa974cd73fbbb41ba1ce36fb792ea810` 已发布到 Control/manager 与全部在线节点 `bot/builder/gaojiu/lab/m4/tecent`；离线 `blg` 按当前决策保持 `0.1.175`。
 - `manager` 是唯一控制面；`aly` 是历史名称。
 - LAE 平台当前在 `manager`，租户 runtime staging allowlist 为 `manager + tecent`，构建与内部 registry 在 `builder`。
-- `0.1.235` 候选通过 817 项 Luma pytest 与 130 项 subtest。`lae-platform-staging` 使用 exact commit `2201895a6b30fed87fb87be4326f3febb13dd8f1` 由 Builder 构建的 immutable platform images，Nomad job version 54，9 个 service 运行；LAE 429 项测试（25 项按环境跳过）及 contracts/compile/component smoke 通过。
+- `0.1.237` 通过 822 项 Luma pytest 与 130 项 subtest。`lae-platform-staging` 使用 exact commit `2201895a6b30fed87fb87be4326f3febb13dd8f1` 由 Builder 构建的 immutable platform images，Nomad job version 54，9 个 service 运行；LAE 429 项测试（25 项按环境跳过）及 contracts/compile/component smoke 通过。
 - Web、API ready、Agent ready、artifact ready 与 Control health 均为 HTTP 200；Agent ready 报告 `mode=ai`、`configured=true`。
 - 当前 staging 完整产品验收已完成 preview auth、AI 诊断、环境配置、四服务 Compose、Builder build、双公网 HTTPS route、双持久卷、restart/suspend/resume、更新检查、七类 unsupported blocker、delete 与 token revoke；公网探测无失败。FastAPI 模板、HTML、ZIP 与真实 GitHub 私有仓库均完成 Agent → Builder → Runtime → HTTPS → cleanup。私有 Git analysis 还验证 Worker 重启后的同一 Operation reclaim/cursor resume。PostgreSQL task 重启时 API ready 出现 503 并在约 2.14 秒恢复，其他四条 sentinel 26/26 全为 200且数据库对象计数不变。真实邮箱、完整安全负例与 PITR/备份还原仍未完成。
+- `0.1.237` manager/fleet 发布后，升级前健康的 11 条 route 以同一集合复放并 11/11 成功；随后真实健康端点连续采样 120 秒，LAE Web/API/Agent/Artifact 与 Gateway 各 83/83、零失败。installer egress fallback 仅作用于同一 exact ref 的安装子进程，不修改 Docker daemon 或宿主全局代理。Control 镜像内部 digest 为 `sha256:cf9381d24cd1dc7fb7f1870d97e440779844d2f97a6f070130c44e81e92ffc6a`。
 - `0.1.229-0.1.233` 增加 Cloudflare DNS-01 wildcard TLS，修复 manager 更新配置所有权、生命周期/初次部署 DNS 授权和 runtime 假异步阻塞；`d0ffc7a` 进一步修复首次冷拉超过默认 3 分钟健康窗口后的永久误失败。Runtime deployment 现为非阻塞精确 Job 注册、持久化提交关联和专用 observer 收敛；同一幂等请求可在 Control 重启后恢复。真实冷拉 E2E 已超过旧窗口并成功，公开事件同时展示 build/render/volumes/runtime/verify 阶段。长时间多 edge sentinel、Docker/CNI 自愈与 route reconciliation 故障注入仍是 production gate。
 
 ## 2. 原始 14 项需求
@@ -53,13 +54,13 @@
 | C-05 | `manager` 是唯一控制面；`aly` 已过时 | live status、[07 D-016](./07-open-decisions.md)、部署/SOP | 当前文档已统一；任何升级/placement 命令再出现 `aly` 应视为 stale 配置缺陷 |
 | C-06 | Staging runtime 可用 `manager + tecent`；manager 可同时是节点；具体 placement 对用户不可见 | LAE runtime allowlist、runtime role、placement admission/admin projection tests | live 配置已存在；production 仍建议至少两个专用 runner，且要完成容量、CNI、volume 与故障切换演练 |
 | C-07 | ARK key/model 做成 provider-agnostic 可配置；AI 必须了解 LAE Skill/背景知识；不可部署要明确告知 | `LAE_AGENT_LLM_BASE_URL/API_KEY/MODEL`、`lae/knowledge/v1/knowledge-pack.json`、Agent Controller/runner、四态 verdict、Web `analysisFailureMessage` | Agent ready 显示 AI configured；真实 E2E 已覆盖 `deployable`、必需配置 `needs_input` 和带七类稳定 blocker 的 `unsupported`；平台诊断故障与项目不支持明确分开，用户不提供 API key | 仍需 provider-backed `diagnostic_failed` 故障注入与 blocker 文案长期兼容性验收 |
-| C-08 | 控制面升级或发布其他应用不得让既有应用 404/502，更不能依赖人工全量重启 | [SOP 11.1](./10-operations-troubleshooting-sop.md#111-控制面升级或其他应用部署后批量-404502)、[部署手册 6.1](./11-deployment-and-upgrade.md#61-升级期间的-route-连续性门禁)；deployment-scoped router/service、Tailscale node metadata、exact rollout barrier | **Staging partial**。Control/manager `0.1.233` 更新、wildcard DNS-01 和完整产品 E2E 均无需人工重启；长时间多 edge sentinel、Docker restart/CNI 和 reconciliation 故障注入仍是 production gate |
+| C-08 | 控制面升级或发布其他应用不得让既有应用 404/502，更不能依赖人工全量重启 | [SOP 11.1](./10-operations-troubleshooting-sop.md#111-控制面升级或其他应用部署后批量-404502)、[部署手册 6.1](./11-deployment-and-upgrade.md#61-升级期间的-route-连续性门禁)；deployment-scoped router/service、Tailscale node metadata、exact rollout barrier | **Staging partial**。Control/manager `0.1.237` 更新与六节点 fleet 更新均无需人工重启，升级前健康 route 原集合复放 11/11；长时间多 edge sentinel、Docker restart/CNI 和 reconciliation 故障注入仍是 production gate |
 
 ## 4. 基础设施落点
 
 | 层 | Staging 当前落点 | Production 目标/缺口 |
 | --- | --- | --- |
-| Luma Control | `manager`，唯一控制面；CLI/Control/manager agent live `0.1.233` | Control HA/恢复、严格 service principal、更广升级 sentinel；manager 是否继续承载 runtime 需容量与故障决策 |
+| Luma Control | `manager`，唯一控制面；CLI/Control/manager 与全部在线 agent live `0.1.237` | Control HA/恢复、严格 service principal、更广升级 sentinel；manager 是否继续承载 runtime 需容量与故障决策 |
 | LAE 平台 | `manager` 上单个 9-task Nomad group：Web、API、Worker、Agent Controller、PostgreSQL、MinIO、artifact-init、Valkey、Mailpit | 专用 `lae-core`/平台池；migration job/lock；平台服务健康/滚动策略；不能把单 group 当 HA |
 | Builder/registry | `builder`；内部 registry，Git/object task lease，analyze/build | 专用 rootless builder pool、无宿主 socket、CPU/memory/PID/disk/time/egress 强制、registry auth/GC/容量/恢复 |
 | Tenant Runtime | `manager + tecent` 正向 allowlist，manager 显式 runtime role | 至少两个专用 runner；管理网/metadata/Tailscale deny、cap drop、read-only rootfs、PID/ephemeral storage、网络策略与 chaos |
@@ -88,7 +89,7 @@
 
 ### 本轮已纠正的文档冲突
 
-- 将旧的 `0.1.171`/`0.1.196` 快照更新为当前 CLI/Control/manager 包版本 `0.1.233`、Control/平台 exact ref `d0ffc7a`，并明确非 manager fleet 本轮未全量升级。
+- 将旧的 `0.1.171`/`0.1.196`/`0.1.233` 快照更新为当前 CLI/Control/全部在线 agent 版本 `0.1.237`、Control exact ref `0d4974a8aa974cd73fbbb41ba1ce36fb792ea810` 与 LAE 平台 exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1`，并明确离线 `blg` 不属于本轮失败节点。
 - 将 “Mailpit 注册”等同真实邮件送达的表述改为“Mailpit 捕获 challenge”。
 - 将 “LLM 只做解释”修正为“AI 受 Knowledge Pack 约束生成 proposal，确定性校验终审”。
 - Skill 从内部状态 `needs_configuration/not_deployable` 改为公开 verdict `needs_input/unsupported/diagnostic_failed`。

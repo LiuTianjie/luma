@@ -1,6 +1,6 @@
 # Luma Application Engine（LAE）产品与工程设计
 
-> 状态：Draft v0.9；Luma `0.1.234` 已发布到 Control/manager 与五个在线节点，`0.1.235` installer egress 修复候选通过全量回归并待发布到 `tecent`；LAE 9 个平台 service 已运行 exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1`（Nomad job v54）。四服务 Compose、HTML/ZIP/私有 Git、模板、clean-room CLI/Skill 与进程级恢复已通过，真实邮件、完整安全负例和备份还原矩阵仍待完成
+> 状态：Draft v0.9；Luma `0.1.237` 已发布到 Control/manager 和全部在线节点（`bot/builder/gaojiu/lab/m4/tecent`），离线 `blg` 按当前决策不处理；LAE 9 个平台 service 已运行 exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1`（Nomad job v54）。四服务 Compose、HTML/ZIP/私有 Git、模板、clean-room CLI/Skill、进程级恢复和升级路由基线复放已通过，真实邮件、完整安全负例和备份还原矩阵仍待完成
 > 日期：2026-07-14
 > 目标：在 Luma 之上建设面向普通用户和 AI Agent 的多租户应用部署平台；LAE 自身及其依赖全部由 Luma 部署和管理。
 
@@ -44,10 +44,11 @@ LAE 不能只是给现有 Luma Dashboard 增加注册页。正确边界是：
 
 本设计不是从空白假设出发。2026-07-14 当前 staging 的分层事实是：
 
-- 当前 live Control/manager 与 `bot/builder/gaojiu/lab/m4` 为 Luma `0.1.234`；`tecent` 仍为 `0.1.228`，其 installer 下载缺少节点 egress 的问题已由 `0.1.235` 候选根治，离线 `blg` 保持历史版本。涉及 agent 协议的版本仍必须按 manager → 所需节点 → fleet 顺序升级同一不可变 ref。`manager` 是唯一控制面；`aly` 是过时历史节点，不进入升级或任何 LAE placement。
+- 当前 live Control/manager 与全部在线节点 `bot/builder/gaojiu/lab/m4/tecent` 均为 Luma `0.1.237`；离线 `blg` 保持 `0.1.175`，不属于本轮失败节点。正式 release 为 `v0.1.237`，exact ref `0d4974a8aa974cd73fbbb41ba1ce36fb792ea810`。涉及 agent 协议的版本仍必须按 manager → 所需节点 → fleet 顺序升级同一不可变 ref。`manager` 是唯一控制面；`aly` 是过时历史节点，不进入升级或任何 LAE placement。
 - LAE 平台 staging 当前在 `manager`；租户 runtime allowlist 是 `manager + tecent`，其中 `manager` 显式具备 runtime role。生产仍应使用专用平台与 runner pool，不能把当前共享节点布局当成生产拓扑。
 - 默认构建节点是 `builder`，位于内部 `home` region；该值不属于 LAE 租户协议，公开 analysis/upload/template/Web/CLI 只接受 `cn | global`。当前 Control 中 registry pull/push 地址均为 `100.66.177.70:5000`，内部 registry 使用 HTTP insecure 配置，平台构建使用 direct 模式；旧文档中的 Builder `localhost:5000` push 地址已经失效。
 - 当前 staging exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 的 9 个平台 service（Nomad job v54）均健康，Cloudflare DNS-01 wildcard TLS 有效，Web、API live/ready、Agent ready 与 artifact ready 探针均返回 200；Agent ready 报告 `mode=ai`、`configured=true`。平台发布全部由 Builder 构建并写入 Builder 自有 registry，Analyzer 使用独立不可变 digest。四服务 Compose、四个 starter、HTML、ZIP、真实私有 Git及 clean-room Agent 主链路均已通过；私有 Git覆盖 Worker crash reclaim。PostgreSQL task 重启中 API ready 按预期 503 后约 2.14 秒恢复，其他公网 sentinel 全程 200。preview 仍不等于真实用户邮箱可收信，进程恢复也不等于 PITR/备份还原。
+- Luma `0.1.237` 的 installer 只在受校验的子进程中使用节点 egress proxy；proxy 失败时以同一 immutable ref 做一次 direct fallback，不修改 Docker daemon、systemd/launchd 或宿主全局代理。`builder/gaojiu/lab/m4` 已记录为 direct egress，`tecent` 使用 manager egress。升级中心会保存升级前健康路由集合，并在 Control 恢复后对同一集合复放；本轮 manager 更新后的 11 条健康基线为 11/11 成功。
 - 现有 Luma `build-image` 已在 builder 临时目录 clone Git、执行 buildx、推送 registry，并能发现仓库内 Compose sidecar 后构建多个 service；凭据在 task lease 时注入。
 - legacy builder 没有“只分析不构建”的 action，也不能直接消费 LAE 生成的多服务 `BuildPlan`，其 Docker/buildx 共享宿主执行形态不满足公网多租户隔离。Builder v2 因此采用不可变 source snapshot、`analyze-source`、显式多 build plan、短期凭据 lease 和 rootless sandbox；其中 analyzer 已拒绝 default/rootful Docker daemon，其他公开门槛见实施状态文档。
 - 已有能力包括单服务/Compose 部署、预览、GitHub/Gitea 凭据、仓库构建、内部 registry、NDJSON 进度、部署历史、日志、指标、更新、重启和回滚。
