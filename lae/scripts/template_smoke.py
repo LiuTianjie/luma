@@ -36,6 +36,10 @@ from staging_product_e2e import (
 )
 
 
+class SchedulerFailure(RuntimeError):
+    """The smoke scheduler failed without proving a template regression."""
+
+
 def _environment_version(
     client: JsonClient, application_id: str, *, deadline: float
 ) -> int:
@@ -223,6 +227,10 @@ def smoke_one(
                     templateId=template_id,
                     applicationId=application_id,
                 )
+                # Cleanup is part of scheduler correctness, but it is not
+                # evidence that the template cannot deploy. Abort before the
+                # result reporter can increment template failure counters.
+                raise SchedulerFailure("template smoke cleanup failed") from None
 
 
 def run(args: argparse.Namespace) -> None:
@@ -373,6 +381,6 @@ def parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     try:
         run(parser().parse_args())
-    except (AcceptanceFailure, ApiFailure, ValueError) as error:
+    except (AcceptanceFailure, ApiFailure, SchedulerFailure, ValueError) as error:
         emit("template_smoke_aborted", error=str(error))
         raise SystemExit(1) from error

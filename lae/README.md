@@ -17,10 +17,10 @@ subscription, usage, and mock-checkout flows.
 
 Current verification snapshot (2026-07-14):
 
-- Luma CLI, Control and manager agent are live on `0.1.233`; 810 pytest cases
+- Luma CLI, Control and manager agent are live on `0.1.233`; 813 pytest cases
   and 130 subtests passed. Non-manager agents were not fleet-upgraded in this
   release and must not be described as uniformly current.
-- All 9 `lae-platform-staging` tasks built from exact commit `65a4010` are
+- All 9 `lae-platform-staging` services built from exact commit `403ba74` are
   healthy on `manager`. Builder work and the internal registry run on
   `builder`; tenant placement remains limited to `manager + tecent`.
 - The product acceptance flow completed a four-service Compose deployment with
@@ -28,6 +28,9 @@ Current verification snapshot (2026-07-14):
   suspend/resume, update check, unsupported diagnosis and deletion. A separate
   clean-room flow used only the project Skill, `lae` CLI and a deploy token to
   diagnose, deploy, inspect history, restart and delete a FastAPI template.
+  All four pinned templates have also passed real staging smoke; a daily Luma
+  task now persists health, auto-unpublishes after three consecutive failures,
+  and republishes after the next successful full deployment.
 
 The 9 platform tasks, wildcard DNS-01 TLS, and base Web/API/Agent/artifact
 probes are healthy; Agent readiness reports the AI provider configured.

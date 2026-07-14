@@ -18,7 +18,7 @@
 - Luma CLI、Control 与 manager agent 为 `0.1.233`；本轮没有 worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`；离线 `blg` 保持 `0.1.175`。
 - `manager` 是唯一控制面；`aly` 是历史名称。
 - LAE 平台当前在 `manager`，租户 runtime staging allowlist 为 `manager + tecent`，构建与内部 registry 在 `builder`。
-- manager Control 使用 exact commit `d0ffc7a` 对应的不可变候选镜像；候选代码通过 813 项 Luma pytest。`lae-platform-staging` 使用 exact commit `d0ffc7a` 构建的 immutable platform images，Nomad job version 50，9 个平台 task 运行；LAE 403 项测试（25 项按环境跳过）及 contracts/compile/health smoke 通过。
+- manager Control 使用 exact commit `d0ffc7a` 对应的不可变候选镜像；候选代码通过 813 项 Luma pytest。`lae-platform-staging` 使用 exact commit `403ba74f2d1ec8b0d140d028a2437652588ee5fa` 构建的 immutable platform images，Nomad job version 52，9 个 service 运行；LAE 414 项测试（25 项按环境跳过）及 contracts/compile 通过。
 - Web、API ready、Agent ready、artifact ready 与 Control health 均为 HTTP 200；Agent ready 报告 `mode=ai`、`configured=true`。
 - `0.1.233` 完整产品验收已完成 preview auth、AI 诊断、环境配置、四服务 Compose、Builder build、双公网 HTTPS route、双持久卷、restart/suspend/resume、更新检查、七类 unsupported blocker、delete 与 token revoke；公网探测无失败。FastAPI 模板与 HTML upload 的既有真实链路证据继续有效。真实邮箱、ZIP、真实私有 Git与完整安全负例仍未完成。
 - `0.1.229-0.1.233` 增加 Cloudflare DNS-01 wildcard TLS，修复 manager 更新配置所有权、生命周期/初次部署 DNS 授权和 runtime 假异步阻塞；`d0ffc7a` 进一步修复首次冷拉超过默认 3 分钟健康窗口后的永久误失败。Runtime deployment 现为非阻塞精确 Job 注册、持久化提交关联和专用 observer 收敛；同一幂等请求可在 Control 重启后恢复。真实冷拉 E2E 已超过旧窗口并成功，公开事件同时展示 build/render/volumes/runtime/verify 阶段。长时间多 edge sentinel、Docker/CNI 自愈与 route reconciliation 故障注入仍是 production gate。
@@ -29,7 +29,7 @@
 | --- | --- | --- | --- | --- |
 | U-01 | LAE 控制台；邮件注册/登录；自动 personal tenant | `lae/apps/web/src/components/auth-portal.tsx`、`lae/apps/api/src/lae_api/auth_service.py`、`lae/packages/python/lae-store/src/lae_store/auth.py`；`test_auth_*`、`test_email_sender.py` | Web/login 与 API healthy；Mailpit challenge、注册和 session 冒烟通过。Working tree 另有仅限保留 `.invalid` 身份的 staging preview flow | **Staging partial**。preview 不是生产邮件且需随新平台 ref 发布后才算 live；真实 SMTP 当前不可用，Mailpit 不会给用户真实邮箱送信。仍需 production provider、送达/退信/outbox、反滥用和浏览器 E2E |
 | U-02 | 主部署界面支持 HTML/ZIP、公有 Git、私有 Git、Dockerfile/Compose；缺 Git 凭据时配置；Agent 诊断、明确 blocker、识别 env、部署动画、成功后进入应用列表 | `lae-console.tsx`、`upload_api.py`、`source_connection_api.py`、`app.py`、`deployment_api.py`、Worker analyze/deployment；`test_static_upload_*`、`test_source_connection_*`、`test_worker_analyze.py`、`test_worker_deployment.py` | FastAPI、HTML 与四服务 Compose 已真实完成 Agent → Builder → Runtime → 随机域名/TLS；Compose 覆盖必需 env、双 route、双 volume 和七类明确 blocker | **Staging partial**。核心 Compose 正向链路与 unsupported 负例已通过；ZIP、真实私有 Git、`diagnostic_failed` 与浏览器交互回归仍需逐项验收 |
-| U-03 | 流行模板一键拉起 | `template_api.py`、Web 模板入口、CLI `templates list/launch`、commit-pinned catalog；`test_template_api.py` | FastAPI 模板从选择、诊断到真实 Runtime 上线通过 | **Staging partial**。尚缺其余模板真实 deploy、每日 smoke、失败计数、自动下架、版本回退和运营流程 |
+| U-03 | 流行模板一键拉起 | `template_api.py`、`template_health.py`、migration `20260714_0013`、`template_smoke.py`、Web/CLI、commit-pinned catalog；template/API/store/bundle tests | Next.js、FastAPI、Flask、Express 均从选择、诊断、构建到真实 Runtime/HTTPS/删除通过；每日调度器已进入 Luma，live 三连败下架与成功恢复演练使公开目录 4→3→4，重复 run id 不重复计数 | **Verified（staging）**。生产仍需告警接收人、SLO 和版本回退运营流程，但每日验收与自动下架主链路已闭合 |
 | U-04 | 应用列表查看状态/信息；停止、重启等生命周期操作 | `application_api.py`、`application_lifecycle_api.py`、`observability_api.py`、Worker lifecycle；`test_application_catalog*`、`test_application_lifecycle_*`、`test_observability_api.py` | 四服务 Compose 的 restart、suspend/resume、update-check 与 delete 已跑真实 Runtime，双 route 在恢复后均通过探测 | **Staging partial**。rollback、各动作失败恢复和 volume retain/restore 的真实矩阵仍待验收；“stop”产品语义统一为 suspend |
 | U-05 | `lae` CLI 提供 Web 等价操作，以 deploy token 鉴权 | `lae/cli/src/lae_cli/__main__.py`；`test_cli.py`、`test_cli_sources_upload.py` | clean-room CLI 已仅凭 deploy token 完成 whoami、FastAPI 模板诊断、deploy、deployment history、restart、route ready 与 delete；既有 check-update、NDJSON cursor、日志/指标证据继续有效 | **Verified（核心路径）**。HTML/ZIP、私有 Git、Compose CLI 负例和断网恢复矩阵仍需扩展；注册、token rotation 保持 Web/API session flow，不应伪造 CLI 命令 |
 | U-06 | 注册自动生成用户级 deploy token；CLI 能持续查看部署流程 | `DEFAULT_DEPLOY_TOKEN_SCOPES`、一次展示/哈希存储、Operation cursor/NDJSON；`test_auth_*`、`test_public_resource_*`、`test_cli.py` | 默认 token/token verify 已冒烟；真实 check-update 与 deployment Operation 已通过 NDJSON cursor 1→terminal 续看 | **Staging partial**。当前 NDJSON 是 CLI 对 JSON cursor polling 的机器流；服务端 SSE 与 cursor-expired retention 协议尚未实现。断网后跨进程 resume、cancel/late-success 与配额只扣一次仍需 Luma E2E；默认 token 故意不含 `billing:checkout` |
@@ -82,7 +82,7 @@
 
 1. 真实 SMTP 与用户邮箱送达；Mailpit 只能证明生成/捕获邮件。
 2. AI provider-backed 四态 verdict golden E2E，尤其是 `unsupported` blocker 的稳定 code、证据位置和可执行修复建议。
-3. 模板 daily smoke/自动下架；真实微信/支付宝；usage ledger/硬配额；admin RBAC/写动作。
+3. 真实微信/支付宝；usage ledger/硬配额；admin RBAC/写动作。模板 daily smoke/自动下架已在 staging 闭合，生产仍需告警和 SLO。
 4. Skill 独立包正式分发与跨 Agent runtime 验收；项目内 clean-room Agent 核心路径已通过，CLI/Web/API 同一 contract 的兼容矩阵仍需扩展。
 5. 真实浏览器视觉、可访问性、reduced-motion 与 Operation event 驱动动画回归。
 

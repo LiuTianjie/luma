@@ -118,6 +118,36 @@ class TemplateSmokeTests(unittest.TestCase):
                 MODULE.run(args)
         self.assertEqual(len(report_calls), 1)
 
+    def test_scheduler_failure_is_not_reported_as_template_failure(self) -> None:
+        args = SimpleNamespace(
+            api_base="https://api.example.test/v1",
+            report_api_base="https://api.example.test",
+            request_timeout=1,
+            timeout_seconds=1,
+            templates=None,
+            keep_failed=False,
+            fail_fast=False,
+        )
+        with (
+            patch.dict(
+                MODULE.os.environ,
+                {
+                    "LAE_DEPLOY_TOKEN": "lae_dt_test",
+                    "LAE_TEMPLATE_SMOKE_REPORT_TOKEN": "s" * 48,
+                },
+            ),
+            patch.object(MODULE, "_template_ids", return_value=[("fastapi-minimal", "v1")]),
+            patch.object(
+                MODULE,
+                "smoke_one",
+                side_effect=MODULE.SchedulerFailure("cleanup failed"),
+            ),
+            patch.object(MODULE, "request_with_retry") as request,
+        ):
+            with self.assertRaises(MODULE.SchedulerFailure):
+                MODULE.run(args)
+        request.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
