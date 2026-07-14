@@ -260,7 +260,7 @@ class LaePlacementTests(unittest.TestCase):
             ("node-tecent",),
         )
 
-    def test_manager_or_edge_requires_explicit_runtime_role(self) -> None:
+    def test_runtime_allowlist_explicitly_admits_manager(self) -> None:
         manager_name, manager = _registered(
             "manager", "node-manager", roles=["nomad-manager", "edge"]
         )
@@ -279,9 +279,12 @@ class LaePlacementTests(unittest.TestCase):
                 _nomad("manager", "node-manager"),
                 _nomad("mixed", "node-mixed"),
             ],
-            allowed_runtime_nodes=["mixed"],
+            allowed_runtime_nodes=["manager", "mixed"],
         )
-        self.assertEqual(decision.candidate_node_ids, ("node-mixed",))
+        self.assertEqual(
+            decision.candidate_node_ids,
+            ("node-manager", "node-mixed"),
+        )
 
     def test_hostname_manager_uses_stable_alias_after_explicit_runtime_opt_in(self) -> None:
         canonical_name, manager = _registered(

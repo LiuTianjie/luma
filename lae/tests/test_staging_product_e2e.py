@@ -97,6 +97,11 @@ class _PreviewClient:
 
 
 class PreviewAuthenticationTest(unittest.TestCase):
+    def test_parser_exposes_explicit_failed_resource_retention(self) -> None:
+        args = MODULE.parser().parse_args(["--keep-failed"])
+
+        self.assertTrue(args.keep_failed)
+
     def test_preview_verification_follows_issued_purpose(self) -> None:
         for purpose, expected_path in (
             ("login", "/auth/login/verify"),

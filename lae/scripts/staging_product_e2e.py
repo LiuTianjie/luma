@@ -1061,7 +1061,19 @@ def run(args: argparse.Namespace) -> None:
                 delete_application(api, negative_id, deadline=cleanup_deadline)
             except Exception:
                 emit("cleanup_failed", resource="negative_application")
-        if golden_id is not None and (not succeeded or not args.keep_golden):
+        preserve_failed = bool(
+            golden_id is not None and not succeeded and args.keep_failed
+        )
+        if preserve_failed:
+            emit(
+                "cleanup_skipped",
+                resource="failed_golden_application",
+                applicationId=golden_id,
+            )
+        if golden_id is not None and (
+            (not succeeded and not args.keep_failed)
+            or (succeeded and not args.keep_golden)
+        ):
             try:
                 delete_application(api, golden_id, deadline=cleanup_deadline)
             except Exception:
@@ -1117,6 +1129,15 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument("--keep-golden", action="store_true")
+    result.add_argument(
+        "--keep-failed",
+        action="store_true",
+        help=(
+            "Keep the golden application after a failed staging run so an "
+            "operator can inspect the persisted runtime record; clean it up "
+            "explicitly after diagnosis."
+        ),
+    )
     return result
 
 

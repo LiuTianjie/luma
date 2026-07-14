@@ -238,10 +238,17 @@ def plan_lae_placement(
             declared_builder_nodes=builder_names,
         ):
             continue
-        if _control_plane_only(record):
+        explicitly_admitted = bool(
+            {registered_name, *aliases} & runtime_names
+        )
+        if not explicitly_admitted:
             continue
-        if not ({registered_name, *aliases} & runtime_names):
-            continue
+        # The positive runtime allowlist is the operator's explicit opt-in.
+        # Requiring a second ``lae-runtime`` role made an allowlisted manager
+        # silently disappear from the candidate set, even though manager is a
+        # valid Nomad client and may intentionally carry tenant workloads in a
+        # small cluster.  Keep builder isolation above, but let the allowlist
+        # admit control-plane nodes without a redundant label.
         all_candidates.append(
             _Candidate(
                 node_id=node_id,
@@ -452,38 +459,6 @@ def _builder_only(
     return (declared or explicit_builder) and not explicit_runtime
 
 
-def _control_plane_only(record: Mapping[str, Any]) -> bool:
-    labels = record.get("labels") if isinstance(record.get("labels"), dict) else {}
-    roles = {str(value).strip().lower() for value in record.get("roles") or []}
-    roles.update(
-        str(value).strip().lower()
-        for value in (
-            record.get("role"),
-            labels.get("role"),
-            labels.get("luma.role"),
-            labels.get("luma.node.role"),
-        )
-        if value
-    )
-    manager = bool(
-        str(record.get("status") or "").lower() == "manager"
-        or str(record.get("nomadRole") or "").lower() == "server"
-        or bool(record.get("nomadServer"))
-        or str(labels.get("role.nomad-manager") or "").lower() == "true"
-    )
-    control_roles = {
-        "control",
-        "control-plane",
-        "manager",
-        "nomad-manager",
-        "swarm-manager",
-        "edge",
-    }
-    return (manager or bool(roles & control_roles)) and not _explicit_runtime(
-        record, roles=roles
-    )
-
-
 def _explicit_runtime(
     record: Mapping[str, Any], *, roles: set[str] | None = None
 ) -> bool:
@@ -568,9 +543,8 @@ def _registered_aliases(key: str, record: Mapping[str, Any]) -> set[str]:
     # The manager's canonical registration may intentionally remain its host
     # name so existing Control/Nomad jobs do not need a disruptive rename.
     # Operators nevertheless need one stable, non-hostname selector when they
-    # explicitly opt that node into LAE runtime service.  This alias is only a
-    # name match: `_control_plane_only` still rejects the node unless its
-    # record also carries an explicit runtime role/label.
+    # explicitly opt that node into LAE runtime service through the positive
+    # runtime allowlist.
     if (
         str(record.get("status") or "").strip().lower() == "manager"
         or str(record.get("nomadRole") or "").strip().lower() == "server"
