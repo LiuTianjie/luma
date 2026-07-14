@@ -321,6 +321,46 @@ services:
           cpus: "0.05"
           memory: 256M
 
+  backup:
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: deploy/luma/docker/backup.Dockerfile
+    environment:
+      LAE_ARTIFACT_S3_BUCKET: lae-artifacts
+      LAE_BACKUP_INTERVAL_SECONDS: "86400"
+      LAE_BACKUP_MAX_AGE_SECONDS: "93600"
+      LAE_BACKUP_RETENTION_DAYS: "30"
+      LAE_BACKUP_RUN_RESTORE_DRILL: "1"
+      LAE_MINIO_INTERNAL_ENDPOINT: http://artifact-store:9000
+      LAE_MINIO_ROOT_PASSWORD: ${LAE_MINIO_ROOT_PASSWORD}
+      LAE_MINIO_ROOT_USER: ${LAE_MINIO_ROOT_USER}
+      LAE_UPLOAD_S3_BUCKET: lae-uploads
+      PGDATABASE: lae
+      PGHOST: postgres
+      PGPASSWORD: ${LAE_POSTGRES_PASSWORD}
+      PGUSER: lae
+    volumes: [backup-data:/backups]
+    depends_on:
+      artifact-init:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, /usr/local/bin/lae-backup, health]
+      interval: 5m
+      timeout: 10s
+      start_period: 20m
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 768M
+        reservations:
+          cpus: "0.10"
+          memory: 256M
+
   valkey:
     image: valkey/valkey:9.1.0-alpine@sha256:a35428eba9043cc0b79dbe54100f0c92784f2de00ad09b01182bfb1c5c83d1bd
     platform: linux/amd64
@@ -353,4 +393,5 @@ services:
 
 volumes:
   artifact-data:
+  backup-data:
   postgres-data:

@@ -12,6 +12,13 @@ volumes:
     path: lae/staging/artifacts/v1
     accessMode: ReadWriteOnce
     initialize: empty
+  backup-data:
+    # Separate failure domain: tecent hosts backups while Builder NFS keeps
+    # PostgreSQL/artifact primary data.
+    storageClass: lae-staging-backups-nfs
+    path: lae/staging/backups/v1
+    accessMode: ReadWriteOnce
+    initialize: empty
   postgres-data:
     storageClass: lae-staging-runtime-nfs
     path: lae/staging/postgres/v1
@@ -43,4 +50,5 @@ services:
     domain: lae-artifacts-staging.itool.tech
     port: 9000
   artifact-init: {node: manager, exposure: none}
+  backup: {node: manager, exposure: none}
   valkey: {node: manager, exposure: none}

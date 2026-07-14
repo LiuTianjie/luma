@@ -8,6 +8,11 @@ volumes:
     path: lae/platform/artifacts/v1
     accessMode: ReadWriteOnce
     initialize: empty
+  backup-data:
+    storageClass: lae-cn-backups
+    path: lae/platform/backups/v1
+    accessMode: ReadWriteOnce
+    initialize: empty
   postgres-data:
     storageClass: lae-cn-postgres
     path: lae/platform/postgres/v1
@@ -40,6 +45,9 @@ services:
     domain: lae-artifacts.itool.tech
     port: 9000
   artifact-init:
+    node: lae-core
+    exposure: none
+  backup:
     node: lae-core
     exposure: none
   valkey:

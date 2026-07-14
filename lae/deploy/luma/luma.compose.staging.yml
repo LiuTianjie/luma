@@ -8,6 +8,11 @@ volumes:
     path: lae/staging/artifacts/v1
     accessMode: ReadWriteOnce
     initialize: empty
+  backup-data:
+    storageClass: lae-cn-backups
+    path: lae/staging/backups/v1
+    accessMode: ReadWriteOnce
+    initialize: empty
   postgres-data:
     storageClass: lae-cn-postgres
     path: lae/staging/postgres/v1
@@ -34,4 +39,5 @@ services:
     domain: lae-artifacts-staging.itool.tech
     port: 9000
   artifact-init: {node: lae-core, exposure: none}
+  backup: {node: lae-core, exposure: none}
   valkey: {node: lae-core, exposure: none}

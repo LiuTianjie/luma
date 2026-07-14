@@ -19,6 +19,7 @@ PLACEHOLDER_IMAGES = {
     "agent-controller": "registry.internal/lae/agent-controller:git-sha",
     "artifact-store": "registry.internal/lae/artifact-store:git-sha",
     "artifact-init": "registry.internal/lae/artifact-init:git-sha",
+    "backup": "registry.internal/lae/backup:git-sha",
     "template-smoke": "registry.internal/lae/template-smoke:git-sha",
 }
 STORAGE_CLASSES = {
@@ -34,6 +35,12 @@ STORAGE_CLASSES = {
         "endpoint": "nfs.example.test:/srv/lae-postgres",
         "regions": ["cn"],
     },
+    "lae-cn-backups": {
+        "provider": "nfs",
+        "mode": "external",
+        "endpoint": "backup-nfs.example.test:/srv/lae-backups",
+        "regions": ["cn"],
+    },
 }
 LIVE_STAGING_STORAGE_CLASSES = {
     "lae-staging-runtime-nfs": {
@@ -43,7 +50,15 @@ LIVE_STAGING_STORAGE_CLASSES = {
         "path": "/srv/luma",
         "regions": ["cn"],
         "nodes": ["manager", "tecent"],
-    }
+    },
+    "lae-staging-backups-nfs": {
+        "provider": "nfs",
+        "mode": "managed",
+        "node": "tecent",
+        "path": "/srv/luma-backups",
+        "regions": ["cn"],
+        "nodes": ["manager"],
+    },
 }
 
 
@@ -125,7 +140,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertEqual(rendered["ID"], "lae-platform")
         self.assertEqual(len(rendered["TaskGroups"]), 1)
         group = rendered["TaskGroups"][0]
-        self.assertEqual(len(group["Tasks"]), 8)
+        self.assertEqual(len(group["Tasks"]), 9)
         self.assertEqual(
             {service["Name"] for service in group["Services"]},
             {
@@ -150,7 +165,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertEqual(deployment.region, "cn")
         self.assertEqual(
             {volume.storage_class for volume in deployment.volumes.values()},
-            {"lae-staging-runtime-nfs"},
+            {"lae-staging-runtime-nfs", "lae-staging-backups-nfs"},
         )
         self.assertEqual(
             {service.node for service in deployment.services.values()}, {"manager"}
@@ -176,6 +191,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
                 "agent-controller",
                 "postgres",
                 "artifact-init",
+                "backup",
                 "valkey",
             ):
                 self.assertEqual(deployment.services[name].exposure, "none")
@@ -219,7 +235,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             self.assertNotIn(":latest", text)
             self.assertIn("@sha256:", text)
             self.assertIn("USER ", text)
-            if name not in {"web", "artifact-store", "artifact-init"}:
+            if name not in {"web", "artifact-store", "artifact-init", "backup"}:
                 self.assertIn("UV_PROJECT_ENVIRONMENT=/opt/lae/.venv", text)
                 self.assertIn(
                     "COPY --from=build /opt/lae/.venv /opt/lae/.venv", text
@@ -258,6 +274,21 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertIn("anonymous set none", init_script)
         self.assertNotIn("cors set", init_script)
         self.assertNotIn("s3:*", init_script)
+
+        backup_script = (DEPLOY / "docker" / "backup.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("pg_dump --format=custom", backup_script)
+        self.assertIn("pg_restore --exit-on-error", backup_script)
+        self.assertIn("sha256sum -c SHA256SUMS", backup_script)
+        self.assertIn("lae-restore-drill-", backup_script)
+        self.assertNotIn("set -x", backup_script)
+
+        live_sidecar = load_yaml(DEPLOY / "luma.compose.staging.itool.yml")
+        self.assertEqual(
+            live_sidecar["volumes"]["backup-data"]["storageClass"],
+            "lae-staging-backups-nfs",
+        )
 
         production_store = self.load("luma.compose.yml").compose["services"][
             "artifact-store"
