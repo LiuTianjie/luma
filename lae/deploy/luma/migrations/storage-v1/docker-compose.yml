@@ -9,13 +9,13 @@ services:
         echo 'postgres migration target is not empty' >&2; exit 1;
       fi;
       tar -C /source -cf - . | tar -C /target -xpf -;
-      source_files=$$(find /source -type f | wc -l | tr -d ' ');
-      target_files=$$(find /target -type f | wc -l | tr -d ' ');
-      source_bytes=$$(find /source -type f -printf '%s\n' | awk '{n += $$1} END {print n + 0}');
-      target_bytes=$$(find /target -type f -printf '%s\n' | awk '{n += $$1} END {print n + 0}');
-      test "$$source_files" = "$$target_files";
-      test "$$source_bytes" = "$$target_bytes";
-      echo "LAE storage migration completed: postgres files=$$target_files bytes=$$target_bytes";
+      source_files=$(find /source -type f | wc -l | tr -d ' ');
+      target_files=$(find /target -type f | wc -l | tr -d ' ');
+      source_bytes=$(find /source -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}');
+      target_bytes=$(find /target -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}');
+      test "$source_files" = "$target_files";
+      test "$source_bytes" = "$target_bytes";
+      echo "LAE storage migration completed: postgres files=$target_files bytes=$target_bytes";
       while :; do sleep 3600; done
     volumes:
       - postgres-data:/source:ro
@@ -31,13 +31,13 @@ services:
         echo 'artifact migration target is not empty' >&2; exit 1;
       fi;
       tar -C /source -cf - . | tar -C /target -xpf -;
-      source_files=$$(find /source -type f | wc -l | tr -d ' ');
-      target_files=$$(find /target -type f | wc -l | tr -d ' ');
-      source_bytes=$$(find /source -type f -printf '%s\n' | awk '{n += $$1} END {print n + 0}');
-      target_bytes=$$(find /target -type f -printf '%s\n' | awk '{n += $$1} END {print n + 0}');
-      test "$$source_files" = "$$target_files";
-      test "$$source_bytes" = "$$target_bytes";
-      echo "LAE storage migration completed: artifacts files=$$target_files bytes=$$target_bytes";
+      source_files=$(find /source -type f | wc -l | tr -d ' ');
+      target_files=$(find /target -type f | wc -l | tr -d ' ');
+      source_bytes=$(find /source -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}');
+      target_bytes=$(find /target -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}');
+      test "$source_files" = "$target_files";
+      test "$source_bytes" = "$target_bytes";
+      echo "LAE storage migration completed: artifacts files=$target_files bytes=$target_bytes";
       while :; do sleep 3600; done
     volumes:
       - artifact-data:/source:ro
