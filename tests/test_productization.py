@@ -10835,6 +10835,13 @@ class ControlApiTests(unittest.TestCase):
                     "payload": {"image": "ghcr.io/acme/api:latest"},
                     "status": "queued",
                 }
+                current["agentTasks"]["task-orphan-alias"] = {
+                    "id": "task-orphan-alias",
+                    "nodeName": "iZ0jl8auywzycory05d9cuZ",
+                    "action": "resolve-docker-image",
+                    "payload": {"image": "ghcr.io/acme/orphan:latest"},
+                    "status": "running",
+                }
                 save_state(current)
 
                 leased = handle_node_agent_lease(
@@ -10850,6 +10857,10 @@ class ControlApiTests(unittest.TestCase):
 
                 self.assertIsNotNone(leased)
                 self.assertEqual(leased["id"], "task-image")
+                self.assertEqual(
+                    load_state()["agentTasks"]["task-orphan-alias"]["status"],
+                    "failed",
+                )
                 handle_node_agent_complete(
                     agent_token,
                     {

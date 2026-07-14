@@ -194,6 +194,12 @@ AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SE
 AGENT_TASK_QUEUE_TIMEOUT_SECONDS = int(
     os.environ.get("LUMA_NODE_AGENT_TASK_QUEUE_TIMEOUT_SECONDS", str(60 * 60))
 )
+# A lease is persisted before optional credential redemption finishes.  A
+# concurrent long-poller must not classify that just-leased task as orphaned
+# while Control is still handing it to the agent.
+AGENT_TASK_HANDOFF_GRACE_SECONDS = int(
+    os.environ.get("LUMA_NODE_AGENT_TASK_HANDOFF_GRACE_SECONDS", "60")
+)
 # How long a finished (succeeded/failed/timeout) agent task is kept in
 # control.json before it is garbage-collected. Without this, agentTasks grows
 # without bound — every remote-node deploy adds an entry that is never deleted,
@@ -1950,12 +1956,22 @@ def _reconcile_interrupted_agent_tasks(
 
     now = int(time.time()) if now is None else now
     tasks = _agent_tasks(state)
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     for task_id, task in tasks.items():
+        task_node_name = str(task.get("nodeName") or "") if isinstance(task, dict) else ""
+        task_node_entry = _node_record_entry_for_name_or_id(nodes, task_node_name)
+        canonical_task_node = task_node_entry[0] if task_node_entry else task_node_name
+        leased_at = int(task.get("leasedAt") or 0) if isinstance(task, dict) else 0
         if (
             not isinstance(task, dict)
-            or str(task.get("nodeName") or "") != node_name
+            or canonical_task_node != node_name
             or str(task.get("status") or "") != "running"
             or task_id == active_task_id
+            or (
+                not active_task_id
+                and leased_at > 0
+                and now - leased_at < max(int(AGENT_TASK_HANDOFF_GRACE_SECONDS), 1)
+            )
         ):
             continue
 
@@ -2275,6 +2291,14 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
                 _prune_build_runs(state)
                 normalized_container_stats = _update_agent_heartbeat(
                     record, body, config=config, state=state
+                )
+                # Idle serial agents poll this endpoint instead of the busy
+                # heartbeat endpoint. Their lease heartbeat therefore proves
+                # that no earlier running task is still owned by this process.
+                _reconcile_interrupted_agent_tasks(
+                    state,
+                    canonical_node_name,
+                    str(body.get("activeTaskId") or "").strip(),
                 )
                 changed = True
             tasks = _agent_tasks(state)
