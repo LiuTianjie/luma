@@ -2,28 +2,27 @@ name: lae-platform-staging
 compose: docker-compose.staging.yml
 region: cn
 
-# Live-cluster staging overlay for luma.itool.tech. Keep the platform control
-# services on manager so their Nomad lifecycle does not depend on the lossy
-# manager-to-lab relay. Tenant workloads still use the separately admitted
-# manager/tecent runtime pool configured in Luma Control.
+# Live-cluster staging overlay for luma.itool.tech. Platform services and their
+# primary data stay on manager-local storage. Off-node copies are asynchronous
+# backup concerns and must never be part of the LAE runtime allocation path.
+# Tenant workloads still use the separately admitted manager/tecent runtime
+# pool configured in Luma Control.
 volumes:
   artifact-data:
-    storageClass: lae-staging-runtime-nfs
-    path: lae/staging/artifacts/v1
-    accessMode: ReadWriteOnce
-    initialize: empty
+    local:
+      node: manager
+      path: /srv/luma/lae/staging/artifacts/v2
+    adopted: true
   backup-data:
-    # Separate failure domain: tecent hosts backups while Builder NFS keeps
-    # PostgreSQL/artifact primary data.
-    storageClass: lae-staging-backups-nfs
-    path: lae/staging/backups/v1
-    accessMode: ReadWriteOnce
-    initialize: empty
+    local:
+      node: manager
+      path: /srv/luma/lae/staging/backups/v2
+    adopted: true
   postgres-data:
-    storageClass: lae-staging-runtime-nfs
-    path: lae/staging/postgres/v1
-    accessMode: ReadWriteOnce
-    initialize: empty
+    local:
+      node: manager
+      path: /srv/luma/lae/staging/postgres/v2
+    adopted: true
 
 services:
   web:

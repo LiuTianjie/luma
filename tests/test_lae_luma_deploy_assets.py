@@ -128,6 +128,61 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             self.assertIn("volume_options", target)
             self.assertIn("LAE storage migration completed", " ".join(task["Config"]["args"]))
 
+    def test_staging_local_storage_migration_copies_all_remote_sources_to_manager(self):
+        migration = DEPLOY / "migrations" / "storage-v2"
+        deployment = load_compose_deployment(
+            migration / "luma.compose.yml",
+            storage_classes=LIVE_STAGING_STORAGE_CLASSES,
+            allow_sidecar_storage_classes=False,
+        )
+        self.assertEqual(
+            {
+                volume.storage_class
+                for volume in deployment.volumes.values()
+                if volume.storage_class
+            },
+            {"lae-staging-runtime-nfs", "lae-staging-backups-nfs"},
+        )
+        local_targets = {
+            volume.name: (volume.local_node, volume.local_path, volume.initialize)
+            for volume in deployment.volumes.values()
+            if volume.kind == "local"
+        }
+        self.assertEqual(
+            local_targets,
+            {
+                "postgres-target": ("manager", "/srv/luma/lae/staging/postgres/v2", "empty"),
+                "artifact-target": ("manager", "/srv/luma/lae/staging/artifacts/v2", "empty"),
+                "backup-target": ("manager", "/srv/luma/lae/staging/backups/v2", "empty"),
+            },
+        )
+        rendered = render_compose_job(
+            config(),
+            deployment,
+            as_json=False,
+            node_records=LIVE_STAGING_NODE_RECORDS,
+        )["Job"]
+        self.assertIn("manager", str(rendered["Constraints"]))
+        self.assertNotIn("Canary", rendered["Update"])
+        tasks = rendered["TaskGroups"][0]["Tasks"]
+        self.assertEqual(
+            {task["Name"] for task in tasks},
+            {"copy-postgres", "copy-artifacts", "copy-backups"},
+        )
+        for task in tasks:
+            mounts = task["Config"]["mount"]
+            source = next(mount for mount in mounts if mount["target"] == "/source")
+            target = next(mount for mount in mounts if mount["target"] == "/target")
+            self.assertEqual(source["type"], "volume")
+            self.assertTrue(source["readonly"])
+            self.assertIn("volume_options", source)
+            self.assertEqual(target["type"], "bind")
+            self.assertTrue(target["source"].startswith("/srv/luma/lae/staging/"))
+            self.assertIn(
+                "LAE local storage migration completed",
+                " ".join(task["Config"]["args"]),
+            )
+
     def test_backup_image_uses_existing_builder_postgres_manifest(self):
         dockerfile = (DEPLOY / "docker" / "backup.Dockerfile").read_text(
             encoding="utf-8"
@@ -248,8 +303,16 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertEqual(deployment.name, "lae-platform-staging")
         self.assertEqual(deployment.region, "cn")
         self.assertEqual(
-            {volume.storage_class for volume in deployment.volumes.values()},
-            {"lae-staging-runtime-nfs", "lae-staging-backups-nfs"},
+            {volume.kind for volume in deployment.volumes.values()},
+            {"local"},
+        )
+        self.assertEqual(
+            {volume.local_node for volume in deployment.volumes.values()},
+            {"manager"},
+        )
+        self.assertEqual(
+            {volume.adopted for volume in deployment.volumes.values()},
+            {True},
         )
         self.assertEqual(
             {service.node for service in deployment.services.values()}, {"manager"}
@@ -381,9 +444,10 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
 
         live_sidecar = load_yaml(DEPLOY / "luma.compose.staging.itool.yml")
         self.assertEqual(
-            live_sidecar["volumes"]["backup-data"]["storageClass"],
-            "lae-staging-backups-nfs",
+            live_sidecar["volumes"]["backup-data"]["local"],
+            {"node": "manager", "path": "/srv/luma/lae/staging/backups/v2"},
         )
+        self.assertTrue(live_sidecar["volumes"]["backup-data"]["adopted"])
 
         production_store = self.load("luma.compose.yml").compose["services"][
             "artifact-store"

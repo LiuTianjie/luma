@@ -438,6 +438,12 @@ def _load_compose_volumes(raw: Any, storage_classes: Dict[str, StorageClassSpec]
         )
         if result[str(name)].kind == "local" and (not result[str(name)].local_node or not result[str(name)].local_path):
             raise LumaError(f"volumes.{name}.local requires node and path")
+        if result[str(name)].kind == "local":
+            local_path = Path(str(result[str(name)].local_path))
+            if not local_path.is_absolute() or ".." in local_path.parts or local_path == Path("/"):
+                raise LumaError(
+                    f"volumes.{name}.local.path must be an absolute path other than / without .."
+                )
     return result
 
 

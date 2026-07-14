@@ -11165,6 +11165,139 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_storage_apply_prepares_local_volume_on_owning_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "manager": {
+                        "name": "manager",
+                        "region": "cn",
+                        "status": "manager",
+                        "labels": {"luma.node.name": "manager", "region": "cn"},
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                compose = yaml.safe_dump(
+                    {
+                        "services": {"postgres": {"image": "postgres:16", "volumes": ["pg-data:/var/lib/postgresql/data"]}},
+                        "volumes": {"pg-data": {}},
+                    }
+                )
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "volumes": {
+                            "pg-data": {
+                                "local": {"node": "manager", "path": "/srv/luma/lae/staging/postgres/v1"}
+                            }
+                        },
+                    }
+                )
+                with patch("luma.control.server._storage_node_is_local", return_value=False), patch(
+                    "luma.control.server._run_node_agent_task",
+                    return_value={"message": "volume path ready", "taskId": "task-1"},
+                ) as run:
+                    result = handle_storage_apply(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
+                    )
+
+                run.assert_called_once_with(
+                    unittest.mock.ANY,
+                    "manager",
+                    "prepare-managed-volume-path",
+                    {"root": "/srv/luma/lae/staging/postgres", "relative": "v1"},
+                )
+                self.assertEqual(result["applied"][0]["path"], "/srv/luma/lae/staging/postgres/v1")
+                self.assertEqual(result["applied"][0]["node"], "manager")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_compose_deployment_blocks_nfs_to_local_switch_before_path_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "manager": {
+                        "name": "manager",
+                        "region": "cn",
+                        "status": "manager",
+                        "labels": {"luma.node.name": "manager", "region": "cn"},
+                    }
+                }
+                state["storageClasses"] = {
+                    "nfs": {"provider": "nfs", "mode": "external", "endpoint": "nas:/srv/luma", "regions": ["cn"]}
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad", "stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                compose = yaml.safe_dump(
+                    {
+                        "services": {"app": {"image": "nginx:alpine", "volumes": ["data:/data"]}},
+                        "volumes": {"data": {}},
+                    }
+                )
+                first_sidecar = yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "volumes": {"data": {"storageClass": "nfs", "path": "app/data"}},
+                    }
+                )
+                handle_compose_deployment(
+                    state["deployToken"],
+                    {
+                        "manifest": first_sidecar,
+                        "composeContent": compose,
+                        "sourceName": "luma.compose.yml",
+                        "skipDns": True,
+                        "skipOrchestrator": True,
+                    },
+                )
+                local_sidecar = yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "volumes": {
+                            "data": {"local": {"node": "manager", "path": "/srv/luma/app/data"}}
+                        },
+                    }
+                )
+                with patch("luma.control.server._run_node_agent_task") as run:
+                    with self.assertRaisesRegex(LumaError, "storage backend changed"):
+                        handle_compose_deployment(
+                            state["deployToken"],
+                            {
+                                "manifest": local_sidecar,
+                                "composeContent": compose,
+                                "sourceName": "luma.compose.yml",
+                                "skipDns": True,
+                                "skipOrchestrator": True,
+                            },
+                        )
+                run.assert_not_called()
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_storage_apply_accepts_import_build_services_without_images(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

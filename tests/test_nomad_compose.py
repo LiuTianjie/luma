@@ -479,6 +479,68 @@ services:
             svc["Tags"],
         )
 
+    def test_local_volume_pins_group_and_disables_canary(self):
+        compose = """
+services:
+  web:
+    image: registry.example.com/web:latest
+    volumes:
+      - app-data:/var/lib/app
+volumes:
+  app-data:
+"""
+        sidecar = """
+name: web-stack
+compose: docker-compose.yml
+region: cn
+volumes:
+  app-data:
+    local:
+      node: manager
+      path: /srv/luma/web-stack/app-data
+services:
+  web:
+    exposure: cn-edge
+    domain: web.example.com
+    port: 3000
+"""
+        dep = write_deployment(sidecar, compose)
+        job = render_compose_job(cfg(), dep, as_json=False)["Job"]
+
+        constraints = {
+            (item.get("LTarget"), item.get("RTarget"))
+            for item in job["Constraints"]
+        }
+        self.assertIn(("${meta.luma_node_name}", "manager"), constraints)
+        mount = job["TaskGroups"][0]["Tasks"][0]["Config"]["mount"][0]
+        self.assertEqual(mount["type"], "bind")
+        self.assertEqual(mount["source"], "/srv/luma/web-stack/app-data")
+        self.assertNotIn("Canary", job["Update"])
+        self.assertNotIn("AutoPromote", job["Update"])
+
+    def test_local_volume_rejects_relative_host_path(self):
+        compose = """
+services:
+  app:
+    image: nginx:alpine
+    volumes:
+      - app-data:/data
+volumes:
+  app-data:
+"""
+        sidecar = """
+name: app-stack
+compose: docker-compose.yml
+region: cn
+volumes:
+  app-data:
+    local:
+      node: manager
+      path: srv/luma/app-data
+"""
+        with self.assertRaisesRegex(LumaError, "absolute path"):
+            write_deployment(sidecar, compose)
+
     def test_compose_edge_service_and_router_names_are_isolated_per_stack(self):
         compose = """
 services:

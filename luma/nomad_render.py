@@ -476,6 +476,11 @@ def render_compose_job(
             regions.add(override.region)
         if override.node:
             nodes.add(override.node)
+    nodes.update(
+        str(volume.local_node)
+        for volume in deployment.volumes.values()
+        if volume.kind == "local" and volume.local_node
+    )
     if len(regions) > 1:
         raise LumaError(
             f"compose deployment {name} pins services to multiple regions {sorted(regions)}; "

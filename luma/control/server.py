@@ -10708,12 +10708,6 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     _mark_compose_deployment(deployment, body, source_name, status="pending", steps=steps)
 
     try:
-        storage_preparation = _deploy_step(
-            steps,
-            "Prepare managed storage",
-            lambda: _prepare_compose_managed_storage(deployment, state),
-            progress=progress,
-        )
         target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
@@ -10734,6 +10728,12 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
             steps,
             "Check storage backend",
             lambda: _guard_compose_storage_switch(target, stack_text, deployment, previous_record=previous_record),
+            progress=progress,
+        )
+        storage_preparation = _deploy_step(
+            steps,
+            "Prepare managed storage",
+            lambda: _prepare_compose_managed_storage(deployment, state),
             progress=progress,
         )
         _deploy_step(steps, "Write compose job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
@@ -11422,7 +11422,55 @@ def _prepare_compose_managed_storage(deployment: ComposeDeploymentSpec, state: D
             results.append(_prepare_managed_nfs_host(storage_class, state))
             prepared_classes.add(storage_class.name)
         results.append(_prepare_managed_volume_path(storage_class, volume.path or volume.name, state))
+    for volume in deployment.volumes.values():
+        if volume.kind == "local":
+            results.append(_prepare_local_volume_path(volume, state))
     return results
+
+
+def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any]) -> dict[str, str]:
+    node_name = str(volume.local_node or "").strip()
+    raw_path = str(volume.local_path or "").strip()
+    path = Path(raw_path)
+    if not node_name or not path.is_absolute() or ".." in path.parts or path == Path("/"):
+        raise LumaError(
+            f"local volume {volume.name} requires a node and an absolute path other than / without .."
+        )
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = _node_record_for_name(nodes, node_name)
+    if not record:
+        names = ", ".join(sorted(str(name) for name in nodes)) or "none"
+        raise LumaError(f"local volume {volume.name} references unknown Luma node: {node_name}. Registered nodes: {names}")
+
+    root = str(path.parent)
+    relative = path.name
+    if not _storage_node_is_local(record, node_name):
+        result = _run_node_agent_task(
+            state,
+            node_name,
+            "prepare-managed-volume-path",
+            {"root": root, "relative": relative},
+        )
+        return {
+            "volume": volume.name,
+            "node": node_name,
+            "path": str(path),
+            "prepared": str(result.get("message") or "local volume path ready"),
+            "taskId": str(result.get("taskId") or ""),
+        }
+
+    try:
+        _run_host_prep_command(
+            f"install -d -m 0777 {shlex.quote(str(path))}; chmod 0777 {shlex.quote(str(path))}"
+        )
+    except LumaError as exc:
+        raise LumaError(f"failed to create local volume path {path} on {node_name}: {exc}") from exc
+    return {
+        "volume": volume.name,
+        "node": node_name,
+        "path": str(path),
+        "prepared": "local volume path ready",
+    }
 
 
 def _prepare_service_managed_storage(service: ServiceSpec, state: Dict[str, Any]) -> list[dict[str, str]]:
@@ -11823,7 +11871,7 @@ def _guard_compose_storage_switch(
     current_volumes = _compose_storage_backend_signatures(deployment)
     changed = []
     for name, spec in deployment.volumes.items():
-        if not spec.storage_class:
+        if spec.kind == "unmanaged":
             continue
         if spec.initialize == "empty" or spec.adopted:
             continue
