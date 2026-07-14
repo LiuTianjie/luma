@@ -62,9 +62,21 @@ LIVE_STAGING_STORAGE_CLASSES = {
     },
 }
 LIVE_STAGING_NODE_RECORDS = {
-    "builder": {"region": "cn", "hostname": "builder"},
-    "tecent": {"region": "cn", "hostname": "tecent"},
-    "manager": {"region": "cn", "hostname": "manager"},
+    "builder": {
+        "region": "home",
+        "hostname": "builder",
+        "tailscaleIP": "100.66.177.70",
+    },
+    "tecent": {
+        "region": "cn",
+        "hostname": "VM-0-10-ubuntu",
+        "tailscaleIP": "100.64.29.91",
+    },
+    "manager": {
+        "region": "cn",
+        "hostname": "iZ0jlep4ral3r2v0ajypnmZ",
+        "tailscaleIP": "100.106.154.3",
+    },
 }
 
 

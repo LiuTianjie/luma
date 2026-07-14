@@ -619,15 +619,20 @@ def _storage_endpoint_for_region(
     node_region = str(record.get("region") or "")
     if not node_region:
         raise LumaError(f"managed storageClass {storage_class.name} node {storage_class.node} has no region; rerun luma node join")
-    if node_region == region:
-        endpoint_host = _same_region_storage_host(storage_class, record)
-        return f"{endpoint_host}:{storage_class.path}", "same-region"
     tailscale_endpoint = str(record.get("tailscaleIP") or record.get("tailscaleName") or "").strip()
-    if not tailscale_endpoint:
+    # A Luma region is a scheduling/placement boundary, not a shared DNS or
+    # layer-2 network. Nodes in the same region can live in different clouds
+    # and a Docker volume driver cannot resolve Luma display names reliably.
+    # Prefer the cluster overlay for every cross-node managed NFS mount, even
+    # when producer and consumer have the same region label.
+    if tailscale_endpoint:
+        return f"{tailscale_endpoint}:{storage_class.path}", "tailscale"
+    if node_region != region:
         raise LumaError(
             f"managed storageClass {storage_class.name} crosses {region}->{node_region} but node {storage_class.node} has no tailscaleIP; rerun luma node join"
         )
-    return f"{tailscale_endpoint}:{storage_class.path}", "tailscale"
+    endpoint_host = _same_region_storage_host(storage_class, record)
+    return f"{endpoint_host}:{storage_class.path}", "same-region-fallback"
 
 
 def _same_region_storage_host(storage_class: StorageClassSpec, record: Dict[str, Any]) -> str:

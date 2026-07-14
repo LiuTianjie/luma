@@ -237,6 +237,59 @@ services:
         self.assertEqual(options[0]["device"], ":/exports/apps/tenants/acme/postgres")
         self.assertIn("addr=storage.example.test", options[0]["o"])
 
+    def test_managed_storage_prefers_overlay_ip_even_inside_same_region(self):
+        compose = """
+services:
+  backup:
+    image: example.test/backup:1
+    volumes:
+      - data:/backups
+volumes:
+  data:
+"""
+        sidecar = """
+name: backup-stack
+compose: docker-compose.yml
+region: cn
+storageClasses:
+  remote-backups:
+    provider: nfs
+    mode: managed
+    node: tecent
+    path: /srv/luma-backups
+    regions: [cn]
+    nodes: [manager]
+volumes:
+  data:
+    storageClass: remote-backups
+    path: tenant/backups
+    accessMode: ReadWriteOnce
+    initialize: empty
+services:
+  backup:
+    node: manager
+    exposure: none
+"""
+        deployment = write_deployment(sidecar, compose)
+        job = render_compose_job(
+            cfg({"nodes": {"manager": {"host": "manager"}}}),
+            deployment,
+            as_json=False,
+            node_records={
+                "tecent": {
+                    "hostname": "VM-0-10-ubuntu",
+                    "region": "cn",
+                    "tailscaleIP": "100.64.29.91",
+                }
+            },
+        )["Job"]
+
+        mount = job["TaskGroups"][0]["Tasks"][0]["Config"]["mount"][0]
+        options = mount["volume_options"]["driver_config"]["options"][0]
+        self.assertIn("addr=100.64.29.91", options["o"])
+        self.assertNotIn("addr=tecent", options["o"])
+        self.assertNotIn("addr=VM-0-10-ubuntu", options["o"])
+
     def test_all_internal_multi_service_gets_shared_netns_bridge(self):
         # All services exposure:none (the `compose init` default). The group
         # MUST still get a bridge Networks block so the tasks share one netns —
