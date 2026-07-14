@@ -4310,12 +4310,16 @@ def _execute_lae_runtime_deployment(
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(stack_text, encoding="utf-8")
+        dns_secrets = (
+            state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+        )
         for route in manifest["routes"]:
             sync_dns(
                 config,
                 _compose_service_as_service_spec(
                     spec, spec.services[str(route["serviceKey"])]
                 ),
+                secrets=dns_secrets,
             )
         deploy_to_nomad(config, stack_text, state, slug=job_slug)
     except BaseException:
