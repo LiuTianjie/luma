@@ -2436,6 +2436,8 @@ def _run_process_streaming(
     timeout: int | None = None,
     on_line: Callable[[str], None] | None = None,
     cancel_event: threading.Event | None = None,
+    heartbeat_interval: float | None = None,
+    heartbeat_message: str = "Process is still running",
 ) -> LocalResult:
     process = subprocess.Popen(
         command,
@@ -2448,13 +2450,17 @@ def _run_process_streaming(
     )
     output_parts: list[str] = []
     line_buffer: list[str] = []
-    deadline = time.monotonic() + timeout if timeout else None
+    started_at = time.monotonic()
+    deadline = started_at + timeout if timeout else None
+    last_progress_at = started_at
 
     def flush_line() -> None:
+        nonlocal last_progress_at
         text = "".join(line_buffer).strip()
         line_buffer.clear()
         if text and on_line:
             on_line(text)
+            last_progress_at = time.monotonic()
 
     def kill_process_group() -> None:
         try:
@@ -2471,17 +2477,28 @@ def _run_process_streaming(
 
     try:
         while True:
+            now = time.monotonic()
             if cancel_event is not None and cancel_event.is_set():
                 kill_process_group()
                 flush_line()
                 output_parts.append("\nprocess canceled")
                 return LocalResult(code=130, output="".join(output_parts).strip())
-            if deadline and time.monotonic() > deadline:
+            if deadline and now > deadline:
                 kill_process_group()
                 flush_line()
                 message = f"process timed out after {timeout}s"
                 output_parts.append("\n" + message)
                 return LocalResult(code=124, output="".join(output_parts).strip())
+            if (
+                on_line is not None
+                and heartbeat_interval is not None
+                and heartbeat_interval > 0
+                and now - last_progress_at >= heartbeat_interval
+            ):
+                on_line(
+                    f"{heartbeat_message} ({max(1, int(now - started_at))}s elapsed)"
+                )
+                last_progress_at = now
             stream = process.stdout
             if stream is None:
                 break
@@ -3057,6 +3074,8 @@ def _docker_buildx_build(
             timeout=build_timeout,
             on_line=on_build_line,
             cancel_event=cancel_event,
+            heartbeat_interval=15.0,
+            heartbeat_message="Docker image build is still running",
         )
 
     result = run_build()

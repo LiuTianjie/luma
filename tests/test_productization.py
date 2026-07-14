@@ -14800,7 +14800,7 @@ class GithubImportTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"LUMA_BUILDX_CONFIG": str(root / "buildx")}), patch(
                 "luma.agent._run_process_streaming", side_effect=fake_stream
-            ):
+            ) as stream:
                 image = _docker_buildx_build(
                     docker="docker",
                     builder="luma-builder",
@@ -14818,6 +14818,11 @@ class GithubImportTests(unittest.TestCase):
                 )
 
         self.assertEqual(image, "100.66.177.70:5000/acme/app:abc123")
+        self.assertEqual(stream.call_args.kwargs["heartbeat_interval"], 15.0)
+        self.assertEqual(
+            stream.call_args.kwargs["heartbeat_message"],
+            "Docker image build is still running",
+        )
         self.assertNotIn("--push", captured_command)
         output_index = captured_command.index("--output")
         self.assertEqual(
@@ -14825,6 +14830,27 @@ class GithubImportTests(unittest.TestCase):
             "type=image,push=true,registry.insecure=true",
         )
         self.assertEqual([event["line"] for event in progress], ["#1 [internal] load build definition", "#2 pushing layers"])
+
+    def test_streaming_process_emits_idle_heartbeats(self):
+        import sys
+
+        from luma.agent import _run_process_streaming
+
+        progress: list[str] = []
+        result = _run_process_streaming(
+            [sys.executable, "-c", "import time; time.sleep(0.35)"],
+            timeout=2,
+            on_line=progress.append,
+            heartbeat_interval=0.05,
+            heartbeat_message="Long operation is still running",
+        )
+
+        self.assertEqual(result.code, 0)
+        self.assertTrue(progress)
+        self.assertTrue(
+            all(line.startswith("Long operation is still running (") for line in progress)
+        )
+        self.assertLessEqual(len(progress), 4)
 
     def test_registry_serve_configures_insecure_registry_and_docker_no_proxy(self):
         from luma.control.server import handle_registry_serve
