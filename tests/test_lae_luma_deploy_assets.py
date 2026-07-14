@@ -21,6 +21,7 @@ PLACEHOLDER_IMAGES = {
     "artifact-init": "registry.internal/lae/artifact-init:git-sha",
     "backup": "registry.internal/lae/backup:git-sha",
     "template-smoke": "registry.internal/lae/template-smoke:git-sha",
+    "valkey": "registry.internal/lae/valkey:git-sha",
 }
 STORAGE_CLASSES = {
     "lae-cn-artifacts": {
@@ -125,6 +126,22 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             dockerfile,
         )
         self.assertNotIn("/luma-system/postgres-amd64", dockerfile)
+
+    def test_staging_runtime_has_no_retired_or_public_registry_pull(self):
+        compose = load_yaml(DEPLOY / "docker-compose.staging.yml")
+        postgres = compose["services"]["postgres"]
+        self.assertTrue(postgres["image"].startswith("100.66.177.70:5000/lae/"))
+        self.assertNotIn("registry.itool.tech", postgres["image"])
+
+        valkey = compose["services"]["valkey"]
+        self.assertNotIn("image", valkey)
+        self.assertEqual(
+            valkey["build"]["dockerfile"], "deploy/luma/docker/valkey.Dockerfile"
+        )
+        dockerfile = (DEPLOY / "docker" / "valkey.Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("FROM valkey/valkey:9.1.0-alpine@sha256:", dockerfile)
 
     def test_control_bundle_install_is_versioned_and_atomic(self):
         script = (ROOT / "scripts/install-lae-control-bundle.sh").read_text(
@@ -287,7 +304,13 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             self.assertNotIn(":latest", text)
             self.assertIn("@sha256:", text)
             self.assertIn("USER ", text)
-            if name not in {"web", "artifact-store", "artifact-init", "backup"}:
+            if name not in {
+                "web",
+                "artifact-store",
+                "artifact-init",
+                "backup",
+                "valkey",
+            }:
                 self.assertIn("UV_PROJECT_ENVIRONMENT=/opt/lae/.venv", text)
                 self.assertIn(
                     "COPY --from=build /opt/lae/.venv /opt/lae/.venv", text
