@@ -10789,6 +10789,29 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_agent_task_execution_timeout_starts_when_task_is_leased(self):
+        from luma.control import server as control_server
+
+        wait_started = 1000.0
+        execution_timeout = 300.0
+        queued_deadline = control_server._agent_task_wait_deadline(
+            {"status": "queued"},
+            wait_started,
+            execution_timeout,
+        )
+        running_deadline = control_server._agent_task_wait_deadline(
+            {"status": "running", "leasedAt": 1200},
+            wait_started,
+            execution_timeout,
+        )
+
+        self.assertEqual(
+            queued_deadline,
+            wait_started
+            + max(execution_timeout, control_server.AGENT_TASK_QUEUE_TIMEOUT_SECONDS),
+        )
+        self.assertEqual(running_deadline, 1500.0)
+
     def test_node_agent_alias_can_lease_canonical_node_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))

@@ -3260,7 +3260,10 @@ def build_image(
     push_host = _safe_registry_host(str(payload.get("pushHost") or "localhost:5000"))
     repo = _safe_image_repo(_required(payload, "repo"))
     registry_auth = payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None
-    build_timeout = int(payload.get("buildTimeout") or 1800)
+    # Browser/ML images routinely need more than 30 minutes on a cold Builder
+    # because package and model downloads are part of the reproducible build.
+    # Callers can still set a tighter bound explicitly.
+    build_timeout = int(payload.get("buildTimeout") or 7200)
 
     docker = _docker_binary()
     if not docker:

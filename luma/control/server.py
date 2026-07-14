@@ -188,6 +188,12 @@ from .resources import (
 
 AGENT_STALE_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_STALE_SECONDS", "120"))
 AGENT_TASK_TIMEOUT_SECONDS = int(os.environ.get("LUMA_NODE_AGENT_TASK_TIMEOUT_SECONDS", "300"))
+# Queue time is capacity waiting, not task execution time.  Keep a separate
+# bound so a serial node can finish its current task without stealing the next
+# task's execution budget.
+AGENT_TASK_QUEUE_TIMEOUT_SECONDS = int(
+    os.environ.get("LUMA_NODE_AGENT_TASK_QUEUE_TIMEOUT_SECONDS", str(60 * 60))
+)
 # How long a finished (succeeded/failed/timeout) agent task is kept in
 # control.json before it is garbage-collected. Without this, agentTasks grows
 # without bound — every remote-node deploy adds an entry that is never deleted,
@@ -2782,11 +2788,14 @@ def _wait_node_agent_task(
     timeout: int | None = None,
     progress: Callable[[dict[str, str]], None] | None = None,
 ) -> Dict[str, Any]:
-    deadline = time.time() + float(timeout or AGENT_TASK_TIMEOUT_SECONDS)
+    wait_started = time.time()
+    execution_timeout = float(timeout or AGENT_TASK_TIMEOUT_SECONDS)
+    queue_deadline = _agent_task_wait_deadline({}, wait_started, execution_timeout)
     cursor = 0
-    while time.time() < deadline:
+    while True:
         current = load_state()
         task = (current.get("agentTasks") if isinstance(current.get("agentTasks"), dict) else {}).get(task_id)
+        status = "missing"
         if isinstance(task, dict):
             task_progress = task.get("progress") if isinstance(task.get("progress"), list) else []
             safe_cursor = min(max(cursor, 0), len(task_progress))
@@ -2803,17 +2812,46 @@ def _wait_node_agent_task(
                 raise LumaError(str(task.get("message") or f"agent task failed: {task_id}"))
             if status == "canceled":
                 raise LumaError(str(task.get("message") or f"agent task canceled: {task_id}"))
+            if status == "timeout":
+                raise LumaError(str(task.get("message") or f"agent task timed out: {task_id}"))
+        now = time.time()
+        deadline = (
+            _agent_task_wait_deadline(task, wait_started, execution_timeout)
+            if status == "running" and isinstance(task, dict)
+            else queue_deadline
+        )
+        if now >= deadline:
+            break
         time.sleep(1)
+
     def mark_timeout(state: Dict[str, Any]) -> None:
         tasks = _agent_tasks(state)
         task = tasks.get(task_id)
         if isinstance(task, dict) and task.get("status") in {"queued", "running"}:
+            now = int(time.time())
             task["status"] = "timeout"
             task["message"] = "agent task timed out"
-            task["updatedAt"] = int(time.time())
+            # A running child must not continue consuming Builder/worker
+            # capacity after its caller has already received a timeout.
+            task["cancelRequestedAt"] = now
+            task["completedAt"] = now
+            task["updatedAt"] = now
 
     mutate_state(mark_timeout)
     raise LumaError(f"node agent task timed out on {node_name}: {action}")
+
+
+def _agent_task_wait_deadline(
+    task: Dict[str, Any],
+    wait_started: float,
+    execution_timeout: float,
+) -> float:
+    if str(task.get("status") or "") == "running":
+        return float(task.get("leasedAt") or wait_started) + execution_timeout
+    return wait_started + max(
+        execution_timeout,
+        float(AGENT_TASK_QUEUE_TIMEOUT_SECONDS),
+    )
 
 
 def _agent_task_progress_step_name(action: str) -> str:
@@ -7900,7 +7938,7 @@ def handle_build_deploy(
         "pushHost": str(body.get("pushHost") or build_config.get("pushHost") or "localhost:5000"),
         "repo": repo,
         "proxy": proxy,
-        "buildTimeout": int(body.get("buildTimeout") or 1800),
+        "buildTimeout": int(body.get("buildTimeout") or 7200),
     }
     if provider_id:
         build_payload["gitProviderId"] = provider_id
@@ -7934,7 +7972,7 @@ def handle_build_deploy(
                 build_node,
                 "build-image",
                 build_payload,
-                timeout=int(body.get("buildTimeout") or 1800) + 120,
+                timeout=int(body.get("buildTimeout") or 7200) + 120,
                 required_capability="docker-build",
                 progress=run_progress,
                 build_run_id=build_run_id,
