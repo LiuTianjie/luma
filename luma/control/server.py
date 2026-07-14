@@ -5444,17 +5444,33 @@ def _lae_runtime_bound_compose_spec(
 
 
 def _lae_runtime_delete_routes(
-    config: LumaConfig, spec: ComposeDeploymentSpec
+    config: LumaConfig,
+    spec: ComposeDeploymentSpec,
+    *,
+    state: Dict[str, Any],
 ) -> None:
+    secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
     for service in compose_public_services(spec):
-        delete_dns(config, _compose_service_as_service_spec(spec, service))
+        delete_dns(
+            config,
+            _compose_service_as_service_spec(spec, service),
+            secrets=secrets,
+        )
 
 
 def _lae_runtime_restore_routes(
-    config: LumaConfig, spec: ComposeDeploymentSpec
+    config: LumaConfig,
+    spec: ComposeDeploymentSpec,
+    *,
+    state: Dict[str, Any],
 ) -> None:
+    secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
     for service in compose_public_services(spec):
-        sync_dns(config, _compose_service_as_service_spec(spec, service))
+        sync_dns(
+            config,
+            _compose_service_as_service_spec(spec, service),
+            secrets=secrets,
+        )
 
 
 def _execute_lae_runtime_lifecycle(
@@ -5525,7 +5541,7 @@ def _execute_lae_runtime_lifecycle(
                 "DELETE",
                 f"/v1/job/{urllib.parse.quote(job_slug, safe='')}?purge=false",
             )
-            _lae_runtime_delete_routes(config, spec)
+            _lae_runtime_delete_routes(config, spec, state=state)
             return {"suspendedNomadVersion": version}
 
         if action == "resume":
@@ -5539,7 +5555,7 @@ def _execute_lae_runtime_lifecycle(
                     "runtime deployment has no resumable saved version"
                 )
             revert_job(config, state, slug=job_slug, version=version)
-            _lae_runtime_restore_routes(config, spec)
+            _lae_runtime_restore_routes(config, spec, state=state)
             current_version = _lae_runtime_nomad_job_version(
                 config, state, job_slug
             )
@@ -5625,7 +5641,7 @@ def _execute_lae_runtime_lifecycle(
             # DNS is derived delivery state outside the allocation. Reconcile
             # it after the replacement exists so restart completion means the
             # application can converge through its managed public routes too.
-            _lae_runtime_restore_routes(config, spec)
+            _lae_runtime_restore_routes(config, spec, state=state)
             return {
                 "restartedAllocations": stopped,
                 "replacementAllocationIds": replacement_ids,
@@ -5633,7 +5649,7 @@ def _execute_lae_runtime_lifecycle(
 
         if action == "delete":
             _lae_runtime_verified_job(config, state, record, required=False)
-            _lae_runtime_delete_routes(config, spec)
+            _lae_runtime_delete_routes(config, spec, state=state)
             try:
                 remove_from_nomad(config, state, slug=job_slug)
             except LumaError as exc:
@@ -5713,13 +5729,13 @@ def _execute_lae_runtime_rollback(
             raise _lae_runtime_conflict("runtime rollback job binding changed")
         if matches_current:
             current_spec = _lae_runtime_bound_compose_spec(state, current)
-            _lae_runtime_delete_routes(config, current_spec)
+            _lae_runtime_delete_routes(config, current_spec, state=state)
             revert_job(config, state, slug=current_slug, version=target_version)
         # Route publication is an independent side effect. Always repair it
         # on retry, including the crash window after Nomad reverted but before
         # the target routes were restored.
         target_spec = _lae_runtime_bound_compose_spec(state, target)
-        _lae_runtime_restore_routes(config, target_spec)
+        _lae_runtime_restore_routes(config, target_spec, state=state)
         return {
             "nomadVersion": _lae_runtime_nomad_job_version(
                 config, state, current_slug

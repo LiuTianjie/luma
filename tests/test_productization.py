@@ -1420,6 +1420,45 @@ class ProductConfigTests(unittest.TestCase):
             finally:
                 _restore_env("CLOUDFLARE_API_TOKEN", old_token)
 
+    def test_delete_dns_accepts_control_state_secret_without_process_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service_path = Path(tmp) / "service.yaml"
+            service_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "api",
+                        "image": "nginx:alpine",
+                        "region": "cn",
+                        "exposure": "cn-edge",
+                        "domain": "api.example.com",
+                        "port": 80,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = load_service(service_path)
+            config = LumaConfig(
+                {"providers": {"dns": {"type": "cloudflare", "zoneId": "zone-id"}}},
+                None,
+            )
+            old_token = os.environ.pop("CLOUDFLARE_API_TOKEN", None)
+            try:
+                client = Mock()
+                client.request.side_effect = [
+                    {"result": [{"id": "record-1"}]},
+                    {"result": {}},
+                ]
+                with patch("luma.cloudflare.CloudflareClient", return_value=client) as factory:
+                    result = delete_dns(
+                        config,
+                        service,
+                        secrets={"CLOUDFLARE_API_TOKEN": "state-token"},
+                    )
+                self.assertEqual(result, "DNS deleted: api.example.com")
+                factory.assert_called_once_with("state-token")
+            finally:
+                _restore_env("CLOUDFLARE_API_TOKEN", old_token)
+
     def test_cloudflare_client_retries_transient_network_errors(self):
         response = MagicMock()
         response.__enter__.return_value.read.return_value = b'{"success": true, "result": []}'

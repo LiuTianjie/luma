@@ -6,7 +6,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from .config import LumaConfig
 from .errors import LumaError
@@ -55,7 +55,12 @@ class CloudflareClient:
         return payload
 
 
-def sync_dns(config: LumaConfig, service: ServiceSpec) -> str:
+def sync_dns(
+    config: LumaConfig,
+    service: ServiceSpec,
+    *,
+    secrets: Mapping[str, object] | None = None,
+) -> str:
     if not service.public:
         return "DNS skipped: service is not public"
     if service.exposure == "cloudflare-tunnel":
@@ -66,7 +71,9 @@ def sync_dns(config: LumaConfig, service: ServiceSpec) -> str:
         return "DNS skipped: dns.provider is not cloudflare"
 
     token_env = str(dns_config.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
-    token = os.environ.get(token_env)
+    token = os.environ.get(token_env) or (
+        str(secrets.get(token_env) or "") if isinstance(secrets, Mapping) else ""
+    )
     if not token:
         raise LumaError(f"missing Cloudflare API token env var: {token_env}")
 
@@ -106,7 +113,12 @@ def sync_dns(config: LumaConfig, service: ServiceSpec) -> str:
     return f"DNS created: {name} -> {target}"
 
 
-def delete_dns(config: LumaConfig, service: ServiceSpec) -> str:
+def delete_dns(
+    config: LumaConfig,
+    service: ServiceSpec,
+    *,
+    secrets: Mapping[str, object] | None = None,
+) -> str:
     if not service.public:
         return "DNS skipped: service is not public"
     if service.exposure == "cloudflare-tunnel":
@@ -117,7 +129,9 @@ def delete_dns(config: LumaConfig, service: ServiceSpec) -> str:
         return "DNS skipped: dns.provider is not cloudflare"
 
     token_env = str(dns_config.get("apiTokenEnv", "CLOUDFLARE_API_TOKEN"))
-    token = os.environ.get(token_env)
+    token = os.environ.get(token_env) or (
+        str(secrets.get(token_env) or "") if isinstance(secrets, Mapping) else ""
+    )
     if not token:
         raise LumaError(f"missing Cloudflare API token env var: {token_env}")
 
