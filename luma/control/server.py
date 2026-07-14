@@ -9941,6 +9941,19 @@ def handle_fleet_update(
             if progress:
                 progress(dict(item))
             continue
+        config = load_config(_control_config_path())
+        install_proxy = _egress_proxy_for_node(config, current_state, node_name)
+        if install_proxy and "luma-update-proxy-v1" not in capabilities:
+            item["status"] = "failed"
+            item["message"] = (
+                "node requires egress for the Luma installer, but its current agent predates "
+                "luma-update-proxy-v1; perform the documented one-time exact-ref bootstrap "
+                "through the root terminal, then use fleet updates normally"
+            )
+            results.append(item)
+            if progress:
+                progress(dict(item))
+            continue
         try:
             item["status"] = "installing"
             item["message"] = f"Downloading and installing Luma {install_ref or 'latest'}."
@@ -9956,8 +9969,6 @@ def handle_fleet_update(
                         progress(dict(item))
 
             install_payload = {"installRef": install_ref}
-            config = load_config(_control_config_path())
-            install_proxy = _egress_proxy_for_node(config, current_state, node_name)
             if install_proxy:
                 install_payload["proxy"] = install_proxy
             result = _run_node_agent_task(

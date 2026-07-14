@@ -893,6 +893,8 @@ class ProductConfigTests(unittest.TestCase):
 
         self.assertIn("luma-update", node_agent_capabilities("linux"))
         self.assertIn("luma-update", node_agent_capabilities("darwin"))
+        self.assertIn("luma-update-proxy-v1", node_agent_capabilities("linux"))
+        self.assertIn("luma-update-proxy-v1", node_agent_capabilities("darwin"))
         self.assertIn("docker-image", node_agent_capabilities("linux"))
         self.assertIn("docker-image", node_agent_capabilities("darwin"))
         self.assertIn("nomad-join", node_agent_capabilities("linux"))
@@ -5569,7 +5571,7 @@ class ControlApiTests(unittest.TestCase):
                             "status": "online",
                             "lastSeen": int(time.time()),
                             "os": "linux",
-                            "capabilities": ["luma-update"],
+                            "capabilities": ["luma-update", "luma-update-proxy-v1"],
                         },
                     }
                 }
@@ -5599,6 +5601,45 @@ class ControlApiTests(unittest.TestCase):
 
                 self.assertEqual(result["succeeded"], 1)
                 self.assertEqual(result["failed"], 0)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_fleet_update_fails_fast_when_legacy_cn_agent_cannot_receive_proxy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nomadRpcAddr"] = "100.106.154.3:4647"
+                state["nodes"] = {
+                    "tecent": {
+                        "region": "cn",
+                        "labels": {"region": "cn", "luma.node.name": "tecent"},
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "os": "linux",
+                            "capabilities": ["luma-update"],
+                        },
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad"}}),
+                    encoding="utf-8",
+                )
+
+                with patch("luma.control.server._run_node_agent_task") as run:
+                    result = handle_fleet_update(
+                        state["deployToken"],
+                        {"installRef": "v0.1.235", "nodeNames": ["tecent"]},
+                    )
+
+                run.assert_not_called()
+                self.assertEqual(result["failed"], 1)
+                self.assertIn("one-time exact-ref bootstrap", result["results"][0]["message"])
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)

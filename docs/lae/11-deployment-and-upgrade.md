@@ -53,7 +53,7 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 storage class 和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-14，Luma `0.1.235` 候选通过 817 项 pytest 与 130 项 subtest；当前 live
+截至 2026-07-14，Luma `0.1.235` 候选通过 818 项 pytest 与 130 项 subtest；当前 live
 Control/manager 与 `bot/builder/gaojiu/lab/m4` 为 `0.1.234`，`tecent` 为 `0.1.228`，离线 `blg` 保持
 `0.1.175`。LAE 通过 429 项测试
 （25 项按环境跳过）、contracts 和 compile。release workflow 继续拒绝
@@ -430,6 +430,15 @@ luma status --format json
 `lab` 和 runtime `manager + tecent`；为了避免下一次调度/故障转移落到旧 agent，
 推荐升级全部 online/ready 节点。`aly` 是历史名称，明确跳过，不应让它导致 fleet
 change 失败。
+
+从不具备 `luma-update-proxy-v1` 的旧 agent 首次升级时还有一个明确边界：如果该节点
+需要 egress proxy，Control 必须立即 fail closed，不能把一个会忽略 `proxy` 字段的任务
+发给旧 agent 后等待下载超时。此类节点只执行一次 root terminal bootstrap：从当前
+systemd `ExecStart` 推导既有安装用户/目录，在单次 installer 进程中设置受控
+`HTTP(S)_PROXY` 和私网 `NO_PROXY`，下载与执行同一个 40 字符候选 ref；installer 会原子
+替换同一安装并刷新 node-agent service。禁止修改 Docker daemon、禁止 `curl | sh`、
+禁止改用 mutable `main`。新 agent 上报 `luma-update-proxy-v1` 后，后续全部恢复为正常
+Update Center 流程，Control 按节点 region/direct-egress 只为 installer 子进程注入代理。
 
 必须确认 `builder` 更新成功。显式 sidecar import 有三层保护：CLI 在 build 前检查
 Control capability，Control 要求 Builder 回显同一路径，Builder 在 clone 后拒绝

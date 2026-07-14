@@ -123,13 +123,14 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "docker-image",
             "docker-egress-proxy",
             "luma-update",
+            "luma-update-proxy-v1",
             "manager-update-v1",
             "nomad-join",
             "nomad-cni-repair",
             "terminal",
         ]
     elif os_value == "darwin":
-        capabilities = ["nfs-host", "managed-volume-path", "docker-volume", "docker-image", "luma-update", "nomad-join", "terminal"]
+        capabilities = ["nfs-host", "managed-volume-path", "docker-volume", "docker-image", "luma-update", "luma-update-proxy-v1", "nomad-join", "terminal"]
     else:
         return []
     if _docker_buildx_available():
