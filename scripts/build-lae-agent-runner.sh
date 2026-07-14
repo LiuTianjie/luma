@@ -40,6 +40,15 @@ done
 }
 command -v git >/dev/null || { echo "git is required" >&2; exit 2; }
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 2; }
+# Some sudo policies preserve the invoking user's HOME. The Luma node agent
+# runs as root and its managed Buildx context lives under root's Docker config,
+# so normalize HOME to the effective account before inspecting that context.
+effective_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+[[ -n "$effective_home" && -d "$effective_home" ]] || {
+  echo "effective account home is unavailable" >&2
+  exit 2
+}
+export HOME="$effective_home"
 docker buildx inspect "$builder" >/dev/null
 
 work=$(mktemp -d /tmp/luma-lae-agent-runner.XXXXXX)

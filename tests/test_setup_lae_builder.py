@@ -33,6 +33,8 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
         source = RUNNER_BUILD_SCRIPT.read_text(encoding="utf-8")
         self.assertIn('[[ "$commit" =~ ^[0-9a-f]{40}$ ]]', source)
         self.assertIn('docker buildx inspect "$builder"', source)
+        self.assertIn('getent passwd "$(id -u)"', source)
+        self.assertIn('export HOME="$effective_home"', source)
         self.assertIn('git -C "$work" fetch -q --depth=1 origin "$commit"', source)
         self.assertIn("--platform linux/amd64", source)
         self.assertIn("--provenance=true", source)
