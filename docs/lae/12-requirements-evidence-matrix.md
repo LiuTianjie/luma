@@ -52,19 +52,19 @@
 | C-04 | 拉代码、Agent runner 与构建全部走 Luma `builder` | Builder Task v1、credential/object redemption、analyze/build executors、Worker adapter | 代码和局部真实接线存在；公网多租户 rootless/egress/quota/GC/orphan 故障验证未关闭 |
 | C-05 | `manager` 是唯一控制面；`aly` 已过时 | live status、[07 D-016](./07-open-decisions.md)、部署/SOP | 当前文档已统一；任何升级/placement 命令再出现 `aly` 应视为 stale 配置缺陷 |
 | C-06 | Staging runtime 可用 `manager + tecent`；manager 可同时是节点；具体 placement 对用户不可见 | LAE runtime allowlist、runtime role、placement admission/admin projection tests | live 配置已存在；production 仍建议至少两个专用 runner，且要完成容量、CNI、volume 与故障切换演练 |
-| C-07 | ARK key/model 做成 provider-agnostic 可配置；AI 必须了解 LAE Skill/背景知识；不可部署要明确告知 | `LAE_AGENT_LLM_BASE_URL/API_KEY/MODEL`、`lae/knowledge/v1/knowledge-pack.json`、Agent Controller/runner、四态 verdict、Web `analysisFailureMessage` | Agent ready 显示 AI configured；FastAPI `deployable` 已真实上线。`unsupported` 会展示 blocker code/path/field/remediation，平台诊断故障与项目不支持明确分开；用户不提供 API key | 仍需 provider-backed `needs_input/unsupported/diagnostic_failed` 各一例和 blocker 质量验收 |
-| C-08 | 控制面升级或发布其他应用不得让既有应用 404/502，更不能依赖人工全量重启 | [SOP 11.1](./10-operations-troubleshooting-sop.md#111-控制面升级或其他应用部署后批量-404502)、[部署手册 6.1](./11-deployment-and-upgrade.md#61-升级期间的-route-连续性门禁)；deployment-scoped router/service、Tailscale node metadata、exact rollout barrier | **Staging partial**。平台 Job v21、在线 fleet 与 Control/manager `0.1.196` 均无需人工重启；LAE Web 定向 sentinel 通过，但长时间探针仍有少量瞬时失败，全量 sentinel 的合法 404 语义也需修复。Docker restart/CNI 和 reconciliation 故障注入仍是 production gate |
+| C-07 | ARK key/model 做成 provider-agnostic 可配置；AI 必须了解 LAE Skill/背景知识；不可部署要明确告知 | `LAE_AGENT_LLM_BASE_URL/API_KEY/MODEL`、`lae/knowledge/v1/knowledge-pack.json`、Agent Controller/runner、四态 verdict、Web `analysisFailureMessage` | Agent ready 显示 AI configured；真实 E2E 已覆盖 `deployable`、必需配置 `needs_input` 和带七类稳定 blocker 的 `unsupported`；平台诊断故障与项目不支持明确分开，用户不提供 API key | 仍需 provider-backed `diagnostic_failed` 故障注入与 blocker 文案长期兼容性验收 |
+| C-08 | 控制面升级或发布其他应用不得让既有应用 404/502，更不能依赖人工全量重启 | [SOP 11.1](./10-operations-troubleshooting-sop.md#111-控制面升级或其他应用部署后批量-404502)、[部署手册 6.1](./11-deployment-and-upgrade.md#61-升级期间的-route-连续性门禁)；deployment-scoped router/service、Tailscale node metadata、exact rollout barrier | **Staging partial**。Control/manager `0.1.233` 更新、wildcard DNS-01 和完整产品 E2E 均无需人工重启；长时间多 edge sentinel、Docker restart/CNI 和 reconciliation 故障注入仍是 production gate |
 
 ## 4. 基础设施落点
 
 | 层 | Staging 当前落点 | Production 目标/缺口 |
 | --- | --- | --- |
-| Luma Control | `manager`，唯一控制面；CLI/Control/manager agent live `0.1.196` | Control HA/恢复、严格 service principal、更广升级 sentinel；manager 是否继续承载 runtime 需容量与故障决策 |
-| LAE 平台 | `lab` 上单个 9-task Nomad group：Web、API、Worker、Agent Controller、PostgreSQL、MinIO、artifact-init、Valkey、Mailpit | 专用 `lae-core`/平台池；migration job/lock；平台服务健康/滚动策略；不能把单 group 当 HA |
+| Luma Control | `manager`，唯一控制面；CLI/Control/manager agent live `0.1.233` | Control HA/恢复、严格 service principal、更广升级 sentinel；manager 是否继续承载 runtime 需容量与故障决策 |
+| LAE 平台 | `manager` 上单个 9-task Nomad group：Web、API、Worker、Agent Controller、PostgreSQL、MinIO、artifact-init、Valkey、Mailpit | 专用 `lae-core`/平台池；migration job/lock；平台服务健康/滚动策略；不能把单 group 当 HA |
 | Builder/registry | `builder`；内部 registry，Git/object task lease，analyze/build | 专用 rootless builder pool、无宿主 socket、CPU/memory/PID/disk/time/egress 强制、registry auth/GC/容量/恢复 |
 | Tenant Runtime | `manager + tecent` 正向 allowlist，manager 显式 runtime role | 至少两个专用 runner；管理网/metadata/Tailscale deny、cap drop、read-only rootfs、PID/ephemeral storage、网络策略与 chaos |
 | Product data | PostgreSQL + MinIO；staging 使用独立 NFS path；Valkey 非权威 | 独立 storage class、PostgreSQL WAL/PITR、MinIO/registry/volume 跨故障域备份和 restore drill |
-| Ingress/domain | Luma route/DNS/TLS，随机 `*.itool.tech` 目标；平台经 `tailscale-relay` | wildcard DNS/TLS、route ownership/reconcile、全 route probe；V1 不支持自定义域名或 TCP relay |
+| Ingress/domain | Luma route/DNS/TLS，Cloudflare DNS-01 wildcard 证书与随机 `*.itool.tech` 目标 | route ownership/reconcile、全 route probe 与长期连续性；V1 不支持自定义域名或 TCP relay |
 | Email | Mailpit 内部捕获；外部 SMTP 当前不可用 | 真实 SMTP/API provider、SPF/DKIM/DMARC、outbox、退信/投诉、限流与送达监控 |
 | Billing | Staging signed mock；production disabled | WeChat/Alipay adapter、sandbox、webhook/reconcile/refund、商户/发票/财务审计 |
 | Observability | Luma Dashboard、应用日志/指标 API 基座 | 独立 OTel/metrics/log/alert 资产、SLO、tenant retention、告警 runbook；当前仓库没有完整生产观测 deployment |
@@ -74,7 +74,7 @@
 ### P0：发布前必须关闭
 
 1. **跨应用 404/502 剩余故障矩阵**：已复现的名称碰撞/跨节点 upstream 与正常升级路径已修复并回归；仍需 Docker daemon restart 后 CNI 自愈、route reconciliation 故障注入和多 edge sentinel，不能把人工 restart 写进标准流程。
-2. **租户 Runtime 纵向 E2E**：至少覆盖 HTML、私有 Git、单 HTTP、Compose 双 HTTP + volume，从 inspect/env/build/deploy/all-route verify 到 restart/update/rollback/delete，并包含失败保旧。
+2. **租户 Runtime 剩余纵向 E2E**：HTML、单 HTTP 与 Compose 双 HTTP + volume 已通过；继续覆盖 ZIP、真实私有 Git、rollback 和失败保旧。
 3. **公网多租户隔离**：专用 builder/runner、网络/metadata 管理面阻断、资源/出口限制、secret 和 artifact 边界必须有真实负例证据。
 4. **数据恢复**：PostgreSQL PITR、MinIO/registry/tenant volume restore drill 未完成。
 
@@ -83,12 +83,12 @@
 1. 真实 SMTP 与用户邮箱送达；Mailpit 只能证明生成/捕获邮件。
 2. AI provider-backed 四态 verdict golden E2E，尤其是 `unsupported` blocker 的稳定 code、证据位置和可执行修复建议。
 3. 模板 daily smoke/自动下架；真实微信/支付宝；usage ledger/硬配额；admin RBAC/写动作。
-4. Skill 正式分发和 clean-room Agent 验收；CLI/Web/API 同一 contract 的兼容矩阵。
+4. Skill 独立包正式分发与跨 Agent runtime 验收；项目内 clean-room Agent 核心路径已通过，CLI/Web/API 同一 contract 的兼容矩阵仍需扩展。
 5. 真实浏览器视觉、可访问性、reduced-motion 与 Operation event 驱动动画回归。
 
 ### 本轮已纠正的文档冲突
 
-- 将旧的 `0.1.171`/`20469a4` 快照更新为当前 CLI/Control/在线 fleet `0.1.196`、平台 Job v21/exact ref `7c1212c`，并明确离线 `blg` 尚未升级。
+- 将旧的 `0.1.171`/`0.1.196` 快照更新为当前 CLI/Control/manager `0.1.233`、平台 exact ref `65a4010`，并明确非 manager fleet 本轮未全量升级。
 - 将 “Mailpit 注册”等同真实邮件送达的表述改为“Mailpit 捕获 challenge”。
 - 将 “LLM 只做解释”修正为“AI 受 Knowledge Pack 约束生成 proposal，确定性校验终审”。
 - Skill 从内部状态 `needs_configuration/not_deployable` 改为公开 verdict `needs_input/unsupported/diagnostic_failed`。

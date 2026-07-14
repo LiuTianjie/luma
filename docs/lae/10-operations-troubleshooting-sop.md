@@ -83,12 +83,12 @@ docker compose -f lae/deploy/luma/docker-compose.staging.yml config --no-interpo
 
 `compose validate --import-mode` 会在 Repository Import 语义下注入构建结果，并在输出中包含 storage validation。不要再把 `luma storage check` 单独用于这些仍含 `build:` 的 sidecar：该命令没有 `--import-mode`，会在 image 注入前失败，不能作为 LAE 发布门禁。
 
-截至 2026-07-12，Luma CLI、Control、manager agent 与 6 个在线非 manager agent
-均为 `0.1.196`；离线 `blg` 保持 `0.1.175`，恢复后补升级。LAE staging Job v21 的
-9 个 task、TLS 与 Web/API/Agent/artifact 探针健康，FastAPI 模板已完成真实 Agent →
-Builder → Runtime → 随机域名/TLS E2E。更新检查、同 revision 重部署、日志/指标和主要
-lifecycle 已有真实证据。Mailpit 仍不能证明真实邮箱送达，HTML/ZIP、私有 Git、
-Compose 双 HTTP/volume 与完整安全负例矩阵仍待完成。
+截至 2026-07-14，Luma CLI、Control 与 manager agent 为 `0.1.233`；本轮未做
+worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`，离线 `blg` 保持
+`0.1.175`。LAE staging 的 9 个 task、wildcard DNS-01 TLS 与 Web/API/Agent/artifact
+探针健康；四服务 Compose 双 HTTPS/双持久卷产品 E2E 与 clean-room CLI/Skill E2E
+均已通过。Mailpit/preview 仍不能证明真实邮箱送达，ZIP、真实私有 Git与完整安全负例
+矩阵仍待完成。
 
 `luma build list/logs` 展示的是 Repository Import build run，不是 LAE Builder v2 service-principal task。不要用它证明 LAE analysis/build 成功。LAE task 先看 LAE Operation；需要内部关联时再使用第 8 节的安全投影。
 

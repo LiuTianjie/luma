@@ -60,7 +60,7 @@
 | Stateful recovery | Not started | PostgreSQL PITR、object/registry restore、Lite/Pro volume restore drill |
 | Abuse/compliance | Not started | 举报/封禁/申诉、内容治理、条款/隐私、地域和支付主体决策 |
 | Capacity/SLO | In progress | 最终 Job 已由 Nomad plan 做实时 CPU/memory feasibility；Luma 内部稳定区分 no-capacity/placement/volume，租户侧故意把容量和卷拓扑统一成不泄露维度的 `LAE_CAPACITY_UNAVAILABLE`；仍需 builder/runner/stateful 容量模型、load/soak/chaos 与告警 |
-| Upgrade/route continuity | In progress | Control/manager `0.1.200`、在线非 manager agents `0.1.198`；真实 gateway restart 已证明 allocation replacement、route/DNS reconcile 和 HTTP 200，且 manager config/provider 跨更新持久。仍需长时间多域 sentinel、Docker/CNI 故障注入和 LAE 平台升级窗口零失败证据 |
+| Upgrade/route continuity | In progress | Control/manager `0.1.233`；本轮未做 worker-wide fleet 升级。真实产品 E2E 已证明 async runtime、restart/suspend/resume 后 route/DNS/TLS 可用，且 manager config/provider 跨更新持久。仍需长时间多域 sentinel、Docker/CNI 故障注入和 LAE 平台升级窗口零失败证据 |
 
 ## 4. 当前实施批次
 

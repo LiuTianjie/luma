@@ -406,8 +406,8 @@ exact deployment/`JobVersion`，并等待该版本每个 required task group 的
 `JobModifyIndex` 对应的当前版本与 allocation 已健康。failed/blocked/canceled、
 superseded 和 timeout 必须 fail closed。
 
-当前 live `0.1.196` 已通过在线 fleet、manager Control 与 LAE Job v21 更新，既有
-route 未再出现需要人工重启才能恢复的批量 404/502。已复现的 service/router
+当前 live `0.1.233` 已通过 manager Control 更新和 LAE 产品 E2E，既有 route 未再
+出现需要人工重启才能恢复的批量 404/502。已复现的 service/router
 名称碰撞和跨节点 private-IP upstream 已分别通过 deployment-scoped 名称与
 `luma_tailscale_ip` service address 修复。但长时间外部探针仍有少量瞬时失败，
 全量 sentinel 对合法 404 的健康语义也不正确。Docker daemon restart 后 CNI 自愈、

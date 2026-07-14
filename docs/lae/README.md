@@ -1,7 +1,7 @@
 # Luma Application Engine（LAE）产品与工程设计
 
-> 状态：Draft v0.7；Luma CLI 与 Control 已运行 `0.1.192`，9 个 LAE 平台 task 健康；真实模板 → Agent → Builder → Runtime → 随机域名/TLS 首次纵向 E2E 已通过，完整来源、生命周期、安全与故障矩阵仍待完成
-> 日期：2026-07-12
+> 状态：Draft v0.8；Luma CLI、Control 与 manager agent 已运行 `0.1.233`，9 个 LAE 平台 task 健康；四服务 Compose 产品 E2E 与 clean-room CLI/Skill E2E 已通过，完整来源、安全与故障矩阵仍待完成
+> 日期：2026-07-14
 > 目标：在 Luma 之上建设面向普通用户和 AI Agent 的多租户应用部署平台；LAE 自身及其依赖全部由 Luma 部署和管理。
 
 ## 1. 结论先行
@@ -42,12 +42,12 @@ LAE 不能只是给现有 Luma Dashboard 增加注册页。正确边界是：
 
 ## 3. 当前 Luma 事实基线
 
-本设计不是从空白假设出发。2026-07-12 当前 staging 的分层事实是：
+本设计不是从空白假设出发。2026-07-14 当前 staging 的分层事实是：
 
-- 当前 live CLI 与 Control 为 Luma `0.1.192`，manager agent 同为 `0.1.192`；其余在线 agent 仍分布在 `0.1.175`-`0.1.188`，不能写成 fleet 已统一。后续涉及 agent 协议的版本仍必须按 manager → 所需节点 → fleet 顺序升级同一不可变 ref。`manager` 是唯一控制面；`aly` 是过时历史节点，不进入升级或任何 LAE placement。
-- LAE 平台 staging 固定在 `lab`；租户 runtime allowlist 是 `manager + tecent`，其中 `manager` 显式具备 runtime role。生产仍应使用专用平台与 runner pool，不能把当前共享节点布局当成生产拓扑。
+- 当前 live CLI、Control 与 manager agent 为 Luma `0.1.233`；本轮没有 worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`，不能写成 fleet 已统一。后续涉及 agent 协议的版本仍必须按 manager → 所需节点 → fleet 顺序升级同一不可变 ref。`manager` 是唯一控制面；`aly` 是过时历史节点，不进入升级或任何 LAE placement。
+- LAE 平台 staging 当前在 `manager`；租户 runtime allowlist 是 `manager + tecent`，其中 `manager` 显式具备 runtime role。生产仍应使用专用平台与 runner pool，不能把当前共享节点布局当成生产拓扑。
 - 默认构建节点是 `builder`，位于内部 `home` region；该值不属于 LAE 租户协议，公开 analysis/upload/template/Web/CLI 只接受 `cn | global`。当前 Control 中 registry pull/push 地址均为 `100.66.177.70:5000`，内部 registry 使用 HTTP insecure 配置，平台构建使用 direct 模式；旧文档中的 Builder `localhost:5000` push 地址已经失效。
-- 当前 staging 的 9 个平台 task 均健康，三个平台公网域名 TLS 有效，Web、API live/ready、Agent ready 与 artifact ready 探针均返回 200；Agent ready 报告 `mode=ai`、`configured=true`。FastAPI 模板已在无人工补写 manifest 的情况下走通 Agent 诊断、Builder 构建、Runtime 部署、随机域名与 TLS，当前两个真实租户应用均运行在 `tecent`。Mailpit 内的注册、默认 deploy token、CLI、模板与 analysis 已跑；这仍不等于真实用户邮箱可收信，也不等于所有 source、AI 四态 verdict、观测与 lifecycle 动作矩阵已完成验收。
+- 当前 staging 的 9 个平台 task 均健康，Cloudflare DNS-01 wildcard TLS 有效，Web、API live/ready、Agent ready 与 artifact ready 探针均返回 200；Agent ready 报告 `mode=ai`、`configured=true`。四服务 Compose 已在无人工补写 manifest 的情况下走通 Agent 诊断、Builder 构建、双 HTTPS route、双持久卷与主要 lifecycle；clean-room Agent 也已仅凭 Skill/CLI/deploy token 完成模板部署和清理。Mailpit/preview 仍不等于真实用户邮箱可收信，也不等于所有 source、AI 四态 verdict 与故障矩阵已完成验收。
 - 现有 Luma `build-image` 已在 builder 临时目录 clone Git、执行 buildx、推送 registry，并能发现仓库内 Compose sidecar 后构建多个 service；凭据在 task lease 时注入。
 - legacy builder 没有“只分析不构建”的 action，也不能直接消费 LAE 生成的多服务 `BuildPlan`，其 Docker/buildx 共享宿主执行形态不满足公网多租户隔离。Builder v2 因此采用不可变 source snapshot、`analyze-source`、显式多 build plan、短期凭据 lease 和 rootless sandbox；其中 analyzer 已拒绝 default/rootful Docker daemon，其他公开门槛见实施状态文档。
 - 已有能力包括单服务/Compose 部署、预览、GitHub/Gitea 凭据、仓库构建、内部 registry、NDJSON 进度、部署历史、日志、指标、更新、重启和回滚。

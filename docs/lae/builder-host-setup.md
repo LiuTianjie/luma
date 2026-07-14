@@ -1,6 +1,6 @@
 # LAE Builder 主机准备与验收
 
-> 状态：Luma Control `0.1.192` 已 live，当前 `builder` agent 为 `0.1.188`；既有构建链路已完成真实 `--check`、平台 import 和 FastAPI tenant build。配置幂等、隔离/压力/故障与恢复证据未全部关闭，本文不构成 production-ready 证明。
+> 状态：Luma Control `0.1.233` 已 live，当前 `builder` agent 为 `0.1.228`；既有构建链路已完成真实 `--check`、平台 import、四服务 Compose tenant build 和 clean-room CLI/Skill template build。配置幂等、隔离/压力/故障与恢复证据未全部关闭，本文不构成 production-ready 证明。
 
 LAE Builder v2 只在显式准备过的 Ubuntu 专用节点上启用。仓库默认不会让普通 Luma 节点宣告 `builder-analyze-v1` 或 `builder-build-v1`：只有操作员执行准备脚本、所有运行时门槛通过、node agent 重新加载环境后，能力探测才可能成功。
 
