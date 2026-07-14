@@ -309,9 +309,7 @@ services:
 
   backup:
     platform: linux/amd64
-    build:
-      context: ../..
-      dockerfile: deploy/luma/docker/backup.Dockerfile
+    image: ${LAE_BACKUP_IMAGE:-100.66.177.70:5000/liutianjie/luma/backup@sha256:b8007b98a03da177c8bf84795aeffa70feface7f5ac963372cf4e1febef3d3df}
     environment:
       LAE_ARTIFACT_S3_BUCKET: lae-artifacts-staging
       LAE_BACKUP_INTERVAL_SECONDS: "86400"
@@ -343,9 +341,7 @@ services:
 
   valkey:
     platform: linux/amd64
-    build:
-      context: ../..
-      dockerfile: deploy/luma/docker/valkey.Dockerfile
+    image: ${LAE_VALKEY_IMAGE:-100.66.177.70:5000/liutianjie/luma/valkey@sha256:344564180c9f6ab456f1de502a88426f2360183d929c06514010c9200b3069db}
     command:
       - sh
       - -ec
