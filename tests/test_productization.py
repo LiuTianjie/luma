@@ -827,6 +827,38 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("100.64.0.0/10", env["NO_PROXY"].split(","))
         self.assertEqual(env["NO_PROXY"], env["no_proxy"])
 
+    def test_node_agent_update_falls_back_directly_without_mutating_host_proxy(self):
+        failed = Mock(returncode=56, stdout="curl: (56) Proxy CONNECT aborted\n")
+        succeeded = Mock(returncode=0, stdout="Luma version: 0.1.236\n")
+        events = []
+        with patch("luma.agent.subprocess.run", side_effect=[failed, succeeded]) as run, patch(
+            "luma.agent.LocalExecutor"
+        ) as executor, patch("luma.agent.node_agent_os", return_value="linux"), patch(
+            "luma.agent._installed_luma_executable", return_value="/root/.local/bin/luma"
+        ), patch.dict(os.environ, {"ALL_PROXY": "socks5://127.0.0.1:1080"}, clear=False):
+            executor.return_value.sudo.return_value = ""
+            result = update_luma_install(
+                install_ref="v0.1.236",
+                proxy="http://100.106.154.3:7890",
+                progress=events.append,
+            )
+
+        self.assertEqual(run.call_count, 2)
+        first_env = run.call_args_list[0].kwargs["env"]
+        direct_env = run.call_args_list[1].kwargs["env"]
+        self.assertEqual(first_env["HTTPS_PROXY"], "http://100.106.154.3:7890")
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+            self.assertNotIn(key, direct_env)
+        self.assertEqual(result["installedVersion"], "0.1.236")
+        self.assertTrue(
+            any(
+                event["line"].startswith(
+                    "Configured node egress failed; retrying the same exact Luma release"
+                )
+                for event in events
+            )
+        )
+
     def test_node_agent_update_rejects_credentialed_proxy(self):
         with patch("luma.agent.subprocess.run") as run:
             with self.assertRaisesRegex(LumaError, "without credentials"):
@@ -895,6 +927,8 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("luma-update", node_agent_capabilities("darwin"))
         self.assertIn("luma-update-proxy-v1", node_agent_capabilities("linux"))
         self.assertIn("luma-update-proxy-v1", node_agent_capabilities("darwin"))
+        self.assertIn("luma-update-egress-fallback-v1", node_agent_capabilities("linux"))
+        self.assertIn("luma-update-egress-fallback-v1", node_agent_capabilities("darwin"))
         self.assertIn("docker-image", node_agent_capabilities("linux"))
         self.assertIn("docker-image", node_agent_capabilities("darwin"))
         self.assertIn("nomad-join", node_agent_capabilities("linux"))
@@ -5148,6 +5182,9 @@ class ControlApiTests(unittest.TestCase):
         with patch("luma.control.server.load_state", return_value=state), patch(
             "luma.control.server.load_config", return_value=Mock()
         ), patch("luma.control.server._dashboard_route_files", return_value=routes), patch(
+            "luma.control.server._sentinel_active_http_domains",
+            return_value={"app.example.com"},
+        ), patch(
             "luma.control.server._sentinel_probe_public_route",
             return_value={"domain": "app.example.com", "status": 200, "ok": True, "latencyMs": 12, "error": ""},
         ):
@@ -5177,6 +5214,72 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(published["status"], 401)
         self.assertFalse(unpublished["ok"])
         self.assertEqual(unpublished["status"], 404)
+
+    def test_route_sentinel_accepts_application_owned_json_404(self):
+        import io
+        from luma.control.server import _sentinel_probe_public_route
+
+        application_404 = urllib.error.HTTPError(
+            "https://api.example.com/",
+            404,
+            "missing",
+            {"Content-Type": "application/json"},
+            io.BytesIO(b'{"detail":"Not Found"}'),
+        )
+        with patch(
+            "luma.control.server.urllib.request.urlopen",
+            side_effect=application_404,
+        ):
+            result = _sentinel_probe_public_route("api.example.com")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], 404)
+
+    def test_route_sentinel_excludes_stale_route_files_from_default_inventory(self):
+        from luma.control.server import handle_route_sentinel
+
+        state = {"clusterId": "luma-test", "deployToken": "management-token"}
+        routes = {
+            "active": {"kind": "http", "domain": "active.example.com"},
+            "stale": {"kind": "http", "domain": "stale.example.com"},
+        }
+        with patch("luma.control.server.load_state", return_value=state), patch(
+            "luma.control.server.load_config", return_value=Mock()
+        ), patch("luma.control.server._dashboard_route_files", return_value=routes), patch(
+            "luma.control.server._sentinel_active_http_domains",
+            return_value={"active.example.com"},
+        ), patch(
+            "luma.control.server._sentinel_probe_public_route",
+            return_value={"domain": "active.example.com", "status": 200, "ok": True, "latencyMs": 4, "error": ""},
+        ) as probe:
+            result = handle_route_sentinel("management-token", {})
+
+        probe.assert_called_once_with("active.example.com")
+        self.assertEqual(result["total"], 1)
+
+    def test_route_sentinel_inventory_joins_active_deployments_not_route_files(self):
+        from luma.control.server import _sentinel_active_http_domains
+
+        state = {
+            "deployments": {
+                "services": {
+                    "app": {
+                        "status": "active",
+                        "manifest": "name: app\nexposure: tailscale-relay\ndomain: active.example.com\n",
+                    }
+                }
+            }
+        }
+        routes = {
+            "app": {"kind": "http", "domain": "active.example.com"},
+            "old-app": {"kind": "http", "domain": "stale.example.com"},
+        }
+        errors = []
+        with patch("luma.control.server.nomad_services_summary", return_value=[]):
+            domains = _sentinel_active_http_domains(Mock(), state, routes, errors)
+
+        self.assertEqual(domains, {"active.example.com"})
+        self.assertEqual(errors, [])
 
     def test_prune_agent_tasks_drops_old_terminal_keeps_active_and_recent(self):
         from luma.control.server import (

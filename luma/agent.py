@@ -124,13 +124,24 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "docker-egress-proxy",
             "luma-update",
             "luma-update-proxy-v1",
+            "luma-update-egress-fallback-v1",
             "manager-update-v1",
             "nomad-join",
             "nomad-cni-repair",
             "terminal",
         ]
     elif os_value == "darwin":
-        capabilities = ["nfs-host", "managed-volume-path", "docker-volume", "docker-image", "luma-update", "luma-update-proxy-v1", "nomad-join", "terminal"]
+        capabilities = [
+            "nfs-host",
+            "managed-volume-path",
+            "docker-volume",
+            "docker-image",
+            "luma-update",
+            "luma-update-proxy-v1",
+            "luma-update-egress-fallback-v1",
+            "nomad-join",
+            "terminal",
+        ]
     else:
         return []
     if _docker_buildx_available():
@@ -3516,23 +3527,62 @@ def update_luma_install(
         env.setdefault("LUMA_INSTALL_HOME", str(install_home))
         env.setdefault("LUMA_BIN_DIR", str(bin_dir))
     emit(f"Downloading and installing Luma {exact_ref}.")
-    try:
-        completed = subprocess.run(
-            command,
-            shell=True,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=900,
-        )
-    except subprocess.TimeoutExpired as exc:
-        output = str(exc.stdout or "")
-        raise LumaError("Luma installer timed out" + (f": {_tail_text(output)}" if output else "")) from exc
-    output = completed.stdout or ""
-    if completed.returncode != 0:
-        raise LumaError(f"Luma installer failed with exit code {completed.returncode}: {_tail_text(output)}")
+    attempts = [("configured node egress" if proxy_value else "node network", env)]
+    if proxy_value:
+        # A reachable proxy socket can still reject a CONNECT request for one
+        # destination. Keep the configured proxy as the first choice, then
+        # retry the same exact ref once with a clean process-local network
+        # environment. This never mutates dockerd, launchd/systemd, or the
+        # host's global proxy settings.
+        direct_env = env.copy()
+        for key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            direct_env.pop(key, None)
+        attempts.append(("direct network fallback", direct_env))
+
+    failures: list[str] = []
+    completed = None
+    output = ""
+    for index, (route, attempt_env) in enumerate(attempts):
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                env=attempt_env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=900,
+            )
+        except subprocess.TimeoutExpired as exc:
+            attempt_output = str(exc.stdout or "")
+            failures.append(
+                f"{route} timed out" + (f": {_tail_text(attempt_output)}" if attempt_output else "")
+            )
+        else:
+            output = completed.stdout or ""
+            if completed.returncode == 0:
+                break
+            failures.append(
+                f"{route} exited with code {completed.returncode}: {_tail_text(output)}"
+            )
+        if index + 1 < len(attempts):
+            emit(
+                "Configured node egress failed; retrying the same exact Luma release "
+                "with a direct process-local connection."
+            )
+    else:
+        raise LumaError("Luma installer failed: " + " | ".join(failures))
+
+    if completed is None or completed.returncode != 0:
+        raise LumaError("Luma installer failed: " + " | ".join(failures))
     version_match = re.search(r"^Luma version:\s*([^\s]+)\s*$", output, re.MULTILINE)
     if version_match is None:
         raise LumaError(

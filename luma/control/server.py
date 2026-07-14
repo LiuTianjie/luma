@@ -10541,19 +10541,95 @@ def _sentinel_probe_public_route(domain: str) -> Dict[str, Any]:
     )
     status = 0
     error = ""
+    response_sample = ""
+    content_type = ""
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
             status = int(response.status or 0)
+            response_headers = response.headers or {}
+            content_type = str(response_headers.get("Content-Type") or "").lower()
     except urllib.error.HTTPError as exc:
         status = int(exc.code or 0)
+        response_headers = exc.headers or {}
+        content_type = str(response_headers.get("Content-Type") or "").lower()
+        try:
+            response_sample = exc.read(512).decode("utf-8", errors="replace")
+        except (OSError, ValueError):
+            response_sample = ""
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         error = str(getattr(exc, "reason", exc))[:240]
     latency_ms = int((time.monotonic() - started) * 1000)
-    # Authentication and redirects still prove that Traefik published the
-    # route. 404 and gateway errors are the upgrade regressions this sentinel
-    # is designed to catch.
-    ok = bool(status and status != 404 and status < 500)
+    # Authentication, redirects, and an application-owned JSON/HTML 404 prove
+    # that Traefik published the route. Only Traefik's plain default 404 means
+    # the router disappeared. Gateway errors remain failures.
+    default_404 = bool(
+        status == 404
+        and (
+            not response_sample
+            or (
+                "text/plain" in content_type
+                and response_sample.strip().lower() == "404 page not found"
+            )
+        )
+    )
+    ok = bool(status and status < 500 and not default_404)
     return {"domain": domain, "status": status, "ok": ok, "latencyMs": latency_ms, "error": error}
+
+
+def _sentinel_active_http_domains(
+    config: Any,
+    state: Dict[str, Any],
+    route_files: dict[str, Dict[str, Any]],
+    errors: list[str],
+) -> set[str]:
+    """Return public domains backed by a current job or active deployment.
+
+    Route files are durable configuration and can outlive a removed job. They
+    are therefore not, by themselves, proof that a route still belongs to the
+    live fleet. The sentinel deliberately joins them with Nomad jobs and Luma's
+    active deployment records so an old file cannot poison every Control
+    upgrade baseline.
+    """
+
+    domains: set[str] = set()
+    try:
+        services = _dashboard_nomad_services(
+            nomad_services_summary(config, state),
+            route_files,
+            state=state,
+        )
+    except Exception as exc:
+        errors.append(f"Active route inventory unavailable: {exc}")
+        services = []
+    for service in services:
+        domain = str(service.get("domain") or "").strip().lower()
+        exposure = str(service.get("exposure") or "none")
+        desired = int(service.get("desired") or 0)
+        if domain and exposure != "none" and desired > 0:
+            domains.add(domain)
+
+    deployment_index, _compose_stacks = _dashboard_deployment_service_index(state)
+    seen_entries: set[tuple[str, str, str]] = set()
+    for entry in deployment_index.values():
+        if not isinstance(entry, dict):
+            continue
+        identity = (
+            str(entry.get("stack") or ""),
+            str(entry.get("name") or ""),
+            str(entry.get("routeId") or ""),
+        )
+        if identity in seen_entries:
+            continue
+        seen_entries.add(identity)
+        if str(entry.get("deploymentStatus") or "") != "active":
+            continue
+        exposure = str(entry.get("exposure") or "none")
+        if exposure in {"none", "tcp-relay"}:
+            continue
+        domain = str(entry.get("domain") or "").strip().lower()
+        if domain:
+            domains.add(domain)
+    return domains
 
 
 def handle_route_sentinel(token: str, body: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -10563,11 +10639,7 @@ def handle_route_sentinel(token: str, body: Dict[str, Any] | None = None) -> Dic
     config = load_config(config_path)
     errors: list[str] = []
     route_files = _dashboard_route_files(config, config_path, errors)
-    known_domains = {
-        str(route.get("domain") or "").strip().lower()
-        for route in route_files.values()
-        if isinstance(route, dict) and str(route.get("kind") or "") == "http" and str(route.get("domain") or "").strip()
-    }
+    known_domains = _sentinel_active_http_domains(config, state, route_files, errors)
     requested = (body or {}).get("domains")
     if requested is not None and not isinstance(requested, list):
         raise LumaError("domains must be a list")
