@@ -389,6 +389,7 @@ def watch_operation(
     client: JsonClient,
     operation: str,
     *,
+    require_success: bool = True,
     deadline: float,
 ) -> dict[str, Any]:
     cursor = 0
@@ -431,7 +432,7 @@ def watch_operation(
             if status not in TERMINAL_OPERATION_STATUSES:
                 raise AcceptanceFailure("operation terminal snapshot is inconsistent")
             emit("operation_terminal", operationId=operation, status=status)
-            if status != "succeeded":
+            if status != "succeeded" and require_success:
                 error = result.get("error")
                 code = error.get("code") if isinstance(error, dict) else None
                 raise AcceptanceFailure(
@@ -640,6 +641,53 @@ def deploy(
     ).body
 
 
+def deploy_expect_failure(
+    client: JsonClient,
+    *,
+    application_id: str,
+    analysis_id: str,
+    environment_version: int,
+    deadline: float,
+) -> tuple[str, dict[str, Any]]:
+    created = request_with_retry(
+        client,
+        "POST",
+        f"/applications/{application_id}/deployments",
+        {"analysisId": analysis_id, "environmentVersion": environment_version},
+        idempotency_key=idempotency("deployfail"),
+        expected=frozenset({202}),
+        deadline=deadline,
+    ).body
+    deployment = created.get("deployment")
+    deployment_id = deployment.get("id") if isinstance(deployment, dict) else None
+    if not isinstance(deployment_id, str):
+        raise AcceptanceFailure("failed deployment admission response is incomplete")
+    terminal = watch_operation(
+        client,
+        operation_id(created),
+        require_success=False,
+        deadline=deadline,
+    )
+    if terminal.get("status") != "failed":
+        raise AcceptanceFailure("intentionally broken deployment did not fail")
+    emit(
+        "failed_deployment_verified",
+        applicationId=application_id,
+        deploymentId=deployment_id,
+    )
+    return deployment_id, terminal
+
+
+def current_deployment_id(application: Mapping[str, Any]) -> str:
+    summary = application.get("application")
+    deployment_id = (
+        summary.get("currentDeploymentId") if isinstance(summary, Mapping) else None
+    )
+    if not isinstance(deployment_id, str):
+        raise AcceptanceFailure("application current deployment ID is missing")
+    return deployment_id
+
+
 def assert_golden_topology(application: Mapping[str, Any]) -> tuple[str, ...]:
     services = application.get("services")
     routes = application.get("routes")
@@ -685,13 +733,16 @@ def lifecycle_action(
     *,
     application_id: str,
     action: str,
+    deployment_id: str | None = None,
     deadline: float,
 ) -> dict[str, Any]:
+    if (action == "rollback") != (deployment_id is not None):
+        raise ValueError("deployment_id is required only for rollback")
     response = request_with_retry(
         client,
         "POST",
         f"/applications/{application_id}/actions/{action}",
-        {},
+        {"deploymentId": deployment_id} if deployment_id is not None else {},
         idempotency_key=idempotency(action.replace("-", "")),
         expected=frozenset({202}),
         deadline=deadline,
@@ -805,6 +856,7 @@ def run(args: argparse.Namespace) -> None:
             environment_version=environment_version,
             deadline=deadline,
         )
+        initial_deployment_id = current_deployment_id(detail)
         initial_hostnames = assert_golden_topology(detail)
         probe_failures = []
         if args.public_probe != "skip":
@@ -886,6 +938,78 @@ def run(args: argparse.Namespace) -> None:
                 )
         if changes["destructive"] != bool(changes["confirmations"]):
             raise AcceptanceFailure("update check destructive diff is inconsistent")
+
+        candidate_analysis_id = candidate_analysis["id"]
+        updated = deploy(
+            api,
+            application_id=golden_id,
+            analysis_id=candidate_analysis_id,
+            environment_version=environment_version,
+            deadline=deadline,
+        )
+        updated_deployment_id = current_deployment_id(updated)
+        if updated_deployment_id == initial_deployment_id:
+            raise AcceptanceFailure("second deployment did not create a new revision")
+        if assert_golden_topology(updated) != initial_hostnames:
+            raise AcceptanceFailure("update changed stable public hostnames")
+        lifecycle_action(
+            api,
+            application_id=golden_id,
+            action="rollback",
+            deployment_id=initial_deployment_id,
+            deadline=deadline,
+        )
+        rolled_back = request_with_retry(
+            api, "GET", f"/applications/{golden_id}", deadline=deadline
+        ).body
+        if current_deployment_id(rolled_back) != initial_deployment_id:
+            raise AcceptanceFailure("rollback did not restore the selected deployment")
+        if assert_golden_topology(rolled_back) != initial_hostnames:
+            raise AcceptanceFailure("rollback changed stable public hostnames")
+        emit(
+            "rollback_verified",
+            applicationId=golden_id,
+            fromDeploymentId=updated_deployment_id,
+            toDeploymentId=initial_deployment_id,
+        )
+
+        failing = analyze_git_source(
+            api,
+            application_id=golden_id,
+            repository=args.repository,
+            ref=args.ref,
+            subdirectory=args.failing_subdirectory,
+            deadline=deadline,
+        )
+        if failing.get("verdict") not in {"deployable", "needs_input"}:
+            raise AcceptanceFailure(
+                "failing rollout fixture was rejected before deployment"
+            )
+        failing_analysis_id = failing.get("id")
+        if not isinstance(failing_analysis_id, str):
+            raise AcceptanceFailure("failing rollout analysis ID is missing")
+        deploy_expect_failure(
+            api,
+            application_id=golden_id,
+            analysis_id=failing_analysis_id,
+            environment_version=environment_version,
+            deadline=deadline,
+        )
+        after_failure = request_with_retry(
+            api, "GET", f"/applications/{golden_id}", deadline=deadline
+        ).body
+        if current_deployment_id(after_failure) != initial_deployment_id:
+            raise AcceptanceFailure("failed update replaced the healthy deployment")
+        if assert_golden_topology(after_failure) != initial_hostnames:
+            raise AcceptanceFailure("failed update changed stable public hostnames")
+        if args.public_probe != "skip":
+            for hostname in initial_hostnames:
+                public_probe(hostname, timeout_seconds=args.request_timeout)
+        emit(
+            "failed_update_retention_verified",
+            applicationId=golden_id,
+            retainedDeploymentId=initial_deployment_id,
+        )
         emit("lifecycle_verified", applicationId=golden_id)
 
         negative_id = create_application(
@@ -974,6 +1098,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--negative-subdirectory",
         default="lae/e2e/fixtures/compose-unsupported-host-access",
+    )
+    result.add_argument(
+        "--failing-subdirectory",
+        default="lae/e2e/fixtures/compose-failing-rollout",
     )
     result.add_argument("--timeout-seconds", type=float, default=1800)
     result.add_argument("--request-timeout", type=float, default=30)

@@ -126,6 +126,43 @@ class PreviewAuthenticationTest(unittest.TestCase):
         self.assertTrue(captured.exception.retryable)
 
 
+class _TerminalOperationClient:
+    def request(self, method: str, path: str, body=None, **kwargs):
+        if method == "GET" and path.endswith("/events"):
+            return MODULE.Response(
+                200,
+                {"events": [], "terminal": True, "status": "failed"},
+                {},
+            )
+        if method == "GET" and path == "/operations/op_test":
+            return MODULE.Response(
+                200,
+                {"id": "op_test", "status": "failed"},
+                {},
+            )
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+class OperationWatcherTest(unittest.TestCase):
+    def test_expected_failure_can_be_inspected_without_masking_terminal_state(self) -> None:
+        terminal = MODULE.watch_operation(
+            _TerminalOperationClient(),
+            "op_test",
+            require_success=False,
+            deadline=time.monotonic() + 2,
+        )
+
+        self.assertEqual(terminal["status"], "failed")
+
+    def test_failed_operation_still_raises_by_default(self) -> None:
+        with self.assertRaisesRegex(MODULE.AcceptanceFailure, "operation op_test failed"):
+            MODULE.watch_operation(
+                _TerminalOperationClient(),
+                "op_test",
+                deadline=time.monotonic() + 2,
+            )
+
+
 class _BillingClient:
     def __init__(self, current: str) -> None:
         self.current = current

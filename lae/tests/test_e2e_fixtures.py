@@ -78,6 +78,52 @@ class E2EFixtureTests(unittest.TestCase):
         self.assertIn("COMPOSE_HOST_PORT", blockers)
         self.assertIn("COMPOSE_DOCKER_SOCKET", blockers)
 
+    def test_failing_rollout_fixture_is_deployable_with_golden_topology(self) -> None:
+        golden_result, golden = self._analyze("compose-two-http-volume")
+        failing_result, failing = self._analyze("compose-failing-rollout")
+
+        self.assertEqual(golden_result["decision"], "needs_configuration")
+        self.assertEqual(failing_result["decision"], "needs_configuration")
+        for key in ("services", "routes", "volumes", "environment"):
+            self.assertEqual(
+                [
+                    {
+                        field: item.get(field)
+                        for field in {
+                            "key",
+                            "role",
+                            "serviceKey",
+                            "port",
+                            "containerPort",
+                            "healthPath",
+                            "name",
+                            "serviceScope",
+                        }
+                        if field in item
+                    }
+                    for item in failing[key]
+                ],
+                [
+                    {
+                        field: item.get(field)
+                        for field in {
+                            "key",
+                            "role",
+                            "serviceKey",
+                            "port",
+                            "containerPort",
+                            "healthPath",
+                            "name",
+                            "serviceScope",
+                        }
+                        if field in item
+                    }
+                    for item in golden[key]
+                ],
+                key,
+            )
+        self.assertEqual(failing["blockers"], [])
+
     def test_static_upload_fixture_produces_one_http_service(self) -> None:
         result, plan = self._analyze("static-site")
 
