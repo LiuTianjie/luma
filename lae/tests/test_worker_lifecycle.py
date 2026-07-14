@@ -289,6 +289,20 @@ class LifecycleWorkerTests(unittest.IsolatedAsyncioTestCase):
                 if action == "delete":
                     self.assertEqual(self.runtime.delete_volume_policies, ["retain"])
 
+    async def test_delete_succeeds_when_runtime_is_already_absent(self) -> None:
+        self.adapter.delete_runtime_deployment(
+            self.source_context,
+            self.source.runtime_deployment_ref,
+            volume_policy="retain",
+            idempotency_key="prepare-runtime-absent",
+        )
+
+        result, states = await self.run_action("delete")
+
+        self.assertEqual(result.status, LifecycleStepStatus.TERMINAL)
+        self.assertEqual(result.operation.status, "succeeded")
+        self.assertTrue(states.succeeded)
+
     @property
     def source_context(self) -> RuntimeCallContext:
         return RuntimeCallContext(

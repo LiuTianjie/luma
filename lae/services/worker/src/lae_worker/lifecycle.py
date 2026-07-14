@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError
 from lae_luma_adapter import (
+    AdapterErrorCode,
     LumaAdapterError,
     LumaRuntimeAdapter,
     RuntimeCallContext,
@@ -845,6 +846,11 @@ class LifecycleStepRunner:
         except LeaseLost:
             raise
         except LumaAdapterError as exc:
+            if context.action == "delete" and exc.code == AdapterErrorCode.NOT_FOUND:
+                completed = await self._states.succeed(
+                    current, context, None, worker_id=self._worker_id
+                )
+                return LifecycleStepResult(LifecycleStepStatus.TERMINAL, completed)
             if exc.retryable:
                 return LifecycleStepResult(LifecycleStepStatus.WAITING, current)
             return await self._fail(current, context, LifecycleRuntimeFailed())
