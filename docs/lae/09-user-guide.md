@@ -1,6 +1,6 @@
 # 09. LAE 用户使用指南
 
-> 文档版本：2026-07-14<br>
+> 文档版本：2026-07-15<br>
 > 适用对象：LAE Web 用户、`lae` CLI 用户，以及代表用户调用 CLI 的 AI Agent<br>
 > 发布状态：代码能力说明，不代表生产 GA。真实可用性以 [实施状态与验收证据](./08-implementation-status.md) 和平台状态页为准。
 
@@ -19,7 +19,7 @@
 | 待 staging 验证 | 已有代码或真实部署，尚未在隔离 Luma staging 完成相应端到端、故障和安全验证 |
 | 发布门禁 | 未满足时不得向生产用户承诺可用 |
 
-截至 2026-07-14，Luma `v0.1.249` 已发布到本机 CLI、Control/manager 与全部在线节点 `bot/builder/gaojiu/lab/m4/tecent`，离线 `blg` 按当前决策保持历史版本且未触碰；最终候选通过 841 项测试与 130 项 subtest，Control image 与 PyPI 发布均成功。LAE staging 运行 exact ref `35591c4e789f7d7bec60614d427fed05023b373a`，真实 staging 的 10 个 LAE service、wildcard DNS-01 TLS 和 Web/API/Agent/artifact 探针健康。四服务 Compose 已走通 Agent 诊断、必需环境配置、Builder 构建、首次冷拉、双公网 HTTPS route、双持久卷、restart、suspend/resume、更新检查、明确 unsupported blocker 与删除；部署界面消费真实阶段事件。四个模板均完成真实部署 smoke和自动下架恢复。clean-room Agent 仅凭项目内 Skill、`lae` CLI 和 deploy token 完成模板部署、历史、重启与清理；HTML、ZIP 与真实私有 Git也已完成公开 API 全链路，私有 Git覆盖 Worker 重启恢复。PostgreSQL task 重启时 API ready 会正确摘除并自动恢复。preview 不代表真实邮箱送达，进程恢复也不代表 PITR/备份还原；因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
+截至 2026-07-15，Luma `v0.1.255` 已发布到 Control/manager 与在线节点 `bot/builder/lab/m4/tecent`；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE staging 运行 exact ref `4548f6ab27ef115e7918a8f3078d93cca7d81476`，10 个 LAE service、wildcard DNS-01 TLS 和 Web/API/Agent/artifact 探针健康。四服务 Compose 已走通 Agent 诊断、必需环境配置、Builder 构建、首次冷拉、双公网 HTTPS route、双持久卷、restart、suspend/resume、更新检查与明确 unsupported blocker；stateful rollback checkpoint、长部署阻塞 Worker 队列及历史裸域证书阻止 wildcard TLS 的问题已在本次基线修复。preview 不代表真实邮箱送达，进程恢复也不代表 PITR/备份还原；因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
 
 ## 2. 支持什么
 

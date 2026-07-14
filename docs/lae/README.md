@@ -1,7 +1,7 @@
 # Luma Application Engine（LAE）产品与工程设计
 
-> 状态：Draft v0.9；2026-07-14 Luma `v0.1.249` 已正式发布，live Control/manager、本机 CLI 与全部在线节点 `bot/builder/gaojiu/lab/m4/tecent` 已收敛到 `0.1.249`，离线 `blg` 按当前决策保留 `0.1.175` 且未触碰；LAE 10 个平台 service 已在 `manager` 本地盘运行 exact ref `35591c4e789f7d7bec60614d427fed05023b373a`，Web/API/Agent/Artifact 健康端点均为 200。HTML/ZIP/私有 Git、模板、clean-room CLI/Skill 和升级路由基线已有证据；真实邮件、完整安全负例、异机备份还原矩阵仍待完成。
-> 日期：2026-07-14
+> 状态：Staging delivery v1.0；2026-07-15 Luma `v0.1.255` 已正式发布，Control/manager 与在线节点 `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE 10 个平台 service 在 `manager` 本地盘运行 exact ref `4548f6ab27ef115e7918a8f3078d93cca7d81476`。详细现状见 [最终交付说明](./13-final-handoff.md)。
+> 日期：2026-07-15
 > 目标：在 Luma 之上建设面向普通用户和 AI Agent 的多租户应用部署平台；LAE 自身及其依赖全部由 Luma 部署和管理。
 
 ## 1. 结论先行
@@ -109,6 +109,7 @@ LAE 不能只是给现有 Luma Dashboard 增加注册页。正确边界是：
 - [10 运维与排障 SOP](./10-operations-troubleshooting-sop.md)：值班检查、Luma/LAE/Builder/Runtime/placement、数据恢复、密钥轮换与 GC。
 - [11 部署、升级与回退](./11-deployment-and-upgrade.md)：不可变 release、manager/fleet 顺序、显式 staging sidecar、验收与回退点。
 - [12 原始需求—实现—证据矩阵](./12-requirements-evidence-matrix.md)：逐条映射原始 14 项需求、后续澄清、代码证据、live 证据和剩余门槛。
+- [13 Staging 最终交付说明](./13-final-handoff.md)：入口、已交付范围、实际拓扑、发布基线、操作顺序与 production gate。
 
 ## 7. 名词与状态源
 

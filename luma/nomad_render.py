@@ -380,9 +380,13 @@ def render_traefik_job(
         clean = str(domain).strip().strip(".")
         if not clean:
             continue
+        # Keep the wildcard as the ACME certificate's main domain.  A legacy
+        # bare-domain-only record keyed by ``clean`` otherwise makes Traefik
+        # consider the request already satisfied and it never adds the SAN,
+        # leaving tenant subdomains on the default self-signed certificate.
         args.extend([
-            f"--entrypoints.websecure.http.tls.domains[{index}].main={clean}",
-            f"--entrypoints.websecure.http.tls.domains[{index}].sans=*.{clean}",
+            f"--entrypoints.websecure.http.tls.domains[{index}].main=*.{clean}",
+            f"--entrypoints.websecure.http.tls.domains[{index}].sans={clean}",
         ])
     wrapped = {"Job": job}
     return json.dumps(wrapped, indent=2, ensure_ascii=False) if as_json else wrapped

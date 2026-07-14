@@ -702,8 +702,8 @@ port: 3000
             args,
         )
         self.assertFalse(any("httpchallenge" in value for value in args))
-        self.assertIn("--entrypoints.websecure.http.tls.domains[0].main=itool.tech", args)
-        self.assertIn("--entrypoints.websecure.http.tls.domains[0].sans=*.itool.tech", args)
+        self.assertIn("--entrypoints.websecure.http.tls.domains[0].main=*.itool.tech", args)
+        self.assertIn("--entrypoints.websecure.http.tls.domains[0].sans=itool.tech", args)
         self.assertEqual(
             task["Env"],
             {"CF_DNS_API_TOKEN_FILE": "/run/secrets/cloudflare-dns-token"},

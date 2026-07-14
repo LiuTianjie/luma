@@ -15,14 +15,15 @@ object-source redemption use mutually authenticated, task-bound, one-time
 leases. The Web account console provides deploy-token management, plan,
 subscription, usage, and mock-checkout flows.
 
-Current verification snapshot (2026-07-14):
+Current verification snapshot (2026-07-15):
 
-- Luma CLI, Control and manager agent are live on `0.1.233`; 813 pytest cases
-  and 130 subtests passed. Non-manager agents were not fleet-upgraded in this
-  release and must not be described as uniformly current.
-- All 9 `lae-platform-staging` services built from exact commit `c7873e6` are
-  healthy on `manager`. Builder work and the internal registry run on
-  `builder`; tenant placement remains limited to `manager + tecent`.
+- Luma `v0.1.255` is released. Control/manager and the online
+  `bot/builder/lab/m4/tecent` agents report `0.1.255`; `gaojiu` is offline,
+  `blg` is intentionally untouched, and historical `aly` is excluded.
+- All 10 `lae-platform-staging` services built from exact commit
+  `4548f6ab27ef115e7918a8f3078d93cca7d81476` are healthy on `manager`.
+  Builder work and the internal registry run on `builder`; tenant placement
+  remains limited to `manager + tecent`.
 - The product acceptance flow completed a four-service Compose deployment with
   two public HTTPS routes and two persistent volumes, followed by restart,
   suspend/resume, update check, unsupported diagnosis and deletion. A separate
