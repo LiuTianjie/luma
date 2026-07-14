@@ -512,7 +512,7 @@ luma compose deploy luma.compose.yml --dry-run
 CI:
 
 ```bash
-python -m pip install "luma-infra==0.1.229"
+python -m pip install "luma-infra==0.1.230"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json

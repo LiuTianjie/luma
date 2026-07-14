@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.229 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.230 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1986,7 +1986,16 @@ def _refresh_manager_control(args: argparse.Namespace) -> None:
     if not state:
         raise LumaError("manager control state not found. Run luma bootstrap manager --domain <control-domain> for first install or repair.")
     state["domain"] = domain
-    config = load_config(args.config)
+    # A managed update runs in a transient systemd unit with no meaningful
+    # working directory.  Falling back to the installer checkout's example
+    # luma.yaml silently renders production ingress with example settings.
+    # The manager-owned config is authoritative unless the operator supplied
+    # an explicit --config path.
+    manager_config = Path("/opt/luma/luma.yaml")
+    config_path = args.config
+    if config_path is None and manager_config.exists():
+        config_path = manager_config
+    config = load_config(config_path)
     node = config.get_node(args.node) if args.node else (config.default_manager() or _local_node(args.profile))
     if not node:
         raise LumaError("no manager node configured. Add a node or pass --node.")
