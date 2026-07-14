@@ -19,6 +19,7 @@ PLACEHOLDER_IMAGES = {
     "agent-controller": "registry.internal/lae/agent-controller:git-sha",
     "artifact-store": "registry.internal/lae/artifact-store:git-sha",
     "artifact-init": "registry.internal/lae/artifact-init:git-sha",
+    "template-smoke": "registry.internal/lae/template-smoke:git-sha",
 }
 STORAGE_CLASSES = {
     "lae-cn-artifacts": {
@@ -107,7 +108,13 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             {service.exposure for service in compose_public_services(deployment)},
             {"cn-edge"},
         )
-        self.assertEqual(len(deployment.warnings), len(PLACEHOLDER_IMAGES))
+        self.assertEqual(
+            len(deployment.warnings),
+            sum(
+                service.get("build") is not None
+                for service in deployment.compose["services"].values()
+            ),
+        )
 
         rendered = render_compose_job(
             config(),
@@ -370,6 +377,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             "LAE_SOURCE_CONNECTION_AEAD_KEYS",
             "LAE_SOURCE_CONNECTION_HMAC_KEYS",
             "LAE_SOURCE_CONNECTION_IDEMPOTENCY_HMAC_KEY",
+            "LAE_TEMPLATE_SMOKE_REPORT_TOKEN",
             "LAE_UPLOAD_HMAC_KEY",
             "LAE_VALKEY_PASSWORD",
             "LAE_WORKER_STATE_HMAC_KEY",
