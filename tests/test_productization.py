@@ -14459,7 +14459,7 @@ class GithubImportTests(unittest.TestCase):
             dockerfile = context_dir / "Dockerfile"
             dockerfile.write_text("FROM busybox\n", encoding="utf-8")
 
-            with patch(
+            with patch.dict(os.environ, {"LUMA_BUILDX_CONFIG": str(root / "buildx")}), patch(
                 "luma.agent._run_process_streaming",
                 side_effect=[
                     LocalResult(code=1, output='ERROR: no builder "luma-builder-egress" found\n'),
@@ -14489,6 +14489,7 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual(ensure.call_args.kwargs["no_proxy"], "localhost,127.0.0.1,::1,localhost:5000,100.66.177.70:5000")
         self.assertTrue(ensure.call_args.kwargs["recreate"])
         self.assertEqual(ensure.call_args.kwargs["env"]["DOCKER_CONFIG"], str(docker_config))
+        self.assertEqual(ensure.call_args.kwargs["env"]["BUILDX_CONFIG"], str(root / "buildx"))
         self.assertIn("recreating it and retrying once", progress[0]["line"])
 
     def test_buildx_build_streams_output_to_progress(self):
@@ -14513,7 +14514,9 @@ class GithubImportTests(unittest.TestCase):
                 kwargs["on_line"]("#2 pushing layers")
                 return LocalResult(code=0, output="#1 [internal] load build definition\n#2 pushing layers\n")
 
-            with patch("luma.agent._run_process_streaming", side_effect=fake_stream):
+            with patch.dict(os.environ, {"LUMA_BUILDX_CONFIG": str(root / "buildx")}), patch(
+                "luma.agent._run_process_streaming", side_effect=fake_stream
+            ):
                 image = _docker_buildx_build(
                     docker="docker",
                     builder="luma-builder",

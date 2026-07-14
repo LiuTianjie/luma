@@ -3019,8 +3019,7 @@ def _docker_buildx_build(
     tag_sha = f"{push_host}/{repo}:{sha}"
     tag_latest = f"{push_host}/{repo}:latest"
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-    env = dict(os.environ)
-    env["DOCKER_CONFIG"] = str(docker_config)
+    env = _buildx_environment(docker_config)
     proxy_build_args: list[str] = []
     if proxy:
         env["HTTP_PROXY"] = proxy
