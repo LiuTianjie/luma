@@ -23,6 +23,7 @@ from .compose import (
     init_compose_sidecar,
     load_compose_deployment,
     render_compose_routes,
+    resolve_storage_mounts,
     storage_summary,
 )
 from .config import LumaConfig, load_config, save_config
@@ -171,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.238 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.239 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -3236,10 +3237,14 @@ def _print_storage_host_result(value: Any) -> None:
 def cmd_storage_apply(args: argparse.Namespace) -> int:
     storage_classes = _control_storage_classes_for_local(args, required=True)
     node_records = _control_node_records_for_local(args, required=True)
-    deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
-    from .nomad_render import render_compose_job
-
-    render_compose_job(load_config(args.config), deployment, resolve_secrets=False)
+    deployment = load_compose_deployment(
+        args.sidecar,
+        storage_classes=storage_classes,
+        allow_build_services=True,
+    )
+    # Storage preflight must validate placement/endpoints without requiring
+    # Builder-produced image references to exist yet.
+    resolve_storage_mounts(deployment, node_records=node_records)
     if args.dry_run:
         print(dump_yaml(storage_summary(deployment, node_records=node_records)))
         return 0
@@ -3265,7 +3270,11 @@ def cmd_storage_apply(args: argparse.Namespace) -> int:
 def cmd_storage_check(args: argparse.Namespace) -> int:
     storage_classes = _control_storage_classes_for_local(args, required=True)
     node_records = _control_node_records_for_local(args, required=True)
-    deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
+    deployment = load_compose_deployment(
+        args.sidecar,
+        storage_classes=storage_classes,
+        allow_build_services=True,
+    )
     result = storage_check_plan(deployment, node_records=node_records)
     if _output_format(args) != "text":
         _print_success(args, result)
@@ -3283,7 +3292,11 @@ def cmd_storage_check(args: argparse.Namespace) -> int:
 
 
 def cmd_storage_migrate(args: argparse.Namespace) -> int:
-    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
+    deployment = load_compose_deployment(
+        args.sidecar,
+        storage_classes=_control_storage_classes_for_local(args, required=True),
+        allow_build_services=True,
+    )
     result = storage_migration_plan(
         deployment,
         volume=args.volume,

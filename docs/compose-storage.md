@@ -338,7 +338,7 @@ The dashboard Storage page shows manager storage classes, volumes detected from 
 CI should use stateless control auth:
 
 ```bash
-python -m pip install "luma-infra==0.1.238"
+python -m pip install "luma-infra==0.1.239"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"

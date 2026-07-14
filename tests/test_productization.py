@@ -11158,6 +11158,73 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_storage_apply_accepts_import_build_services_without_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "backup-node": {
+                        "name": "backup-node",
+                        "region": "cn",
+                        "status": "labeled",
+                        "labels": {"luma.node.name": "backup-node", "region": "cn"},
+                    }
+                }
+                state["storageClasses"] = {
+                    "backup-nfs": {
+                        "provider": "nfs",
+                        "mode": "managed",
+                        "node": "backup-node",
+                        "path": "/srv/backups",
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
+                    encoding="utf-8",
+                )
+                compose = yaml.safe_dump(
+                    {
+                        "services": {
+                            "backup": {
+                                "build": {"context": ".", "dockerfile": "backup.Dockerfile"},
+                                "volumes": ["backup-data:/backups"],
+                            }
+                        },
+                        "volumes": {"backup-data": {}},
+                    }
+                )
+                sidecar = yaml.safe_dump(
+                    {
+                        "name": "backup-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "volumes": {
+                            "backup-data": {
+                                "storageClass": "backup-nfs",
+                                "path": "backup-data",
+                            }
+                        },
+                    }
+                )
+                with patch(
+                    "luma.control.server._prepare_compose_managed_storage",
+                    return_value={"prepared": ["backup-data"]},
+                ):
+                    result = handle_storage_apply(
+                        state["deployToken"],
+                        {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml"},
+                    )
+                self.assertEqual(result["deployment"], "backup-stack")
+                self.assertEqual(result["applied"], {"prepared": ["backup-data"]})
+                self.assertTrue(any("uses build" in warning for warning in result["storage"]["warnings"]))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
     def test_storage_apply_rejects_unsafe_managed_volume_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

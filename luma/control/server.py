@@ -10948,13 +10948,16 @@ def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable
     _apply_state_secrets(state)
     steps: list[dict[str, str]] = []
     source_name = str(body.get("sourceName") or "luma.compose.yml")
-    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
-    config = load_config(config_path)
-    deployment = _load_compose_request(body, source_name)
+    # Storage preparation is independent from image resolution.  In
+    # particular, repositories deployed through ``luma import`` legitimately
+    # contain build-only services whose immutable images do not exist until
+    # the Builder phase runs.  Requiring deploy-ready images here made the
+    # supported preflight path unusable for exactly those applications.
+    deployment = _load_compose_request(body, source_name, allow_build_services=True)
     _deploy_step(
         steps,
         "Resolve storage endpoints",
-        lambda: render_compose_job(config, deployment, resolve_secrets=False),
+        lambda: resolve_storage_mounts(deployment, node_records=_state_nodes(state)),
         progress=progress,
     )
     applied = _deploy_step(
@@ -11350,7 +11353,12 @@ def _remove_local_nfs_export(storage_class: StorageClassSpec, state: Dict[str, A
     return "removed local NFS export"
 
 
-def _load_compose_request(body: Dict[str, Any], source_name: str) -> ComposeDeploymentSpec:
+def _load_compose_request(
+    body: Dict[str, Any],
+    source_name: str,
+    *,
+    allow_build_services: bool = False,
+) -> ComposeDeploymentSpec:
     manifest = body.get("manifest")
     compose_content = body.get("composeContent")
     if not isinstance(manifest, str) or not manifest.strip():
@@ -11374,6 +11382,7 @@ def _load_compose_request(body: Dict[str, Any], source_name: str) -> ComposeDepl
             sidecar_path,
             storage_classes=_state_storage_classes(state),
             allow_sidecar_storage_classes=False,
+            allow_build_services=allow_build_services,
         )
 
 
