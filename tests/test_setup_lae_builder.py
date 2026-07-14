@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "setup-lae-builder.sh"
+RUNNER_BUILD_SCRIPT = ROOT / "scripts" / "build-lae-agent-runner.sh"
 
 
 class LaeBuilderSetupScriptTests(unittest.TestCase):
@@ -19,6 +20,26 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
     def test_script_is_executable_and_bash_syntax_is_valid(self):
         self.assertTrue(os.access(SCRIPT, os.X_OK))
         subprocess.run(["bash", "-n", str(SCRIPT)], check=True, capture_output=True, text=True)
+
+        self.assertTrue(os.access(RUNNER_BUILD_SCRIPT, os.X_OK))
+        subprocess.run(
+            ["bash", "-n", str(RUNNER_BUILD_SCRIPT)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_runner_build_is_exact_commit_builder_only_and_digest_output(self):
+        source = RUNNER_BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('[[ "$commit" =~ ^[0-9a-f]{40}$ ]]', source)
+        self.assertIn('docker buildx inspect "$builder"', source)
+        self.assertIn('git -C "$work" fetch -q --depth=1 origin "$commit"', source)
+        self.assertIn("--platform linux/amd64", source)
+        self.assertIn("--provenance=true", source)
+        self.assertIn("--sbom=true", source)
+        self.assertIn("containerimage.digest", source)
+        self.assertIn('docker buildx imagetools inspect "$immutable"', source)
+        self.assertNotIn(":latest", source)
 
     def test_help_is_available_without_mutating_the_host(self):
         result = subprocess.run(

@@ -208,6 +208,21 @@ luma storage set lae-staging-runtime-nfs \
 首次初始化或批准的整包密钥轮换时，先得到已发布且 Builder 可拉取的 Analyzer 完整
 digest，再生成一次性 bundle：
 
+Analyzer 必须在声明的 `builder` 节点用完整 commit 构建；不允许在操作员电脑构建、
+使用 branch HEAD 或复用 mutable tag。标准入口只输出最终 immutable digest：
+
+```bash
+sudo scripts/build-lae-agent-runner.sh \
+  --repository https://github.com/LiuTianjie/luma.git \
+  --commit "$CANDIDATE_COMMIT" \
+  --image-repository 100.66.177.70:5000/lae/agent-runner
+```
+
+随后用 `scripts/update-lae-builder-runner.sh` 把该 digest 预拉到 rootless Docker 并
+原子更新 node-agent allowlist；再更新同一 bundle 中 Worker 与 Control 的完全相同值。
+这两个脚本是发布操作，不得改系统 Docker daemon proxy，也不得用 SSH 中的临时
+`docker build`/`sed` 代替。
+
 ```bash
 umask 077
 BUNDLE_DIR="$HOME/lae-staging-bundle-$SHORT_SHA"

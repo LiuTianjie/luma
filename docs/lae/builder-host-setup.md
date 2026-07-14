@@ -48,6 +48,13 @@ Trivy vulnerability DB 本身是更新数据，不伪装成固定工具版本。
 
 ## 3. 首次准备
 
+每次 LAE 候选先在 Builder 使用版本化的
+`scripts/build-lae-agent-runner.sh` 从完整 Git commit 构建并推送 Analyzer。脚本固定
+`linux/amd64`、启用 provenance/SBOM、校验 Buildx metadata digest，并只输出
+`repository@sha256:...`；它拒绝 branch、短 SHA、带凭据 URL 和非法 repository。
+构建后使用 `scripts/update-lae-builder-runner.sh` 预拉到 rootless Docker，并原子更新
+node-agent allowlist。普通发布不需要重跑整套首次 setup。
+
 必须先把含 `EnvironmentFile=-/etc/default/luma-node-agent` 的当前 Luma 版本安装到目标节点，再执行：
 
 ```bash
