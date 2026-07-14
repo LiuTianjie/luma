@@ -18,10 +18,10 @@
 - Luma CLI、Control 与 manager agent 为 `0.1.233`；本轮没有 worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`；离线 `blg` 保持 `0.1.175`。
 - `manager` 是唯一控制面；`aly` 是历史名称。
 - LAE 平台当前在 `manager`，租户 runtime staging allowlist 为 `manager + tecent`，构建与内部 registry 在 `builder`。
-- `lae-platform-staging` 使用 exact commit `65a4010` 构建的 immutable platform images；9 个平台 task 运行。
+- manager Control 使用 exact commit `d0ffc7a` 对应的不可变候选镜像；候选代码通过 813 项 Luma pytest。`lae-platform-staging` 使用 exact commit `d0ffc7a` 构建的 immutable platform images，Nomad job version 50，9 个平台 task 运行；LAE 403 项测试（25 项按环境跳过）及 contracts/compile/health smoke 通过。
 - Web、API ready、Agent ready、artifact ready 与 Control health 均为 HTTP 200；Agent ready 报告 `mode=ai`、`configured=true`。
 - `0.1.233` 完整产品验收已完成 preview auth、AI 诊断、环境配置、四服务 Compose、Builder build、双公网 HTTPS route、双持久卷、restart/suspend/resume、更新检查、七类 unsupported blocker、delete 与 token revoke；公网探测无失败。FastAPI 模板与 HTML upload 的既有真实链路证据继续有效。真实邮箱、ZIP、真实私有 Git与完整安全负例仍未完成。
-- `0.1.229-0.1.233` 增加 Cloudflare DNS-01 wildcard TLS，修复 manager 更新配置所有权、生命周期/初次部署 DNS 授权和 runtime 假异步阻塞。Runtime deployment 现为持久化接受后后台执行；同一幂等请求可在 Control 重启后恢复。长时间多 edge sentinel、Docker/CNI 自愈与 route reconciliation 故障注入仍是 production gate。
+- `0.1.229-0.1.233` 增加 Cloudflare DNS-01 wildcard TLS，修复 manager 更新配置所有权、生命周期/初次部署 DNS 授权和 runtime 假异步阻塞；`d0ffc7a` 进一步修复首次冷拉超过默认 3 分钟健康窗口后的永久误失败。Runtime deployment 现为非阻塞精确 Job 注册、持久化提交关联和专用 observer 收敛；同一幂等请求可在 Control 重启后恢复。真实冷拉 E2E 已超过旧窗口并成功，公开事件同时展示 build/render/volumes/runtime/verify 阶段。长时间多 edge sentinel、Docker/CNI 自愈与 route reconciliation 故障注入仍是 production gate。
 
 ## 2. 原始 14 项需求
 
@@ -88,7 +88,7 @@
 
 ### 本轮已纠正的文档冲突
 
-- 将旧的 `0.1.171`/`0.1.196` 快照更新为当前 CLI/Control/manager `0.1.233`、平台 exact ref `65a4010`，并明确非 manager fleet 本轮未全量升级。
+- 将旧的 `0.1.171`/`0.1.196` 快照更新为当前 CLI/Control/manager 包版本 `0.1.233`、Control/平台 exact ref `d0ffc7a`，并明确非 manager fleet 本轮未全量升级。
 - 将 “Mailpit 注册”等同真实邮件送达的表述改为“Mailpit 捕获 challenge”。
 - 将 “LLM 只做解释”修正为“AI 受 Knowledge Pack 约束生成 proposal，确定性校验终审”。
 - Skill 从内部状态 `needs_configuration/not_deployable` 改为公开 verdict `needs_input/unsupported/diagnostic_failed`。

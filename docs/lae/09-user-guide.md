@@ -19,7 +19,7 @@
 | 待 staging 验证 | 已有代码或真实部署，尚未在隔离 Luma staging 完成相应端到端、故障和安全验证 |
 | 发布门禁 | 未满足时不得向生产用户承诺可用 |
 
-截至 2026-07-14，Luma CLI、Control 与 manager agent 已运行 `0.1.233`；本轮未对非 manager agent 做全量升级。真实 staging 的 9 个 LAE 平台 task、wildcard DNS-01 TLS 和 Web/API/Agent/artifact 探针健康。四服务 Compose 已走通 Agent 诊断、必需环境配置、Builder 构建、双公网 HTTPS route、双持久卷、restart、suspend/resume、更新检查、明确 unsupported blocker 与删除。clean-room Agent 也已仅凭项目内 Skill、`lae` CLI 和 deploy token 完成模板部署、deployment history、重启与清理。Mailpit/preview 不向用户真实邮箱投递，ZIP、真实私有 Git与完整安全负例仍待最终 E2E。因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
+截至 2026-07-14，Luma CLI、Control 与 manager agent 包版本为 `0.1.233`，Control 与 LAE staging 已运行 exact ref `d0ffc7a`；本轮未对非 manager agent 做全量升级。真实 staging 的 9 个 LAE 平台 task、wildcard DNS-01 TLS 和 Web/API/Agent/artifact 探针健康。四服务 Compose 已走通 Agent 诊断、必需环境配置、Builder 构建、超过旧 3 分钟窗口的首次冷拉、双公网 HTTPS route、双持久卷、restart、suspend/resume、更新检查、明确 unsupported blocker 与删除；部署界面可消费 build/render/volumes/runtime/verify 的真实事件。clean-room Agent 也已仅凭项目内 Skill、`lae` CLI 和 deploy token 完成模板部署、deployment history、重启与清理。preview 不代表真实邮箱送达，ZIP、真实私有 Git与完整安全负例仍待最终 E2E。因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
 
 ## 2. 支持什么
 

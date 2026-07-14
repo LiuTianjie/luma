@@ -27,7 +27,7 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：Luma CLI/Control/manager agent `0.1.233` 已 live；非 manager fleet 本轮未全量升级。LAE exact ref `65a4010` 的 9 个平台 task、四服务 Compose 双 HTTPS/双持久卷产品 E2E 与 clean-room CLI/Skill E2E 已通过，完整来源、安全负例与故障注入仍在收尾
+> 状态：Luma CLI/Control/manager agent 包版本 `0.1.233` 已 live，manager Control 已运行 exact commit `d0ffc7a` 的候选镜像；非 manager fleet 本轮未全量升级。LAE exact ref `d0ffc7a` 的 9 个平台 task、四服务 Compose 双 HTTPS/双持久卷产品 E2E 与 clean-room CLI/Skill E2E 已通过，完整来源、安全负例与故障注入仍在收尾
 > 日期：2026-07-14
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
@@ -55,16 +55,21 @@ storage class 和 runner pool 仍是门禁；
 
 截至 2026-07-14，Luma CLI、Control 与 manager agent 为 `0.1.233`；本轮没有
 worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`，离线 `blg` 保持
-`0.1.175`。`0.1.233` 发布前通过 810 项 pytest 与 130 项 subtest，release workflow
-继续拒绝 tag 与 package version 不一致。LAE staging 使用 exact ref `65a4010` 构建的
-镜像，平台 9 个 task、wildcard DNS-01 TLS、Web/API/Agent/artifact probes 健康，
-Agent ready 显示 AI provider 已配置。
+`0.1.175`。当前候选代码通过 813 项 pytest 与 130 项 subtest；LAE 通过 403 项测试
+（25 项按环境跳过）、contracts、compile 和 health smoke。release workflow 继续拒绝
+tag 与 package version 不一致。manager Control 当前镜像为
+`100.66.177.70:5000/luma-control@sha256:dca605433652e74232ef6d08b5327c3b6342ef1aa5dd435f6f37fb3aff03d06c`，
+LAE staging 使用 exact ref `d0ffc7a` 构建的镜像，平台 9 个 task、wildcard DNS-01 TLS、
+Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider 已配置。
 
 真实四服务 Compose 已完成 Agent 诊断、环境配置、Builder 构建、双 HTTPS route、
 双持久卷、restart、suspend/resume、更新检查、unsupported 负例与删除；clean-room
 Agent 也已只用 LAE Skill/CLI/deploy token 完成 FastAPI 模板部署、历史查询、重启和
 清理。`0.1.229-0.1.233` 进一步关闭 wildcard TLS、manager 配置所有权、DNS 授权和
-runtime 假异步问题。Docker daemon/CNI 故障注入、跨节点重调度、长时间 route
+runtime 假异步问题；`d0ffc7a` 又把 Nomad submit 与 convergence 拆分，持久化精确
+`JobModifyIndex`/evaluation/version，并将 LAE 冷启动健康/进度窗口设为 30/40 分钟，
+Control 重启后恢复同一不可变提交。真实 E2E 已证明首次镜像拉取超过旧 3 分钟窗口仍可
+健康完成。Docker daemon/CNI 故障注入、跨节点重调度、长时间 route
 sentinel、ZIP/真实私有 Git与数据恢复仍是 production gate；Mailpit/preview 也仍不能
 证明真实邮箱送达。
 
