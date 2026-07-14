@@ -1619,24 +1619,38 @@ def _report_agent_task_result(
     message: str,
     result: Dict[str, Any],
 ) -> None:
-    """Report a task's terminal result to Control, guarding the call so a
-    reporting failure (network drop, Control restart) is logged rather than
-    escaping and crashing the node agent's poll loop."""
-    try:
-        client.complete_agent_task(
-            task_id=task_id,
-            node_name=node_name,
-            node_id=node_id,
-            status=status,
-            message=message,
-            result=result,
-        )
-    except Exception as exc:
-        print(
-            f"luma: node agent failed to report task {task_id} result ({status}): {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
+    """Keep ownership until Control durably acknowledges the terminal result.
+
+    Host mutations such as preparing a managed volume can already have
+    succeeded when a transient gateway error drops the completion response.
+    Returning to the idle lease loop at that point makes the next heartbeat
+    claim that no task is active, so Control reasonably—but incorrectly—marks
+    the task as interrupted.  The busy heartbeat remains active while this
+    loop retries, preserving the truthful task owner and making a transient
+    Control restart or 502 recover without replaying the host mutation.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            client.complete_agent_task(
+                task_id=task_id,
+                node_name=node_name,
+                node_id=node_id,
+                status=status,
+                message=message,
+                result=result,
+            )
+            return
+        except Exception as exc:
+            delay = min(10.0, 0.5 * (2 ** min(attempt - 1, 5)))
+            print(
+                f"luma: node agent failed to report task {task_id} result "
+                f"({status}); retrying in {delay:g}s: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
 
 
 def _start_agent_task_heartbeat(

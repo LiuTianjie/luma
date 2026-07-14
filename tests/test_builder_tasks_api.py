@@ -161,6 +161,51 @@ class BuilderTaskApiTests(unittest.TestCase):
         self.assertEqual(parent["result"], {})
         self.assertNotIn(sentinel, (self.state_dir / "control.json").read_text(encoding="utf-8"))
 
+    def test_terminal_agent_completion_replay_is_idempotent(self):
+        with TestClient(create_app()) as client:
+            created = client.post(
+                "/v1/builder/tasks",
+                json=self._body(),
+                headers={"Authorization": f"Bearer {self.service_token}", "Idempotency-Key": "idem-replay"},
+            ).json()["task"]
+
+        issued = handle_node_agent_token(
+            self.management_token,
+            {"nodeName": "builder", "nodeId": "builder-node-id"},
+        )
+        leased = handle_node_agent_lease(
+            issued["agentToken"],
+            {
+                "nodeName": "builder",
+                "nodeId": "builder-node-id",
+                "os": "linux",
+                "capabilities": ["docker-build", "builder-task-v1"],
+                "waitSeconds": 0,
+            },
+        )["task"]
+        body = {
+            "nodeName": "builder",
+            "nodeId": "builder-node-id",
+            "taskId": leased["id"],
+            "status": "failed",
+            "message": "first response may be lost",
+            "result": {},
+        }
+
+        first = handle_node_agent_complete(issued["agentToken"], body)
+        state_after_first = load_state()
+        first_events = list(state_after_first["builderTasks"][created["id"]]["events"])
+        replay = handle_node_agent_complete(
+            issued["agentToken"],
+            {**body, "status": "succeeded", "message": "conflicting replay"},
+        )
+        state_after_replay = load_state()
+
+        self.assertEqual(first["status"], "failed")
+        self.assertEqual(replay["status"], "failed")
+        self.assertEqual(state_after_replay["agentTasks"][leased["id"]]["status"], "failed")
+        self.assertEqual(state_after_replay["builderTasks"][created["id"]]["events"], first_events)
+
     def test_asgi_builder_routes_use_stable_conflict_and_not_found_statuses(self):
         with TestClient(create_app()) as client:
             headers = {

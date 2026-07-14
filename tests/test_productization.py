@@ -267,13 +267,16 @@ class ProductConfigTests(unittest.TestCase):
             result={"message": "pull diagnostic finished"},
         )
 
-    def test_successful_task_report_failure_is_not_inverted_to_failed(self):
+    def test_successful_task_report_retries_without_inverting_to_failed(self):
         # A task that executes successfully but whose SUCCESS report to Control
-        # fails (network drop) must NOT be re-reported as "failed" — the host
-        # mutation already happened. The report failure is swallowed+logged so
-        # the poll loop survives, and no "failed" report is ever sent.
+        # fails (network drop) must retain its busy heartbeat and retry the same
+        # terminal result. The host mutation already happened, so it must never
+        # be inverted into a synthetic failed result.
         client = Mock()
-        client.complete_agent_task.side_effect = LumaError("control unreachable")
+        client.complete_agent_task.side_effect = [
+            LumaError("control unreachable"),
+            {"taskId": "task-x", "status": "succeeded"},
+        ]
         task = {"id": "task-x", "action": "noop", "payload": {}}
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "agent.json"
@@ -282,14 +285,18 @@ class ProductConfigTests(unittest.TestCase):
                 "luma.agent.node_agent_os", return_value="linux"
             ), patch("luma.agent.node_agent_arch", return_value="x86_64"), patch(
                 "luma.agent.node_agent_capabilities", return_value=["docker-image"]
-            ), patch("luma.agent.node_agent_metrics", return_value={}), patch("sys.stderr"):
+            ), patch("luma.agent.node_agent_metrics", return_value={}), patch(
+                "luma.agent.time.sleep"
+            ) as sleep, patch("sys.stderr"):
                 restart = _complete_agent_task(client, node_name="lab", node_id="node-1", task=task, config_path=config)
 
         self.assertFalse(restart)
-        # Exactly one report attempt, with status "succeeded" — never inverted
-        # to a "failed" report despite the reporting error.
-        client.complete_agent_task.assert_called_once()
-        self.assertEqual(client.complete_agent_task.call_args.kwargs["status"], "succeeded")
+        self.assertEqual(client.complete_agent_task.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["status"] for call in client.complete_agent_task.call_args_list],
+            ["succeeded", "succeeded"],
+        )
+        sleep.assert_called_once_with(0.5)
 
     def test_node_agent_batches_progress_without_blocking_task_output(self):
         client = Mock()

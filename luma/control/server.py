@@ -2689,6 +2689,15 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
         task = tasks.get(task_id)
         if not isinstance(task, dict) or task.get("nodeName") != canonical_node_name:
             raise LumaError(f"agent task not found: {task_id}")
+        existing_status = str(task.get("status") or "")
+        if existing_status in {"succeeded", "failed", "canceled"}:
+            # Completion is an idempotent terminal acknowledgement.  The node
+            # agent retries until it receives this response because the host
+            # mutation may already have happened even when a gateway drops the
+            # first response.  Never append a second Builder event or rewrite
+            # a terminal decision on a replay.
+            final_status = existing_status
+            return
         now = int(time.time())
         builder_task = _builder_task_for_agent_task(state, task)
         effective_status = status
