@@ -49,19 +49,19 @@ class AgentControllerContractTests(unittest.TestCase):
                 json.loads((output / "build-plan-proposal.json").read_text()),
                 json.loads((output / "evidence.json").read_text()),
             )
-        self.assertTrue(_valid_request(request, knowledge_version="2026-07-14.1"))
+        self.assertTrue(_valid_request(request, knowledge_version="2026-07-14.2"))
 
         with_content = json.loads(json.dumps(request))
         with_content["source"]["files"][0]["content"] = "credential=canary"
-        self.assertFalse(_valid_request(with_content, knowledge_version="2026-07-14.1"))
+        self.assertFalse(_valid_request(with_content, knowledge_version="2026-07-14.2"))
         with_extra = json.loads(json.dumps(request))
         with_extra["extra"] = {"token": "canary"}
-        self.assertFalse(_valid_request(with_extra, knowledge_version="2026-07-14.1"))
+        self.assertFalse(_valid_request(with_extra, knowledge_version="2026-07-14.2"))
         nested = json.loads(json.dumps(request))
         nested["deterministic"]["findings"].append(
             {"path": "app.py", "rule": "x", "credential": "canary"}
         )
-        self.assertFalse(_valid_request(nested, knowledge_version="2026-07-14.1"))
+        self.assertFalse(_valid_request(nested, knowledge_version="2026-07-14.2"))
         self.assertFalse(_valid_request(request, knowledge_version="skewed"))
 
 

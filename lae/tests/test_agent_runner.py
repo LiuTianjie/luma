@@ -687,7 +687,7 @@ services:
                 "schemaVersion": "lae.ai-analysis-response/v1",
                 "status": "succeeded",
                 "model": "test-model",
-                "knowledgeVersion": "2026-07-14.1",
+                "knowledgeVersion": "2026-07-14.2",
                 "proposal": {
                     "deploymentPlan": plan,
                     "manifestCandidate": manifest_candidate_from_plan(plan),
@@ -730,7 +730,7 @@ services:
         self.assertNotIn(".env", prompt_paths)
         self.assertNotIn("private-key.pem", prompt_paths)
         evidence = json.loads(artifacts["evidence.json"])
-        self.assertEqual(evidence["ai"]["knowledgeVersion"], "2026-07-14.1")
+        self.assertEqual(evidence["ai"]["knowledgeVersion"], "2026-07-14.2")
 
     def test_required_ai_failure_is_diagnostic_failed_not_unsupported(self) -> None:
         environment = {

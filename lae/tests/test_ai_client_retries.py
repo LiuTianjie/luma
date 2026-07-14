@@ -46,7 +46,7 @@ class AIClientRetryTests(unittest.TestCase):
             {
                 "schemaVersion": "lae.ai-analysis-response/v1",
                 "status": "succeeded",
-                "knowledgeVersion": "2026-07-14.1",
+                "knowledgeVersion": "2026-07-14.2",
                 "proposal": {},
             }
         )

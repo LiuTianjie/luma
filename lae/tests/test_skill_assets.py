@@ -21,11 +21,15 @@ class SkillAssetTests(unittest.TestCase):
         )
         pack = json.loads(pack_path.read_text(encoding="utf-8"))
         self.assertEqual(pack["schemaVersion"], "lae.knowledge-pack/v1")
-        self.assertEqual(pack["knowledgeVersion"], "2026-07-14.1")
+        self.assertEqual(pack["knowledgeVersion"], "2026-07-14.2")
         image_semantics = pack["manifest"]["compose"]["imageSemantics"]
         self.assertIn("registry.itool.tech", image_semantics["internalRegistry"])
         self.assertIn("buildKey", image_semantics["sharedBuildImage"])
         self.assertIn("explicit external image", image_semantics["externalImage"])
+        self.assertEqual(
+            pack["healthAndFrameworkRecipes"]["static"]["healthPath"],
+            "/healthz",
+        )
         policy = (SKILL / "references" / "policy.md").read_text(encoding="utf-8")
         self.assertIn("knowledge-pack.json", policy)
         for key in (
@@ -39,6 +43,7 @@ class SkillAssetTests(unittest.TestCase):
             "blockers",
         ):
             self.assertIn(key, pack)
+
     def test_lae_deploy_skill_is_closed_and_references_existing_files(self) -> None:
         skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         self.assertTrue(skill_text.startswith("---\nname: lae-deploy\n"))

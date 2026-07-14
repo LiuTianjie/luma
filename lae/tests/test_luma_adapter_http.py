@@ -136,7 +136,7 @@ class HttpLumaAdapterTests(unittest.TestCase):
             "diagnosticStatus": "succeeded",
             "diagnosticMode": "ai",
             "diagnosticCode": "AI_ANALYSIS_SUCCEEDED",
-            "knowledgeVersion": "2026-07-14.1",
+            "knowledgeVersion": "2026-07-14.2",
             "blockers": [],
             "artifacts": {
                 "evidence": {

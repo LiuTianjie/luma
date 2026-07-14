@@ -1,6 +1,6 @@
 {
   "schemaVersion": "lae.knowledge-pack/v1",
-  "knowledgeVersion": "2026-07-14.1",
+  "knowledgeVersion": "2026-07-14.2",
   "product": {
     "capabilities": ["single HTTP service", "Compose with multiple public HTTP services", "internal services", "managed named volumes", "static artifacts", "platform-assigned random itool.tech domain"],
     "limitations": ["no public TCP or UDP relay", "no host network or host port", "no host bind or Docker socket", "no privileged mode or devices", "no user custom domain initially", "linux/amd64 only"]
@@ -16,7 +16,7 @@
   },
   "resourcesAndPlacement": {"region": "cn", "runtimeSelection": "platform chooses an eligible runtime", "builder": "Luma Builder executes checkout, analysis and builds", "defaultCpu": "0.50", "defaultMemoryMiB": 512, "placementHiddenFromTenant": true, "planQuotaAuthority": "LAE admission policy"},
   "environment": {"rules": ["infer names from Compose, examples and framework code", "missing required input produces needs_input", "API_KEY AUTH CREDENTIAL DATABASE_URL PRIVATE_KEY PASSWORD SECRET TOKEN are sensitive", "NEXT_PUBLIC_ NUXT_PUBLIC_ PUBLIC_ REACT_APP_ VITE_ are public", "never infer configured values from source"]},
-  "healthAndFrameworkRecipes": {"static": {"port": 8080, "healthPath": "/"}, "nextjs": {"commonPort": 3000, "production": "standalone or package start"}, "vite": {"production": "build static assets"}, "fastapi": {"commonPort": 8000, "bind": "0.0.0.0"}, "flask": {"commonPort": 5000, "bind": "0.0.0.0"}, "express": {"commonPort": 3000, "bind": "0.0.0.0"}, "health": "Prefer declared local HTTP health, otherwise conservative root."},
+  "healthAndFrameworkRecipes": {"static": {"port": 8080, "healthPath": "/healthz"}, "nextjs": {"commonPort": 3000, "production": "standalone or package start"}, "vite": {"production": "build static assets"}, "fastapi": {"commonPort": 8000, "bind": "0.0.0.0"}, "flask": {"commonPort": 5000, "bind": "0.0.0.0"}, "express": {"commonPort": 3000, "bind": "0.0.0.0"}, "health": "Prefer declared local HTTP health, otherwise conservative root."},
   "verdicts": {"deployable": "Supported and no required input is missing.", "needs_input": "Supported but required environment input is missing.", "unsupported": "A deterministic blocker exists; deployment is forbidden.", "diagnostic_failed": "Diagnostic pipeline failed; do not classify user code as unsupported."},
   "blockers": {"format": ["stable code", "evidence path", "evidence field", "actionable remediation"], "rule": "AI cannot remove deterministic blockers or weaken unsupported."}
 }
