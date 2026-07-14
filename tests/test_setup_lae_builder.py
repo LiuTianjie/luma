@@ -32,7 +32,9 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
     def test_runner_build_is_exact_commit_builder_only_and_digest_output(self):
         source = RUNNER_BUILD_SCRIPT.read_text(encoding="utf-8")
         self.assertIn('[[ "$commit" =~ ^[0-9a-f]{40}$ ]]', source)
-        self.assertIn('docker buildx inspect "$builder"', source)
+        self.assertIn('docker buildx create \\\n  --name "$builder"', source)
+        self.assertIn('--driver-opt network=host', source)
+        self.assertIn('docker buildx rm -f "$builder"', source)
         self.assertIn('getent passwd "$(id -u)"', source)
         self.assertIn('export HOME="$effective_home"', source)
         self.assertIn('git -C "$work" fetch -q --depth=1 origin "$commit"', source)
@@ -40,7 +42,8 @@ class LaeBuilderSetupScriptTests(unittest.TestCase):
         self.assertIn("--provenance=true", source)
         self.assertIn("--sbom=true", source)
         self.assertIn("containerimage.digest", source)
-        self.assertIn('docker buildx imagetools inspect "$immutable"', source)
+        self.assertIn("registry.insecure=true", source)
+        self.assertIn('/v2/$repository_path/manifests/$digest', source)
         self.assertNotIn(":latest", source)
 
     def test_help_is_available_without_mutating_the_host(self):

@@ -52,6 +52,9 @@ Trivy vulnerability DB 本身是更新数据，不伪装成固定工具版本。
 `scripts/build-lae-agent-runner.sh` 从完整 Git commit 构建并推送 Analyzer。脚本固定
 `linux/amd64`、启用 provenance/SBOM、校验 Buildx metadata digest，并只输出
 `repository@sha256:...`；它拒绝 branch、短 SHA、带凭据 URL 和非法 repository。
+脚本使用独立、短生命周期的 docker-container Buildx handle，完成后删除；不会读取、
+复用或重配 Repository Import 的临时 Buildx handle。当前匿名 HTTP 内部 registry 必须
+显式传 `--insecure-registry`，后续迁移到可信 HTTPS 后删除该参数。
 构建后使用 `scripts/update-lae-builder-runner.sh` 预拉到 rootless Docker，并原子更新
 node-agent allowlist。普通发布不需要重跑整套首次 setup。
 
