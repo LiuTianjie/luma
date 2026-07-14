@@ -105,6 +105,10 @@ export async function startControlImagePreparation(token: string, installRef: st
   return apiPost<ControlImagePreparation>("/v1/dashboard/updates/control-image", token, { installRef, controlImage });
 }
 
-export async function runRouteSentinel(token: string) {
-  return apiPost<RouteSentinel>("/v1/dashboard/route-sentinel", token, {});
+export async function runRouteSentinel(token: string, domains?: string[]) {
+  return apiPost<RouteSentinel>(
+    "/v1/dashboard/route-sentinel",
+    token,
+    domains ? { domains } : {},
+  );
 }

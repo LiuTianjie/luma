@@ -78,11 +78,11 @@ export function SystemUpdatePanel({
   );
   const aligned = managedNodes.filter((node) => targetVersion && node.agentVersion === targetVersion).length;
 
-  const probeRoutes = useCallback(async () => {
+  const probeRoutes = useCallback(async (domains?: string[]) => {
     setBusy("sentinel");
     setError("");
     try {
-      const result = await runRouteSentinel(token);
+      const result = await runRouteSentinel(token, domains);
       setSentinel(result);
       return result;
     } catch (nextError) {
@@ -120,7 +120,10 @@ export function SystemUpdatePanel({
             setManager(result);
             setReconnecting(false);
             if (result.status === "succeeded") {
-              void probeRoutes();
+              const baselineDomains = (baseline?.results || [])
+                .filter((route) => route.ok && route.domain)
+                .map((route) => route.domain as string);
+              void probeRoutes(baselineDomains.length ? baselineDomains : undefined);
               void onRefresh();
             }
           })
@@ -149,7 +152,7 @@ export function SystemUpdatePanel({
       }
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [fleet?.id, fleet?.status, imagePreparation?.id, imagePreparation?.status, manager?.status, manager?.updateId, onRefresh, probeRoutes, token]);
+  }, [baseline?.results, fleet?.id, fleet?.status, imagePreparation?.id, imagePreparation?.status, manager?.status, manager?.updateId, onRefresh, probeRoutes, token]);
 
   const requestManagerUpdate = async () => {
     if (confirm !== "manager") {
