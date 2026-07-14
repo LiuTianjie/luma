@@ -22,7 +22,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
@@ -480,6 +480,7 @@ def analyze_git_source(
     ref: str,
     subdirectory: str,
     connection_id: str | None = None,
+    on_operation_created: Callable[[str], None] | None = None,
     deadline: float,
 ) -> dict[str, Any]:
     source: dict[str, Any] = {
@@ -507,13 +508,17 @@ def analyze_git_source(
     analysis_id = analysis.get("id") if isinstance(analysis, dict) else None
     if not isinstance(analysis_id, str):
         raise AcceptanceFailure("analysis creation response is incomplete")
+    created_operation_id = operation_id(created)
     emit(
         "analysis_created",
         applicationId=application_id,
         analysisId=analysis_id,
+        operationId=created_operation_id,
         subdirectory=subdirectory,
     )
-    watch_operation(client, operation_id(created), deadline=deadline)
+    if on_operation_created is not None:
+        on_operation_created(created_operation_id)
+    watch_operation(client, created_operation_id, deadline=deadline)
     result = request_with_retry(
         client,
         "GET",

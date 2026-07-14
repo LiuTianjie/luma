@@ -15,6 +15,7 @@ import io
 import json
 import os
 import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -273,6 +274,49 @@ def _create_source_connection(
     return connection_id
 
 
+def _restart_worker_when_operation_runs(
+    client: JsonClient,
+    operation: str,
+    *,
+    stack: str,
+    deadline: float,
+) -> None:
+    while True:
+        snapshot = request_with_retry(
+            client, "GET", f"/operations/{operation}", deadline=deadline
+        ).body
+        status = snapshot.get("status")
+        if status == "running":
+            break
+        if status in {"succeeded", "failed", "canceled"}:
+            raise AcceptanceFailure("analysis completed before recovery injection")
+        if time.monotonic() >= deadline:
+            raise AcceptanceFailure("analysis did not start before recovery injection")
+        time.sleep(0.5)
+    restarted = subprocess.run(
+        [
+            "luma",
+            "service",
+            "restart",
+            stack,
+            "--service",
+            "worker",
+            "--mode",
+            "task",
+            "--timeout",
+            "120",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=150,
+        check=False,
+    )
+    if restarted.returncode != 0:
+        raise AcceptanceFailure("Worker recovery injection failed")
+    emit("worker_recovery_injected", operationId=operation)
+
+
 def run(args: argparse.Namespace) -> None:
     deadline = time.monotonic() + args.timeout_seconds
     session: JsonClient | None = None
@@ -370,6 +414,16 @@ def run(args: argparse.Namespace) -> None:
                 ref=args.private_git_ref,
                 subdirectory=args.private_git_subdirectory,
                 connection_id=connection_id,
+                on_operation_created=(
+                    lambda operation: _restart_worker_when_operation_runs(
+                        api,
+                        operation,
+                        stack=args.stack,
+                        deadline=deadline,
+                    )
+                    if args.restart_worker_during_private_analysis
+                    else None
+                ),
                 deadline=deadline,
             )
             _deploy_analysis(
@@ -449,6 +503,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--private-git-ref", default="main")
     result.add_argument("--private-git-subdirectory", default="")
     result.add_argument("--private-git-token-env", default="LAE_PRIVATE_GIT_TOKEN")
+    result.add_argument("--stack", default="lae-platform-staging")
+    result.add_argument("--restart-worker-during-private-analysis", action="store_true")
     result.add_argument("--timeout-seconds", type=float, default=1800)
     result.add_argument("--request-timeout", type=float, default=30)
     return result

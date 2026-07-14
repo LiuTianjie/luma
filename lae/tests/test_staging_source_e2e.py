@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 SCRIPTS = Path(__file__).parents[1] / "scripts"
@@ -61,6 +63,42 @@ class StaticTopologyTest(unittest.TestCase):
                     "volumes": [],
                 }
             )
+
+
+class WorkerRecoveryInjectionTest(unittest.TestCase):
+    def test_restarts_only_worker_after_operation_is_running(self) -> None:
+        class Client:
+            def request(self, method, path, body=None, **kwargs):
+                self.call = (method, path, body, kwargs)
+                return SimpleNamespace(body={"status": "running"})
+
+        client = Client()
+        completed = SimpleNamespace(returncode=0, stdout="ok", stderr="")
+        with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            MODULE._restart_worker_when_operation_runs(
+                client,
+                "op_test",
+                stack="lae-platform-staging",
+                deadline=MODULE.time.monotonic() + 2,
+            )
+
+        self.assertEqual(client.call[1], "/operations/op_test")
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command,
+            [
+                "luma",
+                "service",
+                "restart",
+                "lae-platform-staging",
+                "--service",
+                "worker",
+                "--mode",
+                "task",
+                "--timeout",
+                "120",
+            ],
+        )
 
 
 if __name__ == "__main__":
