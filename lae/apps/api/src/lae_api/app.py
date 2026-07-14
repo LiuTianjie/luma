@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -134,6 +135,26 @@ _CORS_HEADERS = [
     "X-CSRF-Token",
     "X-Request-Id",
 ]
+
+
+async def _database_ready(engine: Any, *, timeout_seconds: float = 2.0) -> bool:
+    """Return whether the production PostgreSQL dependency is queryable.
+
+    Unit/component apps inject in-memory adapters and deliberately have no
+    engine. A runtime-created app always has an AsyncEngine, so readiness must
+    execute a bounded query instead of merely checking that adapters were
+    constructed during startup.
+    """
+
+    if engine is None:
+        return True
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            async with engine.connect() as connection:
+                result = await connection.exec_driver_sql("SELECT 1")
+                return result.scalar_one() == 1
+    except Exception:
+        return False
 
 
 def _cors_allowed_origins(
@@ -1154,12 +1175,13 @@ def create_app(
 
     @app.get("/health/ready")
     async def ready() -> JSONResponse:
-        ready_now = (
+        adapters_ready = (
             runtime["auth"] is not None
             and runtime["analysis_requests"] is not None
             and runtime["public_resources"] is not None
             and runtime["applications"] is not None
         )
+        ready_now = adapters_ready and await _database_ready(runtime["engine"])
         return JSONResponse(
             component_payload("lae-api", status="ok" if ready_now else "unavailable"),
             status_code=200 if ready_now else 503,

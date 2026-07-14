@@ -51,6 +51,37 @@ class RecoveryPolicyTest(unittest.TestCase):
                 max_api_outage_seconds=15,
             )
 
+    def test_postgres_allows_only_bounded_api_readiness_outage(self) -> None:
+        MODULE._validate_counts(
+            "postgres",
+            {
+                MODULE.API_READY_URL: collections.Counter({503: 3, 200: 7}),
+                "https://lae-staging.itool.tech/": collections.Counter({200: 10}),
+            },
+            [
+                {"second": 0.5, "url": MODULE.API_READY_URL, "status": 503},
+                {"second": 4.0, "url": MODULE.API_READY_URL, "status": 200},
+            ],
+            max_api_outage_seconds=15,
+        )
+
+    def test_postgres_rejects_other_public_failure(self) -> None:
+        with self.assertRaises(MODULE.DrillFailure):
+            MODULE._validate_counts(
+                "postgres",
+                {
+                    MODULE.API_READY_URL: collections.Counter({503: 1, 200: 9}),
+                    "https://lae-staging.itool.tech/": collections.Counter(
+                        {502: 1, 200: 9}
+                    ),
+                },
+                [
+                    {"second": 0.5, "url": MODULE.API_READY_URL, "status": 503},
+                    {"second": 2.0, "url": MODULE.API_READY_URL, "status": 200},
+                ],
+                max_api_outage_seconds=15,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

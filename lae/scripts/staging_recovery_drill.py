@@ -82,13 +82,14 @@ def _validate_counts(
     *,
     max_api_outage_seconds: float,
 ) -> None:
+    dependency_outage_allowed = service in {"api", "postgres"}
     for url, counter in counts.items():
         failures = sum(count for status, count in counter.items() if status != 200)
         if failures == 0:
             continue
-        if service != "api" or url != API_READY_URL:
+        if not dependency_outage_allowed or url != API_READY_URL:
             raise DrillFailure(f"unexpected sentinel failure during {service} restart")
-    if service != "api":
+    if not dependency_outage_allowed:
         return
     api_transitions = [item for item in transitions if item["url"] == API_READY_URL]
     failed_at: float | None = None
@@ -99,13 +100,13 @@ def _validate_counts(
         if item["status"] == 200 and failed_at is not None:
             recovered_at = float(item["second"])
     if failed_at is not None and recovered_at is None:
-        raise DrillFailure("API did not recover after task restart")
+        raise DrillFailure("API readiness did not recover after task restart")
     if (
         failed_at is not None
         and recovered_at is not None
         and recovered_at - failed_at > max_api_outage_seconds
     ):
-        raise DrillFailure("API recovery exceeded the admitted outage window")
+        raise DrillFailure("API readiness recovery exceeded the admitted outage window")
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
