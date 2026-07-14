@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -317,9 +318,18 @@ class LaeRuntimeApiTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        for thread in list(control_server._LAE_RUNTIME_DEPLOY_THREADS.values()):
+            thread.join(timeout=5)
         RUNTIME_SECRETS.clear()
         self.env.stop()
         self.tmp.cleanup()
+
+    def wait_runtime_deployment(self, runtime_ref: str) -> dict[str, object]:
+        thread = control_server._LAE_RUNTIME_DEPLOY_THREADS.get(runtime_ref)
+        if thread is not None:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+        return load_state()["laeRuntime"]["deployments"][runtime_ref]
 
     def headers(
         self,
@@ -601,6 +611,9 @@ class LaeRuntimeApiTests(unittest.TestCase):
                 body,
                 idempotency_key="deploy-idem",
             )
+            self.wait_runtime_deployment(
+                str(first["deployment"]["deploymentRef"])
+            )
         self.assertFalse(first["replayed"])
         self.assertTrue(second["replayed"])
         self.assertEqual(
@@ -622,18 +635,55 @@ class LaeRuntimeApiTests(unittest.TestCase):
                 json=self.deployment_body(volume_ref=volume_ref),
                 headers=self.headers(idempotency_key="deploy-terminal-failure"),
             )
+            runtime_ref = failed.json()["deployment"]["deploymentRef"]
+            self.wait_runtime_deployment(runtime_ref)
 
-        self.assertEqual(failed.status_code, 422, failed.text)
-        payload = failed.json()
-        self.assertEqual(
-            payload["errorInfo"]["code"], "runtime_deployment_failed"
-        )
-        self.assertNotIn("allocation", failed.text)
+        self.assertEqual(failed.status_code, 202, failed.text)
+        self.assertEqual(failed.json()["deployment"]["status"], "preparing")
         state = load_state()
         records = list(state["laeRuntime"]["deployments"].values())
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["status"], "failed")
         self.assertFalse(records[0]["retryable"])
+
+    def test_deployment_create_returns_before_runtime_rollout_finishes(self) -> None:
+        volume_ref = self.prepare_volume()
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked_execution(**kwargs: object) -> dict[str, object]:
+            started.set()
+            self.assertTrue(release.wait(timeout=5))
+            return self.fake_execution(**kwargs)
+
+        timer = threading.Timer(2, release.set)
+        timer.start()
+        try:
+            with patch.object(
+                control_server,
+                "_execute_lae_runtime_deployment",
+                side_effect=blocked_execution,
+            ), TestClient(create_app()) as client:
+                before = time.monotonic()
+                accepted = client.post(
+                    "/v1/lae/runtime/deployments",
+                    json=self.deployment_body(volume_ref=volume_ref),
+                    headers=self.headers(idempotency_key="deploy-async-accept"),
+                )
+                elapsed = time.monotonic() - before
+                self.assertEqual(accepted.status_code, 202, accepted.text)
+                self.assertLess(elapsed, 1)
+                self.assertTrue(started.wait(timeout=1))
+                runtime_ref = accepted.json()["deployment"]["deploymentRef"]
+                self.assertEqual(
+                    accepted.json()["deployment"]["status"], "preparing"
+                )
+                release.set()
+                record = self.wait_runtime_deployment(runtime_ref)
+                self.assertEqual(record["status"], "deploying")
+        finally:
+            release.set()
+            timer.cancel()
 
     def test_closed_schema_rejects_tcp_custom_domain_unknown_fields_and_mount_drift(self) -> None:
         volume_ref = self.prepare_volume()
@@ -846,7 +896,8 @@ class LaeRuntimeApiTests(unittest.TestCase):
                 body,
                 idempotency_key="deploy-lifecycle",
             )
-        runtime_ref = str(deployed["deployment"]["deploymentRef"])
+            runtime_ref = str(deployed["deployment"]["deploymentRef"])
+            self.wait_runtime_deployment(runtime_ref)
         state = load_state()
         state["laeRuntime"]["deployments"][runtime_ref]["status"] = "running"
         save_state(state)
@@ -982,7 +1033,8 @@ class LaeRuntimeApiTests(unittest.TestCase):
                 self.deployment_body(volume_ref=volume_ref),
                 idempotency_key="deploy-restart-replacement",
             )
-        runtime_ref = str(deployed["deployment"]["deploymentRef"])
+            runtime_ref = str(deployed["deployment"]["deploymentRef"])
+            self.wait_runtime_deployment(runtime_ref)
         state = load_state()
         state["laeRuntime"]["deployments"][runtime_ref]["status"] = "restarting"
         save_state(state)
@@ -1109,7 +1161,8 @@ class LaeRuntimeApiTests(unittest.TestCase):
                 ),
                 idempotency_key="rollback-deploy-target",
             )
-        target_ref = str(target["deployment"]["deploymentRef"])
+            target_ref = str(target["deployment"]["deploymentRef"])
+            self.wait_runtime_deployment(target_ref)
         state = load_state()
         state["laeRuntime"]["deployments"][target_ref].update(
             {"status": "running", "nomadVersion": 3}
@@ -1135,7 +1188,8 @@ class LaeRuntimeApiTests(unittest.TestCase):
                 self.deployment_body(volume_ref=str(current_volume)),
                 idempotency_key="rollback-deploy-current",
             )
-        current_ref = str(current["deployment"]["deploymentRef"])
+            current_ref = str(current["deployment"]["deploymentRef"])
+            self.wait_runtime_deployment(current_ref)
         state = load_state()
         state["laeRuntime"]["deployments"][current_ref].update(
             {"status": "running", "nomadVersion": 4}
@@ -1321,7 +1375,8 @@ class LaeRuntimeApiTests(unittest.TestCase):
                 body,
                 idempotency_key="deploy-observability",
             )
-        runtime_ref = str(deployed["deployment"]["deploymentRef"])
+            runtime_ref = str(deployed["deployment"]["deploymentRef"])
+            self.wait_runtime_deployment(runtime_ref)
         state = load_state()
         record = state["laeRuntime"]["deployments"][runtime_ref]
         task_name = record["taskNames"]["postgres"]

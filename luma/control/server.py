@@ -237,6 +237,8 @@ _FLEET_UPDATE_LOCK = threading.RLock()
 _FLEET_UPDATE_THREADS: dict[str, threading.Thread] = {}
 _CONTROL_IMAGE_PREPARE_LOCK = threading.RLock()
 _CONTROL_IMAGE_PREPARE_THREADS: dict[str, threading.Thread] = {}
+_LAE_RUNTIME_DEPLOY_THREAD_LOCK = threading.RLock()
+_LAE_RUNTIME_DEPLOY_THREADS: dict[str, threading.Thread] = {}
 
 
 def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -4381,6 +4383,115 @@ def _lae_runtime_deployment_envelope(
     return value
 
 
+def _run_lae_runtime_deployment(
+    *,
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    record: Dict[str, Any],
+) -> None:
+    runtime_ref = str(record["runtimeDeploymentRef"])
+    try:
+        with _DEPLOY_LOCK:
+            execution = _execute_lae_runtime_deployment(
+                token=token,
+                audience=audience,
+                principal_ref=str(record["principalRef"]),
+                binding=binding,
+                runtime_deployment_ref=runtime_ref,
+                manifest=dict(record["manifest"]),
+                images=dict(record["images"]),
+                volume_records={
+                    str(key): dict(value)
+                    for key, value in dict(record["volumeRecords"]).items()
+                },
+            )
+
+            def complete_submit(current: Dict[str, Any]) -> None:
+                stored = _lae_runtime_state(current)["deployments"].get(runtime_ref)
+                if not isinstance(stored, dict) or not _lae_runtime_binding_matches(
+                    stored, binding, principal_ref=str(record["principalRef"])
+                ):
+                    return
+                stored.update(execution)
+                stored.pop("volumeRecords", None)
+                stored["status"] = "deploying"
+                stored["retryable"] = True
+                stored["submittedAt"] = int(time.time())
+                stored["updatedAt"] = int(time.time())
+
+            _mutate_control_state(complete_submit)
+    except LumaRuntimeError as exc:
+        def fail_runtime(current: Dict[str, Any]) -> None:
+            stored = _lae_runtime_state(current)["deployments"].get(runtime_ref)
+            if isinstance(stored, dict):
+                stored["status"] = "failed"
+                stored["retryable"] = exc.status in {429, 503}
+                stored["updatedAt"] = int(time.time())
+
+        _mutate_control_state(fail_runtime)
+    except NomadRolloutError:
+        def fail_rollout(current: Dict[str, Any]) -> None:
+            stored = _lae_runtime_state(current)["deployments"].get(runtime_ref)
+            if isinstance(stored, dict):
+                stored["status"] = "failed"
+                stored["retryable"] = False
+                stored["updatedAt"] = int(time.time())
+
+        _mutate_control_state(fail_rollout)
+    except (LumaError, OSError, TimeoutError):
+        def fail_unavailable(current: Dict[str, Any]) -> None:
+            stored = _lae_runtime_state(current)["deployments"].get(runtime_ref)
+            if isinstance(stored, dict):
+                stored["status"] = "failed"
+                stored["retryable"] = True
+                stored["updatedAt"] = int(time.time())
+
+        _mutate_control_state(fail_unavailable)
+    except Exception:
+        # The request has already been accepted, so no exception can be
+        # surfaced to that connection. Persist a terminal, non-retryable
+        # failure instead of leaving the deployment stuck in ``preparing``.
+        def fail_internal(current: Dict[str, Any]) -> None:
+            stored = _lae_runtime_state(current)["deployments"].get(runtime_ref)
+            if isinstance(stored, dict):
+                stored["status"] = "failed"
+                stored["retryable"] = False
+                stored["updatedAt"] = int(time.time())
+
+        _mutate_control_state(fail_internal)
+    finally:
+        with _LAE_RUNTIME_DEPLOY_THREAD_LOCK:
+            _LAE_RUNTIME_DEPLOY_THREADS.pop(runtime_ref, None)
+
+
+def _start_lae_runtime_deployment(
+    *,
+    token: str,
+    audience: str,
+    binding: RuntimeBinding,
+    record: Dict[str, Any],
+) -> None:
+    runtime_ref = str(record["runtimeDeploymentRef"])
+    with _LAE_RUNTIME_DEPLOY_THREAD_LOCK:
+        current = _LAE_RUNTIME_DEPLOY_THREADS.get(runtime_ref)
+        if current is not None and current.is_alive():
+            return
+        thread = threading.Thread(
+            target=_run_lae_runtime_deployment,
+            kwargs={
+                "token": token,
+                "audience": audience,
+                "binding": binding,
+                "record": dict(record),
+            },
+            name=f"luma-lae-deploy-{runtime_ref[-12:]}",
+            daemon=True,
+        )
+        _LAE_RUNTIME_DEPLOY_THREADS[runtime_ref] = thread
+        thread.start()
+
+
 @_serialize_deploy
 def handle_lae_runtime_deployment_create(
     token: str,
@@ -4576,81 +4687,14 @@ def handle_lae_runtime_deployment_create(
         return dict(record), False, True
 
     record, replayed, execute = _mutate_control_state(reserve)
-    if not execute:
-        return _lae_runtime_deployment_envelope(record, replayed=replayed)
-    try:
-        execution = _execute_lae_runtime_deployment(
+    if execute:
+        _start_lae_runtime_deployment(
             token=token,
             audience=audience,
-            principal_ref=str(record["principalRef"]),
             binding=binding,
-            runtime_deployment_ref=str(record["runtimeDeploymentRef"]),
-            manifest=dict(record["manifest"]),
-            images=dict(record["images"]),
-            volume_records={
-                str(key): dict(value)
-                for key, value in dict(record["volumeRecords"]).items()
-            },
+            record=record,
         )
-    except LumaRuntimeError as exc:
-        def fail_runtime(current: Dict[str, Any]) -> None:
-            stored = _lae_runtime_state(current)["deployments"].get(
-                str(record["runtimeDeploymentRef"])
-            )
-            if isinstance(stored, dict):
-                stored["status"] = "failed"
-                stored["retryable"] = exc.status in {429, 503}
-                stored["updatedAt"] = int(time.time())
-
-        _mutate_control_state(fail_runtime)
-        raise
-    except NomadRolloutError as exc:
-        def fail_rollout(current: Dict[str, Any]) -> None:
-            stored = _lae_runtime_state(current)["deployments"].get(
-                str(record["runtimeDeploymentRef"])
-            )
-            if isinstance(stored, dict):
-                stored["status"] = "failed"
-                stored["retryable"] = False
-                stored["updatedAt"] = int(time.time())
-
-        _mutate_control_state(fail_rollout)
-        raise _lae_runtime_deployment_failed() from exc
-    except (LumaError, OSError, TimeoutError) as exc:
-        def fail_unavailable(current: Dict[str, Any]) -> None:
-            stored = _lae_runtime_state(current)["deployments"].get(
-                str(record["runtimeDeploymentRef"])
-            )
-            if isinstance(stored, dict):
-                stored["status"] = "failed"
-                stored["retryable"] = True
-                stored["updatedAt"] = int(time.time())
-
-        _mutate_control_state(fail_unavailable)
-        raise _lae_runtime_unavailable(
-            "Luma runtime deployment is temporarily unavailable"
-        ) from exc
-
-    def complete_submit(current: Dict[str, Any]) -> Dict[str, Any]:
-        stored = _lae_runtime_state(current)["deployments"].get(
-            str(record["runtimeDeploymentRef"])
-        )
-        if not isinstance(stored, dict) or not _lae_runtime_binding_matches(
-            stored, binding, principal_ref=str(record["principalRef"])
-        ):
-            raise _lae_runtime_not_found()
-        stored.update(execution)
-        # Safe, non-secret render inputs no longer need to remain duplicated in
-        # the runtime record once the Nomad job has been submitted.
-        stored.pop("volumeRecords", None)
-        stored["status"] = "deploying"
-        stored["retryable"] = True
-        stored["submittedAt"] = int(time.time())
-        stored["updatedAt"] = int(time.time())
-        return dict(stored)
-
-    submitted = _mutate_control_state(complete_submit)
-    return _lae_runtime_deployment_envelope(submitted, replayed=replayed)
+    return _lae_runtime_deployment_envelope(record, replayed=replayed)
 
 
 def _lae_runtime_probe_route(hostname: str, health_path: str) -> str:
