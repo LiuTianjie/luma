@@ -1923,6 +1923,101 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
         tasks.pop(task_id, None)
 
 
+def _reconcile_interrupted_agent_tasks(
+    state: Dict[str, Any],
+    node_name: str,
+    active_task_id: str,
+    *,
+    now: int | None = None,
+) -> None:
+    """Fail running tasks that the node agent no longer owns.
+
+    A task is leased before it is executed.  If the agent process then exits
+    before reporting a terminal result, the durable task used to remain
+    ``running`` forever.  The next authenticated heartbeat is authoritative:
+    its ``activeTaskId`` is the one task still executing on that serial agent;
+    every other running task for the node is an orphan from an earlier agent
+    process.  Failing rather than replaying an arbitrary host mutation keeps
+    recovery safe and lets the owning operation retry through its normal
+    idempotency boundary.
+    """
+
+    now = int(time.time()) if now is None else now
+    tasks = _agent_tasks(state)
+    for task_id, task in tasks.items():
+        if (
+            not isinstance(task, dict)
+            or str(task.get("nodeName") or "") != node_name
+            or str(task.get("status") or "") != "running"
+            or task_id == active_task_id
+        ):
+            continue
+
+        builder_task = _builder_task_for_agent_task(state, task)
+        canceled = bool(task.get("cancelRequestedAt")) or (
+            isinstance(builder_task, dict)
+            and str(builder_task.get("status") or "") in {"cancel_requested", "canceled"}
+        )
+        status = "canceled" if canceled else "failed"
+        message = "agent task canceled" if canceled else "node agent restarted before task completion"
+        task.update(
+            {
+                "status": status,
+                "message": message,
+                "result": {},
+                "completedAt": now,
+                "updatedAt": now,
+            }
+        )
+
+        if isinstance(builder_task, dict) and not _builder_task_terminal(str(builder_task.get("status") or "")):
+            builder_message = "builder task canceled" if canceled else "builder task interrupted by node agent restart"
+            builder_task.update(
+                {
+                    "status": status,
+                    "message": builder_message,
+                    "result": {},
+                    "completedAt": now,
+                    "updatedAt": now,
+                }
+            )
+            _builder_task_event(
+                builder_task,
+                {"type": "status", "status": status, "message": builder_message},
+                now=now,
+            )
+
+        build_run_id = str(task.get("buildRunId") or "")
+        build_run = _build_runs(state).get(build_run_id) if build_run_id else None
+        if isinstance(build_run, dict) and str(build_run.get("status") or "") not in {
+            "succeeded",
+            "failed",
+            "canceled",
+        }:
+            build_status = "canceled" if canceled else "failed"
+            build_message = "build canceled" if canceled else "build interrupted by node agent restart"
+            build_run.update(
+                {
+                    "status": build_status,
+                    "message": build_message,
+                    "updatedAt": now,
+                    "completedAt": now,
+                }
+            )
+            if canceled:
+                build_run["canceledAt"] = now
+            events = build_run.get("events") if isinstance(build_run.get("events"), list) else []
+            events.append(
+                {
+                    "name": "Build image",
+                    "status": "canceled" if canceled else "fail",
+                    "message": build_message,
+                    "ts": now,
+                }
+            )
+            build_run["events"] = events[-max(int(BUILD_RUN_EVENT_LIMIT), 100) :]
+
+
 def _mutate_control_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
     return mutate_state(mutator)
 
@@ -2336,6 +2431,11 @@ def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, A
         canonical_node_name = entry[0] if entry else node_name
         record = _require_node_agent_token(state, token, node_name, node_id=node_id)
         normalized_container_stats = _update_agent_heartbeat(record, body, config=config, state=state)
+        _reconcile_interrupted_agent_tasks(
+            state,
+            canonical_node_name,
+            str(body.get("activeTaskId") or "").strip(),
+        )
 
     _mutate_control_state(mutate)
     state = load_state()

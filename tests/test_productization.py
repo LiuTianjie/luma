@@ -10687,6 +10687,108 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_agent_heartbeat_fails_only_orphaned_running_tasks(self):
+        from luma.control import server as control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                        "labels": {
+                            "luma.node.name": "worker-storage",
+                            "luma.node.id": "worker-node-id",
+                            "region": "cn",
+                        },
+                    }
+                }
+                save_state(state)
+                issued = handle_node_agent_token(
+                    state["deployToken"],
+                    {"nodeName": "worker-storage", "nodeId": "worker-node-id"},
+                )
+                current = load_state()
+                current["agentTasks"] = {
+                    "task-active": {
+                        "id": "task-active",
+                        "nodeName": "worker-storage",
+                        "action": "prepare-managed-nfs-host",
+                        "payload": {},
+                        "status": "running",
+                    },
+                    "task-orphan": {
+                        "id": "task-orphan",
+                        "nodeName": "worker-storage",
+                        "action": "prepare-managed-nfs-host",
+                        "payload": {},
+                        "status": "running",
+                        "builderTaskId": "builder-orphan",
+                        "buildRunId": "run-orphan",
+                    },
+                    "task-waiting": {
+                        "id": "task-waiting",
+                        "nodeName": "worker-storage",
+                        "action": "prepare-managed-nfs-host",
+                        "payload": {},
+                        "status": "queued",
+                    },
+                }
+                current["builderTasks"] = {
+                    "builder-orphan": {
+                        "id": "builder-orphan",
+                        "kind": "build-plan",
+                        "status": "running",
+                        "events": [],
+                    }
+                }
+                current["buildRuns"] = {
+                    "run-orphan": {
+                        "id": "run-orphan",
+                        "status": "running",
+                        "events": [],
+                    }
+                }
+                save_state(current)
+
+                result = control_server.handle_node_agent_heartbeat(
+                    issued["agentToken"],
+                    {
+                        "nodeName": "worker-storage",
+                        "nodeId": "worker-node-id",
+                        "os": "linux",
+                        "capabilities": ["nfs-host"],
+                        "activeTaskId": "task-active",
+                    },
+                )
+
+                self.assertEqual(result["activeTaskId"], "task-active")
+                saved = load_state()["agentTasks"]
+                self.assertEqual(saved["task-active"]["status"], "running")
+                self.assertEqual(saved["task-waiting"]["status"], "queued")
+                self.assertEqual(saved["task-orphan"]["status"], "failed")
+                self.assertEqual(
+                    saved["task-orphan"]["message"],
+                    "node agent restarted before task completion",
+                )
+                self.assertTrue(saved["task-orphan"]["completedAt"])
+                recovered = load_state()
+                self.assertEqual(recovered["builderTasks"]["builder-orphan"]["status"], "failed")
+                self.assertEqual(
+                    recovered["builderTasks"]["builder-orphan"]["message"],
+                    "builder task interrupted by node agent restart",
+                )
+                self.assertEqual(recovered["buildRuns"]["run-orphan"]["status"], "failed")
+                self.assertEqual(
+                    recovered["buildRuns"]["run-orphan"]["message"],
+                    "build interrupted by node agent restart",
+                )
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_node_agent_alias_can_lease_canonical_node_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))

@@ -312,7 +312,11 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         )
         self.assertEqual(
             {volume.adopted for volume in deployment.volumes.values()},
-            {True},
+            {False},
+        )
+        self.assertEqual(
+            {volume.initialize for volume in deployment.volumes.values()},
+            {"empty"},
         )
         self.assertEqual(
             {service.node for service in deployment.services.values()}, {"manager"}
@@ -447,7 +451,11 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             live_sidecar["volumes"]["backup-data"]["local"],
             {"node": "manager", "path": "/srv/luma/lae/staging/backups/v2"},
         )
-        self.assertTrue(live_sidecar["volumes"]["backup-data"]["adopted"])
+        self.assertEqual(
+            live_sidecar["volumes"]["backup-data"]["initialize"],
+            "empty",
+        )
+        self.assertNotIn("adopted", live_sidecar["volumes"]["backup-data"])
 
         production_store = self.load("luma.compose.yml").compose["services"][
             "artifact-store"
@@ -466,13 +474,15 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertNotIn("*", production_store["MINIO_API_CORS_ALLOW_ORIGIN"])
         self.assertNotIn("*", staging_store["MINIO_API_CORS_ALLOW_ORIGIN"])
 
-    def test_managed_storage_and_external_email_environment_boundary(self):
+    def test_platform_local_storage_and_external_email_environment_boundary(self):
         production = self.load("luma.compose.yml")
         staging = self.load("luma.compose.staging.yml")
         for deployment in (production, staging):
             self.assertNotIn("mailpit", deployment.compose["services"])
             for volume in deployment.volumes.values():
-                self.assertIsNotNone(volume.storage_class)
+                self.assertEqual(volume.kind, "local")
+                self.assertEqual(volume.local_node, "lae-core")
+                self.assertIsNone(volume.storage_class)
                 self.assertEqual(volume.initialize, "empty")
                 self.assertEqual(volume.access_mode, "ReadWriteOnce")
 
