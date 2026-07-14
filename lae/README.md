@@ -15,31 +15,26 @@ object-source redemption use mutually authenticated, task-bound, one-time
 leases. The Web account console provides deploy-token management, plan,
 subscription, usage, and mock-checkout flows.
 
-Current verification snapshot (2026-07-12):
+Current verification snapshot (2026-07-14):
 
-- Luma CLI and Control are live on `0.1.192`; that release passed 757/757 tests
-  with `ResourceWarning` treated as an error. The manager agent is also
-  `0.1.192`; the remaining online node agents are intentionally recorded as a
-  heterogeneous `0.1.175`-`0.1.188` fleet and must not be described as
-  uniformly upgraded.
-- The LAE Web scaffold check, TypeScript check and Next.js production build
-  passed at commit `fcff4c8`. Its immutable Web image is live in
-  `lae-platform-staging` Job version 18; all 9 platform tasks are healthy on
-  `lab`.
-- Tenant placement remains limited to `manager + tecent`. Two real FastAPI
-  applications are running on `tecent`; a fresh template launch completed
-  Agent diagnosis, Builder build, Runtime deployment, random-domain routing
-  and valid TLS without a manual manifest or runtime patch.
+- Luma CLI, Control and manager agent are live on `0.1.233`; 810 pytest cases
+  and 130 subtests passed. Non-manager agents were not fleet-upgraded in this
+  release and must not be described as uniformly current.
+- All 9 `lae-platform-staging` tasks built from exact commit `65a4010` are
+  healthy on `manager`. Builder work and the internal registry run on
+  `builder`; tenant placement remains limited to `manager + tecent`.
+- The product acceptance flow completed a four-service Compose deployment with
+  two public HTTPS routes and two persistent volumes, followed by restart,
+  suspend/resume, update check, unsupported diagnosis and deletion. A separate
+  clean-room flow used only the project Skill, `lae` CLI and a deploy token to
+  diagnose, deploy, inspect history, restart and delete a FastAPI template.
 
-The 9 platform tasks, TLS, and base Web/API/Agent/artifact probes are healthy;
-Agent readiness reports the AI provider configured. Mailpit registration,
-deploy-token, CLI, template and analysis flows have run, but Mailpit does not
-deliver to a user's real mailbox and the complete provider-backed verdict and
-lifecycle matrices remain open. The `0.1.190`-`0.1.192` Control upgrades and
-the Web Job v18 rollout preserved both tenant routes, closing the reproduced
-upgrade regression for this staging path; Docker/CNI fault injection and wider
-sentinel coverage remain production gates. This is not a production-readiness
-claim. Real payment providers, production SMTP,
+The 9 platform tasks, wildcard DNS-01 TLS, and base Web/API/Agent/artifact
+probes are healthy; Agent readiness reports the AI provider configured.
+Mailpit/preview authentication does not deliver to a user's real mailbox.
+Docker/CNI fault injection, wider sentinel coverage, ZIP/private-Git evidence
+and recovery drills remain production gates. This is not a
+production-readiness claim. Real payment providers, production SMTP,
 dedicated production runners and stateful infrastructure, recovery drills,
 capacity controls, and abuse/compliance controls remain launch blockers.
 

@@ -27,8 +27,8 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：Luma CLI/Control/全部在线 agent `0.1.196` 与 LAE exact ref `7c1212c037e356c3e6af39829bbed0615bea234d` 已 live；平台 Job v21、模板到 Runtime、稳定更新检查和主要 lifecycle 已完成真实 E2E，完整来源、安全负例与故障注入验收仍在收尾
-> 日期：2026-07-12
+> 状态：Luma CLI/Control/manager agent `0.1.233` 已 live；非 manager fleet 本轮未全量升级。LAE exact ref `65a4010` 的 9 个平台 task、四服务 Compose 双 HTTPS/双持久卷产品 E2E 与 clean-room CLI/Skill E2E 已通过，完整来源、安全负例与故障注入仍在收尾
+> 日期：2026-07-14
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
 ## 1. 当前结论
@@ -48,26 +48,25 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 
 本文所有写操作都要求已批准的 staging 变更窗口。当前集群以 `manager` 为唯一
 控制面，且 manager 本身也显式承担 staging runtime；`aly` 是已过时、必须跳过的
-历史名称，不属于本轮升级目标。平台 staging 明确落在 `lab`，租户 runtime 候选为
-`manager + tecent`，
-经 `tailscale-relay` 发布并使用 `builder-registry-nfs` 独立 path。专用 production
+历史名称，不属于本轮升级目标。平台 staging 当前落在 `manager`，租户 runtime 候选为
+`manager + tecent`，构建与内部 registry 均在 `builder`。专用 production
 storage class 和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-12，Luma CLI、Control、manager agent 与 6 个在线非 manager agent
-均为 `0.1.196`；离线 `blg` 保持 `0.1.175`，恢复后必须补升级。`0.1.196` 发布前
-通过 761/761 gate，release workflow 会拒绝 tag 与 package version 不一致。LAE
-staging 当前 Job version 21 使用 exact ref
-`7c1212c037e356c3e6af39829bbed0615bea234d` 构建的镜像，平台 9 个 task、TLS、
-Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider 已配置。
+截至 2026-07-14，Luma CLI、Control 与 manager agent 为 `0.1.233`；本轮没有
+worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`，离线 `blg` 保持
+`0.1.175`。`0.1.233` 发布前通过 810 项 pytest 与 130 项 subtest，release workflow
+继续拒绝 tag 与 package version 不一致。LAE staging 使用 exact ref `65a4010` 构建的
+镜像，平台 9 个 task、wildcard DNS-01 TLS、Web/API/Agent/artifact probes 健康，
+Agent ready 显示 AI provider 已配置。
 
-真实 FastAPI 模板已完成 Agent 诊断、Builder 构建、Runtime 部署、随机域名和有效
-TLS；更新检查已证明等价快照的计划摘要稳定，刷新基线后正确返回无变化。平台 Job
-v21、fleet 与 Control/manager `0.1.196` 升级均无需人工重启。针对 LAE Web 的
-Control route sentinel 为 1/1 成功，但更长的外部探针仍出现少量 LAE 404/502/timeout，
-且全量 sentinel 会把 API 根路径等合法 404 误判为失败。Docker daemon/CNI 故障注入、
-Compose 双 HTTP、volume、跨节点重调度和 route sentinel 语义修正仍是 production gate；
-Mailpit 也仍不能证明真实邮箱送达。
+真实四服务 Compose 已完成 Agent 诊断、环境配置、Builder 构建、双 HTTPS route、
+双持久卷、restart、suspend/resume、更新检查、unsupported 负例与删除；clean-room
+Agent 也已只用 LAE Skill/CLI/deploy token 完成 FastAPI 模板部署、历史查询、重启和
+清理。`0.1.229-0.1.233` 进一步关闭 wildcard TLS、manager 配置所有权、DNS 授权和
+runtime 假异步问题。Docker daemon/CNI 故障注入、跨节点重调度、长时间 route
+sentinel、ZIP/真实私有 Git与数据恢复仍是 production gate；Mailpit/preview 也仍不能
+证明真实邮箱送达。
 
 ## 2. 发布输入与不变量
 
