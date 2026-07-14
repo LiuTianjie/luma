@@ -187,6 +187,53 @@ services:
         names = {t["Name"] for t in groups[0]["Tasks"]}
         self.assertEqual(names, {"mysql", "app"})
 
+    def test_public_healthcheck_gates_rollout_and_stop_grace_is_preserved(self):
+        compose = """
+services:
+  api:
+    image: example.test/api:1
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready')"]
+      interval: 10s
+      timeout: 3s
+    stop_grace_period: 60s
+"""
+        sidecar = """
+name: checked-api
+compose: docker-compose.yml
+region: cn
+services:
+  api:
+    exposure: cn-edge
+    domain: api.example.test
+    port: 8080
+"""
+        job = render_compose_job(
+            cfg(), write_deployment(sidecar, compose), as_json=False
+        )["Job"]
+
+        task = job["TaskGroups"][0]["Tasks"][0]
+        self.assertEqual(task["KillTimeout"], 60_000_000_000)
+        service = job["TaskGroups"][0]["Services"][0]
+        self.assertEqual(
+            service["Checks"],
+            [
+                {
+                    "Name": "checked-api-api-health",
+                    "PortLabel": "api",
+                    "Interval": 10_000_000_000,
+                    "Timeout": 3_000_000_000,
+                    "Type": "http",
+                    "Path": "/health/ready",
+                }
+            ],
+        )
+        self.assertEqual(job["Update"]["HealthCheck"], "checks")
+
+    def test_compose_without_public_healthcheck_uses_task_state_gate(self):
+        job = self.render()
+        self.assertEqual(job["Update"]["HealthCheck"], "task_states")
+
     def test_storage_class_mount_renders_nfs_driver_options_and_is_namespaced(self):
         compose = """
 services:

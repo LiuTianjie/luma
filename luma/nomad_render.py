@@ -675,10 +675,14 @@ def render_compose_job(
                 resources["MemoryMB"] = _memory_mb(reservations["memory"])
 
         task: Dict[str, Any] = {"Name": str(svc_name), "Driver": "docker", "Config": docker_config, "Resources": resources}
+        stop_grace_period = body.get("stop_grace_period")
+        if stop_grace_period is not None:
+            task["KillTimeout"] = _duration_ns(stop_grace_period)
         if env:
             task["Env"] = env
         tasks.append(task)
 
+        health_check = _compose_health_check(body, label, name, str(svc_name))
         if exposure in {"cn-edge", "external-edge"} and override and override.domain and port:
             # Compose service names are only unique inside one stack. Registering
             # every tenant's common `web`/`api` task under that raw name makes
@@ -698,8 +702,22 @@ def render_compose_job(
                     f"traefik.http.routers.{service_id}.service={service_id}",
                 ],
             }
+            if health_check is not None:
+                service_block["Checks"] = [health_check]
             _set_edge_service_address(service_block, service_address)
             nomad_services.append(service_block)
+        elif exposure in {"tailscale-relay", "tcp-relay"} and health_check is not None:
+            # File-provider relay routes do not need a discovery service, but
+            # Nomad still needs one to make the Compose healthcheck part of the
+            # deployment gate. Keep it tagless so Traefik cannot publish it.
+            nomad_services.append(
+                {
+                    "Name": f"{name}-{slugify(str(svc_name))}-health",
+                    "PortLabel": label,
+                    "Provider": "nomad",
+                    "Checks": [health_check],
+                }
+            )
 
     group: Dict[str, Any] = {
         "Name": name,
@@ -730,7 +748,10 @@ def render_compose_job(
     job = {
         "ID": name, "Name": name, "Type": "service", "Datacenters": ["dc1"],
         "Constraints": constraints,
-        "Update": _compose_update_stanza(deployment),
+        "Update": _compose_update_stanza(
+            deployment,
+            has_service_checks=any(service.get("Checks") for service in nomad_services),
+        ),
         "TaskGroups": [group],
         "Meta": {"luma.managed": "true", "luma.region": region, "luma.compose": "true"},
     }
@@ -923,13 +944,17 @@ def _update_stanza(service: ServiceSpec, *, has_service_check: bool = False) -> 
     return update
 
 
-def _compose_update_stanza(deployment: Any) -> Dict[str, Any]:
+def _compose_update_stanza(
+    deployment: Any,
+    *,
+    has_service_checks: bool = False,
+) -> Dict[str, Any]:
     update = {
         "AutoRevert": True,
         "MaxParallel": 1,
         "MinHealthyTime": 6_000_000_000,  # 6s in ns
         "HealthyDeadline": 180_000_000_000,  # 3m in ns
-        "HealthCheck": "task_states",
+        "HealthCheck": "checks" if has_service_checks else "task_states",
     }
     if _compose_canary_before_promote(deployment):
         update["Canary"] = 1
@@ -1182,6 +1207,44 @@ def _health_check(service: ServiceSpec, port_label: str) -> Dict[str, Any] | Non
         "Interval": interval,
         "Timeout": timeout,
     }
+
+
+def _compose_health_check(
+    body: Mapping[str, Any],
+    port_label: str,
+    deployment_name: str,
+    service_name: str,
+) -> Dict[str, Any] | None:
+    """Translate a public Compose healthcheck into a Nomad service check.
+
+    Nomad does not consume Docker/Compose healthchecks from the Docker driver.
+    Without an explicit service check it marks an allocation healthy as soon as
+    the container process exists, even while the application is still running
+    migrations or waiting for its database. Public services already have a
+    mapped group port, so they can be checked without exposing any extra port.
+    """
+    healthcheck = body.get("healthcheck")
+    if not isinstance(healthcheck, Mapping) or healthcheck.get("disable") is True:
+        return None
+    test = healthcheck.get("test")
+    if not isinstance(test, list) or not test or str(test[0]).upper() == "NONE":
+        return None
+    name = f"{deployment_name}-{slugify(service_name)}"
+    base = {
+        "Name": f"{name}-health",
+        "PortLabel": port_label,
+        "Interval": _duration_ns(healthcheck.get("interval", "30s")),
+        "Timeout": _duration_ns(healthcheck.get("timeout", "5s")),
+    }
+    url = _healthcheck_url(test[1:] if str(test[0]).upper() in {"CMD", "CMD-SHELL"} else test)
+    if url:
+        parsed = urllib.parse.urlparse(url)
+        return {
+            **base,
+            "Type": "http",
+            "Path": parsed.path or "/",
+        }
+    return {**base, "Type": "tcp"}
 
 
 def _healthcheck_url(args: List[Any]) -> str:
