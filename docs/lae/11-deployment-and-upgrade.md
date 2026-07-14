@@ -27,7 +27,7 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：2026-07-14 live Control/manager 报告 Luma `0.1.244`，并运行候选 ref `00b4cdb06bb1d72466013b3ea2f3fd615a46dc13` 的 Control 镜像；在线 fleet 仍为混合版本，最终 release 前必须收敛。LAE exact ref `35591c4e789f7d7bec60614d427fed05023b373a` 的 10 个 service 已在 manager 本地盘全新初始化，Web/API/Agent/Artifact 四个健康端点均为 200；离线 `blg` 按当前决策不处理。
+> 状态：2026-07-14 Luma `v0.1.249` exact ref `028be7174ac76f4698ace6cd7b014a7af14f7e0a` 已正式发布；本机 CLI、live Control/manager 与在线 fleet `bot/builder/gaojiu/lab/m4/tecent` 均为 `0.1.249`，离线 `blg` 保持 `0.1.175` 且按当前决策不处理。LAE exact ref `35591c4e789f7d7bec60614d427fed05023b373a` 的 10 个 service 已在 manager 本地盘全新初始化，Web/API/Agent/Artifact 四个健康端点均为 200。
 > 日期：2026-07-14
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
@@ -53,10 +53,10 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 本地盘容量/异机恢复和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-14，本地候选通过 839 项 pytest；release workflow 继续拒绝 tag 与
-package version 不一致。Live Control/manager 为 `0.1.244`，`builder` 为 `0.1.242`，
-其余 ready 非 manager 节点为 `0.1.238`，离线 `blg` 保持 `0.1.175`。manager Control
-当前运行 `100.66.177.70:5000/luma-control:sha-00b4cdb`；LAE staging 使用 exact ref
+截至 2026-07-14，最终候选通过 841 项 pytest 与 130 项 subtest；release workflow 继续拒绝 tag 与
+package version 不一致。`v0.1.249` 的 Control image 与 PyPI trusted-publishing workflow 均成功；本机 CLI、Live Control/manager 与全部 ready 非 manager 节点
+`bot/builder/gaojiu/lab/m4/tecent` 均为 `0.1.249`，离线 `blg` 保持 `0.1.175`。manager Control
+运行 `100.66.177.70:5000/luma-control:sha-028be71`，实际 digest 为 `sha256:995a524c9c624fcff7478094fd246312d02618b79e5c085ef81f08caab06b8ee`；LAE staging 使用 exact ref
 `35591c4e789f7d7bec60614d427fed05023b373a` 构建的镜像，平台 10 个 service、wildcard
 DNS-01 TLS、Web/API/Agent/artifact probes 健康，平台主数据明确挂载 manager 本地
 `/srv/luma/lae/staging/*/v2`。
@@ -469,10 +469,10 @@ exact deployment/`JobVersion`，并等待该版本每个 required task group 的
 `JobModifyIndex` 对应的当前版本与 allocation 已健康。failed/blocked/canceled、
 superseded 和 timeout 必须 fail closed。
 
-当前 live `0.1.237` 已通过 manager Control 更新、六节点 fleet 更新和 LAE 产品 E2E，
+当前 live `0.1.249` 已通过 manager Control 更新、六节点 fleet 更新和 LAE 产品 E2E，
 既有 route 未再出现需要人工重启才能恢复的批量 404/502。升级前健康的 11 条 route 已在
 Control 恢复后按原集合复放并 11/11 成功；随后按真实健康端点连续采样 120 秒，LAE
-Web/API/Agent/Artifact 与 Gateway 各 83/83、零失败。已复现的 service/router
+Web/API/Agent/Artifact 与 Gateway 各 83/83、零失败；`0.1.249` 最终 manager 更新期间同五入口连续 5 轮均为 200，更新后 60 秒稳定期各 14/14、零失败。已复现的 service/router
 名称碰撞和跨节点 private-IP upstream 已分别通过 deployment-scoped 名称与
 `luma_tailscale_ip` service address 修复。应用所有的 JSON/HTML 404 已与 Traefik 默认
 纯文本 404 区分，遗留 route 文件也不再进入 active inventory。Docker daemon restart 后 CNI 自愈、

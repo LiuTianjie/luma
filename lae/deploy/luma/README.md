@@ -2,7 +2,7 @@
 
 本目录是 `lae-platform` 的第一版可验证 Luma Compose 资产。它把平台本身作为一个受控 Compose 部署到 Luma：Web/API 与受策略约束的 artifact S3 endpoint 使用公网 HTTP，Worker、Agent Controller、PostgreSQL 和 Valkey 只在同一 Nomad group 的内部拓扑中通信。MinIO 数据面虽然有 HTTPS route，但 bucket policy、CORS 和最小权限 credential 只允许 LAE upload/artifact 流程，不能作为管理入口。这里没有公网 TCP/UDP、host bind、Docker socket、host network 或数据库公网入口。
 
-这不是“已经可以生产上线”的声明。截至 2026-07-14，live Control/manager 报告 `0.1.244` 并运行含本地 Compose volume 修复的候选 Control；`lae-platform-staging` 使用 exact commit `35591c4e789f7d7bec60614d427fed05023b373a`，10 个 Compose service 全部健康，Web、API、Agent、artifact 与 Luma Control 公网探针均为 HTTP 200，TLS 和 DNS/route 已收敛。PostgreSQL、MinIO 和本地快照已迁到 manager 本地盘，平台启动不再依赖 NFS。真实邮箱、AI provider-backed 故障矩阵、租户 runtime 完整纵向 E2E、异机恢复和生产安全门禁仍待完成，不能把平台健康外推为 production-ready。
+这不是“已经可以生产上线”的声明。截至 2026-07-14，Luma `v0.1.249` 已正式发布，本机 CLI、live Control/manager 与全部在线 fleet 已收敛；`lae-platform-staging` 使用 exact commit `35591c4e789f7d7bec60614d427fed05023b373a`，10 个 Compose service 全部健康，Web、API、Agent、artifact 与 Luma Control 公网探针均为 HTTP 200，TLS 和 DNS/route 已收敛。PostgreSQL、MinIO 和本地快照位于 manager 本地盘，平台启动不依赖 NFS。真实邮箱、AI provider-backed 故障矩阵、租户 runtime 完整纵向 E2E、异机恢复和生产安全门禁仍待完成，不能把平台健康外推为 production-ready。
 
 ## 文件
 
@@ -48,7 +48,7 @@ staging 要求 AI 诊断，controller/provider 失败会返回 `diagnostic_faile
 
 ## 实际落点与当前集群差距
 
-2026-07-14 当前 staging 实施快照是：Control 与 manager agent 报告 Luma `0.1.244`，Control 已运行包含本地 Compose volume 支持的精确候选镜像；`manager` 是唯一控制面、LAE 平台节点并显式允许兼任租户 runtime，`tecent` 是另一个 staging runtime，构建固定在 `builder`。`aly` 是过时历史节点，不参与升级、构建、平台或租户调度。这个快照会漂移，任何再次发布前都必须重新执行 `luma version` 与 `luma status --format json`，不能把下表当成永久配置。
+2026-07-14 当前 staging 实施快照是：本机 CLI、Control、manager agent 与在线 fleet `bot/builder/gaojiu/lab/m4/tecent` 均为正式 Luma `0.1.249`；`manager` 是唯一控制面、LAE 平台节点并显式允许兼任租户 runtime，`tecent` 是另一个 staging runtime，构建固定在 `builder`。离线 `blg` 保持 `0.1.175` 且未触碰；`aly` 是过时历史节点，不参与升级、构建、平台或租户调度。这个快照会漂移，任何再次发布前都必须重新执行 `luma version` 与 `luma status --format json`，不能把下表当成永久配置。
 
 | 层 | 当前事实 | 可接受用途 | 生产要求 |
 | --- | --- | --- | --- |
