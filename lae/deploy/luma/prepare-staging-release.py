@@ -154,10 +154,6 @@ def main(argv: list[str] | None = None) -> int:
         manifest = json.loads((bundle / "bundle-manifest.json").read_text(encoding="utf-8"))
         platform["LAE_LUMA_CLUSTER_ID"] = args.cluster_id
         platform["LAE_ANALYZER_IMAGE_DIGEST"] = args.analyzer_image_digest
-        platform["LAE_ARTIFACT_INIT_IMAGE"] = "100.66.177.70:5000/liutianjie/luma/artifact-init@sha256:281024c94a47808a8e48cdfd02977fd5ef456820a44f5056c759b7c8c4a7afaf"
-        platform["LAE_BACKUP_IMAGE"] = "100.66.177.70:5000/liutianjie/luma/backup@sha256:b8007b98a03da177c8bf84795aeffa70feface7f5ac963372cf4e1febef3d3df"
-        platform["LAE_MINIO_IMAGE"] = "100.66.177.70:5000/liutianjie/luma/artifact-store@sha256:bcda2439046659f7f2900ec5937f2848fcc93d5cedcef88a86c74d70dc51daed"
-        platform["LAE_VALKEY_IMAGE"] = "100.66.177.70:5000/liutianjie/luma/valkey@sha256:344564180c9f6ab456f1de502a88426f2360183d929c06514010c9200b3069db"
         control["LUMA_BUILDER_ANALYZE_IMAGE_DIGEST"] = args.analyzer_image_digest
         runtime_nodes = sorted(set(args.runtime_nodes or ["manager", "tecent"]))
         if not runtime_nodes or any(

@@ -261,10 +261,9 @@ services:
 
   artifact-store:
     platform: linux/amd64
-    # MinIO is released independently from LAE application images. Production
-    # may override the immutable digest for another Luma cluster, but must not
-    # use a mutable tag or rebuild MinIO during an ordinary LAE rollout.
-    image: ${LAE_MINIO_IMAGE}
+    build:
+      context: ../..
+      dockerfile: deploy/luma/docker/minio.Dockerfile
     environment:
       # Community MinIO exposes CORS as a server-wide API setting; per-bucket
       # PutBucketCors is not implemented. This store is dedicated to one LAE
@@ -291,7 +290,9 @@ services:
 
   artifact-init:
     platform: linux/amd64
-    image: ${LAE_ARTIFACT_INIT_IMAGE}
+    build:
+      context: ../..
+      dockerfile: deploy/luma/docker/artifact-init.Dockerfile
     environment:
       LAE_ARTIFACT_S3_BUCKET: lae-artifacts
       LAE_MINIO_INTERNAL_ENDPOINT: http://artifact-store:9000
@@ -322,7 +323,9 @@ services:
 
   backup:
     platform: linux/amd64
-    image: ${LAE_BACKUP_IMAGE}
+    build:
+      context: ../..
+      dockerfile: deploy/luma/docker/backup.Dockerfile
     environment:
       LAE_ARTIFACT_S3_BUCKET: lae-artifacts
       LAE_BACKUP_INTERVAL_SECONDS: "86400"
@@ -360,7 +363,9 @@ services:
 
   valkey:
     platform: linux/amd64
-    image: ${LAE_VALKEY_IMAGE}
+    build:
+      context: ../..
+      dockerfile: deploy/luma/docker/valkey.Dockerfile
     command:
       - sh
       - -ec
