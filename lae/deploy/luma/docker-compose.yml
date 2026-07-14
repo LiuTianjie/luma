@@ -291,9 +291,7 @@ services:
 
   artifact-init:
     platform: linux/amd64
-    build:
-      context: ../..
-      dockerfile: deploy/luma/docker/artifact-init.Dockerfile
+    image: ${LAE_ARTIFACT_INIT_IMAGE:-100.66.177.70:5000/liutianjie/luma/artifact-init@sha256:281024c94a47808a8e48cdfd02977fd5ef456820a44f5056c759b7c8c4a7afaf}
     environment:
       LAE_ARTIFACT_S3_BUCKET: lae-artifacts
       LAE_MINIO_INTERNAL_ENDPOINT: http://artifact-store:9000
