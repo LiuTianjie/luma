@@ -27,7 +27,7 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：Luma CLI/Control/manager agent 包版本 `0.1.233` 已 live，manager Control 已运行 exact commit `d0ffc7a` 的候选镜像；非 manager fleet 本轮未全量升级。LAE exact ref `c7873e6caf08344e683da9d9c2992445792bab55` 的 9 个 service（Nomad job v53）、四服务 Compose 双 HTTPS/双持久卷产品 E2E、四模板真实 smoke/自动下架恢复与 clean-room CLI/Skill E2E 已通过，完整来源、安全负例与数据恢复故障注入仍在收尾
+> 状态：Luma `0.1.234` 候选通过全量回归，当前 live CLI/Control/manager agent 仍为 `0.1.233`。LAE exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 的 9 个 service（Nomad job v54）、四服务 Compose、HTML/ZIP/私有 Git、四模板、clean-room CLI/Skill 与 PostgreSQL 进程恢复已通过；真实邮件、安全负例与备份还原仍在收尾
 > 日期：2026-07-14
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
@@ -53,13 +53,13 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 storage class 和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-14，Luma CLI、Control 与 manager agent 为 `0.1.233`；本轮没有
-worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`，离线 `blg` 保持
-`0.1.175`。当前候选代码通过 813 项 pytest 与 130 项 subtest；LAE 通过 429 项测试
+截至 2026-07-14，Luma `0.1.234` 候选通过 814 项 pytest 与 130 项 subtest；当前 live
+CLI、Control 与 manager agent 仍为 `0.1.233`，在线非 manager agent 主要为 `0.1.228`，离线 `blg` 保持
+`0.1.175`。LAE 通过 429 项测试
 （25 项按环境跳过）、contracts 和 compile。release workflow 继续拒绝
 tag 与 package version 不一致。manager Control 当前镜像为
 `100.66.177.70:5000/luma-control@sha256:dca605433652e74232ef6d08b5327c3b6342ef1aa5dd435f6f37fb3aff03d06c`，
-LAE staging 使用 exact ref `c7873e6caf08344e683da9d9c2992445792bab55` 构建的镜像，平台 9 个 service（Nomad job v53）、wildcard DNS-01 TLS、
+LAE staging 使用 exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 构建的镜像，平台 9 个 service（Nomad job v54）、wildcard DNS-01 TLS、
 Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider 已配置。
 
 真实四服务 Compose 已完成 Agent 诊断、环境配置、Builder 构建、双 HTTPS route、
