@@ -77,6 +77,7 @@ class JsonClient:
         api_base: str,
         *,
         bearer_token: str | None = None,
+        request_headers: Mapping[str, str] | None = None,
         timeout_seconds: float = 30,
     ) -> None:
         parsed = urllib.parse.urlsplit(api_base.rstrip("/"))
@@ -84,6 +85,16 @@ class JsonClient:
             raise ValueError("api_base must be an absolute HTTP(S) URL")
         self.api_base = api_base.rstrip("/")
         self.bearer_token = bearer_token
+        self.request_headers = dict(request_headers or {})
+        if any(
+            not isinstance(name, str)
+            or not isinstance(value, str)
+            or name.lower() in {"authorization", "cookie", "content-type"}
+            or "\r" in name + value
+            or "\n" in name + value
+            for name, value in self.request_headers.items()
+        ):
+            raise ValueError("request_headers contains an unsafe header")
         self.timeout_seconds = timeout_seconds
         self.cookies: dict[str, str] = {}
 
@@ -103,6 +114,7 @@ class JsonClient:
         headers = {
             "Accept": "application/json",
             "User-Agent": "lae-staging-product-e2e/1",
+            **self.request_headers,
         }
         if self.bearer_token:
             headers["Authorization"] = f"Bearer {self.bearer_token}"

@@ -106,6 +106,11 @@ def validate(bundle: Path, *, cluster_id: str, analyzer: str) -> dict[str, objec
         raise ValueError("bundle cluster binding does not match the live cluster")
     if platform.get("LAE_ANALYZER_IMAGE_DIGEST") != analyzer:
         raise ValueError("platform analyzer digest does not match the release")
+    template_smoke_token = platform.get("LAE_TEMPLATE_SMOKE_REPORT_TOKEN", "")
+    if not template_smoke_token.startswith("lae_template_smoke_") or not 32 <= len(
+        template_smoke_token
+    ) <= 512:
+        raise ValueError("template smoke credential is missing or invalid")
     if control.get("LUMA_BUILDER_ANALYZE_IMAGE_DIGEST") != analyzer:
         raise ValueError("Control analyzer digest does not match the release")
     manifest = json.loads((bundle / "bundle-manifest.json").read_text(encoding="utf-8"))
@@ -168,6 +173,12 @@ def main(argv: list[str] | None = None) -> int:
             # private bundle and is never printed.
             platform["LAE_AGENT_CONTROLLER_TOKEN"] = (
                 "lae_agent_" + secrets.token_urlsafe(36)
+            )
+        if not platform.get("LAE_TEMPLATE_SMOKE_REPORT_TOKEN"):
+            # Additive one-time migration. Existing application/data keys and
+            # service principals remain byte-for-byte unchanged.
+            platform["LAE_TEMPLATE_SMOKE_REPORT_TOKEN"] = (
+                "lae_template_smoke_" + secrets.token_urlsafe(36)
             )
         manifest["clusterId"] = args.cluster_id
         manifest["analyzerImageDigest"] = args.analyzer_image_digest

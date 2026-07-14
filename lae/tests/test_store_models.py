@@ -24,6 +24,7 @@ from lae_store.models import (  # noqa: E402
     DeployToken,
     Operation,
     SourceConnection,
+    TemplateHealth,
 )
 
 
@@ -65,6 +66,7 @@ class StoreModelTests(unittest.TestCase):
                 "billing_orders",
                 "billing_payment_events",
                 "uploads",
+                "template_health",
             },
         )
 
@@ -76,6 +78,12 @@ class StoreModelTests(unittest.TestCase):
         self.assertIn("JSONB", operation_ddl)
         self.assertIn("BYTEA", token_ddl)
         self.assertIn("INET", token_ddl)
+
+        template_ddl = str(
+            CreateTable(TemplateHealth.__table__).compile(dialect=dialect)
+        )
+        self.assertIn("consecutive_failures >= 0", template_ddl)
+        self.assertIn("PRIMARY KEY (template_id)", template_ddl)
 
     def test_active_application_mutation_is_a_postgres_partial_unique_index(
         self,

@@ -59,6 +59,37 @@ class TimestampMixin:
     )
 
 
+class TemplateHealth(TimestampMixin, Base):
+    __tablename__ = "template_health"
+    __table_args__ = (
+        CheckConstraint(
+            "last_status IN ('unverified','succeeded','failed')",
+            name="last_status",
+        ),
+        CheckConstraint("consecutive_failures >= 0", name="failures_nonnegative"),
+    )
+
+    template_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    template_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    published: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    last_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="unverified"
+    )
+    last_run_id: Mapped[str | None] = mapped_column(String(80))
+    last_error_code: Mapped[str | None] = mapped_column(String(80))
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    auto_unpublished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+
 class User(TimestampMixin, Base):
     __tablename__ = "users"
     __table_args__ = (

@@ -195,6 +195,7 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
     postgres_password = secrets.token_urlsafe(32)
     valkey_password = secrets.token_urlsafe(36)
     agent_controller_token = _token("lae_agent_")
+    template_smoke_token = _token("lae_template_smoke_")
 
     environment = {
         "LAE_ADMIN_API_TOKEN": admin_token,
@@ -249,6 +250,7 @@ def generate(argv: list[str] | None = None) -> dict[str, object]:
             {"1": _base64_key()}, separators=(",", ":")
         ),
         "LAE_SOURCE_CONNECTION_IDEMPOTENCY_HMAC_KEY": _base64_key(),
+        "LAE_TEMPLATE_SMOKE_REPORT_TOKEN": template_smoke_token,
         "LAE_UPLOAD_HMAC_KEY": _base64_key(),
         "LAE_VALKEY_PASSWORD": valkey_password,
         "LAE_WORKER_STATE_HMAC_KEY": _base64_key(),

@@ -194,6 +194,7 @@ from .update_checks import (
     public_update_check_from_operation,
 )
 from .state import OperationStatus, OutboxStatus
+from .template_health import PostgresTemplateHealthStore, TemplatePublication
 from .source_connections import (
     SOURCE_CONNECTION_CREATE_ROUTE,
     SOURCE_CONNECTION_REVOKE_ROUTE,

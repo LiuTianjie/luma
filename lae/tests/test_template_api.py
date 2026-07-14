@@ -6,8 +6,13 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from lae_api.app import CSRF_COOKIE, SESSION_COOKIE, create_app
-from lae_api.template_api import TEMPLATES, TemplateApiService, TemplateLaunchRequest
-from lae_store import new_id
+from lae_api.template_api import (
+    TEMPLATES,
+    TemplateApiService,
+    TemplateLaunchRequest,
+    TemplateSmokeAuthenticator,
+)
+from lae_store import ResourceNotFound, new_id
 from lae_store.auth import DeployTokenPrincipal, SessionPrincipal
 
 
@@ -44,6 +49,45 @@ class _Analyses:
             },
             replayed=True,
         )
+
+
+class _TemplateHealth:
+    def __init__(self) -> None:
+        self.states: dict[str, SimpleNamespace] = {}
+
+    async def publication(self, template_id, template_version):
+        return self.states.get(
+            template_id,
+            SimpleNamespace(
+                template_id=template_id,
+                template_version=template_version,
+                published=True,
+                consecutive_failures=0,
+                last_status="unverified",
+                last_error_code=None,
+            ),
+        )
+
+    async def record(
+        self,
+        *,
+        template_id,
+        template_version,
+        run_id,
+        succeeded,
+        error_code,
+    ):
+        del run_id
+        state = SimpleNamespace(
+            template_id=template_id,
+            template_version=template_version,
+            published=succeeded,
+            consecutive_failures=0 if succeeded else 3,
+            last_status="succeeded" if succeeded else "failed",
+            last_error_code=error_code,
+        )
+        self.states[template_id] = state
+        return state
 
 
 class TemplateApiTests(unittest.IsolatedAsyncioTestCase):
@@ -103,6 +147,74 @@ class TemplateApiTests(unittest.IsolatedAsyncioTestCase):
             applications.calls[0][3].removeprefix("template-app:"),
             command.idempotency_key.removeprefix("template-analysis:"),
         )
+
+    async def test_unpublished_template_is_hidden_but_smoke_can_recover_it(self) -> None:
+        health = _TemplateHealth()
+        first = TEMPLATES[0]
+        health.states[first.id] = SimpleNamespace(
+            template_id=first.id,
+            template_version=first.version,
+            published=False,
+            consecutive_failures=3,
+            last_status="failed",
+            last_error_code="LAE_TEMPLATE_ACCEPTANCE_FAILED",
+        )
+        service = TemplateApiService(
+            lambda: _Applications(), lambda: _Analyses(), lambda: health
+        )
+        public = await service.list()
+        self.assertNotIn(first.id, {item["id"] for item in public["templates"]})
+        internal = await service.list(include_unpublished=True)
+        selected = next(item for item in internal["templates"] if item["id"] == first.id)
+        self.assertFalse(selected["publication"]["published"])
+        principal = SimpleNamespace(
+            tenant_id="ten_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            credential_type="deploy_token",
+            credential_id="dt_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        )
+        with self.assertRaises(ResourceNotFound):
+            await service.launch(
+                principal=principal,
+                template_id=first.id,
+                payload=TemplateLaunchRequest(name="Hidden", slug="hidden"),
+                idempotency_key="hidden-public",
+            )
+        body, _ = await service.launch(
+            principal=principal,
+            template_id=first.id,
+            payload=TemplateLaunchRequest(name="Recovery", slug="recovery"),
+            idempotency_key="hidden-smoke",
+            allow_unpublished=True,
+        )
+        self.assertEqual(body["template"]["id"], first.id)
+
+    def test_smoke_result_endpoint_is_authenticated_and_fail_closed(self) -> None:
+        token = "s" * 48
+        health = _TemplateHealth()
+        with TestClient(
+            create_app(
+                template_health=health,
+                template_smoke_authenticator=TemplateSmokeAuthenticator(token),
+            )
+        ) as client:
+            payload = {
+                "runId": "tsm-route-1",
+                "templateId": TEMPLATES[0].id,
+                "version": TEMPLATES[0].version,
+                "status": "failed",
+                "errorCode": "LAE_TEMPLATE_ACCEPTANCE_FAILED",
+            }
+            rejected = client.post(
+                "/internal/v1/template-smoke/results", json=payload
+            )
+            self.assertEqual(rejected.status_code, 401)
+            accepted = client.post(
+                "/internal/v1/template-smoke/results",
+                headers={"Authorization": "Bearer " + token},
+                json=payload,
+            )
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            self.assertFalse(accepted.json()["published"])
 
 
 class TemplateRouteWiringTests(unittest.TestCase):

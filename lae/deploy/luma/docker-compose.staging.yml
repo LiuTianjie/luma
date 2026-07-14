@@ -85,6 +85,7 @@ services:
       LAE_SOURCE_CONNECTION_IDEMPOTENCY_HMAC_KEY: ${LAE_SOURCE_CONNECTION_IDEMPOTENCY_HMAC_KEY}
       LAE_SOURCE_CONNECTION_KEY_VERSION: "1"
       LAE_SOURCE_LEASE_TTL_SECONDS: "900"
+      LAE_TEMPLATE_SMOKE_REPORT_TOKEN: ${LAE_TEMPLATE_SMOKE_REPORT_TOKEN}
       LAE_UPLOAD_ANALYSIS_BROKER_ENABLED: "1"
       LAE_UPLOAD_DRIVER: s3
       LAE_UPLOAD_HMAC_KEY: ${LAE_UPLOAD_HMAC_KEY}
@@ -182,6 +183,30 @@ services:
       resources:
         limits: {cpus: "1.00", memory: 1536M}
         reservations: {cpus: "0.25", memory: 512M}
+
+  template-smoke:
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: deploy/luma/docker/template-smoke.Dockerfile
+    environment:
+      LAE_TEMPLATE_SMOKE_INTERVAL_SECONDS: "86400"
+      LAE_TEMPLATE_SMOKE_REPORT_API_BASE: http://api:8080
+      LAE_TEMPLATE_SMOKE_REPORT_TOKEN: ${LAE_TEMPLATE_SMOKE_REPORT_TOKEN}
+      LAE_TEMPLATE_SMOKE_START_DELAY_SECONDS: "300"
+    depends_on:
+      api: {condition: service_healthy}
+      worker: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import os,time; p='/tmp/lae-template-smoke-heartbeat'; raise SystemExit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<172800 else 1)"]
+      interval: 5m
+      timeout: 5s
+      start_period: 10m
+      retries: 3
+    deploy:
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+        reservations: {cpus: "0.05", memory: 96M}
 
   agent-controller:
     platform: linux/amd64

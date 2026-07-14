@@ -30,6 +30,7 @@ services:
     domain: lae-api-staging.itool.tech
     port: 8080
   worker: {node: manager, exposure: none}
+  template-smoke: {node: manager, exposure: none}
   agent-controller:
     node: manager
     exposure: cn-edge

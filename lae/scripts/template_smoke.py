@@ -98,7 +98,7 @@ def _template_ids(
             catalog.append((template_id, version))
     missing = set() if selected is None else selected - {item[0] for item in catalog}
     if missing:
-        raise AcceptanceFailure("requested template is not published")
+        raise AcceptanceFailure("requested template is not available")
     return catalog
 
 
@@ -229,6 +229,9 @@ def run(args: argparse.Namespace) -> None:
     session_client: JsonClient | None = None
     token_id: str | None = None
     token = os.environ.get("LAE_DEPLOY_TOKEN")
+    report_token = os.environ.get("LAE_TEMPLATE_SMOKE_REPORT_TOKEN", "").strip()
+    if not report_token:
+        raise AcceptanceFailure("template smoke report token is not configured")
     bootstrap_deadline = time.monotonic() + min(args.timeout_seconds, 300)
     if not token:
         session_client = JsonClient(
@@ -237,9 +240,16 @@ def run(args: argparse.Namespace) -> None:
         token, token_id = issue_preview_deploy_token(
             session_client, deadline=bootstrap_deadline
         )
+    report_client = JsonClient(
+        args.report_api_base,
+        bearer_token=report_token,
+        timeout_seconds=args.request_timeout,
+    )
+    smoke_headers = {"X-LAE-Template-Smoke-Token": report_token}
     client = JsonClient(
         args.api_base,
         bearer_token=token,
+        request_headers=smoke_headers,
         timeout_seconds=args.request_timeout,
     )
     selected = None
@@ -250,20 +260,54 @@ def run(args: argparse.Namespace) -> None:
     catalog = _template_ids(client, selected, deadline=bootstrap_deadline)
     results: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    run_id = "tsm-" + uuid.uuid4().hex
+
+    def report(
+        template_id: str,
+        version: str,
+        *,
+        succeeded: bool,
+        error_code: str | None = None,
+    ) -> None:
+        body: dict[str, str] = {
+            "runId": run_id,
+            "templateId": template_id,
+            "version": version,
+            "status": "succeeded" if succeeded else "failed",
+        }
+        if error_code is not None:
+            body["errorCode"] = error_code
+        request_with_retry(
+            report_client,
+            "POST",
+            "/internal/v1/template-smoke/results",
+            body,
+            deadline=time.monotonic() + min(args.timeout_seconds, 300),
+        )
+
     try:
         for template_id, version in catalog:
             try:
-                results.append(
-                    smoke_one(
-                        client,
-                        template_id=template_id,
-                        version=version,
-                        timeout_seconds=args.timeout_seconds,
-                        request_timeout=args.request_timeout,
-                        keep_failed=args.keep_failed,
-                    )
+                result = smoke_one(
+                    client,
+                    template_id=template_id,
+                    version=version,
+                    timeout_seconds=args.timeout_seconds,
+                    request_timeout=args.request_timeout,
+                    keep_failed=args.keep_failed,
                 )
             except (AcceptanceFailure, ApiFailure) as error:
+                error_code = (
+                    "LAE_TEMPLATE_ACCEPTANCE_FAILED"
+                    if isinstance(error, AcceptanceFailure)
+                    else "LAE_TEMPLATE_API_FAILED"
+                )
+                report(
+                    template_id,
+                    version,
+                    succeeded=False,
+                    error_code=error_code,
+                )
                 failures.append(
                     {
                         "templateId": template_id,
@@ -279,6 +323,12 @@ def run(args: argparse.Namespace) -> None:
                 )
                 if args.fail_fast:
                     break
+            else:
+                # Reporting is part of scheduler control-plane health. A
+                # reporting outage must abort the run, never be rewritten as
+                # a false template failure that could trigger auto-unpublish.
+                report(template_id, version, succeeded=True)
+                results.append(result)
         emit(
             "template_smoke_complete",
             checked=len(results) + len(failures),
@@ -304,8 +354,14 @@ def parser() -> argparse.ArgumentParser:
         "--api-base", default="https://lae-api-staging.itool.tech/v1"
     )
     result.add_argument(
+        "--report-api-base",
+        default=os.environ.get(
+            "LAE_TEMPLATE_SMOKE_REPORT_API_BASE", "https://lae-api-staging.itool.tech"
+        ),
+    )
+    result.add_argument(
         "--templates",
-        help="comma-separated template IDs; omitted means every published template",
+        help="comma-separated template IDs; omitted means every catalog template",
     )
     result.add_argument("--timeout-seconds", type=float, default=2400)
     result.add_argument("--request-timeout", type=float, default=30)

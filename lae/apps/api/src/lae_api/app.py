@@ -25,6 +25,7 @@ from lae_store import (
     OperationConflict,
     PostgresAnalysisRequestStore,
     PostgresPublicResourceStore,
+    PostgresTemplateHealthStore,
     Principal,
     PublicAnalysisRecord,
     PublicOperationEventPage,
@@ -100,7 +101,11 @@ from .source_connection_api import (
     register_source_connection_routes,
     source_connection_service_from_env,
 )
-from .template_api import TemplateApiService, register_template_routes
+from .template_api import (
+    TemplateApiService,
+    register_template_routes,
+    template_smoke_authenticator_from_env,
+)
 from .upload_api import (
     UploadAnalysisSourceRequest,
     create_upload_analysis,
@@ -490,6 +495,8 @@ def create_app(
     observability: Any | None = None,
     admin_authenticator: Any | None = None,
     admin_store: Any | None = None,
+    template_health: Any | None = None,
+    template_smoke_authenticator: Any | None = None,
     billing_driver: str | None = None,
     cors_allowed_origins: Sequence[str] | str | None = None,
 ) -> FastAPI:
@@ -527,6 +534,8 @@ def create_app(
         "admin_authenticator": admin_authenticator,
         "admin_store": admin_store,
         "admin_error": None,
+        "template_health": template_health,
+        "template_smoke_authenticator": template_smoke_authenticator,
         "billing": billing_runtime,
         "billing_driver": selected_billing_driver,
         "billing_error": None,
@@ -664,6 +673,19 @@ def create_app(
             runtime["admin_store"] = PostgresAdminReadStore(
                 create_session_factory(runtime["engine"])
             )
+        if runtime["engine"] is not None and runtime["template_health"] is None:
+            runtime["template_health"] = PostgresTemplateHealthStore(
+                create_session_factory(runtime["engine"])
+            )
+        if runtime["template_smoke_authenticator"] is None:
+            try:
+                runtime["template_smoke_authenticator"] = (
+                    template_smoke_authenticator_from_env()
+                )
+            except ValueError:
+                # Daily template smoke is capability-scoped and fail-closed.
+                # The public catalog remains readable when it is not configured.
+                runtime["template_smoke_authenticator"] = None
         if runtime["admin_authenticator"] is None:
             try:
                 runtime["admin_authenticator"] = admin_authenticator_from_env()
@@ -845,6 +867,12 @@ def create_app(
                 retryable=True,
             )
         return store
+
+    def template_health_store() -> Any:
+        return runtime["template_health"]
+
+    def template_smoke_authenticator_service() -> Any:
+        return runtime["template_smoke_authenticator"]
 
     def billing() -> BillingRuntime:
         service = runtime["billing"]
@@ -1694,8 +1722,13 @@ def create_app(
     )
     register_template_routes(
         app,
-        TemplateApiService(application_service, analysis_request_store),
+        TemplateApiService(
+            application_service,
+            analysis_request_store,
+            template_health_store,
+        ),
         ApiError,
+        template_smoke_authenticator_service,
     )
 
     return app
