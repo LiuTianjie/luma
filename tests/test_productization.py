@@ -9839,7 +9839,12 @@ class ControlApiTests(unittest.TestCase):
                     )
                 self.assertEqual(result["deployment"], "uptime-kuma")
                 self.assertEqual(result["artifacts"][0]["kind"], "job")
-                self.assertIn('"source": "kuma-data"', result["artifacts"][0]["content"])
+                self.assertIn(
+                    '"source": "luma-uptime-kuma-kuma-data-',
+                    result["artifacts"][0]["content"],
+                )
+                self.assertIn('"volume_options"', result["artifacts"][0]["content"])
+                self.assertIn('"device": ":/srv/luma/uptime-kuma/kuma-data"', result["artifacts"][0]["content"])
                 self.assertEqual(result["storage"]["storageClasses"][0]["name"], "home-nfs")
                 self.assertFalse((root / "stacks").exists())
                 upsert.assert_not_called()
@@ -10840,7 +10845,9 @@ class ControlApiTests(unittest.TestCase):
                         {"manifest": sidecar, "composeContent": compose, "sourceName": "luma.compose.yml", "skipDns": True, "skipOrchestrator": False},
                     )
                 stack_text = upsert.call_args.args[1]
-                self.assertIn('"source": "pg-data"', stack_text)
+                self.assertIn('"source": "luma-app-stack-pg-data-', stack_text)
+                self.assertIn('"volume_options"', stack_text)
+                self.assertIn('"device": ":/srv/luma/pg-data"', stack_text)
                 self.assertEqual(result["storage"]["storageClasses"][0]["name"], "home-nfs")
                 self.assertEqual(result["storage"]["mounts"][0]["endpoint"], "home-nas:/srv/luma")
             finally:

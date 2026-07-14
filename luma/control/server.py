@@ -4004,6 +4004,9 @@ def _lae_runtime_render_job(
         egress_proxy_url=_egress_proxy_for_region(
             config, state, str(manifest["region"])
         ),
+        node_records=_state_nodes(state),
+        admitted_nodes=(placement.candidate_node_names if placement else ()),
+        render_storage=False,
     )
     if not isinstance(rendered, dict) or not isinstance(rendered.get("Job"), dict):
         raise _lae_runtime_unavailable("Luma runtime renderer is unavailable")
@@ -10723,6 +10726,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
                 secrets=secrets,
                 egress_proxy_url=_egress_proxy_for_region(config, state, deployment.region),
+                node_records=_state_nodes(state),
             ),
             progress=progress,
         )
@@ -10880,6 +10884,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
         deployment,
         registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
         resolve_secrets=False,
+        node_records=_state_nodes(state),
     )
     storage_guard = "skipped: nomad job preview"
     route_texts: Dict[str, str] = {}

@@ -60,6 +60,11 @@ LIVE_STAGING_STORAGE_CLASSES = {
         "nodes": ["manager"],
     },
 }
+LIVE_STAGING_NODE_RECORDS = {
+    "builder": {"region": "cn", "hostname": "builder"},
+    "tecent": {"region": "cn", "hostname": "tecent"},
+    "manager": {"region": "cn", "hostname": "manager"},
+}
 
 
 def config() -> LumaConfig:
@@ -147,6 +152,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             self.with_import_images(deployment),
             as_json=False,
             resolve_secrets=False,
+            node_records={},
         )["Job"]
         self.assertEqual(rendered["ID"], "lae-platform")
         self.assertEqual(len(rendered["TaskGroups"]), 1)
@@ -190,6 +196,7 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             self.with_import_images(deployment),
             as_json=False,
             resolve_secrets=False,
+            node_records=LIVE_STAGING_NODE_RECORDS,
         )["Job"]
         self.assertIn("manager", str(rendered["Constraints"]))
         self.assertIn("cn", str(rendered["Constraints"]))
@@ -291,6 +298,8 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         )
         self.assertIn("pg_dump --format=custom", backup_script)
         self.assertIn("pg_restore --exit-on-error", backup_script)
+        self.assertIn("pg_isready --quiet", backup_script)
+        self.assertIn("LAE_BACKUP_DEPENDENCY_TIMEOUT_SECONDS", backup_script)
         self.assertIn("sha256sum -c SHA256SUMS", backup_script)
         self.assertIn("lae-restore-drill-", backup_script)
         self.assertNotIn("set -x", backup_script)

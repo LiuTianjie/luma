@@ -9,6 +9,7 @@ last_drill="$backup_root/last-restore-drill.epoch"
 interval=${LAE_BACKUP_INTERVAL_SECONDS:-86400}
 retention_days=${LAE_BACKUP_RETENTION_DAYS:-7}
 max_age=${LAE_BACKUP_MAX_AGE_SECONDS:-93600}
+dependency_timeout=${LAE_BACKUP_DEPENDENCY_TIMEOUT_SECONDS:-300}
 
 require_configuration() {
   : "${PGHOST:?PGHOST is required}"
@@ -22,9 +23,25 @@ require_configuration() {
   : "${LAE_ARTIFACT_S3_BUCKET:?LAE_ARTIFACT_S3_BUCKET is required}"
 }
 
-configure_minio() {
-  mc alias set lae-source "$LAE_MINIO_INTERNAL_ENDPOINT" \
-    "$LAE_MINIO_ROOT_USER" "$LAE_MINIO_ROOT_PASSWORD" >/dev/null
+wait_for_dependencies() {
+  deadline=$(($(date +%s) + dependency_timeout))
+  while :; do
+    postgres_ready=0
+    minio_ready=0
+    pg_isready --quiet && postgres_ready=1 || true
+    if mc alias set lae-source "$LAE_MINIO_INTERNAL_ENDPOINT" \
+      "$LAE_MINIO_ROOT_USER" "$LAE_MINIO_ROOT_PASSWORD" >/dev/null 2>&1; then
+      minio_ready=1
+    fi
+    if [ "$postgres_ready" = 1 ] && [ "$minio_ready" = 1 ]; then
+      return 0
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "backup dependencies did not become ready within ${dependency_timeout}s" >&2
+      return 1
+    fi
+    sleep 2
+  done
 }
 
 snapshot_bucket() {
@@ -94,7 +111,7 @@ run_restore_drill() {
 
 run_backup() {
   require_configuration
-  configure_minio
+  wait_for_dependencies
   mkdir -p "$snapshot_root"
   chmod 0700 "$backup_root" "$snapshot_root"
   timestamp=$(date -u +%Y%m%dT%H%M%SZ)

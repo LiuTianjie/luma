@@ -17,14 +17,16 @@ Exposure mapping:
   - none : worker, no service/port unless the manifest declares one.
 """
 
+import hashlib
 import json
 import math
 import re
 import urllib.parse
 from pathlib import PurePosixPath
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Sequence
 
 from .config import LumaConfig
+from .compose import render_storage_class_volume, resolve_storage_mounts
 from .errors import LumaError
 from .registry import normalize_registry_host
 from .service import ServiceSpec, slugify, tcp_entrypoint_name, tcp_relay_publish_port
@@ -442,6 +444,9 @@ def render_compose_job(
     secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
     egress_proxy_url: str | None = None,
+    node_records: Dict[str, Any] | None = None,
+    admitted_nodes: Sequence[str] = (),
+    render_storage: bool = True,
 ) -> str | Dict[str, Any]:
     """Render a Luma compose deployment into a single multi-task Nomad job.
 
@@ -497,6 +502,16 @@ def render_compose_job(
     dynamic_ports: List[Dict[str, Any]] = []
     nomad_services: List[Dict[str, Any]] = []
     tasks: List[Dict[str, Any]] = []
+    storage_endpoint_by_volume: Dict[str, str] = {}
+    if render_storage and node_records is not None:
+        storage_endpoint_by_volume = {
+            str(item["volume"]): str(item["endpoint"])
+            for item in resolve_storage_mounts(
+                deployment,
+                node_records=node_records,
+                admitted_nodes=admitted_nodes,
+            )
+        }
 
     for svc_name, body in services.items():
         if not isinstance(body, dict):
@@ -580,6 +595,54 @@ def render_compose_job(
                 "readonly": len(parts) > 2 and parts[2] == "ro",
             })
         if mounts:
+            for mount in mounts:
+                if str(mount.get("type") or "") != "volume":
+                    continue
+                volume_name = str(mount.get("source") or "")
+                volume = deployment.volumes.get(volume_name)
+                if volume is None:
+                    continue
+                if volume.kind == "local":
+                    mount["type"] = "bind"
+                    mount["source"] = str(volume.local_path or "")
+                    continue
+                if not volume.storage_class:
+                    continue
+                if not render_storage:
+                    continue
+                storage_class = deployment.storage_classes[volume.storage_class]
+                endpoint = storage_endpoint_by_volume.get(volume_name)
+                if endpoint is None:
+                    raise LumaError(
+                        f"compose volume {volume_name} requires resolved storage endpoints; "
+                        "load cluster node records before rendering"
+                    )
+                driver = render_storage_class_volume(
+                    storage_class,
+                    volume,
+                    endpoint,
+                )
+                identity = "\0".join(
+                    (
+                        deployment.slug,
+                        volume_name,
+                        storage_class.name,
+                        endpoint,
+                        volume.path or volume.name,
+                    )
+                )
+                digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+                base = f"{deployment.slug}-{slugify(volume_name)}"[:40].rstrip("-")
+                mount["source"] = f"luma-{base}-{digest}"
+                mount["volume_options"] = {
+                    "no_copy": False,
+                    "driver_config": {
+                        "name": str(driver.get("driver") or "local"),
+                        # Nomad's task-driver JSON schema requires a map to be
+                        # wrapped in a single-element list here.
+                        "options": [dict(driver.get("driver_opts") or {})],
+                    },
+                }
             docker_config["mount"] = mounts
 
         env: Dict[str, str] = {}

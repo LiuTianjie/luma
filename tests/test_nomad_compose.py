@@ -187,6 +187,56 @@ services:
         names = {t["Name"] for t in groups[0]["Tasks"]}
         self.assertEqual(names, {"mysql", "app"})
 
+    def test_storage_class_mount_renders_nfs_driver_options_and_is_namespaced(self):
+        compose = """
+services:
+  db:
+    image: postgres:17
+    volumes:
+      - data:/var/lib/postgresql/data
+volumes:
+  data:
+"""
+        sidecar = """
+name: tenant-db
+compose: docker-compose.yml
+region: cn
+storageClasses:
+  shared:
+    provider: nfs
+    mode: external
+    endpoint: storage.example.test:/exports/apps
+    regions: [cn]
+volumes:
+  data:
+    storageClass: shared
+    path: tenants/acme/postgres
+    accessMode: ReadWriteOnce
+    initialize: empty
+services:
+  db:
+    exposure: none
+"""
+        deployment = write_deployment(sidecar, compose)
+
+        job = render_compose_job(
+            cfg(),
+            deployment,
+            as_json=False,
+            node_records={},
+        )["Job"]
+
+        task = job["TaskGroups"][0]["Tasks"][0]
+        mount = task["Config"]["mount"][0]
+        self.assertRegex(mount["source"], r"^luma-tenant-db-data-[0-9a-f]{16}$")
+        self.assertNotEqual(mount["source"], "data")
+        self.assertEqual(mount["type"], "volume")
+        options = mount["volume_options"]["driver_config"]["options"]
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0]["type"], "nfs")
+        self.assertEqual(options[0]["device"], ":/exports/apps/tenants/acme/postgres")
+        self.assertIn("addr=storage.example.test", options[0]["o"])
+
     def test_all_internal_multi_service_gets_shared_netns_bridge(self):
         # All services exposure:none (the `compose init` default). The group
         # MUST still get a bridge Networks block so the tasks share one netns —

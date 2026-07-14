@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.242 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.243 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -2999,7 +2999,12 @@ def cmd_compose_validate(args: argparse.Namespace) -> int:
     _require_nomad_engine(_compose_engine(config, args))
     from .nomad_render import render_compose_job
 
-    stack = render_compose_job(config, deployment, resolve_secrets=False)
+    stack = render_compose_job(
+        config,
+        deployment,
+        resolve_secrets=False,
+        node_records=node_records,
+    )
     routes = render_compose_routes(config, deployment)
     result = {
         "deployment": _compose_summary(config, deployment, stack, routes, artifact_kind="job"),
@@ -3031,10 +3036,16 @@ def _inject_import_mode_placeholder_images(deployment: Any) -> None:
 def cmd_compose_render(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
+    node_records = _control_node_records_for_local(args)
     _require_nomad_engine(_compose_engine(config, args))
     from .nomad_render import render_compose_job
 
-    rendered = render_compose_job(config, deployment, resolve_secrets=False)
+    rendered = render_compose_job(
+        config,
+        deployment,
+        resolve_secrets=False,
+        node_records=node_records,
+    )
     for warning in _context_warnings(args):
         print(f"# warning: {warning}")
     print(rendered)
@@ -3057,7 +3068,12 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
     if args.dry_run:
         from .nomad_render import render_compose_job
 
-        stack = render_compose_job(config, deployment, resolve_secrets=False)
+        stack = render_compose_job(
+            config,
+            deployment,
+            resolve_secrets=False,
+            node_records=node_records,
+        )
         routes = render_compose_routes(config, deployment)
         result = {
             "deployment": _compose_summary(config, deployment, stack, routes, artifact_kind="job"),
