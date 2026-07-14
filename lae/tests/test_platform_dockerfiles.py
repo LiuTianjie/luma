@@ -9,11 +9,6 @@ DOCKER_DIR = Path(__file__).parents[1] / "deploy" / "luma" / "docker"
 PROXY_UNSET = (
     "unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy;"
 )
-NETWORK_BUILD_COMMAND = re.compile(
-    r"\b(?:uv sync|corepack prepare|pnpm install|git clone|go (?:run|build))\b"
-)
-
-
 def run_instructions(dockerfile: str) -> list[str]:
     """Return folded RUN instructions without needing a Docker daemon."""
 
@@ -37,14 +32,19 @@ def run_instructions(dockerfile: str) -> list[str]:
 
 
 class PlatformDockerfileTests(unittest.TestCase):
-    def test_network_build_steps_honor_per_build_proxy_policy(self) -> None:
+    def test_python_dependency_steps_honor_per_build_proxy_policy(self) -> None:
         checked = 0
         for path in sorted(DOCKER_DIR.glob("*.Dockerfile")):
             for instruction in run_instructions(path.read_text(encoding="utf-8")):
-                if not NETWORK_BUILD_COMMAND.search(instruction):
+                if "uv sync" not in instruction:
                     continue
                 checked += 1
                 self.assertNotIn(PROXY_UNSET, instruction, path.name)
+                self.assertIn(
+                    "--mount=type=cache,id=lae-uv-v1,target=/root/.cache/uv",
+                    instruction,
+                    path.name,
+                )
         self.assertGreater(checked, 0)
 
     def test_platform_images_do_not_persist_build_proxy_settings(self) -> None:

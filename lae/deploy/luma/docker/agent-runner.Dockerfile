@@ -14,7 +14,8 @@ WORKDIR /src
 COPY . .
 # Dependency downloads follow the per-build network policy selected by Luma.
 # Proxy values are BuildKit-only inputs and are not persisted in the image.
-RUN uv sync --frozen --no-dev --no-editable --package lae-agent-runner
+RUN --mount=type=cache,id=lae-uv-v1,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-editable --package lae-agent-runner
 # Fail the image build if uv/Docker cache reuse leaves an older workspace
 # package in the supposedly new runner image. Builder and runner intentionally
 # use a closed result protocol, so a content-stale image must never be pushed.
