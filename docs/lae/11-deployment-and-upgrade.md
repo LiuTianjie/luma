@@ -27,7 +27,7 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：Luma `v0.1.237` 已发布到 Control/manager 与全部在线非 manager 节点 `bot/builder/gaojiu/lab/m4/tecent`；离线 `blg` 按当前决策不处理。LAE exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 的 9 个 service（Nomad job v54）、四服务 Compose、HTML/ZIP/私有 Git、四模板、clean-room CLI/Skill、PostgreSQL 进程恢复与路由基线复放已通过；真实邮件、安全负例与备份还原仍在收尾
+> 状态：2026-07-14 live Control/manager 报告 Luma `0.1.244`，并运行候选 ref `00b4cdb06bb1d72466013b3ea2f3fd615a46dc13` 的 Control 镜像；在线 fleet 仍为混合版本，最终 release 前必须收敛。LAE exact ref `35591c4e789f7d7bec60614d427fed05023b373a` 的 10 个 service 已在 manager 本地盘全新初始化，Web/API/Agent/Artifact 四个健康端点均为 200；离线 `blg` 按当前决策不处理。
 > 日期：2026-07-14
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
@@ -50,17 +50,16 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 控制面，且 manager 本身也显式承担 staging runtime；`aly` 是已过时、必须跳过的
 历史名称，不属于本轮升级目标。平台 staging 当前落在 `manager`，租户 runtime 候选为
 `manager + tecent`，构建与内部 registry 均在 `builder`。专用 production
-storage class 和 runner pool 仍是门禁；
+本地盘容量/异机恢复和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-14，Luma `v0.1.237` exact ref `0d4974a8aa974cd73fbbb41ba1ce36fb792ea810`
-通过 822 项 pytest 与 130 项 subtest；当前 live Control/manager 与
-`bot/builder/gaojiu/lab/m4/tecent` 全部为 `0.1.237`，离线 `blg` 保持 `0.1.175`。LAE 通过 429 项测试
-（25 项按环境跳过）、contracts 和 compile。release workflow 继续拒绝
-tag 与 package version 不一致。manager Control 当前镜像为
-`100.66.177.70:5000/luma-control@sha256:cf9381d24cd1dc7fb7f1870d97e440779844d2f97a6f070130c44e81e92ffc6a`，
-LAE staging 使用 exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 构建的镜像，平台 9 个 service（Nomad job v54）、wildcard DNS-01 TLS、
-Web/API/Agent/artifact probes 健康，Agent ready 显示 AI provider 已配置。
+截至 2026-07-14，本地候选通过 839 项 pytest；release workflow 继续拒绝 tag 与
+package version 不一致。Live Control/manager 为 `0.1.244`，`builder` 为 `0.1.242`，
+其余 ready 非 manager 节点为 `0.1.238`，离线 `blg` 保持 `0.1.175`。manager Control
+当前运行 `100.66.177.70:5000/luma-control:sha-00b4cdb`；LAE staging 使用 exact ref
+`35591c4e789f7d7bec60614d427fed05023b373a` 构建的镜像，平台 10 个 service、wildcard
+DNS-01 TLS、Web/API/Agent/artifact probes 健康，平台主数据明确挂载 manager 本地
+`/srv/luma/lae/staging/*/v2`。
 
 真实四服务 Compose 已完成 Agent 诊断、环境配置、Builder 构建、双 HTTPS route、
 双持久卷、restart、suspend/resume、更新检查、unsupported 负例与删除；clean-room
@@ -154,11 +153,12 @@ git diff --check
 ```
 
 任一检查发现历史 `aly` 仍参与 placement、manager node agent/runtime role 不
-ready、`lab`/`builder`/`tecent` 不 ready、registry host 为空、
-`builder-registry-nfs` 或 `lae-staging-runtime-nfs` 不可用时停止。不要通过删除
-node pin、改成 unmanaged volume 或扩大 runtime allowlist 让验证变绿。
+ready、`builder`/`tecent` 不 ready、registry host 为空，或 manager 本地
+`/srv/luma/lae/staging` 容量/权限不满足时停止。只有执行 tenant volume 场景时才要求
+`lae-staging-runtime-nfs` 可用；它不是 LAE 平台启动依赖。不要通过删除 node pin、
+改成匿名 volume 或扩大 runtime allowlist 让验证变绿。
 
-构建配置必须逐字为以下当前 live 值。`registry-host` 面向 `lab`、`manager`、
+构建配置必须逐字为以下当前 live 值。`registry-host` 面向 `manager`、
 `tecent` 等 target 拉取镜像；registry 当前直接绑定 Builder Tailscale 地址，因此
 `push-host` 使用同一 endpoint。若后续拓扑改变，先以只读 `luma build config` 和
 registry 实际监听为准，再通过受控变更更新本节：
@@ -195,8 +195,9 @@ docker buildx imagetools inspect "$CONTROL_IMAGE"
 
 ## 5. 生成并安装 staging 配置包
 
-先为 tenant volume 注册 staging 专用定义；数据实际落在 builder NFS 的独立 path，
-允许 manager 与 tecent 挂载。这是 staging 选择，不是 production storage：
+先为 tenant volume 注册 staging 专用定义；租户卷数据落在 builder NFS 的独立 path，
+允许 manager 与 tecent 挂载。这只服务 tenant volume，不承载 LAE 平台 PostgreSQL、
+MinIO 或备份目录：
 
 ```bash
 luma storage set lae-staging-runtime-nfs \
@@ -426,8 +427,8 @@ luma status --format json
 ```
 
 这一步不部署应用，但会更新所有 ready、支持 fleet update 的非 manager 节点，
-因此仍需变更窗口。协议相关的最小升级集合是 `manager`、`builder`、平台节点
-`lab` 和 runtime `manager + tecent`；为了避免下一次调度/故障转移落到旧 agent，
+因此仍需变更窗口。协议相关的最小升级集合是平台/控制节点 `manager`、`builder`
+和另一个 runtime `tecent`；为了避免下一次调度/故障转移落到旧 agent，
 推荐升级全部 online/ready 节点。`aly` 是历史名称，明确跳过，不应让它导致 fleet
 change 失败。
 
@@ -593,8 +594,8 @@ luma service remove lae-platform-staging
 只有以下条件都有证据时，才创建 production change：
 
 - 专用 `lae-core` 和至少两个专用 cn runner 已注册、隔离、压测；
-- `lae-cn-postgres`、`lae-cn-artifacts`、registry storage、PITR/object backup
-  与 restore drill 通过；
+- `lae-core` 本地盘容量/损坏告警、registry storage、PITR/object 异机 backup
+  与整机丢失 restore drill 通过；
 - Builder rootless、egress、临时盘、SBOM/扫描和 Analyzer digest 门禁通过；
 - wildcard DNS/TLS、随机 `*.itool.tech`、多 route 和 abuse controls 通过；
 - 真实 SMTP 已接入；payment 在 provider 未完成前继续 `disabled`，不能把 mock
@@ -603,12 +604,11 @@ luma service remove lae-platform-staging
 
 Production 发布使用正式 `v*` Git tag、版本化 Control image或完整 image digest，
 以及 `lae/deploy/luma/luma.compose.yml`。不得把
-`luma.compose.staging.itool.yml` 的 `lab`、`builder-registry-nfs` path、
-`tailscale-relay`、Mailpit、manager runtime opt-in 或 mock billing
+`luma.compose.staging.itool.yml` 的 `manager` 路径、manager runtime opt-in 或 mock billing
 复制为生产默认。
 
 因此当前 production 的明确硬阻塞是：专用 `lae-core`、至少两个专用 runtime
-runner、独立且完成恢复演练的 PostgreSQL/artifact/registry storage、真实 SMTP，
+runner、完成异机恢复演练的 PostgreSQL/artifact/registry 数据、真实 SMTP，
 以及可用的微信/支付宝等真实 payment provider。provider 未就绪时可以保持
 `disabled`，但不能把 mock 解释为生产支付能力。
 

@@ -263,7 +263,7 @@ LAE 公共协议只接受 `region: cn | global`。`node`、IP、pool、failure d
 - `manager` 是唯一控制面；`aly` 是已退出当前 8 节点 live 清单的过时历史名称，若再次出现在注册表中应按 stale record 清理。当前 staging 决策允许 manager 显式兼任 runtime，并要求 manager node agent 写入 `role.runtime=true`。
 - 当前用户 workload 多集中在 home，且至少一个节点出现高负载/高内存占用。
 - 当前 registry 自动推导 pull host，LAE 上线前需要把 registry host、GC、备份和目标节点 pull 线路配置成显式、可监控状态。
-- Staging 平台在 `lab`，平台数据使用 `builder-registry-nfs` 独立 path；租户卷使用单独的 staging runtime storage 定义。这些都不能替代 PostgreSQL/对象存储的生产 HA 设计。
+- Staging 平台与主数据都在 `manager`：PostgreSQL、MinIO 和本地快照使用 `/srv/luma/lae/staging/*/v2`，平台启动不再依赖 NFS。租户卷仍使用单独的 staging runtime storage 定义；平台本地盘也不能替代 PostgreSQL PITR、对象异机复制和整机丢失恢复设计。
 
 最低新增容量：一个专用 cn builder、至少一个 cn runner、一个 stateful 节点；公开发布前 builder 必须完成隔离改造，公网扩容前 builder/runner 均至少两台以支持队列冗余、滚动发布和节点故障。
 

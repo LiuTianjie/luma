@@ -74,7 +74,7 @@ flowchart LR
 4. 注册成功后，平台自动创建 personal tenant、Lite entitlement 和默认 deploy token。
 5. **默认 deploy token 只显示一次。** 立即复制到本机的安全凭据存储；不要粘贴到聊天、Issue、Git、截图或 shell history。
 
-Staging 清单使用内部 Mailpit，不会向真实外部邮箱投递；公开 preview 入口只能取得固定 `preview@lae.invalid` 的凭据，不能查询其他地址，因此普通邮箱验证码不会从 Web 暴露。现有外部 SMTP 凭据实测返回 `535` 鉴权失败。生产开放注册前必须换成可用的真实 SMTP provider，并通过发件域 SPF/DKIM/DMARC、退信和送达率验收。
+公开 preview 入口只允许保留的 `.invalid` 测试身份，不能查询普通邮箱验证码。普通邮箱注册必须由配置的 SMTP/API provider 实际投递；生产开放注册前必须通过真实收件 canary、发件域 SPF/DKIM/DMARC、退信和送达率验收。
 
 登录建立 HttpOnly Session。正常再次登录不会重新显示已有 token。默认 token 仅首次展示；账户页已经支持查看 token metadata、新建、轮换和撤销。轮换或撤销会立即影响后续 CLI/Agent 请求，操作前确认没有仍在使用旧 token 的自动化。
 

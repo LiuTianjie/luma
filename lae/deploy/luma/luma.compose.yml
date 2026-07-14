@@ -4,19 +4,19 @@ region: cn
 
 volumes:
   artifact-data:
-    storageClass: lae-cn-artifacts
-    path: lae/platform/artifacts/v1
-    accessMode: ReadWriteOnce
+    local:
+      node: lae-core
+      path: /srv/luma/lae/production/artifacts/v1
     initialize: empty
   backup-data:
-    storageClass: lae-cn-backups
-    path: lae/platform/backups/v1
-    accessMode: ReadWriteOnce
+    local:
+      node: lae-core
+      path: /srv/luma/lae/production/backups/v1
     initialize: empty
   postgres-data:
-    storageClass: lae-cn-postgres
-    path: lae/platform/postgres/v1
-    accessMode: ReadWriteOnce
+    local:
+      node: lae-core
+      path: /srv/luma/lae/production/postgres/v1
     initialize: empty
 
 services:

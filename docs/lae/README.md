@@ -1,6 +1,6 @@
 # Luma Application Engine（LAE）产品与工程设计
 
-> 状态：Draft v0.9；Luma `0.1.237` 已发布到 Control/manager 和全部在线节点（`bot/builder/gaojiu/lab/m4/tecent`），离线 `blg` 按当前决策不处理；LAE 9 个平台 service 已运行 exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1`（Nomad job v54）。四服务 Compose、HTML/ZIP/私有 Git、模板、clean-room CLI/Skill、进程级恢复和升级路由基线复放已通过，真实邮件、完整安全负例和备份还原矩阵仍待完成
+> 状态：Draft v0.9；2026-07-14 live Control/manager 报告 Luma `0.1.244`，在线 fleet 仍待最终 release 收敛，离线 `blg` 按当前决策不处理；LAE 10 个平台 service 已在 `manager` 本地盘运行 exact ref `35591c4e789f7d7bec60614d427fed05023b373a`，Web/API/Agent/Artifact 健康端点均为 200。HTML/ZIP/私有 Git、模板、clean-room CLI/Skill 和升级路由基线已有证据；真实邮件、完整安全负例、异机备份还原矩阵仍待完成。
 > 日期：2026-07-14
 > 目标：在 Luma 之上建设面向普通用户和 AI Agent 的多租户应用部署平台；LAE 自身及其依赖全部由 Luma 部署和管理。
 
