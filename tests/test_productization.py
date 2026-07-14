@@ -10797,6 +10797,98 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
+    def test_control_restart_closes_only_imports_owned_by_previous_process(self):
+        from luma.control import server as control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(
+                    domain="luma.example.com",
+                    cluster_id="luma-test",
+                    overwrite=True,
+                )
+                now = int(time.time())
+                state["buildRuns"] = {
+                    "run-orphan": {
+                        "id": "run-orphan",
+                        "status": "running",
+                        "controlProcessInstanceId": "control-previous",
+                        "agentTaskId": "task-running",
+                        "events": [],
+                        "createdAt": now - 30,
+                        "updatedAt": now - 20,
+                    },
+                    "run-canceling": {
+                        "id": "run-canceling",
+                        "status": "canceling",
+                        "controlProcessInstanceId": "control-previous",
+                        "agentTaskId": "task-queued",
+                        "events": [],
+                        "createdAt": now - 20,
+                        "updatedAt": now - 10,
+                    },
+                    "run-current": {
+                        "id": "run-current",
+                        "status": "running",
+                        "controlProcessInstanceId": control_server._CONTROL_PROCESS_INSTANCE_ID,
+                        "events": [],
+                        "createdAt": now,
+                        "updatedAt": now,
+                    },
+                    "run-finished": {
+                        "id": "run-finished",
+                        "status": "succeeded",
+                        "controlProcessInstanceId": "control-previous",
+                        "events": [],
+                        "createdAt": now - 40,
+                        "updatedAt": now - 35,
+                    },
+                }
+                state["agentTasks"] = {
+                    "task-running": {
+                        "id": "task-running",
+                        "nodeName": "builder",
+                        "action": "build-image",
+                        "status": "running",
+                        "buildRunId": "run-orphan",
+                    },
+                    "task-queued": {
+                        "id": "task-queued",
+                        "nodeName": "builder",
+                        "action": "build-image",
+                        "status": "queued",
+                        "buildRunId": "run-canceling",
+                    },
+                }
+                save_state(state)
+
+                self.assertEqual(
+                    control_server._reconcile_orphaned_build_runs_after_control_restart(),
+                    2,
+                )
+
+                recovered = load_state()
+                self.assertEqual(recovered["buildRuns"]["run-orphan"]["status"], "failed")
+                self.assertEqual(
+                    recovered["buildRuns"]["run-orphan"]["message"],
+                    "build interrupted by Control restart",
+                )
+                self.assertTrue(recovered["agentTasks"]["task-running"]["cancelRequestedAt"])
+                self.assertEqual(
+                    recovered["buildRuns"]["run-canceling"]["status"],
+                    "canceled",
+                )
+                self.assertEqual(recovered["agentTasks"]["task-queued"]["status"], "canceled")
+                self.assertEqual(recovered["buildRuns"]["run-current"]["status"], "running")
+                self.assertEqual(recovered["buildRuns"]["run-finished"]["status"], "succeeded")
+                self.assertEqual(
+                    control_server._reconcile_orphaned_build_runs_after_control_restart(),
+                    0,
+                )
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
     def test_agent_task_execution_timeout_starts_when_task_is_leased(self):
         from luma.control import server as control_server
 

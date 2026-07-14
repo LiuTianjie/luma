@@ -152,6 +152,7 @@ from .state import (
     require_token,
     save_state,
     state_dir,
+    state_path,
 )
 # Re-exported from the secrets leaf module so existing imports of these names
 # from luma.control.server (callers and tests) keep working unchanged.
@@ -251,6 +252,10 @@ _CONTROL_IMAGE_PREPARE_LOCK = threading.RLock()
 _CONTROL_IMAGE_PREPARE_THREADS: dict[str, threading.Thread] = {}
 _LAE_RUNTIME_DEPLOY_THREAD_LOCK = threading.RLock()
 _LAE_RUNTIME_DEPLOY_THREADS: dict[str, threading.Thread] = {}
+# Repository Import is a request-owned workflow rather than a resumable
+# durable operation.  Persist its owning Control process so a replacement
+# instance can close records whose request thread no longer exists.
+_CONTROL_PROCESS_INSTANCE_ID = f"control-{secrets.token_hex(16)}"
 
 
 def _serialize_deploy(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -1719,6 +1724,7 @@ def _create_build_run(body: Dict[str, Any], *, source: str, build_node: str) -> 
         runs[run_id] = {
             "id": run_id,
             "status": "running",
+            "controlProcessInstanceId": _CONTROL_PROCESS_INSTANCE_ID,
             "source": source,
             "buildNode": build_node,
             "request": _redact_build_request(body),
@@ -1792,6 +1798,7 @@ def _restart_build_run(run_id: str, body: Dict[str, Any], *, source: str, build_
         if not isinstance(run, dict):
             raise LumaError(f"build run not found: {run_id}")
         run["status"] = "running"
+        run["controlProcessInstanceId"] = _CONTROL_PROCESS_INSTANCE_ID
         run["source"] = source
         run["buildNode"] = build_node
         run["request"] = _redact_build_request(body)
@@ -1838,6 +1845,90 @@ def _prune_build_runs(state: Dict[str, Any], *, limit: int = 100) -> None:
     for run_id in list(runs):
         if run_id not in keep:
             runs.pop(run_id, None)
+
+
+def _reconcile_orphaned_build_runs_after_control_restart() -> int:
+    """Close request-owned imports left behind by an older Control process.
+
+    A Repository Import spans the HTTP request thread, a serial node-agent
+    build, and the deployment that follows it.  Unlike LAE Builder operations,
+    that workflow cannot be resumed safely after the Control process exits.
+    Leaving its record as ``running`` is worse than an explicit interruption:
+    users cannot tell whether retry/cancel is safe and the linked child may
+    continue occupying Builder capacity.  A per-process owner fence lets a new
+    Control instance fail only work whose request thread cannot still exist.
+    """
+
+    # `create_app()` is also used by contract-only clients/tests before a
+    # Control state exists.  Startup reconciliation must be a no-op there and
+    # must not attempt to create the production default directory.
+    if not state_path().is_file():
+        return 0
+
+    now = int(time.time())
+
+    def mutate(state: Dict[str, Any]) -> int:
+        reconciled = 0
+        tasks = _agent_tasks(state)
+        for run in _build_runs(state).values():
+            if not isinstance(run, dict):
+                continue
+            status = str(run.get("status") or "")
+            if status not in {"running", "canceling"}:
+                continue
+            if str(run.get("controlProcessInstanceId") or "") == _CONTROL_PROCESS_INSTANCE_ID:
+                continue
+
+            canceled = status == "canceling" or bool(run.get("cancelRequestedAt"))
+            terminal_status = "canceled" if canceled else "failed"
+            message = (
+                "build canceled during Control restart"
+                if canceled
+                else "build interrupted by Control restart"
+            )
+            run.update(
+                {
+                    "status": terminal_status,
+                    "message": message,
+                    "updatedAt": now,
+                    "completedAt": now,
+                }
+            )
+            if canceled:
+                run["canceledAt"] = now
+            events = run.get("events") if isinstance(run.get("events"), list) else []
+            events.append(
+                {
+                    "name": "Build image",
+                    "status": "canceled" if canceled else "fail",
+                    "message": message,
+                    "ts": now,
+                }
+            )
+            run["events"] = events[-max(int(BUILD_RUN_EVENT_LIMIT), 100) :]
+
+            task_id = str(run.get("agentTaskId") or "")
+            task = tasks.get(task_id)
+            if isinstance(task, dict):
+                task_status = str(task.get("status") or "")
+                if task_status == "queued":
+                    task.update(
+                        {
+                            "status": "canceled",
+                            "message": "build owner Control restarted before task lease",
+                            "result": {},
+                            "completedAt": now,
+                            "updatedAt": now,
+                        }
+                    )
+                elif task_status == "running":
+                    task["cancelRequestedAt"] = now
+                    task["updatedAt"] = now
+            reconciled += 1
+        _prune_build_runs(state)
+        return reconciled
+
+    return int(_mutate_control_state(mutate) or 0)
 
 
 def _deployment_events(state: Dict[str, Any]) -> list:
@@ -17233,6 +17324,7 @@ async def _agent_terminal_ws(websocket: WebSocket) -> None:
 
 
 def create_app() -> Starlette:
+    _reconcile_orphaned_build_runs_after_control_restart()
     return Starlette(
         routes=[
             Route("/dashboard", _asgi_dashboard_asset, methods=["GET"]),
