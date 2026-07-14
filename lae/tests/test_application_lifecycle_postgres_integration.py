@@ -659,6 +659,31 @@ class ApplicationLifecyclePostgreSQLTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+        # A source-only analyzer cannot see saved application environment and
+        # reports needs_input on every pass.  When the immutable plan digest is
+        # unchanged, the deployed baseline proves that configuration already
+        # satisfies the plan, so update admission must remain usable.
+        async with self.sessions() as session:
+            async with session.begin():
+                await session.execute(
+                    update(Analysis)
+                    .where(Analysis.id == analysis_id)
+                    .values(deployment_plan_digest=SHA, verdict="needs_input")
+                )
+        unchanged = await resolver.resolve(claimed, context)
+        self.assertFalse(unchanged.deployment_plan_changed)
+        self.assertEqual(unchanged.candidate_verdict, "deployable")
+        async with self.sessions() as session:
+            async with session.begin():
+                await session.execute(
+                    update(Analysis)
+                    .where(Analysis.id == analysis_id)
+                    .values(
+                        deployment_plan_digest=candidate_plan,
+                        verdict="deployable",
+                    )
+                )
+
         # A valid lifecycle request can have no deployed revision baseline
         # (for example a legacy/pending app). That state is explicit and
         # conservative instead of claiming that either dimension is unchanged.

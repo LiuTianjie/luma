@@ -900,6 +900,16 @@ class PostgresUpdateCheckResolver:
                     base_source.source_tree_digest != candidate_source
                 )
                 plan_changed = revision.deployment_plan_digest != candidate_plan
+                candidate_verdict = analysis.verdict
+                if candidate_verdict == "needs_input" and not plan_changed:
+                    # The currently healthy deployment already proves that the
+                    # application's stored environment satisfies this exact
+                    # immutable plan.  A fresh analyzer run is source-only and
+                    # therefore reports ``needs_input`` again; exposing that
+                    # raw verdict made a no-plan-change update impossible to
+                    # deploy from the console.  Reuse the admitted baseline
+                    # configuration only when the plan digest is identical.
+                    candidate_verdict = "deployable"
                 if plan_changed and self._plan_loader is not None:
                     baseline_artifact = await session.scalar(
                         select(Artifact).where(
@@ -977,7 +987,7 @@ class PostgresUpdateCheckResolver:
                 candidate_deployment_plan_digest=candidate_plan,
                 plan_changes=plan_changes,
                 candidate_analysis_id=analysis.id,
-                candidate_verdict=analysis.verdict,
+                candidate_verdict=candidate_verdict,
             )
         except UpdateCheckResultInvalid:
             raise
