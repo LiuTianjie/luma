@@ -5821,7 +5821,10 @@ def _lae_runtime_verified_job(
 
 
 def _lae_runtime_bound_compose_spec(
-    state: Dict[str, Any], record: Dict[str, Any]
+    state: Dict[str, Any],
+    record: Dict[str, Any],
+    *,
+    volume_binding: RuntimeBinding | None = None,
 ) -> ComposeDeploymentSpec:
     manifest = record.get("manifest")
     images = record.get("images")
@@ -5831,7 +5834,7 @@ def _lae_runtime_bound_compose_spec(
     volume_records = _lae_runtime_validate_volumes(
         state,
         str(record.get("principalRef") or ""),
-        binding,
+        volume_binding or binding,
         manifest,
     )
     placement_state = record.get("placement")
@@ -6158,7 +6161,16 @@ def _execute_lae_runtime_rollback(
         # Route publication is an independent side effect. Always repair it
         # on retry, including the crash window after Nomad reverted but before
         # the target routes were restored.
-        target_spec = _lae_runtime_bound_compose_spec(state, target)
+        # Named volumes are application-scoped but their durable ownership is
+        # rebound to each active revision.  Before the rollback transaction is
+        # committed they still carry the current revision binding, so validate
+        # that binding while rendering the immutable target routes.  The state
+        # mutation below atomically rebinds the same volumes to the target.
+        target_spec = _lae_runtime_bound_compose_spec(
+            state,
+            target,
+            volume_binding=_lae_runtime_binding_from_record(current),
+        )
         _lae_runtime_restore_routes(config, target_spec, state=state)
         return {
             "nomadVersion": _lae_runtime_nomad_job_version(
@@ -6259,13 +6271,26 @@ def _handle_lae_runtime_deployment_rollback(
                 True,
                 not bool(existing.get("completed")),
             )
+        recovering = any(
+            isinstance(checkpoint, dict)
+            and str(checkpoint.get("action") or "") == "rollback"
+            and not bool(checkpoint.get("completed"))
+            and str(checkpoint.get("runtimeDeploymentRef") or "")
+            == str(runtime_deployment_ref)
+            and str(checkpoint.get("targetRuntimeDeploymentRef") or "")
+            == target_ref
+            for checkpoint in runtime["lifecycleIdempotency"].values()
+        )
         if str(application.get("currentRuntimeDeploymentRef") or "") != str(
             runtime_deployment_ref
         ):
             raise _lae_runtime_conflict(
                 "runtime rollback source is not the active revision"
             )
-        if str(current.get("status") or "") not in {"running", "degraded"}:
+        current_status = str(current.get("status") or "")
+        if current_status not in {"running", "degraded"} and not (
+            current_status == "rolling_back" and recovering
+        ):
             raise _lae_runtime_conflict("runtime rollback source is not healthy")
         if str(target.get("status") or "") not in {
             "running",

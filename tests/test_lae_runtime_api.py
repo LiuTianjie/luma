@@ -1275,6 +1275,20 @@ class LaeRuntimeApiTests(unittest.TestCase):
         }
         save_state(state)
 
+        # The application-scoped volume is still bound to the current
+        # revision until rollback commits.  Target route restoration must
+        # validate that current ownership instead of rejecting every stateful
+        # rollback before it can atomically rebind the volume.
+        rebound_target_spec = control_server._lae_runtime_bound_compose_spec(
+            state,
+            state["laeRuntime"]["deployments"][target_ref],
+            volume_binding=self.binding,
+        )
+        self.assertEqual(
+            rebound_target_spec.slug,
+            state["laeRuntime"]["deployments"][target_ref]["jobSlug"],
+        )
+
         target_body = {
             "schemaVersion": "luma.lae-runtime/v1",
             "target": {
@@ -1343,6 +1357,104 @@ class LaeRuntimeApiTests(unittest.TestCase):
             )
         )
 
+    def test_rollback_new_request_recovers_incomplete_checkpoint(self) -> None:
+        target_binding = RuntimeBinding(
+            tenant_ref=self.binding.tenant_ref,
+            application_ref=self.binding.application_ref,
+            operation_ref=self.binding.operation_ref,
+            revision_ref="rev-runtime-recovery-target",
+            deployment_ref="dep-runtime-recovery-target",
+        )
+        target_volume = control_server.handle_lae_runtime_volume_prepare(
+            self.runtime_token,
+            RUNTIME_AUDIENCE,
+            target_binding,
+            self.volume_body(),
+            idempotency_key="rollback-recovery-volume-target",
+        )["volumes"][0]["volumeRef"]
+        with patch.object(
+            control_server,
+            "_execute_lae_runtime_deployment",
+            side_effect=self.fake_execution,
+        ):
+            target = control_server.handle_lae_runtime_deployment_create(
+                self.runtime_token,
+                RUNTIME_AUDIENCE,
+                target_binding,
+                self.deployment_body(
+                    volume_ref=str(target_volume), binding=target_binding
+                ),
+                idempotency_key="rollback-recovery-deploy-target",
+            )
+            target_ref = str(target["deployment"]["deploymentRef"])
+            self.wait_runtime_deployment(target_ref)
+        state = load_state()
+        state["laeRuntime"]["deployments"][target_ref].update(
+            {"status": "running", "nomadVersion": 2}
+        )
+        save_state(state)
+
+        control_server.handle_lae_runtime_volume_prepare(
+            self.runtime_token,
+            RUNTIME_AUDIENCE,
+            self.binding,
+            self.volume_body(existing_ref=str(target_volume)),
+            idempotency_key="rollback-recovery-volume-current",
+        )
+        with patch.object(
+            control_server,
+            "_execute_lae_runtime_deployment",
+            side_effect=self.fake_execution,
+        ):
+            current = control_server.handle_lae_runtime_deployment_create(
+                self.runtime_token,
+                RUNTIME_AUDIENCE,
+                self.binding,
+                self.deployment_body(volume_ref=str(target_volume)),
+                idempotency_key="rollback-recovery-deploy-current",
+            )
+            current_ref = str(current["deployment"]["deploymentRef"])
+            self.wait_runtime_deployment(current_ref)
+        state = load_state()
+        state["laeRuntime"]["deployments"][current_ref].update(
+            {"status": "rolling_back", "nomadVersion": 3}
+        )
+        state["laeRuntime"]["lifecycleIdempotency"]["interrupted-checkpoint"] = {
+            "action": "rollback",
+            "runtimeDeploymentRef": current_ref,
+            "targetRuntimeDeploymentRef": target_ref,
+            "completed": False,
+            "createdAt": int(time.time()),
+            "expiresAt": int(time.time()) + 3600,
+        }
+        save_state(state)
+        body = {
+            "schemaVersion": "luma.lae-runtime/v1",
+            "target": {
+                "runtimeDeploymentRef": target_ref,
+                "operationRef": target_binding.operation_ref,
+                "revisionRef": target_binding.revision_ref,
+                "deploymentRef": target_binding.deployment_ref,
+            },
+        }
+        with patch.object(
+            control_server,
+            "_execute_lae_runtime_rollback",
+            return_value={"nomadVersion": 4},
+        ) as execute:
+            recovered = control_server.handle_lae_runtime_deployment_lifecycle(
+                self.runtime_token,
+                RUNTIME_AUDIENCE,
+                self.binding,
+                current_ref,
+                "rollback",
+                body,
+                idempotency_key="rollback-recovery-new-request",
+            )
+        self.assertEqual(recovered["deployment"]["deploymentRef"], target_ref)
+        self.assertEqual(recovered["deployment"]["status"], "deploying")
+        execute.assert_called_once()
+
     def test_runtime_rollback_reverts_saved_nomad_version_and_repairs_routes_on_retry(self) -> None:
         current = {
             "tenantRef": self.binding.tenant_ref,
@@ -1377,7 +1489,7 @@ class LaeRuntimeApiTests(unittest.TestCase):
                 control_server,
                 "_lae_runtime_bound_compose_spec",
                 side_effect=[current_spec, target_spec],
-            ),
+            ) as bound_spec,
             patch.object(control_server, "_lae_runtime_delete_routes") as delete,
             patch.object(control_server, "revert_job") as revert,
             patch.object(control_server, "_lae_runtime_restore_routes") as restore,
@@ -1394,6 +1506,10 @@ class LaeRuntimeApiTests(unittest.TestCase):
         self.assertEqual(revert.call_args.kwargs["slug"], current["jobSlug"])
         self.assertEqual(revert.call_args.kwargs["version"], 3)
         self.assertIs(restore.call_args.args[1], target_spec)
+        self.assertEqual(
+            bound_spec.call_args_list[1].kwargs["volume_binding"],
+            control_server._lae_runtime_binding_from_record(current),
+        )
 
         # Nomad may already expose the target metadata after a crash. The
         # retry must skip a second revert but still restore route publication.
