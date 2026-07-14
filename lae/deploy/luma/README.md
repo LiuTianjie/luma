@@ -2,7 +2,7 @@
 
 本目录是 `lae-platform` 的第一版可验证 Luma Compose 资产。它把平台本身作为一个受控 Compose 部署到 Luma：Web/API 与受策略约束的 artifact S3 endpoint 使用公网 HTTP，Worker、Agent Controller、PostgreSQL 和 Valkey 只在同一 Nomad group 的内部拓扑中通信。MinIO 数据面虽然有 HTTPS route，但 bucket policy、CORS 和最小权限 credential 只允许 LAE upload/artifact 流程，不能作为管理入口。这里没有公网 TCP/UDP、host bind、Docker socket、host network 或数据库公网入口。
 
-这不是“已经可以生产上线”的声明。截至 2026-07-15，Luma `v0.1.255` 已正式发布，live Control/manager 与在线 fleet `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰。`lae-platform-staging` 使用 exact commit `4548f6ab27ef115e7918a8f3078d93cca7d81476`，10 个 Compose service 全部健康。PostgreSQL、MinIO 和本地快照位于 manager 本地盘，平台启动不依赖 NFS。真实邮箱、异机恢复和生产安全门禁仍待完成，不能把平台健康外推为 production-ready。
+这不是“已经可以生产上线”的声明。截至 2026-07-15，Luma `v0.1.256` 已正式发布，live Control/manager 与在线 fleet `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰。`lae-platform-staging` 使用 exact commit `4548f6ab27ef115e7918a8f3078d93cca7d81476`，10 个 Compose service 全部健康。PostgreSQL、MinIO 和本地快照位于 manager 本地盘，平台启动不依赖 NFS。真实邮箱、异机恢复和生产安全门禁仍待完成，不能把平台健康外推为 production-ready。
 
 ## 文件
 

@@ -333,6 +333,7 @@ def render_traefik_job(
         args.extend([
             f"--certificatesresolvers.{cert_resolver}.acme.email={acme_email}",
             f"--certificatesresolvers.{cert_resolver}.acme.storage=/letsencrypt/acme.json",
+            f"--entrypoints.websecure.http.tls.certresolver={cert_resolver}",
         ])
         if acme_dns_provider:
             args.extend([

@@ -1,6 +1,6 @@
 # Luma Application Engine（LAE）产品与工程设计
 
-> 状态：Staging delivery v1.0；2026-07-15 Luma `v0.1.255` 已正式发布，Control/manager 与在线节点 `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE 10 个平台 service 在 `manager` 本地盘运行 exact ref `4548f6ab27ef115e7918a8f3078d93cca7d81476`。详细现状见 [最终交付说明](./13-final-handoff.md)。
+> 状态：Staging delivery v1.0；2026-07-15 Luma `v0.1.256` 已正式发布，Control/manager 与在线节点 `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE 10 个平台 service 在 `manager` 本地盘运行 exact ref `4548f6ab27ef115e7918a8f3078d93cca7d81476`。详细现状见 [最终交付说明](./13-final-handoff.md)。
 > 日期：2026-07-15
 > 目标：在 Luma 之上建设面向普通用户和 AI Agent 的多租户应用部署平台；LAE 自身及其依赖全部由 Luma 部署和管理。
 

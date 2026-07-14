@@ -42,14 +42,14 @@
 
 ## 4. 发布基线
 
-- Luma 正式版本：`v0.1.255`。
-- Control 内部镜像：`100.66.177.70:5000/luma-control:v0.1.255`。
-- 在线节点 `manager/bot/builder/lab/m4/tecent` 已升级到 `0.1.255`。
+- Luma 正式版本：`v0.1.256`。
+- Control 内部镜像：`100.66.177.70:5000/luma-control:v0.1.256`。
+- 在线节点 `manager/bot/builder/lab/m4/tecent` 已升级到 `0.1.256`。
 - `gaojiu` 当前离线，无法升级；`blg` 按明确要求不处理；`aly` 为历史节点，不参与调度。
 - LAE staging exact commit：`4548f6ab27ef115e7918a8f3078d93cca7d81476`，Nomad job `lae-platform-staging` v9，10 services。
 - 平台镜像全部由 Builder 构建并写入 Builder registry；manager 不承载 registry。
 
-`0.1.254-0.1.255` 修复 stateful rollback checkpoint，并让 wildcard 证书使用独立的 `*.itool.tech` 主域申请，避免历史裸域证书阻止随机租户域名获得可信 TLS。LAE 最新平台同时使 Worker 使用三个独立 lease owner 并发领取，长时间冷拉/失败 rollout 不再阻塞分析和生命周期队列。
+`0.1.254-0.1.256` 修复 stateful rollback checkpoint，并把 wildcard 主域与 ACME resolver 绑定到 HTTPS entrypoint，避免历史裸域证书阻止随机租户域名获得可信 TLS。LAE 最新平台同时使 Worker 使用三个独立 lease owner 并发领取，长时间冷拉/失败 rollout 不再阻塞分析和生命周期队列。
 
 ## 5. 日常操作顺序
 

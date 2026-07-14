@@ -701,6 +701,10 @@ port: 3000
             "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare",
             args,
         )
+        self.assertIn(
+            "--entrypoints.websecure.http.tls.certresolver=letsencrypt",
+            args,
+        )
         self.assertFalse(any("httpchallenge" in value for value in args))
         self.assertIn("--entrypoints.websecure.http.tls.domains[0].main=*.itool.tech", args)
         self.assertIn("--entrypoints.websecure.http.tls.domains[0].sans=itool.tech", args)

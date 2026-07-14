@@ -19,7 +19,7 @@
 | 待 staging 验证 | 已有代码或真实部署，尚未在隔离 Luma staging 完成相应端到端、故障和安全验证 |
 | 发布门禁 | 未满足时不得向生产用户承诺可用 |
 
-截至 2026-07-15，Luma `v0.1.255` 已发布到 Control/manager 与在线节点 `bot/builder/lab/m4/tecent`；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE staging 运行 exact ref `4548f6ab27ef115e7918a8f3078d93cca7d81476`，10 个 LAE service、wildcard DNS-01 TLS 和 Web/API/Agent/artifact 探针健康。四服务 Compose 已走通 Agent 诊断、必需环境配置、Builder 构建、首次冷拉、双公网 HTTPS route、双持久卷、restart、suspend/resume、更新检查与明确 unsupported blocker；stateful rollback checkpoint、长部署阻塞 Worker 队列及历史裸域证书阻止 wildcard TLS 的问题已在本次基线修复。preview 不代表真实邮箱送达，进程恢复也不代表 PITR/备份还原；因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
+截至 2026-07-15，Luma `v0.1.256` 已发布到 Control/manager 与在线节点 `bot/builder/lab/m4/tecent`；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE staging 运行 exact ref `4548f6ab27ef115e7918a8f3078d93cca7d81476`，10 个 LAE service、wildcard DNS-01 TLS 和 Web/API/Agent/artifact 探针健康。四服务 Compose 已走通 Agent 诊断、必需环境配置、Builder 构建、首次冷拉、双公网 HTTPS route、双持久卷、restart、suspend/resume、更新检查与明确 unsupported blocker；stateful rollback checkpoint、长部署阻塞 Worker 队列及历史裸域证书阻止 wildcard TLS 的问题已在本次基线修复。preview 不代表真实邮箱送达，进程恢复也不代表 PITR/备份还原；因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
 
 ## 2. 支持什么
 
