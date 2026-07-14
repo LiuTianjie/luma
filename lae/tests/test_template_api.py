@@ -53,7 +53,7 @@ class TemplateApiTests(unittest.IsolatedAsyncioTestCase):
         for item in TEMPLATES:
             with self.subTest(template=item.id):
                 self.assertRegex(item.id, r"^[a-z0-9][a-z0-9-]+$")
-                self.assertRegex(item.version, r"^2026\.07\.11-[0-9]+$")
+                self.assertRegex(item.version, r"^20[0-9]{2}\.[0-9]{2}\.[0-9]{2}-[0-9]+$")
                 self.assertRegex(item.commit, r"^[0-9a-f]{40}$")
                 self.assertRegex(item.repository, r"^https://github\.com/[^/]+/[^/]+\.git$")
                 self.assertEqual(item.kind, "service")
@@ -61,6 +61,13 @@ class TemplateApiTests(unittest.IsolatedAsyncioTestCase):
                     item.public_body()["verification"]["status"], "agent-pass"
                 )
                 self.assertNotIn("repository", item.public_body())
+        nextjs = next(item for item in TEMPLATES if item.id == "nextjs-docker")
+        self.assertEqual(
+            nextjs.subdirectory, "lae/e2e/fixtures/nextjs-standalone"
+        )
+        self.assertEqual(
+            nextjs.commit, "a759c8606fdb21f793b0e8071c99491ca7ba52c8"
+        )
 
     async def test_launch_reuses_normal_application_and_analysis_gates(self) -> None:
         applications = _Applications()

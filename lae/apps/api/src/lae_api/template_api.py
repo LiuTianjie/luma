@@ -67,12 +67,13 @@ class TemplateDefinition:
 TEMPLATES: tuple[TemplateDefinition, ...] = (
     TemplateDefinition(
         id="nextjs-docker",
-        version="2026.07.11-1",
+        version="2026.07.14-1",
         name="Next.js",
-        description="Container-ready App Router starter with standalone output.",
+        description="Pinned App Router starter with reproducible standalone output.",
         stack="Next.js · Node.js",
-        repository="https://github.com/nextjs/deploy-fly.git",
-        commit="eb2da4890980776de122157e590d30c9faa82e6e",
+        repository="https://github.com/LiuTianjie/luma.git",
+        commit="a759c8606fdb21f793b0e8071c99491ca7ba52c8",
+        subdirectory="lae/e2e/fixtures/nextjs-standalone",
         icon="orbit",
         tone="mist",
         estimated_memory_mib=768,
