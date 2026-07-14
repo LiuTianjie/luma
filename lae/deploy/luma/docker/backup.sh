@@ -113,7 +113,9 @@ run_backup() {
   require_configuration
   wait_for_dependencies
   mkdir -p "$snapshot_root"
-  chmod 0700 "$backup_root" "$snapshot_root"
+  # The NFS export root is owned by the storage host and may use root_squash.
+  # The backup process owns its child directory, not the mount point itself.
+  chmod 0700 "$snapshot_root"
   timestamp=$(date -u +%Y%m%dT%H%M%SZ)
   work="$snapshot_root/.${timestamp}.$$"
   final="$snapshot_root/$timestamp"

@@ -139,6 +139,10 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         )
         self.assertNotIn("/luma-system/postgres-amd64", dockerfile)
 
+        script = (DEPLOY / "docker" / "backup.sh").read_text(encoding="utf-8")
+        self.assertNotIn('chmod 0700 "$backup_root"', script)
+        self.assertIn('chmod 0700 "$snapshot_root"', script)
+
     def test_staging_runtime_has_no_retired_or_public_registry_pull(self):
         compose = load_yaml(DEPLOY / "docker-compose.staging.yml")
         postgres = compose["services"]["postgres"]
