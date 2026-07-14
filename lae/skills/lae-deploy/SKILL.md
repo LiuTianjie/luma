@@ -151,6 +151,11 @@ Do not call a deployment successful until the operation is terminal `succeeded` 
 
 Start with `lae apps show <app> --format json`. Then use the narrow action the user requested:
 
+Before rollback or when the user asks what is currently deployed, use
+`lae apps deployments <app> --limit 20 --format json`. Treat this server-owned
+history as authoritative; do not infer a deployment ID from logs or operation
+events.
+
 For a curated starter, inspect `lae templates list --format json`, then run `lae templates launch <template-id> --name <name> --slug <slug> --wait --idempotency-key <key>`. A template launch still goes through the same LAE Agent diagnosis and may return public verdict `needs_input`.
 
 - `check-update`: inspect upstream changes; never deploy automatically unless the user explicitly enabled that policy.

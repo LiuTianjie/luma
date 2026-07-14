@@ -137,6 +137,9 @@ def _parser() -> argparse.ArgumentParser:
     apps_create.add_argument("--idempotency-key", required=True)
     apps_show = apps.add_parser("show")
     apps_show.add_argument("app")
+    apps_deployments = apps.add_parser("deployments")
+    apps_deployments.add_argument("app")
+    apps_deployments.add_argument("--limit", type=int, default=20)
     apps_logs = apps.add_parser("logs")
     apps_logs.add_argument("app")
     apps_logs.add_argument("--service")
@@ -1473,6 +1476,21 @@ def _run(args: argparse.Namespace) -> int:
         app = _resource_id(args.app, "application ID")
         if args.apps_command == "show":
             _write(client.get(f"/applications/{app}"), args.format)
+            return 0
+        if args.apps_command == "deployments":
+            if not 1 <= args.limit <= 100:
+                raise CliError(
+                    "LAE_CLI_ARGUMENT_INVALID",
+                    "Deployment history limit must be 1-100.",
+                    2,
+                )
+            _write(
+                client.get(
+                    f"/applications/{app}/deployments",
+                    query={"limit": args.limit},
+                ),
+                args.format,
+            )
             return 0
         if args.apps_command == "logs":
             if not 1 <= args.tail <= 500:

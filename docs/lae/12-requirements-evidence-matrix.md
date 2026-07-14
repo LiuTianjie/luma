@@ -1,6 +1,6 @@
 # 12. 原始需求—实现—证据矩阵
 
-> 审计日期：2026-07-12
+> 审计日期：2026-07-14
 > 范围：最初 14 项产品需求、后续 Compose/Builder/placement/AI 澄清，以及当前批量 404/502 可用性问题
 > 权威边界：[08 实施状态](./08-implementation-status.md) 决定完成度；本文件负责把需求映射到代码、live 证据和剩余门槛。
 
@@ -13,24 +13,24 @@
 - **Staging partial**：真实组件或部分用户链路已验证，但未覆盖完整 source → Builder → Runtime、故障和安全矩阵。
 - **Verified/Done**：必须满足 [08](./08-implementation-status.md) 的定义；当前没有任何一行可仅凭 HTTP 200、Nomad `running` 或页面截图标为 Done。
 
-2026-07-12 的 live 基线：
+2026-07-14 的 live 基线：
 
-- Luma CLI、Control、manager agent 与 6 个在线非 manager agent 为 `0.1.196`；离线 `blg` 保持 `0.1.175`，恢复后补升级。
+- Luma CLI、Control 与 manager agent 为 `0.1.233`；本轮没有 worker-wide fleet 升级，在线非 manager agent 主要为 `0.1.228`；离线 `blg` 保持 `0.1.175`。
 - `manager` 是唯一控制面；`aly` 是历史名称。
-- LAE 平台固定在 `lab`，租户 runtime staging allowlist 为 `manager + tecent`，构建在 `builder`。
-- `lae-platform-staging` Job version 21 使用 exact commit `7c1212c037e356c3e6af39829bbed0615bea234d` 构建的 immutable images；9 个平台 task 运行。
+- LAE 平台当前在 `manager`，租户 runtime staging allowlist 为 `manager + tecent`，构建与内部 registry 在 `builder`。
+- `lae-platform-staging` 使用 exact commit `65a4010` 构建的 immutable platform images；9 个平台 task 运行。
 - Web、API ready、Agent ready、artifact ready 与 Control health 均为 HTTP 200；Agent ready 报告 `mode=ai`、`configured=true`。
-- FastAPI 模板已完成 Agent 诊断、Builder build、Runtime deploy、随机域名和有效 TLS；当前两个真实租户应用均运行在 `tecent`。Mailpit 注册、默认 deploy token 与 CLI 基础流程已有冒烟；真实邮箱、所有来源/四态 verdict 与完整 lifecycle E2E 未完成。
-- `0.1.190`/`0.1.192` 修复 route/service 名称碰撞与跨节点 upstream 地址；平台 Job v21、在线 fleet 和 Control/manager `0.1.196` 已完成升级。LAE Web 定向 route sentinel 通过，但长时间外部探针仍有少量 404/502/timeout，全量 sentinel 还会误判合法 404；Docker restart/CNI 自愈与 route reconciliation 故障注入仍是 production gate。
+- `0.1.233` 完整产品验收已完成 preview auth、AI 诊断、环境配置、四服务 Compose、Builder build、双公网 HTTPS route、双持久卷、restart/suspend/resume、更新检查、七类 unsupported blocker、delete 与 token revoke；公网探测无失败。FastAPI 模板与 HTML upload 的既有真实链路证据继续有效。真实邮箱、ZIP、真实私有 Git与完整安全负例仍未完成。
+- `0.1.229-0.1.233` 增加 Cloudflare DNS-01 wildcard TLS，修复 manager 更新配置所有权、生命周期/初次部署 DNS 授权和 runtime 假异步阻塞。Runtime deployment 现为持久化接受后后台执行；同一幂等请求可在 Control 重启后恢复。长时间多 edge sentinel、Docker/CNI 自愈与 route reconciliation 故障注入仍是 production gate。
 
 ## 2. 原始 14 项需求
 
 | ID | 原始目标与当前合同 | 实现证据 | Live/验收事实 | 结论与剩余门槛 |
 | --- | --- | --- | --- | --- |
 | U-01 | LAE 控制台；邮件注册/登录；自动 personal tenant | `lae/apps/web/src/components/auth-portal.tsx`、`lae/apps/api/src/lae_api/auth_service.py`、`lae/packages/python/lae-store/src/lae_store/auth.py`；`test_auth_*`、`test_email_sender.py` | Web/login 与 API healthy；Mailpit challenge、注册和 session 冒烟通过。Working tree 另有仅限保留 `.invalid` 身份的 staging preview flow | **Staging partial**。preview 不是生产邮件且需随新平台 ref 发布后才算 live；真实 SMTP 当前不可用，Mailpit 不会给用户真实邮箱送信。仍需 production provider、送达/退信/outbox、反滥用和浏览器 E2E |
-| U-02 | 主部署界面支持 HTML/ZIP、公有 Git、私有 Git、Dockerfile/Compose；缺 Git 凭据时配置；Agent 诊断、明确 blocker、识别 env、部署动画、成功后进入应用列表 | `lae-console.tsx`、`upload_api.py`、`source_connection_api.py`、`app.py`、`deployment_api.py`、Worker analyze/deployment；`test_static_upload_*`、`test_source_connection_*`、`test_worker_analyze.py`、`test_worker_deployment.py` | FastAPI 模板已真实完成 Agent → Builder → Runtime → 随机域名/TLS；部署失败会显示公开 Operation error code/message | **Staging partial**。模板单 HTTP 正向链路已通过；HTML/ZIP、公私 Git、Compose 双 HTTP/volume，以及 `unsupported/diagnostic_failed` 真实负例仍需逐项验收 |
+| U-02 | 主部署界面支持 HTML/ZIP、公有 Git、私有 Git、Dockerfile/Compose；缺 Git 凭据时配置；Agent 诊断、明确 blocker、识别 env、部署动画、成功后进入应用列表 | `lae-console.tsx`、`upload_api.py`、`source_connection_api.py`、`app.py`、`deployment_api.py`、Worker analyze/deployment；`test_static_upload_*`、`test_source_connection_*`、`test_worker_analyze.py`、`test_worker_deployment.py` | FastAPI、HTML 与四服务 Compose 已真实完成 Agent → Builder → Runtime → 随机域名/TLS；Compose 覆盖必需 env、双 route、双 volume 和七类明确 blocker | **Staging partial**。核心 Compose 正向链路与 unsupported 负例已通过；ZIP、真实私有 Git、`diagnostic_failed` 与浏览器交互回归仍需逐项验收 |
 | U-03 | 流行模板一键拉起 | `template_api.py`、Web 模板入口、CLI `templates list/launch`、commit-pinned catalog；`test_template_api.py` | FastAPI 模板从选择、诊断到真实 Runtime 上线通过 | **Staging partial**。尚缺其余模板真实 deploy、每日 smoke、失败计数、自动下架、版本回退和运营流程 |
-| U-04 | 应用列表查看状态/信息；停止、重启等生命周期操作 | `application_api.py`、`application_lifecycle_api.py`、`observability_api.py`、Worker lifecycle；`test_application_catalog*`、`test_application_lifecycle_*`、`test_observability_api.py` | 应用目录、日志、指标、suspend/resume/restart 已跑真实 Runtime；未参与动作的 tenant route 保持健康 | **Staging partial**。rollback/delete、各动作失败恢复和 volume retain 的真实矩阵仍待验收；“stop”产品语义统一为 suspend |
+| U-04 | 应用列表查看状态/信息；停止、重启等生命周期操作 | `application_api.py`、`application_lifecycle_api.py`、`observability_api.py`、Worker lifecycle；`test_application_catalog*`、`test_application_lifecycle_*`、`test_observability_api.py` | 四服务 Compose 的 restart、suspend/resume、update-check 与 delete 已跑真实 Runtime，双 route 在恢复后均通过探测 | **Staging partial**。rollback、各动作失败恢复和 volume retain/restore 的真实矩阵仍待验收；“stop”产品语义统一为 suspend |
 | U-05 | `lae` CLI 提供 Web 等价操作，以 deploy token 鉴权 | `lae/cli/src/lae_cli/__main__.py`；`test_cli.py`、`test_cli_sources_upload.py` | login/whoami、模板/应用、check-update、NDJSON cursor watch、同 revision deploy、日志/指标与主要 lifecycle 已跑真实 staging | **Staging partial**。HTML/ZIP、私有 Git、Compose、失败恢复和完整 token 管理矩阵仍待纵向 E2E；注册、token rotation 和 deployment history 的部分动作仍是 Web/API session flow，不应伪造 CLI 命令 |
 | U-06 | 注册自动生成用户级 deploy token；CLI 能持续查看部署流程 | `DEFAULT_DEPLOY_TOKEN_SCOPES`、一次展示/哈希存储、Operation cursor/NDJSON；`test_auth_*`、`test_public_resource_*`、`test_cli.py` | 默认 token/token verify 已冒烟；真实 check-update 与 deployment Operation 已通过 NDJSON cursor 1→terminal 续看 | **Staging partial**。当前 NDJSON 是 CLI 对 JSON cursor polling 的机器流；服务端 SSE 与 cursor-expired retention 协议尚未实现。断网后跨进程 resume、cancel/late-success 与配额只扣一次仍需 Luma E2E；默认 token 故意不含 `billing:checkout` |
 | U-07 | AI 友好的 Skill，至少登录、检查、部署，可包含注册/支付人机流程 | `lae/skills/lae-deploy/`、版本化 Knowledge Pack、CLI contract/policy；`test_skill_assets.py` | Skill 资产随仓库存在，未形成正式分发证据 | **Implemented**。Skill 使用公开 verdict `deployable/needs_input/unsupported/diagnostic_failed`；注册必须安全跳转 Web，支付只能创建 checkout 并由人确认。仍需打包发布和 clean-room Agent 全流程验收 |
@@ -46,8 +46,8 @@
 
 | ID | 已确认约束 | 实现/文档证据 | 当前结论 |
 | --- | --- | --- | --- |
-| C-01 | Compose 是一等模型，可有多个公网 HTTP service | Normalized Compose、route-per-service、deployment admission/render tests；[02](./02-architecture-and-infrastructure.md)、[03](./03-agent-and-deployment-lifecycle.md) | 代码已覆盖；真实双 HTTP 域名、逐 route health 和失败保旧 E2E 未完成 |
-| C-02 | 允许内部服务、worker、datastore 与受管 named volume；Lite 也可用 | service role/volume models、placement/storage admission tests | 代码已覆盖；真实持久化、备份/恢复、volume affinity 和节点故障仍是门槛；不是托管数据库 SLA |
+| C-01 | Compose 是一等模型，可有多个公网 HTTP service | Normalized Compose、route-per-service、deployment admission/render tests；[02](./02-architecture-and-infrastructure.md)、[03](./03-agent-and-deployment-lifecycle.md) | 四服务 Compose、真实双 HTTPS 域名与逐 route health 已通过；失败保旧与破坏性 update diff 仍需 E2E |
+| C-02 | 允许内部服务、worker、datastore 与受管 named volume；Lite 也可用 | service role/volume models、placement/storage admission tests | 真实 Compose 已部署内部服务与两个受管 named volume，lifecycle 后绑定保持；备份/恢复、volume affinity 故障和数据库数据语义仍是门槛；不是托管数据库 SLA |
 | C-03 | 暂不支持 `tcp-relay`，也不开放 TCP/UDP/host port | Agent policy、Knowledge Pack、plan resolver、Luma policy 与 Skill 均拒绝 | 需要补真实 staging 负例；任何 UI/CLI 不能提供旁路 |
 | C-04 | 拉代码、Agent runner 与构建全部走 Luma `builder` | Builder Task v1、credential/object redemption、analyze/build executors、Worker adapter | 代码和局部真实接线存在；公网多租户 rootless/egress/quota/GC/orphan 故障验证未关闭 |
 | C-05 | `manager` 是唯一控制面；`aly` 已过时 | live status、[07 D-016](./07-open-decisions.md)、部署/SOP | 当前文档已统一；任何升级/placement 命令再出现 `aly` 应视为 stale 配置缺陷 |

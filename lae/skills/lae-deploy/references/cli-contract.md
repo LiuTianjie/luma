@@ -29,6 +29,7 @@ lae operation watch <operation-id> [--after <cursor>] --format ndjson
 lae operation cancel <operation-id> --format json
 lae apps list|show
 lae apps create --name <name> --slug <slug> --idempotency-key <key>
+lae apps deployments <app> [--limit <1-100>]
 lae apps check-update|suspend|resume|restart <app> --idempotency-key <key>
 lae apps rollback <app> [--deployment <deployment-id>] --idempotency-key <key>
 lae apps delete <app> --yes --idempotency-key <key>
@@ -44,20 +45,20 @@ lae billing checkout --plan <lite|pro|ultra> --interval <month|year> --idempoten
 
 The CLI exposes pending-app creation, public/private Git inspection, static
 upload inspection, environment management, deployment and lifecycle
-operations, bounded logs/metrics, plan discovery, and checkout-session
-creation. Deployment history and token management remain Web/API session
-flows; if `lae --help` does not advertise a flow, stop instead of substituting
-raw Luma calls.
+operations, bounded deployment history/logs/metrics, plan discovery, and
+checkout-session creation. Token management remains a Web/API session flow;
+if `lae --help` does not advertise a flow, stop instead of substituting raw
+Luma calls.
 
 `billing checkout` keeps the human-facing `month|year` interval spelling and
 maps it to the API's `monthly|yearly` values. The active payment provider is a
 server-side capability and is never selected or sent by the CLI.
 
 `apps show` is the current CLI detail boundary for application services,
-routes, volumes, and environment metadata. Deployment-history and deploy-token
-management are currently Web/API session flows and are intentionally not
-invented as CLI commands. `apps logs` and `apps metrics` are available, but
-they return one bounded service view per request.
+routes, volumes, and environment metadata. `apps deployments` returns bounded,
+server-owned deployment history for status inspection and rollback target
+selection. Deploy-token management remains a Web/API session flow. `apps logs`
+and `apps metrics` return one bounded service view per request.
 
 Agent execution must provide every required flag. Missing input fails instead of opening a browser. Supply environment values with `--value-stdin` and private Git credentials with `--secret-stdin`; never put them in an argument or environment variable. When stdin carries either secret, load the deploy token from `LAE_DEPLOY_TOKEN` so the two inputs cannot collide.
 

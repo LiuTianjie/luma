@@ -720,6 +720,62 @@ class CliTests(unittest.TestCase):
             ],
         )
 
+    def test_apps_deployments_returns_bounded_server_history(self) -> None:
+        class FakeClient:
+            calls = []
+
+            def get(self, path, *, query=None):
+                self.calls.append((path, query))
+                return {
+                    "deployments": [
+                        {"id": "dep_current", "status": "succeeded"}
+                    ]
+                }
+
+        client = FakeClient()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("lae_cli.__main__._client", return_value=client), redirect_stdout(
+            stdout
+        ), redirect_stderr(stderr):
+            self.assertEqual(
+                main(
+                    [
+                        "apps",
+                        "deployments",
+                        "app_test",
+                        "--limit",
+                        "7",
+                        "--format",
+                        "json",
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "apps",
+                        "deployments",
+                        "app_test",
+                        "--limit",
+                        "101",
+                        "--format",
+                        "json",
+                    ]
+                ),
+                2,
+            )
+        self.assertEqual(
+            client.calls,
+            [("/applications/app_test/deployments", {"limit": 7})],
+        )
+        self.assertEqual(
+            json.loads(stdout.getvalue())["deployments"][0]["id"],
+            "dep_current",
+        )
+        self.assertIn("LAE_CLI_ARGUMENT_INVALID", stderr.getvalue())
+
     def test_template_launch_uses_curated_server_catalog(self) -> None:
         class FakeClient:
             calls = []

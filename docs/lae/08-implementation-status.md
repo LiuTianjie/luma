@@ -14,12 +14,12 @@
 
 禁止用以下证据单独标记 `Done`：页面截图、静态 mock、只测 happy path、只验证 manifest 能解析、只看到 Nomad allocation running、只看到 HTTP 200、未覆盖租户隔离的单元测试。
 
-### 当前结论（2026-07-12）
+### 当前结论（2026-07-14）
 
-- **发布与代码 gate：** Luma `0.1.200` 已发布，461/461 项 productization suite 通过；tag/package version mismatch gate 保持启用。当前 Control 与 manager agent 上报 `0.1.200`，6 个在线非 manager agent 上报 `0.1.198`（`0.1.199-0.1.200` 仅含 manager-side restart route reconcile/render 变更）；离线 `blg` 按当前决策保持 `0.1.175`。LAE exact commit `2f2afd2ab84926d058cbff53c51a86e8816324a9` 已部署为平台 Job version 23，9 个 task 健康。
-- **真实 Luma staging：** 9 个平台 task 全部健康，三个公网域名 TLS 有效；Web、API live/ready、Agent ready 和 artifact ready 探针均返回 200。Agent ready 显示 `mode=ai`、`configured=true`、无 configuration error。平台固定在 `lab`，租户 runtime 候选池为 `manager + tecent`。
-- **产品 E2E：** FastAPI 模板已真实走通 launch → Agent verdict → Builder build → Runtime deploy → random domain/TLS，且无需用户提供 Luma 文件；CLI 已真实完成更新检查、NDJSON cursor 续看、同 revision 重部署和 lifecycle/日志/指标操作。更新检查连续两次生成相同 candidate plan digest；刷新基线后复检得到 `sourceChanged=false`、`deploymentPlanChanged=false`、`changed=false`。HTML upload 也已真实完成 quarantine/scan → Agent diagnosis → trusted static adapter build → SBOM/Trivy → Runtime → random domain，并连续 6 次返回预期内容，随后 delete operation 成功。Mailpit 捕获的注册 challenge、默认 deploy token 与 CLI 基础流程也已执行。ZIP、私有 Git、Compose 双 HTTP/volume 与全部安全负例矩阵仍待完成，Mailpit 不代表真实邮箱送达。
-- **P0 可用性：** `0.1.198` 更新受信静态 adapter 到已修复 Go 基线并让 manager 更新深度保留 `providers/defaults/nodes`；`0.1.200` 将应用重启从 allocation stop 扩展为 replacement wait + CNI + route + DNS + public probe reconcile，并以高优先级 file route 覆盖旧 Nomad provider 的不可达私网 upstream。真实 `linkshell-gateway` 控制台等价重启在 4.83 秒内返回 `delivery.status=ready`，随后 12/12 公网探针为 200；manager DNS 配置经历多次更新后仍 `ready=true`。长时间多域 sentinel、Docker/CNI 故障注入与 LAE 平台升级窗口零失败证明仍未关闭。
+- **发布与代码 gate：** Luma `0.1.233` 已发布，810 项 pytest 与 130 项 subtest 通过；tag/package version mismatch gate 保持启用。CLI、Control 与 manager agent 均为 `0.1.233`；本轮未做 worker-wide fleet 升级，在线非 manager agent 仍主要为 `0.1.228`，离线 `blg` 按当前决策保持 `0.1.175`。LAE staging 9 个平台 task 使用 exact commit `65a4010` 的平台镜像并全部运行。
+- **真实 Luma staging：** 9 个平台 task 全部健康，Web、API live/ready、Agent ready 和 artifact ready 探针均返回 200。Agent ready 显示 `mode=ai`、`configured=true`、无 configuration error。平台当前在 `manager`；构建和内部 registry 在 `builder`，租户 runtime 候选池为 `manager + tecent`。Traefik 通过 Cloudflare DNS-01 持有 `itool.tech`/`*.itool.tech` 证书，Cloudflare token 只以 manager 上的只读 token file 注入。
+- **产品 E2E：** `staging_product_e2e.py` 已在 `0.1.233` 完整通过：preview 注册/登录、默认 deploy token、AI 分析、必需环境变量、Builder 构建、四服务 Compose、两个公网 HTTPS route、两个持久卷、重启、暂停/恢复、更新检查、七类明确 unsupported blocker、删除清理与 token revoke。两个公网 route 探测均无失败；用户全程无需提供 Luma 文件。此前 FastAPI 模板与 HTML upload 的真实链路证据继续有效。ZIP、真实私有 Git、真实邮件送达与全部安全负例矩阵仍待完成；Mailpit/preview 不代表真实邮箱送达。
+- **P0 可用性：** `0.1.229-0.1.233` 已关闭随机域名逐主机 HTTP-01 超时、manager 更新误读示例配置、生命周期/初次部署 DNS 凭据缺失，以及 runtime deploy 表面 `202` 实际同步阻塞的问题。Runtime deploy 现在先持久化幂等记录并立即返回 `preparing`，后台串行执行，异常持久化为可诊断终态；Control 重启后相同幂等请求可安全恢复。本轮完整 E2E 已验证 restart/suspend/resume 后 route 与 TLS 均可用。长时间多域 sentinel、Docker/CNI 故障注入与 LAE 平台升级窗口零失败证明仍未关闭。
 
 ## 2. 用户需求追踪
 
@@ -31,21 +31,21 @@
 | --- | --- | --- | --- |
 | R-001 | LAE 及 PostgreSQL、对象存储、registry、观测等全部由 Luma 部署 | In progress | 全部 Luma manifest/sidecar validate/render；staging deployment healthy；恢复演练通过 |
 | R-002 | 邮箱注册/登录，自动 personal tenant、Lite entitlement 和默认 deploy token | In progress | 邮件送达、过期/重放/限流、session、token once-display/revoke E2E |
-| R-003 | HTML/ZIP、GitHub、私有 Git、Dockerfile、Compose 来源可诊断和部署 | In progress | HTML golden source 已完成 inspect -> build -> deploy -> verify -> delete；ZIP、私有 Git、Dockerfile/Compose 与非法样本仍需同级证据 |
-| R-004 | Compose 支持多个公网 HTTP service、内部服务、worker、datastore 和 named volume | In progress | 双 HTTP 域名、逐 route probe、内部依赖、数据库持久化和端口冲突用例通过 |
+| R-003 | HTML/ZIP、GitHub、私有 Git、Dockerfile、Compose 来源可诊断和部署 | In progress | HTML 与四服务 Compose golden source 已完成 inspect -> configure -> build -> deploy -> verify -> lifecycle -> delete；unsupported Compose 七类 blocker 已验证；ZIP、真实私有 Git及更多 Dockerfile 负例仍需同级证据 |
+| R-004 | Compose 支持多个公网 HTTP service、内部服务、worker、datastore 和 named volume | Verified | 四服务 Compose、双 HTTP HTTPS 域名、逐 route probe、内部服务与两个持久卷、restart/suspend/resume/delete 已在真实 staging 通过；数据库写入后重部署的数据语义与卷恢复演练仍属于更高层恢复 gate |
 | R-005 | 暂不支持 `tcp-relay`，TCP/UDP/host port 在 LAE 与 Luma 双层拒绝 | In progress | contract、Agent policy、Luma policy 正反例测试与 staging 拒绝证据 |
 | R-006 | 独立 LAE Agent 公共端点，需要 session 或 deploy token | In progress | `POST /v1/analyses`、公开 GET、cursor event replay 与 cancel 已覆盖 Bearer scope、cookie CSRF、双凭据冲突、tenant fence、原子 enqueue、幂等 replay 和 late-success fence；仍需 SSE、限流、配额和审计 E2E |
 | R-007 | Git fetch、Agent runner、单/多镜像 build 统一在 Luma builder 执行 | In progress | Builder Task typed API、不可变 snapshot、Git/object 单次 redemption、真实 cancel、rootless sandbox、digest output E2E |
 | R-008 | 识别必需环境变量，部署前补齐，部署后可管理且 secret 不回显 | In progress | 公共 env metadata/CAS/set/unset、AES-GCM envelope、AAD/HMAC、runtime secret lease/injection、幂等/tenant fence 已实现；仍需多框架 evidence 和 staging 日志/镜像/provenance 无 secret E2E |
 | R-009 | 模板可一键拉起，失败模板自动下架 | In progress | 已有 pinned/versioned catalog、Web/CLI launch 和正常 Agent analysis 门禁；仍需每日 smoke、自动下架与真实 deployment E2E |
-| R-010 | 应用列表/详情可看状态、服务、路由、日志、指标，并可 suspend/resume/restart/rollback/delete | In progress | tenant-scoped catalog/observability API、Web 日志指标与全部 lifecycle 入口、API/Worker 均已实现，自动化测试证明失败不切 current；仍需逐 action 真实 staging |
-| R-011 | CLI 与 Web 等价，deploy token 可登录/诊断/部署/续看/管理 | In progress | JSON/NDJSON contract、非交互退出码、cursor resume、token 不进 argv/日志 |
+| R-010 | 应用列表/详情可看状态、服务、路由、日志、指标，并可 suspend/resume/restart/rollback/delete | In progress | tenant-scoped catalog/observability API、Web 日志指标与全部 lifecycle 入口均已实现；真实 Compose restart/suspend/resume/delete 已通过，rollback 与失败保旧矩阵仍需 staging 证据 |
+| R-011 | CLI 与 Web 等价，deploy token 可登录/诊断/部署/续看/管理 | In progress | JSON/NDJSON contract、非交互退出码、cursor resume、token 不进 argv/日志；CLI 已补服务端权威 deployment history 查询，token 管理继续保持 session-only 安全边界 |
 | R-012 | 提供 AI 友好的 LAE Skill，覆盖注册、登录、诊断、部署、管理和支付人机边界 | In progress | Skill 验证、clean-room Agent 执行、secret/payment 安全测试 |
 | R-013 | Lite/Pro/Ultra、月付/年付、mock 及微信/支付宝 adapter、服务端硬配额 | In progress | entitlement/ledger/reservation、webhook 重放乱序、降级、mock 与真实 provider sandbox 测试 |
 | R-014 | Luma Dashboard 超管可看全部 LAE 用户/应用/用量并发起审计动作 | In progress | 已有独立 service-token 的只读 admin API、Luma proxy、Dashboard 页面和仅管理端可见的 placement 审计视图；仍需真实 staging 跨系统关联、suspend/reconcile 写动作、审批与双人复核 E2E |
-| R-015 | 更新检查重新运行 Agent，展示 plan diff，确认后部署 | In progress | 保存来源绑定、原子 check-update Operation、Worker analyze lane、闭合 digest 与 Web 结果提示均已实现；真实 staging 已证明等价 source snapshot 的 plan digest 稳定，刷新基线后返回 `changed=false`。仍需 env/route/volume 破坏性变更分类、逐项确认和失败保旧负例 E2E |
+| R-015 | 更新检查重新运行 Agent，展示 plan diff，确认后部署 | In progress | 保存来源绑定、原子 check-update Operation、Worker analyze lane、闭合 digest 与 Web/CLI 结果提示均已实现；真实 Compose staging 已通过更新检查。仍需把候选 plan artifact 投影为 env/route/volume 结构化安全 diff、逐项确认和失败保旧负例 E2E |
 | R-016 | 平台保存每个应用的 DeploymentPlan、BuildPlan、规范化 Compose、Luma sidecar/manifest 与 image digest | In progress | DB revision 不可变性、hash 复现、用户仓库无 Luma 文件的 Compose 部署 |
-| R-017 | 默认稳定随机 `*.itool.tech` 域名，不支持自定义域名 | In progress | CSPRNG/唯一性、wildcard DNS/TLS、update/suspend/rollback 域名不变、删除冷却测试 |
+| R-017 | 默认稳定随机 `*.itool.tech` 域名，不支持自定义域名 | Verified | CSPRNG/唯一性与自定义域名拒绝由自动化覆盖；Cloudflare DNS-01 wildcard TLS、双 route、restart/suspend/resume 后域名稳定均已在真实 staging 通过；删除冷却仍需长期回归 |
 | R-018 | 控制台保持一致的高级视觉、模板湖面和真实事件驱动部署动画 | In progress | design tokens、键盘/读屏/reduced motion、性能预算、真实 event 映射与视觉回归 |
 
 ## 3. 基础设施与安全硬门槛
