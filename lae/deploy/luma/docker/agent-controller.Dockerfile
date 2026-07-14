@@ -15,7 +15,8 @@ COPY . .
 # Dependency downloads follow the per-build network policy selected by Luma.
 # Proxy values are BuildKit-only inputs and are not persisted in the image.
 RUN --mount=type=cache,id=lae-uv-v1,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable --package lae-agent-controller
+    uv sync --frozen --only-group build --no-install-workspace && \
+    uv sync --frozen --no-dev --no-editable --no-build-isolation --package lae-agent-controller
 
 FROM python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b AS runtime
 

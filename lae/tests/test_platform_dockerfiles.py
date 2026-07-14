@@ -45,6 +45,8 @@ class PlatformDockerfileTests(unittest.TestCase):
                     instruction,
                     path.name,
                 )
+                self.assertIn("uv sync --frozen --only-group build", instruction, path.name)
+                self.assertIn("--no-build-isolation", instruction, path.name)
         self.assertGreater(checked, 0)
 
     def test_platform_images_do_not_persist_build_proxy_settings(self) -> None:
