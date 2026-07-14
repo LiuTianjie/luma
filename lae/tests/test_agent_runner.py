@@ -448,6 +448,42 @@ services:
         self.assertFalse(environment["APP_MODE"]["configured"])
         self.assertIn("PUBLIC_URL", environment)
 
+    def test_managed_adapter_runtime_environment_is_not_tenant_configuration(self) -> None:
+        _, artifacts = self._run(
+            {
+                "package.json": '{"scripts":{"start":"node server.js"}}',
+                "server.js": """
+const port = process.env.PORT || 3001;
+const host = process.env.HOST || process.env.HOSTNAME || '127.0.0.1';
+const token = process.env.API_TOKEN;
+console.log({port, host, token, mode: process.env.NODE_ENV});
+""",
+                ".env.example": "PORT=3001\nHOST=0.0.0.0\nAPI_TOKEN=\n",
+            }
+        )
+        deployment = json.loads(artifacts["deployment-plan.json"])
+        environment = {item["name"]: item for item in deployment["environment"]}
+
+        self.assertEqual(set(environment), {"API_TOKEN"})
+        self.assertTrue(environment["API_TOKEN"]["required"])
+        self.assertTrue(environment["API_TOKEN"]["sensitive"])
+        self.assertEqual(
+            deployment["services"][0]["environmentNames"], ["API_TOKEN"]
+        )
+
+    def test_custom_dockerfile_can_declare_port_as_tenant_configuration(self) -> None:
+        _, artifacts = self._run(
+            {
+                "Dockerfile": "FROM scratch\nEXPOSE 8080\n",
+                "server.js": "console.log(process.env.PORT);\n",
+                ".env.example": "PORT=8080\n",
+            }
+        )
+        deployment = json.loads(artifacts["deployment-plan.json"])
+        environment = {item["name"]: item for item in deployment["environment"]}
+
+        self.assertIn("PORT", environment)
+
     def test_compose_denies_privilege_host_access_and_public_non_http(self) -> None:
         compose = """
 services:

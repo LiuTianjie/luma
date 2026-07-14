@@ -105,6 +105,18 @@ SENSITIVE_MARKERS = (
     "TOKEN",
 )
 PUBLIC_PREFIXES = ("NEXT_PUBLIC_", "NUXT_PUBLIC_", "PUBLIC_", "REACT_APP_", "VITE_")
+PLATFORM_OWNED_RUNTIME_ENV_BY_ADAPTER = {
+    "node-http": frozenset({"HOST", "HOSTNAME", "NODE_ENV", "PORT"}),
+    "python-http": frozenset(
+        {
+            "PIP_DISABLE_PIP_VERSION_CHECK",
+            "PORT",
+            "PYTHONDONTWRITEBYTECODE",
+            "PYTHONPATH",
+            "PYTHONUNBUFFERED",
+        }
+    ),
+}
 FORBIDDEN_METADATA_KEY = re.compile(
     r"(?:authorization|credential|debug|log|password|secret|token)", re.IGNORECASE
 )
@@ -1458,6 +1470,12 @@ class Analyzer:
         force_sensitive: bool = False,
     ) -> None:
         if not ENV_NAME.fullmatch(name):
+            return
+        if (
+            scope == "runtime"
+            and name
+            in PLATFORM_OWNED_RUNTIME_ENV_BY_ADAPTER.get(self.adapter, frozenset())
+        ):
             return
         key = (scope, name)
         finding = self.environments.setdefault(
