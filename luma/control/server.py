@@ -1923,6 +1923,23 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
             task["progress"] = progress[-progress_limit:]
         if task.get("message"):
             task["message"] = str(task.get("message"))[:BUILD_RUN_MESSAGE_LIMIT]
+
+    # A running task for a node that is no longer registered can never report
+    # completion: its agent token and canonical identity no longer exist.
+    # Reuse the normal interruption path so linked Builder tasks/build runs are
+    # finalized consistently instead of retaining permanent ghost activity.
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    unregistered_running_nodes = {
+        str(task.get("nodeName") or "")
+        for task in tasks.values()
+        if isinstance(task, dict)
+        and str(task.get("status") or "") == "running"
+        and str(task.get("nodeName") or "")
+        and _node_record_entry_for_name_or_id(nodes, str(task.get("nodeName") or "")) is None
+    }
+    for node_name in sorted(unregistered_running_nodes):
+        _reconcile_interrupted_agent_tasks(state, node_name, "", now=now)
+
     terminal = {"succeeded", "failed", "timeout", "canceled"}
     stale = [
         task_id

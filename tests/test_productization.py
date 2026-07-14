@@ -10736,6 +10736,13 @@ class ControlApiTests(unittest.TestCase):
                         "payload": {},
                         "status": "queued",
                     },
+                    "task-retired-node": {
+                        "id": "task-retired-node",
+                        "nodeName": "retired-node",
+                        "action": "prepare-managed-nfs-host",
+                        "payload": {},
+                        "status": "running",
+                    },
                 }
                 current["builderTasks"] = {
                     "builder-orphan": {
@@ -10770,6 +10777,7 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(saved["task-active"]["status"], "running")
                 self.assertEqual(saved["task-waiting"]["status"], "queued")
                 self.assertEqual(saved["task-orphan"]["status"], "failed")
+                self.assertEqual(saved["task-retired-node"]["status"], "failed")
                 self.assertEqual(
                     saved["task-orphan"]["message"],
                     "node agent restarted before task completion",
