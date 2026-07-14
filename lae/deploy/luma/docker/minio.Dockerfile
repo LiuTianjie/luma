@@ -13,18 +13,16 @@ ARG MINIO_COMMIT=9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a
 
 WORKDIR /src
 
-# Platform sources and Go modules use the builder's direct network. Luma may
-# pass proxy build args for tenant builds; do not let those leak into LAE.
-RUN unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; \
-    git clone --depth 1 --branch "${MINIO_RELEASE}" https://github.com/minio/minio.git . && \
+# Source and module downloads follow Luma's per-build network policy. Proxy
+# values are BuildKit-only inputs and are not persisted in the image.
+RUN git clone --depth 1 --branch "${MINIO_RELEASE}" https://github.com/minio/minio.git . && \
     test "$(git rev-parse HEAD)" = "${MINIO_COMMIT}" && \
     LDFLAGS="$(go run buildscripts/gen-ldflags.go)" && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       go build -tags kqueue -trimpath --ldflags "${LDFLAGS}" -o /out/minio .
 
 COPY deploy/luma/docker/minio-healthcheck.go /tmp/minio-healthcheck.go
-RUN unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
       go build -trimpath -ldflags='-s -w' -o /out/lae-minio-healthcheck /tmp/minio-healthcheck.go && \
     mkdir -p /rootfs/data /rootfs/tmp && \
     chmod 1777 /rootfs/tmp && \

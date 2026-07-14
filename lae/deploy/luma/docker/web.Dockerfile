@@ -12,15 +12,13 @@ ENV PATH="${PNPM_HOME}:${PATH}"
 
 WORKDIR /workspace
 
-# Platform dependencies use the builder's direct network. Luma may pass proxy
-# build args for tenant builds; do not let those leak into LAE's own images.
-RUN unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; \
-    corepack enable && corepack prepare pnpm@10.30.0 --activate
+# Dependency downloads follow the per-build network policy selected by Luma.
+# Proxy values are BuildKit-only inputs and are not persisted in the image.
+RUN corepack enable && corepack prepare pnpm@10.30.0 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
-RUN unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; \
-    pnpm install --frozen-lockfile --filter @lae/web...
+RUN pnpm install --frozen-lockfile --filter @lae/web...
 
 COPY apps/web apps/web
 RUN pnpm --filter @lae/web build && \

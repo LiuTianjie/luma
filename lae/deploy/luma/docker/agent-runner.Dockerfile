@@ -12,10 +12,9 @@ ENV UV_COMPILE_BYTECODE=1 \
 COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /src
 COPY . .
-# Platform dependencies use the builder's direct network. Luma may pass proxy
-# build args for tenant builds; do not let those leak into LAE's own images.
-RUN unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; \
-    uv sync --frozen --no-dev --no-editable --package lae-agent-runner
+# Dependency downloads follow the per-build network policy selected by Luma.
+# Proxy values are BuildKit-only inputs and are not persisted in the image.
+RUN uv sync --frozen --no-dev --no-editable --package lae-agent-runner
 # Fail the image build if uv/Docker cache reuse leaves an older workspace
 # package in the supposedly new runner image. Builder and runner intentionally
 # use a closed result protocol, so a content-stale image must never be pushed.

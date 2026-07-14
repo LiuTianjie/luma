@@ -37,19 +37,14 @@ def run_instructions(dockerfile: str) -> list[str]:
 
 
 class PlatformDockerfileTests(unittest.TestCase):
-    def test_network_build_steps_ignore_injected_proxy_args(self) -> None:
+    def test_network_build_steps_honor_per_build_proxy_policy(self) -> None:
         checked = 0
         for path in sorted(DOCKER_DIR.glob("*.Dockerfile")):
             for instruction in run_instructions(path.read_text(encoding="utf-8")):
                 if not NETWORK_BUILD_COMMAND.search(instruction):
                     continue
                 checked += 1
-                self.assertIn(PROXY_UNSET, instruction, path.name)
-                self.assertLess(
-                    instruction.index(PROXY_UNSET),
-                    NETWORK_BUILD_COMMAND.search(instruction).start(),  # type: ignore[union-attr]
-                    path.name,
-                )
+                self.assertNotIn(PROXY_UNSET, instruction, path.name)
         self.assertGreater(checked, 0)
 
     def test_platform_images_do_not_persist_build_proxy_settings(self) -> None:
