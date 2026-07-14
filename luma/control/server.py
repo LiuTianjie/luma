@@ -9955,11 +9955,16 @@ def handle_fleet_update(
                     if progress:
                         progress(dict(item))
 
+            install_payload = {"installRef": install_ref}
+            config = load_config(_control_config_path())
+            install_proxy = _egress_proxy_for_node(config, current_state, node_name)
+            if install_proxy:
+                install_payload["proxy"] = install_proxy
             result = _run_node_agent_task(
                 current_state,
                 node_name,
                 "update-luma",
-                {"installRef": install_ref},
+                install_payload,
                 timeout=per_node_timeout,
                 required_capability="luma-update",
                 progress=install_progress,

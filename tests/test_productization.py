@@ -806,6 +806,36 @@ class ProductConfigTests(unittest.TestCase):
             ],
         )
 
+    def test_node_agent_update_scopes_validated_proxy_to_installer_process(self):
+        completed = Mock(returncode=0, stdout="Luma version: 0.1.235\n")
+        with patch("luma.agent.subprocess.run", return_value=completed) as run, patch(
+            "luma.agent.LocalExecutor"
+        ) as executor, patch("luma.agent.node_agent_os", return_value="linux"), patch(
+            "luma.agent._installed_luma_executable", return_value="/root/.local/bin/luma"
+        ):
+            executor.return_value.sudo.return_value = ""
+            update_luma_install(
+                install_ref="v0.1.235",
+                proxy="http://100.106.154.3:7890",
+            )
+
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["HTTP_PROXY"], "http://100.106.154.3:7890")
+        self.assertEqual(env["HTTPS_PROXY"], "http://100.106.154.3:7890")
+        self.assertEqual(env["http_proxy"], "http://100.106.154.3:7890")
+        self.assertEqual(env["https_proxy"], "http://100.106.154.3:7890")
+        self.assertIn("100.64.0.0/10", env["NO_PROXY"].split(","))
+        self.assertEqual(env["NO_PROXY"], env["no_proxy"])
+
+    def test_node_agent_update_rejects_credentialed_proxy(self):
+        with patch("luma.agent.subprocess.run") as run:
+            with self.assertRaisesRegex(LumaError, "without credentials"):
+                update_luma_install(
+                    install_ref="v0.1.235",
+                    proxy="http://user:secret@100.106.154.3:7890",
+                )
+        run.assert_not_called()
+
     def test_node_agent_update_rejects_installer_without_version_proof(self):
         completed = Mock(returncode=0, stdout="installer completed without version\n")
         with patch("luma.agent.subprocess.run", return_value=completed), patch(
@@ -5522,6 +5552,56 @@ class ControlApiTests(unittest.TestCase):
                 self.assertEqual(by_name["lab"]["status"], "skipped")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_fleet_update_injects_node_scoped_egress_proxy_for_cn_installer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nomadRpcAddr"] = "100.106.154.3:4647"
+                state["nodes"] = {
+                    "tecent": {
+                        "region": "cn",
+                        "labels": {"region": "cn", "luma.node.name": "tecent"},
+                        "agent": {
+                            "status": "online",
+                            "lastSeen": int(time.time()),
+                            "os": "linux",
+                            "capabilities": ["luma-update"],
+                        },
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(
+                    yaml.safe_dump({"defaults": {"engine": "nomad"}}),
+                    encoding="utf-8",
+                )
+
+                def run_task(_state, node_name, action, payload, **kwargs):
+                    self.assertEqual(node_name, "tecent")
+                    self.assertEqual(action, "update-luma")
+                    self.assertEqual(payload["installRef"], "v0.1.235")
+                    self.assertEqual(payload["proxy"], "http://100.106.154.3:7890")
+                    self.assertEqual(kwargs["required_capability"], "luma-update")
+                    return {
+                        "taskId": "task-update",
+                        "message": "Luma installer finished",
+                        "installRef": payload["installRef"],
+                    }
+
+                with patch("luma.control.server._run_node_agent_task", side_effect=run_task):
+                    result = handle_fleet_update(
+                        state["deployToken"],
+                        {"installRef": "v0.1.235", "nodeNames": ["tecent"]},
+                    )
+
+                self.assertEqual(result["succeeded"], 1)
+                self.assertEqual(result["failed"], 0)
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
     def test_fleet_update_explicit_empty_target_list_updates_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:

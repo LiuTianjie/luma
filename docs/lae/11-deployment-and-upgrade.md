@@ -27,7 +27,7 @@ staging 当前允许 Builder 通过 HTTPS + scoped static token 访问独立 con
 fail-closed。生产 sidecar 因此不公开 controller；后续通过 API broker/private
 ingress 完成 consent-bound task credential 后才能启用。
 
-> 状态：Luma `0.1.234` 候选通过全量回归，当前 live CLI/Control/manager agent 仍为 `0.1.233`。LAE exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 的 9 个 service（Nomad job v54）、四服务 Compose、HTML/ZIP/私有 Git、四模板、clean-room CLI/Skill 与 PostgreSQL 进程恢复已通过；真实邮件、安全负例与备份还原仍在收尾
+> 状态：Luma `0.1.234` 已发布到 Control/manager 与五个在线非 manager 节点；`0.1.235` installer egress 修复候选通过全量回归，待发布并重试 `tecent`。LAE exact ref `2201895a6b30fed87fb87be4326f3febb13dd8f1` 的 9 个 service（Nomad job v54）、四服务 Compose、HTML/ZIP/私有 Git、四模板、clean-room CLI/Skill 与 PostgreSQL 进程恢复已通过；真实邮件、安全负例与备份还原仍在收尾
 > 日期：2026-07-14
 > 安全边界：本文不包含任何 secret 值，也不表示仓库当前已经部署到生产。
 
@@ -53,8 +53,8 @@ manager 还必须显式标记 runtime，单有 allowlist 不足以绕过 control
 storage class 和 runner pool 仍是门禁；
 未关闭时不要把 staging 步骤改名后当作 production 发布。
 
-截至 2026-07-14，Luma `0.1.234` 候选通过 814 项 pytest 与 130 项 subtest；当前 live
-CLI、Control 与 manager agent 仍为 `0.1.233`，在线非 manager agent 主要为 `0.1.228`，离线 `blg` 保持
+截至 2026-07-14，Luma `0.1.235` 候选通过 817 项 pytest 与 130 项 subtest；当前 live
+Control/manager 与 `bot/builder/gaojiu/lab/m4` 为 `0.1.234`，`tecent` 为 `0.1.228`，离线 `blg` 保持
 `0.1.175`。LAE 通过 429 项测试
 （25 项按环境跳过）、contracts 和 compile。release workflow 继续拒绝
 tag 与 package version 不一致。manager Control 当前镜像为
@@ -456,7 +456,7 @@ exact deployment/`JobVersion`，并等待该版本每个 required task group 的
 `JobModifyIndex` 对应的当前版本与 allocation 已健康。failed/blocked/canceled、
 superseded 和 timeout 必须 fail closed。
 
-当前 live `0.1.233` 已通过 manager Control 更新和 LAE 产品 E2E，既有 route 未再
+当前 live `0.1.234` 已通过 manager Control 更新和 LAE 产品 E2E，既有 route 未再
 出现需要人工重启才能恢复的批量 404/502。已复现的 service/router
 名称碰撞和跨节点 private-IP upstream 已分别通过 deployment-scoped 名称与
 `luma_tailscale_ip` service address 修复。但长时间外部探针仍有少量瞬时失败，

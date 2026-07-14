@@ -15,10 +15,10 @@
 
 2026-07-14 的 live 基线：
 
-- Luma `0.1.234` 候选通过回归；当前 live CLI、Control 与 manager agent 仍为 `0.1.233`，在线非 manager agent 主要为 `0.1.228`；离线 `blg` 保持 `0.1.175`。
+- Luma `0.1.234` 已发布到 Control/manager 与五个在线非 manager 节点；`tecent` 保持 `0.1.228`，其 installer egress 缺陷已在 `0.1.235` 修复并通过全量回归；离线 `blg` 保持 `0.1.175`。
 - `manager` 是唯一控制面；`aly` 是历史名称。
 - LAE 平台当前在 `manager`，租户 runtime staging allowlist 为 `manager + tecent`，构建与内部 registry 在 `builder`。
-- `0.1.234` 候选通过 814 项 Luma pytest 与 130 项 subtest。`lae-platform-staging` 使用 exact commit `2201895a6b30fed87fb87be4326f3febb13dd8f1` 由 Builder 构建的 immutable platform images，Nomad job version 54，9 个 service 运行；LAE 429 项测试（25 项按环境跳过）及 contracts/compile/component smoke 通过。
+- `0.1.235` 候选通过 817 项 Luma pytest 与 130 项 subtest。`lae-platform-staging` 使用 exact commit `2201895a6b30fed87fb87be4326f3febb13dd8f1` 由 Builder 构建的 immutable platform images，Nomad job version 54，9 个 service 运行；LAE 429 项测试（25 项按环境跳过）及 contracts/compile/component smoke 通过。
 - Web、API ready、Agent ready、artifact ready 与 Control health 均为 HTTP 200；Agent ready 报告 `mode=ai`、`configured=true`。
 - 当前 staging 完整产品验收已完成 preview auth、AI 诊断、环境配置、四服务 Compose、Builder build、双公网 HTTPS route、双持久卷、restart/suspend/resume、更新检查、七类 unsupported blocker、delete 与 token revoke；公网探测无失败。FastAPI 模板、HTML、ZIP 与真实 GitHub 私有仓库均完成 Agent → Builder → Runtime → HTTPS → cleanup。私有 Git analysis 还验证 Worker 重启后的同一 Operation reclaim/cursor resume。PostgreSQL task 重启时 API ready 出现 503 并在约 2.14 秒恢复，其他四条 sentinel 26/26 全为 200且数据库对象计数不变。真实邮箱、完整安全负例与 PITR/备份还原仍未完成。
 - `0.1.229-0.1.233` 增加 Cloudflare DNS-01 wildcard TLS，修复 manager 更新配置所有权、生命周期/初次部署 DNS 授权和 runtime 假异步阻塞；`d0ffc7a` 进一步修复首次冷拉超过默认 3 分钟健康窗口后的永久误失败。Runtime deployment 现为非阻塞精确 Job 注册、持久化提交关联和专用 observer 收敛；同一幂等请求可在 Control 重启后恢复。真实冷拉 E2E 已超过旧窗口并成功，公开事件同时展示 build/render/volumes/runtime/verify 阶段。长时间多 edge sentinel、Docker/CNI 自愈与 route reconciliation 故障注入仍是 production gate。

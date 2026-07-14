@@ -2066,6 +2066,7 @@ def execute_agent_task(
     if action == "update-luma":
         return update_luma_install(
             install_ref=str(payload.get("installRef") or ""),
+            proxy=str(payload.get("proxy") or ""),
             config_path=config_path,
             progress=progress,
         )
@@ -3466,6 +3467,7 @@ def _docker_image_pull_error(*, image: str, output: str, platform: str = "") -> 
 def update_luma_install(
     *,
     install_ref: str = "",
+    proxy: str = "",
     config_path: Path = DEFAULT_AGENT_CONFIG,
     progress: Callable[[Dict[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
@@ -3474,6 +3476,36 @@ def update_luma_install(
             progress({"type": "status", "line": message, "ts": int(time.time())})
 
     env = os.environ.copy()
+    proxy_value = str(proxy or "").strip()
+    if proxy_value:
+        parsed_proxy = urllib.parse.urlparse(proxy_value)
+        if (
+            parsed_proxy.scheme not in {"http", "https"}
+            or not parsed_proxy.hostname
+            or parsed_proxy.username is not None
+            or parsed_proxy.password is not None
+        ):
+            raise LumaError("Luma installer proxy must be an HTTP(S) URL without credentials")
+        env["HTTP_PROXY"] = proxy_value
+        env["HTTPS_PROXY"] = proxy_value
+        env["http_proxy"] = proxy_value
+        env["https_proxy"] = proxy_value
+        existing_no_proxy = str(env.get("NO_PROXY") or env.get("no_proxy") or "")
+        no_proxy = [
+            *existing_no_proxy.split(","),
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+        ]
+        no_proxy_value = ",".join(
+            dict.fromkeys(value.strip() for value in no_proxy if value.strip())
+        )
+        env["NO_PROXY"] = no_proxy_value
+        env["no_proxy"] = no_proxy_value
     command, exact_ref = luma_installer_command(install_ref, environ=env)
     env["LUMA_INSTALL_REF"] = exact_ref
     layout = _current_install_layout()
