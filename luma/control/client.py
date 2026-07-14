@@ -882,6 +882,7 @@ class ControlClient:
         mount_options: str = "",
         regions: list[str] | None = None,
         nodes: list[str] | None = None,
+        timeout: int = 360,
     ) -> Dict[str, Any]:
         return self.request(
             "POST",
@@ -897,10 +898,16 @@ class ControlClient:
                 "regions": regions or [],
                 "nodes": nodes or [],
             },
+            timeout=timeout,
         )
 
-    def remove_storage(self, *, name: str) -> Dict[str, Any]:
-        return self.request("POST", "/v1/storage/remove", {"name": name})
+    def remove_storage(self, *, name: str, timeout: int = 360) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/storage/remove",
+            {"name": name},
+            timeout=timeout,
+        )
 
 def _timeout_message(path: str, timeout: int) -> str:
     message = f"control API timed out after {timeout}s waiting for {path}"

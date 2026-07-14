@@ -1879,6 +1879,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.name, "home-nfs")
         self.assertEqual(args.node, "home-nas")
         self.assertEqual(args.path, "/srv/luma")
+        self.assertEqual(args.timeout, 360)
         self.assertFalse(args.external)
         self.assertEqual(args.control_url, "https://luma.example.com")
         args = build_parser().parse_args(
@@ -3989,6 +3990,21 @@ class CliTests(unittest.TestCase):
 
         self.assertIn("control API error 400", str(raised.exception))
         self.assertIn("endpoint is required for nfs", str(raised.exception))
+
+    def test_control_client_storage_mutations_use_operational_timeout(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        with patch.object(client, "request", return_value={"saved": True}) as request:
+            client.set_storage(
+                name="cn-nfs",
+                provider="nfs",
+                node="cn-node",
+                path="/srv/luma",
+            )
+        self.assertEqual(request.call_args.kwargs["timeout"], 360)
+
+        with patch.object(client, "request", return_value={"removed": True}) as request:
+            client.remove_storage(name="cn-nfs")
+        self.assertEqual(request.call_args.kwargs["timeout"], 360)
 
     def test_control_client_reports_missing_agent_token_endpoint_as_old_control(self):
         client = ControlClient("https://luma.example.com", "secret")

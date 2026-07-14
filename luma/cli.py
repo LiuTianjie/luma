@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.237 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.238 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -426,9 +426,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     storage_set.add_argument("--region", action="append", dest="regions", default=[])
     storage_set.add_argument("--eligible-node", action="append", dest="nodes", default=[])
+    storage_set.add_argument(
+        "--timeout",
+        type=int,
+        default=360,
+        help="Wait for managed storage host preparation (default: 360s)",
+    )
     _add_control_arguments(storage_set)
     storage_remove = storage_sub.add_parser("remove")
     storage_remove.add_argument("name")
+    storage_remove.add_argument(
+        "--timeout",
+        type=int,
+        default=360,
+        help="Wait for managed storage host cleanup (default: 360s)",
+    )
     _add_control_arguments(storage_remove)
     storage_apply = storage_sub.add_parser("apply")
     storage_apply.add_argument("sidecar", type=Path)
@@ -3188,6 +3200,7 @@ def cmd_storage_set(args: argparse.Namespace) -> int:
         mount_options=args.mount_options,
         regions=args.regions,
         nodes=args.nodes,
+        timeout=args.timeout,
     )
     print(f"Storage class saved: {result.get('name', args.name)}")
     _print_storage_host_result(result.get("storageHost"))
@@ -3196,7 +3209,10 @@ def cmd_storage_set(args: argparse.Namespace) -> int:
 
 def cmd_storage_remove(args: argparse.Namespace) -> int:
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).remove_storage(name=args.name)
+    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).remove_storage(
+        name=args.name,
+        timeout=args.timeout,
+    )
     status = "removed" if result.get("removed") else "not configured"
     print(f"Storage class {status}: {args.name}")
     _print_storage_host_result(result.get("storageHost"))
