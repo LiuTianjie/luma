@@ -21,7 +21,7 @@ Current verification snapshot (2026-07-15):
   `bot/builder/lab/m4/tecent` agents report `0.1.257`; `gaojiu` is offline,
   `blg` is intentionally untouched, and historical `aly` is excluded.
 - All 10 `lae-platform-staging` services built from exact commit
-  `4548f6ab27ef115e7918a8f3078d93cca7d81476` are healthy on `manager`.
+  `6c718c61b2dae421078c92a2b2542d6a9b2e960c` (Nomad v10) are healthy on `manager`.
   Builder work and the internal registry run on `builder`; tenant placement
   remains limited to `manager + tecent`.
 - The product acceptance flow completed a four-service Compose deployment with

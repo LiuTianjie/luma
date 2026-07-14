@@ -46,10 +46,10 @@
 - Control 内部镜像：`100.66.177.70:5000/luma-control:v0.1.257`。
 - 在线节点 `manager/bot/builder/lab/m4/tecent` 已升级到 `0.1.257`。
 - `gaojiu` 当前离线，无法升级；`blg` 按明确要求不处理；`aly` 为历史节点，不参与调度。
-- LAE staging exact commit：`4548f6ab27ef115e7918a8f3078d93cca7d81476`，Nomad job `lae-platform-staging` v9，10 services。
+- LAE staging exact commit：`6c718c61b2dae421078c92a2b2542d6a9b2e960c`，Nomad job `lae-platform-staging` v10，10 services。
 - 平台镜像全部由 Builder 构建并写入 Builder registry；manager 不承载 registry。
 
-`0.1.254-0.1.257` 修复 stateful rollback checkpoint，并把 wildcard 主域与 ACME resolver 显式绑定到 HTTPS entrypoint 和每个公开 router，避免历史裸域证书阻止随机租户域名获得可信 TLS。LAE 最新平台同时使 Worker 使用三个独立 lease owner 并发领取，长时间冷拉/失败 rollout 不再阻塞分析和生命周期队列。
+`0.1.254-0.1.257` 修复 stateful rollback checkpoint，并把 wildcard 主域与 ACME resolver 显式绑定到 HTTPS entrypoint 和每个公开 router，避免历史裸域证书阻止随机租户域名获得可信 TLS。LAE 最新平台同时使 Worker 使用三个独立 lease owner 并发领取，长时间冷拉/失败 rollout 不再阻塞分析和生命周期队列；删除应用也已在运行时记录不存在时按幂等成功处理。代码和路由配置已经就绪，但新的 wildcard 证书仍受 Let's Encrypt 周限额窗口约束，最终签发与全量 E2E 必须在限额释放后补验，不能提前写成已通过。
 
 ## 5. 日常操作顺序
 
