@@ -81,6 +81,40 @@ def config() -> LumaConfig:
 
 
 class LaeLumaDeployAssetTests(unittest.TestCase):
+    def test_staging_storage_migration_is_pinned_and_copies_into_managed_targets(self):
+        migration = DEPLOY / "migrations" / "storage-v1"
+        deployment = load_compose_deployment(
+            migration / "luma.compose.yml",
+            storage_classes=LIVE_STAGING_STORAGE_CLASSES,
+            allow_sidecar_storage_classes=False,
+        )
+        self.assertEqual(
+            {volume.storage_class for volume in deployment.volumes.values()},
+            {"lae-staging-runtime-nfs"},
+        )
+        self.assertEqual(
+            {service.node for service in deployment.services.values()},
+            {"manager"},
+        )
+        rendered = render_compose_job(
+            config(),
+            deployment,
+            as_json=False,
+            node_records=LIVE_STAGING_NODE_RECORDS,
+        )["Job"]
+        tasks = rendered["TaskGroups"][0]["Tasks"]
+        self.assertEqual({task["Name"] for task in tasks}, {"copy-postgres", "copy-artifacts"})
+        for task in tasks:
+            mounts = task["Config"]["mount"]
+            source = next(mount for mount in mounts if mount["target"] == "/source")
+            target = next(mount for mount in mounts if mount["target"] == "/target")
+            self.assertEqual(source["type"], "volume")
+            self.assertNotIn("volume_options", source)
+            self.assertTrue(source["readonly"])
+            self.assertRegex(target["source"], r"^luma-lae-staging-storage-migration-v1-")
+            self.assertIn("volume_options", target)
+            self.assertIn("LAE storage migration completed", " ".join(task["Config"]["args"]))
+
     def test_backup_image_uses_existing_builder_postgres_manifest(self):
         dockerfile = (DEPLOY / "docker" / "backup.Dockerfile").read_text(
             encoding="utf-8"
