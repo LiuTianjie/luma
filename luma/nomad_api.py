@@ -23,10 +23,10 @@ from .config import LumaConfig
 from .errors import LumaError
 
 
-# A Luma deploy request is allowed to wait longer than Nomad's default ten
-# minute deployment progress deadline.  The CLI/control request timeout is
-# longer still (30 minutes by default), so this remains a bounded operation.
-NOMAD_ROLLOUT_TIMEOUT_SECONDS = 900.0
+# Application jobs allow a 30-minute cold-pull health window and a 40-minute
+# progress deadline.  Control must remain attached beyond both or it can report
+# a false timeout while Nomad is still converging a valid rollout.
+NOMAD_ROLLOUT_TIMEOUT_SECONDS = 2700.0
 NOMAD_ROLLOUT_POLL_INTERVAL_SECONDS = 1.0
 
 

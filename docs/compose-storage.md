@@ -338,7 +338,7 @@ The dashboard Storage page shows manager storage classes, volumes detected from 
 CI should use stateless control auth:
 
 ```bash
-python -m pip install "luma-infra==0.1.251"
+python -m pip install "luma-infra==0.1.252"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -352,5 +352,5 @@ Main or release deployment:
 
 ```bash
 luma storage apply luma.compose.yml --timeout 300
-luma compose deploy luma.compose.yml --format ndjson --timeout 1800
+luma compose deploy luma.compose.yml --format ndjson --timeout 3000
 ```

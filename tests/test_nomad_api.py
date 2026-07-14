@@ -88,6 +88,9 @@ def _allocation(*, alloc_id, version, healthy=True, status="running"):
 
 
 class NomadApiTests(unittest.TestCase):
+    def test_default_rollout_timeout_exceeds_application_progress_deadline(self):
+        self.assertEqual(nomad_api._rollout_timeout_seconds(cfg(), None), 2700.0)
+
     def test_nomad_addr_defaults_to_local_agent(self):
         self.assertEqual(nomad_api.nomad_addr(cfg(), {}), "http://127.0.0.1:4646")
 

@@ -128,7 +128,7 @@ build node: builder
 builder capability: docker-build
 registry service: luma-registry pinned on builder
 registryHost: <builder-tailscale-ip>:5000
-pushHost: localhost:5000
+pushHost: 100.66.177.70:5000
 target Linux nodes: insecure-registry + Docker daemon NO_PROXY configured
 ```
 
@@ -160,7 +160,7 @@ luma registry serve --node builder --storage-class builder-registry-nfs --port 5
 
 If `builder-registry-nfs` is missing or unhealthy, use a known existing class such as `cn-nfs`, or repair/register storage before continuing.
 
-`luma registry serve` deploys `registry:2` as `luma-registry`, pins it to `builder`, uses `localhost:5000` for builder-side push, and exposes `<builder-tailscale-ip>:5000` for other nodes to pull. It should configure `insecure-registries` on ready Linux worker nodes. It intentionally skips manager nodes because restarting the manager Docker daemon can kill Luma Control mid-request.
+`luma registry serve` deploys `registry:2` as `luma-registry`, pins it to `builder`, and uses `<builder-tailscale-ip>:5000` for both BuildKit pushes and target-node pulls. `localhost:5000` is not valid inside the BuildKit container and is not a supported push endpoint. Luma should configure the reachable endpoint as an insecure registry on ready Linux nodes without mutating unrelated daemon proxy policy.
 
 4. Verify health:
 
@@ -197,7 +197,7 @@ Repository import should:
 1. Resolve source from a saved Git provider account (GitHub or Gitea) or a manually entered repo URL.
 2. Support multiple accounts per provider. Select provider type first, then account credential, then repository/ref.
 3. Clone/build on the default builder node.
-4. Push to the builder registry using `pushHost: localhost:5000`.
+4. Push to the builder registry using the reachable `pushHost: <builder-tailscale-ip>:5000`.
 5. Use the repository's Luma manifest if present. For single-service import, scan root `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, then nested `*.luma.yml` / `*.luma.yaml`, excluding Compose sidecar names such as `*.compose.luma.yml`, `*.luma.compose.yml`, and `docker-compose.luma.yml`. For Compose import, scan `luma.compose.yml`, `luma.compose.yaml`, `.luma.compose.yml`, `.luma.compose.yaml`, `*.luma.compose.yml`, `*.compose.luma.yml`, and `docker-compose.luma.yml`; the sidecar's `compose:` path points to the Docker Compose file.
 6. If no manifest exists, allow manual single-service manifest input. Do not invent AI-filled manifests unless the user explicitly asks for that future workflow.
 7. Inject the built deploy image after the build succeeds.
@@ -268,7 +268,7 @@ registryHost/<owner>/<repo>:latest
 registryHost/<owner>/<repo>:<git-sha>
 ```
 
-`registryHost` is the pull host target nodes use, such as `<builder-tailscale-ip>:5000`. `pushHost` is usually `localhost:5000` and is only for the builder node. Users should not hardcode `pushHost` in deployment YAML.
+`registryHost` is the pull host target nodes use, such as `<builder-tailscale-ip>:5000`. `pushHost` is the endpoint used by BuildKit and should normally be the same reachable Builder Tailscale endpoint. Users should not hardcode either platform-owned address in deployment YAML.
 
 The builder pushes both tags. Treat `:latest` as the predictable rolling alias that humans can know before the build. Treat `:<git-sha>` as the immutable build result that Luma should inject into the actual deploy payload.
 
@@ -512,7 +512,7 @@ luma compose deploy luma.compose.yml --dry-run
 CI:
 
 ```bash
-python -m pip install "luma-infra==0.1.251"
+python -m pip install "luma-infra==0.1.252"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json
@@ -524,8 +524,8 @@ luma storage check luma.compose.yml --format json
 Live deploys can stream events:
 
 ```bash
-luma deploy service.yaml --format ndjson --timeout 1800
-luma compose deploy luma.compose.yml --format ndjson --timeout 1800
+luma deploy service.yaml --format ndjson --timeout 3000
+luma compose deploy luma.compose.yml --format ndjson --timeout 3000
 ```
 
 When deploying manifests that reference secrets and the project has a `.env`, include `--env .env` so Luma imports scoped deployment secrets.

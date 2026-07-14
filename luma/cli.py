@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.251 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.252 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -292,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--skip-orchestrator", action="store_true")
     deploy.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for this service")
     deploy.add_argument("--secrets-env-file", dest="deploy_env_file", type=Path, help=argparse.SUPPRESS)
-    deploy.add_argument("--timeout", type=int, default=1800, help="Seconds to wait for the control-plane deploy response")
+    deploy.add_argument("--timeout", type=int, default=3000, help="Seconds to wait for the control-plane deploy response")
     deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
 
@@ -340,7 +340,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_control_arguments(import_cmd)
     _add_output_arguments(import_cmd)
-    import_cmd.add_argument("--timeout", type=int, default=2400, help="Seconds to wait for the build+deploy response")
+    import_cmd.add_argument("--timeout", type=int, default=3600, help="Seconds to wait for the build+deploy response")
 
     build = sub.add_parser("build", help="Inspect and retry repository import build runs")
     build_sub = build.add_subparsers(dest="build_command", required=True)
@@ -355,7 +355,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_retry.add_argument("id")
     _add_control_arguments(build_retry)
     _add_output_arguments(build_retry)
-    build_retry.add_argument("--timeout", type=int, default=2400)
+    build_retry.add_argument("--timeout", type=int, default=3600)
     build_retry.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for the retried import")
     build_cancel = build_sub.add_parser("cancel", help="Cancel an active repository import build")
     build_cancel.add_argument("id")
@@ -407,7 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
     compose_deploy.add_argument("--skip-orchestrator", action="store_true")
     compose_deploy.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for this Compose application")
     compose_deploy.add_argument("--secrets-env-file", dest="deploy_env_file", type=Path, help=argparse.SUPPRESS)
-    compose_deploy.add_argument("--timeout", type=int, default=1800)
+    compose_deploy.add_argument("--timeout", type=int, default=3000)
     storage = sub.add_parser("storage")
     storage_sub = storage.add_subparsers(dest="storage_command", required=True)
     storage_list = storage_sub.add_parser("list")

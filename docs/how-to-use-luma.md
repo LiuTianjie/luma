@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.251 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.252 sh
 ```
 
 For local development from a checkout:
@@ -271,7 +271,7 @@ Luma imports only variables referenced by the manifest, stores them under the se
 
 This submits the manifest to the logged-in Luma Control endpoint. The manager renders generated files under `/opt/luma`, syncs DNS, creates or updates the Nomad job through the Nomad HTTP API, and probes the public route for `cn-edge` and `external-edge` services.
 
-`luma deploy` prints client-side progress and each control-plane step. Luma validates generated Traefik file-provider routes, stages them outside the watched routes directory, then atomically publishes the final route file. A public route probe reports the HTTP status from `/`; an application-level `404` means the route reached the application but the app may not serve a root page, while Traefik's default `404 page not found` is treated as a missing router and a failed public route. When the probe reports the route unhealthy (Traefik router not found, or a transient `502`/`503`/`504`), Control recreates the service's allocation once and re-probes before failing the deploy. The client waits up to 1800 seconds by default because first deploys may pull large images on the target node. Override it when needed:
+`luma deploy` prints client-side progress and each control-plane step. Luma validates generated Traefik file-provider routes, stages them outside the watched routes directory, then atomically publishes the final route file. A public route probe reports the HTTP status from `/`; an application-level `404` means the route reached the application but the app may not serve a root page, while Traefik's default `404 page not found` is treated as a missing router and a failed public route. When the probe reports the route unhealthy (Traefik router not found, or a transient `502`/`503`/`504`), Control recreates the service's allocation once and re-probes before failing the deploy. Luma gives single-service and Compose allocations 30 minutes for cold image acquisition and 40 minutes for rollout progress. The client waits up to 3000 seconds by default so it does not disconnect before that bounded rollout finishes. Override it when needed:
 
 ```bash
 luma deploy app.yaml --timeout 3600
@@ -481,18 +481,19 @@ luma import https://github.com/acme/myapp \
   --region cn --exposure cn-edge --domain myapp.example.com --port 8080
 ```
 
-构建节点来自控制面声明的 builder 节点；通常不用传 `--build-node`，只有需要临时覆盖到另一个已声明 builder 时才传。单服务 import 还可用 `--context`（build 上下文目录，默认 `.`）、`--dockerfile`（默认 `Dockerfile`）、`--registry-host`（其它节点拉取用的 registry 主机，默认 `<build-node>:5000`）覆盖仓库里的 `build:` 字段。对 Compose import，`--region` 会覆盖 sidecar 的 region；`--exposure`、`--domain`、`--port` 是单服务覆盖项，会被忽略并打印 warning。Compose 的服务级路由请写在 `luma.compose.yml` 的 `services:` 里。`luma import` 默认等待 `2400` 秒的 build+deploy 响应，用 `--timeout <seconds>` 覆盖。
+构建节点来自控制面声明的 builder 节点；通常不用传 `--build-node`，只有需要临时覆盖到另一个已声明 builder 时才传。单服务 import 还可用 `--context`（build 上下文目录，默认 `.`）、`--dockerfile`（默认 `Dockerfile`）、`--registry-host`（其它节点拉取用的 registry 主机，默认 `<build-node>:5000`）覆盖仓库里的 `build:` 字段。对 Compose import，`--region` 会覆盖 sidecar 的 region；`--exposure`、`--domain`、`--port` 是单服务覆盖项，会被忽略并打印 warning。Compose 的服务级路由请写在 `luma.compose.yml` 的 `services:` 里。`luma import` 默认等待 `3600` 秒的 build+deploy 响应，用 `--timeout <seconds>` 覆盖。
 
 预声明 builder 节点和内部 registry 默认值，之后 import/build 就能省掉 `--build-node`：
 
 ```bash
 luma build config --node build-1 --default-node build-1 \
-  --registry-host <build-1-tailscale-host>:5000 --push-host localhost:5000
+  --registry-host <build-1-tailscale-host>:5000 \
+  --push-host <build-1-tailscale-host>:5000
 ```
 
-`--node` 可重复声明多个 builder；`--default-node` 是 `luma import` 缺省用的 builder；`--registry-host` 是**其它节点**拉镜像的地址，`--push-host` 是**构建节点自身**推镜像的地址（通常 `localhost:5000`）。不带参数运行 `luma build config` 只打印当前配置和各 builder 的就绪/能力表。
+`--node` 可重复声明多个 builder；`--default-node` 是 `luma import` 缺省用的 builder；`--registry-host` 是 target node 拉镜像的地址，`--push-host` 是 BuildKit 推镜像的地址。两者都必须是 BuildKit 容器和所有目标节点可达的 Builder Tailscale endpoint；不要使用已移除且在 BuildKit namespace 内含义错误的 `localhost:5000`。不带参数运行 `luma build config` 只打印当前配置和各 builder 的就绪/能力表。
 
-构建历史和失败日志用 CLI 查看：`luma build list`（打印 ID/状态/节点/provider/仓库/ref）、`luma build logs <id>`（某次构建的分步日志）。修好凭据或配置后 `luma build retry <id>` 重跑整条 build+deploy；`retry` 也接受 `--env .env` 重新提供 scoped secrets、`--timeout`（默认 2400）。
+构建历史和失败日志用 CLI 查看：`luma build list`（打印 ID/状态/节点/provider/仓库/ref）、`luma build logs <id>`（某次构建的分步日志）。修好凭据或配置后 `luma build retry <id>` 重跑整条 build+deploy；`retry` 也接受 `--env .env` 重新提供 scoped secrets、`--timeout`（默认 3600）。
 
 dashboard 的「创建应用」页顶部也有「仓库导入」入口：选择 Git provider、账户、仓库和 ref；或手填 URL。进度实时显示。
 

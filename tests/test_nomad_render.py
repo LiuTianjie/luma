@@ -144,6 +144,8 @@ port: 3000
         # auto_revert is on (the new capability)
         self.assertTrue(job["Update"]["AutoRevert"])
         self.assertEqual(job["Update"]["MaxParallel"], 1)
+        self.assertEqual(job["Update"]["HealthyDeadline"], 1_800_000_000_000)
+        self.assertEqual(job["Update"]["ProgressDeadline"], 2_400_000_000_000)
 
     def test_cn_edge_pinned_to_local_ingress_manager_advertises_host_address(self):
         service = self.load(

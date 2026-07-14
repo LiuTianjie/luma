@@ -462,6 +462,8 @@ services:
         self.assertTrue(update["AutoPromote"])
         self.assertTrue(update["AutoRevert"])
         self.assertEqual(update["MaxParallel"], 1)
+        self.assertEqual(update["HealthyDeadline"], 1_800_000_000_000)
+        self.assertEqual(update["ProgressDeadline"], 2_400_000_000_000)
         network = job["TaskGroups"][0]["Networks"][0]
         self.assertEqual(network["DynamicPorts"][0]["Label"], "web")
         self.assertEqual(network["DynamicPorts"][0]["To"], 3000)

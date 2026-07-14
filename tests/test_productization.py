@@ -1781,7 +1781,7 @@ class CliTests(unittest.TestCase):
     def test_deploy_defaults_to_control_plane(self):
         args = build_parser().parse_args(["deploy", "app.yaml"])
         self.assertEqual(args.command, "deploy")
-        self.assertEqual(args.timeout, 1800)
+        self.assertEqual(args.timeout, 3000)
 
     def test_service_remove_parser_defaults_to_full_cleanup(self):
         args = build_parser().parse_args(["service", "remove", "app.yaml"])
@@ -1800,6 +1800,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.command, "compose")
         self.assertEqual(args.compose_command, "deploy")
         self.assertTrue(args.dry_run)
+        self.assertEqual(args.timeout, 3000)
         args = build_parser().parse_args(["compose", "validate", "luma.compose.yml", "--import-mode"])
         self.assertEqual(args.compose_command, "validate")
         self.assertTrue(args.import_mode)
@@ -1818,6 +1819,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(args.secret_command, "set")
         self.assertEqual(args.control_url, "https://luma.example.com")
+
         args = build_parser().parse_args(
             [
                 "registry",
@@ -1904,6 +1906,13 @@ class CliTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 build_parser().parse_args(argv)
+
+    def test_repository_import_timeouts_cover_build_and_cold_rollout(self):
+        imported = build_parser().parse_args(["import", "owner/repository"])
+        retried = build_parser().parse_args(["build", "retry", "build-123"])
+
+        self.assertEqual(imported.timeout, 3600)
+        self.assertEqual(retried.timeout, 3600)
 
     def test_storage_set_command_validates_new_shape_before_control_call(self):
         cases = (

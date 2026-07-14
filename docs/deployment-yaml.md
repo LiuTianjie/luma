@@ -228,7 +228,7 @@ luma import acme/myapp --build-node build-1
 也可以使用保存的 provider 账户：
 
 ```bash
-luma build config --node builder --registry-host 100.66.177.70:5000 --push-host localhost:5000
+luma build config --node builder --registry-host 100.66.177.70:5000 --push-host 100.66.177.70:5000
 luma import --provider-id gitea:lin --repository acme/myapp --env .env
 ```
 

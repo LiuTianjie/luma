@@ -36,6 +36,17 @@ from .service import ServiceSpec, slugify, tcp_entrypoint_name, tcp_relay_publis
 DEFAULT_CPU_MHZ = 100
 DEFAULT_MEMORY_MB = 256
 
+# Image acquisition happens before a Nomad task becomes healthy.  A first pull
+# from the Builder registry (or an explicitly configured private registry) can
+# legitimately take longer than the old two/three-minute windows, especially
+# for multi-gigabyte images or a Compose allocation pulling several images in
+# parallel.  Once Nomad marks that allocation unhealthy it will never promote
+# it later, even if every task eventually starts, so the deadline must cover a
+# real cold pull rather than only process startup.  Keep it bounded and leave a
+# separate ten-minute convergence margin after the healthy deadline.
+APPLICATION_HEALTHY_DEADLINE_NS = 1_800_000_000_000  # 30m
+APPLICATION_PROGRESS_DEADLINE_NS = 2_400_000_000_000  # 40m
+
 # Control owns persistent orchestration state, active WebSocket sessions, and
 # streamed Builder progress.  A tenant-sized 256 MiB hard limit is too small:
 # serializing a multi-megabyte control.json while a build stream is active can
@@ -940,7 +951,8 @@ def _update_stanza(service: ServiceSpec, *, has_service_check: bool = False) -> 
         "AutoRevert": True,
         "MaxParallel": 1,
         "MinHealthyTime": 5_000_000_000,  # 5s in ns
-        "HealthyDeadline": 120_000_000_000,  # 2m in ns
+        "HealthyDeadline": APPLICATION_HEALTHY_DEADLINE_NS,
+        "ProgressDeadline": APPLICATION_PROGRESS_DEADLINE_NS,
         "HealthCheck": "checks" if has_service_check else "task_states",
     }
     if _canary_before_promote(service):
@@ -958,7 +970,8 @@ def _compose_update_stanza(
         "AutoRevert": True,
         "MaxParallel": 1,
         "MinHealthyTime": 6_000_000_000,  # 6s in ns
-        "HealthyDeadline": 180_000_000_000,  # 3m in ns
+        "HealthyDeadline": APPLICATION_HEALTHY_DEADLINE_NS,
+        "ProgressDeadline": APPLICATION_PROGRESS_DEADLINE_NS,
         "HealthCheck": "checks" if has_service_checks else "task_states",
     }
     if _compose_canary_before_promote(deployment):
