@@ -76,6 +76,17 @@ def config() -> LumaConfig:
 
 
 class LaeLumaDeployAssetTests(unittest.TestCase):
+    def test_backup_image_uses_existing_builder_postgres_manifest(self):
+        dockerfile = (DEPLOY / "docker" / "backup.Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "100.66.177.70:5000/lae/postgres-amd64:17@sha256:"
+            "5aee909f99ab78c62f03636b6ca25a17195657605ce6782d9919ce4288595eda",
+            dockerfile,
+        )
+        self.assertNotIn("/luma-system/postgres-amd64", dockerfile)
+
     def test_control_bundle_install_is_versioned_and_atomic(self):
         script = (ROOT / "scripts/install-lae-control-bundle.sh").read_text(
             encoding="utf-8"

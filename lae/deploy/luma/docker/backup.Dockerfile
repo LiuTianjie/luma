@@ -4,7 +4,7 @@ FROM quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497
 
 # The Builder-owned registry is the release source of truth for system images.
 # This image contains the matching PostgreSQL 17 client tools used by staging.
-FROM 100.66.177.70:5000/luma-system/postgres-amd64:17@sha256:5aee909f99ab78c62f03636b6ca25a17195657605ce6782d9919ce4288595eda
+FROM 100.66.177.70:5000/lae/postgres-amd64:17@sha256:5aee909f99ab78c62f03636b6ca25a17195657605ce6782d9919ce4288595eda
 
 COPY --from=minio-client /usr/bin/mc /usr/local/bin/mc
 COPY --chmod=0555 deploy/luma/docker/backup.sh /usr/local/bin/lae-backup
