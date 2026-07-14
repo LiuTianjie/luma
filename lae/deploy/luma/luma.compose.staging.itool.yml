@@ -12,17 +12,17 @@ volumes:
     local:
       node: manager
       path: /srv/luma/lae/staging/artifacts/v2
-    adopted: true
+    initialize: empty
   backup-data:
     local:
       node: manager
       path: /srv/luma/lae/staging/backups/v2
-    adopted: true
+    initialize: empty
   postgres-data:
     local:
       node: manager
       path: /srv/luma/lae/staging/postgres/v2
-    adopted: true
+    initialize: empty
 
 services:
   web:
