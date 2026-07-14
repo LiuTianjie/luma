@@ -264,7 +264,7 @@ services:
     # MinIO is released independently from LAE application images. Production
     # may override the immutable digest for another Luma cluster, but must not
     # use a mutable tag or rebuild MinIO during an ordinary LAE rollout.
-    image: ${LAE_MINIO_IMAGE:-100.66.177.70:5000/liutianjie/luma/artifact-store@sha256:bcda2439046659f7f2900ec5937f2848fcc93d5cedcef88a86c74d70dc51daed}
+    image: ${LAE_MINIO_IMAGE}
     environment:
       # Community MinIO exposes CORS as a server-wide API setting; per-bucket
       # PutBucketCors is not implemented. This store is dedicated to one LAE
@@ -291,7 +291,7 @@ services:
 
   artifact-init:
     platform: linux/amd64
-    image: ${LAE_ARTIFACT_INIT_IMAGE:-100.66.177.70:5000/liutianjie/luma/artifact-init@sha256:281024c94a47808a8e48cdfd02977fd5ef456820a44f5056c759b7c8c4a7afaf}
+    image: ${LAE_ARTIFACT_INIT_IMAGE}
     environment:
       LAE_ARTIFACT_S3_BUCKET: lae-artifacts
       LAE_MINIO_INTERNAL_ENDPOINT: http://artifact-store:9000
@@ -322,7 +322,7 @@ services:
 
   backup:
     platform: linux/amd64
-    image: ${LAE_BACKUP_IMAGE:-100.66.177.70:5000/liutianjie/luma/backup@sha256:b8007b98a03da177c8bf84795aeffa70feface7f5ac963372cf4e1febef3d3df}
+    image: ${LAE_BACKUP_IMAGE}
     environment:
       LAE_ARTIFACT_S3_BUCKET: lae-artifacts
       LAE_BACKUP_INTERVAL_SECONDS: "86400"
@@ -360,7 +360,7 @@ services:
 
   valkey:
     platform: linux/amd64
-    image: ${LAE_VALKEY_IMAGE:-100.66.177.70:5000/liutianjie/luma/valkey@sha256:344564180c9f6ab456f1de502a88426f2360183d929c06514010c9200b3069db}
+    image: ${LAE_VALKEY_IMAGE}
     command:
       - sh
       - -ec
