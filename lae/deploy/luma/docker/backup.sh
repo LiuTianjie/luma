@@ -76,7 +76,10 @@ restore_bucket_drill() {
     return 1
   fi
   local_count=$(find "$snapshot/objects/$source_bucket" -type f | wc -l | tr -d ' ')
-  remote_count=$(mc find "lae-source/$restore_bucket" --type f | wc -l | tr -d ' ')
+  # MinIO Client 2025+ removed the old GNU-find-like ``--type`` flag.
+  # A bucket contains objects (not local filesystem entries), so an unfiltered
+  # ``mc find`` already emits exactly one line per restored object.
+  remote_count=$(mc find "lae-source/$restore_bucket" | wc -l | tr -d ' ')
   if [ "$local_count" != "$remote_count" ]; then
     echo "restored object count mismatch" >&2
     exit 1
