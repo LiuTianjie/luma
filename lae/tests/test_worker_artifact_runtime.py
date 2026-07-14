@@ -16,8 +16,10 @@ from lae_worker import (
     LumaArtifactBrokerConfig,
     PostgresArtifactIngestGuard,
     S3AnalysisArtifactObjectStore,
+    S3UpdateCheckPlanLoader,
     build_worker_from_env,
 )
+from lae_store import PrivateObjectDownload, PrivateObjectMetadata
 
 
 class _BrokerHandler(BaseHTTPRequestHandler):
@@ -184,8 +186,57 @@ class ArtifactRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 recorder._object_store, S3AnalysisArtifactObjectStore
             )
             self.assertIsInstance(recorder._broker, HttpArtifactTransferBroker)
+            self.assertIsInstance(
+                runtime.worker._runner._update_checks._plan_loader,
+                S3UpdateCheckPlanLoader,
+            )
         finally:
             await runtime.close()
+
+    async def test_update_check_plan_loader_verifies_descriptor_and_body(self) -> None:
+        body = json.dumps(
+            {
+                "schemaVersion": "lae.deployment-plan/v1",
+                "services": [],
+                "routes": [],
+                "volumes": [],
+                "environment": [],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        digest = "sha256:" + hashlib.sha256(body).hexdigest()
+
+        class FakeStore:
+            async def get_stream(self, key, *, max_bytes):
+                self.key = key
+                self.max_bytes = max_bytes
+
+                async def chunks():
+                    yield body[:5]
+                    yield body[5:]
+
+                return PrivateObjectDownload(
+                    metadata=PrivateObjectMetadata(
+                        key=key,
+                        media_type="application/vnd.lae.deployment-plan+json",
+                        size_bytes=len(body),
+                        digest=digest,
+                    ),
+                    chunks=chunks(),
+                )
+
+        store = FakeStore()
+        loader = S3UpdateCheckPlanLoader(store)
+        loaded = await loader.load(
+            "tenants/tenant-test/deploymentPlan/sha256/"
+            + digest.removeprefix("sha256:"),
+            expected_digest=digest,
+        )
+        self.assertEqual(loaded["schemaVersion"], "lae.deployment-plan/v1")
+        self.assertEqual(store.max_bytes, 8 * 1024 * 1024)
+        with self.assertRaises(ValueError):
+            await loader.load(store.key, expected_digest="sha256:" + "f" * 64)
 
 
 if __name__ == "__main__":

@@ -25,15 +25,19 @@ except ImportError:  # pragma: no cover - skip condition handles this
     Config = None
 
 from lae_store import (  # noqa: E402
+    DeploymentChangeConfirmationRequired,
     IdempotencyInput,
+    OperationStore,
     Principal,
     TenantScope,
+    UpdateChangeSet,
+    UpdateCheckResult,
+    UpdatePlanChanges,
     create_postgres_engine,
     create_session_factory,
     keyed_request_hash,
     new_id,
 )
-from lae_store.repositories import TenantRepository  # noqa: E402
 from lae_store.deployment_admission import (  # noqa: E402
     DEPLOYMENT_CREATE_ROUTE,
     CreateDeploymentAdmission,
@@ -504,6 +508,81 @@ class DeploymentAdmissionPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ResourceNotFound):
             await self.store.list_deployments(self.other_scope, self.application_id)
 
+    async def test_update_candidate_requires_exact_operation_bound_confirmation(
+        self,
+    ) -> None:
+        artifact = await self.store.get_plan_artifact(
+            self.scope, self.application_id, self.analysis_id
+        )
+        changes = UpdatePlanChanges(
+            services=UpdateChangeSet(removed=("legacy-worker",)),
+            destructive=True,
+            confirmations=("SERVICE_REMOVAL",),
+        )
+        comparison = UpdateCheckResult(
+            baseline_available=True,
+            source_changed=True,
+            deployment_plan_changed=True,
+            changed=True,
+            candidate_source_tree_digest="sha256:" + "2" * 64,
+            candidate_deployment_plan_digest=PLAN_DIGEST,
+            baseline_source_tree_digest="sha256:" + "7" * 64,
+            baseline_deployment_plan_digest="sha256:" + "8" * 64,
+            plan_changes=changes,
+            candidate_analysis_id=self.analysis_id,
+            candidate_verdict="deployable",
+        )
+        async with self.sessions() as session:
+            async with session.begin():
+                analysis = await session.get(Analysis, self.analysis_id)
+                assert analysis is not None
+                analysis.verdict = "deployable"
+                operation = await session.get(Operation, analysis.operation_id)
+                assert operation is not None
+                operation.kind = "application.check-update"
+                operation.result = {"updateCheck": comparison.to_body()}
+
+        with self.assertRaises(DeploymentChangeConfirmationRequired) as required:
+            await self.store.admit(
+                CreateDeploymentAdmission(
+                    scope=self.scope,
+                    application_id=self.application_id,
+                    analysis_id=self.analysis_id,
+                    environment_version=0,
+                ),
+                principal=self.principal,
+                idempotency=self.idempotency("update-confirmation-missing"),
+                artifact=artifact,
+                plan=self.prepared_plan(),
+            )
+        self.assertEqual(required.exception.required, ("SERVICE_REMOVAL",))
+
+        admitted = await self.store.admit(
+            CreateDeploymentAdmission(
+                scope=self.scope,
+                application_id=self.application_id,
+                analysis_id=self.analysis_id,
+                environment_version=0,
+                confirmed_changes=("SERVICE_REMOVAL",),
+            ),
+            principal=self.principal,
+            idempotency=self.idempotency(
+                "update-confirmation-exact",
+                request_hash=keyed_request_hash(
+                    {
+                        "applicationId": self.application_id,
+                        "analysisId": self.analysis_id,
+                        "environmentVersion": 0,
+                        "confirmedChanges": ["SERVICE_REMOVAL"],
+                    },
+                    b"deployment-integration-hmac-key".ljust(32, b"!"),
+                ),
+            ),
+            artifact=artifact,
+            plan=self.prepared_plan(),
+        )
+        self.assertEqual(admitted.deployment.application_id, self.application_id)
+
     async def test_version_and_materialized_topology_changes_are_rejected(self) -> None:
         artifact = await self.store.get_plan_artifact(
             self.scope, self.application_id, self.analysis_id
@@ -635,10 +714,12 @@ class DeploymentAdmissionPostgreSQLTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 )
 
-        async with self.sessions() as session:
-            operation = await TenantRepository(session, self.scope).get_operation(
-                admitted.operation_id
-            )
+        operation = await OperationStore(self.sessions).claim_next(
+            worker_id="needs-configuration-integration",
+            kinds=("deployment.create",),
+            lease_seconds=60,
+        )
+        assert operation is not None and operation.id == admitted.operation_id
         context = await PostgresDeploymentContextLoader(
             self.sessions, Materializer(), region="cn"
         ).load(operation)

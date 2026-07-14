@@ -64,7 +64,9 @@ from .artifact_runtime import (
     HttpArtifactTransferBroker,
     LumaArtifactBrokerConfig,
     S3AnalysisArtifactObjectStore,
+    S3UpdateCheckPlanLoader,
     artifact_recorder_from_env,
+    update_check_plan_loader_from_env,
 )
 from .credential_broker import (
     ConnectionCredentialBroker,
@@ -245,9 +247,11 @@ __all__ = [
     "UpdateCheckResultInvalid",
     "S3CompatibleObjectStore",
     "S3AnalysisArtifactObjectStore",
+    "S3UpdateCheckPlanLoader",
     "S3TrustedBuildPlanMaterializer",
     "StoredObject",
     "StoredBuildPlanArtifact",
+    "update_check_plan_loader_from_env",
     "RuntimeManifestRenderer",
     "RuntimeSecretIssueBinding",
     "RuntimeSecretPlaintext",

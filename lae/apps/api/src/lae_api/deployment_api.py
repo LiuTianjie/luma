@@ -5,7 +5,7 @@ import binascii
 import json
 import os
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
@@ -15,6 +15,7 @@ from .plan_resolver import DeploymentConfigurationSchema
 
 from lae_store import (
     ApplicationConflict,
+    DeploymentChangeConfirmationRequired,
     DeploymentEnvironmentSchemaConflict,
     DeploymentEnvironmentScopeInvalid,
     IdempotencyInput,
@@ -57,6 +58,20 @@ class DeploymentCreateRequest(StrictModel):
     # intentionally absent. They can only come from the stored trusted plan.
     analysisId: str = Field(min_length=1, max_length=64)
     environmentVersion: int = Field(ge=0)
+    confirmedChanges: list[
+        Literal[
+            "SERVICE_REMOVAL",
+            "PUBLIC_ROUTE_CHANGE",
+            "PERSISTENT_VOLUME_CHANGE",
+            "REQUIRED_ENVIRONMENT_ADDED",
+        ]
+    ] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_confirmations(self) -> DeploymentCreateRequest:
+        if self.confirmedChanges != sorted(set(self.confirmedChanges)):
+            raise ValueError("confirmed changes must be sorted and unique")
+        return self
 
 
 _MAX_ENV_VALUE_BYTES = 64 * 1024
@@ -210,18 +225,21 @@ class DeploymentApiService:
             application_id=application_id,
             analysis_id=payload.analysisId,
             environment_version=payload.environmentVersion,
+            confirmed_changes=tuple(payload.confirmedChanges),
         )
+        idempotency_body: dict[str, object] = {
+            "applicationId": application_id,
+            "analysisId": payload.analysisId,
+            "environmentVersion": payload.environmentVersion,
+        }
+        if payload.confirmedChanges:
+            idempotency_body["confirmedChanges"] = payload.confirmedChanges
         idempotency = IdempotencyInput(
             key=idempotency_key,
             method="POST",
             route_template=DEPLOYMENT_CREATE_ROUTE,
             request_hash=keyed_request_hash(
-                {
-                    "applicationId": application_id,
-                    "analysisId": payload.analysisId,
-                    "environmentVersion": payload.environmentVersion,
-                },
-                self._idempotency_hash_key,
+                idempotency_body, self._idempotency_hash_key
             ),
         )
         replay = await self._store.lookup_replay(scope, store_principal, idempotency)
@@ -357,6 +375,19 @@ def register_deployment_routes(
                 "LAE_ENVIRONMENT_VERSION_CONFLICT",
                 "Application environment changed before deployment",
                 details={"expectedVersion": exc.expected, "actualVersion": exc.actual},
+            ) from exc
+        except DeploymentChangeConfirmationRequired as exc:
+            if not exc.required:
+                raise error(
+                    409,
+                    "LAE_UPDATE_CHECK_DETAILS_REQUIRED",
+                    "Run update check again before deploying this candidate",
+                ) from exc
+            raise error(
+                409,
+                "LAE_DEPLOYMENT_CONFIRMATION_REQUIRED",
+                "Destructive deployment changes require explicit confirmation",
+                details={"requiredConfirmations": list(exc.required)},
             ) from exc
         except DeploymentEnvironmentIncomplete as exc:
             raise error(

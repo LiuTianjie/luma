@@ -20,6 +20,7 @@ for relative in (
 
 from lae_api.deployment_api import register_deployment_routes  # noqa: E402
 from lae_store import (  # noqa: E402
+    DeploymentChangeConfirmationRequired,
     DeploymentEnvironmentScopeInvalid,
     IdempotentCatalogResult,
     ResourceNotFound,
@@ -64,6 +65,7 @@ class FakeDeploymentService:
         self.revision_id = new_id("rev")
         self.calls: list[tuple[str, object]] = []
         self.not_found = False
+        self.create_error: Exception | None = None
 
     def record(self) -> PublicDeploymentRecord:
         return PublicDeploymentRecord(
@@ -90,6 +92,8 @@ class FakeDeploymentService:
         self.calls.append(
             ("create", (scope, principal, application_id, payload, idempotency_key))
         )
+        if self.create_error is not None:
+            raise self.create_error
         if self.not_found:
             raise ResourceNotFound("foreign analysis secret detail")
         record = self.record()
@@ -277,6 +281,78 @@ class DeploymentRouteTests(unittest.TestCase):
             "luma",
         ):
             self.assertNotIn(forbidden, serialized)
+
+    def test_create_accepts_only_sorted_unique_update_confirmations(self) -> None:
+        path = f"/v1/applications/{self.service.application_id}/deployments"
+        response = self.client.post(
+            path,
+            headers={"Idempotency-Key": "deploy-update-api-1"},
+            json={
+                **self.payload(),
+                "confirmedChanges": [
+                    "PUBLIC_ROUTE_CHANGE",
+                    "SERVICE_REMOVAL",
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 202, response.text)
+        payload = self.service.calls[-1][1][3]
+        self.assertEqual(
+            payload.confirmedChanges,
+            ["PUBLIC_ROUTE_CHANGE", "SERVICE_REMOVAL"],
+        )
+
+        for confirmed in (
+            ["SERVICE_REMOVAL", "PUBLIC_ROUTE_CHANGE"],
+            ["SERVICE_REMOVAL", "SERVICE_REMOVAL"],
+            ["UNKNOWN_CHANGE"],
+        ):
+            rejected = self.client.post(
+                path,
+                headers={"Idempotency-Key": f"reject-{len(self.service.calls)}"},
+                json={**self.payload(), "confirmedChanges": confirmed},
+            )
+            self.assertEqual(rejected.status_code, 422, rejected.text)
+
+    def test_create_projects_required_update_confirmation_without_plan_details(self) -> None:
+        path = f"/v1/applications/{self.service.application_id}/deployments"
+        self.service.create_error = DeploymentChangeConfirmationRequired(
+            ("PUBLIC_ROUTE_CHANGE", "SERVICE_REMOVAL")
+        )
+        required = self.client.post(
+            path,
+            headers={"Idempotency-Key": "deploy-confirmation-required"},
+            json=self.payload(),
+        )
+        self.assertEqual(required.status_code, 409, required.text)
+        self.assertEqual(
+            required.json()["error"],
+            {
+                "code": "LAE_DEPLOYMENT_CONFIRMATION_REQUIRED",
+                "message": (
+                    "Destructive deployment changes require explicit confirmation"
+                ),
+                "retryable": False,
+                "details": {
+                    "requiredConfirmations": [
+                        "PUBLIC_ROUTE_CHANGE",
+                        "SERVICE_REMOVAL",
+                    ]
+                },
+            },
+        )
+
+        self.service.create_error = DeploymentChangeConfirmationRequired(())
+        legacy = self.client.post(
+            path,
+            headers={"Idempotency-Key": "deploy-update-details-required"},
+            json=self.payload(),
+        )
+        self.assertEqual(legacy.status_code, 409, legacy.text)
+        self.assertEqual(
+            legacy.json()["error"]["code"],
+            "LAE_UPDATE_CHECK_DETAILS_REQUIRED",
+        )
 
     def test_request_rejects_missing_idempotency_and_all_user_plan_fields(self) -> None:
         path = f"/v1/applications/{self.service.application_id}/deployments"

@@ -55,6 +55,7 @@ from lae_worker import (  # noqa: E402
 )
 from lae_store.models import (  # noqa: E402
     Analysis,
+    AnalysisArtifact,
     AppRevision,
     Application,
     ApplicationLifecycleRequest,
@@ -79,6 +80,18 @@ DSN = os.environ.get("LAE_TEST_POSTGRES_DSN", "")
 DDL_ALLOWED = os.environ.get("LAE_TEST_POSTGRES_ALLOW_DDL") == "1"
 SHA = "sha256:" + "a" * 64
 PREVIOUS_IMAGE_SHA = "sha256:" + "b" * 64
+
+
+class _UpdatePlanLoader:
+    def __init__(self, plans: dict[str, dict[str, object]]) -> None:
+        self.plans = plans
+        self.calls: list[tuple[str, str]] = []
+
+    async def load(
+        self, storage_key: str, *, expected_digest: str
+    ) -> dict[str, object]:
+        self.calls.append((storage_key, expected_digest))
+        return self.plans[storage_key]
 
 
 def _alembic_config() -> Config:
@@ -540,6 +553,8 @@ class ApplicationLifecyclePostgreSQLTests(unittest.IsolatedAsyncioTestCase):
         )
         assert claimed is not None and claimed.id == operation_id
         candidate_plan = "sha256:" + "c" * 64
+        candidate_artifact_id = new_id("art")
+        candidate_storage_key = "lifecycle/candidate-plan.json"
         async with self.sessions() as session:
             async with session.begin():
                 await session.execute(
@@ -568,6 +583,32 @@ class ApplicationLifecyclePostgreSQLTests(unittest.IsolatedAsyncioTestCase):
                         deployment_plan_digest=candidate_plan,
                         build_plan_digest="sha256:" + "e" * 64,
                         evidence_digest="sha256:" + "f" * 64,
+                        verdict="deployable",
+                        diagnostic_status="succeeded",
+                        artifact_state="stored",
+                        plan_stored=True,
+                    )
+                )
+                session.add(
+                    Artifact(
+                        id=candidate_artifact_id,
+                        tenant_id=self.scope.tenant_id,
+                        kind="deployment-plan",
+                        digest=candidate_plan,
+                        media_type="application/vnd.lae.deployment-plan+json",
+                        size_bytes=256,
+                        storage_key=candidate_storage_key,
+                        upload_status="verified",
+                        verified_at=datetime.now(timezone.utc),
+                    )
+                )
+                await session.flush()
+                session.add(
+                    AnalysisArtifact(
+                        tenant_id=self.scope.tenant_id,
+                        analysis_id=analysis_id,
+                        name="deploymentPlan",
+                        artifact_id=candidate_artifact_id,
                     )
                 )
         context = AnalyzeSourceContext(
@@ -578,12 +619,45 @@ class ApplicationLifecyclePostgreSQLTests(unittest.IsolatedAsyncioTestCase):
             ref=cloned.ref,
             subdirectory=cloned.subdirectory,
         )
-        resolver = PostgresUpdateCheckResolver(self.sessions)
+        loader = _UpdatePlanLoader(
+            {
+                "lifecycle/plan.json": {
+                    "schemaVersion": "lae.deployment-plan/v1",
+                    "services": [{"key": "web", "role": "http"}],
+                    "routes": [],
+                    "volumes": [],
+                    "environment": [],
+                },
+                candidate_storage_key: {
+                    "schemaVersion": "lae.deployment-plan/v1",
+                    "services": [
+                        {"key": "web", "role": "http"},
+                        {"key": "worker", "role": "worker"},
+                    ],
+                    "routes": [],
+                    "volumes": [],
+                    "environment": [],
+                },
+            }
+        )
+        resolver = PostgresUpdateCheckResolver(self.sessions, plan_loader=loader)
         comparison = await resolver.resolve(claimed, context)
         self.assertTrue(comparison.baseline_available)
         self.assertFalse(comparison.source_changed)
         self.assertTrue(comparison.deployment_plan_changed)
         self.assertTrue(comparison.changed)
+        self.assertEqual(comparison.candidate_analysis_id, analysis_id)
+        self.assertEqual(comparison.candidate_verdict, "deployable")
+        assert comparison.plan_changes is not None
+        self.assertEqual(comparison.plan_changes.services.added, ("worker",))
+        self.assertFalse(comparison.plan_changes.destructive)
+        self.assertEqual(
+            loader.calls,
+            [
+                ("lifecycle/plan.json", SHA),
+                (candidate_storage_key, candidate_plan),
+            ],
+        )
 
         # A valid lifecycle request can have no deployed revision baseline
         # (for example a legacy/pending app). That state is explicit and

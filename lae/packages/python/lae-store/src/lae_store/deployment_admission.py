@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .application_catalog import new_managed_hostname
 from .errors import (
+    DeploymentChangeConfirmationRequired,
     DeploymentConflict,
     DeploymentEnvironmentIncomplete,
     DeploymentEnvironmentScopeInvalid,
@@ -52,6 +53,7 @@ from .repositories import (
     _append_event,
 )
 from .security import ensure_persistable_payload
+from .update_checks import UpdateCheckResult
 
 DEPLOYMENT_CREATE_ROUTE = "/v1/applications/{application_id}/deployments"
 
@@ -63,6 +65,14 @@ _PUBLIC_ERROR_CODE = re.compile(r"^LAE_[A-Z0-9_]{1,92}$")
 _ACTIVE_SUBSCRIPTION_STATUSES = ("active", "trialing")
 _ACTIVE_OPERATION_STATUSES = ("queued", "running")
 _SERVICE_ROLES = frozenset({"http", "internal", "worker", "datastore"})
+_UPDATE_CONFIRMATIONS = frozenset(
+    {
+        "SERVICE_REMOVAL",
+        "PUBLIC_ROUTE_CHANGE",
+        "PERSISTENT_VOLUME_CHANGE",
+        "REQUIRED_ENVIRONMENT_ADDED",
+    }
+)
 
 
 def _catalog_key(value: str, *, field_name: str) -> str:
@@ -307,6 +317,7 @@ class CreateDeploymentAdmission:
     application_id: str
     analysis_id: str
     environment_version: int
+    confirmed_changes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         require_opaque_id(self.application_id, prefix="app")
@@ -317,6 +328,13 @@ class CreateDeploymentAdmission:
             or self.environment_version < 0
         ):
             raise ValueError("environment version must be nonnegative")
+        if (
+            not isinstance(self.confirmed_changes, tuple)
+            or self.confirmed_changes
+            != tuple(sorted(set(self.confirmed_changes)))
+            or not set(self.confirmed_changes) <= _UPDATE_CONFIRMATIONS
+        ):
+            raise ValueError("confirmed deployment changes are invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,6 +554,13 @@ class DeploymentAdmissionStore:
                             actual=application.environment_version,
                         )
 
+                    await self._require_update_change_confirmation(
+                        session,
+                        command.scope,
+                        command.analysis_id,
+                        command.confirmed_changes,
+                    )
+
                     locked_artifact = await self._plan_artifact_in_session(
                         session,
                         command.scope,
@@ -669,6 +694,7 @@ class DeploymentAdmissionStore:
                     await session.flush()
                     return result
         except (
+            DeploymentChangeConfirmationRequired,
             DeploymentConflict,
             DeploymentEnvironmentIncomplete,
             DeploymentPlanInvalid,
@@ -685,6 +711,62 @@ class DeploymentAdmissionStore:
             raise DeploymentConflict(
                 "deployment admission conflicts with durable state"
             ) from exc
+
+    async def _require_update_change_confirmation(
+        self,
+        session: AsyncSession,
+        scope: TenantScope,
+        analysis_id: str,
+        confirmed: tuple[str, ...],
+    ) -> None:
+        analysis = await session.scalar(
+            select(Analysis).where(
+                Analysis.tenant_id == scope.tenant_id,
+                Analysis.id == analysis_id,
+            )
+        )
+        if analysis is None:
+            raise ResourceNotFound("analysis not found")
+        operation = await session.scalar(
+            select(Operation).where(
+                Operation.tenant_id == scope.tenant_id,
+                Operation.id == analysis.operation_id,
+            )
+        )
+        if operation is None:
+            raise DeploymentPlanInvalid("analysis operation is missing")
+        if operation.kind != "application.check-update":
+            if confirmed:
+                raise ValueError(
+                    "change confirmations are only valid for update candidates"
+                )
+            return
+        if operation.status != "succeeded" or not isinstance(operation.result, dict):
+            raise DeploymentPlanInvalid("update-check operation is incomplete")
+        try:
+            comparison = UpdateCheckResult.from_body(
+                operation.result.get("updateCheck")
+            )
+        except (TypeError, ValueError) as exc:
+            raise DeploymentPlanInvalid(
+                "update-check comparison is invalid"
+            ) from exc
+        if (
+            comparison.candidate_analysis_id != analysis_id
+            or comparison.candidate_verdict != "deployable"
+        ):
+            raise DeploymentPlanInvalid("update candidate is not deployable")
+        if comparison.deployment_plan_changed and comparison.plan_changes is None:
+            # A legacy digest-only update check cannot authorize a deployment:
+            # the user must run a new check that can enumerate exact changes.
+            raise DeploymentChangeConfirmationRequired(())
+        required = (
+            comparison.plan_changes.confirmations
+            if comparison.plan_changes is not None
+            else ()
+        )
+        if confirmed != required:
+            raise DeploymentChangeConfirmationRequired(required)
 
     async def list_deployments(
         self,

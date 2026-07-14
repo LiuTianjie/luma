@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -43,6 +44,8 @@ _LEASE_ID = re.compile(r"^artdl_[A-Za-z0-9][A-Za-z0-9._-]{7,122}$")
 _TOKEN = re.compile(r"^[A-Za-z0-9._~-]{32,256}$")
 _REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$")
 _SCHEMA_VERSION = "luma.artifact-download-lease/v1"
+_DEPLOYMENT_PLAN_MEDIA_TYPE = "application/vnd.lae.deployment-plan+json"
+_MAX_DEPLOYMENT_PLAN_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,6 +339,80 @@ class S3AnalysisArtifactObjectStore:
         )
 
 
+class S3UpdateCheckPlanLoader:
+    """Read only verified LAE deployment plans for a closed update diff."""
+
+    def __init__(self, store: S3PrivateObjectStore) -> None:
+        self._store = store
+
+    async def load(
+        self, storage_key: str, *, expected_digest: str
+    ) -> Mapping[str, object]:
+        try:
+            download = await self._store.get_stream(
+                storage_key, max_bytes=_MAX_DEPLOYMENT_PLAN_BYTES
+            )
+            metadata = download.metadata
+            if (
+                metadata.media_type != _DEPLOYMENT_PLAN_MEDIA_TYPE
+                or metadata.digest != expected_digest
+            ):
+                raise ValueError("deployment plan descriptor mismatch")
+            hasher = hashlib.sha256()
+            body = bytearray()
+            async for chunk in download.chunks:
+                hasher.update(chunk)
+                body.extend(chunk)
+            if f"sha256:{hasher.hexdigest()}" != expected_digest:
+                raise ValueError("deployment plan digest mismatch")
+            decoded = json.loads(body)
+            if not isinstance(decoded, dict):
+                raise ValueError("deployment plan body is invalid")
+            return decoded
+        except (
+            PrivateObjectIntegrityError,
+            PrivateObjectStoreUnavailable,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ValueError("verified deployment plan is unavailable") from exc
+
+
+def _private_object_store_from_env(
+    values: Mapping[str, str],
+) -> S3PrivateObjectStore:
+    environment = values.get("LAE_ENVIRONMENT", "development").strip().lower()
+    production = environment in {"prod", "production"}
+    return S3PrivateObjectStore(
+        S3PrivateObjectConfig(
+            endpoint=_required(values, "LAE_ARTIFACT_S3_ENDPOINT"),
+            bucket=_required(values, "LAE_ARTIFACT_S3_BUCKET"),
+            region=_required(values, "LAE_ARTIFACT_S3_REGION"),
+            access_key=_required(values, "LAE_ARTIFACT_S3_ACCESS_KEY"),
+            secret_key=_required(values, "LAE_ARTIFACT_S3_SECRET_KEY"),
+            allowed_hosts=tuple(
+                item.strip()
+                for item in _required(
+                    values, "LAE_ARTIFACT_S3_ALLOWED_HOSTS"
+                ).split(",")
+                if item.strip()
+            ),
+            path_style=_bool(values, "LAE_ARTIFACT_S3_PATH_STYLE", True),
+            production=production,
+            timeout_seconds=_float(
+                values, "LAE_ARTIFACT_S3_TIMEOUT_SECONDS", 20.0
+            ),
+        )
+    )
+
+
+def update_check_plan_loader_from_env(
+    environ: Mapping[str, str] | None = None,
+) -> S3UpdateCheckPlanLoader:
+    values = os.environ if environ is None else environ
+    return S3UpdateCheckPlanLoader(_private_object_store_from_env(values))
+
+
 def artifact_recorder_from_env(
     *,
     sessions: Any,
@@ -348,21 +425,6 @@ def artifact_recorder_from_env(
     values = os.environ if environ is None else environ
     environment = values.get("LAE_ENVIRONMENT", "development").strip().lower()
     production = environment in {"prod", "production"}
-    store_config = S3PrivateObjectConfig(
-        endpoint=_required(values, "LAE_ARTIFACT_S3_ENDPOINT"),
-        bucket=_required(values, "LAE_ARTIFACT_S3_BUCKET"),
-        region=_required(values, "LAE_ARTIFACT_S3_REGION"),
-        access_key=_required(values, "LAE_ARTIFACT_S3_ACCESS_KEY"),
-        secret_key=_required(values, "LAE_ARTIFACT_S3_SECRET_KEY"),
-        allowed_hosts=tuple(
-            item.strip()
-            for item in _required(values, "LAE_ARTIFACT_S3_ALLOWED_HOSTS").split(",")
-            if item.strip()
-        ),
-        path_style=_bool(values, "LAE_ARTIFACT_S3_PATH_STYLE", True),
-        production=production,
-        timeout_seconds=_float(values, "LAE_ARTIFACT_S3_TIMEOUT_SECONDS", 20.0),
-    )
     broker = HttpArtifactTransferBroker(
         LumaArtifactBrokerConfig(
             endpoint=_required(values, "LAE_LUMA_CONTROL_URL"),
@@ -388,7 +450,7 @@ def artifact_recorder_from_env(
         catalog=catalog,
         broker=broker,
         object_store=S3AnalysisArtifactObjectStore(
-            S3PrivateObjectStore(store_config)
+            _private_object_store_from_env(values)
         ),
         guard=guard,
         max_attempts=_int(values, "LAE_ARTIFACT_MAX_ATTEMPTS", 3),

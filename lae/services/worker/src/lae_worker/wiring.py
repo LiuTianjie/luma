@@ -35,7 +35,10 @@ from .analyze import (
     AnalyzeWorkerConfig,
     PostgresAnalyzeContextLoader,
 )
-from .artifact_runtime import artifact_recorder_from_env
+from .artifact_runtime import (
+    artifact_recorder_from_env,
+    update_check_plan_loader_from_env,
+)
 from .build_plan_materializer import (
     HmacBuildCredentialLeaseIssuer,
     S3TrustedBuildPlanMaterializer,
@@ -184,6 +187,7 @@ def build_analyze_worker(
     config: AnalyzeWorkerConfig,
     worker_id: str,
     recorder: AnalysisResultRecorder | None = None,
+    update_checks: PostgresUpdateCheckResolver | None = None,
 ) -> AnalyzeWorker:
     contexts = PostgresAnalyzeContextLoader(sessions)
     runner = AnalyzeStepRunner(
@@ -194,7 +198,7 @@ def build_analyze_worker(
         config=config,
         worker_id=worker_id,
         recorder=recorder,
-        update_checks=PostgresUpdateCheckResolver(sessions),
+        update_checks=update_checks or PostgresUpdateCheckResolver(sessions),
     )
     return AnalyzeWorker(
         operations,
@@ -279,6 +283,14 @@ def build_worker_from_env(
             max(float(lease_seconds) / 2, 1.0),
         ),
     )
+    update_checks = PostgresUpdateCheckResolver(
+        sessions,
+        plan_loader=(
+            update_check_plan_loader_from_env(values)
+            if artifact_driver == "s3"
+            else None
+        ),
+    )
     analyze_worker = build_analyze_worker(
         operations=operations,
         sessions=sessions,
@@ -287,6 +299,7 @@ def build_worker_from_env(
         config=config,
         worker_id=worker_id,
         recorder=recorder,
+        update_checks=update_checks,
     )
 
     deployment_worker: DeploymentWorker | None = None

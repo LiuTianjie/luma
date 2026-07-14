@@ -6,6 +6,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 LAE_ROOT = Path(__file__).resolve().parents[1]
 for relative in (
@@ -21,6 +22,7 @@ from lae_api.deployment_api import (  # noqa: E402
 )
 from lae_api.plan_resolver import DeploymentConfigurationSchema  # noqa: E402
 from lae_store import (  # noqa: E402
+    DeploymentChangeConfirmationRequired,
     DeploymentEnvironmentSchemaConflict,
     IdempotencyInput,
     IdempotentCatalogResult,
@@ -30,6 +32,7 @@ from lae_store import (  # noqa: E402
 )
 from lae_store.deployment_admission import (  # noqa: E402
     DeploymentAdmissionResult,
+    DeploymentAdmissionStore,
     PreparedDeploymentPlan,
     PreparedEnvironmentVariable,
     PreparedHttpRoute,
@@ -40,6 +43,7 @@ from lae_store.deployment_admission import (  # noqa: E402
     UnconfiguredPlanResolver,
     _validate_environment_bindings,
 )
+from lae_store.update_checks import UpdateCheckResult, UpdatePlanChanges  # noqa: E402
 from lae_store.errors import (  # noqa: E402
     DeploymentEnvironmentIncomplete,
     DeploymentEnvironmentScopeInvalid,
@@ -162,6 +166,88 @@ class PreparedPlanTests(unittest.TestCase):
             _validate_environment_bindings(
                 {("web", "DATABASE_URL")},
                 prepared,
+            )
+
+
+class _ScalarSequenceSession:
+    def __init__(self, *values: object) -> None:
+        self.values = list(values)
+
+    async def scalar(self, _statement: object) -> object:
+        return self.values.pop(0)
+
+
+class UpdateChangeConfirmationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_destructive_update_requires_the_exact_confirmation_set(self) -> None:
+        tenant_id = new_id("ten")
+        analysis_id = new_id("ana")
+        operation_id = new_id("op")
+        changes = UpdatePlanChanges.from_body(
+            {
+                "services": {
+                    "added": [],
+                    "removed": ["worker"],
+                    "changed": [],
+                },
+                "routes": {"added": [], "removed": [], "changed": []},
+                "volumes": {"added": [], "removed": [], "changed": []},
+                "environment": {"added": [], "removed": [], "changed": []},
+                "destructive": True,
+                "confirmations": ["SERVICE_REMOVAL"],
+            }
+        )
+        comparison = UpdateCheckResult(
+            baseline_available=True,
+            source_changed=True,
+            deployment_plan_changed=True,
+            changed=True,
+            candidate_source_tree_digest="sha256:" + "b" * 64,
+            candidate_deployment_plan_digest="sha256:" + "d" * 64,
+            baseline_source_tree_digest="sha256:" + "a" * 64,
+            baseline_deployment_plan_digest="sha256:" + "c" * 64,
+            plan_changes=changes,
+            candidate_analysis_id=analysis_id,
+            candidate_verdict="deployable",
+        )
+        analysis = SimpleNamespace(operation_id=operation_id)
+        operation = SimpleNamespace(
+            kind="application.check-update",
+            status="succeeded",
+            result={"updateCheck": comparison.to_body()},
+        )
+        store = DeploymentAdmissionStore(None)  # type: ignore[arg-type]
+
+        with self.assertRaises(DeploymentChangeConfirmationRequired) as missing:
+            await store._require_update_change_confirmation(  # noqa: SLF001
+                _ScalarSequenceSession(analysis, operation),  # type: ignore[arg-type]
+                TenantScope(tenant_id),
+                analysis_id,
+                (),
+            )
+        self.assertEqual(missing.exception.required, ("SERVICE_REMOVAL",))
+
+        await store._require_update_change_confirmation(  # noqa: SLF001
+            _ScalarSequenceSession(analysis, operation),  # type: ignore[arg-type]
+            TenantScope(tenant_id),
+            analysis_id,
+            ("SERVICE_REMOVAL",),
+        )
+
+    async def test_confirmations_cannot_be_reused_for_ordinary_analysis(self) -> None:
+        analysis_id = new_id("ana")
+        analysis = SimpleNamespace(operation_id=new_id("op"))
+        operation = SimpleNamespace(
+            kind="source.analyze",
+            status="succeeded",
+            result={},
+        )
+        store = DeploymentAdmissionStore(None)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            await store._require_update_change_confirmation(  # noqa: SLF001
+                _ScalarSequenceSession(analysis, operation),  # type: ignore[arg-type]
+                TenantScope(new_id("ten")),
+                analysis_id,
+                ("SERVICE_REMOVAL",),
             )
 
 

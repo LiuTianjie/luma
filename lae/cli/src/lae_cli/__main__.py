@@ -111,6 +111,17 @@ def _parser() -> argparse.ArgumentParser:
     deploy.add_argument("--wait", action="store_true")
     deploy.add_argument("--timeout", type=float, default=0)
     deploy.add_argument("--poll", type=float, default=1)
+    deploy.add_argument(
+        "--confirm-change",
+        action="append",
+        choices=(
+            "SERVICE_REMOVAL",
+            "PUBLIC_ROUTE_CHANGE",
+            "PERSISTENT_VOLUME_CHANGE",
+            "REQUIRED_ENVIRONMENT_ADDED",
+        ),
+        default=[],
+    )
     deploy.add_argument("--idempotency-key", required=True)
 
     operation = commands.add_parser("operation").add_subparsers(
@@ -1394,6 +1405,8 @@ def _run(args: argparse.Namespace) -> int:
             "analysisId": analysis,
             "environmentVersion": args.environment_version,
         }
+        if args.confirm_change:
+            body["confirmedChanges"] = sorted(set(args.confirm_change))
         created = client.post(
             f"/applications/{app}/deployments",
             body,

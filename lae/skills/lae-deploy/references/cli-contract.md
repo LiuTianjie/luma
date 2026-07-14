@@ -23,7 +23,7 @@ lae uploads create --app <id> --file <artifact.html|artifact.zip> --idempotency-
 lae uploads show <upload-id>
 lae uploads complete <upload-id> --idempotency-key <key>
 lae uploads delete <upload-id> --idempotency-key <key>
-lae deploy --app <id> --analysis <id> --environment-version <version> --idempotency-key <key> [--wait] --format ndjson
+lae deploy --app <id> --analysis <id> --environment-version <version> [--confirm-change <stable-code> ...] --idempotency-key <key> [--wait] --format ndjson
 lae operation show <operation-id> --format json
 lae operation watch <operation-id> [--after <cursor>] --format ndjson
 lae operation cancel <operation-id> --format json
@@ -72,6 +72,13 @@ Fetch `env list` for the current compare-and-set version, then use `env set
 after a source or deployment-plan input changes. Never infer or pass a value in
 argv. A wildcard `--service '*'` satisfies all listed services only when the
 same value is intended for each one.
+
+An update-check terminal Operation may include `changes` with per-section
+`added/removed/changed` keys and a sorted `confirmations` list. The API rejects
+a destructive candidate unless `deploy` supplies that exact list through
+repeated `--confirm-change` flags. Show the complete diff and obtain human
+approval first. A legacy candidate with `deploymentPlanChanged=true` and no
+`changes` must be checked again; it cannot be authorized by guessing codes.
 
 ## Static upload behavior
 

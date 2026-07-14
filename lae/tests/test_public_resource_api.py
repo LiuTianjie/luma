@@ -514,6 +514,8 @@ class PublicResourceApiTests(unittest.TestCase):
                 "sourceChanged",
                 "deploymentPlanChanged",
                 "changed",
+                "changes",
+                "candidateAnalysis",
                 "digests",
             },
         )

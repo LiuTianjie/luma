@@ -97,6 +97,12 @@ class DeploymentEnvironmentIncomplete(StoreError):
     pass
 
 
+class DeploymentChangeConfirmationRequired(StoreError):
+    def __init__(self, required: tuple[str, ...]) -> None:
+        self.required = required
+        super().__init__("destructive deployment changes require confirmation")
+
+
 class DeploymentEnvironmentScopeInvalid(StoreError):
     """Stored environment scopes are incompatible with the trusted plan."""
 

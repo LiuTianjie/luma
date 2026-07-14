@@ -559,6 +559,52 @@ class CliTests(unittest.TestCase):
             },
         )
 
+    def test_deploy_sends_sorted_unique_update_change_confirmations(self) -> None:
+        class FakeClient:
+            calls = []
+
+            def post(self, path, body=None, *, idempotency_key=None):
+                self.calls.append((path, body, idempotency_key))
+                return {"operation": {"id": "op_deploy", "status": "queued"}}
+
+        client = FakeClient()
+        with patch("lae_cli.__main__._client", return_value=client), redirect_stdout(
+            io.StringIO()
+        ):
+            exit_code = main(
+                [
+                    "deploy",
+                    "--app",
+                    "app_test",
+                    "--analysis",
+                    "ana_test",
+                    "--environment-version",
+                    "7",
+                    "--confirm-change",
+                    "SERVICE_REMOVAL",
+                    "--confirm-change",
+                    "PUBLIC_ROUTE_CHANGE",
+                    "--confirm-change",
+                    "SERVICE_REMOVAL",
+                    "--idempotency-key",
+                    "deploy-update-test-1",
+                    "--format",
+                    "json",
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            client.calls[0][1],
+            {
+                "analysisId": "ana_test",
+                "environmentVersion": 7,
+                "confirmedChanges": [
+                    "PUBLIC_ROUTE_CHANGE",
+                    "SERVICE_REMOVAL",
+                ],
+            },
+        )
+
     def test_apps_create_builds_a_pending_draft_request(self) -> None:
         class FakeClient:
             calls = []

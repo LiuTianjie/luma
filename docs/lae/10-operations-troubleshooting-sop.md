@@ -980,12 +980,13 @@ Nomad/CNI P0；在修复发布并完成回归前阻塞 production rollout。
 **Checks**
 
 1. 查看应用 current deployment、目标 action、lifecycle request binding、Operation phase 和幂等键。
-2. check-update 属于 analysis lane；其他动作属于 Runtime lifecycle，不能互相替代。成功的 check-update 应只在终态 Operation 公开闭合的 `updateCheck`，并包含 baseline 可用性、source/DeploymentPlan 是否变化和 SHA-256 digest；普通 analysis、失败或运行中的 Operation 不应返回该字段。
-3. rollback target 必须属于同 tenant/application、已成功且仍有 image/plan；不能由用户提交任意 Luma job/version。
-4. LAE 普通产品 delete 固定使用 `volumePolicy=retain`；Luma Runtime body 必须显式携带该值。卷数据删除是独立、可审计且尚未开放的流程，不能把普通 delete 改成 `delete` 绕过。
-5. Luma Runtime principal scopes、current runtime binding、jobSlug 和 secret/volume cleanup 状态必须一致。
-6. V1 rollback 要求目标与当前 application catalog 的 service/route/volume binding 拓扑兼容；不兼容必须 fail closed 后走新的 analysis/deployment。
-7. 检查 Runtime mutation durable checkpoint：提交前 cancel 应恢复原 desired state；提交后 late cancel 不能假装底层动作未发生，必须继续收敛同一 Runtime 结果。
+2. check-update 属于 analysis lane；其他动作属于 Runtime lifecycle，不能互相替代。成功的 check-update 应只在终态 Operation 公开闭合的 `updateCheck`，并包含 baseline 可用性、source/DeploymentPlan 是否变化、SHA-256 digest、candidate analysis 以及 service/route/volume/environment 差异；普通 analysis、失败或运行中的 Operation 不应返回该字段。若 plan 已变化但 `changes` 为空/null，说明是旧版或不完整结果，必须重新检查，不得直接部署。
+3. destructive update 的确认以 Operation 返回的 `changes.confirmations` 为唯一来源。Web/CLI 只能在用户明确批准后原样提交；API 返回 `LAE_DEPLOYMENT_CONFIRMATION_REQUIRED` 时按 `requiredConfirmations` 重新展示风险，不能自动补齐。`LAE_UPDATE_CHECK_DETAILS_REQUIRED` 表示先重新运行 check-update。
+4. rollback target 必须属于同 tenant/application、已成功且仍有 image/plan；不能由用户提交任意 Luma job/version。
+5. LAE 普通产品 delete 固定使用 `volumePolicy=retain`；Luma Runtime body 必须显式携带该值。卷数据删除是独立、可审计且尚未开放的流程，不能把普通 delete 改成 `delete` 绕过。
+6. Luma Runtime principal scopes、current runtime binding、jobSlug 和 secret/volume cleanup 状态必须一致。
+7. V1 rollback 要求目标与当前 application catalog 的 service/route/volume binding 拓扑兼容；不兼容必须 fail closed 后走新的 analysis/deployment。
+8. 检查 Runtime mutation durable checkpoint：提交前 cancel 应恢复原 desired state；提交后 late cancel 不能假装底层动作未发生，必须继续收敛同一 Runtime 结果。
 
 **Safe action**
 

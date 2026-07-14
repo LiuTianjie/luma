@@ -137,6 +137,7 @@ from .errors import (
     ApplicationRollbackUnavailable,
     CustomDomainUnsupported,
     CredentialLeaseRejected,
+    DeploymentChangeConfirmationRequired,
     DeploymentConflict,
     DeploymentEnvironmentIncomplete,
     DeploymentEnvironmentSchemaConflict,
@@ -185,7 +186,13 @@ from .public_resources import (
     PublicOperationRecord,
     required_scope_for_operation,
 )
-from .update_checks import UpdateCheckResult, public_update_check_from_operation
+from .update_checks import (
+    UpdateChangeSet,
+    UpdateCheckResult,
+    UpdatePlanChanges,
+    diff_deployment_plans,
+    public_update_check_from_operation,
+)
 from .state import OperationStatus, OutboxStatus
 from .source_connections import (
     SOURCE_CONNECTION_CREATE_ROUTE,
@@ -323,6 +330,7 @@ __all__ = [
     "DeployTokenRecord",
     "DeploymentAdmissionResult",
     "DeploymentAdmissionStore",
+    "DeploymentChangeConfirmationRequired",
     "DeploymentConflict",
     "DeploymentEnvironmentIncomplete",
     "DeploymentEnvironmentSchemaConflict",
@@ -452,6 +460,9 @@ __all__ = [
     "UploadVerificationFailed",
     "UpdateCheckBinding",
     "UpdateCheckResult",
+    "UpdateChangeSet",
+    "UpdatePlanChanges",
+    "diff_deployment_plans",
     "canonical_digest",
     "canonical_upload_identity",
     "checksum_header_value",

@@ -415,11 +415,35 @@ export type UpdateCheckResult = {
   sourceChanged: boolean;
   deploymentPlanChanged: boolean;
   changed: boolean;
+  candidateAnalysis: {
+    id: string;
+    verdict: "deployable" | "needs_input" | "unsupported" | "diagnostic_failed";
+  } | null;
+  changes: {
+    destructive: boolean;
+    confirmations: UpdateConfirmationCode[];
+    services: UpdateChangeSet;
+    routes: UpdateChangeSet;
+    volumes: UpdateChangeSet;
+    environment: UpdateChangeSet;
+  } | null;
   digests: {
     baseline: { sourceTree: string; deploymentPlan: string } | null;
     candidate: { sourceTree: string; deploymentPlan: string };
   };
 };
+
+export type UpdateChangeSet = {
+  added: string[];
+  removed: string[];
+  changed: string[];
+};
+
+export type UpdateConfirmationCode =
+  | "SERVICE_REMOVAL"
+  | "PUBLIC_ROUTE_CHANGE"
+  | "PERSISTENT_VOLUME_CHANGE"
+  | "REQUIRED_ENVIRONMENT_ADDED";
 
 export type OperationEvent = {
   eventId: string;
@@ -963,6 +987,7 @@ export async function createDeployment(
     applicationId: string;
     analysisId: string;
     environmentVersion: number;
+    confirmedChanges?: UpdateConfirmationCode[];
   },
   idempotencyKey: string,
   signal?: AbortSignal,
@@ -974,6 +999,9 @@ export async function createDeployment(
       body: {
         analysisId: input.analysisId,
         environmentVersion: input.environmentVersion,
+        ...(input.confirmedChanges?.length
+          ? { confirmedChanges: input.confirmedChanges }
+          : {}),
       },
       idempotencyKey,
       mutation: true,

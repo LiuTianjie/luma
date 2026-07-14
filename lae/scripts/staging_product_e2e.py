@@ -827,8 +827,36 @@ def run(args: argparse.Namespace) -> None:
             action="check-update",
             deadline=deadline,
         )
-        if not isinstance(update.get("updateCheck"), dict):
+        update_check = update.get("updateCheck")
+        if not isinstance(update_check, dict):
             raise AcceptanceFailure("update check did not return a structured result")
+        candidate_analysis = update_check.get("candidateAnalysis")
+        if (
+            not isinstance(candidate_analysis, dict)
+            or not isinstance(candidate_analysis.get("id"), str)
+            or not candidate_analysis["id"].startswith("ana_")
+            or candidate_analysis.get("verdict")
+            not in {"deployable", "needs_input", "unsupported", "diagnostic_failed"}
+        ):
+            raise AcceptanceFailure("update check did not bind a candidate analysis")
+        changes = update_check.get("changes")
+        if (
+            not isinstance(changes, dict)
+            or not isinstance(changes.get("destructive"), bool)
+            or not isinstance(changes.get("confirmations"), list)
+        ):
+            raise AcceptanceFailure("update check did not return a closed plan diff")
+        for section in ("services", "routes", "volumes", "environment"):
+            change_set = changes.get(section)
+            if not isinstance(change_set, dict) or any(
+                not isinstance(change_set.get(kind), list)
+                for kind in ("added", "removed", "changed")
+            ):
+                raise AcceptanceFailure(
+                    f"update check returned an invalid {section} diff"
+                )
+        if changes["destructive"] != bool(changes["confirmations"]):
+            raise AcceptanceFailure("update check destructive diff is inconsistent")
         emit("lifecycle_verified", applicationId=golden_id)
 
         negative_id = create_application(

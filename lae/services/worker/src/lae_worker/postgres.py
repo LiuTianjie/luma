@@ -4,7 +4,7 @@ import re
 import urllib.parse
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from sqlalchemy import func, null, or_, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -26,7 +26,11 @@ from lae_store.models import (
 from lae_store.security import ensure_persistable_payload
 from lae_store.repositories import OperationRecord
 from lae_store.tokens import keyed_request_hash, keyed_secret_hash
-from lae_store.update_checks import UpdateCheckResult
+from lae_store.update_checks import (
+    UpdateCheckResult,
+    UpdatePlanChanges,
+    diff_deployment_plans,
+)
 
 from .analyze import (
     AnalysisDigestReferences,
@@ -666,6 +670,12 @@ class PostgresAnalyzeStateStore:
             raise AssertionError("unreachable")
 
 
+class UpdateCheckPlanLoader(Protocol):
+    async def load(
+        self, storage_key: str, *, expected_digest: str
+    ) -> Mapping[str, object]: ...
+
+
 class PostgresUpdateCheckResolver:
     """Resolve an immutable deployed baseline against the recorded analysis.
 
@@ -673,8 +683,14 @@ class PostgresUpdateCheckResolver:
     never follows the application's moving current pointers after admission.
     """
 
-    def __init__(self, sessions: Any) -> None:
+    def __init__(
+        self,
+        sessions: Any,
+        *,
+        plan_loader: UpdateCheckPlanLoader | None = None,
+    ) -> None:
         self._sessions = sessions
+        self._plan_loader = plan_loader
 
     async def resolve(
         self,
@@ -690,6 +706,8 @@ class PostgresUpdateCheckResolver:
         ):
             raise UpdateCheckResultInvalid()
         try:
+            baseline_plan_ref: tuple[str, str] | None = None
+            candidate_plan_ref: tuple[str, str] | None = None
             async with self._sessions() as session:
                 request = await session.scalar(
                     select(ApplicationLifecycleRequest).where(
@@ -736,13 +754,19 @@ class PostgresUpdateCheckResolver:
                     }
                     or analysis.source_tree_digest is None
                     or analysis.deployment_plan_digest is None
+                    or analysis.verdict is None
                 ):
                     raise UpdateCheckResultInvalid()
 
                 candidate_source = analysis.source_tree_digest
                 candidate_plan = analysis.deployment_plan_digest
                 if request.source_deployment_id is None:
-                    return self._without_baseline(candidate_source, candidate_plan)
+                    return self._without_baseline(
+                        candidate_source,
+                        candidate_plan,
+                        analysis_id=analysis.id,
+                        verdict=analysis.verdict,
+                    )
 
                 deployment = await session.scalar(
                     select(Deployment).where(
@@ -768,24 +792,96 @@ class PostgresUpdateCheckResolver:
                 ):
                     raise UpdateCheckResultInvalid()
                 if base_source.source_tree_digest is None:
-                    return self._without_baseline(candidate_source, candidate_plan)
+                    return self._without_baseline(
+                        candidate_source,
+                        candidate_plan,
+                        analysis_id=analysis.id,
+                        verdict=analysis.verdict,
+                    )
 
                 source_changed = (
                     base_source.source_tree_digest != candidate_source
                 )
                 plan_changed = revision.deployment_plan_digest != candidate_plan
-                return UpdateCheckResult(
-                    baseline_available=True,
-                    source_changed=source_changed,
-                    deployment_plan_changed=plan_changed,
-                    changed=source_changed or plan_changed,
-                    baseline_source_tree_digest=base_source.source_tree_digest,
-                    baseline_deployment_plan_digest=(
-                        revision.deployment_plan_digest
-                    ),
-                    candidate_source_tree_digest=candidate_source,
-                    candidate_deployment_plan_digest=candidate_plan,
+                if plan_changed and self._plan_loader is not None:
+                    baseline_artifact = await session.scalar(
+                        select(Artifact).where(
+                            Artifact.tenant_id == context.tenant_ref,
+                            Artifact.id == revision.deployment_plan_artifact_id,
+                            Artifact.kind == "deployment-plan",
+                            Artifact.digest == revision.deployment_plan_digest,
+                            Artifact.upload_status == "verified",
+                        )
+                    )
+                    candidate_artifact = await session.scalar(
+                        select(Artifact)
+                        .join(
+                            AnalysisArtifact,
+                            AnalysisArtifact.artifact_id == Artifact.id,
+                        )
+                        .where(
+                            AnalysisArtifact.tenant_id == context.tenant_ref,
+                            AnalysisArtifact.analysis_id == analysis.id,
+                            AnalysisArtifact.name == "deploymentPlan",
+                            Artifact.tenant_id == context.tenant_ref,
+                            Artifact.kind == "deployment-plan",
+                            Artifact.digest == candidate_plan,
+                            Artifact.upload_status == "verified",
+                        )
+                    )
+                    if (
+                        baseline_artifact is None
+                        or candidate_artifact is None
+                        or baseline_artifact.storage_key is None
+                        or candidate_artifact.storage_key is None
+                    ):
+                        raise UpdateCheckResultInvalid()
+                    baseline_plan_ref = (
+                        baseline_artifact.storage_key,
+                        revision.deployment_plan_digest,
+                    )
+                    candidate_plan_ref = (
+                        candidate_artifact.storage_key,
+                        candidate_plan,
+                    )
+
+            plan_changes: UpdatePlanChanges | None
+            if not plan_changed:
+                plan_changes = UpdatePlanChanges()
+            elif self._plan_loader is None:
+                # Historical/test-only resolver construction can still project
+                # the closed digest comparison. Production wiring always
+                # supplies the verified private-object plan loader.
+                plan_changes = None
+            else:
+                if baseline_plan_ref is None or candidate_plan_ref is None:
+                    raise UpdateCheckResultInvalid()
+                baseline_plan = await self._plan_loader.load(
+                    baseline_plan_ref[0], expected_digest=baseline_plan_ref[1]
                 )
+                candidate_plan_body = await self._plan_loader.load(
+                    candidate_plan_ref[0], expected_digest=candidate_plan_ref[1]
+                )
+                plan_changes = diff_deployment_plans(
+                    baseline_plan, candidate_plan_body
+                )
+                if plan_changes.empty:
+                    raise UpdateCheckResultInvalid()
+            return UpdateCheckResult(
+                baseline_available=True,
+                source_changed=source_changed,
+                deployment_plan_changed=plan_changed,
+                changed=source_changed or plan_changed,
+                baseline_source_tree_digest=base_source.source_tree_digest,
+                baseline_deployment_plan_digest=(
+                    revision.deployment_plan_digest
+                ),
+                candidate_source_tree_digest=candidate_source,
+                candidate_deployment_plan_digest=candidate_plan,
+                plan_changes=plan_changes,
+                candidate_analysis_id=analysis.id,
+                candidate_verdict=analysis.verdict,
+            )
         except UpdateCheckResultInvalid:
             raise
         except ValueError as exc:
@@ -798,6 +894,9 @@ class PostgresUpdateCheckResolver:
     def _without_baseline(
         candidate_source: str,
         candidate_plan: str,
+        *,
+        analysis_id: str,
+        verdict: str,
     ) -> UpdateCheckResult:
         try:
             return UpdateCheckResult(
@@ -807,6 +906,8 @@ class PostgresUpdateCheckResolver:
                 changed=True,
                 candidate_source_tree_digest=candidate_source,
                 candidate_deployment_plan_digest=candidate_plan,
+                candidate_analysis_id=analysis_id,
+                candidate_verdict=verdict,
             )
         except ValueError as exc:
             raise UpdateCheckResultInvalid() from exc

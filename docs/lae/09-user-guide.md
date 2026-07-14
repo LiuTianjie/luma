@@ -469,9 +469,19 @@ Agent 必须遵守：
 - `sourceChanged`：source tree 是否变化；
 - `deploymentPlanChanged`：规范化 DeploymentPlan 是否变化；
 - `changed`：上述任一维度是否变化；
+- `candidateAnalysis`：可用于后续部署的 candidate analysis ID 与 verdict；
+- `changes.services/routes/volumes/environment`：各类
+  `added/removed/changed` key；
+- `changes.destructive` 与 `changes.confirmations`：是否需要人工确认及必须确认的稳定代码；
 - baseline/candidate 的 SHA-256 digest。没有完整基线时平台会保守视为有变化，不会声称“无需更新”。
 
-Web 已展示无基线、无变化、仅 source 变化、仅 DeploymentPlan 变化或两者均变化；CLI 可从终态 Operation 读取同一结构。逐项 service/route/environment/volume diff、destructive diff 确认和“一键用该 candidate 部署”仍是发布门禁。下面是完整发布流程，不应把更新检查成功写成已经发布新版本：
+Web 会逐项展示差异。非破坏性、verdict 为 `deployable` 的 candidate 可以直接部署；存在
+service 删除、公开 route 变化、persistent volume 变化或新增必填环境变量时，必须先确认
+界面列出的精确风险。CLI/Agent 不得自行替用户确认，得到用户批准后才可把 Operation 返回的
+confirmation code 原样传给 `lae deploy --confirm-change ...`。平台 admission 还会服务端复验，
+不能通过伪造请求绕过。旧版本 check-update 若没有 `changes`，请重新执行检查。
+
+下面是完整发布流程，不应把更新检查成功写成已经发布新版本：
 
 真实 staging 已验证稳定性边界：两次独立检查对同一 source tree 生成相同 candidate
 DeploymentPlan digest；用该 candidate 完成一次部署后再次检查，baseline 与 candidate 的

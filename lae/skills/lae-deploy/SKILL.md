@@ -126,6 +126,12 @@ For every required variable:
    build requirements changed.
 
 If a Compose diff adds/removes a volume, changes a public route, or is destructive, show the structured diff and wait for explicit confirmation.
+When the terminal update-check result includes `changes.confirmations`, show
+every item and obtain explicit human approval. Pass each approved stable code
+to the later deployment as `--confirm-change <CODE>`. Never invent a code,
+confirm a digest-only legacy check, or treat approval of one code as approval
+of the others. If `deploymentPlanChanged=true` but `changes=null`, run a fresh
+update check instead of deploying that candidate.
 
 ### 4. Deploy and watch
 
@@ -134,6 +140,7 @@ Use NDJSON for agent-driven long operations:
 ```text
 lae deploy --app <app-id> --analysis <analysis-id> \
   --environment-version <version> --idempotency-key <stable-key> \
+  [--confirm-change <code> ...] \
   --wait --format ndjson
 ```
 

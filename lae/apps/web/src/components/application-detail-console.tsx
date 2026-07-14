@@ -46,6 +46,7 @@ import {
 
 import {
   cancelOperation,
+  createDeployment,
   getApplication,
   getApplicationLogs,
   getApplicationMetrics,
@@ -65,14 +66,17 @@ import {
   type LaePrincipal,
   type Operation,
   type OperationEvent,
+  type UpdateConfirmationCode,
 } from "../lib/lae-api";
 import styles from "./application-detail-console.module.css";
 
 type ViewState = "loading" | "ready" | "guest" | "not-found" | "error";
 type Theme = "light" | "dark";
 type Confirmation = {
-  action: "suspend" | "rollback";
+  action: "suspend" | "rollback" | "deploy-update";
   deploymentId?: string;
+  analysisId?: string;
+  confirmedChanges?: UpdateConfirmationCode[];
   title: string;
   note: string;
 };
@@ -343,6 +347,34 @@ export function ApplicationDetailConsole({
       setConfirmation(null);
     } catch (error) {
       setActionNotice(apiErrorMessage(error, "操作请求未能提交。"));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const deployUpdate = async (
+    analysisId: string,
+    confirmedChanges: Confirmation["confirmedChanges"] = [],
+  ) => {
+    if (!record) return;
+    setActionBusy(true);
+    setActionNotice(null);
+    setOperationError(null);
+    try {
+      const result = await createDeployment(
+        {
+          applicationId,
+          analysisId,
+          environmentVersion: record.environment.version,
+          confirmedChanges,
+        },
+        newIdempotencyKey("application-update-deploy"),
+      );
+      setActiveOperationId(result.operation.id);
+      setActionNotice("更新部署已启动；当前健康版本会保留到新版本验证成功。");
+      setConfirmation(null);
+    } catch (error) {
+      setActionNotice(apiErrorMessage(error, "更新部署未能提交。"));
     } finally {
       setActionBusy(false);
     }
@@ -771,6 +803,21 @@ export function ApplicationDetailConsole({
                 operation={operation}
                 events={operationEvents}
                 error={operationError}
+                interactionLocked={interactionLocked}
+                onDeployUpdate={(analysisId, confirmations, note) => {
+                  const destructive = confirmations.length > 0;
+                  if (destructive) {
+                    setConfirmation({
+                      action: "deploy-update",
+                      analysisId,
+                      confirmedChanges: confirmations,
+                      title: "确认部署破坏性更新？",
+                      note,
+                    });
+                    return;
+                  }
+                  void deployUpdate(analysisId, []);
+                }}
               />
             </div>
           </section>
@@ -951,12 +998,21 @@ export function ApplicationDetailConsole({
               value={confirmation}
               busy={actionBusy}
               onClose={() => setConfirmation(null)}
-              onConfirm={() =>
+              onConfirm={() => {
+                if (confirmation.action === "deploy-update") {
+                  if (confirmation.analysisId) {
+                    void deployUpdate(
+                      confirmation.analysisId,
+                      confirmation.confirmedChanges,
+                    );
+                  }
+                  return;
+                }
                 void runAction(
                   confirmation.action,
                   confirmation.deploymentId ? { deploymentId: confirmation.deploymentId } : {},
-                )
-              }
+                );
+              }}
             />
           ) : null}
         </section>
@@ -1091,11 +1147,19 @@ function OperationInspector({
   operation,
   events,
   error,
+  interactionLocked,
+  onDeployUpdate,
 }: {
   operationId: string | null;
   operation: Operation | null;
   events: OperationEvent[];
   error: string | null;
+  interactionLocked: boolean;
+  onDeployUpdate: (
+    analysisId: string,
+    confirmations: UpdateConfirmationCode[],
+    note: string,
+  ) => void;
 }) {
   if (!operationId) {
     return <div className={styles.operationInspector}><EmptyState icon={Activity} text="选择一条部署记录查看操作事件。" /></div>;
@@ -1117,7 +1181,13 @@ function OperationInspector({
           <div><dt>终态</dt><dd>{operation.terminal ? "yes" : "no"}</dd></div>
         </dl>
       ) : null}
-      {operation?.updateCheck ? <UpdateCheckSummary operation={operation} /> : null}
+      {operation?.updateCheck ? (
+        <UpdateCheckSummary
+          operation={operation}
+          interactionLocked={interactionLocked}
+          onDeployUpdate={onDeployUpdate}
+        />
+      ) : null}
       {operation?.error ? <p className={styles.operationFailure}>{operation.error.code} · {operation.error.message}</p> : null}
       {error ? <p className={styles.operationFailure}>{error}</p> : null}
       <div className={styles.eventTimeline}>
@@ -1136,9 +1206,36 @@ function OperationInspector({
   );
 }
 
-function UpdateCheckSummary({ operation }: { operation: Operation }) {
+function UpdateCheckSummary({
+  operation,
+  interactionLocked,
+  onDeployUpdate,
+}: {
+  operation: Operation;
+  interactionLocked: boolean;
+  onDeployUpdate: (
+    analysisId: string,
+    confirmations: UpdateConfirmationCode[],
+    note: string,
+  ) => void;
+}) {
   const result = operation.updateCheck;
   if (!result) return null;
+  const sections = result.changes ? [
+    ["服务", result.changes.services],
+    ["公网路由", result.changes.routes],
+    ["持久卷", result.changes.volumes],
+    ["环境变量", result.changes.environment],
+  ] as const : [];
+  const confirmationLabels: Record<string, string> = {
+    SERVICE_REMOVAL: "将移除服务",
+    PUBLIC_ROUTE_CHANGE: "公网路由将变化",
+    PERSISTENT_VOLUME_CHANGE: "持久卷定义将变化",
+    REQUIRED_ENVIRONMENT_ADDED: "新增必填环境变量",
+  };
+  const confirmationNote = result.changes?.confirmations
+    .map((code) => confirmationLabels[code] || code)
+    .join(" · ") || "候选计划未标记破坏性变化。";
   return (
     <div className={styles.updateCheck}>
       <strong><GitCompareArrows size={12} /> 更新检查</strong>
@@ -1148,6 +1245,62 @@ function UpdateCheckSummary({ operation }: { operation: Operation }) {
         <span>计划 <b>{result.deploymentPlanChanged ? "changed" : "same"}</b></span>
         <span>结论 <b>{result.changed ? "update" : "current"}</b></span>
       </div>
+      {result.changes ? (
+        <div className={styles.updateDiff}>
+          {sections.map(([label, changes]) => {
+            const entries = [
+              ...changes.added.map((value) => ({ value, kind: "added", marker: "+" })),
+              ...changes.removed.map((value) => ({ value, kind: "removed", marker: "−" })),
+              ...changes.changed.map((value) => ({ value, kind: "changed", marker: "~" })),
+            ];
+            return entries.length ? (
+              <section key={label}>
+                <b>{label}</b>
+                <ul>
+                  {entries.map((entry) => (
+                    <li key={`${entry.kind}:${entry.value}`} data-kind={entry.kind}>
+                      <i>{entry.marker}</i>{entry.value}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null;
+          })}
+          {result.changes.destructive ? (
+            <aside className={styles.updateWarning} role="alert">
+              <strong>部署前需要明确确认</strong>
+              <span>{result.changes.confirmations.map((code) => confirmationLabels[code] || code).join(" · ")}</span>
+            </aside>
+          ) : null}
+        </div>
+      ) : result.deploymentPlanChanged ? (
+        <p className={styles.updateDiffUnavailable}>该历史检查没有逐项差异，请重新执行更新检查。</p>
+      ) : null}
+      {result.changed && result.candidateAnalysis ? (
+        <button
+          className={styles.updateDeployButton}
+          type="button"
+          disabled={
+            interactionLocked ||
+            result.candidateAnalysis.verdict !== "deployable" ||
+            (result.deploymentPlanChanged && !result.changes)
+          }
+          onClick={() => onDeployUpdate(
+            result.candidateAnalysis!.id,
+            result.changes?.confirmations || [],
+            confirmationNote,
+          )}
+        >
+          <CloudUpload size={11} />
+          {result.candidateAnalysis.verdict === "deployable"
+            ? result.changes?.destructive
+              ? "确认并部署此更新"
+              : "部署此更新"
+            : result.candidateAnalysis.verdict === "needs_input"
+              ? "补齐配置后再部署"
+              : "当前候选不可部署"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -1239,14 +1392,14 @@ function ConfirmationDialog({
         aria-labelledby="application-confirmation-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <span>{value.action === "rollback" ? <RotateCcw size={17} /> : <Pause size={17} />}</span>
+        <span>{value.action === "rollback" ? <RotateCcw size={17} /> : value.action === "deploy-update" ? <CloudUpload size={17} /> : <Pause size={17} />}</span>
         <p>CONFIRM RUNTIME ACTION</p>
         <h2 id="application-confirmation-title">{value.title}</h2>
         <small>{value.note}</small>
         <div>
           <button type="button" onClick={onClose} disabled={busy}>取消</button>
           <button className={styles.dangerButton} type="button" onClick={onConfirm} disabled={busy}>
-            {busy ? <LoaderCircle className={styles.spin} size={13} /> : value.action === "rollback" ? <Undo2 size={13} /> : <Pause size={13} />}
+            {busy ? <LoaderCircle className={styles.spin} size={13} /> : value.action === "rollback" ? <Undo2 size={13} /> : value.action === "deploy-update" ? <CloudUpload size={13} /> : <Pause size={13} />}
             {busy ? "正在提交" : "确认执行"}
           </button>
         </div>
