@@ -6,7 +6,7 @@ import os
 import sys
 import unittest
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import func, select, update
@@ -290,6 +290,61 @@ class PostgreSQLAnalyzePersistenceTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
         )
+
+    async def test_bound_builder_queue_renews_short_credential_lease(self) -> None:
+        operation = await self._create_operation()
+        claimed = await self.operations.claim_next(
+            worker_id="analysis-worker-renewal",
+            kinds=["source.analyze"],
+            lease_seconds=30,
+        )
+        assert claimed is not None and claimed.id == operation.id
+        lease_id = new_id("lease")
+        state = await self.state_store.initialize(
+            operation.id, credential_lease_id=lease_id
+        )
+        state = await self.state_store.save(
+            replace(
+                state,
+                luma_task_id="builder-task-long-queue",
+                luma_status="queued",
+            ),
+            expected_version=state.version,
+        )
+        async with self.sessions() as session:
+            async with session.begin():
+                await session.execute(
+                    update(SourceCredentialLease)
+                    .where(SourceCredentialLease.id == lease_id)
+                    .values(
+                        expires_at=func.clock_timestamp()
+                        + timedelta(seconds=10)
+                    )
+                )
+
+        await self.state_store.renew_credential_lease(state)
+        async with self.sessions() as session:
+            renewed = await session.get(SourceCredentialLease, lease_id)
+        assert renewed is not None
+        self.assertGreater(
+            renewed.expires_at,
+            datetime.now(timezone.utc) + timedelta(minutes=14),
+        )
+
+        # An atomically consumed capability no longer needs renewal and is a
+        # safe no-op while the Worker observes the task's terminal events.
+        async with self.sessions() as session:
+            async with session.begin():
+                await session.execute(
+                    update(SourceCredentialLease)
+                    .where(SourceCredentialLease.id == lease_id)
+                    .values(status="consumed", consumed_at=func.clock_timestamp())
+                )
+        await self.state_store.renew_credential_lease(state)
+
+        await self.operations.request_cancel(TenantScope(self.tenant_id), operation.id)
+        with self.assertRaises(AnalyzeStateConflict):
+            await self.state_store.renew_credential_lease(state)
 
     async def test_cas_resume_cancel_tenant_fence_and_descriptor_recording(
         self,

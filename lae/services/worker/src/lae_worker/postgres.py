@@ -669,6 +669,103 @@ class PostgresAnalyzeStateStore:
             _raise_database_error(exc)
             raise AssertionError("unreachable")
 
+    async def renew_credential_lease(
+        self, state: AnalyzeOrchestrationState
+    ) -> None:
+        """Renew an unconsumed source capability while its Builder task waits.
+
+        The initial lease is deliberately short. Builder queue time can be
+        much longer, so the durable Worker refreshes the opaque capability
+        only while the Operation, checkpoint, task binding and ownership all
+        remain active. No source credential is decrypted here; redemption is
+        still atomic, task-bound and single-use.
+        """
+
+        if (
+            state.tenant_ref is None
+            or state.application_ref is None
+            or state.source_revision_ref is None
+            or state.luma_task_id is None
+        ):
+            raise AnalyzeContextInvalid()
+        try:
+            async with self._sessions() as session:
+                async with session.begin():
+                    task = await session.scalar(
+                        select(BuilderTask)
+                        .where(
+                            BuilderTask.operation_id == state.operation_id,
+                            BuilderTask.tenant_id == state.tenant_ref,
+                            BuilderTask.application_id == state.application_ref,
+                            BuilderTask.source_revision_id
+                            == state.source_revision_ref,
+                            BuilderTask.luma_cluster_id == self._cluster,
+                            BuilderTask.luma_principal_id == self._principal,
+                            BuilderTask.credential_lease_id
+                            == state.credential_lease_id,
+                            BuilderTask.luma_task_id == state.luma_task_id,
+                            BuilderTask.action == "source.analyze",
+                            BuilderTask.cancel_forwarded_at.is_(None),
+                        )
+                        .with_for_update()
+                    )
+                    operation = await session.scalar(
+                        select(Operation)
+                        .where(
+                            Operation.id == state.operation_id,
+                            Operation.tenant_id == state.tenant_ref,
+                        )
+                        .with_for_update()
+                    )
+                    lease = await session.scalar(
+                        select(SourceCredentialLease)
+                        .where(
+                            SourceCredentialLease.id == state.credential_lease_id,
+                            SourceCredentialLease.tenant_id == state.tenant_ref,
+                            SourceCredentialLease.operation_id == state.operation_id,
+                        )
+                        .with_for_update()
+                    )
+                    now = await session.scalar(select(func.clock_timestamp()))
+                    if (
+                        now is None
+                        or task is None
+                        or operation is None
+                        or operation.status not in {"queued", "running"}
+                        or operation.cancel_requested_at is not None
+                        or lease is None
+                        or lease.builder_task_id != task.id
+                        or lease.source_revision_id != state.source_revision_ref
+                        or lease.consumer_id != self._principal
+                        or lease.allowed_action != "source.fetch"
+                        or lease.revoked_at is not None
+                    ):
+                        raise AnalyzeStateConflict(
+                            "credential lease renewal binding is unavailable"
+                        )
+                    if lease.status == "consumed" and lease.consumed_at is not None:
+                        # Redemption already happened atomically; there is no
+                        # longer an open capability to refresh.
+                        return
+                    if (
+                        lease.status != "issued"
+                        or lease.consumed_at is not None
+                        or lease.expires_at <= now
+                    ):
+                        raise AnalyzeStateConflict(
+                            "credential lease renewal binding is unavailable"
+                        )
+                    # Avoid a write on every poll. The default 15-minute lease
+                    # is refreshed only after half of its remaining window has
+                    # elapsed, so a stopped Worker naturally loses authority.
+                    if lease.expires_at <= now + self._credential_lease_ttl / 2:
+                        lease.expires_at = now + self._credential_lease_ttl
+                        lease.updated_at = now
+                        await session.flush()
+        except DBAPIError as exc:
+            _raise_database_error(exc)
+            raise AssertionError("unreachable")
+
 
 class UpdateCheckPlanLoader(Protocol):
     async def load(

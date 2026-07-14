@@ -276,6 +276,9 @@ class FailTaskCheckpointOnce:
             raise RuntimeError("simulated process crash before task checkpoint")
         return await self.delegate.save(state, expected_version=expected_version)
 
+    async def renew_credential_lease(self, state):
+        return await self.delegate.renew_credential_lease(state)
+
 
 class AnalysisCheckpointCodecTests(unittest.TestCase):
     @staticmethod

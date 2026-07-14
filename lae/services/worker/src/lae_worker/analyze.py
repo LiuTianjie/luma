@@ -531,6 +531,10 @@ class AnalyzeStateStore(Protocol):
         expected_version: int,
     ) -> AnalyzeOrchestrationState: ...
 
+    async def renew_credential_lease(
+        self, state: AnalyzeOrchestrationState
+    ) -> None: ...
+
 
 class InMemoryAnalyzeStateStore:
     """Deterministic fake for orchestration tests, never a production fallback."""
@@ -572,6 +576,14 @@ class InMemoryAnalyzeStateStore:
             stored = replace(state, version=expected_version + 1)
             self._states[state.operation_id] = stored
             return stored
+
+    async def renew_credential_lease(
+        self, state: AnalyzeOrchestrationState
+    ) -> None:
+        async with self._lock:
+            current = self._states.get(state.operation_id)
+            if current is None or current != state or state.luma_task_id is None:
+                raise AnalyzeStateConflict()
 
 
 @dataclass(frozen=True, slots=True)
@@ -724,6 +736,12 @@ class AnalyzeStepRunner:
                 )
 
             assert state.luma_task_id is not None
+            if not current.cancel_requested:
+                # The source capability is issued before Luma queues the task.
+                # Keep it alive only while this Worker still owns an active,
+                # fully task-bound operation; the broker remains one-shot and
+                # returns at most a five-minute credential at redemption time.
+                await self._states.renew_credential_lease(state)
             if current.cancel_requested and not state.cancel_forwarded:
                 canceled = await _call_sync(
                     self._luma.cancel_builder_task,
