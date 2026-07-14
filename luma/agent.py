@@ -2611,6 +2611,7 @@ def _ensure_buildx_builder(
     *,
     proxy: str = "",
     no_proxy: str = "",
+    registry_host: str = "",
     recreate: bool = False,
     env: Mapping[str, str] | None = None,
 ) -> str:
@@ -2645,6 +2646,7 @@ def _ensure_buildx_builder(
         name,
         proxy=proxy,
         no_proxy=no_proxy,
+        registry_host=registry_host,
         env=env,
     ):
         # Builder names distinguish proxy/no-proxy in the common case, but the
@@ -2667,6 +2669,28 @@ def _ensure_buildx_builder(
         needs_create = True
     if needs_create:
         create_cmd = [docker, "buildx", "create", "--name", name, "--driver", "docker-container", "--driver-opt", "network=host"]
+        buildkit_config: tempfile.NamedTemporaryFile[str] | None = None
+        if registry_host:
+            # The image exporter has its own ``registry.insecure`` switch, but
+            # Dockerfile FROM/COPY --from resolution is performed by the
+            # independent BuildKit daemon.  Give that resolver an explicit
+            # HTTP registry stanza as well, otherwise an internal base image is
+            # silently upgraded to HTTPS and imports fail before the build.
+            registry_host = _safe_registry_host(registry_host)
+            buildkit_config = tempfile.NamedTemporaryFile(
+                mode="w",
+                prefix="luma-buildkitd-",
+                suffix=".toml",
+                encoding="utf-8",
+            )
+            buildkit_config.write(
+                f'[registry."{registry_host}"]\n'
+                "  http = true\n"
+                "  insecure = true\n"
+            )
+            buildkit_config.flush()
+            create_cmd += ["--buildkitd-config", buildkit_config.name]
+            create_cmd += ["--driver-opt", f"env.LUMA_INSECURE_REGISTRY_HOST={registry_host}"]
         if proxy:
             create_cmd += [
                 "--driver-opt", f"env.HTTP_PROXY={proxy}",
@@ -2674,15 +2698,19 @@ def _ensure_buildx_builder(
                 "--driver-opt", _buildx_driver_opt(f"env.NO_PROXY={no_proxy}"),
             ]
         create_cmd.append("--bootstrap")
-        create = subprocess.run(
-            create_cmd,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            env=env,
-            timeout=180,
-        )
+        try:
+            create = subprocess.run(
+                create_cmd,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                env=env,
+                timeout=180,
+            )
+        finally:
+            if buildkit_config is not None:
+                buildkit_config.close()
         if create.returncode != 0:
             raise LumaError(f"failed to create buildx builder:\n{create.stdout.strip()}")
         verify = subprocess.run(
@@ -2702,9 +2730,10 @@ def _ensure_buildx_builder(
             name,
             proxy=proxy,
             no_proxy=no_proxy,
+            registry_host=registry_host,
             env=env,
         ):
-            raise LumaError(f"failed to create buildx builder {name} with the requested proxy settings")
+            raise LumaError(f"failed to create buildx builder {name} with the requested network settings")
     return name
 
 
@@ -2714,6 +2743,7 @@ def _buildx_builder_proxy_matches(
     *,
     proxy: str,
     no_proxy: str,
+    registry_host: str = "",
     env: Mapping[str, str] | None = None,
 ) -> bool:
     """Return whether BuildKit's persisted container env matches this build."""
@@ -2749,9 +2779,16 @@ def _buildx_builder_proxy_matches(
         if not isinstance(item, str):
             return False
         key, separator, value = item.partition("=")
-        if separator and key.upper() in {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"}:
+        if separator and key.upper() in {
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "LUMA_INSECURE_REGISTRY_HOST",
+        }:
             options[key.upper()] = value
 
+    if options.get("LUMA_INSECURE_REGISTRY_HOST", "") != registry_host:
+        return False
     proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
     if not proxy:
         return all(key not in options for key in proxy_keys)
@@ -2961,7 +2998,14 @@ def _docker_buildx_build(
     if result.code != 0 and _buildx_missing_builder_error(result.output or "", builder):
         if progress:
             progress({"type": "output", "line": "Buildx builder is missing on the build node; recreating it and retrying once."})
-        _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, recreate=True, env=env)
+        _ensure_buildx_builder(
+            docker,
+            proxy=proxy or "",
+            no_proxy=no_proxy,
+            registry_host=registry_host,
+            recreate=True,
+            env=env,
+        )
         result = run_build()
         if result.code == 124:
             raise LumaError(f"docker buildx build timed out after {build_timeout}s")
@@ -3045,7 +3089,13 @@ def _build_compose_images(
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
     buildx_env = dict(os.environ)
     buildx_env["DOCKER_CONFIG"] = str(docker_config)
-    builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, env=buildx_env)
+    builder = _ensure_buildx_builder(
+        docker,
+        proxy=proxy or "",
+        no_proxy=no_proxy,
+        registry_host=registry_host,
+        env=buildx_env,
+    )
     images: Dict[str, str] = {}
     shared_image_replacements: Dict[str, str] = {}
     ambiguous_shared_images: set[str] = set()
@@ -3219,7 +3269,13 @@ def build_image(
         no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
         buildx_env = dict(os.environ)
         buildx_env["DOCKER_CONFIG"] = str(docker_config)
-        builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, env=buildx_env)
+        builder = _ensure_buildx_builder(
+            docker,
+            proxy=proxy or "",
+            no_proxy=no_proxy,
+            registry_host=registry_host,
+            env=buildx_env,
+        )
         image = _docker_buildx_build(
             docker=docker,
             builder=builder,

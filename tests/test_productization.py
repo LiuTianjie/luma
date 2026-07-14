@@ -14248,6 +14248,75 @@ class GithubImportTests(unittest.TestCase):
         self.assertEqual(builder, "luma-builder")
         self.assertEqual([kwargs.get("env") for _, kwargs in calls], [buildx_env, buildx_env, buildx_env, buildx_env])
 
+    def test_buildx_builder_configures_internal_registry_for_base_image_resolution(self):
+        from luma.agent import _ensure_buildx_builder
+
+        calls = []
+        config_text = ""
+
+        def fake_run(cmd, **_kwargs):
+            nonlocal config_text
+            calls.append(cmd)
+            if cmd[:3] == ["docker", "buildx", "inspect"]:
+                return Mock(returncode=1 if len(calls) == 1 else 0, stdout="")
+            if cmd[:2] == ["docker", "inspect"]:
+                return Mock(
+                    returncode=0,
+                    stdout=json.dumps(["LUMA_INSECURE_REGISTRY_HOST=100.66.177.70:5000"]),
+                )
+            if cmd[:3] == ["docker", "buildx", "create"]:
+                config_path = Path(cmd[cmd.index("--buildkitd-config") + 1])
+                config_text = config_path.read_text(encoding="utf-8")
+            return Mock(returncode=0, stdout="created\n")
+
+        with patch("luma.agent.subprocess.run", side_effect=fake_run):
+            builder = _ensure_buildx_builder(
+                "docker",
+                proxy="",
+                no_proxy="localhost,100.66.177.70:5000",
+                registry_host="100.66.177.70:5000",
+            )
+
+        self.assertEqual(builder, "luma-builder")
+        create_cmd = calls[1]
+        self.assertIn("--buildkitd-config", create_cmd)
+        self.assertIn("env.LUMA_INSECURE_REGISTRY_HOST=100.66.177.70:5000", create_cmd)
+        self.assertEqual(
+            config_text,
+            '[registry."100.66.177.70:5000"]\n  http = true\n  insecure = true\n',
+        )
+
+    def test_buildx_builder_recreates_when_internal_registry_config_is_missing(self):
+        from luma.agent import _ensure_buildx_builder
+
+        calls = []
+        docker_inspect_count = 0
+
+        def fake_run(cmd, **_kwargs):
+            nonlocal docker_inspect_count
+            calls.append(cmd)
+            if cmd[:3] == ["docker", "buildx", "inspect"]:
+                return Mock(returncode=0, stdout="Name: luma-builder\n")
+            if cmd[:2] == ["docker", "inspect"]:
+                docker_inspect_count += 1
+                values = [] if docker_inspect_count == 1 else [
+                    "LUMA_INSECURE_REGISTRY_HOST=100.66.177.70:5000"
+                ]
+                return Mock(returncode=0, stdout=json.dumps(values))
+            return Mock(returncode=0, stdout="ok\n")
+
+        with patch("luma.agent.subprocess.run", side_effect=fake_run):
+            builder = _ensure_buildx_builder(
+                "docker",
+                proxy="",
+                no_proxy="localhost,100.66.177.70:5000",
+                registry_host="100.66.177.70:5000",
+            )
+
+        self.assertEqual(builder, "luma-builder")
+        self.assertEqual(calls[2], ["docker", "buildx", "rm", "-f", "luma-builder"])
+        self.assertEqual(calls[3][:5], ["docker", "buildx", "create", "--name", "luma-builder"])
+
     def test_buildx_builder_reuses_matching_proxy_driver_options(self):
         from luma.agent import _ensure_buildx_builder
 
