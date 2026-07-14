@@ -479,20 +479,24 @@ def analyze_git_source(
     repository: str,
     ref: str,
     subdirectory: str,
+    connection_id: str | None = None,
     deadline: float,
 ) -> dict[str, Any]:
+    source: dict[str, Any] = {
+        "type": "git",
+        "repository": repository,
+        "ref": ref,
+        "subdirectory": subdirectory,
+    }
+    if connection_id is not None:
+        source["connectionId"] = connection_id
     created = request_with_retry(
         client,
         "POST",
         "/analyses",
         {
             "applicationId": application_id,
-            "source": {
-                "type": "git",
-                "repository": repository,
-                "ref": ref,
-                "subdirectory": subdirectory,
-            },
+            "source": source,
             "intent": {"region": "cn", "publicProtocols": ["http"]},
         },
         idempotency_key=idempotency("analysis"),
@@ -700,11 +704,19 @@ def public_probe(hostname: str, *, timeout_seconds: float) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds, context=context) as response:
             raw = response.read(64 * 1024)
-            body = json.loads(raw.decode("utf-8")) if raw else {}
-            if response.status != 200 or not isinstance(body, dict):
+            if response.status != 200:
                 raise AcceptanceFailure("public route returned an invalid health response")
-            return body
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+            if not raw:
+                return {}
+            try:
+                body = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                # Platform-generated static runtimes intentionally return a
+                # small text/plain `ok` body. Route acceptance is TLS + HTTP
+                # status based; JSON is optional metadata for richer fixtures.
+                return {}
+            return body if isinstance(body, dict) else {}
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise AcceptanceFailure("public route probe failed") from error
 
 

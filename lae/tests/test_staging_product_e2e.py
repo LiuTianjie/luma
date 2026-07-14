@@ -6,6 +6,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "staging_product_e2e.py"
@@ -23,6 +24,12 @@ class _Response(io.BytesIO):
         self.code = status
         self.headers = {}
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
 
 class JsonClientResponseTest(unittest.TestCase):
     def test_retryable_gateway_html_is_an_api_failure(self) -> None:
@@ -32,6 +39,16 @@ class JsonClientResponseTest(unittest.TestCase):
         self.assertEqual(captured.exception.status, 502)
         self.assertEqual(captured.exception.code, "LAE_API_INVALID_RESPONSE")
         self.assertTrue(captured.exception.retryable)
+
+    def test_public_probe_accepts_plain_text_platform_health(self) -> None:
+        with patch.object(
+            MODULE.urllib.request,
+            "urlopen",
+            return_value=_Response(200, b"ok\n"),
+        ):
+            self.assertEqual(
+                MODULE.public_probe("static.itool.tech", timeout_seconds=1), {}
+            )
 
 
 class _Headers:
