@@ -261,9 +261,10 @@ services:
 
   artifact-store:
     platform: linux/amd64
-    build:
-      context: ../..
-      dockerfile: deploy/luma/docker/minio.Dockerfile
+    # MinIO is released independently from LAE application images. Production
+    # may override the immutable digest for another Luma cluster, but must not
+    # use a mutable tag or rebuild MinIO during an ordinary LAE rollout.
+    image: ${LAE_MINIO_IMAGE:-100.66.177.70:5000/liutianjie/luma/artifact-store@sha256:bcda2439046659f7f2900ec5937f2848fcc93d5cedcef88a86c74d70dc51daed}
     environment:
       # Community MinIO exposes CORS as a server-wide API setting; per-bucket
       # PutBucketCors is not implemented. This store is dedicated to one LAE
