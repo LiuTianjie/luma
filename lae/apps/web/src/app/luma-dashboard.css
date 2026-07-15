@@ -420,7 +420,7 @@ summary:focus-visible {
   font-style: normal;
 }
 .console-shell .shore-title h2 { margin: 0; color: var(--text); font-family: inherit; font-size: 15px; font-weight: 700; }
-.console-shell .shore-title p { margin: 4px 0 0; color: var(--text-subtle); font-size: 9px; }
+.console-shell .shore-heading p { margin: 4px 0 0; color: var(--text-subtle); font-size: 12px; line-height: 1.5; }
 .console-shell .shore-summary {
   min-height: 48px;
   padding: 0 4px;
@@ -1177,7 +1177,7 @@ summary:focus-visible {
   background: var(--recess);
 }
 .console-shell .view-applications .shore-title h2 { font-size: 14px; }
-.console-shell .view-applications .shore-title p { font-size: 8px; }
+.console-shell .view-applications .shore-heading p { font-size: 12px; line-height: 1.5; }
 .console-shell .view-applications .shore-summary {
   min-height: 34px;
   padding: 0;
@@ -1198,7 +1198,7 @@ summary:focus-visible {
   justify-content: space-between;
   gap: 10px;
 }
-.console-shell .view-applications .shore-summary small { font-size: 8px; }
+.console-shell .view-applications .shore-summary small { font-size: 12px; line-height: 1.5; }
 .console-shell .view-applications .shore-summary strong { font-size: 12px; }
 .console-shell .view-applications .shore-title .shore-refresh { min-height: 32px; grid-column: auto; grid-row: auto; }
 .console-shell .view-applications .shore-notice { margin: 0 0 2px !important; }
