@@ -12,7 +12,6 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 
-type Mode = "register" | "login";
 type Step = "request" | "verify" | "magic" | "complete";
 type DeliveryMode = "loading" | "email" | "unavailable";
 type DeliveryCapabilities = {
@@ -23,7 +22,6 @@ const API_ROOT = (process.env.NEXT_PUBLIC_LAE_API_URL || "/v1").replace(/\/$/, "
 
 export function AuthPortal() {
   const reduceMotion = useReducedMotion();
-  const [mode, setMode] = useState<Mode>("register");
   const [step, setStep] = useState<Step>("request");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -75,15 +73,10 @@ export function AuthPortal() {
     }
 
     let active = true;
-    const nextMode: Mode = purpose;
-    setMode(nextMode);
     setEmail(fragmentEmail);
     setStep("magic");
     setLoading(true);
-    void request(
-      nextMode === "register" ? "/auth/email/verify" : "/auth/login/verify",
-      { email: fragmentEmail, magicToken },
-    )
+    void request("/auth/email/complete", { email: fragmentEmail, magicToken })
       .then((response) => {
         if (!active) return;
         setDeployToken(
@@ -106,22 +99,12 @@ export function AuthPortal() {
     };
   }, []);
 
-  const switchMode = (next: Mode) => {
-    setMode(next);
-    setStep("request");
-    setCode("");
-    setError(null);
-    setDeployToken(null);
-  };
-
   const requestChallenge = async (event: FormEvent) => {
     event.preventDefault();
     setLoading(true);
     setError(null);
     try {
-      await request(mode === "register" ? "/auth/register" : "/auth/login/request", {
-        email,
-      });
+      await request("/auth/email/request", { email });
       setStep("verify");
     } catch {
       setError("邮件服务暂时不可用，请稍后重试。");
@@ -135,10 +118,7 @@ export function AuthPortal() {
     setLoading(true);
     setError(null);
     try {
-      const response = await request(
-        mode === "register" ? "/auth/email/verify" : "/auth/login/verify",
-        { email, code },
-      );
+      const response = await request("/auth/email/complete", { email, code });
       setDeployToken(
         typeof response.defaultDeployToken === "string"
           ? response.defaultDeployToken
@@ -158,9 +138,7 @@ export function AuthPortal() {
     setLoading(true);
     setError(null);
     try {
-      await request(mode === "register" ? "/auth/register" : "/auth/login/request", {
-        email,
-      });
+      await request("/auth/email/request", { email });
       setCode("");
     } catch {
       setError("验证码暂时无法重新发送；请稍后再试或更换邮箱。");
@@ -199,14 +177,9 @@ export function AuthPortal() {
 
       <section className="auth-panel" aria-labelledby="auth-title">
         <div className="auth-panel-inner">
-          <div className="auth-switch" aria-label="认证方式">
-            <button type="button" disabled={loading} className={mode === "register" ? "is-active" : ""} onClick={() => switchMode("register")}>注册</button>
-            <button type="button" disabled={loading} className={mode === "login" ? "is-active" : ""} onClick={() => switchMode("login")}>登录</button>
-          </div>
-
           <AnimatePresence mode="wait">
             <motion.div
-              key={`${mode}-${step}`}
+              key={step}
               initial={reduceMotion ? false : { opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
@@ -232,14 +205,14 @@ export function AuthPortal() {
               {step === "request" && deliveryMode === "email" && (
                 <form onSubmit={requestChallenge}>
                   <p className="auth-step">01 · EMAIL</p>
-                  <h2 id="auth-title">{mode === "register" ? "建立你的部署空间" : "回到你的应用"}</h2>
-                  <p className="auth-description">验证码和一次性链接会送到你输入的真实邮箱。没有密码，也不把凭据放进浏览器存储。</p>
+                  <h2 id="auth-title">使用邮箱继续</h2>
+                  <p className="auth-description">已有账户将直接登录，新邮箱会自动创建部署空间。没有密码，也不把凭据放进浏览器存储。</p>
                   <label className="auth-field">
                     <span>邮箱地址</span>
-                    <div><Mail size={16} /><input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></div>
+                    <div><Mail size={16} aria-hidden="true" /><input name="email" type="email" required autoComplete="email" spellCheck={false} value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></div>
                   </label>
                   <button className="auth-submit" type="submit" disabled={loading}>
-                    {loading ? "正在发送…" : "继续"}<ArrowRight size={16} />
+                    {loading ? "正在发送…" : "发送验证码"}<ArrowRight size={16} aria-hidden="true" />
                   </button>
                 </form>
               )}
@@ -248,13 +221,13 @@ export function AuthPortal() {
                 <form onSubmit={verifyChallenge}>
                   <p className="auth-step">02 · VERIFY</p>
                   <h2 id="auth-title">检查你的邮箱</h2>
-                  <p className="auth-description">验证码已发送到 <strong>{email}</strong>。LAE 对不存在或受限的账户也返回相同结果。</p>
+                  <p className="auth-description">验证码已发送到 <strong>{email}</strong>。验证后会自动登录或创建账户。</p>
                   <label className="auth-field auth-code-field">
                     <span>六位验证码</span>
-                    <input inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))} placeholder="000000" />
+                    <input name="code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required autoComplete="one-time-code" spellCheck={false} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))} placeholder="000000" />
                   </label>
                   <button className="auth-submit" type="submit" disabled={loading || code.length !== 6}>
-                    {loading ? "正在验证…" : mode === "register" ? "完成注册" : "登录"}<ArrowRight size={16} />
+                    {loading ? "正在验证…" : "验证并继续"}<ArrowRight size={16} aria-hidden="true" />
                   </button>
                   <div className="auth-secondary-actions">
                     <button className="auth-text-action" type="button" disabled={loading} onClick={() => void resendChallenge()}>重新发送验证码</button>
@@ -276,7 +249,7 @@ export function AuthPortal() {
                 <div>
                   <p className="auth-step">03 · READY</p>
                   <div className="auth-success-mark"><Check size={24} /></div>
-                  <h2 id="auth-title">{mode === "register" ? "部署空间已就绪" : "欢迎回来"}</h2>
+                  <h2 id="auth-title">{deployToken ? "部署空间已就绪" : "欢迎回来"}</h2>
                   <p className="auth-description">Session 已建立，可以继续进入 Luma Application Engine。</p>
                   {deployToken && (
                     <div className="token-once">

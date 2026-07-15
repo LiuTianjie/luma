@@ -1116,6 +1116,7 @@ def create_app(
         if request.url.path in {
             "/v1/auth/register",
             "/v1/auth/login/request",
+            "/v1/auth/email/request",
             "/v1/auth/email/resend",
         }:
             response = JSONResponse({"accepted": True}, status_code=202)
@@ -1242,6 +1243,10 @@ def create_app(
     async def login_request(request: Request, payload: StartRequest) -> JSONResponse:
         return await start_flow(request, payload, "login")
 
+    @app.post("/v1/auth/email/request", status_code=202)
+    async def email_request(request: Request, payload: StartRequest) -> JSONResponse:
+        return await start_flow(request, payload, "auto")
+
     @app.post("/v1/auth/email/resend", status_code=202)
     async def resend(request: Request, payload: ResendRequest) -> JSONResponse:
         return await start_flow(request, payload, payload.purpose)
@@ -1313,6 +1318,12 @@ def create_app(
     @app.post("/v1/auth/login/verify")
     async def verify_login(request: Request, payload: VerifyRequest) -> JSONResponse:
         return await verify_flow(request, payload, "login")
+
+    @app.post("/v1/auth/email/complete")
+    async def complete_email_auth(
+        request: Request, payload: VerifyRequest
+    ) -> JSONResponse:
+        return await verify_flow(request, payload, "auto")
 
     @app.get("/v1/me")
     async def me(request: Request) -> JSONResponse:

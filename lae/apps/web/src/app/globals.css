@@ -405,10 +405,6 @@ button:focus-visible, a:focus-visible, label:focus-within {
 .auth-ambient i:nth-child(3) { top: 61%; left: 12vw; transform: rotate(3deg); }.auth-ambient i:nth-child(4) { top: 69%; left: -4vw; transform: rotate(-2deg); }
 .auth-panel { position: relative; min-height: 100vh; padding: 7vh clamp(30px, 6vw, 92px); display: grid; place-items: center; background: linear-gradient(155deg, rgba(16,32,27,.72), rgba(6,16,13,.92)); }
 .auth-panel-inner { width: min(100%, 430px); }
-.auth-switch { width: max-content; margin-bottom: clamp(58px, 9vh, 100px); padding: 4px; border: 1px solid rgba(214,230,206,.1); border-radius: 999px; display: flex; background: rgba(213,229,205,.025); }
-.auth-switch button { min-width: 70px; padding: 7px 15px; border: 0; border-radius: 999px; background: transparent; color: #67766d; font-size: 9px; cursor: pointer; transition: color var(--quick), background var(--quick); }
-.auth-switch button.is-active { color: #dbe5d7; background: rgba(213,229,205,.085); box-shadow: inset 0 0 0 1px rgba(213,229,205,.05); }
-.auth-switch button:disabled { cursor: wait; opacity: .62; }
 .auth-environment-mark { width: max-content; min-height: 31px; margin-bottom: clamp(58px, 9vh, 100px); padding: 0 13px; border: 1px solid rgba(191,214,177,.14); border-radius: 999px; color: #8fa382; background: rgba(181,207,165,.035); display: flex; align-items: center; gap: 8px; font-size: 8px; letter-spacing: .14em; }
 .auth-panel h2 { margin: 0 0 12px; font-family: "Newsreader Variable", serif; font-weight: 380; font-size: clamp(34px, 3.5vw, 48px); line-height: 1; letter-spacing: -.035em; }
 .auth-description { min-height: 48px; margin: 0 0 34px; color: #77857d; font-size: 10px; line-height: 1.75; }
@@ -452,14 +448,12 @@ button:focus-visible, a:focus-visible, label:focus-within {
   .auth-story-copy h1 { font-size: clamp(50px, 15vw, 72px); }
   .auth-monogram { width: 390px; right: -155px; top: 10px; }
   .auth-panel { order: 1; min-height: min(100svh, 650px); padding: 28px 24px 36px; place-items: start center; }
-  .auth-switch { margin-bottom: clamp(28px, 7vh, 48px); }
   .auth-environment-mark { margin-bottom: clamp(28px, 7vh, 48px); }
   .auth-description { margin-bottom: 24px; }
 }
 
 @media (max-width: 420px) and (max-height: 880px) {
   .auth-panel { min-height: 100svh; padding-top: 22px; }
-  .auth-switch { margin-bottom: 24px; }
   .auth-environment-mark { margin-bottom: 24px; }
   .auth-panel h2 { font-size: 34px; }
   .auth-description { min-height: 0; margin-bottom: 20px; line-height: 1.6; }

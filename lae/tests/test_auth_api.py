@@ -46,6 +46,7 @@ class ApiAuthBackend:
         self.tenant_id = new_id("ten")
         self.session_id = new_id("ses")
         self.register_consumed = False
+        self.challenge_purposes: dict[str, str] = {}
         self.revoked: list[str] = []
         self.revoked_deploy: list[str] = []
         self.deploy_scopes = frozenset(
@@ -63,8 +64,11 @@ class ApiAuthBackend:
     async def begin_challenge(self, **kwargs: object) -> PendingEmailChallenge | None:
         email = str(kwargs["email"])
         purpose = str(kwargs["purpose"])
+        if purpose == "auto":
+            purpose = "login" if email.startswith("existing") else "register"
         if email.startswith("missing") or email.startswith("existing") and purpose == "register":
             return None
+        self.challenge_purposes[email] = purpose
         return PendingEmailChallenge(
             id=self.challenge_id,
             email=email,
@@ -82,6 +86,8 @@ class ApiAuthBackend:
 
     async def complete_challenge(self, **kwargs: object) -> AuthCompletion:
         purpose = str(kwargs["purpose"])
+        if purpose == "auto":
+            purpose = self.challenge_purposes.get(str(kwargs["email"]), "register")
         method = str(kwargs["method"])
         credential = str(kwargs["credential"])
         if credential != (self.code if method == "code" else self.magic):
@@ -225,6 +231,38 @@ class AuthApiTests(unittest.TestCase):
             self.assertNotIn(self.backend.code, serialized)
             self.assertNotIn(self.backend.magic, serialized)
         self.assertEqual(len(self.mail.deliveries), 1)
+
+    def test_unified_email_flow_registers_or_logs_in_without_exposing_branch(self) -> None:
+        registered = self.client.post(
+            "/v1/auth/email/request", json={"email": "person@example.test"}
+        )
+        existing = self.client.post(
+            "/v1/auth/email/request", json={"email": "existing@example.test"}
+        )
+        self.assertEqual(registered.status_code, 202)
+        self.assertEqual(existing.status_code, 202)
+        self.assertEqual(registered.json(), existing.json())
+        self.assertEqual(
+            [delivery.purpose for delivery in self.mail.deliveries],
+            ["register", "login"],
+        )
+
+        completed_registration = self.client.post(
+            "/v1/auth/email/complete",
+            json={"email": "person@example.test", "code": self.backend.code},
+        )
+        self.assertEqual(completed_registration.status_code, 200)
+        self.assertEqual(
+            completed_registration.json()["defaultDeployToken"],
+            self.backend.deploy_token,
+        )
+
+        completed_login = self.client.post(
+            "/v1/auth/email/complete",
+            json={"email": "existing@example.test", "code": self.backend.code},
+        )
+        self.assertEqual(completed_login.status_code, 200)
+        self.assertNotIn("defaultDeployToken", completed_login.json())
 
     def test_preview_auth_is_explicit_and_only_returns_reserved_mailbox_credentials(self) -> None:
         disabled_config = self.client.get("/v1/auth/config")

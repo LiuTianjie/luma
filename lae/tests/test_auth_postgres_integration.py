@@ -474,6 +474,55 @@ class AuthPostgreSQLIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(delivery_failure.activated_at)
         self.assertIsNotNone(delivery_failure.canceled_at)
 
+    async def test_auto_email_purpose_registers_new_and_logs_in_existing_user(self) -> None:
+        email = "auto-auth@example.test"
+        registration = await self.store.begin_challenge(
+            email=email,
+            purpose="auto",
+            request_ip="203.0.113.50",
+            device_id="auto-register-device",
+        )
+        assert registration is not None
+        self.assertEqual(registration.purpose, "register")
+        self.assertTrue(await self.store.activate_challenge(registration.id))
+        registered = await self.store.complete_challenge(
+            email=email,
+            purpose="auto",
+            method="code",
+            credential=registration.code,
+            request_ip="203.0.113.50",
+            user_agent="auto-auth-integration",
+        )
+        self.assertIsNotNone(registered.default_deploy_token)
+
+        async with self.sessions() as session:
+            async with session.begin():
+                await session.execute(
+                    update(EmailChallenge)
+                    .where(EmailChallenge.email == email)
+                    .values(created_at=func.now() - timedelta(seconds=11))
+                )
+
+        login = await self.store.begin_challenge(
+            email=email,
+            purpose="auto",
+            request_ip="203.0.113.51",
+            device_id="auto-login-device",
+        )
+        assert login is not None
+        self.assertEqual(login.purpose, "login")
+        self.assertTrue(await self.store.activate_challenge(login.id))
+        logged_in = await self.store.complete_challenge(
+            email=email,
+            purpose="auto",
+            method="magic",
+            credential=login.magic_token,
+            request_ip="203.0.113.51",
+            user_agent="auto-auth-integration",
+        )
+        self.assertEqual(logged_in.user_id, registered.user_id)
+        self.assertIsNone(logged_in.default_deploy_token)
+
     async def test_deploy_token_auth_rotation_scope_and_tenant_fences(self) -> None:
         first = await self._register("token-owner@example.test")
         assert first.default_deploy_token is not None

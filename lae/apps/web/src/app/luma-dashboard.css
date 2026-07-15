@@ -844,27 +844,26 @@ summary:focus-visible {
   box-shadow: var(--shadow);
 }
 .auth-shell .auth-panel-inner::before { content: "IDENTITY"; display: block; margin-bottom: 20px; color: var(--text-subtle); font-size: 10px; letter-spacing: .08em; }
-.auth-shell .auth-switch { width: 100%; margin: 0 0 24px; padding: 3px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--well); display: grid; grid-template-columns: 1fr 1fr; }
-.auth-shell .auth-switch button { min-height: 32px; padding: 0 10px; border: 0; border-radius: var(--radius-sm); color: var(--text-muted); background: transparent; font-size: 11px; cursor: pointer; }
-.auth-shell .auth-switch button.is-active { color: var(--text); background: var(--surface); box-shadow: var(--shadow); }
 .auth-shell .auth-environment-mark { width: max-content; min-height: 28px; margin: 0 0 24px; padding: 0 9px; border: 1px solid var(--amber-line); border-radius: var(--radius-sm); color: var(--amber); background: var(--amber-soft); display: flex; align-items: center; gap: 7px; font-size: 9px; letter-spacing: .06em; }
-.auth-shell .auth-step { margin: 0 0 8px; color: var(--text-subtle); font-size: 9px; letter-spacing: .08em; }
+.auth-shell .auth-step { margin: 0 0 8px; color: var(--text-subtle); font-size: 11px; letter-spacing: .08em; }
 .auth-shell .auth-panel h2 { margin: 0 0 8px; color: var(--text); font-family: inherit; font-size: 20px; font-weight: 700; line-height: 1.3; letter-spacing: -.01em; }
-.auth-shell .auth-description { min-height: 0; margin: 0 0 22px; color: var(--text-muted); font-size: 11px; line-height: 1.65; }
+.auth-shell .auth-description { min-height: 0; margin: 0 0 22px; color: var(--text-muted); font-size: 13px; line-height: 1.65; }
 .auth-shell .auth-description strong { color: var(--text); font-weight: 600; }
-.auth-shell .auth-field { display: block; margin-bottom: 12px; color: var(--text-muted); font-size: 10px; letter-spacing: 0; }
+.auth-shell .auth-field { display: block; margin-bottom: 12px; color: var(--text-muted); font-size: 12px; letter-spacing: 0; }
 .auth-shell .auth-field > span { display: block; margin: 0 0 7px; }
 .auth-shell .auth-field > div,
 .auth-shell .auth-code-field input { height: 40px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); color: var(--text-muted); background: var(--recess); display: flex; align-items: center; gap: 9px; }
 .auth-shell .auth-field > div:focus-within,
-.auth-shell .auth-code-field input:focus { border-color: var(--accent); background: var(--recess); box-shadow: 0 0 0 2px var(--accent-soft); }
-.auth-shell .auth-field input { width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font-family: inherit; font-size: 12px; }
+.auth-shell .auth-code-field input:focus-visible { border-color: var(--accent); background: var(--recess); box-shadow: 0 0 0 2px var(--accent-soft); }
+.auth-shell .auth-field input { width: 100%; border: 0; color: var(--text); background: transparent; font-family: inherit; font-size: 14px; }
+.auth-shell .auth-field > div input:focus-visible,
+.auth-shell .auth-code-field input:focus-visible { outline: none; }
 .auth-shell .auth-field input::placeholder { color: var(--text-subtle); }
 .auth-shell .auth-code-field input { width: 100%; height: 48px; outline: 0; font-family: inherit; font-size: 18px; letter-spacing: .3em; text-align: center; }
-.auth-shell .auth-submit { width: 100%; min-height: 38px; margin-top: 8px; padding: 0 12px; border: 1px solid var(--accent); border-radius: var(--radius-md); color: #fff; background: var(--accent); display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 500; text-decoration: none; cursor: pointer; transition: background var(--motion-fast), border-color var(--motion-fast); }
+.auth-shell .auth-submit { width: 100%; min-height: 42px; margin-top: 8px; padding: 0 14px; border: 1px solid var(--accent); border-radius: var(--radius-md); color: #fff; background: var(--accent); display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 550; text-decoration: none; cursor: pointer; transition: background var(--motion-fast), border-color var(--motion-fast); }
 .auth-shell .auth-submit:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); transform: none; box-shadow: none; }
 .auth-shell .auth-submit:disabled { cursor: wait; opacity: .55; }
-.auth-shell .auth-text-action { margin-top: 12px; padding: 0; border: 0; color: var(--accent); background: transparent; font-size: 10px; cursor: pointer; }
+.auth-shell .auth-text-action { margin-top: 12px; padding: 0; border: 0; color: var(--accent); background: transparent; font-size: 12px; cursor: pointer; }
 .auth-shell .auth-secondary-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .auth-shell .auth-text-action:disabled { color: var(--text-subtle); cursor: wait; }
 .auth-shell .auth-preview-note { margin: 0 0 14px; padding: 11px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text-muted); background: var(--well); display: grid; grid-template-columns: auto 1fr; gap: 9px; }
@@ -880,8 +879,8 @@ summary:focus-visible {
 .auth-shell .auth-preview-shortcut small { margin-top: 2px; color: var(--text-subtle); font-size: 9px; line-height: 1.4; }
 .auth-shell .auth-magic-progress > span { width: 22px; height: 22px; margin: 0 0 16px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; display: block; }
 .auth-shell .auth-success-mark { width: 36px; height: 36px; margin-bottom: 15px; border: 1px solid var(--green-line); border-radius: var(--radius-md); color: var(--green); background: var(--green-soft); display: grid; place-items: center; box-shadow: none; }
-.auth-shell .auth-error { min-height: 30px; padding-top: 10px; color: var(--red); font-size: 10px; }
-.auth-shell .auth-legal { margin: 14px 0 0; color: var(--text-subtle); font-size: 9px; line-height: 1.55; }
+.auth-shell .auth-error { min-height: 30px; padding-top: 10px; color: var(--red); font-size: 12px; }
+.auth-shell .auth-legal { margin: 14px 0 0; color: var(--text-subtle); font-size: 11px; line-height: 1.55; }
 .auth-shell .token-once { border-color: var(--amber-line); border-radius: var(--radius-md); background: var(--amber-soft); }
 
 .account-shell { min-height: 100vh; overflow: visible; color: var(--text); background: var(--bg); }
@@ -1398,7 +1397,7 @@ summary:focus-visible {
   .plan-review-grid small,
   .plan-service-row small
 ) {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -1414,7 +1413,7 @@ summary:focus-visible {
   .environment-label > span,
   .cli-description
 ) {
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.6;
 }
 
@@ -1434,9 +1433,48 @@ summary:focus-visible {
 .console-shell .utility-heading h2 { font-size: 16px; font-weight: 600; }
 .console-shell .phase-track li small,
 .console-shell .section-index,
-.console-shell .cell-label { font-size: 10px; line-height: 1.35; }
-.console-shell .plan-badge { font-size: 10px; }
+.console-shell .cell-label { font-size: 11px; line-height: 1.35; }
+.console-shell .plan-badge { font-size: 11px; }
 .console-shell small { font-weight: 400; }
+
+/* Operational text must remain readable on wide desktop canvases. */
+.console-shell :is(
+  .shore-title .shore-refresh,
+  .shore-notice,
+  .application-sequence,
+  .application-runtime-note,
+  .service-count,
+  .application-endpoint,
+  .endpoint-pending,
+  .application-target,
+  .application-manage-link,
+  .app-actions > button,
+  .app-more-menu > span,
+  .app-more-menu button strong,
+  .app-more-menu button small,
+  .application-item-footer > span,
+  .application-item-footer > a,
+  .application-loading-label,
+  .application-empty div > span,
+  .application-empty .application-empty-action,
+  .operation-history button,
+  .utility-empty span,
+  .utility-link
+) {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.console-shell :is(
+  .shore-summary strong,
+  .application-name-link,
+  .application-empty strong,
+  .activity-ledger strong,
+  .utility-empty strong
+) {
+  font-size: 14px;
+  line-height: 1.4;
+}
 
 @media (max-width: 980px) {
   .console-shell .view-applications .application-item {

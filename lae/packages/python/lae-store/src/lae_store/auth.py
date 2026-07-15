@@ -354,8 +354,10 @@ class PostgresAuthStore:
 
     @staticmethod
     def _purpose(value: str) -> str:
-        if value not in {"register", "login"}:
-            raise ValueError("authentication purpose must be register or login")
+        if value not in {"register", "login", "auto"}:
+            raise ValueError(
+                "authentication purpose must be register, login, or auto"
+            )
         return value
 
     def _request_ip(self, value: str | None) -> tuple[str | None, bytes | None]:
@@ -481,6 +483,8 @@ class PostgresAuthStore:
                 existing_user = await session.scalar(
                     select(User).where(func.lower(User.email) == email)
                 )
+                if purpose == "auto":
+                    purpose = "login" if existing_user is not None else "register"
                 eligible = (
                     existing_user is None
                     if purpose == "register"
@@ -643,11 +647,12 @@ class PostgresAuthStore:
             async with session.begin():
                 filters = [
                     EmailChallenge.email == email,
-                    EmailChallenge.purpose == purpose,
                     EmailChallenge.activated_at.is_not(None),
                     EmailChallenge.used_at.is_(None),
                     EmailChallenge.canceled_at.is_(None),
                 ]
+                if purpose != "auto":
+                    filters.append(EmailChallenge.purpose == purpose)
                 if method == "magic":
                     try:
                         filters.append(EmailChallenge.id == parse_magic_token(credential))
@@ -691,7 +696,7 @@ class PostgresAuthStore:
                         completion = await self._complete_identity(
                             session,
                             email=email,
-                            purpose=purpose,
+                            purpose=challenge.purpose,
                             now=now,
                             request_ip=canonical_ip,
                             user_agent=sanitized_user_agent,
