@@ -1356,7 +1356,9 @@ function Header({
         <button className="theme-toggle" type="button" onClick={onToggleTheme} aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}>
           {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
         </button>
-        <span className="plan-badge">{principal?.entitlement.plan.toUpperCase() || "GUEST"}</span>
+        {principal && (
+          <span className="plan-badge">{principal.entitlement.plan.toUpperCase()}</span>
+        )}
         <Link className="account-button" aria-label={principal ? "账户" : "登录"} href={principal ? "/account" : "/login"}>
           <CircleUserRound size={18} strokeWidth={1.5} />
           <span>{accountName}</span>
