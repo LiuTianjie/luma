@@ -164,6 +164,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
         # dependency during the short control-plane replacement window.
         capabilities.append("control-image-mirror-v1")
         capabilities.append("system-image-mirror-v1")
+        capabilities.append("runtime-image-cache-v1")
     return capabilities
 
 
@@ -2138,6 +2139,27 @@ def execute_agent_task(
             registry_auth=payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None,
             progress=progress,
         )
+    if action == "cache-runtime-image":
+        return cache_runtime_image(
+            source_image=_required(payload, "sourceImage"),
+            push_image=_required(payload, "pushImage"),
+            destination_image=_required(payload, "destinationImage"),
+            platform=str(payload.get("platform") or ""),
+            proxy=str(payload.get("proxy") or ""),
+            insecure=bool(payload.get("insecure")),
+            timeout=int(payload.get("timeout") or 1800),
+            source_registry_auth=(
+                payload.get("sourceRegistryAuth")
+                if isinstance(payload.get("sourceRegistryAuth"), dict)
+                else None
+            ),
+            destination_registry_auth=(
+                payload.get("destinationRegistryAuth")
+                if isinstance(payload.get("destinationRegistryAuth"), dict)
+                else None
+            ),
+            progress=progress,
+        )
     if action == "build-image":
         return build_image(payload, progress=progress, cancel_event=cancel_event)
     if action == "analyze-source":
@@ -2555,22 +2577,41 @@ def _docker_image_inspect_command(image: str, *, docker_config: str) -> str:
     )
 
 
-def _write_docker_auth_config(config_dir: Path, registry_auth: Dict[str, Any] | None) -> None:
-    if not registry_auth:
+def _write_docker_auth_configs(
+    config_dir: Path, registry_auths: list[Dict[str, Any] | None]
+) -> None:
+    auths: Dict[str, Dict[str, str]] = {}
+    for registry_auth in registry_auths:
+        if not registry_auth:
+            continue
+        username = str(registry_auth.get("username") or "")
+        password = str(registry_auth.get("password") or "")
+        server = str(
+            registry_auth.get("serveraddress")
+            or registry_auth.get("serverAddress")
+            or ""
+        )
+        if not username or not password or not server:
+            continue
+        auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode(
+            "ascii"
+        )
+        auths[server] = {"auth": auth}
+    if not auths:
         return
-    username = str(registry_auth.get("username") or "")
-    password = str(registry_auth.get("password") or "")
-    server = str(registry_auth.get("serveraddress") or registry_auth.get("serverAddress") or "")
-    if not username or not password or not server:
-        return
-    auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     config_dir.mkdir(parents=True, exist_ok=True)
     config_file = config_dir / "config.json"
-    config_file.write_text(json.dumps({"auths": {server: {"auth": auth}}}), encoding="utf-8")
+    config_file.write_text(json.dumps({"auths": auths}), encoding="utf-8")
     try:
         os.chmod(config_file, 0o600)
     except OSError:
         pass
+
+
+def _write_docker_auth_config(
+    config_dir: Path, registry_auth: Dict[str, Any] | None
+) -> None:
+    _write_docker_auth_configs(config_dir, [registry_auth])
 
 
 def _first_repo_digest(image: str, inspect_output: str) -> str:
@@ -3487,7 +3528,10 @@ def mirror_control_image(
     progress: Callable[[Dict[str, Any]], None] | None = None,
     platform: str = "",
     registry_auth: Dict[str, Any] | None = None,
+    source_registry_auth: Dict[str, Any] | None = None,
+    destination_registry_auth: Dict[str, Any] | None = None,
     _system_image: bool = False,
+    _runtime_image: bool = False,
 ) -> Dict[str, Any]:
     """Copy a Control release through the Builder into Luma's pull registry.
 
@@ -3505,7 +3549,16 @@ def mirror_control_image(
     destination = _safe_docker_image_ref(destination_image)
     push_repository = _docker_image_repository(push)
     destination_repository = _docker_image_repository(destination)
-    if _system_image:
+    if _runtime_image:
+        if "/luma-cache/" not in push_repository:
+            raise LumaError(
+                "runtime image cache destination repository must use luma-cache"
+            )
+        if "/luma-cache/" not in destination_repository:
+            raise LumaError(
+                "runtime image cache public repository must use luma-cache"
+            )
+    elif _system_image:
         if "/luma-system/" not in push_repository:
             raise LumaError(
                 "system image mirror destination repository must use luma-system"
@@ -3538,18 +3591,20 @@ def mirror_control_image(
         if value and progress:
             progress({"type": "status", "line": value, "ts": int(time.time())})
 
+    registry_auths = [
+        source_registry_auth,
+        destination_registry_auth,
+        registry_auth,
+    ]
     auth_context = (
         tempfile.TemporaryDirectory(prefix="luma-crane-auth-")
-        if registry_auth
+        if any(registry_auths)
         else contextlib.nullcontext("")
     )
     with auth_context as auth_dir:
         if auth_dir:
             auth_path = Path(auth_dir)
-            _write_docker_auth_config(
-                auth_path,
-                _auth_for_host(registry_auth, _image_registry_host(push)),
-            )
+            _write_docker_auth_configs(auth_path, registry_auths)
             env["DOCKER_CONFIG"] = str(auth_path)
 
         selected_platform = str(platform or "").strip()
@@ -3584,7 +3639,8 @@ def mirror_control_image(
         digest = str(digest_result.output or "").strip().splitlines()[-1] if digest_result.output else ""
         if digest_result.code != 0 or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
             raise LumaError(f"control image mirror verification failed: {_tail_text(digest_result.output or '')}")
-        emit(f"Internal Control image verified at {digest}.")
+        image_kind = "runtime" if _runtime_image else "system" if _system_image else "Control"
+        emit(f"Internal {image_kind} image verified at {digest}.")
         return {
             "sourceImage": source,
             "pushImage": push,
@@ -3621,6 +3677,39 @@ def mirror_system_image(
         _system_image=True,
     )
     result["message"] = "System image cached and verified in the internal registry."
+    return result
+
+
+def cache_runtime_image(
+    *,
+    source_image: str,
+    push_image: str,
+    destination_image: str,
+    platform: str = "",
+    proxy: str = "",
+    insecure: bool = False,
+    timeout: int = 1800,
+    source_registry_auth: Dict[str, Any] | None = None,
+    destination_registry_auth: Dict[str, Any] | None = None,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    selected_platform = str(platform or "").strip()
+    if selected_platform and not re.fullmatch(r"linux/(?:amd64|arm64)", selected_platform):
+        raise LumaError("runtime image cache platform must be linux/amd64 or linux/arm64")
+    result = mirror_control_image(
+        source_image=source_image,
+        push_image=push_image,
+        destination_image=destination_image,
+        proxy=proxy,
+        insecure=insecure,
+        timeout=timeout,
+        source_registry_auth=source_registry_auth,
+        destination_registry_auth=destination_registry_auth,
+        progress=progress,
+        platform=selected_platform,
+        _runtime_image=True,
+    )
+    result["message"] = "Runtime image cached and verified in the internal registry."
     return result
 
 

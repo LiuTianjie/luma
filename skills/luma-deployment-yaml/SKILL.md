@@ -47,11 +47,13 @@ For repository import, builder registry setup, or registry pull/proxy failures, 
 
 - Required: `name`, `region`, and either `image` or a `build` block.
 - For ordinary prebuilt-image deploys, set `image` explicitly.
-- When a prebuilt image is pinned to a ready Luma node, mutable-tag resolution
-  and pulling happen on that target node. Control must not contact the public
-  registry first, because doing so bypasses the node's egress and mirror path.
-- The target node returns the resolved repo digest after a successful pull;
-  Luma writes that immutable digest into the Nomad job.
+- When Builder Registry is configured, every external prebuilt image is copied
+  by the declared Builder into `registryHost/luma-cache/...` before Nomad is
+  submitted. The runtime job receives the verified internal repo digest; target
+  nodes do not pull the public/private source image directly.
+- Source-registry credentials are leased only to Builder for the copy. Do not
+  inject them into the runtime job; only internal-registry credentials, when
+  configured, belong in the Nomad docker auth block.
 - For repository import builds, prefer omitting `image` and adding `build:`. Luma builds and pushes to the configured builder registry, removes the `build` block from the runtime deploy payload, and injects the built image reference.
 - Valid regions: `cn`, `global`, `home`.
 - Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
@@ -64,7 +66,7 @@ For repository import, builder registry setup, or registry pull/proxy failures, 
 - `node` is the Luma node name from `luma node join --name`. Control-plane deploy resolves it to a placement constraint on the node's stable Luma identity and also keeps the region constraint. Do not use Docker hostnames for normal pins; hosts such as OrbStack may share generic names.
 - Nomad node identities are stable across agent restarts, so a node that rejoins keeps its pin without needing constraint rewrites.
 - Use `proxy: true` for container runtime HTTP/HTTPS egress through Luma. Do not hand-write the default `egress` network or default `HTTP_PROXY`/`HTTPS_PROXY`.
-- `proxy: true` is not for image pulls. Image pulls use Docker daemon proxy and registry credentials managed by Luma. For private registries, Docker daemon `NO_PROXY` may need the registry host even when `curl https://<registry>/v2/` is reachable.
+- `proxy: true` is not for image pulls. External image access belongs to Builder's per-process cache task; runtime nodes pull only from Builder Registry.
 - `resources.limits.cpus` and `resources.reservations.cpus` are fractional cores, for example `"0.50"`. Quote them as strings in YAML; Luma converts cores to Nomad CPU MHz.
 - `healthcheck` is passed to the running container's health check. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
 - `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
@@ -74,6 +76,10 @@ For repository import, builder registry setup, or registry pull/proxy failures, 
 ## Builder Registry Workflow
 
 - Treat `luma import` / Dashboard Repository Import as a build pipeline, not just a manifest deploy: Git provider -> builder node clone/buildx -> internal registry push -> target node pull -> normal Luma deploy.
+- Treat ordinary `luma deploy` and `luma compose deploy` prebuilt images as a
+  cache pipeline: external/private registry -> Builder `crane copy` -> Builder
+  Registry digest -> target node. Do not dynamically edit a target node's
+  Docker daemon proxy after a pull failure.
 - Repository Import must support both single-service manifests and Compose deployments. If the repository has `luma.compose.yml`, build services declared with Compose `build:` blocks, rewrite those services to internal-registry `image:` references, then deploy through the normal Compose deployment path.
 - Prefer a dedicated Luma node named `builder` when available. Confirm it is `ready`, Linux, and advertises `docker-build` in `luma status` before using it.
 - Dashboard Repository Import should expose the dedicated `builder` node as the build/registry target. Other historical `docker-build` nodes such as `blg` should not appear in the main build-node dropdown unless the product explicitly adds an advanced override path.
@@ -258,7 +264,7 @@ The dashboard exposes the same Nomad job-version rollback from Applications -> V
 For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.1.259"
+python -m pip install "luma-infra==0.1.260"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:
@@ -279,9 +285,15 @@ luma storage check luma.compose.yml --format json
 
 ## Operational Notes
 
-- `latest` or omitted image tags may be resolved to `name@sha256:...` when Luma can validate the pull on the manager or a fixed target node. Prefer pinned version tags or digests for production rollback; mutable tags can make an old Nomad job version pull newer image bytes.
-- Private registry credentials are stored with `luma registry login` and matched by image registry host during deploy. Luma injects them into the Nomad job's docker `auth` block so the placed client pulls the private image. If Docker daemon proxying causes EOF/timeout against a private registry, check daemon `NO_PROXY`; do not try to fix it with manifest `proxy: true`.
-- For Docker Hub-style images, Luma should prefer the requested image, then configure Docker daemon egress proxy and retry when the target node reports registry network failures, and only then fall back to configured `defaults.imageMirrors`. `defaults.imageMirrors: []` disables mirror fallback.
+- `latest` or omitted image tags are copied and resolved by Builder; the Nomad
+  job uses the verified Builder Registry digest. Prefer version tags or source
+  digests so rollback intent remains understandable.
+- Private registry credentials are stored with `luma registry login`, matched
+  to the external source, and leased only to Builder. They must not be persisted
+  in agent tasks, logs, deployment records, or runtime jobs.
+- For Docker Hub-style images, Builder tries the requested source and then
+  configured `defaults.imageMirrors`; it never changes a target node's Docker
+  daemon proxy. `defaults.imageMirrors: []` disables source mirror fallback.
 - `luma service remove <name>` uses the manifest recorded by the control plane during the last successful single-service or Compose deploy. This also works for deployments created from the web dashboard.
 - Storage data is preserved by default. Add `--delete-storage` only when intentionally deleting removable managed storage referenced by the recorded deployment.
 - `region` controls workload scheduling via a node-meta constraint; the deploy itself is issued by Luma Control through the Nomad API on the manager.

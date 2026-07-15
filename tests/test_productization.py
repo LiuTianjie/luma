@@ -5090,6 +5090,161 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(result["digest"], digest)
         self.assertIn("System image", result["message"])
 
+    def test_agent_caches_runtime_image_with_separate_source_and_destination_auth(self):
+        from luma.agent import cache_runtime_image
+        from luma.local import LocalResult
+
+        digest = "sha256:" + "d" * 64
+        observed: list[dict[str, Any]] = []
+
+        def run(_command, **kwargs):
+            docker_config = Path(kwargs["env"]["DOCKER_CONFIG"])
+            observed.append(json.loads((docker_config / "config.json").read_text(encoding="utf-8")))
+            return LocalResult(0, "copy complete" if len(observed) == 1 else digest + "\n")
+
+        with patch("luma.agent._crane_binary", return_value="/usr/local/bin/crane"), patch(
+            "luma.agent._run_process_streaming", side_effect=run
+        ) as process:
+            result = cache_runtime_image(
+                source_image="private.example.com/acme/api:latest",
+                push_image="builder:5000/luma-cache/private.example.com/acme/api:cache",
+                destination_image="100.66.177.70:5000/luma-cache/private.example.com/acme/api:cache",
+                source_registry_auth={
+                    "username": "source-user",
+                    "password": "source-secret",
+                    "serveraddress": "private.example.com",
+                },
+                destination_registry_auth={
+                    "username": "cache-user",
+                    "password": "cache-secret",
+                    "serveraddress": "builder:5000",
+                },
+                insecure=True,
+            )
+
+        self.assertEqual(result["digest"], digest)
+        self.assertIn("private.example.com", observed[0]["auths"])
+        self.assertIn("builder:5000", observed[0]["auths"])
+        self.assertFalse(Path(process.call_args_list[0].kwargs["env"]["DOCKER_CONFIG"]).exists())
+        self.assertNotIn("source-secret", repr(process.call_args_list))
+        self.assertNotIn("cache-secret", repr(process.call_args_list))
+
+    def test_control_routes_external_runtime_image_through_builder_cache(self):
+        from luma.config import LumaConfig
+        from luma.control.server import _cache_runtime_image_on_builder
+
+        digest = "sha256:" + "e" * 64
+        state = {
+            "build": {
+                "defaultNode": "builder",
+                "registryHost": "100.66.177.70:5000",
+                "pushHost": "100.66.177.70:5000",
+            }
+        }
+        old_insecure = _set_env("LUMA_LAE_BUILDER_REGISTRY_INSECURE", "1")
+        try:
+            with patch(
+                "luma.control.server._require_build_node", return_value="builder"
+            ), patch(
+                "luma.control.server._run_node_agent_task",
+                return_value={"digest": digest},
+            ) as task:
+                result = _cache_runtime_image_on_builder(
+                    LumaConfig({}, None),
+                    state,
+                    "ghcr.io/acme/private-api:latest",
+                    platform="linux/amd64",
+                )
+        finally:
+            _restore_env("LUMA_LAE_BUILDER_REGISTRY_INSECURE", old_insecure)
+
+        self.assertEqual(result["builderNode"], "builder")
+        self.assertTrue(result["cached"])
+        self.assertEqual(
+            result["deployed"],
+            "100.66.177.70:5000/luma-cache/ghcr.io/acme/private-api@" + digest,
+        )
+        self.assertEqual(task.call_args.args[2], "cache-runtime-image")
+        payload = task.call_args.args[3]
+        self.assertEqual(payload["sourceImage"], "ghcr.io/acme/private-api:latest")
+        self.assertEqual(payload["platform"], "linux/amd64")
+        self.assertNotIn("sourceRegistryAuth", payload)
+        self.assertNotIn("destinationRegistryAuth", payload)
+
+    def test_control_keeps_existing_builder_registry_image_without_copy(self):
+        from luma.config import LumaConfig
+        from luma.control.server import _cache_runtime_image_on_builder
+
+        state = {
+            "build": {
+                "defaultNode": "builder",
+                "registryHost": "100.66.177.70:5000",
+                "pushHost": "100.66.177.70:5000",
+            }
+        }
+        with patch(
+            "luma.control.server._require_build_node", return_value="builder"
+        ), patch("luma.control.server._run_node_agent_task") as task:
+            result = _cache_runtime_image_on_builder(
+                LumaConfig({}, None),
+                state,
+                "100.66.177.70:5000/acme/api:abc123",
+            )
+
+        self.assertFalse(result["cached"])
+        self.assertEqual(result["deployed"], "100.66.177.70:5000/acme/api:abc123")
+        task.assert_not_called()
+
+    def test_compose_runtime_cache_reuses_duplicate_image_copy(self):
+        from luma.compose import ComposeDeploymentSpec
+        from luma.config import LumaConfig
+        from luma.control.server import _cache_compose_images_on_builder
+
+        deployment = ComposeDeploymentSpec(
+            source=Path("luma.compose.yml"),
+            compose_path=Path("docker-compose.yml"),
+            compose={
+                "services": {
+                    "api": {"image": "ghcr.io/acme/api:1"},
+                    "worker": {"image": "ghcr.io/acme/api:1"},
+                }
+            },
+            name="stack",
+            region="cn",
+            storage_classes={},
+            volumes={},
+            services={},
+        )
+        state = {
+            "build": {
+                "defaultNode": "builder",
+                "registryHost": "100.66.177.70:5000",
+                "pushHost": "100.66.177.70:5000",
+            }
+        }
+        cached = {
+            "deployed": "100.66.177.70:5000/luma-cache/ghcr.io/acme/api@sha256:" + "f" * 64,
+            "cacheImage": "100.66.177.70:5000/luma-cache/ghcr.io/acme/api:cache",
+            "builderNode": "builder",
+            "cached": True,
+        }
+        with patch(
+            "luma.control.server._cache_runtime_image_on_builder",
+            return_value=cached,
+        ) as cache:
+            resolved, result = _cache_compose_images_on_builder(
+                LumaConfig({}, None), state, deployment
+            )
+
+        self.assertEqual(cache.call_count, 1)
+        self.assertEqual(
+            resolved.compose["services"]["api"]["image"], cached["deployed"]
+        )
+        self.assertEqual(
+            resolved.compose["services"]["worker"]["image"], cached["deployed"]
+        )
+        self.assertEqual(len(result["images"]), 2)
+
     def test_async_control_image_preparation_persists_progress_and_internal_ref(self):
         from luma.control.server import handle_control_image_prepare_get, handle_control_image_prepare_start
         from luma.control.state import save_state
@@ -13327,6 +13482,38 @@ class GithubImportTests(unittest.TestCase):
 
         self.assertEqual(leased["registryAuth"]["password"], "registry-secret")
         self.assertNotIn("registryAuth", stored_payload)
+
+    def test_runtime_cache_credentials_are_leased_for_source_and_destination(self):
+        from luma.control.server import _agent_task_lease_payload
+
+        state = {
+            "registries": {
+                "private.example.com": {
+                    "username": "source-user",
+                    "password": "source-secret",
+                    "serverAddress": "private.example.com",
+                },
+                "builder:5000": {
+                    "username": "cache-user",
+                    "password": "cache-secret",
+                    "serverAddress": "builder:5000",
+                },
+            }
+        }
+        stored_payload = {
+            "sourceImage": "private.example.com/acme/api:latest",
+            "pushImage": "builder:5000/luma-cache/private.example.com/acme/api:cache",
+        }
+
+        leased = _agent_task_lease_payload(
+            state,
+            {"action": "cache-runtime-image", "payload": stored_payload},
+        )
+
+        self.assertEqual(leased["sourceRegistryAuth"]["password"], "source-secret")
+        self.assertEqual(leased["destinationRegistryAuth"]["password"], "cache-secret")
+        self.assertNotIn("sourceRegistryAuth", stored_payload)
+        self.assertNotIn("destinationRegistryAuth", stored_payload)
 
     def test_build_image_credentials_fall_back_to_legacy_github_token_secret(self):
         from luma.control.server import _agent_task_lease_payload

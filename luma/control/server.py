@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import base64
 import concurrent.futures
+import copy
 import errno
 import functools
 import hashlib
@@ -2629,6 +2630,20 @@ def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Di
         registry_auth = registry_auth_for_image(registries, push_image)
         if registry_auth:
             payload["registryAuth"] = registry_auth
+    if task.get("action") == "cache-runtime-image":
+        # Source and destination credentials are independently leased.  A
+        # private external image must be readable by the Builder without ever
+        # persisting its password in agentTasks, while an authenticated
+        # internal registry may require a different write credential.
+        registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+        source_image = str(payload.get("sourceImage") or "")
+        push_image = str(payload.get("pushImage") or "")
+        source_auth = registry_auth_for_image(registries, source_image)
+        destination_auth = registry_auth_for_image(registries, push_image)
+        if source_auth:
+            payload["sourceRegistryAuth"] = source_auth
+        if destination_auth:
+            payload["destinationRegistryAuth"] = destination_auth
     if task.get("action") == "join-nomad" and not payload.get("tailscaleAuthKey"):
         secrets_state = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
         tailscale_authkey = str(secrets_state.get("TAILSCALE_AUTHKEY") or "") or os.environ.get("TAILSCALE_AUTHKEY") or ""
@@ -3000,6 +3015,8 @@ def _agent_task_progress_step_name(action: str) -> str:
         return "Build image"
     if action == "diagnose-docker-pull":
         return "Docker pull"
+    if action == "cache-runtime-image":
+        return "Cache image on Builder"
     return "Agent task"
 
 
@@ -9149,10 +9166,20 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         registry_auth = _registry_auth_for_service(state, service)
         service, image_result = _deploy_step(
             steps,
-            "Resolve image",
-            lambda: resolve_service_image(config, service, registry_auth=registry_auth, state=state),
+            "Cache image on Builder",
+            lambda: resolve_service_image(
+                config,
+                service,
+                registry_auth=registry_auth,
+                state=state,
+                progress=progress,
+            ),
             progress=progress,
         )
+        # The source credential was leased only to Builder.  Runtime receives
+        # credentials for the internal pull reference, if that registry is
+        # authenticated, never credentials for the external source registry.
+        registry_auth = _registry_auth_for_service(state, service)
         _deploy_step(
             steps,
             "Check TCP relay ports",
@@ -11015,6 +11042,17 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+        deployment, image_cache = _deploy_step(
+            steps,
+            "Cache compose images on Builder",
+            lambda: _cache_compose_images_on_builder(
+                config,
+                state,
+                deployment,
+                progress=progress,
+            ),
+            progress=progress,
+        )
         stack_text = _deploy_step(
             steps,
             "Render compose Nomad job",
@@ -11166,6 +11204,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         "cniHostports": cni_hostports,
         "storagePreparation": storage_preparation,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
+        "imageCache": image_cache,
         "steps": steps,
     }
     return result
@@ -14915,9 +14954,16 @@ def resolve_service_image(
     *,
     registry_auth: Dict[str, str] | None = None,
     state: Dict[str, Any] | None = None,
+    progress: Callable[[dict[str, str]], None] | None = None,
 ) -> tuple[ServiceSpec, Dict[str, Any]]:
     if state is not None:
-        return _resolve_service_image_for_deployment(config, service, state, registry_auth=registry_auth)
+        return _resolve_service_image_for_deployment(
+            config,
+            service,
+            state,
+            registry_auth=registry_auth,
+            progress=progress,
+        )
 
     images = [service.image, *_fallback_images(config, service.image)]
     errors: list[str] = []
@@ -14949,15 +14995,75 @@ def _resolve_service_image_for_deployment(
     state: Dict[str, Any],
     *,
     registry_auth: Dict[str, str] | None = None,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> tuple[ServiceSpec, Dict[str, Any]]:
+    build = _build_config(state)
+    if not str(build.get("registryHost") or "").strip() and not str(
+        build.get("pushHost") or ""
+    ).strip():
+        # Existing clusters may upgrade Control before adopting a Builder. Keep
+        # their historical pull path available, but any cluster with Builder
+        # registry settings takes the centralized cache path exclusively.
+        return _resolve_service_image_without_builder(
+            config, service, state, registry_auth=registry_auth
+        )
+    images = [service.image, *_fallback_images(config, service.image)]
+    errors: list[str] = []
+    platform = str(service.node_platform or "").strip()
+    for image in images:
+        image_registry_auth = registry_auth if registry_auth_matches_image(registry_auth, image) else None
+        try:
+            cached = _cache_runtime_image_on_builder(
+                config,
+                state,
+                image,
+                platform=platform,
+                progress=progress,
+            )
+            deploy_image = str(cached["deployed"])
+            image_result = {
+                "requested": service.image,
+                "selected": image,
+                "deployed": deploy_image,
+                "fallback": image != service.image,
+                "registryAuth": bool(image_registry_auth),
+                "forcePull": False,
+                "platform": platform,
+                "node": service.node or "",
+                "builderNode": cached["builderNode"],
+                "cached": cached["cached"],
+                "cacheImage": cached["cacheImage"],
+                "resolvedBy": "builder-cache",
+            }
+            return replace(service, image=deploy_image), image_result
+        except LumaError as exc:
+            errors.append(f"{image}: {exc}")
+    raise LumaError("Builder could not cache the service image; tried " + "; ".join(errors))
+
+
+def _resolve_service_image_without_builder(
+    config: Any,
+    service: ServiceSpec,
+    state: Dict[str, Any],
+    *,
+    registry_auth: Dict[str, str] | None = None,
 ) -> tuple[ServiceSpec, Dict[str, Any]]:
     if not service.node:
-        resolved = _resolve_mutable_service_image_from_registry(service, registry_auth=registry_auth)
+        resolved = _resolve_mutable_service_image_from_registry(
+            service, registry_auth=registry_auth
+        )
         if resolved:
             return resolved
-        return _deferred_service_image(config, service, registry_auth=registry_auth, reason="Nomad will pull on the scheduled node")
-
+        return _deferred_service_image(
+            config,
+            service,
+            registry_auth=registry_auth,
+            reason="Nomad will pull on the scheduled node",
+        )
     if not _node_agent_has_capability(state, service.node, "docker-image"):
-        resolved = _resolve_mutable_service_image_from_registry(service, registry_auth=registry_auth, node=service.node)
+        resolved = _resolve_mutable_service_image_from_registry(
+            service, registry_auth=registry_auth, node=service.node
+        )
         if resolved:
             return resolved
         return _deferred_service_image(
@@ -14966,12 +15072,15 @@ def _resolve_service_image_for_deployment(
             registry_auth=registry_auth,
             reason=f"Target node agent on {service.node} does not advertise docker-image",
         )
-
     images = [service.image, *_fallback_images(config, service.image)]
     errors: list[str] = []
     platform = str(service.node_platform or "").strip()
     for image in images:
-        image_registry_auth = registry_auth if registry_auth_matches_image(registry_auth, image) else None
+        image_registry_auth = (
+            registry_auth
+            if registry_auth_matches_image(registry_auth, image)
+            else None
+        )
         force_pull = image_uses_mutable_latest_tag(image)
         payload: Dict[str, Any] = {
             "image": image,
@@ -14981,13 +15090,13 @@ def _resolve_service_image_for_deployment(
         if image_registry_auth:
             payload["registryAuth"] = image_registry_auth
         try:
-            # Keep registry resolution on the target node.  Resolving mutable
-            # tags from Control bypasses the node's Docker egress and mirror
-            # policy, so a manager with no direct Docker Hub route can fail
-            # before the normal target-node retry/fallback chain even starts.
-            result = _resolve_image_on_target_node(state, service.node, image, payload)
-            deploy_image = str(result.get("deployed") or result.get("digest") or image)
-            image_result = {
+            result = _resolve_image_on_target_node(
+                state, service.node, image, payload
+            )
+            deploy_image = str(
+                result.get("deployed") or result.get("digest") or image
+            )
+            return replace(service, image=deploy_image), {
                 "requested": service.image,
                 "selected": image,
                 "deployed": deploy_image,
@@ -14998,10 +15107,188 @@ def _resolve_service_image_for_deployment(
                 "node": service.node,
                 "resolvedBy": "target-node",
             }
-            return replace(service, image=deploy_image), image_result
         except LumaError as exc:
             errors.append(f"{image}: {exc}")
-    raise LumaError(f"unable to pull service image on target node {service.node}; tried " + "; ".join(errors))
+    raise LumaError(
+        f"unable to pull service image on target node {service.node}; tried "
+        + "; ".join(errors)
+    )
+
+
+def _runtime_image_cache_repository(image: str) -> str:
+    host = normalize_registry_host(registry_host_from_image(image))
+    repository = _image_repository(image)
+    parts = repository.split("/")
+    if parts and ("." in parts[0] or ":" in parts[0] or parts[0] == "localhost"):
+        parts = parts[1:]
+    if host in {"docker.io", "registry-1.docker.io"} and len(parts) == 1:
+        parts.insert(0, "library")
+    safe_host = re.sub(r"[^a-z0-9._-]+", "-", host.lower()).strip("-.")
+    safe_parts = [
+        re.sub(r"[^a-z0-9._-]+", "-", part.lower()).strip("-.")
+        for part in parts
+    ]
+    safe_parts = [part for part in safe_parts if part]
+    if not safe_host or not safe_parts:
+        raise LumaError(f"cannot derive Builder cache repository for image: {image}")
+    return "/".join(["luma-cache", safe_host, *safe_parts])
+
+
+def _rewrite_internal_push_ref(image: str, push_host: str, pull_host: str) -> str:
+    source_host = normalize_registry_host(registry_host_from_image(image))
+    if source_host != push_host or push_host == pull_host:
+        return image
+    prefix, separator, remainder = image.partition("/")
+    if not separator or normalize_registry_host(prefix) != push_host:
+        return image
+    return f"{pull_host}/{remainder}"
+
+
+def _cache_runtime_image_on_builder(
+    config: Any,
+    state: Dict[str, Any],
+    image: str,
+    *,
+    platform: str = "",
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> Dict[str, Any]:
+    build = _build_config(state)
+    pull_host_raw = str(build.get("registryHost") or "").strip()
+    push_host_raw = str(build.get("pushHost") or "").strip()
+    if not pull_host_raw or not push_host_raw:
+        raise LumaError(
+            "Builder registry is not configured; set both build.registryHost and build.pushHost"
+        )
+    pull_host = normalize_registry_host(pull_host_raw)
+    push_host = normalize_registry_host(push_host_raw)
+    build_node = _require_build_node(
+        state,
+        str(build.get("defaultNode") or DEFAULT_BUILD_NODE_NAME),
+        purpose="runtime image cache",
+    )
+    source_host = normalize_registry_host(registry_host_from_image(image))
+    if source_host in {pull_host, push_host}:
+        internal_image = _rewrite_internal_push_ref(image, push_host, pull_host)
+        return {
+            "deployed": internal_image,
+            "cacheImage": internal_image,
+            "builderNode": build_node,
+            "cached": False,
+        }
+
+    selected_platform = str(platform or "").strip()
+    if selected_platform and selected_platform not in {"linux/amd64", "linux/arm64"}:
+        raise LumaError(f"unsupported runtime image platform: {selected_platform}")
+    repository = _runtime_image_cache_repository(image)
+    cache_key = hashlib.sha256(
+        f"{image}\n{selected_platform or 'multi-platform'}".encode("utf-8")
+    ).hexdigest()[:20]
+    push_image = f"{push_host}/{repository}:{cache_key}"
+    destination_image = f"{pull_host}/{repository}:{cache_key}"
+    insecure_raw = str(
+        os.environ.get("LUMA_LAE_BUILDER_REGISTRY_INSECURE") or ""
+    ).strip()
+    if insecure_raw not in {"0", "1"}:
+        raise LumaError(
+            "LUMA_LAE_BUILDER_REGISTRY_INSECURE must be explicitly set to 0 or 1"
+        )
+    result = _run_node_agent_task(
+        state,
+        build_node,
+        "cache-runtime-image",
+        {
+            "sourceImage": image,
+            "pushImage": push_image,
+            "destinationImage": destination_image,
+            "platform": selected_platform,
+            "proxy": _egress_proxy_for_node(config, state, build_node),
+            "insecure": insecure_raw == "1",
+            "timeout": 1800,
+        },
+        timeout=1860,
+        required_capability="runtime-image-cache-v1",
+        progress=progress,
+    )
+    digest = str(result.get("digest") or "").strip()
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+        raise LumaError("Builder image cache returned no verified digest")
+    return {
+        "deployed": f"{_image_repository(destination_image)}@{digest}",
+        "cacheImage": destination_image,
+        "builderNode": build_node,
+        "cached": True,
+    }
+
+
+def _cache_compose_images_on_builder(
+    config: Any,
+    state: Dict[str, Any],
+    deployment: ComposeDeploymentSpec,
+    *,
+    progress: Callable[[dict[str, str]], None] | None = None,
+) -> tuple[ComposeDeploymentSpec, Dict[str, Any]]:
+    build = _build_config(state)
+    if not str(build.get("registryHost") or "").strip() and not str(
+        build.get("pushHost") or ""
+    ).strip():
+        return deployment, {
+            "message": "Builder Registry is not configured; Compose images keep their existing pull references",
+            "images": {},
+            "legacy": True,
+        }
+    compose = copy.deepcopy(deployment.compose)
+    services = compose.get("services") if isinstance(compose.get("services"), dict) else {}
+    cached_by_key: Dict[tuple[str, str], Dict[str, Any]] = {}
+    results: Dict[str, Dict[str, Any]] = {}
+    for service_name, raw_service in services.items():
+        if not isinstance(raw_service, dict):
+            continue
+        image = str(raw_service.get("image") or "").strip()
+        if not image:
+            continue
+        override = deployment.services.get(str(service_name))
+        platform = ""
+        if override and override.node:
+            nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+            record = _node_record_for_name(nodes, override.node)
+            if isinstance(record, dict):
+                platform = _nomad_node_platform_from_record(record)
+        key = (image, platform)
+        cached = cached_by_key.get(key)
+        if cached is None:
+            candidates = [image, *_fallback_images(config, image)]
+            errors: list[str] = []
+            for candidate in candidates:
+                try:
+                    cached = _cache_runtime_image_on_builder(
+                        config,
+                        state,
+                        candidate,
+                        platform=platform,
+                        progress=progress,
+                    )
+                    cached = {
+                        **cached,
+                        "requested": image,
+                        "selected": candidate,
+                        "fallback": candidate != image,
+                    }
+                    break
+                except LumaError as exc:
+                    errors.append(f"{candidate}: {exc}")
+            if cached is None:
+                raise LumaError(
+                    f"Builder could not cache Compose image for {service_name}; tried "
+                    + "; ".join(errors)
+                )
+            cached_by_key[key] = cached
+        raw_service["image"] = str(cached["deployed"])
+        results[str(service_name)] = dict(cached)
+    cached_count = sum(1 for item in results.values() if item.get("cached"))
+    return replace(deployment, compose=compose), {
+        "message": f"{len(results)} Compose image(s) ready in Builder Registry ({cached_count} cached)",
+        "images": results,
+    }
 
 
 def _resolve_mutable_service_image_from_registry(
