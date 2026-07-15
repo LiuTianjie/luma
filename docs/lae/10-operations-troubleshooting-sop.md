@@ -493,7 +493,7 @@ Builder、Runtime、DNS/TLS 或报告链路平台事故处理。`template-smoke`
 4. 检查最近成功 backup/PITR、WAL 连续性、容量和延迟。仓库当前没有可宣称生产完成的 PITR/restore automation；没有外部证据就按“无可验证备份”处理。
 5. 先按实际 Job 区分存储域：`lae-platform-staging` 当前应只挂载 manager 本地
    `/srv/luma/lae/staging/postgres/v2`、`artifacts/v2`、`backups/v2`；只有租户 Compose
-   managed volume 才使用 `lae-staging-runtime-nfs`。平台本地盘故障检查 bind path、容量、
+   managed volume 才使用同节点 `lae-staging-runtime-manager`。平台本地盘故障检查 bind path、容量、
    inode、权限和 fsync，不得因为 Control 中存在 runtime storage class 就误判平台依赖 NFS。
 
 **Safe action**

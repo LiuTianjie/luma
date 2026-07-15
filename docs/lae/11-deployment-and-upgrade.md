@@ -155,7 +155,7 @@ git diff --check
 任一检查发现历史 `aly` 仍参与 placement、manager node agent/runtime role 不
 ready、`builder`/`tecent` 不 ready、registry host 为空，或 manager 本地
 `/srv/luma/lae/staging` 容量/权限不满足时停止。只有执行 tenant volume 场景时才要求
-`lae-staging-runtime-nfs` 可用；它不是 LAE 平台启动依赖。不要通过删除 node pin、
+`lae-staging-runtime-manager` 可用；它不是 LAE 平台启动依赖。不要通过删除 node pin、
 改成匿名 volume 或扩大 runtime allowlist 让验证变绿。
 
 构建配置必须逐字为以下当前 live 值。`registry-host` 面向 `manager`、
@@ -195,15 +195,16 @@ docker buildx imagetools inspect "$CONTROL_IMAGE"
 
 ## 5. 生成并安装 staging 配置包
 
-先为 tenant volume 注册 staging 专用定义；租户卷数据落在 builder NFS 的独立 path，
-允许 manager 与 tecent 挂载。这只服务 tenant volume，不承载 LAE 平台 PostgreSQL、
-MinIO 或备份目录：
+先为 tenant volume 注册 staging 专用定义；租户卷 host 与 eligible runtime 都固定为
+manager，避免数据库初始化和重启经过跨节点 NFS 链路。这只服务 tenant volume，不承载
+LAE 平台 PostgreSQL、MinIO 或备份目录：
 
 ```bash
-luma storage set lae-staging-runtime-nfs \
-  --node builder --path /srv/luma \
+luma storage set lae-staging-runtime-manager \
+  --node manager --path /srv/luma-lae-runtime \
   --region cn \
-  --eligible-node manager --eligible-node tecent
+  --eligible-node manager \
+  --mount-options nfsvers=4,rw,hard,timeo=600,retrans=2,noresvport
 ```
 
 首次初始化或批准的整包密钥轮换时，先得到已发布且 Builder 可拉取的 Analyzer 完整
@@ -241,7 +242,7 @@ python lae/deploy/luma/generate-staging-bundle.py \
   --llm-base-url "$LLM_BASE_URL" \
   --llm-model "$LLM_MODEL" \
   --llm-api-key-file "$LLM_API_KEY_FILE" \
-  --runtime-storage-class lae-staging-runtime-nfs \
+  --runtime-storage-class lae-staging-runtime-manager \
   --runtime-node manager \
   --runtime-node tecent
 ```
@@ -256,7 +257,7 @@ python lae/deploy/luma/prepare-staging-release.py \
   --bundle-dir "$BUNDLE_DIR" \
   --cluster-id "$CLUSTER_ID" \
   --analyzer-image-digest "$ANALYZER_IMAGE_DIGEST" \
-  --runtime-storage-class lae-staging-runtime-nfs \
+  --runtime-storage-class lae-staging-runtime-manager \
   --runtime-node manager --runtime-node tecent \
   --update
 ```

@@ -2,7 +2,7 @@
 
 本目录是 `lae-platform` 的第一版可验证 Luma Compose 资产。它把平台本身作为一个受控 Compose 部署到 Luma：Web/API 与受策略约束的 artifact S3 endpoint 使用公网 HTTP，Worker、Agent Controller、PostgreSQL 和 Valkey 只在同一 Nomad group 的内部拓扑中通信。MinIO 数据面虽然有 HTTPS route，但 bucket policy、CORS 和最小权限 credential 只允许 LAE upload/artifact 流程，不能作为管理入口。这里没有公网 TCP/UDP、host bind、Docker socket、host network 或数据库公网入口。
 
-这不是“已经可以生产上线”的声明。截至 2026-07-15，Luma `v0.1.257` 已正式发布，live Control/manager 与在线 fleet `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰。`lae-platform-staging` 使用 exact commit `6c718c61b2dae421078c92a2b2542d6a9b2e960c`（Nomad v10），10 个 Compose service 全部健康。PostgreSQL、MinIO 和本地快照位于 manager 本地盘，平台启动不依赖 NFS。新的 wildcard 证书仍须在 Let's Encrypt 周限额释放后完成最终签发验收；真实邮箱、异机恢复和生产安全门禁也仍待完成，不能把平台健康外推为 production-ready。
+这不是“已经可以生产上线”的声明。截至 2026-07-15，Luma `v0.1.258` 已正式发布，live Control/manager 与在线 fleet `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰。`lae-platform-staging` 使用 exact commit `6c718c61b2dae421078c92a2b2542d6a9b2e960c`（Nomad v11），10 个 Compose service 全部健康。PostgreSQL、MinIO 和本地快照位于 manager 本地盘，平台启动不依赖 NFS。Let's Encrypt wildcard 证书已签发并通过随机租户域名验证；真实邮箱、异机恢复和生产安全门禁仍待完成，不能把平台健康外推为 production-ready。
 
 ## 文件
 
@@ -56,7 +56,7 @@ staging 要求 AI 诊断，controller/provider 失败会返回 `diagnostic_faile
 | 第二个 cn runtime | `tecent` 约 4C/3.9 GiB，已有 workload | 受限 staging workload/无容量负例 | 至少两个专用 cn runner，容量/故障域/网络隔离压测通过 |
 | 平台 staging | `manager` 为 Linux/amd64，约 8C/15 GiB | 承载 LAE 10-service 单组 staging；主数据位于 manager 本地盘 | 生产改为专用 `lae-core`，本地盘容量/故障恢复和异机备份均需演练 |
 | Builder | `builder` 在 `home`，约 8C/16 GiB | 现有内部 build 与隔离测试 | 公网不可信 build 需要专用 rootless builder pool、临时盘和 egress policy |
-| Storage | 平台主数据使用 manager 本地 `/srv/luma/lae/staging/*/v2`；tenant volume 仍使用独立 `lae-staging-runtime-nfs` 定义 | 平台运行不依赖 NFS；本地快照可快速恢复 | PostgreSQL PITR、对象/快照异机复制、registry/tenant-volume 备份与 restore drill |
+| Storage | 平台主数据使用 manager 本地 `/srv/luma/lae/staging/*/v2`；新 tenant volume 使用同节点 `lae-staging-runtime-manager` 定义 | 平台运行不依赖跨节点 NFS；本地快照可快速恢复 | PostgreSQL PITR、对象/快照异机复制、registry/tenant-volume 备份与 restore drill |
 
 Production sidecar 故意 pin `lae-core`，并把平台卷固定到该节点的 `/srv/luma/lae/production/*/v1`，因此缺少该节点时真实 manager validate 应 fail closed。共享集群 staging 只能使用 `luma.compose.staging.itool.yml`：平台与平台本地卷都在 `manager`，不依赖 `tailscale-relay` 或 NFS 启动；`aly` 不参与任何新部署。租户 runtime allowlist 为 `manager + tecent`，其中 manager 必须显式带 runtime role；`builder` 和未显式 opt-in 的 control-plane 节点继续被排除。
 
@@ -176,7 +176,7 @@ BUNDLE_DIR=<private-staging-bundle-directory>
 ## 当前硬阻塞项
 
 1. 当前 live cluster 没有 production `lae-core`；`aly` 已退出 live 清单，若再次出现只按 stale 历史注册清理。Production sidecar 因而继续 fail closed。`luma.compose.staging.itool.yml` 明确使用 `manager` 本地盘，不代表 production topology。
-2. Staging runtime 明确使用 `manager + tecent`：manager 需要显式 runtime role，二者仍由正向 allowlist、实时 readiness 和 Nomad plan 收敛。专用 production runner pool、无容量、drain、节点故障重调度、volume affinity，以及 admin placement 与真实 allocation 的关联仍需 Luma staging 演练。
+2. Staging runtime allowlist 使用 `manager + tecent`：manager 需要显式 runtime role，二者由正向 allowlist、实时 readiness 和 Nomad plan 收敛；带受管卷的新应用还必须满足 `lae-staging-runtime-manager` 的 eligible-node 约束，因此固定在 manager，避免跨节点存储链路。专用 production runner pool、无容量、drain、节点故障重调度、volume affinity，以及 admin placement 与真实 allocation 的关联仍需 Luma staging 演练。
 3. Builder/Runtime principal files、Git/object broker、LAE admin proxy、plan signing、registry、Analyzer repo digest 与 runtime storage class 已有 staging 配置；live 候选与平台 ref `35591c4e789f7d7bec60614d427fed05023b373a` 仍须完成 controller scoped token、Builder `0600` EnvironmentFile、Worker/Control analyzer digest 三端一致及真实 provider-backed analysis 验收。不能用 management token、inline secret 或 mutable analyzer tag 简化。
 4. S3 artifact/upload、MinIO policy/CORS、API/Worker 分权 credential 和一次性 object redemption 已完成本地真实 MinIO 最小权限与 CORS 正反例；Luma staging 的浏览器上传、恶意 ZIP、cancel/replay、Builder download、artifact ingest 和日志/state 无 URL/key E2E 仍是上线门禁。
 5. 当前平台 Compose renderer不把标准 Compose `healthcheck`/`depends_on` 全部转换成严格 Nomad readiness/启动顺序。Runtime API 会生成 HTTP check，但平台服务自身仍必须重试依赖，并验证故障/恢复行为。

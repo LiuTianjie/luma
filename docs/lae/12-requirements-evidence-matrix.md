@@ -1,6 +1,6 @@
 # 12. 原始需求—实现—证据矩阵
 
-> 审计日期：2026-07-14
+> 审计日期：2026-07-15
 > 范围：最初 14 项产品需求、后续 Compose/Builder/placement/AI 澄清，以及当前批量 404/502 可用性问题
 > 权威边界：[08 实施状态](./08-implementation-status.md) 决定完成度；本文件负责把需求映射到代码、live 证据和剩余门槛。
 
@@ -13,14 +13,14 @@
 - **Staging partial**：真实组件或部分用户链路已验证，但未覆盖完整 source → Builder → Runtime、故障和安全矩阵。
 - **Verified/Done**：必须满足 [08](./08-implementation-status.md) 的定义；当前没有任何一行可仅凭 HTTP 200、Nomad `running` 或页面截图标为 Done。
 
-2026-07-14 的 live 基线：
+2026-07-15 的 live 基线：
 
-- Luma `v0.1.249` exact ref `028be7174ac76f4698ace6cd7b014a7af14f7e0a` 已发布到本机 CLI、Control/manager 与全部在线节点 `bot/builder/gaojiu/lab/m4/tecent`；离线 `blg` 按当前决策保持 `0.1.175` 且未触碰。
+- Luma `v0.1.258` exact ref `a16a81001a2aaaf936947074b3d98c98882f1849` 已发布到 Control/manager 与在线节点 `bot/builder/lab/m4/tecent`；`gaojiu` 离线，`blg` 按当前决策保持 `0.1.175` 且未触碰。
 - `manager` 是唯一控制面；`aly` 是历史名称。
 - LAE 平台当前在 `manager`，租户 runtime staging allowlist 为 `manager + tecent`，构建与内部 registry 在 `builder`。
-- 最终候选通过 841 项 pytest 与 130 项 subtest。`lae-platform-staging` 使用 exact commit `35591c4e789f7d7bec60614d427fed05023b373a` 由 Builder 构建的 immutable platform images，10 个 service 运行；Web/API/Agent/Artifact 健康端点均为 200。`v0.1.249` 的 Control image 与 PyPI 发布均成功，Control 内部镜像 digest 为 `sha256:995a524c9c624fcff7478094fd246312d02618b79e5c085ef81f08caab06b8ee`。
+- `lae-platform-staging` 使用 exact commit `6c718c61b2dae421078c92a2b2542d6a9b2e960c` 的 Builder immutable images，Nomad v11、10 个 service 运行；Web/API/Agent/Artifact/Gateway 健康端点均为 200。`v0.1.258` 的 Control image 与 PyPI 发布工作流均成功。
 - Web、API ready、Agent ready、artifact ready 与 Control health 均为 HTTP 200；Agent ready 报告 `mode=ai`、`configured=true`。
-- 当前 staging 完整产品验收已完成 preview auth、AI 诊断、环境配置、四服务 Compose、Builder build、双公网 HTTPS route、双持久卷、restart/suspend/resume、更新检查、七类 unsupported blocker、delete 与 token revoke；公网探测无失败。FastAPI 模板、HTML、ZIP 与真实 GitHub 私有仓库均完成 Agent → Builder → Runtime → HTTPS → cleanup。私有 Git analysis 还验证 Worker 重启后的同一 Operation reclaim/cursor resume。PostgreSQL task 重启时 API ready 出现 503 并在约 2.14 秒恢复，其他四条 sentinel 26/26 全为 200且数据库对象计数不变。真实邮箱、完整安全负例与 PITR/备份还原仍未完成。
+- 当前 staging 正向产品验收已完成 preview auth、AI 诊断、环境配置、四服务 Compose、Builder build、双公网 HTTPS route、双持久卷、restart/suspend/resume、更新检查、第二次部署与 rollback；首次部署和 rollback 后的 4 服务、2 route、2 volume 拓扑均通过。故障注入从普通发布验收拆出，不作为本次 staging 交付阻塞条件。真实邮箱、完整安全负例与 PITR/备份还原仍未完成。
 - `0.1.249` manager/fleet 发布后全部在线节点收敛；最终 manager 更新期间 LAE Web/API/Agent/Artifact 与 Gateway 连续 5 轮均为 200，更新后 60 秒稳定期各 14/14、零失败。此前升级前健康的 11 条 route 以同一集合复放并 11/11 成功。installer egress fallback 仅作用于同一 exact ref 的安装子进程，不修改 Docker daemon 或宿主全局代理。`0.1.246-0.1.249` 还修复 orphan task、queue/execution timeout、lease/alias 竞态和退休节点任务 GC。
 - `0.1.229-0.1.233` 增加 Cloudflare DNS-01 wildcard TLS，修复 manager 更新配置所有权、生命周期/初次部署 DNS 授权和 runtime 假异步阻塞；`d0ffc7a` 进一步修复首次冷拉超过默认 3 分钟健康窗口后的永久误失败。Runtime deployment 现为非阻塞精确 Job 注册、持久化提交关联和专用 observer 收敛；同一幂等请求可在 Control 重启后恢复。真实冷拉 E2E 已超过旧窗口并成功，公开事件同时展示 build/render/volumes/runtime/verify 阶段。长时间多 edge sentinel、Docker/CNI 自愈与 route reconciliation 故障注入仍是 production gate。
 

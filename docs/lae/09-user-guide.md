@@ -19,7 +19,7 @@
 | 待 staging 验证 | 已有代码或真实部署，尚未在隔离 Luma staging 完成相应端到端、故障和安全验证 |
 | 发布门禁 | 未满足时不得向生产用户承诺可用 |
 
-截至 2026-07-15，Luma `v0.1.257` 已发布到 Control/manager 与在线节点 `bot/builder/lab/m4/tecent`；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE staging 运行 exact ref `6c718c61b2dae421078c92a2b2542d6a9b2e960c`（Nomad v10），10 个 LAE service 与 Web/API/Agent/artifact 基础探针健康。四服务 Compose 已走通 Agent 诊断、必需环境配置、Builder 构建、首次冷拉、双公网 HTTPS route、双持久卷、restart、suspend/resume、更新检查与明确 unsupported blocker；stateful rollback checkpoint、长部署阻塞 Worker 队列、运行时已不存在时删除失败及历史裸域证书阻止 wildcard TLS 的问题已在本次基线修复。新的 wildcard 证书仍受 Let's Encrypt 周限额窗口约束，须在限额释放后完成最终签发验收。preview 不代表真实邮箱送达，进程恢复也不代表 PITR/备份还原；因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
+截至 2026-07-15，Luma `v0.1.258` 已发布到 Control/manager 与在线节点 `bot/builder/lab/m4/tecent`；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE staging 运行 exact ref `6c718c61b2dae421078c92a2b2542d6a9b2e960c`（Nomad v11），10 个 LAE service 与 Web/API/Agent/artifact 基础探针健康。四服务 Compose 已走通 Agent 诊断、必需环境配置、Builder 构建、首次冷拉、双公网 HTTPS route 与双持久卷；stateful rollback checkpoint、长部署阻塞 Worker 队列、运行时已不存在时删除失败、wildcard TLS，以及节点任务完成响应丢失后的错误失败均已修复。`*.itool.tech`/`itool.tech` 证书已经签发并由随机租户域名命中。preview 不代表真实邮箱送达，进程恢复也不代表 PITR/备份还原；因此本指南仍是 staging 使用说明，不是生产 GA 承诺。
 
 ## 2. 支持什么
 
