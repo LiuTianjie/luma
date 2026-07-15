@@ -1333,7 +1333,11 @@ function Header({
   theme: "light" | "dark";
   onToggleTheme: () => void;
 }) {
-  const accountName = principal?.user.email.split("@", 1)[0] || "登录";
+  const accountName = principal
+    ? principal.user.email.endsWith(".invalid")
+      ? "账户"
+      : principal.user.email.split("@", 1)[0]
+    : "登录";
   const catalogAvailable = catalogStatus === "connected";
   return (
     <header className="topbar">
@@ -2541,7 +2545,7 @@ function ConsoleUtilities({
           </div>
           <div className="cli-intro">
             <p className="cli-description">Deploy token 授权后，CLI 与控制台使用同一套诊断、部署和生命周期协议。所有长操作都能输出 NDJSON，并凭 operation ID 断线续看。</p>
-            <span>STAGING · workspace distribution</span>
+            <span>TOKEN AUTH · NDJSON</span>
           </div>
           <div className="cli-workflow" aria-label="LAE CLI 完整工作流">
             <article>

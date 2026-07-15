@@ -42,6 +42,8 @@
   --motion-slow: .25s;
   --ease-standard: cubic-bezier(.2, 0, 0, 1);
   --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
 
 :root[data-theme="light"] {
@@ -77,13 +79,21 @@ html,
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
-  font-size: 14px;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
 input,
-select { font-family: inherit; }
+select,
+textarea { font-family: inherit; }
+
+code,
+pre { font-family: var(--font-mono); }
 
 button:focus-visible,
 a:focus-visible,
@@ -1337,6 +1347,96 @@ summary:focus-visible {
   border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   background: var(--surface);
 }
+
+/* Typography standard: readable bilingual UI, monospace only for machine data. */
+.console-shell :is(
+  .rail-label,
+  .section-kicker,
+  .instrument-topline,
+  .instrument-copy > span,
+  .phase-track li small,
+  .contract-heading,
+  .section-index,
+  .utility-heading p,
+  .utility-status,
+  .cli-intro > span,
+  .cli-workflow article > span,
+  .cell-label,
+  .application-sequence,
+  .application-target
+) {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.console-shell :is(
+  .rail-brand small,
+  .rail-label,
+  .section-kicker,
+  .instrument-topline,
+  .instrument-copy > span,
+  .source-row small,
+  .contract-heading,
+  .deployment-contract dt,
+  .contract-boundaries span,
+  .contract-source,
+  .lake-heading p,
+  .lake-note,
+  .template-label small,
+  .template-label em,
+  .template-action,
+  .shore-title p,
+  .shore-summary small,
+  .application-runtime-note,
+  .service-count,
+  .utility-heading p,
+  .activity-ledger small,
+  .cli-workflow small,
+  .cli-surface span,
+  .handoff-heading small,
+  .handoff-routes span,
+  .plan-review-grid small,
+  .plan-service-row small
+) {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.console-shell :is(
+  .runtime-status,
+  .hero-copy > div > span,
+  .instrument-copy p,
+  .phase-track li strong,
+  .deployment-contract dd,
+  .source-form-grid label,
+  .trust-note,
+  .diagnosis-list li,
+  .environment-label > span,
+  .cli-description
+) {
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.console-shell :is(
+  .source-row strong,
+  .template-label strong,
+  .lake-heading h2,
+  .shore-title h2,
+  .utility-heading h2
+) {
+  line-height: 1.4;
+}
+
+.console-shell .template-label strong { font-size: 13px; font-weight: 600; }
+.console-shell .lake-heading h2,
+.console-shell .shore-title h2,
+.console-shell .utility-heading h2 { font-size: 16px; font-weight: 600; }
+.console-shell .phase-track li small,
+.console-shell .section-index,
+.console-shell .cell-label { font-size: 10px; line-height: 1.35; }
+.console-shell .plan-badge { font-size: 10px; }
+.console-shell small { font-weight: 400; }
 
 @media (max-width: 980px) {
   .console-shell .view-applications .application-item {

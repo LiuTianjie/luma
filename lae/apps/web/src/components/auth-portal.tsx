@@ -4,7 +4,6 @@ import {
   ArrowRight,
   Check,
   Copy,
-  FlaskConical,
   KeyRound,
   Mail,
   ShieldCheck,
@@ -15,10 +14,9 @@ import { FormEvent, useEffect, useState } from "react";
 
 type Mode = "register" | "login";
 type Step = "request" | "verify" | "magic" | "complete";
-type DeliveryMode = "loading" | "email" | "preview" | "unavailable";
+type DeliveryMode = "loading" | "email" | "unavailable";
 type DeliveryCapabilities = {
   mode: DeliveryMode;
-  previewAccess: boolean;
 };
 
 const API_ROOT = (process.env.NEXT_PUBLIC_LAE_API_URL || "/v1").replace(/\/$/, "");
@@ -34,7 +32,6 @@ export function AuthPortal() {
   const [deployToken, setDeployToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("loading");
-  const [previewAccess, setPreviewAccess] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -42,7 +39,6 @@ export function AuthPortal() {
       .then((capabilities) => {
         if (active) {
           setDeliveryMode(capabilities.mode);
-          setPreviewAccess(capabilities.previewAccess);
         }
       })
       .catch(() => {
@@ -173,45 +169,6 @@ export function AuthPortal() {
     }
   };
 
-  const enterPreview = async () => {
-    setLoading(true);
-    setError(null);
-    setStep("magic");
-    try {
-      const preview = await request("/auth/preview", {});
-      const previewEmail = preview.email;
-      const purpose = preview.purpose;
-      const magicToken = preview.magicToken;
-      if (
-        typeof previewEmail !== "string" ||
-        !previewEmail.endsWith(".invalid") ||
-        (purpose !== "register" && purpose !== "login") ||
-        typeof magicToken !== "string" ||
-        !magicToken.startsWith("lae_em_")
-      ) {
-        throw new Error("preview identity response invalid");
-      }
-      const nextMode: Mode = purpose;
-      setMode(nextMode);
-      setEmail(previewEmail);
-      const response = await request(
-        nextMode === "register" ? "/auth/email/verify" : "/auth/login/verify",
-        { email: previewEmail, magicToken },
-      );
-      setDeployToken(
-        typeof response.defaultDeployToken === "string"
-          ? response.defaultDeployToken
-          : null,
-      );
-      setStep("complete");
-    } catch {
-      setStep("request");
-      setError("预览身份刚刚被使用，请一分钟后重试。");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const copyToken = async () => {
     if (!deployToken) return;
     try {
@@ -242,14 +199,10 @@ export function AuthPortal() {
 
       <section className="auth-panel" aria-labelledby="auth-title">
         <div className="auth-panel-inner">
-          {deliveryMode === "preview" ? (
-            <div className="auth-environment-mark"><FlaskConical size={13} /> STAGING PREVIEW</div>
-          ) : (
-            <div className="auth-switch" aria-label="认证方式">
-              <button type="button" disabled={loading} className={mode === "register" ? "is-active" : ""} onClick={() => switchMode("register")}>注册</button>
-              <button type="button" disabled={loading} className={mode === "login" ? "is-active" : ""} onClick={() => switchMode("login")}>登录</button>
-            </div>
-          )}
+          <div className="auth-switch" aria-label="认证方式">
+            <button type="button" disabled={loading} className={mode === "register" ? "is-active" : ""} onClick={() => switchMode("register")}>注册</button>
+            <button type="button" disabled={loading} className={mode === "login" ? "is-active" : ""} onClick={() => switchMode("login")}>登录</button>
+          </div>
 
           <AnimatePresence mode="wait">
             <motion.div
@@ -265,21 +218,6 @@ export function AuthPortal() {
                   <span aria-hidden="true" />
                   <h2 id="auth-title">正在确认邮件通道</h2>
                   <p className="auth-description">LAE 正在读取此环境可用的登录方式。</p>
-                </div>
-              )}
-
-              {step === "request" && deliveryMode === "preview" && (
-                <div className="auth-preview-entry">
-                  <p className="auth-step">01 · PREVIEW ACCESS</p>
-                  <h2 id="auth-title">进入预览环境</h2>
-                  <p className="auth-description">这是隔离的 staging 空间。真实邮箱不会收到验证码；LAE 会签发一个短时预览身份，并沿用正式的注册与 Session 流程。</p>
-                  <div className="auth-preview-note">
-                    <FlaskConical size={15} />
-                    <div><strong>不会读取你的邮箱</strong><span>预览凭据只属于保留的 .invalid 测试账号，不会返回任何真实用户验证码。</span></div>
-                  </div>
-                  <button className="auth-submit" type="button" disabled={loading} onClick={enterPreview}>
-                    {loading ? "正在准备…" : "进入预览空间"}<ArrowRight size={16} />
-                  </button>
                 </div>
               )}
 
@@ -303,21 +241,6 @@ export function AuthPortal() {
                   <button className="auth-submit" type="submit" disabled={loading}>
                     {loading ? "正在发送…" : "继续"}<ArrowRight size={16} />
                   </button>
-                  {previewAccess && (
-                    <button
-                      className="auth-preview-shortcut"
-                      type="button"
-                      disabled={loading}
-                      onClick={enterPreview}
-                    >
-                      <FlaskConical size={15} />
-                      <span>
-                        <strong>使用预览身份</strong>
-                        <small>跳过邮件，仅进入共享 staging 空间</small>
-                      </span>
-                      <ArrowRight size={14} />
-                    </button>
-                  )}
                 </form>
               )}
 
@@ -369,7 +292,7 @@ export function AuthPortal() {
           </AnimatePresence>
 
           <div className="auth-error" aria-live="polite">{error}</div>
-          <p className="auth-legal">{deliveryMode === "preview" ? "预览身份是共享的 staging 测试空间，请勿放入真实代码、密钥或个人数据。" : "继续即表示你同意服务条款与隐私政策。公开运营前将替换为正式备案文本。"}</p>
+          <p className="auth-legal">继续即表示你同意服务条款与隐私政策。公开运营前将替换为正式备案文本。</p>
         </div>
       </section>
     </main>
@@ -407,12 +330,8 @@ async function readAuthConfig(): Promise<DeliveryCapabilities> {
   }
   const record = delivery as Record<string, unknown>;
   const mode = record.mode;
-  const normalizedMode =
-    mode === "preview" || mode === "email" || mode === "unavailable"
-      ? mode
-      : "unavailable";
+  const normalizedMode = mode === "email" ? mode : "unavailable";
   return {
     mode: normalizedMode,
-    previewAccess: record.previewAccess === true,
   };
 }
