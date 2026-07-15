@@ -6944,7 +6944,8 @@ class ControlApiTests(unittest.TestCase):
                 digest = "ghcr.io/acme/pura@sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"
 
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
-                    "luma.control.server.resolve_registry_image_digest", return_value=digest
+                    "luma.control.server.resolve_registry_image_digest",
+                    side_effect=AssertionError("Control must not resolve a pinned target image"),
                 ), patch(
                     "luma.control.server._run_node_agent_task",
                     return_value={"deployed": digest, "digest": digest, "message": "Target node image pull ready"},
@@ -7012,7 +7013,8 @@ class ControlApiTests(unittest.TestCase):
                 digest = "gcode.gaojiua.com:3000/acme/docs@sha256:58307df1e4f8efcfec29a8f7a6653c65446d6afded7d03caa3329f2c0ac92719"
 
                 with patch("luma.control.server.ensure_image_pull_egress_proxy", return_value="Image pull egress ready"), patch(
-                    "luma.control.server.resolve_registry_image_digest", return_value=digest
+                    "luma.control.server.resolve_registry_image_digest",
+                    side_effect=AssertionError("Control must not resolve a pinned target's private mutable image"),
                 ), patch(
                     "luma.control.server._run_node_agent_task",
                     return_value={"deployed": digest, "digest": digest, "message": "Target node image pull ready"},
@@ -7022,7 +7024,8 @@ class ControlApiTests(unittest.TestCase):
                         {"manifest": manifest, "sourceName": "docs.yaml", "skipDns": True, "skipOrchestrator": True},
                     )
                 payload = agent.call_args.args[3]
-                self.assertEqual(payload["image"], digest)
+                self.assertEqual(payload["image"], "gcode.gaojiua.com:3000/acme/docs:latest")
+                self.assertTrue(payload["forcePull"])
                 self.assertEqual(payload["platform"], "linux/amd64")
                 self.assertEqual(payload["registryAuth"]["password"], "secret")
                 self.assertTrue(result["image"]["registryAuth"])
@@ -11919,11 +11922,12 @@ class ControlApiTests(unittest.TestCase):
                 with patch("luma.control.server.docker_request", return_value=docker_nodes), patch(
                     "luma.control.server._running_egress_gateway_node_name", return_value="manager-1"
                 ), patch(
-                    "luma.control.server.resolve_registry_image_digest", return_value=digest
+                    "luma.control.server.resolve_registry_image_digest",
+                    side_effect=AssertionError("Control must not resolve a pinned target's mutable image"),
                 ), patch(
                     "luma.control.server._run_node_agent_task",
                     side_effect=[
-                        LumaError("target node Docker pull failed for ghcr.io/acme/api@sha256:abc123: failed to do request: EOF"),
+                        LumaError("target node Docker pull failed for ghcr.io/acme/api:latest: network is unreachable"),
                         {"message": "Docker daemon egress proxy configured"},
                         {"deployed": digest, "digest": digest},
                     ],
@@ -11934,8 +11938,10 @@ class ControlApiTests(unittest.TestCase):
                     )
                 self.assertEqual([call.args[2] for call in agent.call_args_list], ["resolve-docker-image", "configure-docker-egress-proxy", "resolve-docker-image"])
                 self.assertEqual(agent.call_args_list[1].args[3]["proxy"], "http://100.64.0.1:7890")
-                self.assertEqual(agent.call_args_list[0].args[3]["image"], digest)
+                self.assertEqual(agent.call_args_list[0].args[3]["image"], "ghcr.io/acme/api:latest")
+                self.assertTrue(agent.call_args_list[0].args[3]["forcePull"])
                 self.assertEqual(result["image"]["deployed"], digest)
+                self.assertEqual(result["image"]["resolvedBy"], "target-node")
                 stack = (root / "stacks" / "cn" / "api" / "api.nomad.json").read_text(encoding="utf-8")
                 self.assertIn(f"\"image\": \"{digest}\"", stack)
             finally:

@@ -3630,7 +3630,19 @@ def _docker_image_pull_error(*, image: str, output: str, platform: str = "") -> 
     lowered = detail.lower()
     if platform and any(marker in lowered for marker in ("no matching manifest", "no match for platform", "not found")):
         message += f"; image does not provide a manifest for target platform {platform}"
-    if any(marker in lowered for marker in ("failed to do request", "eof", "timeout", "connection reset")):
+    if any(
+        marker in lowered
+        for marker in (
+            "failed to do request",
+            "eof",
+            "timeout",
+            "connection reset",
+            "connection refused",
+            "network is unreachable",
+            "no route to host",
+            "temporary failure in name resolution",
+        )
+    ):
         message += "; target node cannot reach the registry, configure registry egress/proxy for that node or use a reachable mirror"
     return message
 

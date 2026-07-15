@@ -113,6 +113,12 @@ luma registry remove ghcr.io
 
 During deploy, Luma matches credentials by image registry host and injects them into the Nomad job's docker `auth` block, so the placed client pulls the private image with the stored credentials.
 
+For a deployment pinned to a ready Luma node, Control sends the original image
+reference and any matching ephemeral registry credential to that node. The
+target node resolves mutable tags, performs the pull through its own configured
+egress/mirror path, and returns the repo digest that is written into the Nomad
+job. Control must not pre-resolve `latest` against the public registry.
+
 Private registry image pulls are separate from runtime `proxy: true`. If `curl https://<registry>/v2/` reaches the registry but `docker pull` fails with EOF/timeout, inspect Docker daemon `HTTPProxy`/`HTTPSProxy` and add the private registry host to daemon `NO_PROXY`.
 
 ## Builder Registry And Repository Import
@@ -512,7 +518,7 @@ luma compose deploy luma.compose.yml --dry-run
 CI:
 
 ```bash
-python -m pip install "luma-infra==0.1.258"
+python -m pip install "luma-infra==0.1.259"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json

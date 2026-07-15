@@ -14973,22 +14973,20 @@ def _resolve_service_image_for_deployment(
     for image in images:
         image_registry_auth = registry_auth if registry_auth_matches_image(registry_auth, image) else None
         force_pull = image_uses_mutable_latest_tag(image)
-        node_image = image
-        resolved_by = "target-node"
-        if force_pull:
-            node_image = resolve_registry_image_digest(image, registry_auth=image_registry_auth)
-            resolved_by = "registry"
-            force_pull = False
         payload: Dict[str, Any] = {
-            "image": node_image,
+            "image": image,
             "forcePull": force_pull,
             "platform": platform,
         }
         if image_registry_auth:
             payload["registryAuth"] = image_registry_auth
         try:
-            result = _resolve_image_on_target_node(state, service.node, node_image, payload)
-            deploy_image = str(result.get("deployed") or result.get("digest") or node_image)
+            # Keep registry resolution on the target node.  Resolving mutable
+            # tags from Control bypasses the node's Docker egress and mirror
+            # policy, so a manager with no direct Docker Hub route can fail
+            # before the normal target-node retry/fallback chain even starts.
+            result = _resolve_image_on_target_node(state, service.node, image, payload)
+            deploy_image = str(result.get("deployed") or result.get("digest") or image)
             image_result = {
                 "requested": service.image,
                 "selected": image,
@@ -14998,7 +14996,7 @@ def _resolve_service_image_for_deployment(
                 "forcePull": force_pull,
                 "platform": platform,
                 "node": service.node,
-                "resolvedBy": resolved_by,
+                "resolvedBy": "target-node",
             }
             return replace(service, image=deploy_image), image_result
         except LumaError as exc:
@@ -15061,7 +15059,17 @@ def _target_image_pull_proxy_applicable(state: Dict[str, Any], node_name: str, i
     if not _node_agent_has_capability(state, node_name, "docker-egress-proxy"):
         return False
     lowered = str(error).lower()
-    markers = ("failed to do request", "eof", "timeout", "connection reset", "cannot reach the registry")
+    markers = (
+        "failed to do request",
+        "eof",
+        "timeout",
+        "connection reset",
+        "connection refused",
+        "network is unreachable",
+        "no route to host",
+        "temporary failure in name resolution",
+        "cannot reach the registry",
+    )
     if not any(marker in lowered for marker in markers):
         return False
     return bool(_target_image_pull_proxy_url(state, node_name))

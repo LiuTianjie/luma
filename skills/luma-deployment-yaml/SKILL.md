@@ -47,6 +47,11 @@ For repository import, builder registry setup, or registry pull/proxy failures, 
 
 - Required: `name`, `region`, and either `image` or a `build` block.
 - For ordinary prebuilt-image deploys, set `image` explicitly.
+- When a prebuilt image is pinned to a ready Luma node, mutable-tag resolution
+  and pulling happen on that target node. Control must not contact the public
+  registry first, because doing so bypasses the node's egress and mirror path.
+- The target node returns the resolved repo digest after a successful pull;
+  Luma writes that immutable digest into the Nomad job.
 - For repository import builds, prefer omitting `image` and adding `build:`. Luma builds and pushes to the configured builder registry, removes the `build` block from the runtime deploy payload, and injects the built image reference.
 - Valid regions: `cn`, `global`, `home`.
 - Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
@@ -253,7 +258,7 @@ The dashboard exposes the same Nomad job-version rollback from Applications -> V
 For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.1.258"
+python -m pip install "luma-infra==0.1.259"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:
