@@ -534,27 +534,27 @@ class BillingApiTests(unittest.TestCase):
         self.assertEqual(plans.json()["error"]["code"], "LAE_BILLING_UNAVAILABLE")
         self.assertEqual(mock.status_code, 404)
 
-        runtime = BillingRuntime(self.store, self.provider, "staging")
-        staging_app = create_app(
+        runtime = BillingRuntime(self.store, self.provider, "development")
+        development_app = create_app(
             self.auth,
             analysis_requests=object(),
             public_resources=object(),
             applications=object(),
             billing_runtime=runtime,
-            billing_environment="staging",
+            billing_environment="development",
             billing_driver="mock",
         )
         with TestClient(
-            staging_app,
+            development_app,
             base_url="https://lae.example.test",
-        ) as staging:
-            self.assertEqual(staging.get("/health/ready").status_code, 200)
-            self.assertEqual(staging.get("/v1/plans").status_code, 200)
-            mock_route = staging.post(
+        ) as development:
+            self.assertEqual(development.get("/health/ready").status_code, 200)
+            self.assertEqual(development.get("/v1/plans").status_code, 200)
+            mock_route = development.post(
                 f"/v1/billing/mock/orders/{self.store.order_id}/complete",
                 json={},
             )
-            approve_route = staging.post(
+            approve_route = development.post(
                 f"/v1/billing/mock/orders/{self.store.order_id}/approve",
                 json={},
             )
@@ -572,7 +572,7 @@ class BillingApiTests(unittest.TestCase):
                 },
             }
         )
-        parsed = MockPricingCatalog.parse(raw, environment="staging")
+        parsed = MockPricingCatalog.parse(raw, environment="development")
         self.assertEqual(parsed.price("pro", "monthly").amount_minor, 9900)
         with self.assertRaises(BillingConfigurationError):
             MockPricingCatalog.parse(raw, environment="production")

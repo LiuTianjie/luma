@@ -156,7 +156,7 @@ class AuthDomainTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("billing:checkout", SUPPORTED_DEPLOY_TOKEN_SCOPES)
         self.assertNotIn("billing:checkout", DEFAULT_DEPLOY_TOKEN_SCOPES)
 
-    def test_preview_auth_is_staging_only_and_requires_a_reserved_mailbox(self) -> None:
+    def test_preview_auth_is_development_only_and_requires_a_reserved_mailbox(self) -> None:
         self.assertIsNone(preview_email_from_env({}, environment="production"))
         self.assertEqual(
             preview_email_from_env(
@@ -164,7 +164,7 @@ class AuthDomainTests(unittest.IsolatedAsyncioTestCase):
                     "LAE_AUTH_PREVIEW_MODE": "public",
                     "LAE_AUTH_PREVIEW_EMAIL": "Preview@LAE.Invalid",
                 },
-                environment="staging",
+                environment="development",
             ),
             "preview@lae.invalid",
         )
@@ -181,9 +181,9 @@ class AuthDomainTests(unittest.IsolatedAsyncioTestCase):
                     "LAE_AUTH_PREVIEW_MODE": "public",
                     "LAE_AUTH_PREVIEW_EMAIL": "person@itool.tech",
                 },
-                "staging",
+                "development",
             ),
-            ({"LAE_AUTH_PREVIEW_MODE": "unexpected"}, "staging"),
+            ({"LAE_AUTH_PREVIEW_MODE": "unexpected"}, "development"),
         ):
             with self.subTest(values=values, environment=environment):
                 with self.assertRaises(AuthConfigurationError):

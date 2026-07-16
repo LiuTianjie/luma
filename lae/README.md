@@ -5,12 +5,12 @@ from the root Luma Python package and dashboard workspace so it can be moved to
 an independent repository without changing package names or service contracts.
 
 The current foundation is executable, tested, and deployed to a real Luma
-staging stack. It establishes versioned contracts, a deterministic analyzer,
+validation stack. It establishes versioned contracts, a deterministic analyzer,
 PostgreSQL durable operations/outbox, typed Luma Builder and Runtime adapters,
 component health entry points, a machine-readable CLI, public
 email/deploy-token authentication, Git and static-artifact source lanes, a
 quota-counted application catalog, encrypted environment metadata, lifecycle
-operations, and a dev/staging-only signed mock billing slice. Private Git and
+operations, and a dev/validation-only signed mock billing slice. Private Git and
 object-source redemption use mutually authenticated, task-bound, one-time
 leases. The Web account console provides deploy-token management, plan,
 subscription, usage, and mock-checkout flows.
@@ -20,7 +20,6 @@ Current verification snapshot (2026-07-15):
 - Luma `v0.1.257` is released. Control/manager and the online
   `bot/builder/lab/m4/tecent` agents report `0.1.257`; `gaojiu` is offline,
   `blg` is intentionally untouched, and historical `aly` is excluded.
-- All 10 `lae-platform-staging` services built from exact commit
   `6c718c61b2dae421078c92a2b2542d6a9b2e960c` (Nomad v10) are healthy on `manager`.
   Builder work and the internal registry run on `builder`; tenant placement
   remains limited to `manager + tecent`.
@@ -29,7 +28,7 @@ Current verification snapshot (2026-07-15):
   suspend/resume, update check, unsupported diagnosis and deletion. A separate
   clean-room flow used only the project Skill, `lae` CLI and a deploy token to
   diagnose, deploy, inspect history, restart and delete a FastAPI template.
-  All four pinned templates have also passed real staging smoke; a daily Luma
+  All four pinned templates have also passed real validation smoke; a daily Luma
   task now persists health, auto-unpublishes after three consecutive failures,
   and republishes after the next successful full deployment.
 
@@ -144,6 +143,6 @@ allowed public reference anonymously with `crane` during analysis, signs the
 expected platform digest, and verifies the same resolution again at build time
 before producing CycloneDX, offline Trivy, and LAE-owned external-resolution
 evidence. This is implemented and covered by isolated tests. The platform stack
-has been imported into real Luma staging, but tenant-level image resolution,
+has been imported into real Luma validation, but tenant-level image resolution,
 network-level redirect/DNS egress enforcement, and the complete Builder/Runtime
 E2E remain behind the public launch gate.

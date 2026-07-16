@@ -20,7 +20,7 @@
 SQLite is deliberately unsupported: its locking, partial-index and queue
 semantics do not prove the PostgreSQL guarantees used here.
 
-The payment implementation is deliberately a dev/staging mock. Production
+The payment implementation is deliberately a dev/validation mock. Production
 defaults to `LAE_BILLING_DRIVER=disabled`; billing endpoints fail closed while
 identity, Lite usage and deployment remain available. WeChat Pay and Alipay
 have only a provider port, not adapters. No commercial prices are bundled.

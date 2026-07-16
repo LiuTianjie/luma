@@ -29,7 +29,7 @@ are streamed in bounded chunks with timeout, cancellation checkpoints, a 16
 MiB per-analysis-artifact cap, and a fresh lease for each bounded retry.
 
 `S3CompatibleObjectStore.put_verified` is an atomic port: implementations must
-upload to private staging, verify the descriptor, then publish at a key derived
+upload to private validation, verify the descriptor, then publish at a key derived
 only from the LAE tenant, closed artifact kind, and digest. The upstream cannot
 choose the key. Existing exact objects make crash retries idempotent; partial
 or mismatched objects never cause `planStored=true`. The in-memory broker,
@@ -49,7 +49,7 @@ late task-state changes, cancellation, and descriptor mismatch fail closed.
 adapter, HTTP lease broker, PostgreSQL catalog, and operation heartbeat guard.
 The S3 endpoint/bucket are fixed runtime configuration; caller URLs never
 participate. Production requires HTTPS and an exact
-`LAE_ARTIFACT_S3_ALLOWED_HOSTS` entry. Staging may explicitly use HTTP for an
+`LAE_ARTIFACT_S3_ALLOWED_HOSTS` entry. validation may explicitly use HTTP for an
 internal MinIO drill. The bucket must already exist and its lifecycle/backup
 policy remains an operator responsibility. Required configuration is:
 

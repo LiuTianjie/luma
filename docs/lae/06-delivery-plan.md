@@ -11,7 +11,7 @@ Product decision / ADR
  -> OpenAPI + JSON Schema + Event Catalog
  -> fake Luma / contract tests
  -> parallel implementation
- -> staging Luma E2E
+ -> validation Luma E2E
  -> security + recovery gate
  -> release
 ```
@@ -109,7 +109,7 @@ Web、CLI、Skill 只能消费 API；Agent 只能输出 DeploymentPlan；Worker 
 - TypeScript/Python generated clients 通过 schema compatibility tests。
 - operation 在 API/worker 重启后可接管和重放。
 - 同 idempotency key 不产生重复 operation。
-- 所有服务能在 staging Luma 以空功能启动。
+- 所有服务能在 validation Luma 以空功能启动。
 
 ## 6. Phase 2：第一条纵向切片——静态上传
 
@@ -268,7 +268,7 @@ Compose 开发可在 static/Git slice 期间并行，但公开验收依赖 build
 
 ### 12.3 Release Gate
 
-- staging Luma 真部署：static、single service、Compose+volume、multi-route。
+- validation Luma 真部署：static、single service、Compose+volume、multi-route。
 - update/failed update/rollback/suspend/resume/delete。
 - public route + runtime observed state 对账。
 - backup/restore smoke。
@@ -287,7 +287,7 @@ Compose 开发可在 static/Git slice 期间并行，但公开验收依赖 build
 - metrics/logs/trace/alert。
 - migration/rollback/cleanup。
 - docs/runbook。
-- staging Luma 真验证。
+- validation Luma 真验证。
 
 “本地返回 200”或“Dashboard 显示 active”不能单独作为完成依据。
 

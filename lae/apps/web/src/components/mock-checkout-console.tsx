@@ -131,7 +131,7 @@ export function MockCheckoutConsole({ orderId }: { orderId: string }) {
           <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
           <span><strong>LAE</strong><small>Luma Application Engine</small></span>
         </Link>
-        <span className="mock-checkout-environment"><FlaskConical size={12} /> STAGING · MOCK</span>
+        <span className="mock-checkout-environment"><FlaskConical size={12} /> DEVELOPMENT · MOCK</span>
         <Link className="mock-checkout-account" href="/account">账户中心 <ArrowRight size={13} /></Link>
       </header>
 
@@ -147,7 +147,7 @@ export function MockCheckoutConsole({ orderId }: { orderId: string }) {
           transition={{ duration: 0.58, ease: [0.22, 1, 0.36, 1] }}
         >
           <section className="mock-checkout-intro" aria-labelledby="checkout-title">
-            <p><span /> STAGING CHECKOUT</p>
+            <p><span /> DEVELOPMENT CHECKOUT</p>
             <h1 id="checkout-title">确认模拟付款</h1>
             <div className="mock-checkout-assurance">
               <ShieldCheck size={14} />
@@ -194,7 +194,7 @@ export function MockCheckoutConsole({ orderId }: { orderId: string }) {
                   <p>APPROVAL REQUIRED</p>
                   <h2>准备激活<br />{PLAN_NAMES[order.plan.code]}</h2>
                   <span className="mock-action-copy">
-                    点击后，LAE 仅在 staging 的 mock provider 中记录一条 paid 事件，并以服务端结果更新订阅。
+                    点击后，LAE 仅在开发环境的 mock provider 中记录一条 paid 事件，并以服务端结果更新订阅。
                   </span>
                   <button type="button" disabled={busy} onClick={() => void approve()}>
                     {busy ? <LoaderCircle className="is-spinning" size={15} /> : <Check size={15} />}

@@ -155,7 +155,7 @@ class StoredObject:
 class S3CompatibleObjectStore(Protocol):
     """Managed object-store port with an atomic verified-write contract.
 
-    Implementations must stream to a private staging upload, validate the exact
+    Implementations must stream to a private temporary upload, validate the exact
     digest/size/media descriptor, then atomically publish at ``key``. A partial
     or invalid stream must never become visible at the final key. Credentials
     are implementation-private and must come from the runtime secret mount.

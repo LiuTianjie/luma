@@ -143,7 +143,7 @@ LAE 不把任意 Compose 字段原样转交 Luma。Agent 先生成 `NormalizedCo
 - `lae-agent` 是公开 Analysis API 背后的 controller：鉴权上下文由 `lae-api` 注入，controller 创建 operation，由 `lae-worker` 通过 Luma adapter 调度 builder task；Agent 不持有 Luma credential。
 - `lae-agent-runner` 是固定 digest 的无状态分析镜像，只在 builder sandbox 中读取不可变 source snapshot。
 - runner 执行规则化识别、env 证据提取、策略检查并生成 DeploymentPlan 与内部 unsigned BuildPlan proposal；它无网络、无解析器凭据。Luma analyze executor 在受控匿名 resolver 中加入 external `resolvedDigest` 后才生成 canonical candidate；可信 controller 校验 candidate 后签名。runner 不持有签名密钥，也不直接部署。
-- 可配置的 OpenAI-compatible 模型接收脱敏、限量的结构化 evidence 与版本化 LAE Knowledge Pack，可提出 adapter、环境变量、DeploymentPlan 和 manifest candidate，并生成解释；它不接收源码正文或 secret。确定性 detector/policy/schema/Luma validator 拥有最终裁决权：AI 不能删除 blocker、放宽能力、修改受保护的 route/volume/topology 或自行部署。Staging 当前映射 ARK；production 启用外部模型前仍需用户同意、披露和审计策略。
+- 可配置的 OpenAI-compatible 模型接收脱敏、限量的结构化 evidence 与版本化 LAE Knowledge Pack，可提出 adapter、环境变量、DeploymentPlan 和 manifest candidate，并生成解释；它不接收源码正文或 secret。确定性 detector/policy/schema/Luma validator 拥有最终裁决权：AI 不能删除 blocker、放宽能力、修改受保护的 route/volume/topology 或自行部署。validation 当前映射 ARK；production 启用外部模型前仍需用户同意、披露和审计策略。
 
 ### 3.4 `lae-worker`
 
@@ -260,10 +260,9 @@ LAE 公共协议只接受 `region: cn | global`。`node`、IP、pool、failure d
 当前 live 集群不能原样作为公共 LAE 生产池：
 
 - `builder` 在 `home` region，当前 `build-image` 使用 Docker/buildx 共享宿主能力，只适合现有内部构建；不能原样承载公开不可信分析与构建。
-- `manager` 是唯一控制面；`aly` 是已退出当前 8 节点 live 清单的过时历史名称，若再次出现在注册表中应按 stale record 清理。当前 staging 决策允许 manager 显式兼任 runtime，并要求 manager node agent 写入 `role.runtime=true`。
+- `manager` 是唯一控制面；`aly` 是已退出当前 8 节点 live 清单的过时历史名称，若再次出现在注册表中应按 stale record 清理。当前 validation 决策允许 manager 显式兼任 runtime，并要求 manager node agent 写入 `role.runtime=true`。
 - 当前用户 workload 多集中在 home，且至少一个节点出现高负载/高内存占用。
 - 当前 registry 自动推导 pull host，LAE 上线前需要把 registry host、GC、备份和目标节点 pull 线路配置成显式、可监控状态。
-- Staging 平台与主数据都在 `manager`：PostgreSQL、MinIO 和本地快照使用 `/srv/luma/lae/staging/*/v2`，平台启动不再依赖 NFS。租户卷仍使用单独的 staging runtime storage 定义；平台本地盘也不能替代 PostgreSQL PITR、对象异机复制和整机丢失恢复设计。
 
 最低新增容量：一个专用 cn builder、至少一个 cn runner、一个 stateful 节点；公开发布前 builder 必须完成隔离改造，公网扩容前 builder/runner 均至少两台以支持队列冗余、滚动发布和节点故障。
 

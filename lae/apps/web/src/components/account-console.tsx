@@ -749,7 +749,7 @@ function UsageSoundings({ usage }: { usage: BillingUsage }) {
   const usageNotice = usage.ledger.connected
     ? usage.ledger.billingImpact
       ? usage.notice
-      : "资源用量为实时快照；staging 模拟结算不会产生真实扣费。"
+      : "资源用量为实时快照；开发环境模拟结算不会产生真实扣费。"
     : "用量账本尚未接通；以下数值为占位快照，不参与计费或额度扣减。";
   return (
     <div className="usage-soundings">

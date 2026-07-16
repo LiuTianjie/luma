@@ -41,7 +41,7 @@ _CONFIG_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _MERCHANT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _PROVIDER_EVENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
-_MOCK_ENVIRONMENTS = frozenset({"dev", "development", "staging", "test"})
+_MOCK_ENVIRONMENTS = frozenset({"dev", "development", "test"})
 _TERMINAL_ORDER_STATUSES = frozenset(
     {"paid", "failed", "expired", "canceled"}
 )
@@ -73,7 +73,7 @@ class Price:
 
 @dataclass(frozen=True, slots=True)
 class MockPricingCatalog:
-    """Strict, explicitly non-commercial dev/staging pricing input."""
+    """Strict, explicitly non-commercial development/test pricing input."""
 
     version: str
     currency: str
@@ -106,7 +106,7 @@ class MockPricingCatalog:
     def parse(cls, raw: str, *, environment: str) -> MockPricingCatalog:
         if environment.strip().lower() not in _MOCK_ENVIRONMENTS:
             raise BillingConfigurationError(
-                "mock billing is forbidden outside dev/staging/test"
+                "mock billing is forbidden outside development/test"
             )
         try:
             payload = json.loads(raw)
@@ -198,7 +198,7 @@ def decode_billing_key(value: str, *, label: str) -> bytes:
 
 @dataclass(frozen=True, slots=True)
 class MockPaymentProvider:
-    """Signed dev/staging adapter; it never talks to a real payment network."""
+    """Signed development/test adapter; it never talks to a real payment network."""
 
     merchant_id: str
     checkout_base_url: str

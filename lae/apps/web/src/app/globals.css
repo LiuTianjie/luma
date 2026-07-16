@@ -720,7 +720,7 @@ button:focus-visible, a:focus-visible, label:focus-within {
   .account-dialog { padding: 23px 19px; }
 }
 
-/* Staging mock checkout: a restrained verification chamber, not a storefront. */
+/* Development mock checkout: a restrained verification chamber, not a storefront. */
 .mock-checkout-shell { position: relative; min-height: 100vh; overflow-x: clip; background: radial-gradient(circle at 52% -8%, rgba(122,151,119,.12), transparent 35%), linear-gradient(153deg, #091511 0%, #050e0c 57%, #0a1512 100%); }
 .mock-checkout-ambient { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
 .mock-checkout-ambient::after { content: ""; position: absolute; inset: -35%; opacity: .045; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.84' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); transform: rotate(7deg); }

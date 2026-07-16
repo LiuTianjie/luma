@@ -209,20 +209,20 @@ class EmailSenderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("runtime-password-canary", repr(service._email))
         await engine.dispose()
 
-        staging_console = {
+        development_console = {
             "LAE_DATABASE_URL": common["LAE_DATABASE_URL"],
             "LAE_AUTH_HMAC_KEY": common["LAE_AUTH_HMAC_KEY"],
-            "LAE_ENVIRONMENT": "staging",
+            "LAE_ENVIRONMENT": "development",
             "LAE_EMAIL_DRIVER": "console",
         }
-        with patch.dict(os.environ, staging_console, clear=True):
+        with patch.dict(os.environ, development_console, clear=True):
             preview_only, engine = _runtime_auth_service()
         self.assertFalse(preview_only.external_mailbox_enabled)
         await engine.dispose()
 
         with patch.dict(
             os.environ,
-            {**staging_console, "LAE_AUTH_EXTERNAL_MAILBOX": "true"},
+            {**development_console, "LAE_AUTH_EXTERNAL_MAILBOX": "true"},
             clear=True,
         ):
             with self.assertRaises(AuthConfigurationError) as caught:
@@ -231,7 +231,7 @@ class EmailSenderTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.dict(
             os.environ,
-            {**staging_console, "LAE_AUTH_EXTERNAL_MAILBOX": "sometimes"},
+            {**development_console, "LAE_AUTH_EXTERNAL_MAILBOX": "sometimes"},
             clear=True,
         ):
             with self.assertRaises(AuthConfigurationError) as caught:

@@ -64,7 +64,7 @@ class _PreviewEmailCapture:
         if hmac.compare_digest(delivery.email, self._email):
             # The reserved .invalid mailbox must never be handed to an external
             # SMTP provider. Its credential is held only long enough for the
-            # explicit staging preview endpoint to exchange it.
+            # explicit development preview endpoint to exchange it.
             self._sequence += 1
             self._latest = delivery
             return
@@ -77,7 +77,7 @@ def preview_email_from_env(
     mode = values.get("LAE_AUTH_PREVIEW_MODE", "disabled").strip().lower()
     if mode in {"", "disabled"}:
         return None
-    if mode != "public" or environment.strip().lower() != "staging":
+    if mode != "public" or environment.strip().lower() != "development":
         raise AuthConfigurationError("auth preview mode is not allowed")
     try:
         email = normalize_email(values.get("LAE_AUTH_PREVIEW_EMAIL", ""))
@@ -149,7 +149,7 @@ class AuthService:
             raise PreviewAuthDisabled("preview authentication is disabled")
 
         async with self._preview_lock:
-            # Existing preview users take the login branch. A fresh staging
+            # Existing preview users take the login branch. A fresh development
             # database has no such identity, so the indistinguishable login
             # miss falls through to the ordinary registration contract.
             for purpose in ("login", "register"):

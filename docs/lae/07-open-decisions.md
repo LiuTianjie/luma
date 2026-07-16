@@ -20,9 +20,9 @@
 | D-012 | Lite 允许受管 named volume 和应用内自管数据库 | Confirmed 2026-07-11 | Lite 不是纯静态套餐；仍不承诺托管数据库 SLA |
 | D-013 | Dockerfile 与 Compose 对所有用户开放 | Confirmed 2026-07-11 | 不采用邀请制/申请 Beta；安全隔离是公开发布门槛而非用户分层 |
 | D-014 | Git 源码拉取、Agent runner 分析与镜像构建统一走 Luma builder | Confirmed 2026-07-11 | LAE Agent 是 controller + builder runner；需要 Builder v2 task 协议 |
-| D-015 | AI provider 的 Base URL/API key/model 由平台配置，staging 可映射 ARK；Agent 必须携带版本化 LAE Knowledge Pack | Confirmed 2026-07-11 | 用户不提供模型 key；AI 生成 candidate/解释，确定性校验终审并明确不可部署原因 |
+| D-015 | AI provider 的 Base URL/API key/model 由平台配置，validation 可映射 ARK；Agent 必须携带版本化 LAE Knowledge Pack | Confirmed 2026-07-11 | 用户不提供模型 key；AI 生成 candidate/解释，确定性校验终审并明确不可部署原因 |
 | D-016 | `manager` 是唯一控制面，`aly` 是过时历史名称 | Confirmed 2026-07-11 | 升级、placement、SOP 与资产均不得再把 `aly` 当真实节点 |
-| D-017 | Staging 租户 runtime 可落在 `manager + tecent`，manager 可显式兼任 runtime；用户只选择 region，不看具体 placement | Confirmed 2026-07-11 | 内部正向 allowlist、runtime role、容量/volume 门禁和管理员审计；生产仍建议专用 runner |
+| D-017 | validation 租户 runtime 可落在 `manager + tecent`，manager 可显式兼任 runtime；用户只选择 region，不看具体 placement | Confirmed 2026-07-11 | 内部正向 allowlist、runtime role、容量/volume 门禁和管理员审计；生产仍建议专用 runner |
 
 ## 2. P0：会改变总体架构
 
@@ -82,7 +82,7 @@ Compose 出现 env/route/volume/destructive diff 时永远要求人工确认。
 
 ### Q12. 邮件、微信支付、支付宝的真实供应商/商户是否已就绪？
 
-**Recommended default：接口先完成，dev/staging 用 Mailpit + mock payment，production provider 用 feature flag。**
+**Recommended default：接口先完成，dev/validation 用 Mailpit + mock payment，production provider 用 feature flag。**
 
 第三方未就绪不阻塞核心部署，但阻塞公开收费和真实注册邮件。
 

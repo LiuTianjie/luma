@@ -150,7 +150,7 @@ class S3PrivateObjectStore:
         chunks: AsyncIterator[bytes],
     ) -> PrivateObjectMetadata:
         _require_descriptor(key, media_type, size_bytes, digest)
-        with tempfile.TemporaryFile(mode="w+b") as staging:
+        with tempfile.TemporaryFile(mode="w+b") as buffer:
             hasher = hashlib.sha256()
             total = 0
             async for chunk in chunks:
@@ -163,20 +163,20 @@ class S3PrivateObjectStore:
                 if total > size_bytes:
                     raise PrivateObjectIntegrityError("object stream is invalid")
                 hasher.update(chunk)
-                staging.write(chunk)
+                buffer.write(chunk)
             if total != size_bytes or not hmac.compare_digest(
                 f"sha256:{hasher.hexdigest()}", digest
             ):
                 raise PrivateObjectIntegrityError("object stream is invalid")
-            staging.flush()
-            staging.seek(0)
+            buffer.flush()
+            buffer.seek(0)
             return await asyncio.to_thread(
                 self._publish_sync,
                 key,
                 media_type,
                 size_bytes,
                 digest,
-                staging,
+                buffer,
             )
 
     async def get_stream(
@@ -268,7 +268,7 @@ class S3PrivateObjectStore:
         media_type: str,
         size_bytes: int,
         digest: str,
-        staging: BinaryIO,
+        buffer: BinaryIO,
     ) -> PrivateObjectMetadata:
         expected = PrivateObjectMetadata(key, media_type, size_bytes, digest)
         existing = self._head_sync(key)
@@ -286,7 +286,7 @@ class S3PrivateObjectStore:
                 "If-None-Match": "*",
                 "X-Amz-Meta-LAE-SHA256": digest,
             },
-            body=staging,
+            body=buffer,
             payload_hash=digest.removeprefix("sha256:"),
         )
         try:

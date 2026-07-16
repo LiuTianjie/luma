@@ -5,7 +5,7 @@ Revises: 20260711_0004
 Create Date: 2026-07-11
 
 Prices are deliberately absent from this migration.  Until commercial pricing
-is approved, dev/staging loads a versioned price snapshot from
+is approved, development/test loads a versioned price snapshot from
 ``LAE_MOCK_PRICING_JSON`` and persists the selected snapshot on each order.
 """
 

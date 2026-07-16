@@ -163,7 +163,7 @@ def _usage_body(usage: BillingUsageRecord) -> dict[str, Any]:
         },
         "counters": usage.counters,
         "notice": (
-            "Resource counters are live. Staging mock billing does not create "
+            "Resource counters are live. Development mock billing does not create "
             "real charges, but plan limits remain enforceable."
         ),
     }
@@ -415,7 +415,6 @@ def create_billing_router(
     if mock_enabled and environment.strip().lower() in {
         "dev",
         "development",
-        "staging",
         "test",
     }:
 

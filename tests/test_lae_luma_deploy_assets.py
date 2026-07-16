@@ -20,7 +20,6 @@ PLACEHOLDER_IMAGES = {
     "artifact-store": "registry.internal/lae/artifact-store:git-sha",
     "artifact-init": "registry.internal/lae/artifact-init:git-sha",
     "backup": "registry.internal/lae/backup:git-sha",
-    "template-smoke": "registry.internal/lae/template-smoke:git-sha",
     "valkey": "registry.internal/lae/valkey:git-sha",
 }
 STORAGE_CLASSES = {
@@ -43,41 +42,6 @@ STORAGE_CLASSES = {
         "regions": ["cn"],
     },
 }
-LIVE_STAGING_STORAGE_CLASSES = {
-    "lae-staging-runtime-nfs": {
-        "provider": "nfs",
-        "mode": "managed",
-        "node": "builder",
-        "path": "/srv/luma",
-        "regions": ["cn"],
-        "nodes": ["manager", "tecent"],
-    },
-    "lae-staging-backups-nfs": {
-        "provider": "nfs",
-        "mode": "managed",
-        "node": "tecent",
-        "path": "/srv/luma-backups",
-        "regions": ["cn"],
-        "nodes": ["manager"],
-    },
-}
-LIVE_STAGING_NODE_RECORDS = {
-    "builder": {
-        "region": "home",
-        "hostname": "builder",
-        "tailscaleIP": "100.66.177.70",
-    },
-    "tecent": {
-        "region": "cn",
-        "hostname": "VM-0-10-ubuntu",
-        "tailscaleIP": "100.64.29.91",
-    },
-    "manager": {
-        "region": "cn",
-        "hostname": "iZ0jlep4ral3r2v0ajypnmZ",
-        "tailscaleIP": "100.106.154.3",
-    },
-}
 
 
 def config() -> LumaConfig:
@@ -94,94 +58,6 @@ def config() -> LumaConfig:
 
 
 class LaeLumaDeployAssetTests(unittest.TestCase):
-    def test_staging_storage_migration_is_pinned_and_copies_into_managed_targets(self):
-        migration = DEPLOY / "migrations" / "storage-v1"
-        deployment = load_compose_deployment(
-            migration / "luma.compose.yml",
-            storage_classes=LIVE_STAGING_STORAGE_CLASSES,
-            allow_sidecar_storage_classes=False,
-        )
-        self.assertEqual(
-            {volume.storage_class for volume in deployment.volumes.values()},
-            {"lae-staging-runtime-nfs"},
-        )
-        self.assertEqual(
-            {service.node for service in deployment.services.values()},
-            {"manager"},
-        )
-        rendered = render_compose_job(
-            config(),
-            deployment,
-            as_json=False,
-            node_records=LIVE_STAGING_NODE_RECORDS,
-        )["Job"]
-        tasks = rendered["TaskGroups"][0]["Tasks"]
-        self.assertEqual({task["Name"] for task in tasks}, {"copy-postgres", "copy-artifacts"})
-        for task in tasks:
-            mounts = task["Config"]["mount"]
-            source = next(mount for mount in mounts if mount["target"] == "/source")
-            target = next(mount for mount in mounts if mount["target"] == "/target")
-            self.assertEqual(source["type"], "volume")
-            self.assertNotIn("volume_options", source)
-            self.assertTrue(source["readonly"])
-            self.assertRegex(target["source"], r"^luma-lae-staging-storage-migration-v1-")
-            self.assertIn("volume_options", target)
-            self.assertIn("LAE storage migration completed", " ".join(task["Config"]["args"]))
-
-    def test_staging_local_storage_migration_copies_all_remote_sources_to_manager(self):
-        migration = DEPLOY / "migrations" / "storage-v2"
-        deployment = load_compose_deployment(
-            migration / "luma.compose.yml",
-            storage_classes=LIVE_STAGING_STORAGE_CLASSES,
-            allow_sidecar_storage_classes=False,
-        )
-        self.assertEqual(
-            {
-                volume.storage_class
-                for volume in deployment.volumes.values()
-                if volume.storage_class
-            },
-            {"lae-staging-runtime-nfs", "lae-staging-backups-nfs"},
-        )
-        local_targets = {
-            volume.name: (volume.local_node, volume.local_path, volume.initialize)
-            for volume in deployment.volumes.values()
-            if volume.kind == "local"
-        }
-        self.assertEqual(
-            local_targets,
-            {
-                "postgres-target": ("manager", "/srv/luma/lae/staging/postgres/v2", "empty"),
-                "artifact-target": ("manager", "/srv/luma/lae/staging/artifacts/v2", "empty"),
-                "backup-target": ("manager", "/srv/luma/lae/staging/backups/v2", "empty"),
-            },
-        )
-        rendered = render_compose_job(
-            config(),
-            deployment,
-            as_json=False,
-            node_records=LIVE_STAGING_NODE_RECORDS,
-        )["Job"]
-        self.assertIn("manager", str(rendered["Constraints"]))
-        self.assertNotIn("Canary", rendered["Update"])
-        tasks = rendered["TaskGroups"][0]["Tasks"]
-        self.assertEqual(
-            {task["Name"] for task in tasks},
-            {"copy-postgres", "copy-artifacts", "copy-backups"},
-        )
-        for task in tasks:
-            mounts = task["Config"]["mount"]
-            source = next(mount for mount in mounts if mount["target"] == "/source")
-            target = next(mount for mount in mounts if mount["target"] == "/target")
-            self.assertEqual(source["type"], "volume")
-            self.assertTrue(source["readonly"])
-            self.assertIn("volume_options", source)
-            self.assertEqual(target["type"], "bind")
-            self.assertTrue(target["source"].startswith("/srv/luma/lae/staging/"))
-            self.assertIn(
-                "LAE local storage migration completed",
-                " ".join(task["Config"]["args"]),
-            )
 
     def test_backup_image_uses_existing_builder_postgres_manifest(self):
         dockerfile = (DEPLOY / "docker" / "backup.Dockerfile").read_text(
@@ -198,8 +74,8 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertNotIn('chmod 0700 "$backup_root"', script)
         self.assertIn('chmod 0700 "$snapshot_root"', script)
 
-    def test_staging_runtime_has_no_retired_or_public_registry_pull(self):
-        compose = load_yaml(DEPLOY / "docker-compose.staging.yml")
+    def test_runtime_has_no_retired_or_public_registry_pull(self):
+        compose = load_yaml(DEPLOY / "docker-compose.yml")
         postgres = compose["services"]["postgres"]
         self.assertTrue(postgres["image"].startswith("100.66.177.70:5000/lae/"))
         self.assertNotIn("registry.itool.tech", postgres["image"])
@@ -250,12 +126,12 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
                 service.pop("build", None)
         return result
 
-    def test_production_is_valid_import_shape_and_renders_three_http_routes(self):
+    def test_production_is_valid_import_shape_and_renders_http_routes(self):
         deployment = self.load("luma.compose.yml")
         self.assertEqual(deployment.name, "lae-platform")
         self.assertEqual(
             {service.name for service in compose_public_services(deployment)},
-            {"web", "api", "artifact-store"},
+            {"web", "api", "agent-controller", "artifact-store"},
         )
         self.assertEqual(
             {service.exposure for service in compose_public_services(deployment)},
@@ -285,90 +161,51 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             {
                 "lae-platform-web",
                 "lae-platform-api",
+                "lae-platform-agent-controller",
                 "lae-platform-artifact-store",
             },
         )
         self.assertEqual(
             {port["To"] for port in group["Networks"][0]["DynamicPorts"]},
-            {3000, 8080, 9000},
+            {3000, 8080, 8081, 9000},
         )
-
-    def test_live_itool_staging_overlay_uses_only_existing_internal_topology(self):
-        deployment = load_compose_deployment(
-            DEPLOY / "luma.compose.staging.itool.yml",
-            storage_classes=LIVE_STAGING_STORAGE_CLASSES,
-            allow_sidecar_storage_classes=False,
-            allow_build_services=True,
-        )
-        self.assertEqual(deployment.name, "lae-platform-staging")
-        self.assertEqual(deployment.region, "cn")
-        self.assertEqual(
-            {volume.kind for volume in deployment.volumes.values()},
-            {"local"},
-        )
-        self.assertEqual(
-            {volume.local_node for volume in deployment.volumes.values()},
-            {"manager"},
-        )
-        self.assertEqual(
-            {volume.adopted for volume in deployment.volumes.values()},
-            {False},
-        )
-        self.assertEqual(
-            {volume.initialize for volume in deployment.volumes.values()},
-            {"empty"},
-        )
-        self.assertEqual(
-            {service.node for service in deployment.services.values()}, {"manager"}
-        )
-        self.assertEqual(
-            {service.name for service in compose_public_services(deployment)},
-            {"web", "api", "agent-controller", "artifact-store"},
-        )
-        rendered = render_compose_job(
-            config(),
-            self.with_import_images(deployment),
-            as_json=False,
-            resolve_secrets=False,
-            node_records=LIVE_STAGING_NODE_RECORDS,
-        )["Job"]
-        self.assertIn("manager", str(rendered["Constraints"]))
-        self.assertIn("cn", str(rendered["Constraints"]))
 
     def test_only_signed_s3_data_plane_is_public_beside_web_and_api(self):
-        for sidecar_name in ("luma.compose.yml", "luma.compose.staging.yml"):
-            deployment = self.load(sidecar_name)
-            for name in (
-                "worker",
-                "agent-controller",
-                "postgres",
-                "artifact-init",
-                "backup",
-                "valkey",
-            ):
-                self.assertEqual(deployment.services[name].exposure, "none")
-                self.assertIsNone(deployment.services[name].domain)
-            artifact = deployment.services["artifact-store"]
-            self.assertEqual(artifact.exposure, "cn-edge")
-            self.assertEqual(artifact.port, 9000)
-            self.assertIn("artifacts", artifact.domain or "")
-    def test_compose_has_no_host_or_public_port_escape_hatches(self):
-        for compose_name in ("docker-compose.yml", "docker-compose.staging.yml"):
-            compose = load_yaml(DEPLOY / compose_name)
-            for name, service in compose["services"].items():
-                self.assertNotIn("ports", service, name)
-                self.assertNotIn("network_mode", service, name)
-                self.assertNotIn("privileged", service, name)
-                self.assertNotIn("devices", service, name)
-                self.assertIn("healthcheck", service, name)
-                for volume in service.get("volumes", []):
-                    source = str(volume).split(":", 1)[0]
-                    self.assertFalse(source.startswith(("/", ".", "~")), name)
-                    self.assertNotIn("docker.sock", str(volume), name)
+        deployment = self.load("luma.compose.yml")
+        for name in (
+            "worker",
+            "postgres",
+            "artifact-init",
+            "backup",
+            "valkey",
+        ):
+            self.assertEqual(deployment.services[name].exposure, "none")
+            self.assertIsNone(deployment.services[name].domain)
+        artifact = deployment.services["artifact-store"]
+        self.assertEqual(artifact.exposure, "cn-edge")
+        self.assertEqual(artifact.port, 9000)
+        self.assertIn("artifacts", artifact.domain or "")
+        controller = deployment.services["agent-controller"]
+        self.assertEqual(controller.exposure, "cn-edge")
+        self.assertEqual(controller.port, 8081)
+        self.assertEqual(controller.domain, "lae-agent.itool.tech")
 
-            rendered = (DEPLOY / compose_name).read_text(encoding="utf-8")
-            self.assertNotIn('"$VALKEY_PASSWORD"', rendered)
-            self.assertIn('"$${VALKEY_PASSWORD}"', rendered)
+    def test_compose_has_no_host_or_public_port_escape_hatches(self):
+        compose = load_yaml(DEPLOY / "docker-compose.yml")
+        for name, service in compose["services"].items():
+            self.assertNotIn("ports", service, name)
+            self.assertNotIn("network_mode", service, name)
+            self.assertNotIn("privileged", service, name)
+            self.assertNotIn("devices", service, name)
+            self.assertIn("healthcheck", service, name)
+            for volume in service.get("volumes", []):
+                source = str(volume).split(":", 1)[0]
+                self.assertFalse(source.startswith(("/", ".", "~")), name)
+                self.assertNotIn("docker.sock", str(volume), name)
+
+        rendered = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertNotIn('"$VALKEY_PASSWORD"', rendered)
+        self.assertIn('"$${VALKEY_PASSWORD}"', rendered)
 
     def test_images_and_builds_are_reproducible_inputs(self):
         compose = load_yaml(DEPLOY / "docker-compose.yml")
@@ -446,97 +283,39 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertIn("lae-restore-drill-", backup_script)
         self.assertNotIn("set -x", backup_script)
 
-        live_sidecar = load_yaml(DEPLOY / "luma.compose.staging.itool.yml")
-        self.assertEqual(
-            live_sidecar["volumes"]["backup-data"]["local"],
-            {"node": "manager", "path": "/srv/luma/lae/staging/backups/v2"},
-        )
-        self.assertEqual(
-            live_sidecar["volumes"]["backup-data"]["initialize"],
-            "empty",
-        )
-        self.assertNotIn("adopted", live_sidecar["volumes"]["backup-data"])
-
         production_store = self.load("luma.compose.yml").compose["services"][
-            "artifact-store"
-        ]["environment"]
-        staging_store = self.load("luma.compose.staging.yml").compose["services"][
             "artifact-store"
         ]["environment"]
         self.assertEqual(
             production_store["MINIO_API_CORS_ALLOW_ORIGIN"],
             "https://lae.itool.tech",
         )
-        self.assertEqual(
-            staging_store["MINIO_API_CORS_ALLOW_ORIGIN"],
-            "https://lae-staging.itool.tech",
-        )
         self.assertNotIn("*", production_store["MINIO_API_CORS_ALLOW_ORIGIN"])
-        self.assertNotIn("*", staging_store["MINIO_API_CORS_ALLOW_ORIGIN"])
 
     def test_platform_local_storage_and_external_email_environment_boundary(self):
         production = self.load("luma.compose.yml")
-        staging = self.load("luma.compose.staging.yml")
-        for deployment in (production, staging):
-            self.assertNotIn("mailpit", deployment.compose["services"])
-            for volume in deployment.volumes.values():
-                self.assertEqual(volume.kind, "local")
-                self.assertEqual(volume.local_node, "lae-core")
-                self.assertIsNone(volume.storage_class)
-                self.assertEqual(volume.initialize, "empty")
-                self.assertEqual(volume.access_mode, "ReadWriteOnce")
+        self.assertNotIn("mailpit", production.compose["services"])
+        for volume in production.volumes.values():
+            self.assertEqual(volume.kind, "local")
+            self.assertEqual(volume.local_node, "manager")
+            self.assertIsNone(volume.storage_class)
+            self.assertEqual(volume.initialize, "empty")
+            self.assertEqual(volume.access_mode, "ReadWriteOnce")
 
         production_api = production.compose["services"]["api"]["environment"]
         self.assertEqual(production_api["LAE_ENVIRONMENT"], "production")
         self.assertEqual(production_api["LAE_BILLING_DRIVER"], "disabled")
         self.assertEqual(production_api["LAE_EMAIL_DRIVER"], "smtp")
         self.assertEqual(str(production_api["LAE_AUTH_EXTERNAL_MAILBOX"]), "1")
-        self.assertEqual(production_api["LAE_SMTP_SECURITY"], "tls")
-        self.assertEqual(str(production_api["LAE_SMTP_PORT"]), "465")
+        self.assertEqual(production_api["LAE_SMTP_SECURITY"], "starttls")
+        self.assertEqual(production_api["LAE_SMTP_PORT"], "${ITOOL_TECH_SMTP_PORT}")
         self.assertEqual(production_api["LAE_AUTH_PREVIEW_MODE"], "disabled")
         self.assertNotIn("LAE_AUTH_PREVIEW_EMAIL", production_api)
 
-        staging_api = staging.compose["services"]["api"]["environment"]
-        self.assertEqual(staging_api["LAE_ENVIRONMENT"], "staging")
-        self.assertEqual(staging_api["LAE_BILLING_DRIVER"], "mock")
-        self.assertEqual(str(staging_api["LAE_AUTH_EXTERNAL_MAILBOX"]), "1")
-        self.assertEqual(staging_api["LAE_EMAIL_FROM"], "${ITOOL_TECH_SMTP_USER}")
-        self.assertEqual(staging_api["LAE_SMTP_HOST"], "${ITOOL_TECH_SMTP_HOST}")
-        self.assertEqual(staging_api["LAE_SMTP_PASSWORD"], "${ITOOL_TECH_SMTP_PASS}")
-        self.assertEqual(staging_api["LAE_SMTP_PORT"], "${ITOOL_TECH_SMTP_PORT}")
-        self.assertEqual(staging_api["LAE_SMTP_SECURITY"], "starttls")
-        self.assertEqual(staging_api["LAE_SMTP_USERNAME"], "${ITOOL_TECH_SMTP_USER}")
-        self.assertEqual(staging_api["LAE_AUTH_PREVIEW_MODE"], "public")
-        self.assertTrue(staging_api["LAE_AUTH_PREVIEW_EMAIL"].endswith(".invalid"))
-
-    def test_staging_private_object_io_does_not_hairpin_through_public_edge(self):
-        staging = self.load("luma.compose.staging.yml").compose["services"]
-        api = staging["api"]["environment"]
-        worker = staging["worker"]["environment"]
-
-        for environment in (api, worker):
-            self.assertEqual(
-                environment["LAE_ARTIFACT_S3_ENDPOINT"],
-                "http://artifact-store:9000",
-            )
-            self.assertEqual(
-                environment["LAE_ARTIFACT_S3_ALLOWED_HOSTS"], "artifact-store"
-            )
-        self.assertEqual(
-            worker["LAE_UPLOAD_S3_ENDPOINT"], "http://artifact-store:9000"
-        )
-        self.assertEqual(
-            api["LAE_UPLOAD_S3_ENDPOINT"],
-            "https://lae-artifacts-staging.itool.tech",
-        )
-
     def test_env_example_covers_references_without_secret_values(self):
         referenced: set[str] = set()
-        for compose_name in ("docker-compose.yml", "docker-compose.staging.yml"):
-            text = (DEPLOY / compose_name).read_text(encoding="utf-8")
-            referenced.update(
-                re.findall(r"(?<!\$)\$\{([A-Z][A-Z0-9_]*)\}", text)
-            )
+        text = (DEPLOY / "docker-compose.yml").read_text(encoding="utf-8")
+        referenced.update(re.findall(r"(?<!\$)\$\{([A-Z][A-Z0-9_]*)\}", text))
 
         values: dict[str, str] = {}
         for example_name in (".env.example", ".global-secrets.example"):
@@ -564,9 +343,6 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             "LAE_LUMA_SERVICE_TOKEN",
             "LAE_LUMA_RUNTIME_SERVICE_TOKEN",
             "LAE_MINIO_ROOT_PASSWORD",
-            "LAE_MOCK_CHECKOUT_BASE_URL",
-            "LAE_MOCK_PAYMENT_MERCHANT_ID",
-            "LAE_MOCK_PAYMENT_SIGNING_KEY",
             "LAE_POSTGRES_PASSWORD",
             "LAE_S3_API_ACCESS_KEY",
             "LAE_S3_API_SECRET_KEY",
@@ -577,7 +353,6 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
             "LAE_SOURCE_CONNECTION_AEAD_KEYS",
             "LAE_SOURCE_CONNECTION_HMAC_KEYS",
             "LAE_SOURCE_CONNECTION_IDEMPOTENCY_HMAC_KEY",
-            "LAE_TEMPLATE_SMOKE_REPORT_TOKEN",
             "LAE_UPLOAD_HMAC_KEY",
             "LAE_VALKEY_PASSWORD",
             "LAE_WORKER_STATE_HMAC_KEY",
@@ -589,17 +364,16 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertEqual({name: values[name] for name in sensitive}, dict.fromkeys(sensitive, ""))
 
     def test_upload_analysis_has_exact_internal_redemption_capability(self):
-        for compose_name in ("docker-compose.yml", "docker-compose.staging.yml"):
-            compose = load_yaml(DEPLOY / compose_name)
-            api = compose["services"]["api"]["environment"]
-            self.assertEqual(str(api["LAE_UPLOAD_ANALYSIS_BROKER_ENABLED"]), "1")
-            self.assertEqual(
-                api["LAE_CREDENTIAL_BROKER_TOKEN"],
-                "${LAE_CREDENTIAL_BROKER_TOKEN}",
-            )
-            self.assertEqual(api["LAE_UPLOAD_DRIVER"], "s3")
-            self.assertIn("LAE_UPLOAD_S3_ACCESS_KEY", api)
-            self.assertIn("LAE_UPLOAD_S3_SECRET_KEY", api)
+        compose = load_yaml(DEPLOY / "docker-compose.yml")
+        api = compose["services"]["api"]["environment"]
+        self.assertEqual(str(api["LAE_UPLOAD_ANALYSIS_BROKER_ENABLED"]), "1")
+        self.assertEqual(
+            api["LAE_CREDENTIAL_BROKER_TOKEN"],
+            "${LAE_CREDENTIAL_BROKER_TOKEN}",
+        )
+        self.assertEqual(api["LAE_UPLOAD_DRIVER"], "s3")
+        self.assertIn("LAE_UPLOAD_S3_ACCESS_KEY", api)
+        self.assertIn("LAE_UPLOAD_S3_SECRET_KEY", api)
 
     def test_api_entrypoint_materializes_admin_token_and_waits_for_database(self):
         entrypoint = (DEPLOY / "docker" / "api-entrypoint.sh").read_text(
@@ -613,24 +387,23 @@ class LaeLumaDeployAssetTests(unittest.TestCase):
         self.assertIn("LAE_MIGRATION_RETRY_SECONDS", entrypoint)
 
     def test_worker_and_api_use_separate_runtime_principal(self):
-        for compose_name in ("docker-compose.yml", "docker-compose.staging.yml"):
-            compose = load_yaml(DEPLOY / compose_name)
-            api = compose["services"]["api"]["environment"]
-            worker = compose["services"]["worker"]["environment"]
-            self.assertEqual(str(worker["LAE_DEPLOYMENT_WORKER_ENABLED"]), "1")
-            self.assertEqual(worker["LAE_LUMA_RUNTIME_PRINCIPAL_ID"], "lae-runtime")
-            self.assertEqual(worker["LAE_LUMA_SERVICE_PRINCIPAL_ID"], "lae-builder")
-            self.assertNotEqual(
-                worker["LAE_LUMA_RUNTIME_SERVICE_TOKEN"],
-                worker["LAE_LUMA_SERVICE_TOKEN"],
-            )
-            self.assertEqual(
-                api["LAE_LUMA_RUNTIME_SERVICE_TOKEN"],
-                worker["LAE_LUMA_RUNTIME_SERVICE_TOKEN"],
-            )
-            self.assertIn("LAE_BUILD_PLAN_SIGNING_HMAC_KEY", worker)
-            self.assertIn("LAE_BUILD_CREDENTIAL_LEASE_HMAC_KEY", worker)
-            self.assertIn("LAE_ADMIN_API_TOKEN", api)
+        compose = load_yaml(DEPLOY / "docker-compose.yml")
+        api = compose["services"]["api"]["environment"]
+        worker = compose["services"]["worker"]["environment"]
+        self.assertEqual(str(worker["LAE_DEPLOYMENT_WORKER_ENABLED"]), "1")
+        self.assertEqual(worker["LAE_LUMA_RUNTIME_PRINCIPAL_ID"], "lae-runtime")
+        self.assertEqual(worker["LAE_LUMA_SERVICE_PRINCIPAL_ID"], "lae-builder")
+        self.assertNotEqual(
+            worker["LAE_LUMA_RUNTIME_SERVICE_TOKEN"],
+            worker["LAE_LUMA_SERVICE_TOKEN"],
+        )
+        self.assertEqual(
+            api["LAE_LUMA_RUNTIME_SERVICE_TOKEN"],
+            worker["LAE_LUMA_RUNTIME_SERVICE_TOKEN"],
+        )
+        self.assertIn("LAE_BUILD_PLAN_SIGNING_HMAC_KEY", worker)
+        self.assertIn("LAE_BUILD_CREDENTIAL_LEASE_HMAC_KEY", worker)
+        self.assertIn("LAE_ADMIN_API_TOKEN", api)
 
 
 if __name__ == "__main__":

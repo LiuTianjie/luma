@@ -81,11 +81,11 @@ sudo scripts/setup-lae-builder.sh \
 - 默认允许解析 `docker.io` 与 `ghcr.io` 的外部基础镜像。要收窄或替换，重复传小写、按字典序排列且不重复的 `--external-registry HOST`；
 - 大陆 Builder 无法直连公开 registry 时，`--external-resolver-proxy` 只负责 `crane digest`，`--buildkit-egress-proxy` 只负责专用 rootless BuildKit 拉公开基础镜像；两者都不得改用户 Compose、系统 Docker daemon、rootless Docker daemon或 analyzer 网络；
 - `--buildkit-egress-no-proxy` 必须覆盖内部 registry 及内网/Tailscale 网段，确保构建产物直推 Builder registry，不绕公网代理；
-- rootless BuildKit 需要访问显式 push endpoint，因此专用 Builder 主机不得在该 endpoint 暴露非必要敏感服务。进一步的 Builder 出口/主机防火墙隔离仍是 staging 上线门槛。
+- rootless BuildKit 需要访问显式 push endpoint，因此专用 Builder 主机不得在该 endpoint 暴露非必要敏感服务。进一步的 Builder 出口/主机防火墙隔离仍是 validation 上线门槛。
 
 脚本只为 rootless Docker 管理本次指定的 insecure registry 条目：它用 `/var/lib/luma/builder/rootless-docker-managed-registries.json` 记录自己拥有的条目，更新时移除旧的 managed 值并保留运维人员原有的其他 Docker daemon 配置。
 
-当前共享 staging 的实时参数是：pull host 与 push host 均为 `100.66.177.70:5000`，内部 registry 使用 insecure HTTP，平台镜像构建使用 direct 网络。旧的 `localhost:5000` push endpoint 已无监听并会连接失败；发布前必须以 `luma build config` 的当前值为准。target node 仍不得使用 Builder loopback。
+当前共享 validation 的实时参数是：pull host 与 push host 均为 `100.66.177.70:5000`，内部 registry 使用 insecure HTTP，平台镜像构建使用 direct 网络。旧的 `localhost:5000` push endpoint 已无监听并会连接失败；发布前必须以 `luma build config` 的当前值为准。target node 仍不得使用 Builder loopback。
 
 BuildKit 出口是 Builder 专用 user service 的显式环境，不修改任何 Docker daemon。变更 setup 参数会重写 unit 并重启该 BuildKit；若出现 `short read`、`unexpected EOF`、`ECONNRESET` 或依赖下载异常，先检查 `luma-buildkit.service` 的实际环境、内部 registry 是否命中 `NO_PROXY`，不要只重试 import。代理只解决 Builder 基础镜像/构建网络，不会被写进用户 Compose。
 
@@ -126,7 +126,7 @@ sudo scripts/setup-lae-builder.sh --check \
 
 真正的 Git/object/registry 凭据仍必须由 Builder task lease 短期兑换，不能写入以上任一路径。
 
-## 6. 尚需 staging 关闭的证据
+## 6. 尚需 validation 关闭的证据
 
 历史 `--check` 已证明固定工具链、rootless socket、runner digest、registry endpoint 和 bind probe 在当时一致；当前 Control 已把 pull/push 都配置为 `100.66.177.70:5000`，必须用这组实时参数重跑并归档新的 `--check`。脚本落库与单次 `--check` 仍不等于 Builder 已可公开承载用户代码，至少还要完成并保存：
 
@@ -139,4 +139,4 @@ sudo scripts/setup-lae-builder.sh --check \
 7. Trivy DB 定时刷新与 freshness 告警；
 8. registry 从 anonymous 迁移到短期 credential broker 后，删除 `LUMA_BUILDER_ALLOW_ANONYMOUS_REGISTRY=1` 的迁移验证。
 
-因此当前默认状态仍是：**普通节点不启用 Builder；只有操作员显式运行 setup 且验收通过的专用节点才启用本机 Builder env。当前 staging 已真实执行 import 并通过一次 Builder `--check`，但公开多租户 Builder 的剩余门禁未清零，本能力不能标记为 production-ready。**
+因此当前默认状态仍是：**普通节点不启用 Builder；只有操作员显式运行 setup 且验收通过的专用节点才启用本机 Builder env。当前 validation 已真实执行 import 并通过一次 Builder `--check`，但公开多租户 Builder 的剩余门禁未清零，本能力不能标记为 production-ready。**

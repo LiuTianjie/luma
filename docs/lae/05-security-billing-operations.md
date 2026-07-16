@@ -147,7 +147,7 @@ Compose 支持不等于允许全部 Docker 能力。V1 policy：
 
 ## 8. Runtime 隔离
 
-- 生产使用专用 `lae-runner` pool。当前共享 staging 经明确决策允许 `manager + tecent`：manager 必须带显式 runtime role、进入正向 allowlist，并继续接受资源/网络/容量门禁；这不是生产隔离证明。
+- 生产使用专用 `lae-runner` pool。当前共享 validation 经明确决策允许 `manager + tecent`：manager 必须带显式 runtime role、进入正向 allowlist，并继续接受资源/网络/容量门禁；这不是生产隔离证明。
 - `non-root`、read-only rootfs（需要写时用 tmpfs/volume）、drop capabilities、no-new-privileges、seccomp/AppArmor。
 - 禁止 host mount/device/docker socket。
 - CPU/memory/PID/ephemeral disk/hard timeout 限制；OOM/重启有用户可见事件。
@@ -243,7 +243,7 @@ PAID/FULFILLED -> REFUND_PENDING -> REFUNDED | REFUND_FAILED
 ## 12. 邮件
 
 - `email-service` adapter 发送 verification、login、security、billing 和 incident 邮件。
-- dev/staging 使用 Mailpit/mock；production 接可替换 SMTP/API provider。
+- dev/validation 使用 Mailpit/mock；production 接可替换 SMTP/API provider。
 - 邮件任务走 outbox + worker，重试/退信/投诉有状态。
 - 模板版本化，链接短时签名，邮件中不包含 deploy token/secret。
 - 供应商未就绪时允许 mock，但注册页面明确测试环境，不伪造真实送达。
@@ -317,10 +317,10 @@ PAID/FULFILLED -> REFUND_PENDING -> REFUNDED | REFUND_FAILED
 - 数据库 migration 采用 expand/migrate/contract，先兼容旧 worker，再切新版本。
 - Web/API/Agent/Worker 独立版本，contracts 有兼容矩阵。
 - kill switch 只用于事故止损；Compose/private Git 不按邀请或套餐隐藏。feature flag 可控制真实 payment provider 和 auto update 等尚未发布能力。
-- 每次 release 在 staging Luma 跑 HTML、单服务、Compose+volume、双 route、失败回滚 E2E。
+- 每次 release 在 validation Luma 跑 HTML、单服务、Compose+volume、双 route、失败回滚 E2E。
 - production deploy 使用 canary/rolling；readiness 失败自动保留旧版本。
 - 每个事故保留 operation/trace/audit，形成 runbook 与回归测试。
-- 用户操作以 [09 用户使用指南](./09-user-guide.md) 为准；值班检查、placement 可见性、恢复、轮换和 GC 采用 [10 运维与排障 SOP](./10-operations-troubleshooting-sop.md)。SOP 默认只读和隔离 staging，不把节点/IP 或 secret 带入租户工单。
+- 用户操作以 [09 用户使用指南](./09-user-guide.md) 为准；值班检查、placement 可见性、恢复、轮换和 GC 采用 [10 运维与排障 SOP](./10-operations-troubleshooting-sop.md)。SOP 默认只读和隔离 validation，不把节点/IP 或 secret 带入租户工单。
 
 ## 17. 合规开放项
 

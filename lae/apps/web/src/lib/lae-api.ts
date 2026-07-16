@@ -1269,7 +1269,6 @@ function isAllowedUploadOrigin(origin: string) {
   if (origin === window.location.origin) return true;
   const platformOrigin = {
     "lae.itool.tech": "https://lae-artifacts.itool.tech",
-    "lae-staging.itool.tech": "https://lae-artifacts-staging.itool.tech",
   }[window.location.hostname];
   if (origin === platformOrigin) return true;
   const configured = (process.env.NEXT_PUBLIC_LAE_UPLOAD_ORIGINS || "")

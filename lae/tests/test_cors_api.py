@@ -17,7 +17,7 @@ from lae_store.auth import AuthConfigurationError  # noqa: E402
 
 
 class CorsApiTests(unittest.TestCase):
-    origin = "https://lae-staging.itool.tech"
+    origin = "https://lae-preview.example.test"
 
     def test_allowed_origin_preflight_supports_web_credentials_and_headers(self) -> None:
         with TestClient(create_app(cors_allowed_origins=[self.origin])) as client:
@@ -87,8 +87,8 @@ class CorsApiTests(unittest.TestCase):
     def test_wildcard_and_non_origin_values_fail_closed(self) -> None:
         for value in (
             "*",
-            "https://lae-staging.itool.tech/",
-            "https://user@lae-staging.itool.tech",
+            "https://lae-preview.example.test/",
+            "https://user@lae-preview.example.test",
         ):
             with self.subTest(value=value):
                 with self.assertRaises(AuthConfigurationError):
