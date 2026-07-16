@@ -61,7 +61,7 @@ LAE 不能只是给现有 Luma Dashboard 增加注册页。正确边界是：
 
 因此，现有 Luma 适合作为 LAE 的执行底座，但不适合直接暴露给租户。
 
-本轮还确认了两个部署约束：其一，BuildKit 的代理配置会持久化在 Buildx container 中，当前代码会在代理 URL、`NO_PROXY` 或 direct/proxy 模式变化时重建不匹配的 builder；LAE 平台 Dockerfile 的依赖下载显式使用 direct 网络，避免继承租户 build args。其二，`artifact-init` 在当前 Compose-to-Nomad 模型中是完成初始化后保持健康的长运行 task，validation 使用 512 MiB memory limit 与 256 MiB reservation；资源过低会让整个 9-service group 无法健康，production 参数必须独立验证且满足 reservation 不高于 limit。
+本轮还确认了两个部署约束：其一，BuildKit 的代理配置会持久化在 Buildx container 中，当前代码会在代理 URL、`NO_PROXY` 或 direct/proxy 模式变化时重建不匹配的 builder；LAE Web 平台镜像的依赖下载遵循 Builder 已声明的 egress policy，代理只作为 BuildKit 传输输入，不进入 runtime image。其二，`artifact-init` 在当前 Compose-to-Nomad 模型中是完成初始化后保持健康的长运行 task，validation 使用 512 MiB memory limit 与 256 MiB reservation；资源过低会让整个 9-service group 无法健康，production 参数必须独立验证且满足 reservation 不高于 limit。
 
 ## 4. MVP 支持矩阵
 

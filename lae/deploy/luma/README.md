@@ -13,7 +13,7 @@
 | `docker/agent-runner.Dockerfile` | Builder 执行 `analyze-source` 时使用的固定 digest、rootless LAE Analyzer 沙箱镜像；不属于平台 Compose service |
 | `.env.example` | 变量名和非敏感默认值；不包含 secret 值 |
 
-Web 使用 Next.js standalone 产物；本地 Next dev 默认把 `/v1` 代理到 `127.0.0.1:8080`，容器构建阶段显式把经过白名单校验的 `LAE_API_INTERNAL_URL` 固定为 `http://api:8080`，并检查生成的 routes manifest，避免把宿主开发地址烘焙进生产镜像。Python 镜像使用 frozen `uv.lock`、不可变基础镜像 digest 和非 root UID/GID 10001；build/runtime 都把 virtualenv 固定在 `/opt/lae/.venv`，防止 console-script shebang 在搬迁后失效。Compose 中的 Postgres、MinIO 与 Valkey 也都固定到 digest。Luma Repository Import 会给平台源码服务注入构建结果；发布检查必须继续确认最终 job/image 与 exact commit 对应，运行时以 digest 作为唯一事实。
+Web 使用 Next.js standalone 产物；本地 Next dev 默认把 `/v1` 代理到 `127.0.0.1:8080`，容器构建阶段显式把经过白名单校验的 `LAE_API_INTERNAL_URL` 固定为 `http://api:8080`，并检查生成的 routes manifest，避免把宿主开发地址烘焙进生产镜像。Web 依赖下载遵循 Builder 已声明的 egress policy，代理值只作为 BuildKit 传输输入，不复制进 runtime image。Python 镜像使用 frozen `uv.lock`、不可变基础镜像 digest 和非 root UID/GID 10001；build/runtime 都把 virtualenv 固定在 `/opt/lae/.venv`，防止 console-script shebang 在搬迁后失效。Compose 中的 Postgres、MinIO 与 Valkey 也都固定到 digest。Luma Repository Import 会给平台源码服务注入构建结果；发布检查必须继续确认最终 job/image 与 exact commit 对应，运行时以 digest 作为唯一事实。
 
 `agent-runner.Dockerfile` 需要单独构建并推送到 Builder 可拉取的受控 registry，记录 registry 返回的 immutable `repository@sha256:...`。Worker 的 `LAE_ANALYZER_IMAGE_DIGEST` 与 Luma Control/Builder 的 `LUMA_BUILDER_ANALYZE_IMAGE_DIGEST` 必须逐字相同；不能一个使用 tag、一个使用 digest，也不能只比较短 SHA。目标 Builder 节点应预拉该 digest，rootless Docker executor 使用 `--pull never` 并在执行前 inspect 本地镜像，避免任务中从不可信或漂移的 registry 拉取 analyzer。
 
