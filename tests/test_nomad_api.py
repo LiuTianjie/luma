@@ -471,6 +471,30 @@ class NomadApiTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in tasks["mysql"]["tasks"]], ["alloc-1"])
         self.assertEqual(tasks["granary"]["fullName"], "granary_granary")
 
+    def test_services_summary_marks_lae_managed_job_from_nomad_metadata(self):
+        responses = {
+            "GET /v1/jobs": [
+                {
+                    "ID": "lae-runtime",
+                    "Name": "lae-runtime",
+                    "Type": "service",
+                    "Status": "running",
+                    "Meta": {"luma.region": "cn"},
+                    "JobSummary": {"Summary": {"lae-runtime": {"Running": 1}}},
+                }
+            ],
+            "GET /v1/job/lae-runtime": {
+                "ID": "lae-runtime",
+                "Meta": {"luma.region": "cn", "luma.lae": "true"},
+                "TaskGroups": [],
+            },
+            "GET /v1/job/lae-runtime/allocations": [],
+        }
+        fake = _FakeApi(responses)
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            services = nomad_api.nomad_services_summary(cfg(), {})
+        self.assertEqual(services[0]["managedBy"], "lae")
+
     def test_rescheduled_recovered_service_reports_running_not_failed(self):
         # A failed-then-rescheduled alloc keeps DesiredStatus="run" but carries
         # a NextAllocation pointer and a terminal ClientStatus. It must NOT be

@@ -8925,6 +8925,7 @@ class ControlApiTests(unittest.TestCase):
                         "name": "codex-gitea",
                         "jobId": "codex-gitea",
                         "status": "running",
+                        "managedBy": "lae",
                         "running": 0,
                         "region": "home",
                         "compose": False,
@@ -8964,6 +8965,7 @@ class ControlApiTests(unittest.TestCase):
 
                 service = result["services"][0]
                 self.assertEqual(service["fullName"], "codex-gitea")
+                self.assertEqual(service["managedBy"], "lae")
                 self.assertEqual(service["running"], 0)
                 self.assertEqual(service["desired"], 1)
                 self.assertEqual(service["pending"], 1)

@@ -83,6 +83,7 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
 
   const running = useMemo(() => state.applications.filter((app) => app.observedState === "running").length, [state.applications]);
   const failedOperations = useMemo(() => state.operations.filter((operation) => operation.status === "failed").length, [state.operations]);
+  const tenantsById = useMemo(() => new Map(state.tenants.map((tenant) => [tenant.id, tenant])), [state.tenants]);
   const tabs: Array<{ id: View; label: string; icon: typeof Boxes }> = [
     { id: "applications", label: zh ? "应用" : "Apps", icon: Boxes },
     { id: "placements", label: zh ? "调度位置" : "Placement", icon: MapPinned },
@@ -118,7 +119,10 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
         </div>
 
         {view === "applications" ? <div className="table-wrap"><table><thead><tr><th>{zh ? "应用" : "Application"}</th><th>Tenant</th><th>{zh ? "形态" : "Kind"}</th><th>{zh ? "状态" : "State"}</th><th>{zh ? "服务" : "Services"}</th><th>{zh ? "卷配额" : "Volumes"}</th><th>{zh ? "部署" : "Deployment"}</th></tr></thead><tbody>
-          {state.applications.map((app) => <tr key={app.id}><td><PrimaryCell title={app.name} meta={app.slug} /></td><td><CodeCell value={app.tenantId} /></td><td><Badge value={app.kind} /></td><td><StatePill label={`${app.desiredState} / ${app.observedState}`} value={app.observedState} /></td><td>{app.serviceCount}</td><td>{bytes(app.requestedVolumeBytes)}</td><td><CodeCell value={app.currentDeploymentId || "pending"} /></td></tr>)}
+          {state.applications.map((app) => {
+            const tenant = tenantsById.get(app.tenantId);
+            return <tr key={app.id}><td><PrimaryCell title={app.name} meta={app.slug} /></td><td><PrimaryCell title={tenant?.name || app.tenantId} meta={tenant?.ownerEmail || app.tenantId} /></td><td><Badge value={app.kind} /></td><td><StatePill label={`${app.desiredState} / ${app.observedState}`} value={app.observedState} /></td><td>{app.serviceCount}</td><td>{bytes(app.requestedVolumeBytes)}</td><td><CodeCell value={app.currentDeploymentId || "pending"} /></td></tr>;
+          })}
           {!state.applications.length ? <tr><td colSpan={7}>{loading ? (zh ? "读取中…" : "Loading…") : (zh ? "暂无应用" : "No applications")}</td></tr> : null}
         </tbody></table></div> : null}
 

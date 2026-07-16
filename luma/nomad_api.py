@@ -828,6 +828,9 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
             "running": running,
             "region": str(meta.get("luma.region") or ""),
             "compose": str(meta.get("luma.compose") or "").lower() == "true",
+            "managedBy": "lae"
+            if str(meta.get("luma.lae") or "").lower() == "true"
+            else "",
         }
         try:
             detail = client.request("GET", f"/v1/job/{_q(job_id)}")
@@ -838,6 +841,8 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
             if detail_meta:
                 item["region"] = str(detail_meta.get("luma.region") or item.get("region") or "")
                 item["compose"] = str(detail_meta.get("luma.compose") or item.get("compose") or "").lower() == "true"
+                if str(detail_meta.get("luma.lae") or "").lower() == "true":
+                    item["managedBy"] = "lae"
         try:
             allocations = client.request("GET", f"/v1/job/{_q(job_id)}/allocations")
         except LumaError:

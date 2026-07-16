@@ -91,6 +91,7 @@ export type DashboardBuildNode = {
 export type DashboardService = {
   name?: string;
   fullName?: string;
+  managedBy?: string;
   stack?: string;
   region?: string;
   node?: string;
