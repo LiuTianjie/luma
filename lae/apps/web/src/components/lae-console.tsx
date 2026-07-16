@@ -74,6 +74,7 @@ import {
   type SourceConnection,
   type ApplicationAction,
   type ApplicationRecord,
+  type ApplicationSummary,
   type ApplicationLogTail,
   type ApplicationMetricHistory,
   type ApplicationTemplate,
@@ -118,6 +119,28 @@ function operationFailureMessage(
   fallback: string,
 ): string {
   return error ? `${fallback}（${error.code}）：${error.message}` : fallback;
+}
+
+async function createOrReusePendingApplication(
+  input: { name: string; slug: string },
+  signal: AbortSignal,
+): Promise<ApplicationSummary> {
+  try {
+    const created = await createApplication(input, newIdempotencyKey("app-create"), signal);
+    return created.application;
+  } catch (error) {
+    if (!(error instanceof LaeApiError) || error.code !== "LAE_APPLICATION_CONFLICT") throw error;
+    const catalog = await listApplications(signal);
+    const reusable = catalog.applications.find(
+      (application) => application.slug === input.slug &&
+        application.kind === "pending" &&
+        application.desiredState !== "deleted" &&
+        application.currentRevisionId === null &&
+        application.currentDeploymentId === null,
+    );
+    if (!reusable) throw error;
+    return reusable;
+  }
 }
 
 const templatePositions: Record<string, { x: number; y: number; drift: number }> = {
@@ -737,14 +760,13 @@ export function LaeConsole() {
     setOperationEvents([]);
     setFlow("diagnosing");
     try {
-      const created = await createApplication(
+      const application = await createOrReusePendingApplication(
         { name: input.name, slug: input.slug },
-        newIdempotencyKey("app-create"),
         controller.signal,
       );
       const analysis = await createGitAnalysis(
         {
-          applicationId: created.application.id,
+          applicationId: application.id,
           repository: input.repository,
           ref: input.ref,
           subdirectory: input.subdirectory,
@@ -754,9 +776,9 @@ export function LaeConsole() {
         controller.signal,
       );
       setActiveRun({
-        applicationId: created.application.id,
+        applicationId: application.id,
         analysisId: analysis.analysis.id,
-        environmentVersion: created.application.environmentVersion,
+        environmentVersion: application.environmentVersion,
       });
       const operationStatus = await watchOperation(
         analysis.operation.id,
@@ -768,7 +790,7 @@ export function LaeConsole() {
         result.planStored &&
         (result.verdict === "deployable" || result.verdict === "needs_input")
           ? await getDeploymentConfiguration(
-              created.application.id,
+              application.id,
               analysis.analysis.id,
               controller.signal,
             )
@@ -827,14 +849,13 @@ export function LaeConsole() {
     try {
       const mediaType = staticUploadMediaType(input.file.name);
       const digest = await sha256File(input.file);
-      const created = await createApplication(
+      const application = await createOrReusePendingApplication(
         { name: input.name, slug: input.slug },
-        newIdempotencyKey("app-create"),
         controller.signal,
       );
       const reserved = await createStaticUpload(
         {
-          applicationId: created.application.id,
+          applicationId: application.id,
           filename: input.file.name,
           mediaType,
           sizeBytes: input.file.size,
@@ -873,16 +894,16 @@ export function LaeConsole() {
 
       const analysis = await createUploadAnalysis(
         {
-          applicationId: created.application.id,
+          applicationId: application.id,
           uploadId: upload.id,
         },
         newIdempotencyKey("analysis"),
         controller.signal,
       );
       setActiveRun({
-        applicationId: created.application.id,
+        applicationId: application.id,
         analysisId: analysis.analysis.id,
-        environmentVersion: created.application.environmentVersion,
+        environmentVersion: application.environmentVersion,
       });
       const operationStatus = await watchOperation(
         analysis.operation.id,
@@ -894,7 +915,7 @@ export function LaeConsole() {
         result.planStored &&
         (result.verdict === "deployable" || result.verdict === "needs_input")
           ? await getDeploymentConfiguration(
-              created.application.id,
+              application.id,
               analysis.analysis.id,
               controller.signal,
             )
@@ -1958,7 +1979,7 @@ function StaticUploadForm({
         </label>
         <label>
           <span>Slug</span>
-          <input required maxLength={80} pattern="[a-z0-9][a-z0-9-]*" value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} />
+          <input required maxLength={80} pattern="[a-z0-9][a-z0-9\-]*" value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} />
         </label>
       </div>
       {!supported && <div className="connection-notice">Web 只接受 `.html` 或 `.zip`。</div>}
@@ -2023,7 +2044,7 @@ function GitSourceForm({
         </label>
         <label>
           <span>Slug</span>
-          <input required maxLength={80} pattern="[a-z0-9][a-z0-9-]*" value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} placeholder="northwind-notes" />
+          <input required maxLength={80} pattern="[a-z0-9][a-z0-9\-]*" value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} placeholder="northwind-notes" />
         </label>
       </div>
       <label>

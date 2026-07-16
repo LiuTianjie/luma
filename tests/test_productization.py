@@ -14644,6 +14644,90 @@ class GithubImportTests(unittest.TestCase):
         self.assertNotIn("build", compose["services"]["web"])
         self.assertEqual(compose["services"]["redis"]["image"], "redis:7-alpine")
 
+    def test_build_image_passes_literal_compose_build_args_to_buildx(self):
+        from luma.agent import build_image
+
+        def fake_clone(_url, dest, **_kwargs):
+            (dest / "web").mkdir(parents=True)
+            (dest / "luma.compose.yml").write_text(
+                "name: app-stack\ncompose: docker-compose.yml\nregion: cn\n",
+                encoding="utf-8",
+            )
+            (dest / "docker-compose.yml").write_text(
+                "services:\n"
+                "  web:\n"
+                "    build:\n"
+                "      context: ./web\n"
+                "      args:\n"
+                "        NEXT_PUBLIC_UPLOAD_ORIGIN: https://uploads.example.com\n",
+                encoding="utf-8",
+            )
+            (dest / "web" / "Dockerfile").write_text(
+                "FROM busybox\n", encoding="utf-8"
+            )
+
+        completed = Mock(code=0, output="built\n")
+        with patch("luma.gitops.clone", side_effect=fake_clone), patch(
+            "luma.gitops.head_commit", return_value="abc123"
+        ), patch("luma.agent._docker_binary", return_value="docker"), patch(
+            "luma.agent._docker_buildx_available", return_value=True
+        ), patch("luma.agent._ensure_buildx_builder", return_value="luma-builder"), patch(
+            "luma.agent._run_process_streaming", return_value=completed
+        ) as run:
+            build_image(
+                {
+                    "repoUrl": "https://github.com/acme/app",
+                    "registryHost": "100.66.177.70:5000",
+                    "pushHost": "localhost:5000",
+                    "repo": "acme/app",
+                }
+            )
+
+        command = run.call_args.args[0]
+        index = command.index("--build-arg")
+        self.assertEqual(
+            command[index + 1],
+            "NEXT_PUBLIC_UPLOAD_ORIGIN=https://uploads.example.com",
+        )
+
+    def test_build_image_rejects_environment_inherited_compose_build_args(self):
+        from luma.agent import build_image
+        from luma.errors import LumaError
+
+        def fake_clone(_url, dest, **_kwargs):
+            (dest / "web").mkdir(parents=True)
+            (dest / "luma.compose.yml").write_text(
+                "name: app-stack\ncompose: docker-compose.yml\nregion: cn\n",
+                encoding="utf-8",
+            )
+            (dest / "docker-compose.yml").write_text(
+                "services:\n"
+                "  web:\n"
+                "    build:\n"
+                "      context: ./web\n"
+                "      args:\n"
+                "        PRIVATE_VALUE:\n",
+                encoding="utf-8",
+            )
+            (dest / "web" / "Dockerfile").write_text(
+                "FROM busybox\n", encoding="utf-8"
+            )
+
+        with patch("luma.gitops.clone", side_effect=fake_clone), patch(
+            "luma.gitops.head_commit", return_value="abc123"
+        ), patch("luma.agent._docker_binary", return_value="docker"), patch(
+            "luma.agent._docker_buildx_available", return_value=True
+        ), patch("luma.agent._ensure_buildx_builder", return_value="luma-builder"):
+            with self.assertRaisesRegex(LumaError, "must declare a literal value"):
+                build_image(
+                    {
+                        "repoUrl": "https://github.com/acme/app",
+                        "registryHost": "100.66.177.70:5000",
+                        "pushHost": "localhost:5000",
+                        "repo": "acme/app",
+                    }
+                )
+
     def test_build_image_rewrites_services_reusing_a_built_compose_image(self):
         from luma.agent import build_image
 

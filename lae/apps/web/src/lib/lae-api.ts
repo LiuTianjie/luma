@@ -1288,6 +1288,12 @@ function publicMessage(status: number, code: string) {
   if (code === "LAE_IDEMPOTENCY_KEY_REUSED") {
     return "这次请求标识已经用于其他操作；请重新发起。";
   }
+  if (code === "LAE_UPLOAD_ORIGIN_REJECTED") {
+    return "上传域名未进入当前 Web 构建的允许列表；请联系管理员重新发布 Web。";
+  }
+  if (code === "LAE_UPLOAD_TRANSFER_FAILED") {
+    return "文件未能传入对象存储；请检查网络后重试。";
+  }
   if (status === 401) return "请先登录 LAE。";
   if (status === 403) return "当前凭据没有执行此操作的权限。";
   if (status === 409) return "状态已发生变化，请刷新后重试。";

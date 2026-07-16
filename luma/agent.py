@@ -3085,6 +3085,7 @@ def _docker_buildx_build(
     platform: str,
     proxy: str,
     build_timeout: int,
+    build_args: Mapping[str, str] | None = None,
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> str:
@@ -3102,10 +3103,16 @@ def _docker_buildx_build(
             "--build-arg", f"HTTPS_PROXY={proxy}",
             "--build-arg", f"NO_PROXY={no_proxy}",
         ]
+    declared_build_args = [
+        item
+        for name, value in sorted((build_args or {}).items())
+        for item in ("--build-arg", f"{name}={value}")
+    ]
     command = [
         docker, "buildx", "build",
         "--builder", builder,
         "--platform", platform,
+        *declared_build_args,
         *proxy_build_args,
         # Luma's managed build registry is intentionally served over the
         # tailnet as plain HTTP. Host dockerd already knows it as an insecure
@@ -3180,6 +3187,56 @@ def _compose_build_spec(body: Dict[str, Any]) -> Dict[str, Any] | None:
     if not isinstance(raw, dict):
         raise LumaError("compose service build must be a string or mapping")
     return dict(raw)
+
+
+_COMPOSE_BUILD_ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def _compose_build_args(spec: Mapping[str, Any]) -> Dict[str, str]:
+    """Return checked-in, non-secret Compose build arguments.
+
+    Repository import does not inherit the Builder process environment. A
+    key-only Compose argument would do exactly that, so reject it instead of
+    silently producing a different image or leaking Builder configuration.
+    """
+
+    raw = spec.get("args")
+    if raw is None:
+        return {}
+    pairs: list[tuple[str, Any]] = []
+    if isinstance(raw, dict):
+        pairs = [(str(name), value) for name, value in raw.items()]
+    elif isinstance(raw, list):
+        for index, item in enumerate(raw):
+            if not isinstance(item, str) or "=" not in item:
+                raise LumaError(
+                    f"compose build args[{index}] must be a literal NAME=value entry"
+                )
+            name, value = item.split("=", 1)
+            pairs.append((name, value))
+    else:
+        raise LumaError("compose build args must be a mapping or list")
+    if len(pairs) > 64:
+        raise LumaError("compose build args exceed the supported limit")
+
+    result: Dict[str, str] = {}
+    for name, value in pairs:
+        if not _COMPOSE_BUILD_ARG_NAME.fullmatch(name):
+            raise LumaError(f"compose build arg name is invalid: {name}")
+        if value is None:
+            raise LumaError(
+                f"compose build arg {name} must declare a literal value"
+            )
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, (str, int, float)):
+            rendered = str(value)
+        else:
+            raise LumaError(f"compose build arg {name} must be a scalar value")
+        if len(rendered) > 4096 or any(char in rendered for char in "\x00\r\n"):
+            raise LumaError(f"compose build arg {name} has an invalid value")
+        result[name] = rendered
+    return result
 
 
 def _build_compose_images(
@@ -3267,6 +3324,7 @@ def _build_compose_images(
             platform=platform,
             proxy=proxy,
             build_timeout=build_timeout,
+            build_args=_compose_build_args(spec),
             progress=progress,
             cancel_event=cancel_event,
         )
