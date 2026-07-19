@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.263 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.264 sh
 ```
 
 For local development from a checkout:
@@ -495,6 +495,11 @@ luma build local . --env .env
 本机需要能访问 `build.registryHost`；registry 开启鉴权时，先执行对应的
 `docker login`。单服务与 Compose 都支持，也可以传 `--compose-sidecar`、
 `--platform`、`--context`、`--dockerfile`。
+
+本地构建和 Builder 构建都会以实际部署目标为准选择容器架构：固定到
+Mac/ARM 节点时构建 `linux/arm64`，目标区域同时存在 amd64 和 arm64 节点时
+构建多架构镜像。显式 `--platform` 只能用于覆盖全部目标架构，不能把镜像
+强制构建成与部署节点不兼容的架构。
 
 同一个项目在任意时刻只允许一个活动构建：Builder import 与本地构建互相
 排斥，不同项目仍可并行。Control 给本地构建分配唯一 tag，并校验完成请求中

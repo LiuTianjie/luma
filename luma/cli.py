@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.263 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.264 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -2894,15 +2894,25 @@ def cmd_build(args: argparse.Namespace) -> int:
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     output_format = _output_format(args)
     if args.build_command == "local":
-        from .local_build import build_and_push_local_source, local_source_metadata
+        from .local_build import (
+            build_and_push_local_source,
+            local_deployment_target,
+            local_source_metadata,
+        )
 
         quiet = _quiet(args) or output_format != "text"
         if args.timeout < 1:
             raise LumaError("--timeout must be at least 1 second")
         metadata = local_source_metadata(args.path, repo_url=args.repo_url)
+        target = local_deployment_target(
+            args.path,
+            compose_sidecar=args.compose_sidecar,
+            region=args.region,
+        )
         prepare_body: Dict[str, Any] = {
             "repoUrl": metadata["repoUrl"],
             "sourceRevision": metadata["revision"],
+            **target,
         }
         for key, value in {
             "region": args.region,
@@ -2934,7 +2944,7 @@ def cmd_build(args: argparse.Namespace) -> int:
                 compose_sidecar=args.compose_sidecar,
                 context=args.build_context,
                 dockerfile=args.dockerfile,
-                platform=args.platform,
+                platform=str(upload.get("platform") or ""),
                 timeout=args.timeout,
                 progress=(lambda line: print(line, flush=True)) if not quiet else None,
             )

@@ -8,6 +8,7 @@ from starlette.testclient import TestClient
 
 from luma.control.server import (
     _create_build_run,
+    _resolve_target_build_platform,
     handle_local_build_complete,
     handle_local_build_fail,
     handle_local_build_prepare,
@@ -16,7 +17,11 @@ from luma.control.server import (
 from luma.control.state import init_state, load_state, save_state
 from luma.errors import LumaError
 from luma.cli import build_parser
-from luma.local_build import build_and_push_local_source
+from luma.agent import _deployment_target_build_platform
+from luma.local_build import (
+    build_and_push_local_source,
+    local_deployment_target,
+)
 
 
 class LocalBuildWorkflowTests(unittest.TestCase):
@@ -34,6 +39,14 @@ class LocalBuildWorkflowTests(unittest.TestCase):
             "registryHost": "100.66.177.70:5000",
             "pushHost": "localhost:5000",
         }
+        state["nodes"] = {
+            "cn-amd64": {
+                "name": "cn-amd64",
+                "region": "cn",
+                "nomadStatus": "ready",
+                "agent": {"status": "ready", "os": "linux", "arch": "amd64"},
+            }
+        }
         save_state(state)
         self.token = state["deployToken"]
 
@@ -50,11 +63,11 @@ class LocalBuildWorkflowTests(unittest.TestCase):
 
     def test_same_project_has_one_builder_or_local_build_lane(self):
         first = handle_local_build_prepare(
-            self.token, {"repoUrl": "https://github.com/Acme/App.git"}
+            self.token, {"repoUrl": "https://github.com/Acme/App.git", "targetRegion": "cn"}
         )
         with self.assertRaisesRegex(LumaError, "already has an active build"):
             handle_local_build_prepare(
-                self.token, {"repoUrl": "git@github.com:acme/app.git"}
+                self.token, {"repoUrl": "git@github.com:acme/app.git", "targetRegion": "cn"}
             )
         with self.assertRaisesRegex(LumaError, "already has an active build"):
             _create_build_run(
@@ -67,7 +80,7 @@ class LocalBuildWorkflowTests(unittest.TestCase):
         build_id = first["run"]["id"]
         handle_local_build_fail(self.token, build_id, {"message": "stopped locally"})
         second = handle_local_build_prepare(
-            self.token, {"repoUrl": "https://github.com/acme/app"}
+            self.token, {"repoUrl": "https://github.com/acme/app", "targetRegion": "cn"}
         )
         self.assertNotEqual(second["run"]["id"], build_id)
         self.assertEqual(second["upload"]["repository"], "acme/app")
@@ -85,10 +98,79 @@ class LocalBuildWorkflowTests(unittest.TestCase):
             response = client.post(
                 "/v1/builds/local/prepare",
                 headers={"Authorization": f"Bearer {self.token}"},
-                json={"repoUrl": "https://github.com/acme/app.git"},
+                json={"repoUrl": "https://github.com/acme/app.git", "targetRegion": "cn"},
             )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["upload"]["repository"], "acme/app")
+        self.assertEqual(response.json()["upload"]["platform"], "linux/amd64")
+
+    def test_target_architecture_uses_node_and_builds_mixed_region_as_multi_platform(self):
+        state = load_state()
+        state["nodes"]["home-arm"] = {
+            "name": "home-arm",
+            "region": "home",
+            "nomadStatus": "ready",
+            "agent": {"status": "ready", "os": "darwin", "arch": "arm64"},
+        }
+        state["nodes"]["home-amd"] = {
+            "name": "home-amd",
+            "region": "home",
+            "nomadStatus": "ready",
+            "agent": {"status": "ready", "os": "linux", "arch": "x86_64"},
+        }
+        save_state(state)
+        self.assertEqual(
+            _resolve_target_build_platform(
+                state, target_nodes=["home-arm"], target_regions=[], requested=""
+            ),
+            "linux/arm64",
+        )
+        self.assertEqual(
+            _resolve_target_build_platform(
+                state, target_nodes=[], target_regions=["home"], requested=""
+            ),
+            "linux/amd64,linux/arm64",
+        )
+        with self.assertRaisesRegex(LumaError, "does not cover"):
+            _resolve_target_build_platform(
+                state,
+                target_nodes=[],
+                target_regions=["home"],
+                requested="linux/amd64",
+            )
+
+    def test_builder_resolves_manifest_target_from_control_inventory(self):
+        payload = {
+            "targetPlatformsByNode": {"m4": "linux/arm64"},
+            "targetPlatformsByRegion": {
+                "home": ["linux/amd64", "linux/arm64"]
+            },
+        }
+        self.assertEqual(
+            _deployment_target_build_platform(payload, node="m4", region="home"),
+            "linux/arm64",
+        )
+        self.assertEqual(
+            _deployment_target_build_platform(payload, region="home"),
+            "linux/amd64,linux/arm64",
+        )
+
+    def test_local_compose_target_collects_service_architecture_scopes(self):
+        project = self.root / "targets"
+        project.mkdir()
+        (project / "luma.compose.yml").write_text(
+            "name: app\ncompose: docker-compose.yml\nregion: home\nservices:\n"
+            "  web:\n    node: m4\n  worker:\n    region: cn\n",
+            encoding="utf-8",
+        )
+        (project / "docker-compose.yml").write_text(
+            "services:\n  web:\n    image: app\n  worker:\n    image: worker\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            local_deployment_target(project),
+            {"targetNodes": ["m4"], "targetRegions": ["cn"]},
+        )
 
     def test_local_compose_build_forces_the_reserved_project_namespace(self):
         project = self.root / "project"
@@ -154,7 +236,7 @@ class LocalBuildWorkflowTests(unittest.TestCase):
 
     def test_local_upload_cannot_escape_reserved_repository_or_tag(self):
         prepared = handle_local_build_prepare(
-            self.token, {"repoUrl": "https://github.com/acme/app.git"}
+            self.token, {"repoUrl": "https://github.com/acme/app.git", "targetRegion": "cn"}
         )
         build_id = prepared["run"]["id"]
         with self.assertRaisesRegex(LumaError, "reserved project repository"):

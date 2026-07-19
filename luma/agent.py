@@ -3239,6 +3239,58 @@ def _compose_build_args(spec: Mapping[str, Any]) -> Dict[str, str]:
     return result
 
 
+def _build_platform_parts(value: Any) -> list[str]:
+    return sorted({part.strip().lower() for part in str(value or "").split(",") if part.strip()})
+
+
+def _deployment_target_build_platform(
+    payload: Mapping[str, Any],
+    *,
+    node: Any = "",
+    region: Any = "",
+    requested: Any = "",
+) -> str:
+    by_node = payload.get("targetPlatformsByNode")
+    by_region = payload.get("targetPlatformsByRegion")
+    if not isinstance(by_node, dict):
+        by_node = {}
+    if not isinstance(by_region, dict):
+        by_region = {}
+    if not by_node and not by_region:
+        return str(requested or "linux/amd64").strip() or "linux/amd64"
+
+    target: set[str] = set()
+    target_node = str(node or "").strip()
+    target_region = str(region or "").strip()
+    if target_node:
+        platform = str(by_node.get(target_node) or "").strip()
+        if not platform:
+            raise LumaError(
+                f"cannot resolve a ready deployment target architecture for node {target_node}"
+            )
+        target.add(platform)
+    elif target_region:
+        raw = by_region.get(target_region)
+        values = raw if isinstance(raw, list) else [raw] if raw else []
+        target.update(str(value).strip() for value in values if str(value).strip())
+        if not target:
+            raise LumaError(
+                f"cannot resolve a ready deployment target architecture for region {target_region}"
+            )
+    else:
+        raise LumaError(
+            "deployment target node or region is required to select the build architecture"
+        )
+
+    requested_parts = set(_build_platform_parts(requested))
+    if requested_parts and not target.issubset(requested_parts):
+        raise LumaError(
+            "requested build platform does not cover deployment target architecture: "
+            f"requested {','.join(sorted(requested_parts))}; target {','.join(sorted(target))}"
+        )
+    return ",".join(sorted(target))
+
+
 def _build_compose_images(
     *,
     src: Path,
@@ -3272,6 +3324,9 @@ def _build_compose_images(
     services = compose_data.get("services")
     if not isinstance(services, dict) or not services:
         raise LumaError("docker-compose.yml requires a non-empty services mapping")
+    sidecar_services = sidecar.get("services") if isinstance(sidecar.get("services"), dict) else {}
+    root_node = str(sidecar.get("node") or "").strip()
+    root_region = str(payload.get("region") or sidecar.get("region") or "").strip()
 
     build_services: list[tuple[str, Dict[str, Any], Dict[str, Any]]] = []
     build_source_images: Dict[str, str] = {}
@@ -3309,7 +3364,17 @@ def _build_compose_images(
         dockerfile_path = _safe_repo_path_from(context_dir, src, dockerfile_rel)
         if not dockerfile_path.is_file():
             raise LumaError(f"Dockerfile not found in repository: {dockerfile_rel}")
-        platform = str(payload.get("platform") or spec.get("platform") or service_body.get("platform") or "linux/amd64").strip() or "linux/amd64"
+        sidecar_service = sidecar_services.get(service_name)
+        if not isinstance(sidecar_service, dict):
+            sidecar_service = {}
+        target_node = str(sidecar_service.get("node") or root_node).strip()
+        target_region = str(sidecar_service.get("region") or root_region).strip()
+        platform = _deployment_target_build_platform(
+            payload,
+            node=target_node,
+            region=target_region,
+            requested=payload.get("platform") or spec.get("platform") or service_body.get("platform"),
+        )
         repo_override = (
             str(spec.get("repo") or spec.get("x-luma-repo") or "").strip()
             if allow_repo_overrides
@@ -3449,6 +3514,7 @@ def build_image(
         # For single-service imports, the repo manifest's build block is the
         # declarative source of truth; payload values act as overrides.
         build_block: Dict[str, Any] = {}
+        parsed: Dict[str, Any] = {}
         if manifest_text.strip():
             import yaml
 
@@ -3456,12 +3522,19 @@ def build_image(
                 parsed = yaml.safe_load(manifest_text) or {}
             except yaml.YAMLError as exc:
                 raise LumaError(f"invalid Luma deployment manifest in repository: {exc}") from exc
-            if isinstance(parsed, dict) and isinstance(parsed.get("build"), dict):
+            if not isinstance(parsed, dict):
+                raise LumaError("Luma deployment manifest must contain a YAML mapping")
+            if isinstance(parsed.get("build"), dict):
                 build_block = parsed["build"]
         repo = _safe_image_repo(str(build_block.get("repo") or repo))
         context_rel = str(payload.get("context") or build_block.get("context") or ".").strip() or "."
         dockerfile_rel = str(payload.get("dockerfile") or build_block.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
-        platform = str(payload.get("platform") or build_block.get("platform") or "linux/amd64").strip() or "linux/amd64"
+        platform = _deployment_target_build_platform(
+            payload,
+            node=parsed.get("node"),
+            region=payload.get("region") or parsed.get("region"),
+            requested=payload.get("platform") or build_block.get("platform"),
+        )
 
         context_dir = _safe_repo_subpath(src, context_rel)
         dockerfile_path = _safe_repo_subpath(src, dockerfile_rel)

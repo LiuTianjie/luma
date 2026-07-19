@@ -8127,6 +8127,87 @@ def _rewrite_compose_import_images(
     return yaml.safe_dump(compose, sort_keys=False, allow_unicode=False)
 
 
+def _container_platform_for_node(record: Dict[str, Any]) -> str:
+    platform = _nomad_node_platform_from_record(record)
+    if not platform:
+        return ""
+    os_name, _, arch = platform.partition("/")
+    # Docker Desktop/OrbStack nodes run Linux containers even though the host
+    # agent correctly reports Darwin.
+    if os_name == "darwin":
+        os_name = "linux"
+    return f"{os_name}/{arch}" if os_name and arch else ""
+
+
+def _target_build_platform_inventory(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    by_node: Dict[str, str] = {}
+    by_region_sets: Dict[str, set[str]] = {}
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    for key, record in nodes.items():
+        if not isinstance(record, dict) or not _node_agent_is_ready(record):
+            continue
+        try:
+            _ensure_nomad_node_record_schedulable(str(key), record)
+        except LumaError:
+            continue
+        platform = _container_platform_for_node(record)
+        region = str(record.get("region") or "").strip()
+        if not platform or not region:
+            continue
+        for name in _node_record_names(str(key), record):
+            by_node[name] = platform
+        by_region_sets.setdefault(region, set()).add(platform)
+    return {
+        "byNode": by_node,
+        "byRegion": {
+            region: sorted(platforms)
+            for region, platforms in sorted(by_region_sets.items())
+        },
+    }
+
+
+def _platform_parts(value: Any) -> list[str]:
+    return sorted({part.strip().lower() for part in str(value or "").split(",") if part.strip()})
+
+
+def _resolve_target_build_platform(
+    state: Dict[str, Any],
+    *,
+    target_nodes: list[str],
+    target_regions: list[str],
+    requested: Any = "",
+) -> str:
+    inventory = _target_build_platform_inventory(state)
+    by_node = inventory["byNode"]
+    by_region = inventory["byRegion"]
+    platforms: set[str] = set()
+    for node in target_nodes:
+        platform = str(by_node.get(str(node).strip()) or "")
+        if not platform:
+            raise LumaError(
+                f"cannot resolve a ready deployment target architecture for node {node}"
+            )
+        platforms.add(platform)
+    for region in target_regions:
+        values = by_region.get(str(region).strip()) or []
+        if not values:
+            raise LumaError(
+                f"cannot resolve a ready deployment target architecture for region {region}"
+            )
+        platforms.update(str(value) for value in values)
+    if not platforms:
+        raise LumaError(
+            "deployment target node or region is required to select the build architecture"
+        )
+    requested_parts = set(_platform_parts(requested))
+    if requested_parts and not platforms.issubset(requested_parts):
+        raise LumaError(
+            "requested build platform does not cover deployment target architecture: "
+            f"requested {','.join(sorted(requested_parts))}; target {','.join(sorted(platforms))}"
+        )
+    return ",".join(sorted(platforms))
+
+
 def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -8136,12 +8217,41 @@ def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, An
     project_key = _image_repo_from_repo_url(repo_url)
     build_config = _build_config(state)
     registry_host = normalize_registry_host(str(build_config.get("registryHost") or "").strip())
+    raw_target_nodes = body.get("targetNodes")
+    target_nodes = [
+        str(value).strip()
+        for value in (raw_target_nodes if isinstance(raw_target_nodes, list) else [])
+        if str(value).strip()
+    ]
+    target_node = str(body.get("targetNode") or "").strip()
+    if target_node:
+        target_nodes.append(target_node)
+    raw_target_regions = body.get("targetRegions")
+    target_regions = [
+        str(value).strip()
+        for value in (raw_target_regions if isinstance(raw_target_regions, list) else [])
+        if str(value).strip()
+    ]
+    target_region = str(body.get("region") or body.get("targetRegion") or "").strip()
+    if target_region:
+        target_regions.append(target_region)
+    build_platform = _resolve_target_build_platform(
+        state,
+        target_nodes=sorted(set(target_nodes)),
+        target_regions=(
+            sorted(set(target_regions))
+            if isinstance(raw_target_nodes, list)
+            else [] if target_nodes else sorted(set(target_regions))
+        ),
+        requested=body.get("platform"),
+    )
     now = int(time.time())
     expires_at = now + max(LOCAL_BUILD_LEASE_SECONDS, 300)
     request = dict(body)
     request["repoUrl"] = repo_url
     request["registryHost"] = registry_host
     request["localBuild"] = True
+    request["platform"] = build_platform
     run_id = _create_build_run(
         request,
         source=repo_url,
@@ -8166,6 +8276,7 @@ def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, An
             "repository": project_key,
             "tag": tag,
             "image": f"{registry_host}/{project_key}:{tag}",
+            "platform": build_platform,
         },
     }
 
@@ -8395,9 +8506,12 @@ def handle_build_deploy(
         "proxy": proxy,
         "buildTimeout": int(body.get("buildTimeout") or 7200),
     }
+    target_inventory = _target_build_platform_inventory(state)
+    build_payload["targetPlatformsByNode"] = target_inventory["byNode"]
+    build_payload["targetPlatformsByRegion"] = target_inventory["byRegion"]
     if provider_id:
         build_payload["gitProviderId"] = provider_id
-    for key in ("context", "dockerfile", "platform"):
+    for key in ("context", "dockerfile", "platform", "region"):
         if body.get(key):
             build_payload[key] = str(body.get(key))
     if compose_sidecar:

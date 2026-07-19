@@ -17,6 +17,7 @@ from .agent import (
     _docker_buildx_build,
     _ensure_buildx_builder,
     _find_luma_deployment_manifest,
+    _safe_repo_path_from,
     _safe_repo_subpath,
     _select_luma_compose_manifest,
     _write_docker_auth_config,
@@ -49,6 +50,56 @@ def local_source_metadata(source: Path, *, repo_url: str = "") -> Dict[str, str]
     if revision and _git_output(root, "status", "--porcelain"):
         revision += "-dirty"
     return {"path": str(root), "repoUrl": resolved_repo_url, "revision": revision}
+
+
+def local_deployment_target(
+    source: Path, *, compose_sidecar: str = "", region: str = ""
+) -> Dict[str, Any]:
+    """Read the checked-out deployment target before reserving a local build."""
+    root = source.expanduser().resolve()
+    selected_sidecar = str(compose_sidecar or "").strip()
+    deployment_manifest = (
+        ("compose", _select_luma_compose_manifest(root, selected_sidecar))
+        if selected_sidecar
+        else _find_luma_deployment_manifest(root)
+    )
+    if not deployment_manifest:
+        raise LumaError("no Luma deployment manifest found in the local project")
+    try:
+        manifest = yaml.safe_load(deployment_manifest[1].read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise LumaError(f"invalid local Luma deployment manifest: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise LumaError("local Luma deployment manifest must contain a YAML mapping")
+    root_node = str(manifest.get("node") or "").strip()
+    root_region = str(region or manifest.get("region") or "").strip()
+    if deployment_manifest[0] != "compose":
+        return {"targetNode": root_node, "targetRegion": root_region}
+    nodes: set[str] = set()
+    regions: set[str] = set()
+    sidecar_services = manifest.get("services") if isinstance(manifest.get("services"), dict) else {}
+    compose_value = str(manifest.get("compose") or "docker-compose.yml").strip() or "docker-compose.yml"
+    compose_path = _safe_repo_path_from(deployment_manifest[1].parent, root, compose_value)
+    if not compose_path.is_file():
+        raise LumaError(f"Compose file not found in local project: {compose_value}")
+    try:
+        compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise LumaError(f"invalid local Compose file: {exc}") from exc
+    compose_services = compose.get("services") if isinstance(compose, dict) else None
+    if not isinstance(compose_services, dict) or not compose_services:
+        raise LumaError("local Compose file requires a non-empty services mapping")
+    for service_name in compose_services:
+        service = sidecar_services.get(service_name)
+        if not isinstance(service, dict):
+            service = {}
+        node = str(service.get("node") or root_node).strip()
+        region = str(service.get("region") or root_region).strip()
+        if node:
+            nodes.add(node)
+        elif region:
+            regions.add(region)
+    return {"targetNodes": sorted(nodes), "targetRegions": sorted(regions)}
 
 
 def build_and_push_local_source(

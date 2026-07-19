@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.263"
+python -m pip install "luma-infra==0.1.264"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.263 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.264 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.263"
+python -m pip install "luma-infra==0.1.264"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.263"
+python -m pip install "luma-infra==0.1.264"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -283,7 +283,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.263 --timeout 900
+luma update fleet --install-ref v0.1.264 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -500,6 +500,11 @@ normal deploy path. The local computer must be able to reach the configured
 `build.registryHost`; for an authenticated registry, log in with Docker first.
 Single-service manifests and Compose sidecars are supported, including
 `--compose-sidecar`, `--platform`, `--context`, and `--dockerfile` overrides.
+Both this command and Builder import derive the container architecture from the
+deployment node or currently ready nodes in the target region. A Darwin/ARM
+node therefore builds `linux/arm64`; a region with both amd64 and arm64 targets
+builds a multi-platform image. An explicit `--platform` is accepted only when
+it covers every resolved target architecture.
 
 Control permits only one active build per project across both lanes. A running
 Builder import blocks a local build for the same repository, and a running local
