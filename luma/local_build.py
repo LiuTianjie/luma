@@ -25,6 +25,22 @@ from .agent import (
 from .errors import LumaError
 
 
+def _expose_local_docker_cli_plugins(docker_config: Path) -> None:
+    """Keep Docker CLI plugins visible while using isolated registry auth."""
+    source_root = Path.home() / ".docker" / "cli-plugins"
+    buildx = source_root / "docker-buildx"
+    if not buildx.is_file():
+        return
+    plugin_root = docker_config / "cli-plugins"
+    plugin_root.mkdir(parents=True, exist_ok=True)
+    destination = plugin_root / "docker-buildx"
+    try:
+        destination.symlink_to(buildx.resolve())
+    except OSError:
+        # Windows configurations may not permit unprivileged symlinks.
+        shutil.copy2(buildx, destination)
+
+
 def _git_output(source: Path, *args: str) -> str:
     git = shutil.which("git")
     if not git:
@@ -144,6 +160,7 @@ def build_and_push_local_source(
             shutil.copy2(user_docker_config, docker_config / "config.json")
         else:
             _write_docker_auth_config(docker_config, _auth_for_host(None, registry_host))
+        _expose_local_docker_cli_plugins(docker_config)
         if deployment_manifest[0] == "compose":
             payload: Dict[str, Any] = {}
             if context:

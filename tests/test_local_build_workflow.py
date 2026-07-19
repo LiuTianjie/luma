@@ -19,6 +19,7 @@ from luma.errors import LumaError
 from luma.cli import build_parser
 from luma.agent import _deployment_target_build_platform
 from luma.local_build import (
+    _expose_local_docker_cli_plugins,
     build_and_push_local_source,
     local_deployment_target,
 )
@@ -92,6 +93,19 @@ class LocalBuildWorkflowTests(unittest.TestCase):
         self.assertEqual(args.command, "build")
         self.assertEqual(args.build_command, "local")
         self.assertEqual(args.path, Path("."))
+
+    def test_local_docker_config_keeps_buildx_plugin_visible(self):
+        user_home = self.root / "home"
+        plugin = user_home / ".docker" / "cli-plugins" / "docker-buildx"
+        plugin.parent.mkdir(parents=True)
+        plugin.write_text("buildx", encoding="utf-8")
+        docker_config = self.root / "docker-config"
+        docker_config.mkdir()
+        with patch("luma.local_build.Path.home", return_value=user_home):
+            _expose_local_docker_cli_plugins(docker_config)
+        exposed = docker_config / "cli-plugins" / "docker-buildx"
+        self.assertTrue(exposed.is_file())
+        self.assertEqual(exposed.read_text(encoding="utf-8"), "buildx")
 
     def test_asgi_exposes_local_build_prepare_route(self):
         with TestClient(create_app()) as client:
