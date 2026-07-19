@@ -2930,11 +2930,19 @@ def _write_buildx_registry_marker(
             tmp.unlink()
 
 
-def _buildx_environment(docker_config: Path) -> dict[str, str]:
+def _buildx_environment(
+    docker_config: Path, *, buildx_config_root: Path | None = None
+) -> dict[str, str]:
     """Keep registry auth ephemeral while persisting non-secret Buildx state."""
     env = dict(os.environ)
     env["DOCKER_CONFIG"] = str(docker_config)
-    root = Path(str(os.environ.get("LUMA_BUILDX_CONFIG") or DEFAULT_BUILDX_CONFIG)).expanduser()
+    root = Path(
+        str(
+            buildx_config_root
+            or os.environ.get("LUMA_BUILDX_CONFIG")
+            or DEFAULT_BUILDX_CONFIG
+        )
+    ).expanduser()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
     env["BUILDX_CONFIG"] = str(root)
@@ -3088,11 +3096,14 @@ def _docker_buildx_build(
     build_args: Mapping[str, str] | None = None,
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    buildx_config_root: Path | None = None,
 ) -> str:
     tag_sha = f"{push_host}/{repo}:{sha}"
     tag_latest = f"{push_host}/{repo}:latest"
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-    env = _buildx_environment(docker_config)
+    env = _buildx_environment(
+        docker_config, buildx_config_root=buildx_config_root
+    )
     proxy_build_args: list[str] = []
     if proxy:
         env["HTTP_PROXY"] = proxy
@@ -3307,6 +3318,8 @@ def _build_compose_images(
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
     allow_repo_overrides: bool = True,
+    buildx_builder: str = "",
+    buildx_config_root: Path | None = None,
 ) -> Dict[str, Any]:
     import yaml
 
@@ -3343,8 +3356,10 @@ def _build_compose_images(
             raise LumaError(f"compose service {service_name} requires image or build")
 
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-    buildx_env = _buildx_environment(docker_config)
-    builder = _ensure_buildx_builder(
+    buildx_env = _buildx_environment(
+        docker_config, buildx_config_root=buildx_config_root
+    )
+    builder = str(buildx_builder or "").strip() or _ensure_buildx_builder(
         docker,
         proxy=proxy or "",
         no_proxy=no_proxy,
@@ -3397,6 +3412,7 @@ def _build_compose_images(
             build_args=_compose_build_args(spec),
             progress=progress,
             cancel_event=cancel_event,
+            buildx_config_root=buildx_config_root,
         )
         service_body["image"] = image
         service_body.pop("build", None)

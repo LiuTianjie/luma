@@ -25,20 +25,45 @@ from .agent import (
 from .errors import LumaError
 
 
-def _expose_local_docker_cli_plugins(docker_config: Path) -> None:
-    """Keep Docker CLI plugins visible while using isolated registry auth."""
-    source_root = Path.home() / ".docker" / "cli-plugins"
-    buildx = source_root / "docker-buildx"
+def _expose_local_docker_runtime(docker_config: Path) -> None:
+    """Keep CLI plugins and named contexts visible with isolated registry auth."""
+    user_docker_root = Path.home() / ".docker"
+    buildx = user_docker_root / "cli-plugins" / "docker-buildx"
     if not buildx.is_file():
-        return
-    plugin_root = docker_config / "cli-plugins"
-    plugin_root.mkdir(parents=True, exist_ok=True)
-    destination = plugin_root / "docker-buildx"
-    try:
-        destination.symlink_to(buildx.resolve())
-    except OSError:
-        # Windows configurations may not permit unprivileged symlinks.
-        shutil.copy2(buildx, destination)
+        buildx = None
+    if buildx is not None:
+        plugin_root = docker_config / "cli-plugins"
+        plugin_root.mkdir(parents=True, exist_ok=True)
+        destination = plugin_root / "docker-buildx"
+        try:
+            destination.symlink_to(buildx.resolve())
+        except OSError:
+            # Windows configurations may not permit unprivileged symlinks.
+            shutil.copy2(buildx, destination)
+
+    contexts = user_docker_root / "contexts"
+    if contexts.is_dir():
+        destination = docker_config / "contexts"
+        try:
+            destination.symlink_to(contexts.resolve(), target_is_directory=True)
+        except OSError:
+            shutil.copytree(contexts, destination)
+
+
+def _current_docker_context_builder(
+    docker: str, *, env: Dict[str, str]
+) -> str:
+    result = subprocess.run(
+        [docker, "context", "show"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        env=env,
+        timeout=15,
+    )
+    context = result.stdout.strip() if result.returncode == 0 else ""
+    return context or "default"
 
 
 def _git_output(source: Path, *args: str) -> str:
@@ -128,10 +153,17 @@ def build_and_push_local_source(
     context: str = "",
     dockerfile: str = "",
     platform: str = "",
+    builder: str = "",
     timeout: int = 7200,
     progress: Callable[[str], None] | None = None,
 ) -> Dict[str, Any]:
     root = source.expanduser().resolve()
+    selected_builder = str(builder or "").strip()
+    if selected_builder and not all(
+        char.isalnum() or char in "_.-" for char in selected_builder
+    ):
+        raise LumaError("local buildx builder name is invalid")
+    user_buildx_root = Path.home() / ".docker" / "buildx" if selected_builder else None
     docker = _docker_binary()
     if not docker:
         raise LumaError("docker command not found on this computer")
@@ -160,7 +192,7 @@ def build_and_push_local_source(
             shutil.copy2(user_docker_config, docker_config / "config.json")
         else:
             _write_docker_auth_config(docker_config, _auth_for_host(None, registry_host))
-        _expose_local_docker_cli_plugins(docker_config)
+        _expose_local_docker_runtime(docker_config)
         if deployment_manifest[0] == "compose":
             payload: Dict[str, Any] = {}
             if context:
@@ -171,6 +203,14 @@ def build_and_push_local_source(
                 payload["platform"] = platform
             if selected_sidecar:
                 payload["composeSidecar"] = selected_sidecar
+            local_env = _buildx_environment(
+                docker_config, buildx_config_root=user_buildx_root
+            )
+            local_builder = selected_builder or (
+                _current_docker_context_builder(docker, env=local_env)
+                if platform and "," not in platform
+                else ""
+            )
             return _build_compose_images(
                 src=root,
                 sidecar_path=deployment_manifest[1],
@@ -185,6 +225,8 @@ def build_and_push_local_source(
                 payload=payload,
                 progress=emit,
                 allow_repo_overrides=False,
+                buildx_builder=local_builder,
+                buildx_config_root=user_buildx_root,
             )
 
         manifest_path = deployment_manifest[1]
@@ -201,13 +243,19 @@ def build_and_push_local_source(
         dockerfile_path = _safe_repo_subpath(root, dockerfile_rel)
         if not dockerfile_path.is_file():
             raise LumaError(f"Dockerfile not found in local project: {dockerfile_rel}")
-        buildx_env = _buildx_environment(docker_config)
-        builder = _ensure_buildx_builder(
-            docker,
-            proxy="",
-            no_proxy=f"localhost,127.0.0.1,::1,{registry_host}",
-            registry_host=registry_host,
-            env=buildx_env,
+        buildx_env = _buildx_environment(
+            docker_config, buildx_config_root=user_buildx_root
+        )
+        builder = selected_builder or (
+            _current_docker_context_builder(docker, env=buildx_env)
+            if "," not in build_platform
+            else _ensure_buildx_builder(
+                docker,
+                proxy="",
+                no_proxy=f"localhost,127.0.0.1,::1,{registry_host}",
+                registry_host=registry_host,
+                env=buildx_env,
+            )
         )
         image = _docker_buildx_build(
             docker=docker,
@@ -223,6 +271,7 @@ def build_and_push_local_source(
             proxy="",
             build_timeout=timeout,
             progress=emit,
+            buildx_config_root=user_buildx_root,
         )
         return {
             "kind": "service",

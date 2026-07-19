@@ -19,7 +19,7 @@ from luma.errors import LumaError
 from luma.cli import build_parser
 from luma.agent import _deployment_target_build_platform
 from luma.local_build import (
-    _expose_local_docker_cli_plugins,
+    _expose_local_docker_runtime,
     build_and_push_local_source,
     local_deployment_target,
 )
@@ -88,24 +88,34 @@ class LocalBuildWorkflowTests(unittest.TestCase):
 
     def test_cli_exposes_local_build_as_a_build_subcommand(self):
         args = build_parser().parse_args(
-            ["build", "local", ".", "--repo-url", "https://github.com/acme/app.git"]
+            [
+                "build", "local", ".",
+                "--repo-url", "https://github.com/acme/app.git",
+                "--builder", "desktop-linux",
+            ]
         )
         self.assertEqual(args.command, "build")
         self.assertEqual(args.build_command, "local")
         self.assertEqual(args.path, Path("."))
+        self.assertEqual(args.builder, "desktop-linux")
 
-    def test_local_docker_config_keeps_buildx_plugin_visible(self):
+    def test_local_docker_config_keeps_buildx_plugin_and_context_visible(self):
         user_home = self.root / "home"
         plugin = user_home / ".docker" / "cli-plugins" / "docker-buildx"
         plugin.parent.mkdir(parents=True)
         plugin.write_text("buildx", encoding="utf-8")
+        context = user_home / ".docker" / "contexts" / "meta" / "context" / "meta.json"
+        context.parent.mkdir(parents=True)
+        context.write_text('{"Name":"desktop"}', encoding="utf-8")
         docker_config = self.root / "docker-config"
         docker_config.mkdir()
         with patch("luma.local_build.Path.home", return_value=user_home):
-            _expose_local_docker_cli_plugins(docker_config)
+            _expose_local_docker_runtime(docker_config)
         exposed = docker_config / "cli-plugins" / "docker-buildx"
         self.assertTrue(exposed.is_file())
         self.assertEqual(exposed.read_text(encoding="utf-8"), "buildx")
+        exposed_context = docker_config / "contexts" / "meta" / "context" / "meta.json"
+        self.assertEqual(exposed_context.read_text(encoding="utf-8"), '{"Name":"desktop"}')
 
     def test_asgi_exposes_local_build_prepare_route(self):
         with TestClient(create_app()) as client:
@@ -211,6 +221,34 @@ class LocalBuildWorkflowTests(unittest.TestCase):
             )
         self.assertEqual(result, expected)
         self.assertFalse(build.call_args.kwargs["allow_repo_overrides"])
+        self.assertEqual(build.call_args.kwargs["buildx_builder"], "")
+
+    def test_local_single_platform_compose_can_reuse_existing_builder(self):
+        project = self.root / "single-platform"
+        project.mkdir()
+        (project / "luma.compose.yml").write_text(
+            "name: app\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web: {}\n",
+            encoding="utf-8",
+        )
+        (project / "docker-compose.yml").write_text(
+            "services:\n  web:\n    build: .\n", encoding="utf-8"
+        )
+        with patch("luma.local_build._docker_binary", return_value="docker"), patch(
+            "luma.local_build._docker_buildx_available", return_value=True
+        ), patch(
+            "luma.local_build._build_compose_images", return_value={"kind": "compose"}
+        ) as build, patch(
+            "luma.local_build._current_docker_context_builder", return_value="desktop-linux"
+        ):
+            build_and_push_local_source(
+                project,
+                registry_host="registry",
+                repository="acme/app",
+                tag="local-run",
+                platform="linux/amd64",
+                builder="desktop-linux",
+            )
+        self.assertEqual(build.call_args.kwargs["buildx_builder"], "desktop-linux")
 
     def test_local_service_upload_deploys_under_reserved_project(self):
         prepared = handle_local_build_prepare(

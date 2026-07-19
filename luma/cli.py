@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.265 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.266 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -373,6 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_local.add_argument("--domain", default="", help="Override single-service domain")
     build_local.add_argument("--port", type=int, default=None, help="Override single-service container port")
     build_local.add_argument("--platform", default="", help="Build platform override")
+    build_local.add_argument("--builder", default="", help="Existing local Docker Buildx builder")
     build_local.add_argument("--context", dest="build_context", default="", help="Docker build context within the local project")
     build_local.add_argument("--dockerfile", default="", help="Dockerfile path within the local project")
     build_local.add_argument("--env", dest="deploy_env_file", type=Path, help="Import this .env file as scoped deployment secrets")
@@ -2945,6 +2946,7 @@ def cmd_build(args: argparse.Namespace) -> int:
                 context=args.build_context,
                 dockerfile=args.dockerfile,
                 platform=str(upload.get("platform") or ""),
+                builder=args.builder,
                 timeout=args.timeout,
                 progress=(lambda line: print(line, flush=True)) if not quiet else None,
             )
