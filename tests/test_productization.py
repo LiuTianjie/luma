@@ -15201,9 +15201,6 @@ class GithubImportTests(unittest.TestCase):
                     platform="linux/amd64",
                     proxy="",
                     build_timeout=1800,
-                    build_contexts={
-                        "busybox": "100.66.177.70:5000/luma-cache/busybox@sha256:" + "a" * 64
-                    },
                     progress=lambda event: progress.append(event),
                 )
 
@@ -15214,11 +15211,6 @@ class GithubImportTests(unittest.TestCase):
             "Docker image build is still running",
         )
         self.assertNotIn("--push", captured_command)
-        context_index = captured_command.index("--build-context")
-        self.assertEqual(
-            captured_command[context_index + 1],
-            "busybox=docker-image://100.66.177.70:5000/luma-cache/busybox@sha256:" + "a" * 64,
-        )
         output_index = captured_command.index("--output")
         self.assertEqual(
             captured_command[output_index + 1],

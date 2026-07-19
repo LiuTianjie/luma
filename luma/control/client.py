@@ -677,16 +677,6 @@ class ControlClient:
     def prepare_local_build(self, body: Dict[str, Any]) -> Dict[str, Any]:
         return self.request("POST", "/v1/builds/local/prepare", body)
 
-    def cache_local_build_base_images(
-        self, build_id: str, *, images: list[str], platform: str, timeout: int = 3600
-    ) -> Dict[str, Any]:
-        return self.request(
-            "POST",
-            f"/v1/builds/local/{urllib.parse.quote(build_id, safe='')}/base-images",
-            {"images": images, "platform": platform},
-            timeout=timeout,
-        )
-
     def complete_local_build(
         self,
         build_id: str,

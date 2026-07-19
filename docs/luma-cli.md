@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.268"
+python -m pip install "luma-infra==0.1.269"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.268 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.269 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.268"
+python -m pip install "luma-infra==0.1.269"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.268"
+python -m pip install "luma-infra==0.1.269"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -283,7 +283,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.268 --timeout 900
+luma update fleet --install-ref v0.1.269 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -498,11 +498,6 @@ builds with local Docker Buildx, pushes to the configured Luma registry under
 the same `owner/repository` namespace used by `luma import`, and then runs the
 normal deploy path. The local computer must be able to reach the configured
 `build.registryHost`; for an authenticated registry, log in with Docker first.
-Before the build starts, Luma resolves Dockerfile `FROM` references and asks
-the configured Builder to cache those base images in the same internal
-Registry. BuildKit receives the cached images as named contexts, so the
-checkout does not need Dockerfile changes and local Docker does not need direct
-registry access for base layers.
 Single-service manifests and Compose sidecars are supported, including
 `--compose-sidecar`, `--platform`, `--context`, and `--dockerfile` overrides.
 Use `--builder <name>` to reuse an existing local Buildx builder when it has

@@ -10,7 +10,6 @@ from luma.control.server import (
     _create_build_run,
     _resolve_target_build_platform,
     handle_local_build_complete,
-    handle_local_build_base_images,
     handle_local_build_fail,
     handle_local_build_prepare,
     create_app,
@@ -22,7 +21,6 @@ from luma.agent import _deployment_target_build_platform
 from luma.local_build import (
     _expose_local_docker_runtime,
     build_and_push_local_source,
-    _dockerfile_base_images,
     local_deployment_target,
 )
 
@@ -102,44 +100,6 @@ class LocalBuildWorkflowTests(unittest.TestCase):
         self.assertEqual(args.path, Path("."))
         self.assertEqual(args.builder, "desktop-linux")
         self.assertEqual(args.proxy, "http://host.docker.internal:7890")
-
-    def test_dockerfile_base_images_resolve_global_args_and_skip_stages(self):
-        dockerfile = self.root / "Dockerfile"
-        dockerfile.write_text(
-            "ARG NODE_IMAGE=node:22-bookworm-slim\n"
-            "ARG PYTHON_IMAGE=python:3.12-slim\n"
-            "FROM ${NODE_IMAGE} AS frontend\n"
-            "FROM ${PYTHON_IMAGE} AS runtime\n"
-            "COPY --from=frontend /app /app\n",
-            encoding="utf-8",
-        )
-        self.assertEqual(
-            _dockerfile_base_images(dockerfile),
-            ["node:22-bookworm-slim", "python:3.12-slim"],
-        )
-
-    def test_local_base_images_are_cached_by_builder_registry(self):
-        prepared = handle_local_build_prepare(
-            self.token,
-            {"repoUrl": "https://github.com/acme/app.git", "targetRegion": "cn"},
-        )
-        with patch(
-            "luma.control.server._cache_runtime_image_on_builder",
-            side_effect=[
-                {"deployed": "100.66.177.70:5000/luma-cache/node@sha256:" + "a" * 64},
-                {"deployed": "100.66.177.70:5000/luma-cache/python@sha256:" + "b" * 64},
-            ],
-        ) as cache:
-            result = handle_local_build_base_images(
-                self.token,
-                prepared["run"]["id"],
-                {
-                    "images": ["node:22-bookworm-slim", "python:3.12-slim"],
-                    "platform": "linux/amd64",
-                },
-            )
-        self.assertEqual(cache.call_count, 2)
-        self.assertEqual(set(result["images"]), {"node:22-bookworm-slim", "python:3.12-slim"})
 
     def test_local_docker_config_keeps_buildx_plugin_and_context_visible(self):
         user_home = self.root / "home"

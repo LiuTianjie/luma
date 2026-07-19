@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.268 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.269 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -2898,7 +2898,6 @@ def cmd_build(args: argparse.Namespace) -> int:
     if args.build_command == "local":
         from .local_build import (
             build_and_push_local_source,
-            local_build_base_images,
             local_deployment_target,
             local_source_metadata,
         )
@@ -2907,12 +2906,6 @@ def cmd_build(args: argparse.Namespace) -> int:
         if args.timeout < 1:
             raise LumaError("--timeout must be at least 1 second")
         metadata = local_source_metadata(args.path, repo_url=args.repo_url)
-        base_images = local_build_base_images(
-            args.path,
-            compose_sidecar=args.compose_sidecar,
-            context=args.build_context,
-            dockerfile=args.dockerfile,
-        )
         target = local_deployment_target(
             args.path,
             compose_sidecar=args.compose_sidecar,
@@ -2945,20 +2938,6 @@ def cmd_build(args: argparse.Namespace) -> int:
             print(f"[ok] Project reserved: {upload.get('repository')} ({build_id})", flush=True)
             print(f"[start] Building locally and pushing to {upload.get('registryHost')}", flush=True)
         try:
-            build_contexts: Dict[str, str] = {}
-            if base_images:
-                if not quiet:
-                    print(f"[start] Caching {len(base_images)} base image(s) in the Builder Registry", flush=True)
-                cached = client.cache_local_build_base_images(
-                    build_id,
-                    images=base_images,
-                    platform=str(upload.get("platform") or ""),
-                    timeout=args.timeout,
-                )
-                build_contexts = {
-                    str(name): str(value)
-                    for name, value in (cached.get("images") or {}).items()
-                }
             build_result = build_and_push_local_source(
                 Path(metadata["path"]),
                 registry_host=str(upload.get("registryHost") or ""),
@@ -2972,7 +2951,6 @@ def cmd_build(args: argparse.Namespace) -> int:
                 proxy=args.proxy,
                 timeout=args.timeout,
                 progress=(lambda line: print(line, flush=True)) if not quiet else None,
-                build_contexts=build_contexts,
             )
             result = client.complete_local_build(
                 build_id,
