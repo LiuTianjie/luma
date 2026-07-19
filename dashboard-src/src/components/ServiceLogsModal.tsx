@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Copy, Download, RefreshCw, X } from "lucide-react";
 import { t } from "../i18n";
@@ -139,12 +139,18 @@ export function ServiceLogsModal({
   const [pullDiagnostic, setPullDiagnostic] = useState<PullDiagnosticState | null>(null);
   const [pullLoading, setPullLoading] = useState(false);
 
+  // Sync the requested initial service only when initialServiceName itself
+  // changes. Depending on `services` here re-ran this after every 30s dashboard
+  // poll (new array reference) and silently yanked the user's selection back to
+  // the initial service, reconnecting the log stream each time.
+  const servicesRef = useRef(services);
+  servicesRef.current = services;
   useEffect(() => {
-    const next = services.find((service) => service.fullName === initialServiceName);
+    const next = servicesRef.current.find((service) => service.fullName === initialServiceName);
     if (!next?.fullName) return;
     setSelectedApp(appKey(next));
     setSelectedService(next.fullName);
-  }, [initialServiceName, services]);
+  }, [initialServiceName]);
 
   useEffect(() => {
     if (!applications.length) {

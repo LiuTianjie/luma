@@ -52,9 +52,10 @@ export type NdjsonOptions = {
 
 // Consume an NDJSON stream, invoking `onEvent` for each JSON line. Resolves with the
 // `result` field of the terminal `{status: doneStatus}` frame, and throws on a
-// `{status: failStatus}` frame. Handles both step-shaped streams ({status, result})
-// and line-shaped streams (e.g. log tails) — line-shaped callers just read their own
-// fields off each event and never hit the done/fail branches.
+// `{status: failStatus}` frame. A stream that ends without any terminal frame is
+// treated as truncated (e.g. Control restarted mid-deploy) and throws instead of
+// silently resolving — callers only use this for step-shaped streams, never for
+// line-shaped log tails, which keep their own tolerant readers.
 export async function consumeNdjson<T = unknown>(
   response: Response,
   onEvent: (event: Record<string, unknown>) => void,
@@ -71,22 +72,36 @@ export async function consumeNdjson<T = unknown>(
   const decoder = new TextDecoder();
   let buffer = "";
   let result: unknown = null;
+  let sawTerminal = false;
   const handleLine = (line: string) => {
     if (!line.trim()) return;
     const event = JSON.parse(line) as Record<string, unknown>;
     onEvent(event);
-    if (event.status === failStatus) throw new Error(String(event.message || "stream failed"));
-    if (event.status === doneStatus) result = event.result;
+    if (event.status === failStatus) {
+      sawTerminal = true;
+      throw new Error(String(event.message || "stream failed"));
+    }
+    if (event.status === doneStatus) {
+      sawTerminal = true;
+      result = event.result;
+    }
   };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    for (const line of lines) handleLine(line);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) handleLine(line);
+    }
+    buffer += decoder.decode();
+    handleLine(buffer);
+  } finally {
+    // Release the underlying connection on every exit path (fail frame, malformed
+    // line, network cut); after a clean EOF this cancel is a no-op.
+    reader.cancel().catch(() => {});
   }
-  buffer += decoder.decode();
-  handleLine(buffer);
+  if (!sawTerminal) throw new Error("stream ended before completion");
   return result as T;
 }

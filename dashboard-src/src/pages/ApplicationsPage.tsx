@@ -42,9 +42,9 @@ export function ApplicationsPage({
             : "Search, filter, read logs, inspect deployment config, review versions, and run guarded runtime actions.",
           metrics: [
             { label: t(lang, "applications"), value: applications.length },
-            { label: zh ? "Healthy" : "Healthy", value: healthy },
-            { label: zh ? "Degraded" : "Degraded", value: degraded },
-            { label: zh ? "Failed" : "Failed", value: failed },
+            { label: zh ? "健康" : "Healthy", value: healthy },
+            { label: zh ? "降级" : "Degraded", value: degraded },
+            { label: zh ? "失败" : "Failed", value: failed },
           ],
           action: (
             <button type="button" className="page-toolbar-cta" onClick={onCreateApplication}>

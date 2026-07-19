@@ -1,6 +1,6 @@
 import type { DetailState } from "./detailRecords";
 import type { Lang } from "./types";
-import { t } from "./i18n";
+import { detailLabel, t } from "./i18n";
 
 export function DetailDrawer({ lang, detail, onClose }: { lang: Lang; detail: DetailState; onClose: () => void }) {
   if (!detail) return null;
@@ -19,7 +19,7 @@ export function DetailDrawer({ lang, detail, onClose }: { lang: Lang; detail: De
         <dl>
           {Object.entries(detail.items).map(([key, value]) => (
             <div key={key}>
-              <dt>{key}</dt>
+              <dt>{detailLabel(lang, key)}</dt>
               <dd>{String(value || "-")}</dd>
             </div>
           ))}
