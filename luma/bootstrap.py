@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import ipaddress
 import os
 import re
+import secrets
 import shlex
 import time
 from pathlib import Path
-from typing import Any, Callable, Union
+from typing import Any, Callable, Mapping, Union
 
 from .config import LumaConfig, NodeConfig
 from .cloudflare import sync_control_dns
-from .egress import minimal_mihomo_config_from_url
+from .egress import ensure_mihomo_direct_domains, minimal_mihomo_config_from_url
 from .errors import LumaError
-from .io import dump_yaml
+from .io import dump_yaml, load_yaml
 from .local import LocalExecutor
 from .profiles import PROFILES, Profile
 from .registry import image_uses_mutable_latest_tag, registry_host_from_image
@@ -21,9 +24,13 @@ from .remote import RemoteExecutor
 
 
 ROOT = "/opt/luma"
+CONTROL_ENV_FILE = f"{ROOT}/control/control.env"
+TRAEFIK_DNS_TOKEN_FILE = f"{ROOT}/traefik/cloudflare-dns-token"
+CONTROL_ENV_FILE_MAX_BYTES = 64 * 1024
 DEFAULT_TRAEFIK_IMAGE = "docker.1panel.live/library/traefik:v3.6"
 DEFAULT_EGRESS_IMAGE = "docker.1panel.live/metacubex/mihomo:latest"
 DEFAULT_CONTROL_IMAGE = "ghcr.io/liutianjie/luma-control:latest"
+CONTROL_IMAGE_PULL_RETRY_DELAYS = (2, 4, 8, 12, 20)
 EGRESS_PROXY_URL = "http://127.0.0.1:7890"
 EGRESS_NO_PROXY = "localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,docker.1panel.live,docker.m.daocloud.io,docker.1ms.run"
 DEFAULT_EGRESS_PULL_REGISTRIES = {
@@ -108,6 +115,27 @@ def _acme_email(config: LumaConfig) -> str:
     )
 
 
+def _install_traefik_dns_secret(
+    remote: Executor,
+    config: LumaConfig,
+    *,
+    state: Mapping[str, object] | None = None,
+) -> str:
+    provider = config.acme_dns_provider
+    if not provider:
+        return "Traefik ACME uses HTTP-01"
+    if provider != "cloudflare":
+        return f"Traefik ACME DNS provider is externally managed: {provider}"
+    token_env = str(config.dns.get("apiTokenEnv") or "CLOUDFLARE_API_TOKEN")
+    persisted = state.get("secrets") if isinstance(state, Mapping) else None
+    persisted_token = persisted.get(token_env) if isinstance(persisted, Mapping) else None
+    token = str(os.environ.get(token_env) or persisted_token or "").strip()
+    if not token:
+        raise LumaError(f"missing Cloudflare API token env var for Traefik DNS-01: {token_env}")
+    remote.write_secret(token + "\n", TRAEFIK_DNS_TOKEN_FILE, mode="600")
+    return "Traefik Cloudflare DNS-01 secret installed"
+
+
 def _control_image(config: LumaConfig) -> str:
     return _core_image(
         config,
@@ -115,6 +143,177 @@ def _control_image(config: LumaConfig) -> str:
         "LUMA_CONTROL_IMAGE",
         DEFAULT_CONTROL_IMAGE,
     )
+
+
+def _parse_control_environment_file(content: bytes) -> dict[str, str]:
+    """Parse the persisted Control environment without shell evaluation.
+
+    The file is intentionally a small, strict ``NAME=value`` format.  It is
+    not a shell script: comments, ``export``, quoting, substitutions and
+    continuation lines are rejected instead of being interpreted.
+    """
+
+    from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, control_job_environment
+
+    if len(content) > CONTROL_ENV_FILE_MAX_BYTES:
+        raise LumaError("Luma Control environment file is too large")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise LumaError("Luma Control environment file must be UTF-8") from None
+    if "\0" in text or "\r" in text:
+        raise LumaError("Luma Control environment file contains invalid characters")
+
+    parsed: dict[str, str] = {}
+    for line_number, line in enumerate(text.split("\n"), start=1):
+        if not line:
+            continue
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
+        if match is None:
+            raise LumaError(
+                f"Luma Control environment file has an invalid line at {line_number}"
+            )
+        name, value = match.groups()
+        if name not in CONTROL_JOB_ENV_ALLOWLIST:
+            raise LumaError(
+                f"Luma Control environment file key is not allowlisted: {name}"
+            )
+        if name in parsed:
+            raise LumaError(
+                f"Luma Control environment file has a duplicate key: {name}"
+            )
+        if not value:
+            raise LumaError(
+                f"Luma Control environment file value is empty: {name}"
+            )
+        parsed[name] = value
+
+    # Reuse the renderer's per-key validation and normalization so persisted
+    # settings have exactly the same contract as invocation-time settings.
+    return control_job_environment(parsed)
+
+
+def install_control_environment(
+    values: Mapping[str, str],
+    *,
+    path: Path = Path(CONTROL_ENV_FILE),
+) -> dict[str, str]:
+    """Merge validated non-secret Control settings into the manager file.
+
+    This is used by the root-owned node agent during a managed Control update.
+    The fixed destination and strict allowlist prevent the update API from
+    becoming an arbitrary file-write or secret-persistence primitive.
+    """
+
+    from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, control_job_environment
+
+    if not isinstance(values, Mapping):
+        raise LumaError("controlEnvironment must be an object")
+    supplied = {str(name): str(value) for name, value in values.items()}
+    unknown = sorted(set(supplied) - CONTROL_JOB_ENV_ALLOWLIST)
+    if unknown:
+        raise LumaError(f"controlEnvironment key is not allowlisted: {unknown[0]}")
+    if any(not value for value in supplied.values()):
+        raise LumaError("controlEnvironment values must not be empty")
+    updates = control_job_environment(supplied)
+
+    current: dict[str, str] = {}
+    if path.exists() or path.is_symlink():
+        metadata = path.lstat()
+        if path.is_symlink() or not path.is_file():
+            raise LumaError("Luma Control environment file must be a regular file")
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o777 not in {0o400, 0o600}:
+            raise LumaError("Luma Control environment file ownership or mode is invalid")
+        if metadata.st_size > CONTROL_ENV_FILE_MAX_BYTES:
+            raise LumaError("Luma Control environment file is too large")
+        current = _parse_control_environment_file(path.read_bytes())
+
+    merged = {**current, **updates}
+    content = "".join(f"{name}={merged[name]}\n" for name in sorted(merged)).encode()
+    if len(content) > CONTROL_ENV_FILE_MAX_BYTES:
+        raise LumaError("Luma Control environment file is too large")
+
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory_metadata = directory.lstat()
+    if (
+        directory.is_symlink()
+        or not directory.is_dir()
+        or directory_metadata.st_uid != os.geteuid()
+        or directory_metadata.st_mode & 0o022
+    ):
+        raise LumaError("Luma Control environment directory is not private")
+    temporary = directory / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return merged
+
+
+def _persisted_control_environment(
+    remote: Executor,
+    path: str = CONTROL_ENV_FILE,
+) -> dict[str, str]:
+    """Read the manager-owned Control environment after remote file checks."""
+
+    quoted_path = shlex.quote(path)
+    output = remote.sudo(
+        "set -euo pipefail; "
+        f"path={quoted_path}; "
+        "directory=${path%/*}; "
+        "[ ! -L \"$directory\" ] && [ -d \"$directory\" ] || { printf '%s\\n' "
+        "'Luma Control environment directory must be a real directory' >&2; exit 73; }; "
+        "directory_meta=$(stat -c '%u:%a' -- \"$directory\"); "
+        "directory_uid=${directory_meta%%:*}; directory_mode=${directory_meta#*:}; "
+        "[ \"$directory_uid\" = 0 ] && [ $((8#$directory_mode & 022)) -eq 0 ] || { "
+        "printf '%s\\n' 'Luma Control environment directory is not private' >&2; exit 73; }; "
+        "if [ ! -e \"$path\" ] && [ ! -L \"$path\" ]; then "
+        "printf '%s\\n' __LUMA_CONTROL_ENV_MISSING__; exit 0; fi; "
+        "[ ! -L \"$path\" ] || { printf '%s\\n' "
+        "'Luma Control environment file must not be a symlink' >&2; exit 73; }; "
+        "[ -f \"$path\" ] || { printf '%s\\n' "
+        "'Luma Control environment path must be a regular file' >&2; exit 73; }; "
+        "meta=$(stat -c '%u:%a:%s' -- \"$path\"); "
+        "uid=${meta%%:*}; rest=${meta#*:}; mode=${rest%%:*}; size=${rest#*:}; "
+        "[ \"$uid\" = 0 ] || { printf '%s\\n' "
+        "'Luma Control environment file must be owned by root' >&2; exit 73; }; "
+        "case \"$mode\" in 400|600) ;; *) printf '%s\\n' "
+        "'Luma Control environment file mode must be 0400 or 0600' >&2; exit 73;; esac; "
+        f"[ \"$size\" -le {CONTROL_ENV_FILE_MAX_BYTES} ] || {{ printf '%s\\n' "
+        "'Luma Control environment file is too large' >&2; exit 73; }; "
+        "base64 \"$path\" | tr -d '\\n'; printf '\\n'"
+    )
+    # Executors return text.  Treat an unconfigured test double like a missing
+    # optional file, while real executors can only return ``str`` here.
+    if not isinstance(output, str):
+        return {}
+    output = output.strip()
+    # Empty output is accepted as "not installed" for executor compatibility;
+    # the real command always emits either the marker or one base64 line.
+    if not output or output == "__LUMA_CONTROL_ENV_MISSING__":
+        return {}
+    if "\n" in output:
+        raise LumaError("Luma Control environment file reader returned invalid output")
+    try:
+        content = base64.b64decode(output, validate=True)
+    except (ValueError, binascii.Error):
+        raise LumaError("Luma Control environment file reader returned invalid data") from None
+    return _parse_control_environment_file(content)
 
 
 def _pull_image(remote: Executor, image: str) -> str:
@@ -133,13 +332,15 @@ def deploy_control_stack(
     emit: Progress | None = None,
     require_pull_egress: bool = True,
     node_name: str | None = None,
+    control_image_prepared: bool = False,
 ) -> list[str]:
     results: list[str] = []
     engine = str(config.defaults.get("engine") or "nomad")
     image = _control_image(config)
-    if require_pull_egress and _control_image_pull_requires_egress(image):
-        _step(results, emit, "Ensure control image pull egress", lambda: _ensure_control_image_pull_egress(remote, image))
-    _step(results, emit, "Pull Luma control image", lambda: _ensure_control_image(remote, image))
+    if not control_image_prepared:
+        if require_pull_egress and _control_image_pull_requires_egress(image):
+            _step(results, emit, "Ensure control image pull egress", lambda: _ensure_control_image_pull_egress(remote, image))
+        _step(results, emit, "Pull Luma control image", lambda: _ensure_control_image(remote, image))
     deploy_image = image
     if image_uses_mutable_latest_tag(image):
         resolved: dict[str, str] = {}
@@ -155,10 +356,26 @@ def deploy_control_stack(
     if engine != "nomad":
         raise LumaError("Nomad is the only supported deployment engine")
 
-    from .nomad_render import render_control_job
+    from .nomad_render import CONTROL_JOB_ENV_ALLOWLIST, render_control_job
 
     node = node_name or local_host_name()
-    job_json = render_control_job(image=deploy_image, node_name=node)
+    # The manager-owned file survives CLI/process updates.  The current
+    # invocation is intentionally authoritative, which permits an operator to
+    # rotate or override one setting without first rewriting the persisted
+    # file.  Both sources are independently restricted to the Control Job
+    # allowlist and validated by render_control_job.
+    control_environment = _persisted_control_environment(remote)
+    invocation_environment = {
+        name: str(os.environ[name])
+        for name in CONTROL_JOB_ENV_ALLOWLIST
+        if str(os.environ.get(name) or "")
+    }
+    control_environment.update(invocation_environment)
+    job_json = render_control_job(
+        image=deploy_image,
+        node_name=node,
+        control_environment=control_environment,
+    )
     _step(results, emit, "Check Nomad tmpfs compatibility", lambda: _nomad_tmpfs_compat_status(remote))
     _step(results, emit, "Deploy Luma control job", lambda: _deploy_nomad_job(remote, job_json, "luma-control"))
     _step(results, emit, "Wait Luma control job", lambda: _wait_nomad_job(remote, "luma-control"))
@@ -268,25 +485,161 @@ def _wait_nomad_job(remote: Executor, job_id: str, *, timeout: int = 120) -> str
         f"Check `nomad job status {job_id}` and alloc logs."
     )
 
-def _ensure_control_image(remote: Executor, image: str) -> str:
+def _ensure_control_image(
+    remote: Executor,
+    image: str,
+    *,
+    registry_auth: dict[str, str] | None = None,
+) -> str:
     image_arg = shlex.quote(image)
+    docker_config_dir = ""
+    docker_prefix = ""
+    if registry_auth:
+        server = str(registry_auth.get("serverAddress") or registry_host_from_image(image)).strip()
+        username = str(registry_auth.get("username") or "")
+        password = str(registry_auth.get("password") or "")
+        if server and username and password:
+            docker_config_dir = f"/run/luma/control-image-auth-{os.getpid()}"
+            auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+            remote.write_secret(
+                json.dumps({"auths": {server: {"auth": auth}}}, separators=(",", ":")),
+                f"{docker_config_dir}/config.json",
+                mode="600",
+            )
+            docker_prefix = f"DOCKER_CONFIG={shlex.quote(docker_config_dir)} "
+    last_error: Exception | None = None
     try:
-        _docker(
-            remote,
-            f"docker pull {image_arg}",
+        for attempt in range(len(CONTROL_IMAGE_PULL_RETRY_DELAYS) + 1):
+            try:
+                _docker(
+                    remote,
+                    f"{docker_prefix}docker pull {image_arg}",
+                )
+                return f"Control image pulled: {image}"
+            except Exception as exc:
+                last_error = exc
+                if attempt >= len(CONTROL_IMAGE_PULL_RETRY_DELAYS) or not _control_image_pull_error_is_transient(exc):
+                    break
+                time.sleep(CONTROL_IMAGE_PULL_RETRY_DELAYS[attempt])
+    finally:
+        if docker_config_dir:
+            remote.sudo(f"rm -rf {shlex.quote(docker_config_dir)}", check=False)
+    detail = str(last_error or "")
+    suffix = f" Docker error: {detail}" if detail else ""
+    raise LumaError(
+        f"failed to pull Luma Control image: {image}. "
+        "Publish the image or set LUMA_CONTROL_IMAGE/defaults.images.lumaControl to a pullable image tag. "
+        "If this manager cannot reach the registry directly, configure EGRESS_SUBSCRIPTION_URL "
+        "and rerun without --skip-egress."
+        f"{suffix}"
+    ) from last_error
+
+
+def _control_image_pull_error_is_transient(exc: Exception) -> bool:
+    detail = f" {str(exc).lower()} "
+    return any(
+        marker in detail
+        for marker in (
+            " eof ",
+            "connection reset",
+            "connection refused",
+            "unexpected status code 502",
+            "unexpected status code 503",
+            "unexpected status code 504",
+            " 502 bad gateway",
+            " 503 service unavailable",
+            " 504 gateway timeout",
+            "i/o timeout",
+            "tls handshake timeout",
+            "temporary failure",
+            "context deadline exceeded",
+            "no route to host",
         )
-    except Exception as exc:
-        detail = str(exc)
-        suffix = f" Docker error: {detail}" if detail else ""
+    )
+
+
+def _prefetch_control_image_for_manager_refresh(
+    remote: Executor,
+    config: LumaConfig,
+    *,
+    state: dict[str, object] | None = None,
+) -> str:
+    """Cache Control before refreshing ingress that may serve its registry."""
+    image = _control_image(config)
+    messages: list[str] = []
+    direct_route = _ensure_control_registry_direct_route(remote, image)
+    if direct_route:
+        messages.append(direct_route)
+    if _control_image_pull_requires_egress(image):
+        egress = _ensure_control_image_pull_egress(remote, image)
+        if egress:
+            messages.append(egress)
+    messages.append(
+        _ensure_control_image(
+            remote,
+            image,
+            registry_auth=_control_image_registry_auth(state or {}, image),
+        )
+    )
+    return "; ".join(messages)
+
+
+def _control_image_registry_auth(state: dict[str, object], image: str) -> dict[str, str] | None:
+    registry = registry_host_from_image(image).strip().lower()
+    records = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    for raw_name, raw_record in records.items():
+        if not isinstance(raw_record, dict):
+            continue
+        server = str(raw_record.get("serverAddress") or raw_name).strip()
+        if server.lower().removeprefix("https://").removeprefix("http://").rstrip("/") != registry:
+            continue
+        username = str(raw_record.get("username") or "")
+        password = str(raw_record.get("password") or "")
+        if username and password:
+            return {
+                "serverAddress": registry,
+                "username": username,
+                "password": password,
+            }
+    return None
+
+
+def _ensure_control_registry_direct_route(remote: Executor, image: str) -> str:
+    """Keep an internal registry out of the manager's external proxy path."""
+    registry = registry_host_from_image(image).strip().lower()
+    if not registry or _control_image_pull_requires_egress(image):
+        return ""
+    if not _docker_daemon_uses_egress_proxy(remote):
+        return ""
+    probe = remote.run_result(
+        "curl --noproxy '*' --silent --show-error --output /dev/null "
+        "--write-out '%{http_code}' --max-time 20 "
+        f"{shlex.quote('https://' + registry + '/v2/')}",
+        timeout=25,
+    )
+    status = probe.output.strip().splitlines()[-1] if probe.output.strip() else ""
+    if probe.code != 0 or status not in {"200", "401"}:
+        return ""
+    config_path = f"{ROOT}/egress-gateway/config.yaml"
+    encoded = remote.sudo(
+        f"test -f {shlex.quote(config_path)} && base64 {shlex.quote(config_path)} | tr -d '\\n'",
+    ).strip()
+    if not encoded:
         raise LumaError(
-            f"failed to pull Luma Control image: {image}. "
-            "Publish the image or set LUMA_CONTROL_IMAGE/defaults.images.lumaControl to a pullable image tag. "
-            "If this manager cannot reach the registry directly, configure EGRESS_SUBSCRIPTION_URL "
-            "and rerun without --skip-egress."
-            f"{suffix}"
-        ) from exc
-    else:
-        return f"Control image pulled: {image}"
+            f"Docker uses the Luma egress proxy but its config is missing: {config_path}"
+        )
+    try:
+        config_text = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+        raise LumaError("installed egress config is unreadable") from exc
+    domain = registry.rsplit(":", 1)[0] if registry.count(":") == 1 else registry
+    updated, changed = ensure_mihomo_direct_domains(config_text, [domain])
+    if not changed:
+        return f"Internal registry already bypasses external egress: {registry}"
+    remote.write_secret(updated, config_path)
+    remote.run("nomad job restart -yes -on-error=fail egress", timeout=180)
+    _wait_nomad_job(remote, "egress", timeout=120)
+    return f"Internal registry now bypasses external egress: {registry}"
 
 
 def _resolve_control_image(remote: Executor, image: str) -> tuple[str, str]:
@@ -384,8 +737,31 @@ def _image_repository(image: str) -> str:
 
 
 def install_control_config(remote: Executor, config: LumaConfig, node: NodeConfig | None = None) -> str:
-    content = Path(config.path).read_text(encoding="utf-8") if config.path else dump_yaml(_bootstrap_config(config, node))
+    incoming = dict(config.raw) if config.path else _bootstrap_config(config, node)
+    destination = Path(ROOT) / "luma.yaml"
+    if isinstance(remote, LocalExecutor) and destination.exists():
+        # `luma update manager` may be launched with a smaller bootstrap config
+        # than the live control config. The update must be monotonic: preserve
+        # operator-owned sections (providers, node metadata, image overrides,
+        # etc.) that are absent from the incoming file while still allowing
+        # explicitly supplied values to override them.
+        incoming = _merge_control_config(load_yaml(destination), incoming)
+    if config.path and (not isinstance(remote, LocalExecutor) or Path(config.path).resolve() == destination.resolve()):
+        content = Path(config.path).read_text(encoding="utf-8")
+    else:
+        content = dump_yaml(incoming)
     return remote.write_secret(content, f"{ROOT}/luma.yaml", mode="644")
+
+
+def _merge_control_config(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(existing)
+    for key, value in incoming.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_control_config(current, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _bootstrap_config(config: LumaConfig, node: NodeConfig | None = None) -> dict[str, object]:
@@ -680,9 +1056,39 @@ def configure_public_port_guards(remote: Executor, *, restrict_nomad_public: boo
     return "Public port guards installed"
 
 
-def configure_tailscale_watchdog(remote: Executor) -> str:
+def configure_tailscale_watchdog(
+    remote: Executor, *, peers: list[str] | tuple[str, ...] | None = None
+) -> str:
     if _is_darwin(remote):
         return "Tailscale watchdog skipped on macOS"
+    requested_peers = peers
+    if requested_peers is None:
+        requested_peers = [
+            value.strip()
+            for value in os.environ.get(
+                "LUMA_TAILSCALE_WATCHDOG_PEERS", ""
+            ).split(",")
+            if value.strip()
+        ]
+    safe_peers = sorted(
+        {
+            value
+            for value in requested_peers
+            if re.fullmatch(r"100(?:\.[0-9]{1,3}){3}", value)
+            or re.fullmatch(r"fd7a:115c:a1e0:[0-9a-fA-F:]+", value)
+        }
+    )
+    peers_value = ",".join(safe_peers)
+    watchdog_environment = (
+        "install -d -m 755 /etc/default; "
+        "cat > /etc/default/luma-tailscale-watchdog <<'EOF'\n"
+        f"LUMA_TAILSCALE_WATCHDOG_PEERS={peers_value}\n"
+        "LUMA_TAILSCALE_WATCHDOG_PORT=0\n"
+        "EOF\n"
+        "chmod 600 /etc/default/luma-tailscale-watchdog; "
+        if safe_peers
+        else ""
+    )
     remote.sudo(
         "set -euo pipefail; "
         "if ! command -v systemctl >/dev/null 2>&1 || ! command -v tailscale >/dev/null 2>&1; then "
@@ -694,8 +1100,9 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "#!/bin/sh\n"
         "set -eu\n"
         "threshold=${LUMA_TAILSCALE_WATCHDOG_THRESHOLD:-3}\n"
-        "port=${LUMA_TAILSCALE_WATCHDOG_PORT:-4647}\n"
+        "port=${LUMA_TAILSCALE_WATCHDOG_PORT:-0}\n"
         "peers=${LUMA_TAILSCALE_WATCHDOG_PEERS:-}\n"
+        f"control_state={ROOT}/control/control.json\n"
         "state_dir=/run/luma\n"
         "state_file=$state_dir/tailscale-watchdog.failures\n"
         "mkdir -p \"$state_dir\"\n"
@@ -724,19 +1131,54 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "  echo 0 > \"$state_file\"\n"
         "  exit 0\n"
         "fi\n"
+        "if [ -z \"$peers\" ] && command -v python3 >/dev/null 2>&1 && [ -r \"$control_state\" ]; then\n"
+        "  peers=$(python3 - \"$control_state\" <<'PY'\n"
+        "import ipaddress, json, sys, time\n"
+        "try:\n"
+        "    with open(sys.argv[1], encoding='utf-8') as handle:\n"
+        "        state = json.load(handle)\n"
+        "except (OSError, ValueError):\n"
+        "    raise SystemExit(0)\n"
+        "now = int(time.time())\n"
+        "values = set()\n"
+        "for record in (state.get('nodes') or {}).values():\n"
+        "    if not isinstance(record, dict):\n"
+        "        continue\n"
+        "    agent = record.get('agent') if isinstance(record.get('agent'), dict) else {}\n"
+        "    if agent.get('status') not in {'online', 'ready'} or now - int(agent.get('lastSeen') or 0) > 300:\n"
+        "        continue\n"
+        "    raw = str(record.get('tailscaleIP') or '').strip()\n"
+        "    try:\n"
+        "        address = ipaddress.ip_address(raw)\n"
+        "    except ValueError:\n"
+        "        continue\n"
+        "    if address in ipaddress.ip_network('100.64.0.0/10') or raw.lower().startswith('fd7a:115c:a1e0:'):\n"
+        "        values.add(raw)\n"
+        "print(','.join(sorted(values)))\n"
+        "PY\n"
+        "  )\n"
+        "fi\n"
+        "local_ips=$(tailscale ip 2>/dev/null || true)\n"
         "peers=$(printf '%s' \"$peers\" | tr ',' ' ')\n"
         "checked=0\n"
         "bad=0\n"
         "for addr in $peers; do\n"
         "  [ -n \"$addr\" ] || continue\n"
-        "  addr=${addr%%:*}\n"
         "  is_tailnet_addr \"$addr\" || continue\n"
-        "  if tailscale ping --timeout=3s --c 2 \"$addr\" >/dev/null 2>&1; then\n"
-        "    checked=$((checked + 1))\n"
-        "    if ! tcp_probe \"$addr\"; then\n"
-        "      bad=$((bad + 1))\n"
-        "      log \"tailnet TCP probe failed: $addr:$port\"\n"
-        "    fi\n"
+        "  is_local=0\n"
+        "  for local_addr in $local_ips; do\n"
+        "    [ \"$addr\" != \"$local_addr\" ] || is_local=1\n"
+        "  done\n"
+        "  [ \"$is_local\" -eq 0 ] || continue\n"
+        "  checked=$((checked + 1))\n"
+        "  if ! tailscale ping --timeout=3s --c 2 \"$addr\" >/dev/null 2>&1; then\n"
+        "    bad=$((bad + 1))\n"
+        "    log \"tailnet ping failed: $addr\"\n"
+        "    continue\n"
+        "  fi\n"
+        "  if [ \"$port\" -gt 0 ] && ! tcp_probe \"$addr\"; then\n"
+        "    bad=$((bad + 1))\n"
+        "    log \"tailnet TCP probe failed: $addr:$port\"\n"
         "  fi\n"
         "done\n"
         "if [ \"$checked\" -eq 0 ]; then\n"
@@ -760,7 +1202,8 @@ def configure_tailscale_watchdog(remote: Executor) -> str:
         "fi\n"
         "EOF\n"
         f"chmod 755 {ROOT}/watchdog/tailscale-watchdog.sh; "
-        "cat > /etc/systemd/system/luma-tailscale-watchdog.service <<'EOF'\n"
+        + watchdog_environment
+        + "cat > /etc/systemd/system/luma-tailscale-watchdog.service <<'EOF'\n"
         "[Unit]\n"
         "Description=Luma Tailscale TCP watchdog\n"
         "After=network-online.target tailscaled.service nomad.service\n"
@@ -861,6 +1304,13 @@ def _bootstrap_node_nomad(
         _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
 
     if "edge" in roles or profile.name == "single-node":
+        _step(
+            results,
+            emit,
+            "Install Traefik ACME DNS secret",
+            lambda: _install_traefik_dns_secret(remote, config),
+        )
+
         def _deploy_traefik_nomad() -> str:
             from .nomad_render import render_traefik_job
             job = render_traefik_job(
@@ -868,6 +1318,9 @@ def _bootstrap_node_nomad(
                 nomad_addr="http://127.0.0.1:4646",
                 acme_email=_acme_email(config),
                 cert_resolver=config.cert_resolver,
+                acme_dns_provider=config.acme_dns_provider,
+                acme_dns_token_file=TRAEFIK_DNS_TOKEN_FILE if config.acme_dns_provider == "cloudflare" else "",
+                acme_domains=config.acme_domains,
                 tcp_entrypoints=sorted({int(p) for p in (tcp_ports or [])}),
             )
             _deploy_nomad_job(remote, job, "traefik")
@@ -1022,6 +1475,63 @@ def _state_tcp_relay_ports(state: dict[str, object]) -> list[int]:
     return sorted(ports)
 
 
+def sync_nomad_tailscale_service_metadata(
+    remote: Executor, *, strict: bool = True
+) -> str:
+    """Publish every ready Nomad client's mesh address as dynamic metadata.
+
+    Static metadata is written by new Luma node installs. This manager-side
+    reconciliation migrates already joined nodes immediately, without an SSH
+    restart of every Nomad client, and is safe to repeat on each manager update.
+    """
+    result = remote.run_result("nomad node status -json", timeout=30)
+    if result.code != 0:
+        raise LumaError(f"unable to list Nomad nodes for Tailscale metadata sync: {result.output.strip()}")
+    try:
+        rows = json.loads(result.output)
+    except json.JSONDecodeError as exc:
+        raise LumaError("Nomad node list returned invalid JSON during Tailscale metadata sync") from exc
+    if not isinstance(rows, list):
+        raise LumaError("Nomad node list returned an invalid shape during Tailscale metadata sync")
+
+    applied = 0
+    skipped = 0
+    deferred = 0
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or str(row.get("Status") or "").lower() != "ready":
+            continue
+        node_id = str(row.get("ID") or "").strip()
+        raw_address = str(row.get("Address") or "").strip()
+        if not node_id or node_id in seen:
+            continue
+        seen.add(node_id)
+        try:
+            address = str(ipaddress.ip_address(raw_address))
+        except ValueError:
+            skipped += 1
+            continue
+        command = (
+            "nomad node meta apply "
+            f"-node-id {shlex.quote(node_id)} "
+            f"{shlex.quote('luma_tailscale_ip=' + address)}"
+        )
+        updated = remote.run_result(command, timeout=30)
+        if updated.code != 0:
+            if strict:
+                raise LumaError(
+                    f"unable to publish Tailscale service address for Nomad node {node_id}: "
+                    f"{updated.output.strip()}"
+                )
+            deferred += 1
+            continue
+        applied += 1
+    suffix = f"; {skipped} ready node(s) skipped without a valid mesh address" if skipped else ""
+    if deferred:
+        suffix += f"; {deferred} unreachable node(s) deferred for the next reconciliation"
+    return f"Nomad Tailscale service metadata applied to {applied} ready node(s){suffix}"
+
+
 def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: str, state: dict[str, object], *, emit: Progress | None = None) -> list[str]:
     remote = LocalExecutor()
     results: list[str] = []
@@ -1031,6 +1541,19 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         raise LumaError("Nomad is the only supported deployment engine")
     tcp_ports = _state_tcp_relay_ports(state)
     manager_node_name = _remember_local_manager_node(state, node, None, remote)
+    _step(
+        results,
+        emit,
+        "Prefetch Luma control image",
+        lambda: _prefetch_control_image_for_manager_refresh(remote, config, state=state),
+    )
+    _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
+    _step(
+        results,
+        emit,
+        "Sync Nomad Tailscale service metadata",
+        lambda: sync_nomad_tailscale_service_metadata(remote, strict=False),
+    )
     http_port, https_port = _traefik_ports(config)
     _step(
         results,
@@ -1039,6 +1562,13 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
         lambda: configure_firewall(remote, http_port=http_port, https_port=https_port, tcp_ports=tcp_ports, engine="nomad"),
     )
     if "edge" in node.roles:
+        _step(
+            results,
+            emit,
+            "Install Traefik ACME DNS secret",
+            lambda: _install_traefik_dns_secret(remote, config, state=state),
+        )
+
         def _deploy_traefik_nomad() -> str:
             from .nomad_render import render_traefik_job
             job = render_traefik_job(
@@ -1046,20 +1576,29 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
                 nomad_addr=str(state.get("nomadAddr") or config.defaults.get("nomadAddr") or "http://127.0.0.1:4646"),
                 acme_email=_acme_email(config),
                 cert_resolver=config.cert_resolver,
+                acme_dns_provider=config.acme_dns_provider,
+                acme_dns_token_file=TRAEFIK_DNS_TOKEN_FILE if config.acme_dns_provider == "cloudflare" else "",
+                acme_domains=config.acme_domains,
                 tcp_entrypoints=tcp_ports,
             )
             _deploy_nomad_job(remote, job, "traefik")
             return _wait_nomad_job(remote, "traefik")
 
         _step(results, emit, "Refresh Traefik ingress", _deploy_traefik_nomad)
-    _step(results, emit, "Install Tailscale watchdog", lambda: configure_tailscale_watchdog(remote))
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
     _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
     _step(
         results,
         emit,
         "Refresh Luma control API",
-        lambda: deploy_control_stack(remote, config, domain, emit=emit, node_name=manager_node_name),
+        lambda: deploy_control_stack(
+            remote,
+            config,
+            domain,
+            emit=emit,
+            node_name=manager_node_name,
+            control_image_prepared=True,
+        ),
         fix="Check luma-control service logs and rerun luma update manager",
     )
     return results

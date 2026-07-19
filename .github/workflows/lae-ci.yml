@@ -1,0 +1,92 @@
+name: LAE Contracts and Scaffold
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "lae/**"
+      - ".github/workflows/lae-ci.yml"
+  pull_request:
+    paths:
+      - "lae/**"
+      - ".github/workflows/lae-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lae-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres@sha256:5c855ad7b85e68e48a62f34662853f38b57c1c1d80f3a927ab58034fd6d31c5e
+        env:
+          POSTGRES_DB: lae_ci
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d lae_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: lae
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: lae/uv.lock
+
+      - name: Install locked Python workspace
+        run: uv sync --all-packages --all-extras --locked
+
+      - name: Validate canonical contracts and component entry points
+        run: make check
+
+      - name: Verify auth, durable queue, and worker state against PostgreSQL 17
+        env:
+          LAE_TEST_POSTGRES_ALLOW_DDL: "1"
+          LAE_TEST_POSTGRES_DSN: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/lae_ci
+        run: >-
+          uv run --package lae-store --extra migrations python -m unittest discover
+          -s tests -p 'test_*_postgres_integration.py'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "10.30.0"
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: lae/pnpm-lock.yaml
+
+      - name: Verify TypeScript workspace metadata
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm check
+
+      - name: Check whitespace
+        working-directory: .
+        run: git diff --check

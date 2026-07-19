@@ -5,7 +5,7 @@
 | Field | Required | Type | Notes |
 | --- | --- | --- | --- |
 | `name` | yes | string | Service name. Luma slugifies it for stack, service, route, and deployment records. |
-| `image` | required unless `build` is set | string | Prebuilt container image. `latest` or omitted tags may be resolved to `name@sha256:...` when Luma can validate the pull on the manager or a fixed target node. For Repository Import, omit `image` and use `build:` so Luma can inject the built internal-registry image. |
+| `image` | required unless `build` is set | string | Prebuilt container image. With Builder Registry configured, Luma copies external/private images into the internal cache and deploys the verified internal digest. For Repository Import, omit `image` and use `build:` so Luma can inject the built internal-registry image. |
 | `build` | no | map | Source-to-image build for `luma import` / Dashboard Repository Import. Subfields: `build.context` (default `.`), `build.dockerfile` (default `Dockerfile`), `build.platform` (default `linux/amd64`), and optional `build.repo` to override the internal image repository path. When present, `image` may be omitted. Not used by plain `luma deploy`. |
 | `region` | yes | `cn` / `global` / `home` | Runtime placement region. |
 | `engine` | no | `nomad` | Orchestrator override. Omit to inherit the cluster default. |
@@ -111,9 +111,16 @@ luma registry list
 luma registry remove ghcr.io
 ```
 
-During deploy, Luma matches credentials by image registry host and injects them into the Nomad job's docker `auth` block, so the placed client pulls the private image with the stored credentials.
+During deploy, Luma leases the matching source credential only to Builder.
+Builder copies the source image into `registryHost/luma-cache/...`, verifies its
+digest, and Control writes that internal digest into the Nomad job. Source
+credentials are not persisted in agent tasks and are not injected into the
+runtime allocation. If Builder Registry itself is authenticated, its separate
+credential is matched against the internal destination.
 
-Private registry image pulls are separate from runtime `proxy: true`. If `curl https://<registry>/v2/` reaches the registry but `docker pull` fails with EOF/timeout, inspect Docker daemon `HTTPProxy`/`HTTPSProxy` and add the private registry host to daemon `NO_PROXY`.
+Private source access is separate from runtime `proxy: true`. Diagnose external
+registry connectivity on Builder; do not modify a target runtime node's Docker
+daemon proxy in response to a deployment pull failure.
 
 ## Builder Registry And Repository Import
 
@@ -126,9 +133,10 @@ The ergonomic production shape is:
 ```text
 build node: builder
 builder capability: docker-build
+builder capability: runtime-image-cache-v1
 registry service: luma-registry pinned on builder
 registryHost: <builder-tailscale-ip>:5000
-pushHost: localhost:5000
+pushHost: 100.66.177.70:5000
 target Linux nodes: insecure-registry + Docker daemon NO_PROXY configured
 ```
 
@@ -160,7 +168,15 @@ luma registry serve --node builder --storage-class builder-registry-nfs --port 5
 
 If `builder-registry-nfs` is missing or unhealthy, use a known existing class such as `cn-nfs`, or repair/register storage before continuing.
 
-`luma registry serve` deploys `registry:2` as `luma-registry`, pins it to `builder`, uses `localhost:5000` for builder-side push, and exposes `<builder-tailscale-ip>:5000` for other nodes to pull. It should configure `insecure-registries` on ready Linux worker nodes. It intentionally skips manager nodes because restarting the manager Docker daemon can kill Luma Control mid-request.
+`luma registry serve` deploys `registry:2` as `luma-registry`, pins it to `builder`, and uses `<builder-tailscale-ip>:5000` for both BuildKit pushes and target-node pulls. `localhost:5000` is not valid inside the BuildKit container and is not a supported push endpoint. Luma should configure the reachable endpoint as an insecure registry on ready Linux nodes without mutating unrelated daemon proxy policy.
+
+Once both `registryHost` and `pushHost` are configured, ordinary single-service
+and Compose deployments also use Builder Registry. Builder copies each distinct
+external image once per source reference/platform into a stable
+`luma-cache/<source-host>/<repository>:<cache-key>` tag. Nomad receives
+`luma-cache/...@sha256:...`, so mutable source tags cannot silently change an
+already-rendered job version. Repeated services using the same image in one
+Compose deployment share the same cache result.
 
 4. Verify health:
 
@@ -197,7 +213,7 @@ Repository import should:
 1. Resolve source from a saved Git provider account (GitHub or Gitea) or a manually entered repo URL.
 2. Support multiple accounts per provider. Select provider type first, then account credential, then repository/ref.
 3. Clone/build on the default builder node.
-4. Push to the builder registry using `pushHost: localhost:5000`.
+4. Push to the builder registry using the reachable `pushHost: <builder-tailscale-ip>:5000`.
 5. Use the repository's Luma manifest if present. For single-service import, scan root `.luma.yml`, `.luma.yaml`, `luma.yml`, `luma.yaml`, then nested `*.luma.yml` / `*.luma.yaml`, excluding Compose sidecar names such as `*.compose.luma.yml`, `*.luma.compose.yml`, and `docker-compose.luma.yml`. For Compose import, scan `luma.compose.yml`, `luma.compose.yaml`, `.luma.compose.yml`, `.luma.compose.yaml`, `*.luma.compose.yml`, `*.compose.luma.yml`, and `docker-compose.luma.yml`; the sidecar's `compose:` path points to the Docker Compose file.
 6. If no manifest exists, allow manual single-service manifest input. Do not invent AI-filled manifests unless the user explicitly asks for that future workflow.
 7. Inject the built deploy image after the build succeeds.
@@ -268,7 +284,7 @@ registryHost/<owner>/<repo>:latest
 registryHost/<owner>/<repo>:<git-sha>
 ```
 
-`registryHost` is the pull host target nodes use, such as `<builder-tailscale-ip>:5000`. `pushHost` is usually `localhost:5000` and is only for the builder node. Users should not hardcode `pushHost` in deployment YAML.
+`registryHost` is the pull host target nodes use, such as `<builder-tailscale-ip>:5000`. `pushHost` is the endpoint used by BuildKit and should normally be the same reachable Builder Tailscale endpoint. Users should not hardcode either platform-owned address in deployment YAML.
 
 The builder pushes both tags. Treat `:latest` as the predictable rolling alias that humans can know before the build. Treat `:<git-sha>` as the immutable build result that Luma should inject into the actual deploy payload.
 
@@ -512,7 +528,7 @@ luma compose deploy luma.compose.yml --dry-run
 CI:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.262"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json
@@ -524,8 +540,8 @@ luma storage check luma.compose.yml --format json
 Live deploys can stream events:
 
 ```bash
-luma deploy service.yaml --format ndjson --timeout 1800
-luma compose deploy luma.compose.yml --format ndjson --timeout 1800
+luma deploy service.yaml --format ndjson --timeout 3000
+luma compose deploy luma.compose.yml --format ndjson --timeout 3000
 ```
 
 When deploying manifests that reference secrets and the project has a `.env`, include `--env .env` so Luma imports scoped deployment secrets.

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "lae.deployment-plan/v1",
+  "planId": "plan_invalid",
+  "sourceRevisionId": "src_invalid",
+  "sourceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "kind": "service",
+  "services": [
+    {
+      "key": "mysql",
+      "role": "datastore",
+      "image": {"source": "external", "ref": "mysql:8"},
+      "dependencies": [],
+      "environmentNames": [],
+      "resources": {"cpu": "0.50", "memoryMiB": 512},
+      "node": "manager"
+    }
+  ],
+  "routes": [
+    {
+      "serviceKey": "mysql",
+      "kind": "tcp",
+      "primary": true,
+      "hostnameRef": "domain_invalid",
+      "containerPort": 3306,
+      "healthPath": "/"
+    }
+  ],
+  "volumes": [],
+  "environment": [],
+  "warnings": [],
+  "blockers": [],
+  "policy": {"version": "2026-07-11", "decision": "allow"}
+}

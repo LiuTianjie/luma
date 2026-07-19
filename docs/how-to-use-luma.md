@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.160 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.262 sh
 ```
 
 For local development from a checkout:
@@ -271,7 +271,7 @@ Luma imports only variables referenced by the manifest, stores them under the se
 
 This submits the manifest to the logged-in Luma Control endpoint. The manager renders generated files under `/opt/luma`, syncs DNS, creates or updates the Nomad job through the Nomad HTTP API, and probes the public route for `cn-edge` and `external-edge` services.
 
-`luma deploy` prints client-side progress and each control-plane step. Luma validates generated Traefik file-provider routes, stages them outside the watched routes directory, then atomically publishes the final route file. A public route probe reports the HTTP status from `/`; an application-level `404` means the route reached the application but the app may not serve a root page, while Traefik's default `404 page not found` is treated as a missing router and a failed public route. When the probe reports the route unhealthy (Traefik router not found, or a transient `502`/`503`/`504`), Control recreates the service's allocation once and re-probes before failing the deploy. The client waits up to 1800 seconds by default because first deploys may pull large images on the target node. Override it when needed:
+`luma deploy` prints client-side progress and each control-plane step. Luma validates generated Traefik file-provider routes, stages them outside the watched routes directory, then atomically publishes the final route file. A public route probe reports the HTTP status from `/`; an application-level `404` means the route reached the application but the app may not serve a root page, while Traefik's default `404 page not found` is treated as a missing router and a failed public route. When the probe reports the route unhealthy (Traefik router not found, or a transient `502`/`503`/`504`), Control recreates the service's allocation once and re-probes before failing the deploy. Luma gives single-service and Compose allocations 30 minutes for cold image acquisition and 40 minutes for rollout progress. The client waits up to 3000 seconds by default so it does not disconnect before that bounded rollout finishes. Override it when needed:
 
 ```bash
 luma deploy app.yaml --timeout 3600
@@ -394,6 +394,8 @@ luma registry serve --node build-1
 
 它会把 `registry:2` 部署到 `build-1`（默认 `5000` 端口、带持久化卷、仅 Tailscale 内网可达），并遍历非 manager 的就绪 Linux 节点配置 `insecure-registries`，让它们能经 Tailscale 内网从这个 registry 拉镜像。构建节点本机推送走 `localhost:5000`，跨节点拉取走 `<build-1-tailscale-host>:5000`。
 
+从 `0.1.162` 起，CLI 会先完成 Docker daemon 配置、再创建 registry allocation；重复写入相同的 `insecure-registries` 也不会重启 Docker。这个顺序避免首次启用 registry 时由 Docker 重启打断刚创建的 Nomad CNI 网络。
+
 可选 flag：
 
 - `--port <n>`：registry 监听端口，默认 `5000`。
@@ -479,18 +481,19 @@ luma import https://github.com/acme/myapp \
   --region cn --exposure cn-edge --domain myapp.example.com --port 8080
 ```
 
-构建节点来自控制面声明的 builder 节点；通常不用传 `--build-node`，只有需要临时覆盖到另一个已声明 builder 时才传。单服务 import 还可用 `--context`（build 上下文目录，默认 `.`）、`--dockerfile`（默认 `Dockerfile`）、`--registry-host`（其它节点拉取用的 registry 主机，默认 `<build-node>:5000`）覆盖仓库里的 `build:` 字段。对 Compose import，`--region` 会覆盖 sidecar 的 region；`--exposure`、`--domain`、`--port` 是单服务覆盖项，会被忽略并打印 warning。Compose 的服务级路由请写在 `luma.compose.yml` 的 `services:` 里。`luma import` 默认等待 `2400` 秒的 build+deploy 响应，用 `--timeout <seconds>` 覆盖。
+构建节点来自控制面声明的 builder 节点；通常不用传 `--build-node`，只有需要临时覆盖到另一个已声明 builder 时才传。单服务 import 还可用 `--context`（build 上下文目录，默认 `.`）、`--dockerfile`（默认 `Dockerfile`）、`--registry-host`（其它节点拉取用的 registry 主机，默认 `<build-node>:5000`）覆盖仓库里的 `build:` 字段。对 Compose import，`--region` 会覆盖 sidecar 的 region；`--exposure`、`--domain`、`--port` 是单服务覆盖项，会被忽略并打印 warning。Compose 的服务级路由请写在 `luma.compose.yml` 的 `services:` 里。`luma import` 默认等待 `3600` 秒的 build+deploy 响应，用 `--timeout <seconds>` 覆盖。
 
 预声明 builder 节点和内部 registry 默认值，之后 import/build 就能省掉 `--build-node`：
 
 ```bash
 luma build config --node build-1 --default-node build-1 \
-  --registry-host <build-1-tailscale-host>:5000 --push-host localhost:5000
+  --registry-host <build-1-tailscale-host>:5000 \
+  --push-host <build-1-tailscale-host>:5000
 ```
 
-`--node` 可重复声明多个 builder；`--default-node` 是 `luma import` 缺省用的 builder；`--registry-host` 是**其它节点**拉镜像的地址，`--push-host` 是**构建节点自身**推镜像的地址（通常 `localhost:5000`）。不带参数运行 `luma build config` 只打印当前配置和各 builder 的就绪/能力表。
+`--node` 可重复声明多个 builder；`--default-node` 是 `luma import` 缺省用的 builder；`--registry-host` 是 target node 拉镜像的地址，`--push-host` 是 BuildKit 推镜像的地址。两者都必须是 BuildKit 容器和所有目标节点可达的 Builder Tailscale endpoint；不要使用已移除且在 BuildKit namespace 内含义错误的 `localhost:5000`。不带参数运行 `luma build config` 只打印当前配置和各 builder 的就绪/能力表。
 
-构建历史和失败日志用 CLI 查看：`luma build list`（打印 ID/状态/节点/provider/仓库/ref）、`luma build logs <id>`（某次构建的分步日志）。修好凭据或配置后 `luma build retry <id>` 重跑整条 build+deploy；`retry` 也接受 `--env .env` 重新提供 scoped secrets、`--timeout`（默认 2400）。
+构建历史和失败日志用 CLI 查看：`luma build list`（打印 ID/状态/节点/provider/仓库/ref）、`luma build logs <id>`（某次构建的分步日志）。修好凭据或配置后 `luma build retry <id>` 重跑整条 build+deploy；`retry` 也接受 `--env .env` 重新提供 scoped secrets、`--timeout`（默认 3600）。
 
 dashboard 的「创建应用」页顶部也有「仓库导入」入口：选择 Git provider、账户、仓库和 ref；或手填 URL。进度实时显示。
 
@@ -537,3 +540,17 @@ dashboard 的 Applications → Versions 也能做同样的回滚。注意这是 
 ### 取消接入
 
 不想再用时，删掉 registry 服务即可（`luma service remove luma-registry`），已经在跑的服务不受影响。`insecure-registries` 配置留在各节点的 docker daemon 里是无害的。
+
+## 12. 通过 Dashboard 升级 Luma
+
+日常升级不需要 SSH manager，也不需要在每台节点运行命令。使用管理 Token 登录 `https://<control-domain>/dashboard/fleet`，在「升级中心」完成整条流程：
+
+1. 填写不可变 release tag（例如 `v0.1.175`）。标准 tag 会自动建议同 tag 的 Control 镜像；自定义分支或 commit 需要明确填写已发布镜像。
+2. 点击「检查全部公网路由」保存升级前基线。HTTP 成功、重定向和鉴权拒绝都能证明路由已发布；404、网关错误和连接失败会明确标红，但不会悄悄阻断管理员操作。
+3. 第一次点击「升级 Control」会展示影响和基线结果，第二次确认后，Builder 先通过受管出网代理把外部 Control 镜像缓存到内部 registry 并校验 digest。该任务可恢复、有明确进度，避免 manager 的 Docker daemon 在替换窗口直接依赖 GHCR。
+4. 内网镜像就绪后才启动 Control 更新。更新运行在独立 systemd 单元中，不会因 node agent 自身重启而被中断。
+5. Control 替换期间页面自动重连。完成后自动重新检查全部公网路由，并展示有界日志；无需手动重启应用。
+6. 点击「更新未对齐节点」。操作会只选择版本落后的非 manager 节点，并持久化逐节点状态。安装完成后，节点必须以目标版本重新心跳，才会显示成功。
+7. 失败或中断的镜像准备、Control 或节点任务都会保留原因，可在同一页面重试。关闭页面、刷新浏览器或 Control 重启都不会丢失操作结果。
+
+首次接入一个早于托管更新能力的历史 agent 时，Dashboard 会明确显示缺失的 capability；只需对该历史节点做一次 CLI 更新。之后的发布均可在升级中心完成。

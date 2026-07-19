@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "lae.operation-event/v1",
+  "eventId": "evt_invalid",
+  "operationId": "op_invalid",
+  "seq": 0,
+  "type": "builder.analyze.progress",
+  "phase": "source.analyze",
+  "status": "running",
+  "level": "info",
+  "message": "Sequence zero is invalid.",
+  "occurredAt": "2026-07-11T12:00:00Z",
+  "data": {}
+}

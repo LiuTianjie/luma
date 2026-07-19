@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.262"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.160 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.262 sh
 ```
 
 Develop from source:
@@ -151,6 +151,89 @@ EGRESS_SUBSCRIPTION_URL=...
 | `TAILSCALE_AUTHKEY` | Needed for private/home/tailscale-relay nodes | Lets servers join your tailnet. Not required for an ordinary single public manager or ordinary public services. |
 | `LUMA_SUDO_PASSWORD` | Only when sudo needs a password | Local fallback password for sudo commands. It stays in the local user config and is not distributed to clients. |
 
+### Manager-side LAE Control files
+
+When Luma Control serves LAE, keep Builder and Runtime identities in separate
+private files on the manager. The Nomad job mounts `/opt/luma/control`; every
+principal, broker, and admin file passed to the job must therefore live below
+that directory. Files must be regular, non-symlink files readable only by the
+owner (`0600` is recommended). Token contents are read by Luma Control at
+runtime and are never rendered into the Nomad Job or `control.json`.
+
+Create one token file per identity, then create the two principal files. A
+`tokenFile` is a file in the same directory as its principal file:
+
+```json
+{
+  "lae-builder": {
+    "tokenFile": "lae-builder.token",
+    "tenantRefs": ["*"],
+    "applicationRefs": ["*"]
+  }
+}
+```
+
+Save that as `/opt/luma/control/lae-builder-principals.json`. Save the Runtime
+configuration separately as `/opt/luma/control/lae-runtime-principals.json`:
+
+```json
+{
+  "lae-runtime": {
+    "tokenFile": "lae-runtime.token",
+    "tenantRefs": ["*"],
+    "applicationRefs": ["*"],
+    "builderPrincipalRefs": ["lae-builder"],
+    "scopes": [
+      "runtime:volumes:prepare",
+      "runtime:deployments:write",
+      "runtime:deployments:read",
+      "runtime:logs",
+      "runtime:metrics",
+      "runtime:secrets:issue"
+    ]
+  }
+}
+```
+
+Install all four files privately and configure the manager's `.env` before
+`luma bootstrap manager` or `luma update manager`:
+
+```bash
+sudo install -d -m 700 /opt/luma/control
+sudo chmod 600 \
+  /opt/luma/control/lae-builder.token \
+  /opt/luma/control/lae-runtime.token \
+  /opt/luma/control/lae-builder-principals.json \
+  /opt/luma/control/lae-runtime-principals.json
+
+LUMA_LAE_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-builder-principals.json
+LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-runtime-principals.json
+```
+
+Optional credential/object brokers and the LAE super-admin proxy use the same
+file-only pattern:
+
+```bash
+LUMA_CREDENTIAL_BROKER_URL=https://lae-api.internal/v1/internal/credential-leases/redeem
+LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS=5
+LUMA_CREDENTIAL_BROKER_TOKEN_FILE=/opt/luma/control/lae-broker.token
+
+LUMA_OBJECT_SOURCE_BROKER_URL=https://lae-api.internal/v1/internal/object-source-leases/redeem
+LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS=5
+# Optional when it intentionally reuses LUMA_CREDENTIAL_BROKER_TOKEN_FILE:
+LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE=/opt/luma/control/lae-object-broker.token
+
+LUMA_LAE_ADMIN_API_URL=https://lae-api.internal
+LUMA_LAE_ADMIN_TIMEOUT_SECONDS=8
+LUMA_LAE_ADMIN_TOKEN_FILE=/opt/luma/control/lae-admin.token
+```
+
+Only the documented HTTPS URLs, bounded timeouts, and file paths are copied
+into the `luma-control` Job. Inline legacy variables such as
+`LUMA_LAE_SERVICE_TOKEN` and `LUMA_LAE_*_PRINCIPALS_JSON` remain available for
+direct/local compatibility but are deliberately not forwarded by manager
+bootstrap; production Nomad managers should use the file configuration above.
+
 You can skip editing `.env` and run `luma bootstrap manager --domain ...` directly. When local values are missing, the CLI explains each value and prompts interactively.
 
 `EGRESS_SUBSCRIPTION_URL` is optional only when the manager can pull the configured control image directly. Mainland hosts using the default GHCR control image should set it before bootstrap and should not use `--skip-egress`.
@@ -179,6 +262,7 @@ The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For p
 | manager | First control-plane install | `luma bootstrap manager --domain luma.example.com` |
 | manager | Update CLI and control plane | `luma update` |
 | logged-in client | Update ready non-manager node agents | `luma update fleet` |
+| browser on trusted device | Update Control and nodes, then verify every public route | `https://luma.example.com/dashboard/fleet` |
 | worker/home node | Join the cluster | `luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1` |
 | client laptop | Login to control plane | `luma login https://luma.example.com --token <management-token>` |
 | client laptop | Deploy a service | `luma deploy app.yaml` |
@@ -252,14 +336,14 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.262"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
 luma validate status.yaml --format json
 luma deploy status.yaml --dry-run --format json
-luma deploy status.yaml --format ndjson --timeout 1800
+luma deploy status.yaml --format ndjson --timeout 3000
 ```
 
 CI clients do not need SSH, Docker, Cloudflare, Nomad, or persistent files under `~/.config/luma`.
@@ -294,7 +378,7 @@ For private images, keep registry credentials out of the manifest. Save them onc
 printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --password-stdin
 ```
 
-After that, manifests still only contain the image name, for example `image: ghcr.io/acme/private-api:1.0.0`. During deploy, Luma matches the registry host and injects the registry auth into the Nomad jobspec's docker `config.auth` block, so the node that receives the allocation can pull. Fixed-node deployments may ask that target node to resolve the image first; unpinned services keep the requested image and are pulled by the node where Nomad places the allocation, not by the manager as a deploy prerequisite. For Docker Hub-style images, Luma tries the requested image first, configures the target node's Docker egress proxy and retries when registry network failures indicate proxying is needed, and only then falls back to configured `defaults.imageMirrors`. Set `defaults.imageMirrors: []` to disable mirror fallback. This is useful for private GHCR images produced by GitHub Actions, including images built from repositories that also publish docs or marketing pages through GitHub Pages.
+After that, manifests still only contain the source image name, for example `image: ghcr.io/acme/private-api:1.0.0`. When Builder Registry is configured, Luma leases matching source credentials only to Builder, copies the image into `registryHost/luma-cache/...`, verifies the digest, and renders that internal digest into the Nomad job. Runtime nodes therefore pull only from Builder Registry; deployment does not dynamically rewrite their Docker daemon proxy. Docker Hub sources may fall back to configured `defaults.imageMirrors` during the Builder copy. Set `defaults.imageMirrors: []` to disable source mirror fallback.
 Private registry image pulls are separate from runtime `proxy: true`. If a scheduled node has a global Docker proxy and a private registry fails before auth, check `docker info` proxy settings on that node and make sure that registry host is in Docker daemon `NO_PROXY`; `curl https://<registry>/v2/` returning `401` usually means the registry is reachable and Docker proxy routing is the next thing to inspect.
 
 Do not put sensitive values directly in manifests. If the project already has a `.env` file, pass it during deploy:
@@ -322,8 +406,8 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 
 | Question | What to do |
 | --- | --- |
-| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI, hot-refreshes Luma Control, and refreshes the manager node agent when possible, without restarting Traefik, the Nomad agent, Docker, or app jobs. |
-| Update worker/home nodes | Run `luma update fleet` from a logged-in client after the manager has the current Control API. Fleet update skips the Nomad server (manager) node by default; update the manager separately with `luma update manager` on the manager. Nodes whose agent is too old to support fleet update are reported as skipped; run `luma update` once on those nodes. |
+| Update the whole Luma cluster | Prefer Dashboard → Nodes → Update center. Enter an immutable release tag and capture a public-route baseline. On confirmation, the Builder caches and verifies the Control image in the internal registry before the manager rollout starts; the page reconnects and probes routes again. Then update only stale non-manager nodes. Image, manager, and per-node results remain visible across page closes and Control restarts. |
+| CLI update fallback | Use `luma update manager` and `luma update fleet` only when the Dashboard is unavailable or when adopting a historical agent that predates `luma-update`. Routine upgrades require no node SSH. |
 | View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, the orchestrator (Nomad) with its leader, and registered nodes with `role=client`. |
 | View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the management token on a trusted device. |
 | What happens if I run `luma update` on a joined node or client? | On a joined node it updates the CLI and refreshes the local node agent; on a client it updates only the CLI and skips manager control-plane refresh. |

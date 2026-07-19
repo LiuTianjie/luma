@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "lae.build-plan-candidate/v1",
+  "sourceSnapshotDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "resolvedCommit": "0123456789abcdef0123456789abcdef01234567",
+  "policyVersion": "2026-07-11",
+  "builds": [],
+  "externalImages": [
+    {
+      "key": "postgres",
+      "ref": "postgres:latest",
+      "resolvedDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "platform": "linux/amd64"
+    }
+  ]
+}

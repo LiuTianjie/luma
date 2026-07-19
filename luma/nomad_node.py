@@ -131,6 +131,11 @@ def render_agent_config(
     lines.append("  meta {")
     lines.append(f'    region         = "{region}"')
     lines.append(f'    luma_node_name = "{node_name}"')
+    # Edge ingress runs on the manager while tenant allocations may run on any
+    # Tailscale-connected client. Nomad's default host service address can be a
+    # provider-private LAN address, so publish the mesh address as schedulable
+    # node metadata for runtime service interpolation.
+    lines.append(f'    luma_tailscale_ip = "{tailscale_ip}"')
     for k, v in (extra_meta or {}).items():
         lines.append(f'    {k} = "{v}"')
     lines.append("  }")

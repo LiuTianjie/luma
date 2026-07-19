@@ -187,6 +187,156 @@ services:
         names = {t["Name"] for t in groups[0]["Tasks"]}
         self.assertEqual(names, {"mysql", "app"})
 
+    def test_public_healthcheck_gates_rollout_and_stop_grace_is_preserved(self):
+        compose = """
+services:
+  api:
+    image: example.test/api:1
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready')"]
+      interval: 10s
+      timeout: 3s
+    stop_grace_period: 60s
+"""
+        sidecar = """
+name: checked-api
+compose: docker-compose.yml
+region: cn
+services:
+  api:
+    exposure: cn-edge
+    domain: api.example.test
+    port: 8080
+"""
+        job = render_compose_job(
+            cfg(), write_deployment(sidecar, compose), as_json=False
+        )["Job"]
+
+        task = job["TaskGroups"][0]["Tasks"][0]
+        self.assertEqual(task["KillTimeout"], 60_000_000_000)
+        service = job["TaskGroups"][0]["Services"][0]
+        self.assertEqual(
+            service["Checks"],
+            [
+                {
+                    "Name": "checked-api-api-health",
+                    "PortLabel": "api",
+                    "Interval": 10_000_000_000,
+                    "Timeout": 3_000_000_000,
+                    "Type": "http",
+                    "Path": "/health/ready",
+                }
+            ],
+        )
+        self.assertEqual(job["Update"]["HealthCheck"], "checks")
+
+    def test_compose_without_public_healthcheck_uses_task_state_gate(self):
+        job = self.render()
+        self.assertEqual(job["Update"]["HealthCheck"], "task_states")
+
+    def test_storage_class_mount_renders_nfs_driver_options_and_is_namespaced(self):
+        compose = """
+services:
+  db:
+    image: postgres:17
+    volumes:
+      - data:/var/lib/postgresql/data
+volumes:
+  data:
+"""
+        sidecar = """
+name: tenant-db
+compose: docker-compose.yml
+region: cn
+storageClasses:
+  shared:
+    provider: nfs
+    mode: external
+    endpoint: storage.example.test:/exports/apps
+    regions: [cn]
+volumes:
+  data:
+    storageClass: shared
+    path: tenants/acme/postgres
+    accessMode: ReadWriteOnce
+    initialize: empty
+services:
+  db:
+    exposure: none
+"""
+        deployment = write_deployment(sidecar, compose)
+
+        job = render_compose_job(
+            cfg(),
+            deployment,
+            as_json=False,
+            node_records={},
+        )["Job"]
+
+        task = job["TaskGroups"][0]["Tasks"][0]
+        mount = task["Config"]["mount"][0]
+        self.assertRegex(mount["source"], r"^luma-tenant-db-data-[0-9a-f]{16}$")
+        self.assertNotEqual(mount["source"], "data")
+        self.assertEqual(mount["type"], "volume")
+        options = mount["volume_options"]["driver_config"]["options"]
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0]["type"], "nfs")
+        self.assertEqual(options[0]["device"], ":/exports/apps/tenants/acme/postgres")
+        self.assertIn("addr=storage.example.test", options[0]["o"])
+
+    def test_managed_storage_prefers_overlay_ip_even_inside_same_region(self):
+        compose = """
+services:
+  backup:
+    image: example.test/backup:1
+    volumes:
+      - data:/backups
+volumes:
+  data:
+"""
+        sidecar = """
+name: backup-stack
+compose: docker-compose.yml
+region: cn
+storageClasses:
+  remote-backups:
+    provider: nfs
+    mode: managed
+    node: tecent
+    path: /srv/luma-backups
+    regions: [cn]
+    nodes: [manager]
+volumes:
+  data:
+    storageClass: remote-backups
+    path: tenant/backups
+    accessMode: ReadWriteOnce
+    initialize: empty
+services:
+  backup:
+    node: manager
+    exposure: none
+"""
+        deployment = write_deployment(sidecar, compose)
+        job = render_compose_job(
+            cfg({"nodes": {"manager": {"host": "manager"}}}),
+            deployment,
+            as_json=False,
+            node_records={
+                "tecent": {
+                    "hostname": "VM-0-10-ubuntu",
+                    "region": "cn",
+                    "tailscaleIP": "100.64.29.91",
+                }
+            },
+        )["Job"]
+
+        mount = job["TaskGroups"][0]["Tasks"][0]["Config"]["mount"][0]
+        options = mount["volume_options"]["driver_config"]["options"][0]
+        self.assertIn("addr=100.64.29.91", options["o"])
+        self.assertNotIn("addr=tecent", options["o"])
+        self.assertNotIn("addr=VM-0-10-ubuntu", options["o"])
+
     def test_all_internal_multi_service_gets_shared_netns_bridge(self):
         # All services exposure:none (the `compose init` default). The group
         # MUST still get a bridge Networks block so the tasks share one netns —
@@ -312,13 +462,131 @@ services:
         self.assertTrue(update["AutoPromote"])
         self.assertTrue(update["AutoRevert"])
         self.assertEqual(update["MaxParallel"], 1)
+        self.assertEqual(update["HealthyDeadline"], 1_800_000_000_000)
+        self.assertEqual(update["ProgressDeadline"], 2_400_000_000_000)
         network = job["TaskGroups"][0]["Networks"][0]
         self.assertEqual(network["DynamicPorts"][0]["Label"], "web")
         self.assertEqual(network["DynamicPorts"][0]["To"], 3000)
         self.assertNotIn("ReservedPorts", network)
         svc = job["TaskGroups"][0]["Services"][0]
+        self.assertEqual(svc["Name"], "web-stack-web")
         self.assertEqual(svc["Address"], "100.64.29.91")
         self.assertNotIn("AddressMode", svc)
+        self.assertIn(
+            "traefik.http.routers.web-stack-web.rule=Host(`web.example.com`)",
+            svc["Tags"],
+        )
+        self.assertIn(
+            "traefik.http.routers.web-stack-web.service=web-stack-web",
+            svc["Tags"],
+        )
+
+    def test_local_volume_pins_group_and_disables_canary(self):
+        compose = """
+services:
+  web:
+    image: registry.example.com/web:latest
+    volumes:
+      - app-data:/var/lib/app
+volumes:
+  app-data:
+"""
+        sidecar = """
+name: web-stack
+compose: docker-compose.yml
+region: cn
+volumes:
+  app-data:
+    local:
+      node: manager
+      path: /srv/luma/web-stack/app-data
+services:
+  web:
+    exposure: cn-edge
+    domain: web.example.com
+    port: 3000
+"""
+        dep = write_deployment(sidecar, compose)
+        job = render_compose_job(cfg(), dep, as_json=False)["Job"]
+
+        constraints = {
+            (item.get("LTarget"), item.get("RTarget"))
+            for item in job["Constraints"]
+        }
+        self.assertIn(("${meta.luma_node_name}", "manager"), constraints)
+        mount = job["TaskGroups"][0]["Tasks"][0]["Config"]["mount"][0]
+        self.assertEqual(mount["type"], "bind")
+        self.assertEqual(mount["source"], "/srv/luma/web-stack/app-data")
+        self.assertNotIn("Canary", job["Update"])
+        self.assertNotIn("AutoPromote", job["Update"])
+
+    def test_local_volume_rejects_relative_host_path(self):
+        compose = """
+services:
+  app:
+    image: nginx:alpine
+    volumes:
+      - app-data:/data
+volumes:
+  app-data:
+"""
+        sidecar = """
+name: app-stack
+compose: docker-compose.yml
+region: cn
+volumes:
+  app-data:
+    local:
+      node: manager
+      path: srv/luma/app-data
+"""
+        with self.assertRaisesRegex(LumaError, "absolute path"):
+            write_deployment(sidecar, compose)
+
+    def test_compose_edge_service_and_router_names_are_isolated_per_stack(self):
+        compose = """
+services:
+  web:
+    image: registry.example.com/web:latest
+"""
+
+        def render(stack_name: str, domain: str):
+            dep = write_deployment(
+                f"""
+name: {stack_name}
+compose: docker-compose.yml
+region: cn
+services:
+  web:
+    exposure: cn-edge
+    domain: {domain}
+    port: 3000
+""",
+                compose,
+            )
+            return render_compose_job(cfg(), dep, as_json=False)["Job"]["TaskGroups"][0]
+
+        tenant_a = render("tenant-a", "a.example.com")
+        tenant_b = render("tenant-b", "b.example.com")
+        service_a = tenant_a["Services"][0]
+        service_b = tenant_b["Services"][0]
+
+        self.assertEqual(service_a["Name"], "tenant-a-web")
+        self.assertEqual(service_b["Name"], "tenant-b-web")
+        self.assertNotEqual(service_a["Name"], service_b["Name"])
+        self.assertEqual(service_a["Address"], "${meta.luma_tailscale_ip}")
+        self.assertNotIn("AddressMode", service_a)
+        self.assertIn(
+            "traefik.http.routers.tenant-a-web.rule=Host(`a.example.com`)",
+            service_a["Tags"],
+        )
+        self.assertIn(
+            "traefik.http.routers.tenant-b-web.rule=Host(`b.example.com`)",
+            service_b["Tags"],
+        )
+        # User-facing Compose/task semantics remain unchanged.
+        self.assertEqual(tenant_a["Tasks"][0]["Name"], "web")
+        self.assertEqual(tenant_a["Networks"][0]["DynamicPorts"][0]["Label"], "web")
 
     def test_compose_publish_port_skips_canary_to_avoid_port_conflict(self):
         compose = """

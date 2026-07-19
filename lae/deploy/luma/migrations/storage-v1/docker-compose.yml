@@ -1,0 +1,50 @@
+services:
+  copy-postgres:
+    image: 100.66.177.70:5000/lae/postgres-amd64:17@sha256:5aee909f99ab78c62f03636b6ca25a17195657605ce6782d9919ce4288595eda
+    command: >-
+      set -eu;
+      test -d /source;
+      test -d /target;
+      if find /target -mindepth 1 -print -quit | grep -q .; then
+        echo 'postgres migration target is not empty' >&2; exit 1;
+      fi;
+      tar -C /source -cf - . | tar -C /target -xpf -;
+      source_files=$(find /source -type f | wc -l | tr -d ' ');
+      target_files=$(find /target -type f | wc -l | tr -d ' ');
+      source_bytes=$(find /source -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}');
+      target_bytes=$(find /target -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}');
+      test "$source_files" = "$target_files";
+      test "$source_bytes" = "$target_bytes";
+      echo "LAE storage migration completed: postgres files=$target_files bytes=$target_bytes";
+      while :; do sleep 3600; done
+    volumes:
+      - postgres-data:/source:ro
+      - postgres-target:/target
+
+  copy-artifacts:
+    image: 100.66.177.70:5000/lae/postgres-amd64:17@sha256:5aee909f99ab78c62f03636b6ca25a17195657605ce6782d9919ce4288595eda
+    command: >-
+      set -eu;
+      test -d /source;
+      test -d /target;
+      if find /target -mindepth 1 -print -quit | grep -q .; then
+        echo 'artifact migration target is not empty' >&2; exit 1;
+      fi;
+      tar -C /source -cf - . | tar -C /target -xpf -;
+      source_files=$(find /source -type f | wc -l | tr -d ' ');
+      target_files=$(find /target -type f | wc -l | tr -d ' ');
+      source_bytes=$(find /source -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}');
+      target_bytes=$(find /target -type f -printf '%s\n' | awk '{n += $1} END {print n + 0}');
+      test "$source_files" = "$target_files";
+      test "$source_bytes" = "$target_bytes";
+      echo "LAE storage migration completed: artifacts files=$target_files bytes=$target_bytes";
+      while :; do sleep 3600; done
+    volumes:
+      - artifact-data:/source:ro
+      - artifact-target:/target
+
+volumes:
+  postgres-data: {}
+  artifact-data: {}
+  postgres-target: {}
+  artifact-target: {}

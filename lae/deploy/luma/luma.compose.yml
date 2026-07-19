@@ -1,0 +1,57 @@
+name: lae-platform
+compose: docker-compose.yml
+region: cn
+
+volumes:
+  artifact-data:
+    local:
+      node: manager
+      path: /srv/luma/lae/production/artifacts/v1
+    initialize: empty
+  backup-data:
+    local:
+      node: manager
+      path: /srv/luma/lae/production/backups/v1
+    initialize: empty
+  postgres-data:
+    local:
+      node: manager
+      path: /srv/luma/lae/production/postgres/v1
+    initialize: empty
+
+services:
+  web:
+    node: manager
+    exposure: cn-edge
+    domain: lae.itool.tech
+    port: 3000
+  api:
+    node: manager
+    exposure: cn-edge
+    domain: lae-api.itool.tech
+    port: 8080
+  worker:
+    node: manager
+    exposure: none
+  agent-controller:
+    node: manager
+    exposure: cn-edge
+    domain: lae-agent.itool.tech
+    port: 8081
+  postgres:
+    node: manager
+    exposure: none
+  artifact-store:
+    node: manager
+    exposure: cn-edge
+    domain: lae-artifacts.itool.tech
+    port: 9000
+  artifact-init:
+    node: manager
+    exposure: none
+  backup:
+    node: manager
+    exposure: none
+  valkey:
+    node: manager
+    exposure: none

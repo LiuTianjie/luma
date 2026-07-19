@@ -22,12 +22,75 @@ class _FakeApi:
         self.calls.append((method, path, body))
         key = f"{method} {path.split('?')[0]}"
         resp = self.responses.get(key, self.responses.get(method))
+        if callable(resp):
+            resp = resp()
         if isinstance(resp, Exception):
             raise resp
         return resp
 
 
+def _sequence(*values):
+    remaining = list(values)
+
+    def next_value():
+        if len(remaining) > 1:
+            return remaining.pop(0)
+        return remaining[0]
+
+    return next_value
+
+
+def _job(*, version=2, modify_index=20, count=1):
+    return {
+        "ID": "app",
+        "Version": version,
+        "JobModifyIndex": modify_index,
+        "TaskGroups": [{"Name": "app", "Count": count}],
+    }
+
+
+def _deployment(*, status="successful", version=2, modify_index=20, description=""):
+    return {
+        "ID": "deployment-123",
+        "JobID": "app",
+        "JobVersion": version,
+        "JobModifyIndex": modify_index,
+        "Status": status,
+        "StatusDescription": description,
+        "TaskGroups": {
+            "app": {
+                "DesiredTotal": 1,
+                "PlacedAllocs": 1,
+                "HealthyAllocs": 1 if status == "successful" else 0,
+                "UnhealthyAllocs": 0,
+            }
+        },
+        "CreateIndex": 21,
+    }
+
+
+def _allocation(*, alloc_id, version, healthy=True, status="running"):
+    return {
+        "ID": alloc_id,
+        "JobID": "app",
+        "JobVersion": version,
+        "TaskGroup": "app",
+        "DesiredStatus": "run",
+        "ClientStatus": status,
+        "DeploymentStatus": {"Healthy": healthy},
+        "TaskStates": {
+            "app": {
+                "State": status,
+                "Failed": status not in {"running", "pending"},
+            }
+        },
+    }
+
+
 class NomadApiTests(unittest.TestCase):
+    def test_default_rollout_timeout_exceeds_application_progress_deadline(self):
+        self.assertEqual(nomad_api._rollout_timeout_seconds(cfg(), None), 2700.0)
+
     def test_nomad_addr_defaults_to_local_agent(self):
         self.assertEqual(nomad_api.nomad_addr(cfg(), {}), "http://127.0.0.1:4646")
 
@@ -37,15 +100,248 @@ class NomadApiTests(unittest.TestCase):
             "http://100.1.1.1:4646",
         )
 
-    def test_deploy_unwraps_job_and_posts_to_jobs(self):
-        fake = _FakeApi({"POST /v1/jobs": {"EvalID": "eval-123"}})
-        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+    def test_deploy_waits_for_exact_deployment_and_new_allocations(self):
+        old = _allocation(alloc_id="alloc-old", version=1)
+        new = _allocation(alloc_id="alloc-new", version=2)
+        fake = _FakeApi(
+            {
+                "POST /v1/jobs": {
+                    "EvalID": "eval-123",
+                    "JobModifyIndex": 20,
+                },
+                "GET /v1/evaluation/eval-123": _sequence(
+                    {
+                        "ID": "eval-123",
+                        "JobID": "app",
+                        "JobModifyIndex": 20,
+                        "Status": "pending",
+                    },
+                    {
+                        "ID": "eval-123",
+                        "JobID": "app",
+                        "JobModifyIndex": 20,
+                        "DeploymentID": "deployment-123",
+                        "Status": "complete",
+                    },
+                ),
+                "GET /v1/job/app": _job(),
+                "GET /v1/deployment/deployment-123": _sequence(
+                    _deployment(status="running"),
+                    _deployment(),
+                ),
+                # A previous-version allocation remains running throughout
+                # cutover. It must not satisfy the v2 barrier.
+                "GET /v1/job/app/allocations": _sequence(
+                    [old],
+                    [old, new],
+                ),
+            }
+        )
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake), mock.patch.object(
+            nomad_api.time, "sleep", return_value=None
+        ):
             job_json = json.dumps({"Job": {"ID": "app", "Name": "app"}})
             msg = nomad_api.deploy_to_nomad(cfg(), job_json, {}, slug="app")
-        self.assertIn("eval-123", msg)
+        self.assertIn("rollout healthy", msg)
+        self.assertIn("v2", msg)
+        self.assertIn("eval eval-123", msg)
+        self.assertIn("deployment deployment-123", msg)
         method, path, body = fake.calls[0]
         self.assertEqual((method, path), ("POST", "/v1/jobs"))
         self.assertEqual(body["Job"]["ID"], "app")
+        allocation_calls = [
+            call for call in fake.calls if call[:2] == ("GET", "/v1/job/app/allocations")
+        ]
+        self.assertEqual(len(allocation_calls), 2)
+
+    def test_deploy_noop_verifies_current_version_and_allocations(self):
+        fake = _FakeApi(
+            {
+                "POST /v1/jobs": {"EvalID": "", "JobModifyIndex": 20},
+                "GET /v1/job/app": _job(),
+                "GET /v1/job/app/deployments": [_deployment()],
+                "GET /v1/job/app/allocations": [
+                    _allocation(alloc_id="alloc-current", version=2)
+                ],
+            }
+        )
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            msg = nomad_api.deploy_to_nomad(
+                cfg(),
+                json.dumps({"Job": {"ID": "app", "Name": "app"}}),
+                {},
+                slug="app",
+            )
+        self.assertIn("already healthy", msg)
+        self.assertIn("no-op", msg)
+        self.assertIn("v2", msg)
+        self.assertFalse(
+            any(path.startswith("/v1/evaluation/") for _, path, _ in fake.calls)
+        )
+
+    def test_deploy_ignores_terminal_predecessor_after_reschedule(self):
+        predecessor = _allocation(
+            alloc_id="alloc-failed",
+            version=2,
+            healthy=False,
+            status="failed",
+        )
+        predecessor["NextAllocation"] = "alloc-current"
+        fake = _FakeApi(
+            {
+                "POST /v1/jobs": {"EvalID": "", "JobModifyIndex": 20},
+                "GET /v1/job/app": _job(),
+                "GET /v1/job/app/deployments": [_deployment()],
+                "GET /v1/job/app/allocations": [
+                    predecessor,
+                    _allocation(alloc_id="alloc-current", version=2),
+                ],
+            }
+        )
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            msg = nomad_api.deploy_to_nomad(
+                cfg(),
+                json.dumps({"Job": {"ID": "app"}}),
+                {},
+                slug="app",
+            )
+        self.assertIn("1 allocations", msg)
+
+    def test_healthy_deployment_marker_does_not_hide_dead_task_state(self):
+        allocation = _allocation(alloc_id="alloc-restarting", version=2)
+        allocation["TaskStates"]["app"] = {"State": "dead", "Failed": True}
+        ready, healthy, detail = nomad_api._allocation_health(
+            [allocation],
+            target_version=2,
+            expected_groups={"app": 1},
+        )
+        self.assertFalse(ready)
+        self.assertEqual(healthy, 0)
+        self.assertIn("healthy=0", detail)
+
+    def test_deploy_rejects_blocked_evaluation_with_placement_context(self):
+        fake = _FakeApi(
+            {
+                "POST /v1/jobs": {
+                    "EvalID": "eval-blocked",
+                    "JobModifyIndex": 20,
+                },
+                "GET /v1/evaluation/eval-blocked": {
+                    "ID": "eval-blocked",
+                    "JobID": "app",
+                    "JobModifyIndex": 20,
+                    "Status": "complete",
+                    "BlockedEval": "eval-placement",
+                    "FailedTGAllocs": {"app": {"NodesEvaluated": 2}},
+                },
+            }
+        )
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            with self.assertRaisesRegex(
+                LumaError,
+                r"rollout blocked.*eval-placement.*task groups: app",
+            ):
+                nomad_api.deploy_to_nomad(
+                    cfg(),
+                    json.dumps({"Job": {"ID": "app"}}),
+                    {},
+                    slug="app",
+                )
+
+    def test_deploy_rejects_failed_cancelled_or_blocked_deployment(self):
+        for status in ("failed", "cancelled", "blocked"):
+            with self.subTest(status=status):
+                fake = _FakeApi(
+                    {
+                        "POST /v1/jobs": {
+                            "EvalID": "eval-123",
+                            "JobModifyIndex": 20,
+                        },
+                        "GET /v1/evaluation/eval-123": {
+                            "ID": "eval-123",
+                            "JobID": "app",
+                            "JobModifyIndex": 20,
+                            "DeploymentID": "deployment-123",
+                            "Status": "complete",
+                        },
+                        "GET /v1/job/app": _job(),
+                        "GET /v1/deployment/deployment-123": _deployment(
+                            status=status,
+                            description="scheduler stopped rollout",
+                        ),
+                    }
+                )
+                with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+                    with self.assertRaisesRegex(
+                        nomad_api.NomadRolloutError,
+                        rf"rollout {status}.*deployment-123.*scheduler stopped rollout",
+                    ):
+                        nomad_api.deploy_to_nomad(
+                            cfg(),
+                            json.dumps({"Job": {"ID": "app"}}),
+                            {},
+                            slug="app",
+                        )
+
+    def test_deploy_times_out_while_evaluation_is_pending(self):
+        fake = _FakeApi(
+            {
+                "POST /v1/jobs": {
+                    "EvalID": "eval-pending",
+                    "JobModifyIndex": 20,
+                },
+                "GET /v1/evaluation/eval-pending": {
+                    "ID": "eval-pending",
+                    "JobID": "app",
+                    "JobModifyIndex": 20,
+                    "Status": "pending",
+                },
+            }
+        )
+        clock = {"value": 0.0}
+
+        def monotonic():
+            return clock["value"]
+
+        def sleep(seconds):
+            clock["value"] += max(float(seconds), 0.1)
+
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake), mock.patch.object(
+            nomad_api.time,
+            "monotonic",
+            side_effect=monotonic,
+        ), mock.patch.object(nomad_api.time, "sleep", side_effect=sleep):
+            with self.assertRaisesRegex(
+                nomad_api.NomadRolloutError,
+                r"timed out.*evaluation eval-pending.*last status: pending",
+            ):
+                nomad_api.deploy_to_nomad(
+                    cfg(),
+                    json.dumps({"Job": {"ID": "app"}}),
+                    {},
+                    slug="app",
+                    rollout_timeout_seconds=0.25,
+                )
+
+    def test_deploy_rejects_superseded_job_before_allocation_success(self):
+        fake = _FakeApi(
+            {
+                "POST /v1/jobs": {"EvalID": "", "JobModifyIndex": 20},
+                "GET /v1/job/app": _sequence(
+                    _job(),
+                    _job(modify_index=21),
+                ),
+                "GET /v1/job/app/deployments": [],
+            }
+        )
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            with self.assertRaisesRegex(LumaError, r"rollout superseded.*21.*20"):
+                nomad_api.deploy_to_nomad(
+                    cfg(),
+                    json.dumps({"Job": {"ID": "app"}}),
+                    {},
+                    slug="app",
+                )
 
     def test_deploy_rejects_missing_job_object(self):
         fake = _FakeApi({})
@@ -174,6 +470,30 @@ class NomadApiTests(unittest.TestCase):
         self.assertEqual(tasks["mysql"]["failed"], 0)
         self.assertEqual([row["id"] for row in tasks["mysql"]["tasks"]], ["alloc-1"])
         self.assertEqual(tasks["granary"]["fullName"], "granary_granary")
+
+    def test_services_summary_marks_lae_managed_job_from_nomad_metadata(self):
+        responses = {
+            "GET /v1/jobs": [
+                {
+                    "ID": "lae-runtime",
+                    "Name": "lae-runtime",
+                    "Type": "service",
+                    "Status": "running",
+                    "Meta": {"luma.region": "cn"},
+                    "JobSummary": {"Summary": {"lae-runtime": {"Running": 1}}},
+                }
+            ],
+            "GET /v1/job/lae-runtime": {
+                "ID": "lae-runtime",
+                "Meta": {"luma.region": "cn", "luma.lae": "true"},
+                "TaskGroups": [],
+            },
+            "GET /v1/job/lae-runtime/allocations": [],
+        }
+        fake = _FakeApi(responses)
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            services = nomad_api.nomad_services_summary(cfg(), {})
+        self.assertEqual(services[0]["managedBy"], "lae")
 
     def test_rescheduled_recovered_service_reports_running_not_failed(self):
         # A failed-then-rescheduled alloc keeps DesiredStatus="run" but carries

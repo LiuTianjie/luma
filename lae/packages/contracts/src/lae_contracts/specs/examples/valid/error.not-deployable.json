@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "lae.error/v1",
+  "code": "LAE_NOT_DEPLOYABLE",
+  "message": "The Compose file requests host networking, which LAE does not support.",
+  "requestId": "req_01JEXAMPLE",
+  "retryable": false,
+  "details": {"blocker": "compose.network_mode.host", "path": "compose.yaml"}
+}

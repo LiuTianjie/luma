@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "lae.build-plan/v1",
+  "sourceSnapshotDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "resolvedCommit": "0123456789abcdef0123456789abcdef01234567",
+  "policyVersion": "2026-07-11",
+  "builds": [
+    {
+      "key": "web",
+      "context": ".",
+      "dockerfile": "Dockerfile",
+      "target": null,
+      "platform": "linux/amd64",
+      "buildArgNames": [],
+      "secretMountNames": [],
+      "dependsOnBuilds": []
+    }
+  ],
+  "externalImages": [
+    {
+      "key": "web",
+      "ref": "nginx:1.27-alpine",
+      "resolvedDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "platform": "linux/amd64"
+    }
+  ],
+  "signature": {
+    "keyId": "lae-plan-2026-01",
+    "value": "ZmFrZS1zaWduYXR1cmUtdjE"
+  }
+}

@@ -99,10 +99,46 @@ replicas: 2
         # traefik nomad-provider service
         svc = group["Services"][0]
         self.assertEqual(svc["Provider"], "nomad")
-        self.assertEqual(svc["AddressMode"], "host")
+        self.assertEqual(svc["Address"], "${meta.luma_tailscale_ip}")
+        self.assertNotIn("AddressMode", svc)
+        self.assertIn(
+            {"LTarget": "${meta.luma_tailscale_ip}", "Operand": "is_set"},
+            job["Constraints"],
+        )
         self.assertIn("traefik.enable=true", svc["Tags"])
         self.assertIn(
             "traefik.http.routers.app.rule=Host(`app.example.com`)", svc["Tags"]
+        )
+
+    def test_cn_edge_binds_matching_router_to_reusable_wildcard_certificate(self):
+        service = self.load(
+            """
+name: app
+image: ghcr.io/acme/app:latest
+region: cn
+exposure: cn-edge
+domain: random.itool.tech
+port: 3000
+"""
+        )
+        config = LumaConfig(
+            {
+                "defaults": {
+                    "entrypoint": "websecure",
+                    "certResolver": "letsencrypt",
+                    "acmeDnsProvider": "cloudflare",
+                    "acmeDomains": ["itool.tech"],
+                }
+            },
+            None,
+        )
+        job = render_nomad_job(config, service, as_json=False)["Job"]
+        tags = job["TaskGroups"][0]["Services"][0]["Tags"]
+        self.assertIn(
+            "traefik.http.routers.app.tls.domains[0].main=*.itool.tech", tags
+        )
+        self.assertIn(
+            "traefik.http.routers.app.tls.domains[0].sans=itool.tech", tags
         )
 
     def test_cn_edge_with_pinned_node_advertises_tailscale_address(self):
@@ -139,6 +175,44 @@ port: 3000
         # auto_revert is on (the new capability)
         self.assertTrue(job["Update"]["AutoRevert"])
         self.assertEqual(job["Update"]["MaxParallel"], 1)
+        self.assertEqual(job["Update"]["HealthyDeadline"], 1_800_000_000_000)
+        self.assertEqual(job["Update"]["ProgressDeadline"], 2_400_000_000_000)
+
+    def test_cn_edge_pinned_to_local_ingress_manager_advertises_host_address(self):
+        service = self.load(
+            """
+name: registry
+image: registry:2
+region: cn
+node: manager
+exposure: cn-edge
+domain: registry.example.com
+port: 5000
+"""
+        )
+        config = LumaConfig(
+            {
+                "nodes": {
+                    "manager": {
+                        "host": "manager",
+                        "region": "cn",
+                        "tailscaleIP": "100.106.154.3",
+                        "lumaLocalIngress": True,
+                    }
+                }
+            },
+            None,
+        )
+
+        job = render_nomad_job(config, service, as_json=False)["Job"]
+        svc = job["TaskGroups"][0]["Services"][0]
+
+        self.assertNotIn("Address", svc)
+        self.assertEqual(svc["AddressMode"], "host")
+        self.assertNotIn(
+            {"LTarget": "${meta.luma_tailscale_ip}", "Operand": "is_set"},
+            job["Constraints"],
+        )
 
     def test_single_replica_dynamic_edge_uses_canary_before_promoting(self):
         job = self.render(
@@ -472,14 +546,146 @@ port: 3000
             job["Constraints"],
         )
         task = job["TaskGroups"][0]["Tasks"][0]
+        self.assertEqual(
+            task["Resources"],
+            {"CPU": 500, "MemoryMB": 1024, "MemoryMaxMB": 0},
+        )
         # bridge + port 8080 (reachable by Traefik, see migration notes)
         self.assertEqual(job["TaskGroups"][0]["Networks"][0]["Mode"], "bridge")
         self.assertEqual(job["TaskGroups"][0]["Networks"][0]["ReservedPorts"][0]["Value"], 8080)
+        self.assertEqual(job["Update"]["HealthCheck"], "checks")
+        service = job["TaskGroups"][0]["Services"][0]
+        self.assertEqual(service["Provider"], "nomad")
+        self.assertEqual(service["PortLabel"], "http")
+        self.assertEqual(service["AddressMode"], "host")
+        self.assertEqual(
+            service["Checks"],
+            [{
+                "Name": "luma-control-health",
+                "Type": "http",
+                "PortLabel": "http",
+                "Path": "/v1/health",
+                "Interval": 10_000_000_000,
+                "Timeout": 2_000_000_000,
+            }],
+        )
         # host binds via mount blocks, never the dangerous volumes shorthand
         self.assertNotIn("volumes", task["Config"])
         sources = {m["source"] for m in task["Config"]["mount"]}
         self.assertIn("/var/run/docker.sock", sources)
-        self.assertIn("/opt/luma/control", sources)
+        self.assertIn("/opt/luma", sources)
+        self.assertNotIn("/opt/luma/control", sources)
+        self.assertNotIn("/opt/luma/routes", sources)
+
+    def test_control_job_only_forwards_allowlisted_lae_file_url_and_timeout_values(self):
+        canary = "inline-control-secret-must-not-enter-job"
+        configured = {
+            "LUMA_LAE_SERVICE_PRINCIPALS_FILE": "/opt/luma/control/lae-builder-principals.json",
+            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE": "/opt/luma/control/lae-runtime-principals.json",
+            "LUMA_CREDENTIAL_BROKER_URL": "https://broker.internal/v1/redeem",
+            "LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS": "5",
+            "LUMA_CREDENTIAL_BROKER_TOKEN_FILE": "/opt/luma/control/credential-broker.token",
+            "LUMA_OBJECT_SOURCE_BROKER_URL": "https://broker.internal/v1/objects",
+            "LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS": "6.5",
+            "LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE": "/opt/luma/control/object-broker.token",
+            "LUMA_LAE_ADMIN_API_URL": "https://lae-api.internal/",
+            "LUMA_LAE_ADMIN_TIMEOUT_SECONDS": "8",
+            "LUMA_LAE_ADMIN_TOKEN_FILE": "/opt/luma/control/lae-admin.token",
+            "LUMA_LAE_PLAN_SIGNING_KEYS_FILE": "/opt/luma/control/lae-plan-signing.json",
+            "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": "registry.internal/lae/agent@sha256:" + "a" * 64,
+            "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY": "1",
+            "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY": "0",
+            "LUMA_LAE_BUILDER_REGISTRY_INSECURE": "1",
+            "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON": '["docker.io","ghcr.io"]',
+            "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": '["tecent"]',
+            "LUMA_LAE_RUNTIME_STORAGE_CLASS": "cn-nfs",
+            "LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS": "600",
+            "LUMA_LAE_SERVICE_TOKEN": canary,
+            "LUMA_LAE_SERVICE_PRINCIPALS_JSON": json.dumps({"token": canary}),
+            "LUMA_CREDENTIAL_BROKER_TOKEN": canary,
+            "UNRELATED_SECRET": canary,
+        }
+        job = render_control_job(
+            image="ghcr.io/acme/luma-control:v1",
+            node_name="manager-1",
+            control_environment=configured,
+            as_json=False,
+        )["Job"]
+        environment = job["TaskGroups"][0]["Tasks"][0]["Env"]
+        self.assertEqual(
+            environment["LUMA_LAE_ADMIN_API_URL"],
+            "https://lae-api.internal",
+        )
+        for name in (
+            "LUMA_LAE_SERVICE_PRINCIPALS_FILE",
+            "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE",
+            "LUMA_CREDENTIAL_BROKER_URL",
+            "LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS",
+            "LUMA_CREDENTIAL_BROKER_TOKEN_FILE",
+            "LUMA_OBJECT_SOURCE_BROKER_URL",
+            "LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS",
+            "LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE",
+            "LUMA_LAE_ADMIN_API_URL",
+            "LUMA_LAE_ADMIN_TIMEOUT_SECONDS",
+            "LUMA_LAE_ADMIN_TOKEN_FILE",
+            "LUMA_LAE_PLAN_SIGNING_KEYS_FILE",
+            "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST",
+            "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY",
+            "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY",
+            "LUMA_LAE_BUILDER_REGISTRY_INSECURE",
+            "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON",
+            "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON",
+            "LUMA_LAE_RUNTIME_STORAGE_CLASS",
+            "LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS",
+        ):
+            self.assertIn(name, environment)
+        for name in (
+            "LUMA_LAE_SERVICE_TOKEN",
+            "LUMA_LAE_SERVICE_PRINCIPALS_JSON",
+            "LUMA_CREDENTIAL_BROKER_TOKEN",
+            "UNRELATED_SECRET",
+        ):
+            self.assertNotIn(name, environment)
+        self.assertNotIn(canary, json.dumps(job, sort_keys=True))
+
+    def test_control_job_rejects_paths_outside_mount_and_open_urls_or_timeouts(self):
+        invalid = (
+            {"LUMA_LAE_ADMIN_TOKEN_FILE": "/tmp/admin.token"},
+            {"LUMA_LAE_ADMIN_TOKEN_FILE": "/opt/luma/control"},
+            {"LUMA_LAE_ADMIN_TOKEN_FILE": "/opt/luma/control/../admin.token"},
+            {"LUMA_LAE_ADMIN_TOKEN_FILE": "admin.token"},
+            {"LUMA_CREDENTIAL_BROKER_URL": "http://broker.internal/redeem"},
+            {"LUMA_CREDENTIAL_BROKER_URL": "https://user@broker.internal/redeem"},
+            {"LUMA_CREDENTIAL_BROKER_URL": "https://broker.internal/redeem?token=x"},
+            {"LUMA_LAE_ADMIN_API_URL": "https://lae-api.internal/admin"},
+            {"LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS": "0"},
+            {"LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS": "31"},
+            {"LUMA_LAE_ADMIN_TIMEOUT_SECONDS": "0.5"},
+            {"LUMA_LAE_ADMIN_TIMEOUT_SECONDS": "nan"},
+            {"LUMA_LAE_PLAN_SIGNING_KEYS_FILE": "/tmp/signing.json"},
+            {"LUMA_BUILDER_ANALYZE_IMAGE_DIGEST": "lae-agent:latest"},
+            {"LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY": "yes"},
+            {"LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY": "yes"},
+            {"LUMA_LAE_BUILDER_REGISTRY_INSECURE": "2"},
+            {"LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON": '["GHCR.IO"]'},
+            {"LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON": '["ghcr.io","docker.io"]'},
+            {"LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON": '["ghcr.io/path"]'},
+            {"LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": "[]"},
+            {"LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": '["tecent","aly"]'},
+            {"LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": '["tecent","tecent"]'},
+            {"LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON": '["tecent secret"]'},
+            {"LUMA_LAE_RUNTIME_STORAGE_CLASS": "../cn-nfs"},
+            {"LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS": "29"},
+            {"LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS": "3601"},
+        )
+        for environment in invalid:
+            with self.subTest(environment=environment), self.assertRaises(LumaError):
+                render_control_job(
+                    image="ghcr.io/acme/luma-control:v1",
+                    node_name="manager-1",
+                    control_environment=environment,
+                    as_json=False,
+                )
 
     def test_traefik_job_persists_certs_via_named_volume_mount(self):
         job = render_traefik_job(
@@ -501,7 +707,49 @@ port: 3000
         self.assertIn("--entrypoints.tcp-3306.address=:3306", args)
         self.assertTrue(any("acme.email=ops@example.com" in a for a in args))
         self.assertTrue(any("providers.nomad=true" in a for a in args))
+        self.assertIn("--providers.nomad.watch=true", args)
+        self.assertIn("--accesslog=true", args)
+        self.assertIn("--accesslog.format=json", args)
+        self.assertIn(
+            "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=6h",
+            args,
+        )
+        self.assertFalse(any("accesslog.filepath" in a for a in args))
         self.assertFalse(any("providers.swarm" in a for a in args))
+
+    def test_traefik_job_uses_cloudflare_dns01_and_wildcard_without_exposing_token(self):
+        job = render_traefik_job(
+            image="traefik:v3.6",
+            acme_email="ops@example.com",
+            acme_dns_provider="cloudflare",
+            acme_dns_token_file="/opt/luma/traefik/cloudflare-dns-token",
+            acme_domains=["itool.tech"],
+            as_json=False,
+        )["Job"]
+        task = job["TaskGroups"][0]["Tasks"][0]
+        args = task["Config"]["args"]
+        self.assertIn(
+            "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare",
+            args,
+        )
+        self.assertIn(
+            "--entrypoints.websecure.http.tls.certresolver=letsencrypt",
+            args,
+        )
+        self.assertFalse(any("httpchallenge" in value for value in args))
+        self.assertIn("--entrypoints.websecure.http.tls.domains[0].main=*.itool.tech", args)
+        self.assertIn("--entrypoints.websecure.http.tls.domains[0].sans=itool.tech", args)
+        self.assertEqual(
+            task["Env"],
+            {"CF_DNS_API_TOKEN_FILE": "/run/secrets/cloudflare-dns-token"},
+        )
+        secret_mount = next(
+            mount for mount in task["Config"]["mount"]
+            if mount["target"] == "/run/secrets/cloudflare-dns-token"
+        )
+        self.assertEqual(secret_mount["source"], "/opt/luma/traefik/cloudflare-dns-token")
+        self.assertTrue(secret_mount["readonly"])
+        self.assertNotIn("CF_DNS_API_TOKEN", task["Env"])
 
     def test_egress_job_static_proxy_port_and_config_bind(self):
         job = render_egress_job(image="metacubex/mihomo:latest", as_json=False)["Job"]

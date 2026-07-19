@@ -93,6 +93,7 @@ export function ApplicationManagementPanel({
   const [deploymentConfigFor, setDeploymentConfigFor] = useState("");
   const [configTab, setConfigTab] = useState<ConfigTab>("manifest");
   const [actionError, setActionError] = useState("");
+  const [actionNotice, setActionNotice] = useState("");
   const [actionBusy, setActionBusy] = useState("");
   const [updatingApp, setUpdatingApp] = useState("");
   const [actionSteps, setActionSteps] = useState<DeployStep[]>([]);
@@ -119,10 +120,17 @@ export function ApplicationManagementPanel({
 
   const restart = async (app: Application) => {
     setActionError("");
-    if (!window.confirm(lang === "zh" ? `确认重启应用 ${app.stack}？` : `Restart application ${app.stack}?`)) return;
+    setActionNotice("");
+    if (!window.confirm(lang === "zh" ? `确认重启应用 ${app.stack}？运行实例将被重建。` : `Restart ${app.stack}? Its runtime allocation will be recreated.`)) return;
     setActionBusy(app.stack);
     try {
-      await restartApplication({ token, stack: app.stack });
+      const result = await restartApplication({ token, stack: app.stack });
+      const replacements = result.replacementAllocations || [];
+      if (result.mode !== "recreate" || replacements.length === 0) {
+        throw new Error(lang === "zh" ? "控制面未返回新的运行实例，重启未完成。" : "Control did not return a replacement allocation; restart did not complete.");
+      }
+      const shortIds = replacements.map((id) => id.slice(0, 8)).join(", ");
+      setActionNotice(lang === "zh" ? `应用已重建，新实例：${shortIds}` : `Application recreated. New allocation: ${shortIds}`);
       await onRefresh();
     } catch (error) {
       setActionError(String(error instanceof Error ? error.message : error));
@@ -453,6 +461,7 @@ export function ApplicationManagementPanel({
   return (
     <article className="panel app-management-panel" id="section-1">
       {actionError ? <div className="storage-warnings"><span>{actionError}</span></div> : null}
+      {actionNotice ? <div className="application-action-notice"><span>{actionNotice}</span></div> : null}
       <div className="application-filter-bar" aria-label={lang === "zh" ? "应用筛选" : "Application filters"}>
         <label className="application-search-field">
           <Search size={16} aria-hidden="true" />

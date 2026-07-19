@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 import yaml
 
@@ -64,6 +64,35 @@ def minimal_mihomo_config_from_bytes(raw: bytes) -> str:
         "rules": ["MATCH,EGRESS"],
     }
     return yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
+
+
+def ensure_mihomo_direct_domains(config_text: str, domains: Iterable[str]) -> tuple[str, bool]:
+    """Put trusted internal domains before the catch-all egress rule."""
+    try:
+        data = yaml.safe_load(config_text)
+    except yaml.YAMLError as exc:
+        raise LumaError(f"invalid installed egress YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise LumaError("installed egress YAML must be a mapping")
+    normalized = sorted(
+        {
+            str(domain).strip().lower().rstrip(".")
+            for domain in domains
+            if str(domain).strip()
+        }
+    )
+    normalized = [domain for domain in normalized if domain and "," not in domain and "/" not in domain]
+    if not normalized:
+        return config_text, False
+    wanted = [f"DOMAIN,{domain},DIRECT" for domain in normalized]
+    rules = [str(rule) for rule in data.get("rules") or [] if str(rule).strip()]
+    wanted_keys = {rule.lower() for rule in wanted}
+    remaining = [rule for rule in rules if rule.lower() not in wanted_keys]
+    updated_rules = [*wanted, *remaining]
+    if updated_rules == rules:
+        return config_text, False
+    data["rules"] = updated_rules
+    return yaml.safe_dump(data, allow_unicode=True, sort_keys=False), True
 
 
 def minimal_mihomo_config_from_url(url: str) -> str:

@@ -137,7 +137,7 @@ luma deploy <service>.yaml
 
 ## Restart A Service
 
-Restart a running deployment without redeploying its manifest. This does not pull a new image or change the jobspec — it only cycles the running allocations.
+Restart a running deployment without pulling a new image or changing its stored manifest. Restart is a delivery reconcile, not merely a process signal: Control waits for replacement allocations, refreshes Nomad CNI host-port state, reconstructs HTTP/TCP route files from the stored deployment record and actual allocation node, synchronizes DNS, and verifies every public HTTP endpoint before returning success.
 
 ```bash
 luma service restart <stack>
@@ -151,6 +151,8 @@ There are two restart modes:
 - `task` — restarts the task in place inside the existing allocation. This is the default when `--service` targets one task.
 
 Omitting `--mode` uses `recreate` for the whole stack and `task` when `--service` is set; pass `--mode` explicitly to override. For a Compose application, `luma service restart <app> --service <svc>` restarts one service's task in place, while `luma service restart <app>` recreates every allocation in the stack. Use `--timeout <seconds>` (default `120`) to bound the control-plane response wait.
+
+The response includes `replacementAllocations` and a structured `delivery` result (`routes`, `dns`, and `probes`). A platform-managed deployment with no saved record reports delivery reconciliation as skipped; a managed public deployment does not report `delivery.status=ready` until its public probe succeeds. Reconciled file-provider HTTP routes use explicit priority so they safely override stale legacy Nomad-provider routes that advertise an unreachable provider-private node address.
 
 Restart refuses the system stacks `traefik`, `egress`, and `luma-control` (Control runs inside the `luma-control` allocation, so cycling it from application management would kill Control itself).
 

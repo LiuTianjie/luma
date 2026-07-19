@@ -60,6 +60,34 @@ class LumaConfig:
         return str(self.defaults.get("certResolver", "letsencrypt"))
 
     @property
+    def acme_dns_provider(self) -> str:
+        """Return the ACME DNS provider, when wildcard issuance is available.
+
+        Cloudflare-backed installations opt into DNS-01 automatically.  This
+        keeps randomly generated application hostnames from each requiring a
+        separate, failure-prone HTTP-01 validation through the public edge.
+        Set ``defaults.acmeDnsProvider`` to an empty value to retain HTTP-01.
+        """
+
+        if "acmeDnsProvider" in self.defaults:
+            return str(self.defaults.get("acmeDnsProvider") or "").strip()
+        dns = self.dns
+        zone = str(dns.get("zone") or "").strip().strip(".")
+        if dns.get("provider") == "cloudflare" and zone and zone != "example.com":
+            return "cloudflare"
+        return ""
+
+    @property
+    def acme_domains(self) -> List[str]:
+        configured = self.defaults.get("acmeDomains")
+        if configured is not None:
+            if not isinstance(configured, list):
+                raise LumaError("defaults.acmeDomains must be a list")
+            return [str(value).strip().strip(".") for value in configured if str(value).strip()]
+        zone = str(self.dns.get("zone") or "").strip().strip(".")
+        return [zone] if self.acme_dns_provider and zone and zone != "example.com" else []
+
+    @property
     def entrypoint(self) -> str:
         return str(self.defaults.get("entrypoint", "websecure"))
 

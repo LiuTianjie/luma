@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.262"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.160 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.262 sh
 ```
 
 Develop from source:
@@ -252,7 +252,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.262"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -294,7 +294,7 @@ For private images, keep registry credentials out of the manifest. Save them onc
 printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --password-stdin
 ```
 
-After that, manifests still only contain the image name, for example `image: ghcr.io/acme/private-api:1.0.0`. During deploy, Luma matches the registry host and injects the registry auth into the Nomad jobspec's docker `config.auth` block, so the node that receives the allocation can pull. Fixed-node deployments may ask that target node to resolve the image first; unpinned services keep the requested image and are pulled by the node where Nomad places the allocation, not by the manager as a deploy prerequisite. For Docker Hub-style images, Luma tries the requested image first, configures the target node's Docker egress proxy and retries when registry network failures indicate proxying is needed, and only then falls back to configured `defaults.imageMirrors`. Set `defaults.imageMirrors: []` to disable mirror fallback. This is useful for private GHCR images produced by GitHub Actions, including images built from repositories that also publish docs or marketing pages through GitHub Pages.
+After that, manifests still only contain the source image name, for example `image: ghcr.io/acme/private-api:1.0.0`. When Builder Registry is configured, Luma leases matching source credentials only to Builder, copies the image into `registryHost/luma-cache/...`, verifies the digest, and renders that internal digest into the Nomad job. Runtime nodes therefore pull only from Builder Registry; deployment does not dynamically rewrite their Docker daemon proxy. Docker Hub sources may fall back to configured `defaults.imageMirrors` during the Builder copy. Set `defaults.imageMirrors: []` to disable source mirror fallback.
 Private registry image pulls are separate from runtime `proxy: true`. If a scheduled node has a global Docker proxy and a private registry fails before auth, check `docker info` proxy settings on that node and make sure that registry host is in Docker daemon `NO_PROXY`; `curl https://<registry>/v2/` returning `401` usually means the registry is reachable and Docker proxy routing is the next thing to inspect.
 
 Do not put sensitive values directly in manifests. Store them in the control plane:
@@ -316,8 +316,8 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 
 | Question | What to do |
 | --- | --- |
-| Update the manager | Run `luma update` on the manager. If local manager state exists, it updates the CLI, hot-refreshes Luma Control, and refreshes the manager node agent when possible, without restarting Traefik, the Nomad agent, Docker, or app jobs. |
-| Update worker/home nodes | Run `luma update fleet` from a logged-in client after the manager has the current Control API. Fleet update skips the Nomad server (manager) node by default; update the manager separately with `luma update manager` on the manager. Nodes whose agent is too old to support fleet update are reported as skipped; run `luma update` once on those nodes. |
+| Update the whole Luma cluster | Prefer Dashboard → Nodes → Update center. The Builder caches and verifies the release image in the internal registry before the manager rollout; Control reconnect, route probes, and stale-node updates are tracked on the same page. Routine upgrades require no node SSH. |
+| CLI update fallback | Use `luma update manager` and `luma update fleet` only when the Dashboard is unavailable or when adopting a historical agent that predates managed updates. |
 | View whole cluster status | Run `luma status` from any logged-in client. It prints control, DNS, the orchestrator (Nomad) with its leader, and registered nodes with `role=client`. |
 | View the Web status panel | Open `https://<control-domain>/dashboard/` and paste the management token on a trusted device. |
 | What happens if I run `luma update` on a joined node or client? | On a joined node it updates the CLI and refreshes the local node agent; on a client it updates only the CLI and skips manager control-plane refresh. |

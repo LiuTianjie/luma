@@ -15,7 +15,7 @@ export const I18N = {
     navFuture: "扩展",
     refresh: "刷新",
     signOut: "退出",
-    readonly: "只读访问",
+    readonly: "管理访问",
     loginTitle: "粘贴管理 Token",
     loginCopy: "Token 只保存在当前浏览器，并只发送给当前 Luma Control 域名。",
     openStatus: "打开面板",
@@ -112,7 +112,7 @@ export const I18N = {
     navFuture: "Extensions",
     refresh: "Refresh",
     signOut: "Sign out",
-    readonly: "Read-only access",
+    readonly: "Management access",
     loginTitle: "Paste a management token",
     loginCopy: "The token stays in this browser and is only sent to this Luma Control origin.",
     openStatus: "Open status",
@@ -216,4 +216,31 @@ export function localizeState(lang: Lang, value?: string): string {
     unknown: "未知",
   };
   return lang === "zh" ? zh[value] || value : value;
+}
+
+// Labels for the raw camelCase keys detailRecords.ts puts in the node/service
+// detail drawer. Keys that already exist in the I18N dictionary (region, role,
+// state, ...) resolve through t(); the rest live here; unknown keys fall back to
+// the raw key so new detail fields stay readable.
+const DETAIL_LABELS: Record<string, { zh: string; en: string }> = {
+  displayName: { zh: "名称", en: "Name" },
+  agent: { zh: "Agent", en: "Agent" },
+  cpu: { zh: "CPU", en: "CPU" },
+  load1: { zh: "负载 (1m)", en: "Load (1m)" },
+  memory: { zh: "内存", en: "Memory" },
+  memoryTotal: { zh: "内存总量", en: "Total memory" },
+  cpuCapacity: { zh: "CPU 容量", en: "CPU capacity" },
+  memoryCapacity: { zh: "内存容量", en: "Memory capacity" },
+  fullName: { zh: "完整名称", en: "Full name" },
+  nodes: { zh: "节点", en: "Nodes" },
+  limits: { zh: "资源上限", en: "Limits" },
+  reservations: { zh: "资源预留", en: "Reservations" },
+  tasks: { zh: "任务", en: "Tasks" },
+};
+
+export function detailLabel(lang: Lang, key: string): string {
+  const direct = DETAIL_LABELS[key];
+  if (direct) return direct[lang];
+  if (key in I18N.zh) return t(lang, key as I18nKey);
+  return key;
 }

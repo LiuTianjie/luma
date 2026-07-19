@@ -13,13 +13,30 @@ its own.
 
 import json
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from .config import LumaConfig
 from .errors import LumaError
+
+
+# Application jobs allow a 30-minute cold-pull health window and a 40-minute
+# progress deadline.  Control must remain attached beyond both or it can report
+# a false timeout while Nomad is still converging a valid rollout.
+NOMAD_ROLLOUT_TIMEOUT_SECONDS = 2700.0
+NOMAD_ROLLOUT_POLL_INTERVAL_SECONDS = 1.0
+
+
+class NomadRolloutError(LumaError):
+    """A submitted rollout reached a terminal failure for this revision.
+
+    This is distinct from transport and correlation failures: callers may
+    safely stop retrying the same immutable deployment while still treating a
+    Nomad API outage as transient.
+    """
 
 
 def nomad_addr(config: LumaConfig, state: Dict[str, Any]) -> str:
@@ -43,12 +60,20 @@ def deploy_to_nomad(
     state: Dict[str, Any],
     *,
     slug: str,
+    rollout_timeout_seconds: float | None = None,
 ) -> str:
-    """Register (create or update) a Nomad job from rendered job JSON.
+    """Register a job and wait for this exact Nomad rollout to be healthy.
 
     job_json is the {"Job": {...}} document produced by render_nomad_job.
     Registering an existing job ID updates it in place — same idempotency the
-    deploy path relies on.
+    deploy path relies on.  Success is deliberately correlated through the
+    registration's JobModifyIndex, evaluation, deployment, JobVersion, and
+    allocations.  A still-running allocation from the previous job version can
+    therefore never make a new rollout look healthy.
+
+    Nomad returns an empty EvalID for a no-op registration.  That path still
+    verifies the returned JobModifyIndex and the allocations for its exact
+    current JobVersion before returning success.
     """
     client = NomadApi(nomad_addr(config, state), token=_token(state))
     try:
@@ -58,11 +83,631 @@ def deploy_to_nomad(
     job = parsed.get("Job") if isinstance(parsed, dict) else None
     if not isinstance(job, dict):
         raise LumaError(f"rendered Nomad job for {slug} missing top-level Job object")
+    job_id = str(job.get("ID") or slug).strip()
+    if not job_id:
+        raise LumaError(f"rendered Nomad job for {slug} missing Job.ID")
+
+    timeout_seconds = _rollout_timeout_seconds(
+        config,
+        rollout_timeout_seconds,
+    )
+    deadline = time.monotonic() + timeout_seconds
     resp = client.request("POST", "/v1/jobs", {"Job": job})
+    if not isinstance(resp, dict):
+        raise LumaError(
+            f"Nomad registration response for {slug} is invalid; rollout cannot be verified"
+        )
     eval_id = resp.get("EvalID") if isinstance(resp, dict) else None
+    eval_id = str(eval_id or "").strip()
+    target_modify_index = _positive_index(resp.get("JobModifyIndex"))
+    if target_modify_index is None:
+        raise LumaError(
+            f"Nomad registration response for {slug} missing JobModifyIndex; "
+            "rollout cannot be correlated safely"
+        )
+
+    deployment_id = ""
+    evaluation: Dict[str, Any] | None = None
     if eval_id:
-        return f"Nomad job registered for {slug} (eval {eval_id})"
-    return f"Nomad job registered for {slug}"
+        evaluation = _wait_for_evaluation(
+            client,
+            job_id=job_id,
+            slug=slug,
+            eval_id=eval_id,
+            target_modify_index=target_modify_index,
+            deadline=deadline,
+            timeout_seconds=timeout_seconds,
+        )
+        deployment_id = str(evaluation.get("DeploymentID") or "").strip()
+
+    target_job = _read_target_job(
+        client,
+        job_id=job_id,
+        slug=slug,
+        target_modify_index=target_modify_index,
+    )
+    target_version = _nonnegative_int(target_job.get("Version"))
+    if target_version is None:
+        raise LumaError(
+            f"Nomad job {slug} is missing Version for JobModifyIndex {target_modify_index}"
+        )
+    expected_groups = _desired_group_counts_from_job(target_job, slug=slug)
+
+    deployment: Dict[str, Any] | None = None
+    if deployment_id:
+        deployment = _wait_for_deployment(
+            client,
+            job_id=job_id,
+            slug=slug,
+            deployment_id=deployment_id,
+            target_modify_index=target_modify_index,
+            target_version=target_version,
+            deadline=deadline,
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        # Empty EvalID is Nomad's normal no-op response.  A matching deployment
+        # may nevertheless still be converging from an earlier identical
+        # registration, so monitor it rather than trusting old allocations.
+        matching = _target_deployment(
+            client,
+            job_id=job_id,
+            target_modify_index=target_modify_index,
+            target_version=target_version,
+        )
+        if matching is not None:
+            deployment_id = str(matching.get("ID") or "").strip()
+            matching_status = str(matching.get("Status") or "").strip().lower()
+            if deployment_id and matching_status not in {
+                "successful",
+                "failed",
+                "cancelled",
+                "canceled",
+            }:
+                deployment = _wait_for_deployment(
+                    client,
+                    job_id=job_id,
+                    slug=slug,
+                    deployment_id=deployment_id,
+                    target_modify_index=target_modify_index,
+                    target_version=target_version,
+                    deadline=deadline,
+                    timeout_seconds=timeout_seconds,
+                    initial=matching,
+                )
+            elif matching_status != "successful":
+                # A no-op registration did not create this historical terminal
+                # deployment. Its exact current-version allocations are the
+                # source of truth; a later reschedule may already have healed
+                # them without creating a new deployment record.
+                deployment_id = ""
+            else:
+                # Successful history proves nothing beyond what the allocation
+                # barrier below verifies and is not a deployment created by
+                # this no-op submission.
+                deployment_id = ""
+
+    if deployment is not None:
+        deployment_groups = _desired_group_counts_from_deployment(deployment)
+        if deployment_groups and deployment_groups != expected_groups:
+            raise LumaError(
+                f"Nomad rollout correlation failed for {slug}: deployment {deployment_id} "
+                f"desired groups {deployment_groups} do not match job v{target_version} "
+                f"groups {expected_groups}"
+            )
+
+    healthy_allocations = _wait_for_healthy_allocations(
+        client,
+        job_id=job_id,
+        slug=slug,
+        target_modify_index=target_modify_index,
+        target_version=target_version,
+        expected_groups=expected_groups,
+        deadline=deadline,
+        timeout_seconds=timeout_seconds,
+    )
+
+    if not eval_id:
+        suffix = f", deployment {deployment_id}" if deployment_id else ""
+        return (
+            f"Nomad job {slug} already healthy "
+            f"(no-op, v{target_version}, {healthy_allocations} allocations{suffix})"
+        )
+    suffix = f", deployment {deployment_id}" if deployment_id else ""
+    return (
+        f"Nomad job {slug} rollout healthy "
+        f"(v{target_version}, {healthy_allocations} allocations, eval {eval_id}{suffix})"
+    )
+
+
+def _rollout_timeout_seconds(
+    config: LumaConfig,
+    override: float | None,
+) -> float:
+    raw: Any = override
+    if raw is None:
+        raw = config.defaults.get(
+            "nomadRolloutTimeoutSeconds",
+            NOMAD_ROLLOUT_TIMEOUT_SECONDS,
+        )
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        raise LumaError("defaults.nomadRolloutTimeoutSeconds must be a positive number") from None
+    if not 0 < timeout <= 3600:
+        raise LumaError(
+            "defaults.nomadRolloutTimeoutSeconds must be greater than 0 and at most 3600 seconds"
+        )
+    return timeout
+
+
+def _positive_index(value: Any) -> int | None:
+    parsed = _nonnegative_int(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _deadline_expired(deadline: float) -> bool:
+    return time.monotonic() >= deadline
+
+
+def _poll(deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return
+    time.sleep(min(NOMAD_ROLLOUT_POLL_INTERVAL_SECONDS, remaining))
+
+
+def _rollout_timeout(
+    slug: str,
+    timeout_seconds: float,
+    waiting_for: str,
+    last_status: str,
+) -> NomadRolloutError:
+    detail = f"; last status: {last_status}" if last_status else ""
+    return NomadRolloutError(
+        f"Nomad rollout timed out for {slug} after {timeout_seconds:g}s "
+        f"while waiting for {waiting_for}{detail}"
+    )
+
+
+def _wait_for_evaluation(
+    client: "NomadApi",
+    *,
+    job_id: str,
+    slug: str,
+    eval_id: str,
+    target_modify_index: int,
+    deadline: float,
+    timeout_seconds: float,
+) -> Dict[str, Any]:
+    current_eval_id = eval_id
+    last_status = ""
+    visited: set[str] = set()
+    while True:
+        if _deadline_expired(deadline):
+            raise _rollout_timeout(
+                slug,
+                timeout_seconds,
+                f"evaluation {current_eval_id}",
+                last_status,
+            )
+        if current_eval_id in visited:
+            raise LumaError(
+                f"Nomad rollout correlation failed for {slug}: evaluation chain loops at "
+                f"{current_eval_id}"
+            )
+        visited.add(current_eval_id)
+        evaluation = client.request(
+            "GET",
+            f"/v1/evaluation/{_q(current_eval_id)}",
+        )
+        if not isinstance(evaluation, dict):
+            raise LumaError(
+                f"Nomad returned no evaluation {current_eval_id} for {slug}"
+            )
+        _require_rollout_identity(
+            evaluation,
+            kind="evaluation",
+            object_id=current_eval_id,
+            job_id=job_id,
+            slug=slug,
+            target_modify_index=target_modify_index,
+            require_modify_index=current_eval_id == eval_id,
+        )
+        status = str(evaluation.get("Status") or "").strip().lower()
+        last_status = status or "unknown"
+        if status in {"failed", "cancelled", "canceled"}:
+            raise _rollout_terminal_error(
+                slug,
+                kind="evaluation",
+                object_id=current_eval_id,
+                status=status,
+                description=_evaluation_description(evaluation),
+            )
+        blocked_eval = str(evaluation.get("BlockedEval") or "").strip()
+        if status == "blocked" or blocked_eval:
+            blocked_id = blocked_eval or current_eval_id
+            raise _rollout_terminal_error(
+                slug,
+                kind="evaluation",
+                object_id=blocked_id,
+                status="blocked",
+                description=_evaluation_description(evaluation),
+            )
+        if status == "complete":
+            next_eval = str(evaluation.get("NextEval") or "").strip()
+            if evaluation.get("DeploymentID") or not next_eval:
+                if evaluation.get("FailedTGAllocs") and not evaluation.get("DeploymentID"):
+                    raise _rollout_terminal_error(
+                        slug,
+                        kind="evaluation",
+                        object_id=current_eval_id,
+                        status="blocked",
+                        description=_evaluation_description(evaluation),
+                    )
+                return evaluation
+            current_eval_id = next_eval
+            # The next evaluation may not have committed by the time its ID is
+            # visible on the current one.
+            _poll(deadline)
+            continue
+        # Pending evaluations retain the same ID.  It must be removed from the
+        # cycle guard before the next poll.
+        visited.remove(current_eval_id)
+        _poll(deadline)
+
+
+def _require_rollout_identity(
+    record: Mapping[str, Any],
+    *,
+    kind: str,
+    object_id: str,
+    job_id: str,
+    slug: str,
+    target_modify_index: int,
+    require_modify_index: bool = True,
+) -> None:
+    record_job_id = str(record.get("JobID") or "").strip()
+    if not record_job_id:
+        raise LumaError(
+            f"Nomad rollout correlation failed for {slug}: {kind} {object_id} "
+            "is missing JobID"
+        )
+    if record_job_id != job_id:
+        raise LumaError(
+            f"Nomad rollout correlation failed for {slug}: {kind} {object_id} "
+            f"belongs to job {record_job_id}, not {job_id}"
+        )
+    record_index = _positive_index(record.get("JobModifyIndex"))
+    if record_index is None:
+        if require_modify_index:
+            raise LumaError(
+                f"Nomad rollout correlation failed for {slug}: {kind} {object_id} "
+                "is missing JobModifyIndex"
+            )
+        return
+    if record_index != target_modify_index:
+        raise LumaError(
+            f"Nomad rollout correlation failed for {slug}: {kind} {object_id} "
+            f"has JobModifyIndex {record_index}, expected {target_modify_index}"
+        )
+
+
+def _evaluation_description(evaluation: Mapping[str, Any]) -> str:
+    parts: List[str] = []
+    description = str(evaluation.get("StatusDescription") or "").strip()
+    if description:
+        parts.append(description)
+    failures = evaluation.get("FailedTGAllocs")
+    if isinstance(failures, dict) and failures:
+        groups = ", ".join(sorted(str(group) for group in failures))
+        parts.append(f"placement failures in task groups: {groups}")
+    return "; ".join(parts)
+
+
+def _rollout_terminal_error(
+    slug: str,
+    *,
+    kind: str,
+    object_id: str,
+    status: str,
+    description: str,
+) -> NomadRolloutError:
+    detail = f": {description}" if description else ""
+    return NomadRolloutError(
+        f"Nomad rollout {status} for {slug}: {kind} {object_id}{detail}"
+    )
+
+
+def _read_target_job(
+    client: "NomadApi",
+    *,
+    job_id: str,
+    slug: str,
+    target_modify_index: int,
+) -> Dict[str, Any]:
+    job = client.request("GET", f"/v1/job/{_q(job_id)}")
+    if not isinstance(job, dict):
+        raise LumaError(f"Nomad returned no job for {slug} after registration")
+    actual_job_id = str(job.get("ID") or "").strip()
+    if actual_job_id and actual_job_id != job_id:
+        raise LumaError(
+            f"Nomad rollout correlation failed for {slug}: expected job {job_id}, "
+            f"got {actual_job_id}"
+        )
+    actual_index = _positive_index(job.get("JobModifyIndex"))
+    if actual_index != target_modify_index:
+        rendered = str(actual_index) if actual_index is not None else "missing"
+        raise LumaError(
+            f"Nomad rollout superseded for {slug}: current JobModifyIndex {rendered}, "
+            f"submitted {target_modify_index}"
+        )
+    return job
+
+
+def _desired_group_counts_from_job(
+    job: Mapping[str, Any],
+    *,
+    slug: str,
+) -> Dict[str, int]:
+    groups = job.get("TaskGroups")
+    if not isinstance(groups, list) or not groups:
+        raise LumaError(f"Nomad job {slug} has no task groups to verify")
+    result: Dict[str, int] = {}
+    for raw_group in groups:
+        if not isinstance(raw_group, dict):
+            continue
+        name = str(raw_group.get("Name") or "").strip()
+        count = _nonnegative_int(raw_group.get("Count", 1))
+        if not name or count is None:
+            raise LumaError(f"Nomad job {slug} has an invalid task group")
+        result[name] = count
+    if not result:
+        raise LumaError(f"Nomad job {slug} has no task groups to verify")
+    return result
+
+
+def _desired_group_counts_from_deployment(
+    deployment: Mapping[str, Any],
+) -> Dict[str, int]:
+    groups = deployment.get("TaskGroups")
+    if not isinstance(groups, dict):
+        return {}
+    result: Dict[str, int] = {}
+    for name, raw_group in groups.items():
+        if not isinstance(raw_group, dict):
+            continue
+        count = _nonnegative_int(raw_group.get("DesiredTotal"))
+        if count is not None:
+            result[str(name)] = count
+    return result
+
+
+def _target_deployment(
+    client: "NomadApi",
+    *,
+    job_id: str,
+    target_modify_index: int,
+    target_version: int,
+) -> Dict[str, Any] | None:
+    deployments = client.request(
+        "GET",
+        f"/v1/job/{_q(job_id)}/deployments",
+    )
+    if not isinstance(deployments, list):
+        return None
+    matches: List[Dict[str, Any]] = []
+    for deployment in deployments:
+        if not isinstance(deployment, dict):
+            continue
+        if str(deployment.get("JobID") or job_id) != job_id:
+            continue
+        if _positive_index(deployment.get("JobModifyIndex")) != target_modify_index:
+            continue
+        if _nonnegative_int(deployment.get("JobVersion")) != target_version:
+            continue
+        matches.append(deployment)
+    if not matches:
+        return None
+    return max(
+        matches,
+        key=lambda item: _nonnegative_int(item.get("CreateIndex")) or 0,
+    )
+
+
+def _wait_for_deployment(
+    client: "NomadApi",
+    *,
+    job_id: str,
+    slug: str,
+    deployment_id: str,
+    target_modify_index: int,
+    target_version: int,
+    deadline: float,
+    timeout_seconds: float,
+    initial: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    last_status = ""
+    current: Mapping[str, Any] | None = initial
+    while True:
+        if _deadline_expired(deadline):
+            raise _rollout_timeout(
+                slug,
+                timeout_seconds,
+                f"deployment {deployment_id}",
+                last_status,
+            )
+        if current is None:
+            current = client.request(
+                "GET",
+                f"/v1/deployment/{_q(deployment_id)}",
+            )
+        if not isinstance(current, dict):
+            raise LumaError(
+                f"Nomad returned no deployment {deployment_id} for {slug}"
+            )
+        _require_rollout_identity(
+            current,
+            kind="deployment",
+            object_id=deployment_id,
+            job_id=job_id,
+            slug=slug,
+            target_modify_index=target_modify_index,
+        )
+        deployment_version = _nonnegative_int(current.get("JobVersion"))
+        if deployment_version != target_version:
+            rendered = str(deployment_version) if deployment_version is not None else "missing"
+            raise LumaError(
+                f"Nomad rollout correlation failed for {slug}: deployment {deployment_id} "
+                f"has JobVersion {rendered}, expected {target_version}"
+            )
+        status = str(current.get("Status") or "").strip().lower()
+        last_status = status or "unknown"
+        if status == "successful":
+            return dict(current)
+        if status in {"failed", "cancelled", "canceled", "blocked", "paused"}:
+            raise _rollout_terminal_error(
+                slug,
+                kind="deployment",
+                object_id=deployment_id,
+                status=status,
+                description=str(current.get("StatusDescription") or "").strip(),
+            )
+        current = None
+        _poll(deadline)
+
+
+def _allocation_is_healthy(allocation: Mapping[str, Any]) -> bool:
+    if str(allocation.get("DesiredStatus") or "run").strip().lower() not in {
+        "run",
+        "running",
+    }:
+        return False
+    if str(allocation.get("ClientStatus") or "").strip().lower() != "running":
+        return False
+    task_states = allocation.get("TaskStates")
+    tasks_are_running = isinstance(task_states, dict) and bool(task_states) and all(
+        isinstance(task, dict)
+        and str(task.get("State") or "").strip().lower() == "running"
+        and task.get("Failed") is not True
+        for task in task_states.values()
+    )
+    if isinstance(task_states, dict) and task_states and not tasks_are_running:
+        return False
+    deployment_status = allocation.get("DeploymentStatus")
+    if isinstance(deployment_status, dict) and "Healthy" in deployment_status:
+        return deployment_status.get("Healthy") is True
+    return tasks_are_running
+
+
+def _allocation_health(
+    allocations: List[Any],
+    *,
+    target_version: int,
+    expected_groups: Mapping[str, int],
+) -> tuple[bool, int, str]:
+    active_by_group: Dict[str, List[Mapping[str, Any]]] = {
+        name: [] for name in expected_groups
+    }
+    for allocation in allocations:
+        if not isinstance(allocation, dict):
+            continue
+        if _nonnegative_int(allocation.get("JobVersion")) != target_version:
+            continue
+        if str(allocation.get("DesiredStatus") or "run").strip().lower() not in {
+            "run",
+            "running",
+        }:
+            continue
+        # Failed/complete allocations may retain DesiredStatus=run until Nomad
+        # garbage-collects them, including after a successful reschedule.  They
+        # are history, not an extra active replica; the live replacement still
+        # has to satisfy the exact desired count below.
+        if str(allocation.get("ClientStatus") or "").strip().lower() in {
+            "complete",
+            "dead",
+            "failed",
+            "lost",
+        }:
+            continue
+        group = str(allocation.get("TaskGroup") or "").strip()
+        if group in active_by_group:
+            active_by_group[group].append(allocation)
+
+    ready = True
+    healthy_total = 0
+    parts: List[str] = []
+    for group, desired in expected_groups.items():
+        active = active_by_group.get(group, [])
+        healthy = [allocation for allocation in active if _allocation_is_healthy(allocation)]
+        healthy_total += len(healthy)
+        if len(active) != desired or len(healthy) != desired:
+            ready = False
+        states = sorted(
+            {
+                str(allocation.get("ClientStatus") or "unknown").strip().lower()
+                for allocation in active
+            }
+        )
+        parts.append(
+            f"{group}: desired={desired}, active={len(active)}, healthy={len(healthy)}, "
+            f"states={','.join(states) or 'none'}"
+        )
+    return ready, healthy_total, "; ".join(parts)
+
+
+def _wait_for_healthy_allocations(
+    client: "NomadApi",
+    *,
+    job_id: str,
+    slug: str,
+    target_modify_index: int,
+    target_version: int,
+    expected_groups: Mapping[str, int],
+    deadline: float,
+    timeout_seconds: float,
+) -> int:
+    last_status = ""
+    while True:
+        if _deadline_expired(deadline):
+            raise _rollout_timeout(
+                slug,
+                timeout_seconds,
+                f"healthy allocations for job v{target_version}",
+                last_status,
+            )
+        _read_target_job(
+            client,
+            job_id=job_id,
+            slug=slug,
+            target_modify_index=target_modify_index,
+        )
+        allocations = client.request(
+            "GET",
+            f"/v1/job/{_q(job_id)}/allocations",
+        )
+        if not isinstance(allocations, list):
+            allocations = []
+        ready, healthy_total, last_status = _allocation_health(
+            allocations,
+            target_version=target_version,
+            expected_groups=expected_groups,
+        )
+        if ready:
+            return healthy_total
+        _poll(deadline)
 
 
 def remove_from_nomad(config: LumaConfig, state: Dict[str, Any], *, slug: str) -> str:
@@ -183,6 +828,9 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
             "running": running,
             "region": str(meta.get("luma.region") or ""),
             "compose": str(meta.get("luma.compose") or "").lower() == "true",
+            "managedBy": "lae"
+            if str(meta.get("luma.lae") or "").lower() == "true"
+            else "",
         }
         try:
             detail = client.request("GET", f"/v1/job/{_q(job_id)}")
@@ -193,6 +841,8 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
             if detail_meta:
                 item["region"] = str(detail_meta.get("luma.region") or item.get("region") or "")
                 item["compose"] = str(detail_meta.get("luma.compose") or item.get("compose") or "").lower() == "true"
+                if str(detail_meta.get("luma.lae") or "").lower() == "true":
+                    item["managedBy"] = "lae"
         try:
             allocations = client.request("GET", f"/v1/job/{_q(job_id)}/allocations")
         except LumaError:
@@ -554,3 +1204,81 @@ class NomadApi:
                 "from the luma-control container."
             ) from exc
         return raw
+
+    def put_variable(self, path: str, items: Dict[str, str]) -> Dict[str, Any]:
+        """Create/update a Nomad Variable without exposing values in a job spec.
+
+        The caller owns path/ACL policy. Values are sent only to Nomad's
+        encrypted Variables store and this method never interpolates them into
+        errors or log messages.
+        """
+
+        normalized = str(path or "").strip().strip("/")
+        if (
+            not normalized
+            or ".." in normalized.split("/")
+            or not isinstance(items, dict)
+            or not items
+            or any(
+                not isinstance(key, str)
+                or not key
+                or not isinstance(value, str)
+                for key, value in items.items()
+            )
+        ):
+            raise LumaError("invalid Nomad variable request")
+        try:
+            result = self.request(
+                "PUT",
+                "/v1/var/" + urllib.parse.quote(normalized, safe="/"),
+                {"Items": dict(items)},
+            )
+        except LumaError:
+            # Nomad should not echo Items, but keep this boundary generic even
+            # if a future server version changes its error payload.
+            raise LumaError("Nomad variable write failed") from None
+        if not isinstance(result, dict):
+            raise LumaError("Nomad variable write failed")
+        return result
+
+    def get_variable(self, path: str) -> Dict[str, str]:
+        """Read one variable for in-memory redaction at a trusted boundary.
+
+        Values are returned only to the caller and are never included in this
+        method's errors. LAE uses this solely to remove exact secret values
+        from application logs before returning them to a tenant.
+        """
+
+        normalized = str(path or "").strip().strip("/")
+        if not normalized or ".." in normalized.split("/"):
+            raise LumaError("invalid Nomad variable request")
+        try:
+            result = self.request(
+                "GET",
+                "/v1/var/" + urllib.parse.quote(normalized, safe="/"),
+            )
+        except LumaError:
+            raise LumaError("Nomad variable read failed") from None
+        items = result.get("Items") if isinstance(result, dict) else None
+        if not isinstance(items, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in items.items()
+        ):
+            raise LumaError("Nomad variable read failed")
+        return {str(key): str(value) for key, value in items.items()}
+
+    def delete_variable(self, path: str) -> None:
+        normalized = str(path or "").strip().strip("/")
+        if not normalized or ".." in normalized.split("/"):
+            raise LumaError("invalid Nomad variable request")
+        try:
+            self.request(
+                "DELETE",
+                "/v1/var/" + urllib.parse.quote(normalized, safe="/"),
+            )
+        except LumaError as exc:
+            # DELETE is used by retryable cancel/delete flows. A missing lease
+            # is already the requested end state and must stay idempotent.
+            if "Nomad API error 404" in str(exc):
+                return
+            raise LumaError("Nomad variable delete failed") from None

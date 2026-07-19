@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "lae.build-plan-proposal/v1",
+  "sourceSnapshotDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "resolvedCommit": "0123456789abcdef0123456789abcdef01234567",
+  "policyVersion": "2026-07-11",
+  "builds": [],
+  "externalImages": [
+    {
+      "key": "postgres",
+      "ref": "postgres:17",
+      "platform": "linux/amd64"
+    },
+    {
+      "key": "valkey",
+      "ref": "valkey/valkey@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "resolvedDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "platform": "linux/amd64"
+    }
+  ]
+}

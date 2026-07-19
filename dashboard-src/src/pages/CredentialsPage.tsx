@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { GitBranch, KeyRound, LockKeyhole, PackageCheck, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, GitBranch, KeyRound, LockKeyhole, PackageCheck, ShieldCheck } from "lucide-react";
 import {
   fetchGitProviders,
   fetchRegistries,
@@ -53,6 +53,73 @@ function secretScopeLabel(scope: string, lang: Lang) {
   return scope;
 }
 
+type ParsedSecret = ReturnType<typeof parseSecretName>;
+
+type SecretGroup = {
+  id: string;
+  label: string;
+  description: string;
+  secrets: ParsedSecret[];
+};
+
+const GLOBAL_SECRET_GROUPS = [
+  { id: "platform", prefixes: ["LAE_", "LUMA_"], zh: "Luma / LAE", en: "Luma / LAE", zhDescription: "平台控制面与应用引擎", enDescription: "Platform control plane and application engine" },
+  { id: "ai", prefixes: ["ARK_", "OPENAI_", "ANTHROPIC_", "DEEPSEEK_", "ITOOL_TECH_ARK_"], zh: "AI 模型", en: "AI models", zhDescription: "模型、推理服务与 Agent", enDescription: "Models, inference services, and agents" },
+  { id: "source", prefixes: ["CODEX_GITEA_", "GITEA_", "GITHUB_", "GITLAB_"], zh: "代码与仓库", en: "Source control", zhDescription: "Git Provider、Webhook 与仓库访问", enDescription: "Git providers, webhooks, and repository access" },
+  { id: "network", prefixes: ["CLOUDFLARE_", "TAILSCALE_", "TRAEFIK_"], zh: "网络与域名", en: "Network and DNS", zhDescription: "边缘网络、DNS 与流量入口", enDescription: "Edge network, DNS, and ingress" },
+  { id: "granary", prefixes: ["GRANARY_"], zh: "Granary", en: "Granary", zhDescription: "Granary 服务与数据层", enDescription: "Granary services and data layer" },
+  { id: "itool", prefixes: ["ITOOL_TECH_"], zh: "iTool.tech", en: "iTool.tech", zhDescription: "iTool.tech 产品与支付配置", enDescription: "iTool.tech product and billing config" },
+  { id: "delivery", prefixes: ["SMTP_", "MAIL_", "EMAIL_", "WECHAT_", "ALIPAY_", "STRIPE_"], zh: "通知与支付", en: "Delivery and billing", zhDescription: "邮件、通知与支付渠道", enDescription: "Email, notifications, and payment channels" },
+] as const;
+
+function buildSecretGroups(secrets: ParsedSecret[], lang: Lang): SecretGroup[] {
+  const zh = lang === "zh";
+  const groups = new Map<string, SecretGroup>();
+
+  for (const secret of secrets) {
+    if (secret.scope !== "global") {
+      const id = `scope:${secret.scope}`;
+      const current = groups.get(id) || {
+        id,
+        label: secret.scope,
+        description: zh ? "应用作用域" : "Application scope",
+        secrets: [],
+      };
+      current.secrets.push(secret);
+      groups.set(id, current);
+      continue;
+    }
+
+    const definition = GLOBAL_SECRET_GROUPS.find((candidate) =>
+      candidate.prefixes.some((prefix) => secret.name.startsWith(prefix)),
+    );
+    const id = definition ? `global:${definition.id}` : "global:other";
+    const current = groups.get(id) || {
+      id,
+      label: definition ? (zh ? definition.zh : definition.en) : (zh ? "其他全局配置" : "Other global config"),
+      description: definition
+        ? (zh ? definition.zhDescription : definition.enDescription)
+        : (zh ? "尚未归入产品命名空间的全局 Secret" : "Global secrets outside a product namespace"),
+      secrets: [],
+    };
+    current.secrets.push(secret);
+    groups.set(id, current);
+  }
+
+  return [...groups.values()]
+    .map((group) => ({ ...group, secrets: [...group.secrets].sort((left, right) => left.name.localeCompare(right.name)) }))
+    .sort((left, right) => {
+      const leftScoped = left.id.startsWith("scope:");
+      const rightScoped = right.id.startsWith("scope:");
+      if (leftScoped !== rightScoped) return leftScoped ? -1 : 1;
+      const leftIndex = GLOBAL_SECRET_GROUPS.findIndex((item) => `global:${item.id}` === left.id);
+      const rightIndex = GLOBAL_SECRET_GROUPS.findIndex((item) => `global:${item.id}` === right.id);
+      const normalizedLeft = leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex;
+      const normalizedRight = rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex;
+      return normalizedLeft - normalizedRight || left.label.localeCompare(right.label);
+    });
+}
+
 export function CredentialsPage({
   lang,
   token,
@@ -82,6 +149,8 @@ export function CredentialsPage({
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [writeError, setWriteError] = useState("");
+  const [expandedSecretGroups, setExpandedSecretGroups] = useState<Set<string>>(new Set());
+  const initializedSecretGroups = useRef(false);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState((current) => ({ ...current, loading: true, error: "" }));
@@ -113,9 +182,25 @@ export function CredentialsPage({
   }, [refresh]);
 
   const parsedSecrets = useMemo(() => state.secrets.map(parseSecretName), [state.secrets]);
+  const secretGroups = useMemo(() => buildSecretGroups(parsedSecrets, lang), [lang, parsedSecrets]);
   const scopedSecrets = parsedSecrets.filter((item) => item.scope !== "global").length;
   const configuredRegistries = state.registries.filter((item) => item.configured).length;
   const configuredGitProviders = state.gitProviders.filter((item) => item.configured).length;
+
+  useEffect(() => {
+    if (state.loading || initializedSecretGroups.current || !secretGroups.length) return;
+    initializedSecretGroups.current = true;
+    setExpandedSecretGroups(new Set([secretGroups[0].id]));
+  }, [secretGroups, state.loading]);
+
+  const toggleSecretGroup = (id: string) => {
+    setExpandedSecretGroups((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const submitSecret = async () => {
     if (!secretForm.name.trim() || !secretForm.value) return;
@@ -268,30 +353,70 @@ export function CredentialsPage({
           </div>
 
           {activeTab === "secrets" ? (
-            <div className="table-wrap">
-              <table className="credentials-table">
-                <thead>
-                  <tr>
-                    <th>{zh ? "名称" : "Name"}</th>
-                    <th>{zh ? "作用域" : "Scope"}</th>
-                    <th>{zh ? "值" : "Value"}</th>
-                    <th>{zh ? "状态" : "Status"}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {parsedSecrets.length ? parsedSecrets.map((secret) => (
-                    <tr key={`${secret.scope}/${secret.name}`}>
-                      <td><PrimaryCell title={secret.name} /></td>
-                      <td><Badge value={secretScopeLabel(secret.scope, lang)} /></td>
-                      <td><CodeCell value="write-only" /></td>
-                      <td><StatePill label={zh ? "已保存" : "saved"} value="ready" /></td>
-                    </tr>
-                  )) : (
-                    <tr><td colSpan={4}>{state.loading ? (zh ? "读取中..." : "Loading...") : (zh ? "暂无 Secret" : "No secrets")}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+            parsedSecrets.length ? (
+              <div className="secret-groups">
+                <div className="secret-groups-toolbar">
+                  <span>{zh ? `${secretGroups.length} 个分组` : `${secretGroups.length} groups`}</span>
+                  <div>
+                    <button type="button" className="ghost" onClick={() => setExpandedSecretGroups(new Set(secretGroups.map((group) => group.id)))}>
+                      {zh ? "全部展开" : "Expand all"}
+                    </button>
+                    <button type="button" className="ghost" onClick={() => setExpandedSecretGroups(new Set())}>
+                      {zh ? "全部收起" : "Collapse all"}
+                    </button>
+                  </div>
+                </div>
+                {secretGroups.map((group) => {
+                  const expanded = expandedSecretGroups.has(group.id);
+                  const contentId = `secret-group-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+                  return (
+                    <section className={expanded ? "secret-group expanded" : "secret-group"} key={group.id}>
+                      <button
+                        type="button"
+                        className="secret-group-trigger"
+                        aria-expanded={expanded}
+                        aria-controls={contentId}
+                        onClick={() => toggleSecretGroup(group.id)}
+                      >
+                        <span className="secret-group-mark" aria-hidden="true">{group.label.slice(0, 1).toUpperCase()}</span>
+                        <span className="secret-group-copy">
+                          <strong>{group.label}</strong>
+                          <small>{group.description}</small>
+                        </span>
+                        <span className="secret-group-count">{group.secrets.length}</span>
+                        <ChevronDown className="secret-group-chevron" size={16} aria-hidden="true" />
+                      </button>
+                      {expanded ? (
+                        <div className="table-wrap secret-group-table" id={contentId}>
+                          <table className="credentials-table">
+                            <thead>
+                              <tr>
+                                <th>{zh ? "名称" : "Name"}</th>
+                                <th>{zh ? "作用域" : "Scope"}</th>
+                                <th>{zh ? "值" : "Value"}</th>
+                                <th>{zh ? "状态" : "Status"}</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {group.secrets.map((secret) => (
+                                <tr key={`${secret.scope}/${secret.name}`}>
+                                  <td><PrimaryCell title={secret.name} /></td>
+                                  <td><Badge value={secretScopeLabel(secret.scope, lang)} /></td>
+                                  <td><CodeCell value="write-only" /></td>
+                                  <td><StatePill label={zh ? "已保存" : "saved"} value="ready" /></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : null}
+                    </section>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="secret-groups-empty">{state.loading ? (zh ? "读取中..." : "Loading...") : (zh ? "暂无 Secret" : "No secrets")}</div>
+            )
           ) : null}
 
           {activeTab === "registries" ? (

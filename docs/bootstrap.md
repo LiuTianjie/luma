@@ -192,7 +192,7 @@ Use `luma update` after upgrading Luma itself:
 luma update
 ```
 
-The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and hot-refreshes only the Luma Control API: it preserves existing tokens, nodes, and Nomad jobs; refreshes control config/state metadata; refreshes inferred DNS provider config when local Cloudflare credentials are available; pulls the current Luma Control image; rolls the `luma-control` job with healthcheck-based auto-revert; and refreshes the manager's local node agent when possible. It does not redeploy or force-restart Traefik, the Nomad agent, Docker, egress, or user services.
+The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and preserves existing tokens, nodes, and user jobs while reconciling the manager control plane: firewall TCP relay ports, Traefik when the manager has the `edge` role, the Tailscale watchdog, control config/state metadata, inferred DNS provider config when local Cloudflare credentials are available, and the `luma-control` Nomad job. It pulls the configured Control image, submits the job with Nomad auto-revert, and refreshes the manager's local node agent when possible. It does not restart Docker or the Nomad agent, run egress setup, or redeploy user services.
 
 On a joined worker/home node, `luma update` updates the CLI and refreshes the local node agent. If an older node has no saved agent metadata, pass the Control URL and node join token once:
 
@@ -210,9 +210,9 @@ Fleet update depends on the node agent already being new enough to support the `
 
 Fleet update skips the Nomad server (manager) node by default so a client-side fleet operation cannot disrupt the active control plane. Update the manager separately from the manager host with `luma update manager`.
 
-On an ordinary client, `luma update` only updates the CLI. Use `luma update manager` on a manager to force the same control-only refresh when you need to pass `--domain`.
+On an ordinary client, `luma update` only updates the CLI. Use `luma update manager` on a manager to force the same manager control-plane reconciliation when you need to pass `--domain`.
 
-Use `luma bootstrap manager --domain ...` for first install or explicit infrastructure repair. Full bootstrap can touch Docker, firewall, Traefik, the Nomad agent, and egress, so treat it as a maintenance-window operation. If an old installed CLI still implements the previous update behavior, update the CLI first through the installer or package manager, then rerun the new `luma update manager` control-only refresh.
+Use `luma bootstrap manager --domain ...` for first install or explicit infrastructure repair. Full bootstrap can touch Docker, firewall, Traefik, the Nomad agent, and egress, so treat it as a maintenance-window operation. If an old installed CLI still implements the previous update behavior, update the CLI first through the installer or package manager, then rerun the new `luma update manager` reconciliation.
 
 If the installed CLI is too old to recognize `luma update`, run the installer once and then retry the update command.
 

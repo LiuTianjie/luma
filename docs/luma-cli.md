@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.262"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.160 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.262 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.262"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,13 +75,13 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.160"
+python -m pip install "luma-infra==0.1.262"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 
 luma status --format json
-luma deploy deploy/app.yaml --format ndjson --timeout 1800
+luma deploy deploy/app.yaml --format ndjson --timeout 3000
 ```
 
 The control context priority is CLI flags, then environment variables, then the local login context. CI commonly uses:
@@ -208,7 +208,7 @@ Deploy an in-cluster registry for source-to-image builds:
 luma registry serve --node build-1
 ```
 
-`luma registry serve` deploys a `registry:2` service on a `docker-build`-capable node and wires `insecure-registries` into every non-manager ready Linux node so they can pull built images over the Tailscale network. The builder pushes via `localhost:5000`; other nodes pull via `<build-node-tailscale-host>:5000`. Optional flags: `--port` (default `5000`), `--storage-class` (data volume storageClass, default `local`), `--image` (default `registry:2`), `--name` (default `luma-registry`), `--timeout` (default `1800`). See the repository-import walkthrough in [how-to-use-luma.md](how-to-use-luma.md) for the full source-to-image flow.
+`luma registry serve` deploys a `registry:2` service on a `docker-build`-capable node and wires `insecure-registries` into every non-manager ready Linux node so they can pull built images over the Tailscale network. BuildKit and target nodes both use the reachable Builder Tailscale endpoint `<build-node-tailscale-host>:5000`; do not configure the removed `localhost:5000` push endpoint. Optional flags: `--port` (default `5000`), `--storage-class` (data volume storageClass, default `local`), `--image` (default `registry:2`), `--name` (default `luma-registry`), `--timeout` (default `1800`). See the repository-import walkthrough in [how-to-use-luma.md](how-to-use-luma.md) for the full source-to-image flow.
 
 The same control plane also serves a read-only Web status panel:
 
@@ -283,9 +283,13 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.160 --timeout 900
+luma update fleet --install-ref v0.1.262 --timeout 900
 luma update fleet --include-manager
 ```
+
+`--install-ref` accepts a release tag, branch, or full 40-character Git commit.
+Use a full commit for a coordinated candidate rollout so manager and node agents
+cannot resolve different revisions while a branch moves.
 
 Fleet update runs through the node agents. It updates the CLI on each ready non-manager node and then refreshes the local node-agent service and Tailscale watchdog. The Nomad server (manager) node is skipped by default; update the manager separately with `luma update manager` from the manager host. `--include-manager` is available for explicit repair workflows, but normal fleet updates should leave the active control plane alone. Nodes whose agent is too old to advertise `luma-update` are reported as skipped; run `luma update` once on those nodes, then they can participate in later fleet updates.
 
@@ -365,7 +369,7 @@ luma service restart public-cn-service
 luma service restart my-stack --service web --mode task
 ```
 
-`--mode recreate` reschedules the allocation; `--mode task` restarts the task in place. Omitting `--mode` uses `recreate` for a whole stack and `task` when `--service` targets one task. Restart refuses the system stacks `traefik`, `egress`, and `luma-control`. See [operations.md](operations.md) for details.
+`--mode recreate` reschedules the allocation; `--mode task` restarts the task in place. Omitting `--mode` uses `recreate` for a whole stack and `task` when `--service` targets one task. After the runtime action, Control reconciles the saved deployment's routes and DNS and probes its public HTTP services; Compose reconciles every exposed service. Restart refuses the system stacks `traefik`, `egress`, and `luma-control`. See [operations.md](operations.md) for details.
 
 Remove a deployed service:
 
@@ -467,7 +471,7 @@ For `luma deploy service.yaml`, Luma does:
 9. submit the job to Nomad through `PUT /v1/jobs` (create or update);
 10. probe the public route for `cn-edge` and `external-edge` services.
 
-The client prints local progress before submitting the request, while waiting for the control plane, and for each control-plane step. Luma validates generated Traefik file-provider routes, stages them outside the watched routes directory, then atomically publishes the final route file. A public route probe reports the HTTP status from `/`; an application-level `404` means the route is reachable but the application may not serve a root page, while Traefik's default `404 page not found` is treated as a missing router and a failed public route. When the probe reports the route unhealthy (Traefik router not found, or a transient `502`/`503`/`504`), Control recreates the service's allocation once and re-probes before failing the deploy. The default deploy response timeout is 1800 seconds because first deploys may pull large images on the target node; use `--timeout <seconds>` to override it.
+The client prints local progress before submitting the request, while waiting for the control plane, and for each control-plane step. Luma validates generated Traefik file-provider routes, stages them outside the watched routes directory, then atomically publishes the final route file. A public route probe reports the HTTP status from `/`; an application-level `404` means the route is reachable but the application may not serve a root page, while Traefik's default `404 page not found` is treated as a missing router and a failed public route. When the probe reports the route unhealthy (Traefik router not found, or a transient `502`/`503`/`504`), Control recreates the service's allocation once and re-probes before failing the deploy. Single-service and Compose jobs allow 30 minutes for cold image acquisition and 40 minutes for rollout progress; the default deploy response timeout is 3000 seconds so Control remains attached beyond that bounded Nomad window. Use `--timeout <seconds>` to override it.
 
 Deploy is an upsert. Re-running `luma deploy service.yaml` with the same service `name` updates the existing Nomad job (the job id is the service slug) instead of creating a duplicate. The update uses the current rendered jobspec as the source of truth, and Nomad keeps the previous version so `luma rollback` or the dashboard's Applications -> Versions action can return to it.
 
@@ -504,6 +508,25 @@ For Compose repositories, `luma import` builds services that still have `build:`
 ```bash
 luma compose validate --import-mode luma.compose.yml
 ```
+
+When a repository contains more than one deployment sidecar, select the exact
+Compose sidecar inside the cloned repository instead of relying on discovery:
+
+```bash
+luma import https://github.com/acme/platform.git \
+  --ref v1.4.0 \
+  --build-node builder \
+  --compose-sidecar deploy/staging.luma.compose.yml \
+  --env .env
+```
+
+`--compose-sidecar` accepts only a canonical POSIX repository-relative path and
+cannot be combined with `--manifest`. The CLI requires a Control capability
+before starting the build; Control requires the Builder to echo the same path;
+the Builder rejects absolute paths, `..`, missing/invalid YAML, and symlink
+escapes. An explicit selection never falls back to an auto-discovered sidecar.
+Update the manager and Builder agent first when either side lacks this
+capability.
 
 `--dry-run` renders locally and does not submit a deployment. When local rendering cannot read optional cluster context such as node or storage metadata, JSON output includes `validationMode: "degraded"` plus warnings; text output prints `[warn]` lines. `--skip-dns` and `--skip-orchestrator` are sent to the control API. `--commit` and `--push` are deprecated in control-plane deploy mode.
 

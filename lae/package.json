@@ -1,0 +1,10 @@
+{
+  "name": "@lae/workspace",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.30.0",
+  "scripts": {
+    "check": "pnpm -r check",
+    "contracts:check": "PYTHONPATH=packages/contracts/src python3 -m lae_contracts validate"
+  }
+}

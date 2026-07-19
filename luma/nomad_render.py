@@ -17,22 +17,272 @@ Exposure mapping:
   - none : worker, no service/port unless the manifest declares one.
 """
 
+import hashlib
 import json
+import math
 import re
 import urllib.parse
-from typing import Any, Dict, List, Mapping
+from pathlib import PurePosixPath
+from typing import Any, Dict, List, Mapping, Sequence
 
 from .config import LumaConfig
+from .compose import render_storage_class_volume, resolve_storage_mounts
 from .errors import LumaError
-from .service import ServiceSpec, tcp_entrypoint_name, tcp_relay_publish_port
+from .registry import normalize_registry_host
+from .service import ServiceSpec, slugify, tcp_entrypoint_name, tcp_relay_publish_port
 
 # Nomad requires CPU (MHz) and MemoryMB on every task. These match Nomad's own
 # defaults so an unspecified manifest behaves like a small container.
 DEFAULT_CPU_MHZ = 100
 DEFAULT_MEMORY_MB = 256
 
+# Image acquisition happens before a Nomad task becomes healthy.  A first pull
+# from the Builder registry (or an explicitly configured private registry) can
+# legitimately take longer than the old two/three-minute windows, especially
+# for multi-gigabyte images or a Compose allocation pulling several images in
+# parallel.  Once Nomad marks that allocation unhealthy it will never promote
+# it later, even if every task eventually starts, so the deadline must cover a
+# real cold pull rather than only process startup.  Keep it bounded and leave a
+# separate ten-minute convergence margin after the healthy deadline.
+APPLICATION_HEALTHY_DEADLINE_NS = 1_800_000_000_000  # 30m
+APPLICATION_PROGRESS_DEADLINE_NS = 2_400_000_000_000  # 40m
+
+# Control owns persistent orchestration state, active WebSocket sessions, and
+# streamed Builder progress.  A tenant-sized 256 MiB hard limit is too small:
+# serializing a multi-megabyte control.json while a build stream is active can
+# exceed it and make every public Control route return 502 until Nomad restarts
+# the task.  Reserve enough for the steady state and retain bounded burst room.
+CONTROL_CPU_MHZ = 500
+CONTROL_MEMORY_MB = 1024
+# Nomad ignores MemoryMaxMB unless memory oversubscription is enabled. Keep the
+# hard reservation equal to the actual Control ceiling so an OOM fix cannot be
+# silently discarded by the scheduler.
+CONTROL_MEMORY_MAX_MB = 0
+
+# Traefik's default entrypoint read timeout is 60 seconds and covers the whole
+# request body. BuildKit may finalize a large registry layer with one PUT, so a
+# valid push can exceed that limit even while bytes are continuously flowing.
+# Keep a finite boundary for public ingress, but make it large enough for a
+# multi-gigabyte *single layer* on a slow CI uplink. Six hours also matches the
+# practical upper bound of common CI jobs; unlike ``0`` it does not turn an
+# authenticated registry requirement into an unbounded public slow-body slot.
+TRAEFIK_WEBSECURE_READ_TIMEOUT = "6h"
+
 EDGE_EXPOSURES = {"cn-edge", "external-edge"}
 HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
+NOMAD_TAILSCALE_META_KEY = "luma_tailscale_ip"
+NOMAD_TAILSCALE_SERVICE_ADDRESS = f"${{meta.{NOMAD_TAILSCALE_META_KEY}}}"
+NOMAD_LOCAL_HOST_SERVICE_ADDRESS = "__luma_nomad_host__"
+
+CONTROL_JOB_FILE_ENV_NAMES = frozenset(
+    {
+        "LUMA_LAE_SERVICE_PRINCIPALS_FILE",
+        "LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE",
+        "LUMA_CREDENTIAL_BROKER_TOKEN_FILE",
+        "LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE",
+        "LUMA_LAE_ADMIN_TOKEN_FILE",
+        "LUMA_LAE_PLAN_SIGNING_KEYS_FILE",
+    }
+)
+CONTROL_JOB_URL_ENV_NAMES = frozenset(
+    {
+        "LUMA_CREDENTIAL_BROKER_URL",
+        "LUMA_OBJECT_SOURCE_BROKER_URL",
+        "LUMA_LAE_ADMIN_API_URL",
+    }
+)
+CONTROL_JOB_TIMEOUT_ENV_NAMES = frozenset(
+    {
+        "LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS",
+        "LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS",
+        "LUMA_LAE_ADMIN_TIMEOUT_SECONDS",
+    }
+)
+CONTROL_JOB_LAE_CONFIG_ENV_NAMES = frozenset(
+    {
+        "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST",
+        "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY",
+        "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY",
+        "LUMA_LAE_BUILDER_REGISTRY_INSECURE",
+        "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON",
+        "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON",
+        "LUMA_LAE_RUNTIME_STORAGE_CLASS",
+        "LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS",
+    }
+)
+CONTROL_JOB_ENV_ALLOWLIST = frozenset(
+    {
+        *CONTROL_JOB_FILE_ENV_NAMES,
+        *CONTROL_JOB_URL_ENV_NAMES,
+        *CONTROL_JOB_TIMEOUT_ENV_NAMES,
+        *CONTROL_JOB_LAE_CONFIG_ENV_NAMES,
+    }
+)
+
+
+def _control_job_file_path(value: str) -> str:
+    candidate = value.strip()
+    if (
+        candidate != value
+        or not candidate
+        or len(candidate) > 1024
+        or any(character in candidate for character in ("\0", "\n", "\r"))
+    ):
+        raise LumaError("Luma Control file path is invalid")
+    path = PurePosixPath(candidate)
+    raw_parts = candidate.split("/")
+    if (
+        not path.is_absolute()
+        or path == PurePosixPath("/opt/luma/control")
+        or path.parts[:4] != ("/", "opt", "luma", "control")
+        or any(part in {"", ".", ".."} for part in raw_parts[1:])
+    ):
+        raise LumaError(
+            "Luma Control file paths must stay within /opt/luma/control"
+        )
+    return candidate
+
+
+def _control_job_https_url(name: str, value: str) -> str:
+    candidate = value.strip()
+    if (
+        candidate != value
+        or not candidate
+        or len(candidate) > 2048
+        or any(character in candidate for character in ("\0", "\n", "\r", " ", "\t"))
+    ):
+        raise LumaError(f"{name} must be a closed HTTPS URL")
+    try:
+        parsed = urllib.parse.urlsplit(candidate)
+        port = parsed.port
+    except ValueError:
+        raise LumaError(f"{name} must be a closed HTTPS URL") from None
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or port is not None and not 1 <= port <= 65535
+        or name == "LUMA_LAE_ADMIN_API_URL" and parsed.path not in {"", "/"}
+    ):
+        raise LumaError(f"{name} must be a closed HTTPS URL")
+    return candidate.rstrip("/") if parsed.path == "/" else candidate
+
+
+def _control_job_timeout(name: str, value: str) -> str:
+    candidate = value.strip()
+    try:
+        timeout = float(candidate)
+    except (TypeError, ValueError):
+        raise LumaError(f"{name} is invalid") from None
+    minimum = 1.0 if name == "LUMA_LAE_ADMIN_TIMEOUT_SECONDS" else 0.1
+    if (
+        candidate != value
+        or not candidate
+        or len(candidate) > 32
+        or not math.isfinite(timeout)
+        or not minimum <= timeout <= 30.0
+    ):
+        raise LumaError(f"{name} is invalid")
+    return candidate
+
+
+def _control_job_lae_config(name: str, value: str) -> str:
+    """Validate non-secret LAE policy values copied into Luma Control."""
+
+    candidate = value.strip()
+    if candidate != value or not candidate or len(candidate) > 4096:
+        raise LumaError(f"{name} is invalid")
+    if name == "LUMA_BUILDER_ANALYZE_IMAGE_DIGEST":
+        if re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", candidate) is None:
+            raise LumaError(f"{name} must be an immutable image digest")
+        return candidate
+    if name in {
+        "LUMA_LAE_BUILDER_ALLOW_ANONYMOUS_REGISTRY",
+        "LUMA_LAE_BUILDER_ALLOW_BASIC_REGISTRY",
+        "LUMA_LAE_BUILDER_REGISTRY_INSECURE",
+    }:
+        if candidate not in {"0", "1"}:
+            raise LumaError(f"{name} must be 0 or 1")
+        return candidate
+    if name == "LUMA_LAE_BUILDER_EXTERNAL_REGISTRIES_JSON":
+        try:
+            registries = json.loads(candidate)
+        except json.JSONDecodeError:
+            raise LumaError(f"{name} is invalid") from None
+        if (
+            not isinstance(registries, list)
+            or len(registries) > 32
+            or any(not isinstance(item, str) for item in registries)
+        ):
+            raise LumaError(f"{name} is invalid")
+        try:
+            normalized = [normalize_registry_host(item) for item in registries]
+        except LumaError:
+            raise LumaError(f"{name} is invalid") from None
+        if (
+            normalized != registries
+            or len(set(normalized)) != len(normalized)
+            or normalized != sorted(normalized)
+        ):
+            raise LumaError(f"{name} must be a sorted exact registry list")
+        return json.dumps(normalized, separators=(",", ":"), ensure_ascii=True)
+    if name == "LUMA_LAE_RUNTIME_NODE_ALLOWLIST_JSON":
+        try:
+            nodes = json.loads(candidate)
+        except json.JSONDecodeError:
+            raise LumaError(f"{name} is invalid") from None
+        if (
+            not isinstance(nodes, list)
+            or not nodes
+            or len(nodes) > 64
+            or any(not isinstance(item, str) for item in nodes)
+            or len(nodes) != len(set(nodes))
+            or nodes != sorted(nodes)
+            or any(
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item)
+                is None
+                for item in nodes
+            )
+        ):
+            raise LumaError(f"{name} must be a sorted exact node list")
+        return json.dumps(nodes, separators=(",", ":"), ensure_ascii=True)
+    if name == "LUMA_LAE_RUNTIME_STORAGE_CLASS":
+        if re.fullmatch(r"[a-z][a-z0-9-]{0,62}", candidate) is None:
+            raise LumaError(f"{name} is invalid")
+        return candidate
+    if name == "LUMA_LAE_RUNTIME_VERIFY_TIMEOUT_SECONDS":
+        try:
+            timeout = int(candidate)
+        except ValueError:
+            raise LumaError(f"{name} is invalid") from None
+        if str(timeout) != candidate or not 30 <= timeout <= 3600:
+            raise LumaError(f"{name} is invalid")
+        return candidate
+    raise LumaError(f"{name} is not an allowlisted LAE Control setting")
+
+
+def control_job_environment(values: Mapping[str, str] | None) -> Dict[str, str]:
+    """Return the only host values allowed into the luma-control Nomad task."""
+
+    result: Dict[str, str] = {}
+    source = values or {}
+    for name in sorted(CONTROL_JOB_ENV_ALLOWLIST):
+        raw = source.get(name)
+        if raw is None or str(raw) == "":
+            continue
+        value = str(raw)
+        if name in CONTROL_JOB_FILE_ENV_NAMES:
+            result[name] = _control_job_file_path(value)
+        elif name in CONTROL_JOB_URL_ENV_NAMES:
+            result[name] = _control_job_https_url(name, value)
+        elif name in CONTROL_JOB_TIMEOUT_ENV_NAMES:
+            result[name] = _control_job_timeout(name, value)
+        else:
+            result[name] = _control_job_lae_config(name, value)
+    return result
 
 
 def uses_traefik_tags(service: ServiceSpec) -> bool:
@@ -45,6 +295,9 @@ def render_traefik_job(
     nomad_addr: str = "http://127.0.0.1:4646",
     acme_email: str = "",
     cert_resolver: str = "letsencrypt",
+    acme_dns_provider: str = "",
+    acme_dns_token_file: str = "",
+    acme_domains: list[str] | None = None,
     tcp_entrypoints: list[int] | None = None,
     as_json: bool = True,
 ) -> str | Dict[str, Any]:
@@ -62,8 +315,15 @@ def render_traefik_job(
         "--providers.nomad=true",
         f"--providers.nomad.endpoint.address={nomad_addr}",
         "--providers.nomad.exposedByDefault=false",
+        "--providers.nomad.watch=true",
+        "--accesslog=true",
+        "--accesslog.format=json",
         "--entrypoints.web.address=:80",
         "--entrypoints.websecure.address=:443",
+        (
+            "--entrypoints.websecure.transport.respondingTimeouts.readTimeout="
+            f"{TRAEFIK_WEBSECURE_READ_TIMEOUT}"
+        ),
         "--entrypoints.web.http.redirections.entrypoint.to=websecure",
         "--entrypoints.web.http.redirections.entrypoint.scheme=https",
     ]
@@ -73,9 +333,18 @@ def render_traefik_job(
         args.extend([
             f"--certificatesresolvers.{cert_resolver}.acme.email={acme_email}",
             f"--certificatesresolvers.{cert_resolver}.acme.storage=/letsencrypt/acme.json",
-            f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge=true",
-            f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge.entrypoint=web",
+            f"--entrypoints.websecure.http.tls.certresolver={cert_resolver}",
         ])
+        if acme_dns_provider:
+            args.extend([
+                f"--certificatesresolvers.{cert_resolver}.acme.dnschallenge=true",
+                f"--certificatesresolvers.{cert_resolver}.acme.dnschallenge.provider={acme_dns_provider}",
+            ])
+        else:
+            args.extend([
+                f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge=true",
+                f"--certificatesresolvers.{cert_resolver}.acme.httpchallenge.entrypoint=web",
+            ])
     args.append("--api.dashboard=true")
     job = {
         "ID": "traefik", "Name": "traefik", "Type": "service", "Datacenters": ["dc1"],
@@ -99,6 +368,27 @@ def render_traefik_job(
         }],
         "Meta": {"luma.managed": "true"},
     }
+    task = job["TaskGroups"][0]["Tasks"][0]
+    if acme_dns_provider == "cloudflare" and acme_dns_token_file:
+        task["Env"] = {"CF_DNS_API_TOKEN_FILE": "/run/secrets/cloudflare-dns-token"}
+        task["Config"]["mount"].append({
+            "type": "bind",
+            "target": "/run/secrets/cloudflare-dns-token",
+            "source": acme_dns_token_file,
+            "readonly": True,
+        })
+    for index, domain in enumerate(acme_domains or []):
+        clean = str(domain).strip().strip(".")
+        if not clean:
+            continue
+        # Keep the wildcard as the ACME certificate's main domain.  A legacy
+        # bare-domain-only record keyed by ``clean`` otherwise makes Traefik
+        # consider the request already satisfied and it never adds the SAN,
+        # leaving tenant subdomains on the default self-signed certificate.
+        args.extend([
+            f"--entrypoints.websecure.http.tls.domains[{index}].main=*.{clean}",
+            f"--entrypoints.websecure.http.tls.domains[{index}].sans={clean}",
+        ])
     wrapped = {"Job": job}
     return json.dumps(wrapped, indent=2, ensure_ascii=False) if as_json else wrapped
 
@@ -170,6 +460,9 @@ def render_compose_job(
     secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
     egress_proxy_url: str | None = None,
+    node_records: Dict[str, Any] | None = None,
+    admitted_nodes: Sequence[str] = (),
+    render_storage: bool = True,
 ) -> str | Dict[str, Any]:
     """Render a Luma compose deployment into a single multi-task Nomad job.
 
@@ -199,6 +492,11 @@ def render_compose_job(
             regions.add(override.region)
         if override.node:
             nodes.add(override.node)
+    nodes.update(
+        str(volume.local_node)
+        for volume in deployment.volumes.values()
+        if volume.kind == "local" and volume.local_node
+    )
     if len(regions) > 1:
         raise LumaError(
             f"compose deployment {name} pins services to multiple regions {sorted(regions)}; "
@@ -225,6 +523,16 @@ def render_compose_job(
     dynamic_ports: List[Dict[str, Any]] = []
     nomad_services: List[Dict[str, Any]] = []
     tasks: List[Dict[str, Any]] = []
+    storage_endpoint_by_volume: Dict[str, str] = {}
+    if render_storage and node_records is not None:
+        storage_endpoint_by_volume = {
+            str(item["volume"]): str(item["endpoint"])
+            for item in resolve_storage_mounts(
+                deployment,
+                node_records=node_records,
+                admitted_nodes=admitted_nodes,
+            )
+        }
 
     for svc_name, body in services.items():
         if not isinstance(body, dict):
@@ -308,6 +616,54 @@ def render_compose_job(
                 "readonly": len(parts) > 2 and parts[2] == "ro",
             })
         if mounts:
+            for mount in mounts:
+                if str(mount.get("type") or "") != "volume":
+                    continue
+                volume_name = str(mount.get("source") or "")
+                volume = deployment.volumes.get(volume_name)
+                if volume is None:
+                    continue
+                if volume.kind == "local":
+                    mount["type"] = "bind"
+                    mount["source"] = str(volume.local_path or "")
+                    continue
+                if not volume.storage_class:
+                    continue
+                if not render_storage:
+                    continue
+                storage_class = deployment.storage_classes[volume.storage_class]
+                endpoint = storage_endpoint_by_volume.get(volume_name)
+                if endpoint is None:
+                    raise LumaError(
+                        f"compose volume {volume_name} requires resolved storage endpoints; "
+                        "load cluster node records before rendering"
+                    )
+                driver = render_storage_class_volume(
+                    storage_class,
+                    volume,
+                    endpoint,
+                )
+                identity = "\0".join(
+                    (
+                        deployment.slug,
+                        volume_name,
+                        storage_class.name,
+                        endpoint,
+                        volume.path or volume.name,
+                    )
+                )
+                digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+                base = f"{deployment.slug}-{slugify(volume_name)}"[:40].rstrip("-")
+                mount["source"] = f"luma-{base}-{digest}"
+                mount["volume_options"] = {
+                    "no_copy": False,
+                    "driver_config": {
+                        "name": str(driver.get("driver") or "local"),
+                        # Nomad's task-driver JSON schema requires a map to be
+                        # wrapped in a single-element list here.
+                        "options": [dict(driver.get("driver_opts") or {})],
+                    },
+                }
             docker_config["mount"] = mounts
 
         env: Dict[str, str] = {}
@@ -340,24 +696,52 @@ def render_compose_job(
                 resources["MemoryMB"] = _memory_mb(reservations["memory"])
 
         task: Dict[str, Any] = {"Name": str(svc_name), "Driver": "docker", "Config": docker_config, "Resources": resources}
+        stop_grace_period = body.get("stop_grace_period")
+        if stop_grace_period is not None:
+            task["KillTimeout"] = _duration_ns(stop_grace_period)
         if env:
             task["Env"] = env
         tasks.append(task)
 
+        health_check = _compose_health_check(body, label, name, str(svc_name))
         if exposure in {"cn-edge", "external-edge"} and override and override.domain and port:
+            # Compose service names are only unique inside one stack. Registering
+            # every tenant's common `web`/`api` task under that raw name makes
+            # Traefik merge unrelated allocations and gives every stack the same
+            # router key. Keep the task and port label Compose-compatible, but
+            # namespace the discovery service and router by the deployment slug.
+            service_id = f"{name}-{slugify(str(svc_name))}"
             service_block = {
-                "Name": str(svc_name),
+                "Name": service_id,
                 "PortLabel": label,
                 "Provider": "nomad",
                 "Tags": [
                     "traefik.enable=true",
-                    f"traefik.http.routers.{label}.rule=Host(`{override.domain}`)",
-                    f"traefik.http.routers.{label}.entrypoints={config.entrypoint}",
-                    f"traefik.http.routers.{label}.tls.certresolver={config.cert_resolver}",
+                    f"traefik.http.routers.{service_id}.rule=Host(`{override.domain}`)",
+                    f"traefik.http.routers.{service_id}.entrypoints={config.entrypoint}",
+                    f"traefik.http.routers.{service_id}.tls.certresolver={config.cert_resolver}",
+                    f"traefik.http.routers.{service_id}.service={service_id}",
                 ],
             }
+            service_block["Tags"].extend(
+                _router_tls_domain_tags(config, service_id, str(override.domain))
+            )
+            if health_check is not None:
+                service_block["Checks"] = [health_check]
             _set_edge_service_address(service_block, service_address)
             nomad_services.append(service_block)
+        elif exposure in {"tailscale-relay", "tcp-relay"} and health_check is not None:
+            # File-provider relay routes do not need a discovery service, but
+            # Nomad still needs one to make the Compose healthcheck part of the
+            # deployment gate. Keep it tagless so Traefik cannot publish it.
+            nomad_services.append(
+                {
+                    "Name": f"{name}-{slugify(str(svc_name))}-health",
+                    "PortLabel": label,
+                    "Provider": "nomad",
+                    "Checks": [health_check],
+                }
+            )
 
     group: Dict[str, Any] = {
         "Name": name,
@@ -382,11 +766,16 @@ def render_compose_job(
         group["Networks"] = [network]
     if nomad_services:
         group["Services"] = nomad_services
+        if not service_address:
+            constraints.append(_tailscale_service_address_constraint())
 
     job = {
         "ID": name, "Name": name, "Type": "service", "Datacenters": ["dc1"],
         "Constraints": constraints,
-        "Update": _compose_update_stanza(deployment),
+        "Update": _compose_update_stanza(
+            deployment,
+            has_service_checks=any(service.get("Checks") for service in nomad_services),
+        ),
         "TaskGroups": [group],
         "Meta": {"luma.managed": "true", "luma.region": region, "luma.compose": "true"},
     }
@@ -398,6 +787,7 @@ def render_control_job(
     *,
     image: str,
     node_name: str,
+    control_environment: Mapping[str, str] | None = None,
     as_json: bool = True,
 ) -> str | Dict[str, Any]:
     """Render the luma-control infrastructure job (bridge mode, port 8080).
@@ -407,38 +797,65 @@ def render_control_job(
     why). Pinned to the manager node. Routing is handled separately by the
     Traefik file route.
     """
+    environment = {
+        "DOCKER_API_VERSION": "1.44",
+        "LUMA_CONTROL_CONFIG": "/opt/luma/luma.yaml",
+        "LUMA_CONTROL_STATE_DIR": "/opt/luma/control",
+        **control_job_environment(control_environment),
+    }
     job = {
         "ID": "luma-control",
         "Name": "luma-control",
         "Type": "service",
         "Datacenters": ["dc1"],
         "Constraints": [{"LTarget": "${meta.luma_node_name}", "RTarget": node_name, "Operand": "="}],
-        "Update": {"AutoRevert": True, "MinHealthyTime": 6_000_000_000, "HealthyDeadline": 120_000_000_000},
+        "Update": {
+            "AutoRevert": True,
+            "MinHealthyTime": 6_000_000_000,
+            "HealthyDeadline": 120_000_000_000,
+            "HealthCheck": "checks",
+        },
         "TaskGroups": [{
             "Name": "luma-control",
             "Count": 1,
             "MaxClientDisconnect": 3_600_000_000_000,
             "Networks": [{"Mode": "bridge", "ReservedPorts": [{"Label": "http", "Value": 8080, "To": 8080}]}],
+            "Services": [{
+                "Name": "luma-control",
+                "PortLabel": "http",
+                "Provider": "nomad",
+                "AddressMode": "host",
+                "Checks": [{
+                    "Name": "luma-control-health",
+                    "Type": "http",
+                    "PortLabel": "http",
+                    "Path": "/v1/health",
+                    "Interval": 10_000_000_000,
+                    "Timeout": 2_000_000_000,
+                }],
+            }],
             "Tasks": [{
                 "Name": "luma-control",
                 "Driver": "docker",
                 "Config": {
                     "image": image,
                     "ports": ["http"],
+                    # Keep the complete Luma state tree on one bind mount.  Route
+                    # files are staged in /opt/luma/.luma-route-staging and then
+                    # renamed into /opt/luma/routes; separate nested bind mounts
+                    # make that rename EXDEV and force staging back into the
+                    # Traefik-watched directory.
                     "mount": [
-                        {"type": "bind", "target": "/opt/luma/control", "source": "/opt/luma/control"},
-                        {"type": "bind", "target": "/opt/luma/luma.yaml", "source": "/opt/luma/luma.yaml"},
-                        {"type": "bind", "target": "/opt/luma/routes", "source": "/opt/luma/routes"},
-                        {"type": "bind", "target": "/opt/luma/stacks", "source": "/opt/luma/stacks"},
+                        {"type": "bind", "target": "/opt/luma", "source": "/opt/luma"},
                         {"type": "bind", "target": "/var/run/docker.sock", "source": "/var/run/docker.sock"},
                     ],
                 },
-                "Env": {
-                    "DOCKER_API_VERSION": "1.44",
-                    "LUMA_CONTROL_CONFIG": "/opt/luma/luma.yaml",
-                    "LUMA_CONTROL_STATE_DIR": "/opt/luma/control",
+                "Env": environment,
+                "Resources": {
+                    "CPU": CONTROL_CPU_MHZ,
+                    "MemoryMB": CONTROL_MEMORY_MB,
+                    "MemoryMaxMB": CONTROL_MEMORY_MAX_MB,
                 },
-                "Resources": {"CPU": 200, "MemoryMB": 256},
             }],
         }],
         "Meta": {"luma.managed": "true"},
@@ -514,6 +931,8 @@ def _build_job(
     nomad_service = _service_block(config, service, port_label)
     if nomad_service is not None:
         group["Services"] = [nomad_service]
+        if nomad_service.get("Address") == NOMAD_TAILSCALE_SERVICE_ADDRESS:
+            constraints.append(_tailscale_service_address_constraint())
 
     tasks = [_app_task(config, service, port_label, registry_auth=registry_auth, secrets=secrets, resolve_secrets=resolve_secrets, egress_proxy_url=egress_proxy_url)]
     sidecar = _cloudflared_task(service, secrets=secrets, resolve_secrets=resolve_secrets)
@@ -540,7 +959,8 @@ def _update_stanza(service: ServiceSpec, *, has_service_check: bool = False) -> 
         "AutoRevert": True,
         "MaxParallel": 1,
         "MinHealthyTime": 5_000_000_000,  # 5s in ns
-        "HealthyDeadline": 120_000_000_000,  # 2m in ns
+        "HealthyDeadline": APPLICATION_HEALTHY_DEADLINE_NS,
+        "ProgressDeadline": APPLICATION_PROGRESS_DEADLINE_NS,
         "HealthCheck": "checks" if has_service_check else "task_states",
     }
     if _canary_before_promote(service):
@@ -549,13 +969,18 @@ def _update_stanza(service: ServiceSpec, *, has_service_check: bool = False) -> 
     return update
 
 
-def _compose_update_stanza(deployment: Any) -> Dict[str, Any]:
+def _compose_update_stanza(
+    deployment: Any,
+    *,
+    has_service_checks: bool = False,
+) -> Dict[str, Any]:
     update = {
         "AutoRevert": True,
         "MaxParallel": 1,
         "MinHealthyTime": 6_000_000_000,  # 6s in ns
-        "HealthyDeadline": 180_000_000_000,  # 3m in ns
-        "HealthCheck": "task_states",
+        "HealthyDeadline": APPLICATION_HEALTHY_DEADLINE_NS,
+        "ProgressDeadline": APPLICATION_PROGRESS_DEADLINE_NS,
+        "HealthCheck": "checks" if has_service_checks else "task_states",
     }
     if _compose_canary_before_promote(deployment):
         update["Canary"] = 1
@@ -711,6 +1136,7 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
         f"traefik.http.routers.{name}.entrypoints={config.entrypoint}",
         f"traefik.http.routers.{name}.tls.certresolver={config.cert_resolver}",
     ]
+    tags.extend(_router_tls_domain_tags(config, name, str(service.domain)))
     tags.extend(str(t) for t in service.labels)
     block: Dict[str, Any] = {
         "Name": name,
@@ -725,11 +1151,47 @@ def _service_block(config: LumaConfig, service: ServiceSpec, port_label: str | N
     return block
 
 
+def _router_tls_domain_tags(
+    config: LumaConfig, router_name: str, hostname: str
+) -> List[str]:
+    """Bind generated host routes to the configured reusable wildcard cert."""
+
+    clean_host = str(hostname or "").strip().lower().strip(".")
+    for configured in config.acme_domains:
+        domain = str(configured).strip().lower().strip(".")
+        if not domain or not (
+            clean_host == domain or clean_host.endswith(f".{domain}")
+        ):
+            continue
+        return [
+            f"traefik.http.routers.{router_name}.tls.domains[0].main=*.{domain}",
+            f"traefik.http.routers.{router_name}.tls.domains[0].sans={domain}",
+        ]
+    return []
+
+
 def _set_edge_service_address(block: Dict[str, Any], address: str) -> None:
-    if address:
-        block["Address"] = address
-    else:
+    # A scheduled node's default host address may be a provider-private LAN IP
+    # (for example 10.0.0.10 on Tencent), which the manager-side Traefik cannot
+    # reach. Pinned nodes can use their resolved configured address; otherwise
+    # interpolate the Tailscale address published by every Luma Nomad client.
+    if address == NOMAD_LOCAL_HOST_SERVICE_ADDRESS:
+        # Traefik and the workload share the manager host. Let Nomad advertise
+        # the actual host-network address bound to the dynamic port; overriding
+        # it with the manager's Tailscale address produces a guaranteed 502
+        # when the port binds to a provider/bridge host-network address.
+        block.pop("Address", None)
         block["AddressMode"] = "host"
+        return
+    block["Address"] = address or NOMAD_TAILSCALE_SERVICE_ADDRESS
+    block.pop("AddressMode", None)
+
+
+def _tailscale_service_address_constraint() -> Dict[str, str]:
+    # Fail closed on legacy nodes that have not received the metadata migration
+    # yet: an unscheduled app is diagnosable, while a "running" app routed to an
+    # unreachable private IP is a false success.
+    return {"LTarget": NOMAD_TAILSCALE_SERVICE_ADDRESS, "Operand": "is_set"}
 
 
 def _node_service_address(config: LumaConfig, node_name: str) -> str:
@@ -739,6 +1201,8 @@ def _node_service_address(config: LumaConfig, node_name: str) -> str:
     if node is None:
         return ""
     raw = node.raw or {}
+    if bool(raw.get("lumaLocalIngress") or raw.get("localIngress")):
+        return NOMAD_LOCAL_HOST_SERVICE_ADDRESS
     for key in ("tailscaleIP", "tailscaleIp", "tailscaleName", "advertiseAddr"):
         value = _clean_service_address(raw.get(key))
         if value:
@@ -789,6 +1253,44 @@ def _health_check(service: ServiceSpec, port_label: str) -> Dict[str, Any] | Non
         "Interval": interval,
         "Timeout": timeout,
     }
+
+
+def _compose_health_check(
+    body: Mapping[str, Any],
+    port_label: str,
+    deployment_name: str,
+    service_name: str,
+) -> Dict[str, Any] | None:
+    """Translate a public Compose healthcheck into a Nomad service check.
+
+    Nomad does not consume Docker/Compose healthchecks from the Docker driver.
+    Without an explicit service check it marks an allocation healthy as soon as
+    the container process exists, even while the application is still running
+    migrations or waiting for its database. Public services already have a
+    mapped group port, so they can be checked without exposing any extra port.
+    """
+    healthcheck = body.get("healthcheck")
+    if not isinstance(healthcheck, Mapping) or healthcheck.get("disable") is True:
+        return None
+    test = healthcheck.get("test")
+    if not isinstance(test, list) or not test or str(test[0]).upper() == "NONE":
+        return None
+    name = f"{deployment_name}-{slugify(service_name)}"
+    base = {
+        "Name": f"{name}-health",
+        "PortLabel": port_label,
+        "Interval": _duration_ns(healthcheck.get("interval", "30s")),
+        "Timeout": _duration_ns(healthcheck.get("timeout", "5s")),
+    }
+    url = _healthcheck_url(test[1:] if str(test[0]).upper() in {"CMD", "CMD-SHELL"} else test)
+    if url:
+        parsed = urllib.parse.urlparse(url)
+        return {
+            **base,
+            "Type": "http",
+            "Path": parsed.path or "/",
+        }
+    return {**base, "Type": "tcp"}
 
 
 def _healthcheck_url(args: List[Any]) -> str:

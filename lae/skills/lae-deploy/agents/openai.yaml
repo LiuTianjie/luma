@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy with LAE"
+  short_description: "Inspect, deploy, and operate apps safely on Luma"
+  default_prompt: "Use $lae-deploy to inspect this application and deploy it safely through LAE."

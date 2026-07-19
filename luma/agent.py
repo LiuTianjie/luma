@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import fcntl
 import json
 import os
 import platform
 import pty
+import queue
 import re
 import select
+import secrets
 import shutil
 import shlex
 import signal
@@ -25,11 +28,22 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping
 
+from . import __version__
+from .builder_build_executor import build_plan, builder_build_available
+from .builder_executor import (
+    BuilderCleanupFailed,
+    BuilderTaskCanceled,
+    analyze_source,
+    builder_analyze_available,
+    open_builder_analysis_artifact,
+)
 from .errors import LumaError
+from .installer import luma_installer_command
 from .local import LocalExecutor, LocalResult
 from .service import slugify
 
 DEFAULT_AGENT_CONFIG = Path("/opt/luma/node-agent/agent.json")
+DEFAULT_BUILDX_CONFIG = Path.home() / ".local" / "state" / "luma" / "buildx"
 DEFAULT_AGENT_SERVICE = "luma-node-agent"
 DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS = 30
 DEFAULT_BUSY_HEARTBEAT_INTERVAL_SECONDS = 30.0
@@ -60,6 +74,16 @@ def _docker_binary() -> str | None:
         "/Applications/OrbStack.app/Contents/MacOS/xbin/docker",
         "/Applications/Docker.app/Contents/Resources/bin/docker",
     ):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _crane_binary() -> str | None:
+    crane = shutil.which("crane")
+    if crane:
+        return crane
+    for candidate in ("/usr/local/bin/crane", "/opt/homebrew/bin/crane"):
         if os.path.exists(candidate):
             return candidate
     return None
@@ -100,16 +124,47 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "docker-image",
             "docker-egress-proxy",
             "luma-update",
+            "luma-update-proxy-v1",
+            "luma-update-egress-fallback-v1",
+            "manager-update-v1",
             "nomad-join",
             "nomad-cni-repair",
             "terminal",
         ]
     elif os_value == "darwin":
-        capabilities = ["nfs-host", "managed-volume-path", "docker-volume", "docker-image", "luma-update", "nomad-join", "terminal"]
+        capabilities = [
+            "nfs-host",
+            "managed-volume-path",
+            "docker-volume",
+            "docker-image",
+            "luma-update",
+            "luma-update-proxy-v1",
+            "luma-update-egress-fallback-v1",
+            "nomad-join",
+            "terminal",
+        ]
     else:
         return []
     if _docker_buildx_available():
         capabilities.append("docker-build")
+    if builder_analyze_available(os_value):
+        # Do not advertise the aggregate builder-task-v1 capability: this node
+        # implements analyze-source only.  build-plan gets its own executor and
+        # capability when that code genuinely exists.
+        capabilities.append("builder-analyze-v1")
+        capabilities.append("builder-artifact-export-v1")
+    if builder_build_available(os_value):
+        # build-plan has a separate, stricter rootless BuildKit + supply-chain
+        # gate.  Never advertise the aggregate builder-task-v1 capability.
+        capabilities.append("builder-build-v1")
+    if os_value == "linux" and _crane_binary():
+        # The hardened LAE Builder setup installs crane. Control uses this
+        # narrow capability to cache its own release image in the internal
+        # registry before a manager rollout, avoiding a dockerd -> GHCR
+        # dependency during the short control-plane replacement window.
+        capabilities.append("control-image-mirror-v1")
+        capabilities.append("system-image-mirror-v1")
+        capabilities.append("runtime-image-cache-v1")
     return capabilities
 
 
@@ -274,11 +329,90 @@ def _diagnostic_recent_image_pull_errors(executor: LocalExecutor) -> list[str]:
 
 def _diagnostic_nomad_cni_hostports(executor: LocalExecutor) -> Dict[str, Any]:
     if node_agent_os() != "linux":
-        return {"conflicts": []}
+        return {"conflicts": [], "missingNetworks": []}
     result = executor.run_result("iptables -t nat -S CNI-HOSTPORT-DNAT 2>/dev/null || true", timeout=10)
+    missing_networks = _diagnostic_nomad_cni_missing_networks(executor)
     if result.code != 0:
-        return {"conflicts": [], "message": (result.output or "iptables unavailable").strip()}
-    return {"conflicts": _parse_cni_hostport_conflicts(result.output or "")}
+        return {
+            "conflicts": [],
+            "missingNetworks": missing_networks,
+            "message": (result.output or "iptables unavailable").strip(),
+        }
+    return {
+        "conflicts": _parse_cni_hostport_conflicts(result.output or ""),
+        "missingNetworks": missing_networks,
+    }
+
+
+def _diagnostic_nomad_cni_missing_networks(executor: LocalExecutor) -> list[Dict[str, Any]]:
+    # Nomad's bridge network is owned by its running nomad_init_* container. A
+    # Docker daemon restart can restore that container with network=none while
+    # Nomad still considers the allocation healthy. Inspect /proc instead of
+    # entering the namespace: this keeps the check read-only and avoids making
+    # nsenter/ip availability a prerequisite.
+    command = (
+        "set -euo pipefail; "
+        f"{_docker_cli_prelude()}; "
+        'command -v awk >/dev/null 2>&1 || exit 0; '
+        '"$docker_cli" ps --filter name=nomad_init_ --format \'{{.ID}}\' 2>/dev/null '
+        "| while IFS= read -r container; do "
+        '[ -n "$container" ] || continue; '
+        'record=$("$docker_cli" inspect --format '
+        "'{{.Id}}|{{.Name}}|{{.State.Pid}}|{{index .Config.Labels \"com.hashicorp.nomad.alloc_id\"}}' "
+        '"$container" 2>/dev/null || true); '
+        '[ -n "$record" ] || continue; '
+        "IFS='|' read -r container_id container_name pid alloc_id <<< \"$record\"; "
+        "case \"$pid\" in ''|*[!0-9]*) continue ;; esac; "
+        '[ "$pid" -gt 0 ] 2>/dev/null || continue; '
+        '[ -r "/proc/$pid/net/dev" ] || continue; '
+        "interfaces=$(awk -F: 'NR > 2 { name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, \"\", name); "
+        "if (name != \"\") { if (seen) printf \",\"; printf \"%s\", name; seen=1 } } "
+        "END { if (seen) printf \"\\n\" }' \"/proc/$pid/net/dev\" 2>/dev/null || true); "
+        '[ -n "$interfaces" ] || continue; '
+        "printf '%s\\t%s\\t%s\\t%s\\n' \"$container_id\" \"$container_name\" \"$alloc_id\" \"$interfaces\"; "
+        "done"
+    )
+    result = executor.run_result(command, timeout=10)
+    if result.code != 0:
+        return []
+    return _parse_nomad_cni_missing_networks(result.output or "")
+
+
+def _parse_nomad_cni_missing_networks(output: str) -> list[Dict[str, Any]]:
+    missing: list[Dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for line in str(output or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        raw_container, raw_name, raw_alloc_id, raw_interfaces = (part.strip() for part in parts)
+        name = raw_name.removeprefix("/")
+        if not re.fullmatch(r"[0-9a-fA-F]{12,64}", raw_container):
+            continue
+        if not re.fullmatch(r"nomad_init_[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name):
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", raw_alloc_id):
+            continue
+        interfaces = [item.strip() for item in raw_interfaces.split(",") if item.strip()]
+        # Only a successfully inspected namespace containing exactly loopback
+        # is evidence of this failure. Empty, malformed, or additional
+        # interfaces are intentionally treated as non-actionable.
+        if interfaces != ["lo"]:
+            continue
+        container = raw_container[:12].lower()
+        key = (raw_alloc_id, container, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        missing.append(
+            {
+                "allocId": raw_alloc_id,
+                "container": container,
+                "name": name,
+                "interfaces": ["lo"],
+            }
+        )
+    return sorted(missing, key=lambda item: (item["allocId"], item["name"], item["container"]))
 
 
 def _parse_cni_hostport_conflicts(output: str) -> list[Dict[str, Any]]:
@@ -994,14 +1128,18 @@ def _node_tailscale_watchdog_launchd_plist(script_path: str) -> str:
 
 
 def _agent_executable_args(config_path: Path, *, executable: str | None = None) -> list[str]:
-    executable = executable or os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or _current_executable() or sys.executable
+    # Preserve the install layout of the running Luma command. In particular,
+    # a manager refresh may run with root privileges while the supported CLI
+    # lives in the manager operator's home. Falling back to root's PATH here
+    # rewrites a previously healthy service to /root/.local/bin/luma.
+    executable = executable or _installed_luma_executable()
     if Path(executable).name.startswith("python"):
         return [executable, "-m", "luma.cli", "node-agent", "run", "--config", str(config_path)]
     return [executable, "node-agent", "run", "--config", str(config_path)]
 
 
 def _terminal_supervisor_args(config_path: Path, *, executable: str | None = None) -> list[str]:
-    executable = executable or os.environ.get("LUMA_AGENT_EXECUTABLE") or shutil.which("luma") or _current_executable() or sys.executable
+    executable = executable or _installed_luma_executable()
     if Path(executable).name.startswith("python"):
         return [executable, "-m", "luma.cli", "node-agent", "terminal-supervisor", "--config", str(config_path)]
     return [executable, "node-agent", "terminal-supervisor", "--config", str(config_path)]
@@ -1128,6 +1266,7 @@ def _systemd_unit(config_path: Path, *, executable: str | None = None) -> str:
             "",
             "[Service]",
             "Type=simple",
+            "EnvironmentFile=-/etc/default/luma-node-agent",
             f"ExecStart={args}",
             "Restart=always",
             "RestartSec=5",
@@ -1225,6 +1364,7 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
                     node_id=node_id,
                     os_name=node_agent_os(),
                     arch=node_agent_arch(),
+                    version=__version__,
                     capabilities=node_agent_capabilities(),
                     metrics=node_agent_metrics(),
                     container_stats=container_stats,
@@ -1250,44 +1390,223 @@ def run_node_agent(config_path: Path = DEFAULT_AGENT_CONFIG, *, once: bool = Fal
             stats_sampler.stop()
 
 
+class _AgentTaskProgressReporter:
+    """Batch task progress without blocking the task's stdout reader.
+
+    BuildKit can emit hundreds of lines in a few seconds. Sending one Control
+    request per line applies network latency directly to the child process and
+    can eventually fill its stdout pipe. A single background sender preserves
+    ordering while collapsing bursts into bounded requests.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        task_id: str,
+        node_name: str,
+        node_id: str,
+        batch_size: int = 50,
+        flush_interval: float = 0.25,
+    ) -> None:
+        self.client = client
+        self.task_id = task_id
+        self.node_name = node_name
+        self.node_id = node_id
+        self.batch_size = max(int(batch_size), 1)
+        self.flush_interval = max(float(flush_interval), 0.01)
+        self.events: queue.Queue[Dict[str, Any]] = queue.Queue()
+        self.stop = threading.Event()
+        self.closed = threading.Event()
+        self.thread = threading.Thread(
+            target=self._run,
+            name=f"luma-agent-task-progress-{node_name}",
+            daemon=True,
+        )
+        self.thread.start()
+
+    def submit(self, event: Dict[str, Any]) -> None:
+        if not self.closed.is_set():
+            self.events.put(dict(event))
+
+    def close(self) -> None:
+        if self.closed.is_set():
+            return
+        self.closed.set()
+        self.stop.set()
+        self.thread.join(timeout=15)
+
+    def _run(self) -> None:
+        while not self.stop.is_set() or not self.events.empty():
+            try:
+                first = self.events.get(timeout=self.flush_interval)
+            except queue.Empty:
+                continue
+            batch = [first]
+            deadline = time.monotonic() + self.flush_interval
+            while len(batch) < self.batch_size:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    batch.append(self.events.get(timeout=remaining))
+                except queue.Empty:
+                    break
+            if not self._send(batch):
+                # Progress is observational and must never hold the task's
+                # terminal result hostage during a Control outage. Drop the
+                # remaining queued output after bounded retries; the terminal
+                # report still carries the task outcome.
+                while True:
+                    try:
+                        self.events.get_nowait()
+                    except queue.Empty:
+                        return
+
+    def _send(self, events: list[Dict[str, Any]]) -> bool:
+        for attempt in range(2):
+            try:
+                self.client.progress_agent_task(
+                    task_id=self.task_id,
+                    node_name=self.node_name,
+                    node_id=self.node_id,
+                    events=events,
+                    timeout=5,
+                )
+                return True
+            except Exception as exc:
+                if attempt == 1:
+                    print(
+                        f"luma: node agent task progress batch failed: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return False
+                time.sleep(0.25 * (attempt + 1))
+        return False
+
+
 def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dict[str, Any], config_path: Path = DEFAULT_AGENT_CONFIG) -> bool:
     task_id = str(task.get("id") or "")
-    def progress(event: Dict[str, Any]) -> None:
-        try:
-            client.progress_agent_task(task_id=task_id, node_name=node_name, node_id=node_id, events=[event])
-        except Exception as exc:
-            print(f"luma: node agent task progress failed: {exc}", file=sys.stderr, flush=True)
+    cancel_event = threading.Event()
+    progress_reporter = _AgentTaskProgressReporter(
+        client,
+        task_id=task_id,
+        node_name=node_name,
+        node_id=node_id,
+    )
 
-    heartbeat_stop, heartbeat_thread = _start_agent_task_heartbeat(client, node_name=node_name, node_id=node_id, config_path=config_path)
-    try:
-        # Keep task execution and result reporting in separate try scopes: a
-        # network error while reporting SUCCESS must not be caught and inverted
-        # into a "failed" report after the host mutation already happened.
-        try:
-            result = execute_agent_task(task, config_path=config_path, progress=progress)
-        except Exception as exc:
-            _report_agent_task_result(
-                client,
-                task_id=task_id,
-                node_name=node_name,
-                node_id=node_id,
-                status="failed",
-                message=str(exc),
-                result={},
-            )
-            return False
-        restart = bool(result.get("restartAgent"))
+    def report_result(*, status: str, message: str, result: Dict[str, Any]) -> None:
+        progress_reporter.close()
         _report_agent_task_result(
             client,
             task_id=task_id,
             node_name=node_name,
             node_id=node_id,
+            status=status,
+            message=message,
+            result=result,
+        )
+
+    heartbeat_stop, heartbeat_thread = _start_agent_task_heartbeat(
+        client,
+        node_name=node_name,
+        node_id=node_id,
+        active_task_id=task_id,
+        cancel_event=cancel_event,
+        config_path=config_path,
+    )
+    try:
+        # Keep task execution and result reporting in separate try scopes: a
+        # network error while reporting SUCCESS must not be caught and inverted
+        # into a "failed" report after the host mutation already happened.
+        try:
+            if str(task.get("action") or "") == "export-builder-artifact":
+                if cancel_event.is_set():
+                    raise BuilderTaskCanceled("builder artifact export canceled")
+                export = open_builder_analysis_artifact(
+                    task.get("payload") if isinstance(task.get("payload"), dict) else {},
+                    cancel_event=cancel_event,
+                )
+                try:
+                    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+                    response = client.upload_builder_artifact(
+                        lease_id=str(payload.get("leaseId") or ""),
+                        node_name=node_name,
+                        node_id=node_id,
+                        stream=export.stream,
+                        media_type=export.media_type,
+                        digest=export.digest,
+                        size_bytes=export.size_bytes,
+                        timeout=60,
+                    )
+                    if response != {
+                        "leaseId": str(payload.get("leaseId") or ""),
+                        "accepted": True,
+                    }:
+                        raise LumaError("builder artifact upload was not accepted")
+                    result = {
+                        "leaseId": str(payload.get("leaseId") or ""),
+                        "digest": export.digest,
+                        "sizeBytes": export.size_bytes,
+                        "message": "builder artifact exported",
+                    }
+                finally:
+                    export.close()
+            else:
+                result = execute_agent_task(
+                    task,
+                    config_path=config_path,
+                    progress=progress_reporter.submit,
+                    cancel_event=cancel_event,
+                )
+        except BuilderCleanupFailed:
+            report_result(
+                status="failed",
+                message="builder sandbox cleanup failed",
+                result={},
+            )
+            return False
+        except BuilderTaskCanceled as exc:
+            report_result(
+                status="canceled",
+                message=str(exc),
+                result={},
+            )
+            return False
+        except Exception as exc:
+            status = "canceled" if cancel_event.is_set() else "failed"
+            action = str(task.get("action") or "")
+            if action == "analyze-source":
+                failure_message = "builder analyze-source failed"
+            elif action == "build-plan":
+                failure_message = "builder build-plan failed"
+            elif action == "export-builder-artifact":
+                failure_message = "builder artifact export failed"
+            else:
+                failure_message = str(exc)
+            report_result(
+                status=status,
+                message="builder task canceled" if status == "canceled" else failure_message,
+                result={},
+            )
+            return False
+        if cancel_event.is_set():
+            report_result(
+                status="canceled",
+                message="builder task canceled",
+                result={},
+            )
+            return False
+        restart = bool(result.get("restartAgent"))
+        report_result(
             status="succeeded",
             message=str(result.get("message") or "ok"),
             result=result,
         )
         return restart
     finally:
+        progress_reporter.close()
         _stop_agent_task_heartbeat(heartbeat_stop, heartbeat_thread)
 
 
@@ -1301,42 +1620,68 @@ def _report_agent_task_result(
     message: str,
     result: Dict[str, Any],
 ) -> None:
-    """Report a task's terminal result to Control, guarding the call so a
-    reporting failure (network drop, Control restart) is logged rather than
-    escaping and crashing the node agent's poll loop."""
-    try:
-        client.complete_agent_task(
-            task_id=task_id,
-            node_name=node_name,
-            node_id=node_id,
-            status=status,
-            message=message,
-            result=result,
-        )
-    except Exception as exc:
-        print(
-            f"luma: node agent failed to report task {task_id} result ({status}): {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
+    """Keep ownership until Control durably acknowledges the terminal result.
+
+    Host mutations such as preparing a managed volume can already have
+    succeeded when a transient gateway error drops the completion response.
+    Returning to the idle lease loop at that point makes the next heartbeat
+    claim that no task is active, so Control reasonably—but incorrectly—marks
+    the task as interrupted.  The busy heartbeat remains active while this
+    loop retries, preserving the truthful task owner and making a transient
+    Control restart or 502 recover without replaying the host mutation.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            client.complete_agent_task(
+                task_id=task_id,
+                node_name=node_name,
+                node_id=node_id,
+                status=status,
+                message=message,
+                result=result,
+            )
+            return
+        except Exception as exc:
+            delay = min(10.0, 0.5 * (2 ** min(attempt - 1, 5)))
+            print(
+                f"luma: node agent failed to report task {task_id} result "
+                f"({status}); retrying in {delay:g}s: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
 
 
-def _start_agent_task_heartbeat(client: Any, *, node_name: str, node_id: str, config_path: Path) -> tuple[threading.Event, threading.Thread]:
+def _start_agent_task_heartbeat(
+    client: Any,
+    *,
+    node_name: str,
+    node_id: str,
+    active_task_id: str,
+    cancel_event: threading.Event,
+    config_path: Path,
+) -> tuple[threading.Event, threading.Thread]:
     stop = threading.Event()
-    interval = _agent_task_heartbeat_interval(config_path)
+    interval = min(_agent_task_heartbeat_interval(config_path), 2.0)
 
     def loop() -> None:
         while not stop.is_set():
             try:
-                client.heartbeat_agent(
+                response = client.heartbeat_agent(
                     node_name=node_name,
                     node_id=node_id,
+                    active_task_id=active_task_id,
                     os_name=node_agent_os(),
                     arch=node_agent_arch(),
+                    version=__version__,
                     capabilities=node_agent_capabilities(),
                     metrics=node_agent_metrics(),
                     timeout=_agent_task_heartbeat_timeout(interval),
                 )
+                if isinstance(response, dict) and bool(response.get("cancelRequested")):
+                    cancel_event.set()
             except Exception as exc:
                 print(f"luma: node agent busy heartbeat failed: {exc}", file=sys.stderr, flush=True)
             if stop.wait(interval):
@@ -1693,6 +2038,7 @@ def execute_agent_task(
     *,
     config_path: Path = DEFAULT_AGENT_CONFIG,
     progress: Callable[[Dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Dict[str, Any]:
     action = str(task.get("action") or "")
     payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
@@ -1746,9 +2092,80 @@ def execute_agent_task(
             progress=progress,
         )
     if action == "update-luma":
-        return update_luma_install(install_ref=str(payload.get("installRef") or ""), config_path=config_path)
+        return update_luma_install(
+            install_ref=str(payload.get("installRef") or ""),
+            proxy=str(payload.get("proxy") or ""),
+            config_path=config_path,
+            progress=progress,
+        )
+    if action == "start-manager-update":
+        return start_manager_control_update(
+            install_ref=str(payload.get("installRef") or ""),
+            control_image=str(payload.get("controlImage") or ""),
+            domain=str(payload.get("domain") or ""),
+            control_environment=(
+                payload.get("controlEnvironment")
+                if isinstance(payload.get("controlEnvironment"), dict)
+                else {}
+            ),
+            watchdog_peers=[
+                str(value)
+                for value in payload.get("tailscaleWatchdogPeers") or []
+            ],
+        )
+    if action == "manager-update-status":
+        return manager_control_update_status(update_id=str(payload.get("updateId") or ""))
+    if action == "mirror-control-image":
+        return mirror_control_image(
+            source_image=_required(payload, "sourceImage"),
+            push_image=_required(payload, "pushImage"),
+            destination_image=_required(payload, "destinationImage"),
+            platform=str(payload.get("platform") or ""),
+            proxy=str(payload.get("proxy") or ""),
+            insecure=bool(payload.get("insecure")),
+            timeout=int(payload.get("timeout") or 900),
+            registry_auth=payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None,
+            progress=progress,
+        )
+    if action == "mirror-system-image":
+        return mirror_system_image(
+            source_image=_required(payload, "sourceImage"),
+            push_image=_required(payload, "pushImage"),
+            destination_image=_required(payload, "destinationImage"),
+            platform=str(payload.get("platform") or "linux/amd64"),
+            proxy=str(payload.get("proxy") or ""),
+            insecure=bool(payload.get("insecure")),
+            timeout=int(payload.get("timeout") or 900),
+            registry_auth=payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None,
+            progress=progress,
+        )
+    if action == "cache-runtime-image":
+        return cache_runtime_image(
+            source_image=_required(payload, "sourceImage"),
+            push_image=_required(payload, "pushImage"),
+            destination_image=_required(payload, "destinationImage"),
+            platform=str(payload.get("platform") or ""),
+            proxy=str(payload.get("proxy") or ""),
+            insecure=bool(payload.get("insecure")),
+            timeout=int(payload.get("timeout") or 1800),
+            source_registry_auth=(
+                payload.get("sourceRegistryAuth")
+                if isinstance(payload.get("sourceRegistryAuth"), dict)
+                else None
+            ),
+            destination_registry_auth=(
+                payload.get("destinationRegistryAuth")
+                if isinstance(payload.get("destinationRegistryAuth"), dict)
+                else None
+            ),
+            progress=progress,
+        )
     if action == "build-image":
-        return build_image(payload, progress=progress)
+        return build_image(payload, progress=progress, cancel_event=cancel_event)
+    if action == "analyze-source":
+        return analyze_source(payload, progress=progress, cancel_event=cancel_event)
+    if action == "build-plan":
+        return build_plan(payload, progress=progress, cancel_event=cancel_event)
     if action == "configure-insecure-registry":
         return configure_insecure_registry(registry=_required(payload, "registry"))
     if action == "join-nomad":
@@ -1838,26 +2255,59 @@ def remove_managed_nfs_export(*, name: str) -> Dict[str, Any]:
     return {"name": name, "message": "managed NFS export removed"}
 
 
+_DOCKER_CONFIG_CHANGED_MARKER = "LUMA_DOCKER_CONFIG_CHANGED="
+
+
+def _docker_config_changed(output: str) -> bool:
+    matches = re.findall(
+        rf"(?m)^{re.escape(_DOCKER_CONFIG_CHANGED_MARKER)}([01])\s*$",
+        str(output or ""),
+    )
+    if not matches:
+        raise LumaError("Docker daemon configuration completed without reporting whether it changed")
+    return matches[-1] == "1"
+
+
 def configure_docker_egress_proxy(*, proxy: str, no_proxy: str) -> Dict[str, Any]:
     os_value = node_agent_os()
     if os_value != "linux":
         raise LumaError(f"Docker daemon egress proxy setup is not supported on {os_value}")
     if not proxy.startswith(("http://", "https://")):
         raise LumaError("Docker daemon proxy must start with http:// or https://")
+    desired = (
+        "[Service]\n"
+        f'Environment="HTTP_PROXY={proxy}"\n'
+        f'Environment="HTTPS_PROXY={proxy}"\n'
+        f'Environment="NO_PROXY={no_proxy}"\n'
+    )
     command = (
         "set -euo pipefail; "
         "mkdir -p /etc/systemd/system/docker.service.d; "
-        "cat > /etc/systemd/system/docker.service.d/http-proxy.conf <<'EOF'\n"
-        "[Service]\n"
-        f"Environment=\"HTTP_PROXY={proxy}\"\n"
-        f"Environment=\"HTTPS_PROXY={proxy}\"\n"
-        f"Environment=\"NO_PROXY={no_proxy}\"\n"
-        "EOF\n"
+        "f=/etc/systemd/system/docker.service.d/http-proxy.conf; "
+        'tmp=$(mktemp "${f}.luma.XXXXXX"); '
+        'trap \'rm -f "$tmp"\' EXIT; '
+        f"printf '%s' {shlex.quote(desired)} > \"$tmp\"; "
+        'if [ -f "$f" ] && cmp -s "$tmp" "$f"; then '
+        "changed=0; "
+        "else "
+        'install -m 0644 "$tmp" "$f"; '
         "systemctl daemon-reload; "
-        "systemctl restart docker"
+        "systemctl restart docker; "
+        "changed=1; "
+        "fi; "
+        f"printf '{_DOCKER_CONFIG_CHANGED_MARKER}%s\\n' \"$changed\""
     )
-    LocalExecutor().sudo(command)
-    return {"proxy": proxy, "noProxy": no_proxy, "message": "Docker daemon egress proxy configured"}
+    executor = LocalExecutor()
+    active_alloc_ids = sorted(_active_nomad_docker_alloc_ids(executor))
+    changed = _docker_config_changed(executor.sudo(command))
+    return {
+        "proxy": proxy,
+        "noProxy": no_proxy,
+        "changed": changed,
+        "dockerRestarted": changed,
+        "affectedAllocationIds": active_alloc_ids if changed else [],
+        "message": "Docker daemon egress proxy configured" if changed else "Docker daemon egress proxy already configured",
+    }
 
 
 def resolve_docker_image(
@@ -2021,6 +2471,9 @@ def _run_process_streaming(
     env: Dict[str, str] | None = None,
     timeout: int | None = None,
     on_line: Callable[[str], None] | None = None,
+    cancel_event: threading.Event | None = None,
+    heartbeat_interval: float | None = None,
+    heartbeat_message: str = "Process is still running",
 ) -> LocalResult:
     process = subprocess.Popen(
         command,
@@ -2033,25 +2486,55 @@ def _run_process_streaming(
     )
     output_parts: list[str] = []
     line_buffer: list[str] = []
-    deadline = time.monotonic() + timeout if timeout else None
+    started_at = time.monotonic()
+    deadline = started_at + timeout if timeout else None
+    last_progress_at = started_at
 
     def flush_line() -> None:
+        nonlocal last_progress_at
         text = "".join(line_buffer).strip()
         line_buffer.clear()
         if text and on_line:
             on_line(text)
+            last_progress_at = time.monotonic()
+
+    def kill_process_group() -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
 
     try:
         while True:
-            if deadline and time.monotonic() > deadline:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            now = time.monotonic()
+            if cancel_event is not None and cancel_event.is_set():
+                kill_process_group()
+                flush_line()
+                output_parts.append("\nprocess canceled")
+                return LocalResult(code=130, output="".join(output_parts).strip())
+            if deadline and now > deadline:
+                kill_process_group()
                 flush_line()
                 message = f"process timed out after {timeout}s"
                 output_parts.append("\n" + message)
                 return LocalResult(code=124, output="".join(output_parts).strip())
+            if (
+                on_line is not None
+                and heartbeat_interval is not None
+                and heartbeat_interval > 0
+                and now - last_progress_at >= heartbeat_interval
+            ):
+                on_line(
+                    f"{heartbeat_message} ({max(1, int(now - started_at))}s elapsed)"
+                )
+                last_progress_at = now
             stream = process.stdout
             if stream is None:
                 break
@@ -2081,10 +2564,9 @@ def _run_process_streaming(
         return LocalResult(code=process.wait(), output="".join(output_parts))
     finally:
         if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            kill_process_group()
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 def _docker_image_inspect_command(image: str, *, docker_config: str) -> str:
@@ -2095,22 +2577,41 @@ def _docker_image_inspect_command(image: str, *, docker_config: str) -> str:
     )
 
 
-def _write_docker_auth_config(config_dir: Path, registry_auth: Dict[str, Any] | None) -> None:
-    if not registry_auth:
+def _write_docker_auth_configs(
+    config_dir: Path, registry_auths: list[Dict[str, Any] | None]
+) -> None:
+    auths: Dict[str, Dict[str, str]] = {}
+    for registry_auth in registry_auths:
+        if not registry_auth:
+            continue
+        username = str(registry_auth.get("username") or "")
+        password = str(registry_auth.get("password") or "")
+        server = str(
+            registry_auth.get("serveraddress")
+            or registry_auth.get("serverAddress")
+            or ""
+        )
+        if not username or not password or not server:
+            continue
+        auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode(
+            "ascii"
+        )
+        auths[server] = {"auth": auth}
+    if not auths:
         return
-    username = str(registry_auth.get("username") or "")
-    password = str(registry_auth.get("password") or "")
-    server = str(registry_auth.get("serveraddress") or registry_auth.get("serverAddress") or "")
-    if not username or not password or not server:
-        return
-    auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     config_dir.mkdir(parents=True, exist_ok=True)
     config_file = config_dir / "config.json"
-    config_file.write_text(json.dumps({"auths": {server: {"auth": auth}}}), encoding="utf-8")
+    config_file.write_text(json.dumps({"auths": auths}), encoding="utf-8")
     try:
         os.chmod(config_file, 0o600)
     except OSError:
         pass
+
+
+def _write_docker_auth_config(
+    config_dir: Path, registry_auth: Dict[str, Any] | None
+) -> None:
+    _write_docker_auth_configs(config_dir, [registry_auth])
 
 
 def _first_repo_digest(image: str, inspect_output: str) -> str:
@@ -2183,6 +2684,7 @@ def _ensure_buildx_builder(
     *,
     proxy: str = "",
     no_proxy: str = "",
+    registry_host: str = "",
     recreate: bool = False,
     env: Mapping[str, str] | None = None,
 ) -> str:
@@ -2205,14 +2707,79 @@ def _ensure_buildx_builder(
     inspect = subprocess.run(
         [docker, "buildx", "inspect", name],
         text=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         check=False,
         env=env,
         timeout=30,
     )
-    if inspect.returncode != 0:
+    needs_create = inspect.returncode != 0
+    if not needs_create and (
+        not _buildx_builder_proxy_matches(
+            docker,
+            name,
+            proxy=proxy,
+            no_proxy=no_proxy,
+            env=env,
+        )
+        or not _buildx_registry_marker_matches(name, registry_host=registry_host, env=env)
+    ):
+        # Builder names distinguish proxy/no-proxy in the common case, but the
+        # egress proxy URL and NO_PROXY list can change while the named builder
+        # survives. Reusing it would keep BuildKit on the stale network path.
+        # Remove the incompatible builder before creating its replacement; if
+        # removal fails, stop rather than accidentally using the stale builder.
+        remove = subprocess.run(
+            [docker, "buildx", "rm", "-f", name],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+            env=env,
+            timeout=60,
+        )
+        if remove.returncode != 0:
+            details = "\n".join(part for part in (inspect.stdout.strip(), remove.stdout.strip()) if part)
+            raise LumaError(f"failed to reconfigure buildx builder {name}:\n{details}")
+        needs_create = True
+    if needs_create:
         create_cmd = [docker, "buildx", "create", "--name", name, "--driver", "docker-container", "--driver-opt", "network=host"]
+        buildkit_config: tempfile.NamedTemporaryFile[str] | None = None
+        if registry_host:
+            # The image exporter has its own ``registry.insecure`` switch, but
+            # Dockerfile FROM/COPY --from resolution is performed by the
+            # independent BuildKit daemon.  Give that resolver an explicit
+            # HTTP registry stanza as well, otherwise an internal base image is
+            # silently upgraded to HTTPS and imports fail before the build.
+            registry_host = _safe_registry_host(registry_host)
+            buildkit_config = tempfile.NamedTemporaryFile(
+                mode="w",
+                prefix="luma-buildkitd-",
+                suffix=".toml",
+                encoding="utf-8",
+            )
+            buildkit_config.write(
+                f'[registry."{registry_host}"]\n'
+                "  http = true\n"
+                "  insecure = true\n"
+            )
+            buildkit_config.flush()
+            create_cmd += ["--buildkitd-config", buildkit_config.name]
+            # A task-scoped DOCKER_CONFIG used to discard Buildx metadata while
+            # leaving this deterministic BuildKit container behind.  Remove
+            # only that orphan container before re-creating the builder; keep
+            # its named state volume so cache survives.  This never touches
+            # dockerd configuration or application containers.
+            if _buildx_config_root(env) is not None:
+                subprocess.run(
+                    [docker, "rm", "-f", f"buildx_buildkit_{name}0"],
+                    text=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    env=env,
+                    timeout=60,
+                )
         if proxy:
             create_cmd += [
                 "--driver-opt", f"env.HTTP_PROXY={proxy}",
@@ -2220,15 +2787,19 @@ def _ensure_buildx_builder(
                 "--driver-opt", _buildx_driver_opt(f"env.NO_PROXY={no_proxy}"),
             ]
         create_cmd.append("--bootstrap")
-        create = subprocess.run(
-            create_cmd,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            env=env,
-            timeout=180,
-        )
+        try:
+            create = subprocess.run(
+                create_cmd,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                env=env,
+                timeout=180,
+            )
+        finally:
+            if buildkit_config is not None:
+                buildkit_config.close()
         if create.returncode != 0:
             raise LumaError(f"failed to create buildx builder:\n{create.stdout.strip()}")
         verify = subprocess.run(
@@ -2243,7 +2814,131 @@ def _ensure_buildx_builder(
         if verify.returncode != 0:
             details = "\n".join(part for part in (create.stdout.strip(), verify.stdout.strip()) if part)
             raise LumaError(f"failed to create buildx builder:\n{details}")
+        if not _buildx_builder_proxy_matches(
+            docker,
+            name,
+            proxy=proxy,
+            no_proxy=no_proxy,
+            env=env,
+        ):
+            raise LumaError(f"failed to create buildx builder {name} with the requested network settings")
+        _write_buildx_registry_marker(name, registry_host=registry_host, env=env)
     return name
+
+
+def _buildx_builder_proxy_matches(
+    docker: str,
+    name: str,
+    *,
+    proxy: str,
+    no_proxy: str,
+    env: Mapping[str, str] | None = None,
+) -> bool:
+    """Return whether BuildKit's persisted container env matches this build."""
+    # Current buildx versions do not expose create-time driver opts through
+    # `buildx inspect`. The docker-container driver persists env.* driver opts
+    # as Config.Env on its deterministic BuildKit container, which gives us the
+    # actual settings that base-image pulls will use.
+    inspect = subprocess.run(
+        [
+            docker,
+            "inspect",
+            "--format",
+            "{{json .Config.Env}}",
+            f"buildx_buildkit_{name}0",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        env=env,
+        timeout=30,
+    )
+    if inspect.returncode != 0:
+        return False
+    try:
+        container_env = json.loads(inspect.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(container_env, list):
+        return False
+    options: dict[str, str] = {}
+    for item in container_env:
+        if not isinstance(item, str):
+            return False
+        key, separator, value = item.partition("=")
+        if separator and key.upper() in {"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"}:
+            options[key.upper()] = value
+
+    proxy_keys = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+    if not proxy:
+        return all(key not in options for key in proxy_keys)
+    return (
+        options.get("HTTP_PROXY") == proxy
+        and options.get("HTTPS_PROXY") == proxy
+        and options.get("NO_PROXY") == no_proxy
+    )
+
+
+def _buildx_config_root(env: Mapping[str, str] | None) -> Path | None:
+    value = str((env or {}).get("BUILDX_CONFIG") or "").strip()
+    return Path(value) if value else None
+
+
+def _buildx_registry_marker_path(name: str, env: Mapping[str, str] | None) -> Path | None:
+    root = _buildx_config_root(env)
+    return root / f".{name}.luma-registry" if root is not None else None
+
+
+def _buildx_registry_marker_matches(
+    name: str,
+    *,
+    registry_host: str,
+    env: Mapping[str, str] | None,
+) -> bool:
+    if not registry_host:
+        return True
+    marker = _buildx_registry_marker_path(name, env)
+    if marker is None:
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").strip() == registry_host
+    except OSError:
+        return False
+
+
+def _write_buildx_registry_marker(
+    name: str,
+    *,
+    registry_host: str,
+    env: Mapping[str, str] | None,
+) -> None:
+    if not registry_host:
+        return
+    marker = _buildx_registry_marker_path(name, env)
+    if marker is None:
+        raise LumaError("BUILDX_CONFIG is required for internal registry builds")
+    marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(marker.parent, 0o700)
+    tmp = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(registry_host + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, marker)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _buildx_environment(docker_config: Path) -> dict[str, str]:
+    """Keep registry auth ephemeral while persisting non-secret Buildx state."""
+    env = dict(os.environ)
+    env["DOCKER_CONFIG"] = str(docker_config)
+    root = Path(str(os.environ.get("LUMA_BUILDX_CONFIG") or DEFAULT_BUILDX_CONFIG)).expanduser()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
+    env["BUILDX_CONFIG"] = str(root)
+    return env
 
 
 def _buildx_driver_opt(value: str) -> str:
@@ -2297,6 +2992,76 @@ def _find_luma_deployment_manifest(repo: Path) -> tuple[str, Path] | None:
     return ranked[0]
 
 
+def _select_luma_compose_manifest(repo: Path, value: str) -> Path:
+    """Resolve and structurally validate an explicitly selected Compose sidecar."""
+
+    import yaml
+
+    from .compose import load_compose_deployment
+    from .repo_paths import normalize_repo_relative_path
+    from .service import VALID_REGIONS
+
+    selected = normalize_repo_relative_path(value, label="composeSidecar")
+    repo_root = repo.resolve()
+    unresolved = repo_root.joinpath(*selected.split("/"))
+    try:
+        sidecar_path = unresolved.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise LumaError(f"selected composeSidecar does not exist: {selected}") from exc
+    if sidecar_path != repo_root and repo_root not in sidecar_path.parents:
+        raise LumaError("selected composeSidecar escapes the repository")
+    if not sidecar_path.is_file() or unresolved.suffix not in {".yml", ".yaml"}:
+        raise LumaError("selected composeSidecar must be a YAML file")
+
+    try:
+        raw = yaml.safe_load(sidecar_path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise LumaError(f"selected composeSidecar is not valid YAML: {selected}") from exc
+    if not isinstance(raw, dict):
+        raise LumaError("selected composeSidecar must contain a YAML mapping")
+
+    compose_value = raw.get("compose", "docker-compose.yml")
+    if not isinstance(compose_value, str) or not compose_value.strip():
+        raise LumaError("selected composeSidecar requires string field: compose")
+    compose_path = _safe_repo_path_from(
+        sidecar_path.parent, repo_root, compose_value
+    )
+    if not compose_path.is_file():
+        raise LumaError(
+            f"selected composeSidecar references a missing Compose file: {compose_value}"
+        )
+
+    volumes = raw.get("volumes")
+    storage_names = (
+        {
+            str(spec.get("storageClass"))
+            for spec in volumes.values()
+            if isinstance(spec, dict) and spec.get("storageClass")
+        }
+        if isinstance(volumes, dict)
+        else set()
+    )
+    validation_storage = {
+        name: {
+            "provider": "nfs",
+            "mode": "external",
+            "endpoint": "nfs.invalid:/luma-sidecar-validation",
+            "regions": sorted(VALID_REGIONS),
+        }
+        for name in storage_names
+    }
+    try:
+        load_compose_deployment(
+            sidecar_path,
+            storage_classes=validation_storage,
+            allow_sidecar_storage_classes=False,
+            allow_build_services=True,
+        )
+    except LumaError as exc:
+        raise LumaError(f"selected composeSidecar is invalid: {exc}") from exc
+    return sidecar_path
+
+
 def _looks_like_compose_luma_manifest(path: Path) -> bool:
     name = path.name.lower()
     return bool(
@@ -2320,13 +3085,14 @@ def _docker_buildx_build(
     platform: str,
     proxy: str,
     build_timeout: int,
+    build_args: Mapping[str, str] | None = None,
     progress: Callable[[Dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     tag_sha = f"{push_host}/{repo}:{sha}"
     tag_latest = f"{push_host}/{repo}:latest"
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-    env = dict(os.environ)
-    env["DOCKER_CONFIG"] = str(docker_config)
+    env = _buildx_environment(docker_config)
     proxy_build_args: list[str] = []
     if proxy:
         env["HTTP_PROXY"] = proxy
@@ -2337,12 +3103,23 @@ def _docker_buildx_build(
             "--build-arg", f"HTTPS_PROXY={proxy}",
             "--build-arg", f"NO_PROXY={no_proxy}",
         ]
+    declared_build_args = [
+        item
+        for name, value in sorted((build_args or {}).items())
+        for item in ("--build-arg", f"{name}={value}")
+    ]
     command = [
         docker, "buildx", "build",
         "--builder", builder,
         "--platform", platform,
+        *declared_build_args,
         *proxy_build_args,
-        "--push",
+        # Luma's managed build registry is intentionally served over the
+        # tailnet as plain HTTP. Host dockerd already knows it as an insecure
+        # registry, but the docker-container BuildKit daemon is independent and
+        # does not inherit daemon.json. Tell the image exporter explicitly so
+        # pushes do not get upgraded to HTTPS inside BuildKit.
+        "--output", "type=image,push=true,registry.insecure=true",
         "-t", tag_sha,
         "-t", tag_latest,
         "-f", str(dockerfile_path),
@@ -2358,15 +3135,27 @@ def _docker_buildx_build(
             env=env,
             timeout=build_timeout,
             on_line=on_build_line,
+            cancel_event=cancel_event,
+            heartbeat_interval=15.0,
+            heartbeat_message="Docker image build is still running",
         )
 
     result = run_build()
+    if result.code == 130 or (cancel_event is not None and cancel_event.is_set()):
+        raise BuilderTaskCanceled("build-image task canceled")
     if result.code == 124:
         raise LumaError(f"docker buildx build timed out after {build_timeout}s")
     if result.code != 0 and _buildx_missing_builder_error(result.output or "", builder):
         if progress:
             progress({"type": "output", "line": "Buildx builder is missing on the build node; recreating it and retrying once."})
-        _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, recreate=True, env=env)
+        _ensure_buildx_builder(
+            docker,
+            proxy=proxy or "",
+            no_proxy=no_proxy,
+            registry_host=registry_host,
+            recreate=True,
+            env=env,
+        )
         result = run_build()
         if result.code == 124:
             raise LumaError(f"docker buildx build timed out after {build_timeout}s")
@@ -2400,6 +3189,56 @@ def _compose_build_spec(body: Dict[str, Any]) -> Dict[str, Any] | None:
     return dict(raw)
 
 
+_COMPOSE_BUILD_ARG_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def _compose_build_args(spec: Mapping[str, Any]) -> Dict[str, str]:
+    """Return checked-in, non-secret Compose build arguments.
+
+    Repository import does not inherit the Builder process environment. A
+    key-only Compose argument would do exactly that, so reject it instead of
+    silently producing a different image or leaking Builder configuration.
+    """
+
+    raw = spec.get("args")
+    if raw is None:
+        return {}
+    pairs: list[tuple[str, Any]] = []
+    if isinstance(raw, dict):
+        pairs = [(str(name), value) for name, value in raw.items()]
+    elif isinstance(raw, list):
+        for index, item in enumerate(raw):
+            if not isinstance(item, str) or "=" not in item:
+                raise LumaError(
+                    f"compose build args[{index}] must be a literal NAME=value entry"
+                )
+            name, value = item.split("=", 1)
+            pairs.append((name, value))
+    else:
+        raise LumaError("compose build args must be a mapping or list")
+    if len(pairs) > 64:
+        raise LumaError("compose build args exceed the supported limit")
+
+    result: Dict[str, str] = {}
+    for name, value in pairs:
+        if not _COMPOSE_BUILD_ARG_NAME.fullmatch(name):
+            raise LumaError(f"compose build arg name is invalid: {name}")
+        if value is None:
+            raise LumaError(
+                f"compose build arg {name} must declare a literal value"
+            )
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, (str, int, float)):
+            rendered = str(value)
+        else:
+            raise LumaError(f"compose build arg {name} must be a scalar value")
+        if len(rendered) > 4096 or any(char in rendered for char in "\x00\r\n"):
+            raise LumaError(f"compose build arg {name} has an invalid value")
+        result[name] = rendered
+    return result
+
+
 def _build_compose_images(
     *,
     src: Path,
@@ -2414,6 +3253,7 @@ def _build_compose_images(
     build_timeout: int,
     payload: Dict[str, Any],
     progress: Callable[[Dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Dict[str, Any]:
     import yaml
 
@@ -2433,22 +3273,35 @@ def _build_compose_images(
         raise LumaError("docker-compose.yml requires a non-empty services mapping")
 
     build_services: list[tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+    build_source_images: Dict[str, str] = {}
     for service_name, service_body in services.items():
         if not isinstance(service_body, dict):
             raise LumaError(f"compose service {service_name} must be a mapping")
         spec = _compose_build_spec(service_body)
         if spec is not None:
             build_services.append((str(service_name), service_body, spec))
+            declared_image = str(service_body.get("image") or "").strip()
+            if declared_image:
+                build_source_images[str(service_name)] = declared_image
         elif not isinstance(service_body.get("image"), str) or not service_body.get("image"):
             raise LumaError(f"compose service {service_name} requires image or build")
 
     no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-    buildx_env = dict(os.environ)
-    buildx_env["DOCKER_CONFIG"] = str(docker_config)
-    builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, env=buildx_env)
+    buildx_env = _buildx_environment(docker_config)
+    builder = _ensure_buildx_builder(
+        docker,
+        proxy=proxy or "",
+        no_proxy=no_proxy,
+        registry_host=registry_host,
+        env=buildx_env,
+    )
     images: Dict[str, str] = {}
+    shared_image_replacements: Dict[str, str] = {}
+    ambiguous_shared_images: set[str] = set()
     single_build = len(build_services) == 1
     for service_name, service_body, spec in build_services:
+        if cancel_event is not None and cancel_event.is_set():
+            raise BuilderTaskCanceled("build-image task canceled")
         context_rel = str(payload.get("context") or spec.get("context") or ".").strip() or "."
         context_dir = _safe_repo_path_from(compose_path.parent, src, context_rel)
         dockerfile_rel = str(payload.get("dockerfile") or spec.get("dockerfile") or "Dockerfile").strip() or "Dockerfile"
@@ -2471,24 +3324,63 @@ def _build_compose_images(
             platform=platform,
             proxy=proxy,
             build_timeout=build_timeout,
+            build_args=_compose_build_args(spec),
             progress=progress,
+            cancel_event=cancel_event,
         )
         service_body["image"] = image
         service_body.pop("build", None)
         images[service_name] = image
+        source_image = build_source_images.get(service_name, "")
+        if source_image:
+            previous = shared_image_replacements.get(source_image)
+            if previous and previous != image:
+                ambiguous_shared_images.add(source_image)
+            else:
+                shared_image_replacements[source_image] = image
 
-    return {
+    # Compose stacks commonly build an image once and reuse it from worker or
+    # sidecar services that only declare ``image:``.  Repository import must
+    # keep those consumers on the exact immutable image produced above; leaving
+    # the original tag in place can send a worker back to an obsolete/public
+    # registry even though its sibling was built into the in-cluster registry.
+    built_service_names = set(images)
+    for service_name, service_body in services.items():
+        if str(service_name) in built_service_names or not isinstance(service_body, dict):
+            continue
+        source_image = str(service_body.get("image") or "").strip()
+        if not source_image or source_image in ambiguous_shared_images:
+            continue
+        replacement = shared_image_replacements.get(source_image)
+        if replacement:
+            service_body["image"] = replacement
+
+    result = {
         "kind": "compose",
         "manifest": sidecar_text,
         "composeContent": yaml.safe_dump(compose_data, sort_keys=False, allow_unicode=False),
         "images": images,
+        "imageAliases": {
+            source_image: replacement
+            for source_image, replacement in shared_image_replacements.items()
+            if source_image not in ambiguous_shared_images
+        },
         "image": next(iter(images.values()), ""),
         "sha": sha,
         "message": f"Built and pushed {len(images)} compose image(s)" if images else "Compose images already declared",
     }
+    selected_sidecar = str(payload.get("composeSidecar") or "")
+    if selected_sidecar:
+        result["composeSidecar"] = selected_sidecar
+    return result
 
 
-def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]], None] | None = None) -> Dict[str, Any]:
+def build_image(
+    payload: Dict[str, Any],
+    *,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> Dict[str, Any]:
     from . import gitops
 
     repo_url = _required(payload, "repoUrl")
@@ -2500,7 +3392,10 @@ def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]],
     push_host = _safe_registry_host(str(payload.get("pushHost") or "localhost:5000"))
     repo = _safe_image_repo(_required(payload, "repo"))
     registry_auth = payload.get("registryAuth") if isinstance(payload.get("registryAuth"), dict) else None
-    build_timeout = int(payload.get("buildTimeout") or 1800)
+    # Browser/ML images routinely need more than 30 minutes on a cold Builder
+    # because package and model downloads are part of the reproducible build.
+    # Callers can still set a tighter bound explicitly.
+    build_timeout = int(payload.get("buildTimeout") or 7200)
 
     docker = _docker_binary()
     if not docker:
@@ -2509,14 +3404,23 @@ def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]],
         raise LumaError("docker buildx is not available on build node")
 
     with tempfile.TemporaryDirectory(prefix="luma-build-") as workdir:
+        if cancel_event is not None and cancel_event.is_set():
+            raise BuilderTaskCanceled("build-image task canceled")
         src = Path(workdir) / "src"
         gitops.clone(repo_url, src, ref=ref, proxy=proxy, token=git_token, username=git_username)
+        if cancel_event is not None and cancel_event.is_set():
+            raise BuilderTaskCanceled("build-image task canceled")
         sha = gitops.head_commit(src)
 
         docker_config = Path(workdir) / "docker-config"
         _write_docker_auth_config(docker_config, _auth_for_host(registry_auth, push_host))
 
-        deployment_manifest = _find_luma_deployment_manifest(src)
+        selected_sidecar = str(payload.get("composeSidecar") or "")
+        deployment_manifest = (
+            ("compose", _select_luma_compose_manifest(src, selected_sidecar))
+            if selected_sidecar
+            else _find_luma_deployment_manifest(src)
+        )
         if deployment_manifest and deployment_manifest[0] == "compose":
             return _build_compose_images(
                 src=src,
@@ -2531,6 +3435,7 @@ def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]],
                 build_timeout=build_timeout,
                 payload=payload,
                 progress=progress,
+                cancel_event=cancel_event,
             )
 
         manifest_path = deployment_manifest[1] if deployment_manifest else None
@@ -2565,9 +3470,14 @@ def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]],
         # creation in _ensure_buildx_builder). Keep the in-cluster registry and
         # localhost out of the proxy so --push stays on the internal network.
         no_proxy = f"localhost,127.0.0.1,::1,{push_host},{registry_host}"
-        buildx_env = dict(os.environ)
-        buildx_env["DOCKER_CONFIG"] = str(docker_config)
-        builder = _ensure_buildx_builder(docker, proxy=proxy or "", no_proxy=no_proxy, env=buildx_env)
+        buildx_env = _buildx_environment(docker_config)
+        builder = _ensure_buildx_builder(
+            docker,
+            proxy=proxy or "",
+            no_proxy=no_proxy,
+            registry_host=registry_host,
+            env=buildx_env,
+        )
         image = _docker_buildx_build(
             docker=docker,
             builder=builder,
@@ -2582,6 +3492,7 @@ def build_image(payload: Dict[str, Any], *, progress: Callable[[Dict[str, Any]],
             proxy=proxy or "",
             build_timeout=build_timeout,
             progress=progress,
+            cancel_event=cancel_event,
         )
 
     return {
@@ -2603,8 +3514,8 @@ def configure_insecure_registry(*, registry: str) -> Dict[str, Any]:
         "mkdir -p /etc/docker; "
         'f=/etc/docker/daemon.json; '
         '[ -f "$f" ] || echo "{}" > "$f"; '
-        f"python3 - \"$f\" {shlex.quote(host)} <<'PY'\n"
-        "import json, sys\n"
+        f"changed=$(python3 - \"$f\" {shlex.quote(host)} <<'PY'\n"
+        "import os, json, sys\n"
         "path, host = sys.argv[1], sys.argv[2]\n"
         "try:\n"
         "    data = json.load(open(path))\n"
@@ -2615,15 +3526,30 @@ def configure_insecure_registry(*, registry: str) -> Dict[str, Any]:
         "regs = data.get('insecure-registries')\n"
         "if not isinstance(regs, list):\n"
         "    regs = []\n"
+        "changed = host not in regs\n"
         "if host not in regs:\n"
         "    regs.append(host)\n"
-        "data['insecure-registries'] = regs\n"
-        "open(path, 'w').write(json.dumps(data, indent=2))\n"
+        "if changed:\n"
+        "    data['insecure-registries'] = regs\n"
+        "    tmp = path + '.luma.tmp'\n"
+        "    open(tmp, 'w').write(json.dumps(data, indent=2) + '\\n')\n"
+        "    os.replace(tmp, path)\n"
+        "print('1' if changed else '0')\n"
         "PY\n"
-        "systemctl restart docker"
+        "); "
+        'if [ "$changed" = "1" ]; then systemctl restart docker; fi; '
+        f"printf '{_DOCKER_CONFIG_CHANGED_MARKER}%s\\n' \"$changed\""
     )
-    LocalExecutor().sudo(script)
-    return {"registry": host, "message": f"insecure-registry configured: {host}"}
+    executor = LocalExecutor()
+    active_alloc_ids = sorted(_active_nomad_docker_alloc_ids(executor))
+    changed = _docker_config_changed(executor.sudo(script))
+    return {
+        "registry": host,
+        "changed": changed,
+        "dockerRestarted": changed,
+        "affectedAllocationIds": active_alloc_ids if changed else [],
+        "message": f"insecure-registry configured: {host}" if changed else f"insecure-registry already configured: {host}",
+    }
 
 
 def _docker_image_repository(image: str) -> str:
@@ -2642,45 +3568,347 @@ def _safe_docker_image_ref(value: str) -> str:
     return image
 
 
+def _image_registry_host(image: str) -> str:
+    first = image.split("/", 1)[0]
+    if first == "localhost" or "." in first or ":" in first:
+        return first
+    return "registry-1.docker.io"
+
+
+def mirror_control_image(
+    *,
+    source_image: str,
+    push_image: str,
+    destination_image: str,
+    proxy: str = "",
+    insecure: bool = False,
+    timeout: int = 900,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+    platform: str = "",
+    registry_auth: Dict[str, Any] | None = None,
+    source_registry_auth: Dict[str, Any] | None = None,
+    destination_registry_auth: Dict[str, Any] | None = None,
+    _system_image: bool = False,
+    _runtime_image: bool = False,
+) -> Dict[str, Any]:
+    """Copy a Control release through the Builder into Luma's pull registry.
+
+    The action receives only validated argv values and never invokes a shell.
+    It is intentionally narrower than a general registry-copy primitive: the
+    destination repository must be ``luma-control`` and the public pull ref is
+    returned separately from the builder-local push ref.
+    """
+
+    crane = _crane_binary()
+    if not crane:
+        raise LumaError("control image mirror requires crane on the builder node")
+    source = _safe_docker_image_ref(source_image)
+    push = _safe_docker_image_ref(push_image)
+    destination = _safe_docker_image_ref(destination_image)
+    push_repository = _docker_image_repository(push)
+    destination_repository = _docker_image_repository(destination)
+    if _runtime_image:
+        if "/luma-cache/" not in push_repository:
+            raise LumaError(
+                "runtime image cache destination repository must use luma-cache"
+            )
+        if "/luma-cache/" not in destination_repository:
+            raise LumaError(
+                "runtime image cache public repository must use luma-cache"
+            )
+    elif _system_image:
+        if "/luma-system/" not in push_repository:
+            raise LumaError(
+                "system image mirror destination repository must use luma-system"
+            )
+        if "/luma-system/" not in destination_repository:
+            raise LumaError(
+                "system image public repository must use luma-system"
+            )
+    else:
+        if not push_repository.endswith("/luma-control"):
+            raise LumaError("control image mirror destination repository must be luma-control")
+        if not destination_repository.endswith("/luma-control"):
+            raise LumaError("control image public repository must be luma-control")
+    if push.rsplit(":", 1)[-1] != destination.rsplit(":", 1)[-1]:
+        raise LumaError("control image push and pull tags must match")
+    timeout = min(max(int(timeout or 900), 60), 1800)
+    env = dict(os.environ)
+    proxy_value = str(proxy or "").strip()
+    if proxy_value:
+        parsed_proxy = urllib.parse.urlparse(proxy_value)
+        if parsed_proxy.scheme not in {"http", "https"} or not parsed_proxy.hostname:
+            raise LumaError("control image mirror proxy must be an HTTP(S) URL")
+        env["HTTP_PROXY"] = proxy_value
+        env["HTTPS_PROXY"] = proxy_value
+    no_proxy = ["localhost", "127.0.0.1", "::1", _image_registry_host(push), _image_registry_host(destination)]
+    env["NO_PROXY"] = ",".join(dict.fromkeys(value for value in no_proxy if value))
+
+    def emit(line: str) -> None:
+        value = str(line or "").strip()
+        if value and progress:
+            progress({"type": "status", "line": value, "ts": int(time.time())})
+
+    registry_auths = [
+        source_registry_auth,
+        destination_registry_auth,
+        registry_auth,
+    ]
+    auth_context = (
+        tempfile.TemporaryDirectory(prefix="luma-crane-auth-")
+        if any(registry_auths)
+        else contextlib.nullcontext("")
+    )
+    with auth_context as auth_dir:
+        if auth_dir:
+            auth_path = Path(auth_dir)
+            _write_docker_auth_configs(auth_path, registry_auths)
+            env["DOCKER_CONFIG"] = str(auth_path)
+
+        selected_platform = str(platform or "").strip()
+        if selected_platform and not re.fullmatch(
+            r"linux/(?:amd64|arm64)", selected_platform
+        ):
+            raise LumaError("image mirror platform must be linux/amd64 or linux/arm64")
+        command = [crane, "copy", source, push]
+        if selected_platform:
+            command.extend(["--platform", selected_platform])
+        if insecure:
+            command.append("--insecure")
+        emit(f"Caching {source} on the internal Builder registry.")
+        result: LocalResult | None = None
+        transient_markers = ("eof", "timeout", "connection reset", "temporary", "tls handshake", "unexpected status code 5")
+        for attempt in range(1, 4):
+            result = _run_process_streaming(command, env=env, timeout=timeout, on_line=emit)
+            if result.code == 0:
+                break
+            output = str(result.output or "").strip()
+            if attempt >= 3 or not any(marker in output.lower() for marker in transient_markers):
+                raise LumaError(f"control image mirror failed: {_tail_text(output)}")
+            emit(f"Registry transfer was interrupted; retrying ({attempt + 1}/3).")
+            time.sleep(2**attempt)
+        if result is None or result.code != 0:
+            raise LumaError("control image mirror failed")
+
+        digest_command = [crane, "digest", push]
+        if insecure:
+            digest_command.append("--insecure")
+        digest_result = _run_process_streaming(digest_command, env=env, timeout=120, on_line=None)
+        digest = str(digest_result.output or "").strip().splitlines()[-1] if digest_result.output else ""
+        if digest_result.code != 0 or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+            raise LumaError(f"control image mirror verification failed: {_tail_text(digest_result.output or '')}")
+        image_kind = "runtime" if _runtime_image else "system" if _system_image else "Control"
+        emit(f"Internal {image_kind} image verified at {digest}.")
+        return {
+            "sourceImage": source,
+            "pushImage": push,
+            "destinationImage": destination,
+            "digest": digest,
+            "message": "Control image cached and verified in the internal registry.",
+        }
+
+
+def mirror_system_image(
+    *,
+    source_image: str,
+    push_image: str,
+    destination_image: str,
+    platform: str = "linux/amd64",
+    proxy: str = "",
+    insecure: bool = False,
+    timeout: int = 900,
+    registry_auth: Dict[str, Any] | None = None,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    if not re.fullmatch(r"linux/(?:amd64|arm64)", str(platform or "")):
+        raise LumaError("system image mirror platform must be linux/amd64 or linux/arm64")
+    result = mirror_control_image(
+        source_image=source_image,
+        push_image=push_image,
+        destination_image=destination_image,
+        proxy=proxy,
+        insecure=insecure,
+        timeout=timeout,
+        registry_auth=registry_auth,
+        progress=progress,
+        platform=platform,
+        _system_image=True,
+    )
+    result["message"] = "System image cached and verified in the internal registry."
+    return result
+
+
+def cache_runtime_image(
+    *,
+    source_image: str,
+    push_image: str,
+    destination_image: str,
+    platform: str = "",
+    proxy: str = "",
+    insecure: bool = False,
+    timeout: int = 1800,
+    source_registry_auth: Dict[str, Any] | None = None,
+    destination_registry_auth: Dict[str, Any] | None = None,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    selected_platform = str(platform or "").strip()
+    if selected_platform and not re.fullmatch(r"linux/(?:amd64|arm64)", selected_platform):
+        raise LumaError("runtime image cache platform must be linux/amd64 or linux/arm64")
+    result = mirror_control_image(
+        source_image=source_image,
+        push_image=push_image,
+        destination_image=destination_image,
+        proxy=proxy,
+        insecure=insecure,
+        timeout=timeout,
+        source_registry_auth=source_registry_auth,
+        destination_registry_auth=destination_registry_auth,
+        progress=progress,
+        platform=selected_platform,
+        _runtime_image=True,
+    )
+    result["message"] = "Runtime image cached and verified in the internal registry."
+    return result
+
+
 def _docker_image_pull_error(*, image: str, output: str, platform: str = "") -> str:
     detail = (output or "").strip()
     message = f"target node Docker pull failed for {image}: {detail}"
     lowered = detail.lower()
     if platform and any(marker in lowered for marker in ("no matching manifest", "no match for platform", "not found")):
         message += f"; image does not provide a manifest for target platform {platform}"
-    if any(marker in lowered for marker in ("failed to do request", "eof", "timeout", "connection reset")):
+    if any(
+        marker in lowered
+        for marker in (
+            "failed to do request",
+            "eof",
+            "timeout",
+            "connection reset",
+            "connection refused",
+            "network is unreachable",
+            "no route to host",
+            "temporary failure in name resolution",
+        )
+    ):
         message += "; target node cannot reach the registry, configure registry egress/proxy for that node or use a reachable mirror"
     return message
 
 
-def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AGENT_CONFIG) -> Dict[str, Any]:
+def update_luma_install(
+    *,
+    install_ref: str = "",
+    proxy: str = "",
+    config_path: Path = DEFAULT_AGENT_CONFIG,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    def emit(message: str) -> None:
+        if progress:
+            progress({"type": "status", "line": message, "ts": int(time.time())})
+
     env = os.environ.copy()
-    if install_ref:
-        env["LUMA_INSTALL_REF"] = install_ref
+    proxy_value = str(proxy or "").strip()
+    if proxy_value:
+        parsed_proxy = urllib.parse.urlparse(proxy_value)
+        if (
+            parsed_proxy.scheme not in {"http", "https"}
+            or not parsed_proxy.hostname
+            or parsed_proxy.username is not None
+            or parsed_proxy.password is not None
+        ):
+            raise LumaError("Luma installer proxy must be an HTTP(S) URL without credentials")
+        env["HTTP_PROXY"] = proxy_value
+        env["HTTPS_PROXY"] = proxy_value
+        env["http_proxy"] = proxy_value
+        env["https_proxy"] = proxy_value
+        existing_no_proxy = str(env.get("NO_PROXY") or env.get("no_proxy") or "")
+        no_proxy = [
+            *existing_no_proxy.split(","),
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+        ]
+        no_proxy_value = ",".join(
+            dict.fromkeys(value.strip() for value in no_proxy if value.strip())
+        )
+        env["NO_PROXY"] = no_proxy_value
+        env["no_proxy"] = no_proxy_value
+    command, exact_ref = luma_installer_command(install_ref, environ=env)
+    env["LUMA_INSTALL_REF"] = exact_ref
     layout = _current_install_layout()
     if layout:
         user_home, install_home, bin_dir = layout
         env.setdefault("LUMA_USER_HOME", str(user_home))
         env.setdefault("LUMA_INSTALL_HOME", str(install_home))
         env.setdefault("LUMA_BIN_DIR", str(bin_dir))
-    command = "curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
-    try:
-        completed = subprocess.run(
-            command,
-            shell=True,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=900,
+    emit(f"Downloading and installing Luma {exact_ref}.")
+    attempts = [("configured node egress" if proxy_value else "node network", env)]
+    if proxy_value:
+        # A reachable proxy socket can still reject a CONNECT request for one
+        # destination. Keep the configured proxy as the first choice, then
+        # retry the same exact ref once with a clean process-local network
+        # environment. This never mutates dockerd, launchd/systemd, or the
+        # host's global proxy settings.
+        direct_env = env.copy()
+        for key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            direct_env.pop(key, None)
+        attempts.append(("direct network fallback", direct_env))
+
+    failures: list[str] = []
+    completed = None
+    output = ""
+    for index, (route, attempt_env) in enumerate(attempts):
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                env=attempt_env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=900,
+            )
+        except subprocess.TimeoutExpired as exc:
+            attempt_output = str(exc.stdout or "")
+            failures.append(
+                f"{route} timed out" + (f": {_tail_text(attempt_output)}" if attempt_output else "")
+            )
+        else:
+            output = completed.stdout or ""
+            if completed.returncode == 0:
+                break
+            failures.append(
+                f"{route} exited with code {completed.returncode}: {_tail_text(output)}"
+            )
+        if index + 1 < len(attempts):
+            emit(
+                "Configured node egress failed; retrying the same exact Luma release "
+                "with a direct process-local connection."
+            )
+    else:
+        raise LumaError("Luma installer failed: " + " | ".join(failures))
+
+    if completed is None or completed.returncode != 0:
+        raise LumaError("Luma installer failed: " + " | ".join(failures))
+    version_match = re.search(r"^Luma version:\s*([^\s]+)\s*$", output, re.MULTILINE)
+    if version_match is None:
+        raise LumaError(
+            "Luma installer completed without reporting the installed version; "
+            "the update cannot be verified"
         )
-    except subprocess.TimeoutExpired as exc:
-        output = str(exc.stdout or "")
-        raise LumaError("Luma installer timed out" + (f": {_tail_text(output)}" if output else "")) from exc
-    output = completed.stdout or ""
-    if completed.returncode != 0:
-        raise LumaError(f"Luma installer failed with exit code {completed.returncode}: {_tail_text(output)}")
+    installed_version = version_match.group(1)
+    emit("Package installed; refreshing the node agent service definition.")
     os_value = node_agent_os()
     executable = _installed_luma_executable()
     restart_agent = True
@@ -2698,17 +3926,247 @@ def update_luma_install(*, install_ref: str = "", config_path: Path = DEFAULT_AG
             executor.sudo(_agent_service_command(config_path, executable=executable, restart=False), timeout=60)
     except Exception as exc:
         raise LumaError(f"Luma installer finished but node agent service refresh failed: {exc}") from exc
+    emit(f"{service_message.capitalize()}; refreshing the node watchdog.")
     watchdog_message = "Tailscale watchdog skipped"
     try:
         LocalExecutor().sudo(_node_tailscale_watchdog_install_command(node_agent_os()), timeout=60)
         watchdog_message = "Tailscale watchdog installed"
     except Exception as exc:
         watchdog_message = f"Tailscale watchdog skipped: {exc}"
+    emit(f"Update prepared successfully; {watchdog_message}.")
     return {
-        "installRef": install_ref,
+        "installRef": exact_ref,
+        "installedVersion": installed_version,
         "message": f"Luma installer finished; {service_message}; {watchdog_message}",
         "output": _tail_text(output),
         "restartAgent": restart_agent,
+    }
+
+
+def _manager_update_root() -> Path:
+    return Path(os.environ.get("LUMA_MANAGER_UPDATE_ROOT") or "/opt/luma/manager-updates")
+
+
+def _manager_update_id(value: str) -> str:
+    update_id = str(value or "").strip()
+    if not re.fullmatch(r"manager-[0-9]{10,}-[a-f0-9]{8}", update_id):
+        raise LumaError("invalid manager update id")
+    return update_id
+
+
+def _manager_update_ref(value: str) -> str:
+    install_ref = str(value or "").strip()
+    if not install_ref or len(install_ref) > 200 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", install_ref):
+        raise LumaError("installRef must be a Git tag, branch, or commit")
+    return install_ref
+
+
+def _manager_update_domain(value: str) -> str:
+    domain = str(value or "").strip().lower().rstrip(".")
+    if not domain or len(domain) > 253 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", domain):
+        raise LumaError("invalid control domain")
+    return domain
+
+
+def _write_manager_update_json(path: Path, value: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def start_manager_control_update(
+    *,
+    install_ref: str,
+    control_image: str,
+    domain: str,
+    control_environment: Mapping[str, str] | None = None,
+    watchdog_peers: list[str] | tuple[str, ...] = (),
+) -> Dict[str, Any]:
+    if node_agent_os() != "linux" or not shutil.which("systemd-run"):
+        raise LumaError("managed control-plane update requires Linux systemd")
+    safe_ref = _manager_update_ref(install_ref)
+    safe_image = _safe_docker_image_ref(control_image)
+    safe_domain = _manager_update_domain(domain)
+    executable = _installed_luma_executable()
+    if not executable or not Path(executable).exists():
+        raise LumaError("installed Luma executable is unavailable")
+    root = _manager_update_root()
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    # Fail closed while another manager rollout has no terminal status. The
+    # dashboard can reconnect to that operation instead of launching a race.
+    for meta_path in sorted(root.glob("manager-*.json"), reverse=True)[:20]:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        current_id = str(meta.get("id") or "")
+        if current_id and not (root / f"{current_id}.status").exists():
+            unit = str(meta.get("unit") or "")
+            active = subprocess.run(
+                ["systemctl", "is-active", "--quiet", unit],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode == 0
+            if active:
+                raise LumaError(f"manager update already running: {current_id}")
+    installed_control_environment: dict[str, str] = {}
+    if control_environment:
+        from .bootstrap import install_control_environment
+
+        installed_control_environment = install_control_environment(
+            control_environment
+        )
+    update_id = f"manager-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+    unit = f"luma-{update_id}"
+    log_path = root / f"{update_id}.log"
+    status_path = root / f"{update_id}.status"
+    meta_path = root / f"{update_id}.json"
+    layout = _current_install_layout()
+    environment = {
+        "LUMA_CONTROL_IMAGE": safe_image,
+        "LUMA_MANAGER_UPDATE_LOG_PATH": str(log_path),
+        "LUMA_MANAGER_UPDATE_STATUS_PATH": str(status_path),
+    }
+    safe_watchdog_peers = sorted(
+        {
+            str(value).strip()
+            for value in watchdog_peers
+            if re.fullmatch(r"100(?:\.[0-9]{1,3}){3}", str(value).strip())
+            or re.fullmatch(
+                r"fd7a:115c:a1e0:[0-9a-fA-F:]+", str(value).strip()
+            )
+        }
+    )
+    if safe_watchdog_peers:
+        environment["LUMA_TAILSCALE_WATCHDOG_PEERS"] = ",".join(
+            safe_watchdog_peers
+        )
+    if layout:
+        user_home, install_home, bin_dir = layout
+        environment.update(
+            {
+                "LUMA_USER_HOME": str(user_home),
+                "LUMA_INSTALL_HOME": str(install_home),
+                "LUMA_BIN_DIR": str(bin_dir),
+            }
+        )
+    _write_manager_update_json(
+        meta_path,
+        {
+            "schemaVersion": "luma.manager-update/v1",
+            "id": update_id,
+            "unit": unit,
+            "installRef": safe_ref,
+            "controlImage": safe_image,
+            "domain": safe_domain,
+            "createdAt": int(time.time()),
+            "controlEnvironmentKeys": sorted(installed_control_environment),
+        },
+    )
+    wrapper = (
+        'umask 077; exec >> "$LUMA_MANAGER_UPDATE_LOG_PATH" 2>&1; '
+        '"$@"; code=$?; printf "%s\\n" "$code" > "$LUMA_MANAGER_UPDATE_STATUS_PATH"; exit "$code"'
+    )
+    invocation = [
+        "systemd-run",
+        f"--unit={unit}",
+        "--collect",
+        "--no-block",
+        "--property=Type=exec",
+    ]
+    invocation.extend(f"--setenv={key}={value}" for key, value in environment.items())
+    invocation.extend(
+        [
+            "sh",
+            "-c",
+            wrapper,
+            "luma-manager-update",
+            executable,
+            "update",
+            "manager",
+            "--install-ref",
+            safe_ref,
+            "--domain",
+            safe_domain,
+        ]
+    )
+    completed = subprocess.run(invocation, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if completed.returncode != 0:
+        status_path.write_text(f"{completed.returncode}\n", encoding="utf-8")
+        status_path.chmod(0o600)
+        raise LumaError(f"unable to start manager update: {_tail_text(completed.stdout or '')}")
+    return {
+        "updateId": update_id,
+        "status": "running",
+        "installRef": safe_ref,
+        "controlImage": safe_image,
+        "createdAt": int(time.time()),
+        "message": "Control-plane update started; the dashboard will reconnect automatically during the rollout.",
+    }
+
+
+def manager_control_update_status(*, update_id: str = "") -> Dict[str, Any]:
+    root = _manager_update_root()
+    if update_id:
+        safe_id = _manager_update_id(update_id)
+        meta_path = root / f"{safe_id}.json"
+    else:
+        candidates = sorted(root.glob("manager-*.json"), key=lambda path: path.stat().st_mtime, reverse=True) if root.exists() else []
+        if not candidates:
+            return {"status": "none", "message": "No manager update has been recorded."}
+        meta_path = candidates[0]
+        safe_id = _manager_update_id(meta_path.stem)
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise LumaError("manager update not found") from exc
+    except (OSError, ValueError) as exc:
+        raise LumaError("manager update state is unreadable") from exc
+    status_path = root / f"{safe_id}.status"
+    log_path = root / f"{safe_id}.log"
+    status = "running"
+    exit_code: int | None = None
+    if status_path.exists():
+        try:
+            exit_code = int(status_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            exit_code = -1
+        status = "succeeded" if exit_code == 0 else "failed"
+    else:
+        unit = str(meta.get("unit") or "")
+        active = bool(unit) and subprocess.run(
+            ["systemctl", "is-active", "--quiet", unit],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        if not active:
+            status = "interrupted"
+    lines: list[str] = []
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
+    except OSError:
+        pass
+    return {
+        "updateId": safe_id,
+        "status": status,
+        "exitCode": exit_code,
+        "installRef": str(meta.get("installRef") or ""),
+        "controlImage": str(meta.get("controlImage") or ""),
+        "createdAt": int(meta.get("createdAt") or 0),
+        "log": lines,
     }
 
 
@@ -2768,7 +4226,28 @@ def _linux_prepare_nfs_command(name: str, path: str) -> str:
         "fi; "
         f"install -d -m 755 {shlex.quote(safe_path)}; "
         "install -d -m 755 /etc/exports.d; "
-        f"printf '%s\\n' {shlex.quote(export_line)} > {shlex.quote(export_file)}; "
+        f"python3 - {shlex.quote(export_file)} {shlex.quote(export_line)} {shlex.quote(safe_path)} <<'PY'\n"
+        "import glob, os, pathlib, sys\n"
+        "target = pathlib.Path(sys.argv[1])\n"
+        "export_line = sys.argv[2]\n"
+        "export_path = sys.argv[3]\n"
+        "reused = False\n"
+        "for raw in glob.glob('/etc/exports.d/luma-*.exports'):\n"
+        "    candidate = pathlib.Path(raw)\n"
+        "    if candidate == target or not candidate.is_file():\n"
+        "        continue\n"
+        "    lines = [line.strip() for line in candidate.read_text().splitlines() if line.strip() and not line.lstrip().startswith('#')]\n"
+        "    if export_line in lines:\n"
+        "        target.unlink(missing_ok=True)\n"
+        "        reused = True\n"
+        "        break\n"
+        "    if any(line.split(None, 1)[0] == export_path for line in lines):\n"
+        "        raise SystemExit('managed NFS export path already exists with different options: ' + str(candidate))\n"
+        "if not reused:\n"
+        "    tmp = target.with_name(target.name + '.luma.tmp')\n"
+        "    tmp.write_text(export_line + '\\n')\n"
+        "    os.replace(tmp, target)\n"
+        "PY\n"
         "mountpoint -q /proc/fs/nfsd || mount -t nfsd nfsd /proc/fs/nfsd; "
         "systemctl enable --now nfs-server >/dev/null 2>&1 "
         "|| systemctl enable --now nfs-kernel-server >/dev/null 2>&1 "
@@ -2824,7 +4303,16 @@ def _macos_remove_nfs_command(name: str) -> str:
 
 def _volume_path_command(path: str) -> str:
     safe_path = _safe_absolute_path(path)
-    return f"set -euo pipefail; install -d -m 755 {shlex.quote(safe_path)}"
+    # A managed volume can be mounted by arbitrary non-root image UIDs. The
+    # per-application path is the isolation boundary, so its root must be
+    # writable without assuming an image-specific uid/gid. Reconcile existing
+    # paths as well as new ones so an upgrade repairs previously created 0755
+    # roots.
+    return (
+        "set -euo pipefail; "
+        f"install -d -m 0777 {shlex.quote(safe_path)}; "
+        f"chmod 0777 {shlex.quote(safe_path)}"
+    )
 
 
 def _remove_volume_path_command(root: str, relative: str) -> str:

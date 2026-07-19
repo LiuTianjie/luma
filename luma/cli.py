@@ -23,16 +23,18 @@ from .compose import (
     init_compose_sidecar,
     load_compose_deployment,
     render_compose_routes,
+    resolve_storage_mounts,
     storage_summary,
 )
 from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
 from .control.context import list_contexts, load_current_context, save_context, use_context
 from .control.state import load_state, new_state, state_path
-from .agent import DEFAULT_AGENT_CONFIG, install_node_agent, run_node_agent, run_terminal_supervisor
+from .agent import DEFAULT_AGENT_CONFIG, _current_install_layout, install_node_agent, run_node_agent, run_terminal_supervisor
 from .envfile import load_env_file, parse_env_file
 from .errors import LumaError
 from .io import dump_yaml, write_yaml
+from .installer import luma_installer_command
 from .local import LocalExecutor
 from .profiles import PROFILES
 from .render import render_tailscale_route, render_tcp_route, route_path, stack_path
@@ -45,6 +47,7 @@ from . import __version__
 T = TypeVar("T")
 OUTPUT_FORMATS = ("text", "json", "ndjson")
 UPDATE_REEXEC_ENV = "LUMA_UPDATE_REEXECED"
+UPDATE_DETACHED_ENV = "LUMA_UPDATE_DETACHED"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -113,12 +116,16 @@ def build_parser() -> argparse.ArgumentParser:
     registry_remove = registry_sub.add_parser("remove")
     registry_remove.add_argument("host")
     _add_control_arguments(registry_remove)
-    registry_serve = registry_sub.add_parser("serve", help="Deploy an in-cluster Docker registry on a build node and wire insecure-registries to every node")
-    registry_serve.add_argument("--node", required=True, help="Build node that hosts the registry (must be docker-build capable)")
+    registry_serve = registry_sub.add_parser("serve", help="Deploy a managed registry on a Linux Luma node")
+    registry_serve.add_argument("--node", required=True, help="Ready Linux node that hosts the registry")
     registry_serve.add_argument("--port", type=int, default=5000, help="Host port the registry listens on (default: 5000)")
     registry_serve.add_argument("--image", default="", help="Registry image (default: registry:2)")
     registry_serve.add_argument("--name", default="", help="Service name (default: luma-registry)")
-    registry_serve.add_argument("--storage-class", dest="storage_class", default="", help="storageClass for the registry data volume (default: local)")
+    registry_serve.add_argument("--storage-class", dest="storage_class", default="", help="Optional storageClass; otherwise use a node-local Docker volume")
+    registry_serve.add_argument("--domain", default="", help="TLS hostname for a secure registry; avoids Docker daemon restarts")
+    registry_serve.add_argument("--username", default="", help="Basic Auth username for --domain")
+    registry_serve.add_argument("--password-stdin", action="store_true", help="Read the secure registry password from stdin")
+    registry_serve.add_argument("--no-activate", action="store_true", help="Do not make the new secure registry the Builder push/pull registry")
     _add_control_arguments(registry_serve)
     _add_output_arguments(registry_serve)
     registry_serve.add_argument("--timeout", type=int, default=1800)
@@ -165,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.160 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.262 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -285,7 +292,7 @@ def build_parser() -> argparse.ArgumentParser:
     deploy.add_argument("--skip-orchestrator", action="store_true")
     deploy.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for this service")
     deploy.add_argument("--secrets-env-file", dest="deploy_env_file", type=Path, help=argparse.SUPPRESS)
-    deploy.add_argument("--timeout", type=int, default=1800, help="Seconds to wait for the control-plane deploy response")
+    deploy.add_argument("--timeout", type=int, default=3000, help="Seconds to wait for the control-plane deploy response")
     deploy.add_argument("--commit", action="store_true", help="Deprecated for control-plane deploy")
     deploy.add_argument("--push", action="store_true", help="Deprecated for control-plane deploy")
 
@@ -314,15 +321,26 @@ def build_parser() -> argparse.ArgumentParser:
     import_cmd.add_argument("--domain", default="", help="Override domain from the repo's .luma.yml for single-service imports")
     import_cmd.add_argument("--port", type=int, default=None, help="Override container port from the repo's .luma.yml for single-service imports")
     import_cmd.add_argument("--manifest", type=Path, help="Use this Luma manifest when the repository does not contain one")
+    import_cmd.add_argument(
+        "--compose-sidecar",
+        default="",
+        help="Select one repository-relative Luma Compose sidecar instead of auto-discovery",
+    )
     import_cmd.add_argument("--env", dest="deploy_env_file", type=Path, help="Import this .env file as scoped deployment secrets for the imported app/stack")
     import_cmd.add_argument("--secrets-env-file", dest="deploy_env_file", type=Path, help=argparse.SUPPRESS)
     import_cmd.add_argument("--platform", default="", help="Build platform (default: linux/amd64 or the repo's build.platform)")
     import_cmd.add_argument("--context", dest="build_context", default="", help="Docker build context within the repo (default: .)")
     import_cmd.add_argument("--dockerfile", default="", help="Dockerfile path within the repo (default: Dockerfile)")
     import_cmd.add_argument("--registry-host", dest="registry_host", default="", help="Registry host other nodes pull from (default: <build-node>:5000)")
+    import_cmd.add_argument(
+        "--proxy-mode",
+        choices=("auto", "direct"),
+        default="auto",
+        help="Builder outbound network mode: auto uses the node/region policy; direct explicitly disables the build proxy",
+    )
     _add_control_arguments(import_cmd)
     _add_output_arguments(import_cmd)
-    import_cmd.add_argument("--timeout", type=int, default=2400, help="Seconds to wait for the build+deploy response")
+    import_cmd.add_argument("--timeout", type=int, default=3600, help="Seconds to wait for the build+deploy response")
 
     build = sub.add_parser("build", help="Inspect and retry repository import build runs")
     build_sub = build.add_subparsers(dest="build_command", required=True)
@@ -337,13 +355,19 @@ def build_parser() -> argparse.ArgumentParser:
     build_retry.add_argument("id")
     _add_control_arguments(build_retry)
     _add_output_arguments(build_retry)
-    build_retry.add_argument("--timeout", type=int, default=2400)
+    build_retry.add_argument("--timeout", type=int, default=3600)
     build_retry.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for the retried import")
+    build_cancel = build_sub.add_parser("cancel", help="Cancel an active repository import build")
+    build_cancel.add_argument("id")
+    _add_control_arguments(build_cancel)
+    _add_output_arguments(build_cancel)
     build_config = build_sub.add_parser("config", help="Declare builder nodes and internal registry defaults")
     build_config.add_argument("--node", action="append", dest="nodes", default=[], help="Declared builder node; repeat for multiple builders")
     build_config.add_argument("--default-node", default="", help="Default builder node for luma import")
     build_config.add_argument("--registry-host", default="", help="Registry host that target nodes pull from, for example 100.66.177.70:5000")
     build_config.add_argument("--push-host", default="", help="Registry host used from the builder itself, usually localhost:5000")
+    build_config.add_argument("--direct-egress-node", action="append", dest="direct_egress_nodes", default=None, help="Builder node with reliable direct internet access; repeat for multiple nodes")
+    build_config.add_argument("--clear-direct-egress", action="store_true", help="Clear the direct-egress builder node list")
     _add_control_arguments(build_config)
     _add_output_arguments(build_config)
 
@@ -383,7 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
     compose_deploy.add_argument("--skip-orchestrator", action="store_true")
     compose_deploy.add_argument("--env", dest="deploy_env_file", type=Path, help="Use this .env file as scoped deployment secrets for this Compose application")
     compose_deploy.add_argument("--secrets-env-file", dest="deploy_env_file", type=Path, help=argparse.SUPPRESS)
-    compose_deploy.add_argument("--timeout", type=int, default=1800)
+    compose_deploy.add_argument("--timeout", type=int, default=3000)
     storage = sub.add_parser("storage")
     storage_sub = storage.add_subparsers(dest="storage_command", required=True)
     storage_list = storage_sub.add_parser("list")
@@ -403,9 +427,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     storage_set.add_argument("--region", action="append", dest="regions", default=[])
     storage_set.add_argument("--eligible-node", action="append", dest="nodes", default=[])
+    storage_set.add_argument(
+        "--timeout",
+        type=int,
+        default=360,
+        help="Wait for managed storage host preparation (default: 360s)",
+    )
     _add_control_arguments(storage_set)
     storage_remove = storage_sub.add_parser("remove")
     storage_remove.add_argument("name")
+    storage_remove.add_argument(
+        "--timeout",
+        type=int,
+        default=360,
+        help="Wait for managed storage host cleanup (default: 360s)",
+    )
     _add_control_arguments(storage_remove)
     storage_apply = storage_sub.add_parser("apply")
     storage_apply.add_argument("sidecar", type=Path)
@@ -448,6 +484,12 @@ def _add_update_manager_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--skip-egress", action="store_true")
     parser.add_argument("--overwrite-control-state", action="store_true")
     parser.add_argument("--install-ref", help="Git ref passed to the install script as LUMA_INSTALL_REF")
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Run a manager update in a detached transaction and write progress to a local log",
+    )
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -1370,12 +1412,25 @@ def cmd_registry(args: argparse.Namespace) -> int:
     if args.registry_command == "serve":
         output_format = _output_format(args)
         quiet = _quiet(args) or output_format != "text"
+        registry_password = ""
+        if args.domain:
+            if not args.username:
+                raise LumaError("--username is required with --domain")
+            registry_password = (
+                sys.stdin.read().strip()
+                if args.password_stdin
+                else getpass.getpass(f"{args.domain} password: ")
+            )
         serve_kwargs: Dict[str, Any] = dict(
             node=args.node,
             port=args.port,
             image=args.image,
             name=args.name,
             storage_class=args.storage_class,
+            domain=args.domain,
+            username=args.username,
+            password=registry_password,
+            activate=not args.no_activate,
             timeout=args.timeout,
         )
         if not quiet:
@@ -1524,11 +1579,22 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
 def cmd_update(args: argparse.Namespace) -> int:
     if args.update_command not in {None, "manager", "fleet"}:
         raise LumaError(f"unknown update command: {args.update_command}")
+    if bool(getattr(args, "detach", False)) and os.environ.get(UPDATE_DETACHED_ENV) != "1":
+        if args.update_command == "fleet":
+            raise LumaError("--detach is only supported for manager updates")
+        should_refresh = args.update_command == "manager" or _manager_refresh_decision(args)[0]
+        if not should_refresh:
+            raise LumaError("--detach requires a manager host with local control state, or the explicit `update manager` target")
+        return _start_detached_manager_update(args)
     if os.environ.get(UPDATE_REEXEC_ENV) == "1":
         print("[skip] Luma CLI already updated in this run")
     else:
         print("[start] Update Luma CLI")
-        _run_luma_installer(install_ref=_effective_update_install_ref(args))
+        manager_refresh = args.update_command == "manager" or _manager_refresh_decision(args)[0]
+        _run_luma_installer(
+            install_ref=_effective_update_install_ref(args),
+            skip_node_agent_refresh=manager_refresh,
+        )
         print("[ok] Luma CLI updated")
         _reexec_after_luma_update()
     if args.update_command == "fleet":
@@ -1781,12 +1847,128 @@ def _manager_update_options_provided(args: argparse.Namespace) -> bool:
     return False
 
 
-def _run_luma_installer(*, install_ref: str | None = None) -> None:
+def _run_luma_installer(*, install_ref: str | None = None, skip_node_agent_refresh: bool = False) -> None:
     env = os.environ.copy()
-    if install_ref:
-        env["LUMA_INSTALL_REF"] = install_ref
-    command = "curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | sh"
+    command, exact_ref = luma_installer_command(install_ref, environ=env)
+    env["LUMA_INSTALL_REF"] = exact_ref
+    # A manager update can be launched from the root-owned node-agent terminal
+    # even though the supported Luma installation belongs to the operator. Keep
+    # the running executable's layout instead of silently creating /root/.local
+    # and rewriting the healthy systemd unit to that incomplete environment.
+    layout = _current_install_layout()
+    if layout:
+        user_home, install_home, bin_dir = layout
+        env.setdefault("LUMA_USER_HOME", str(user_home))
+        env.setdefault("LUMA_INSTALL_HOME", str(install_home))
+        env.setdefault("LUMA_BIN_DIR", str(bin_dir))
+    # Manager refresh already reinstalls the node agent after Control is healthy.
+    # Restarting it from the bootstrap installer can kill an update launched by
+    # that same service before the control image and routes are reconciled.
+    if skip_node_agent_refresh:
+        env["LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH"] = "1"
     subprocess.run(command, shell=True, check=True, env=env)
+
+
+def _start_detached_manager_update(args: argparse.Namespace) -> int:
+    command = _current_luma_command()
+    if not command:
+        raise LumaError("unable to locate the Luma executable for detached manager update")
+    raw_argv = list(getattr(args, "_raw_argv", ()) or sys.argv[1:])
+    state_root = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+    update_dir = state_root / "luma" / "updates"
+    try:
+        update_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise LumaError(f"unable to create detached update state directory {update_dir}: {exc}") from exc
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    run_id = f"manager-{stamp}-{os.getpid()}"
+    log_path = update_dir / f"{run_id}.log"
+    status_path = update_dir / f"{run_id}.status"
+    try:
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as exc:
+        raise LumaError(f"unable to create detached update log {log_path}: {exc}") from exc
+    log_file = os.fdopen(log_fd, "w", encoding="utf-8")
+    env = os.environ.copy()
+    env[UPDATE_DETACHED_ENV] = "1"
+    env["LUMA_UPDATE_STATUS_PATH"] = str(status_path)
+    env["LUMA_UPDATE_LOG_PATH"] = str(log_path)
+    wrapper = (
+        'umask 077; "$@"; code=$?; '
+        'printf "%s\\n" "$code" > "$LUMA_UPDATE_STATUS_PATH"; exit "$code"'
+    )
+    if _manager_update_needs_transient_unit():
+        # A terminal session is a child of luma-node-agent.service. Merely
+        # calling setsid() does not escape that service's cgroup, so refreshing
+        # the agent would SIGTERM the manager update half way through its own
+        # control rollout. Run it as a transient unit with its own cgroup.
+        log_file.close()
+        unit = f"luma-manager-update-{stamp}-{os.getpid()}"
+        unit_wrapper = (
+            'umask 077; exec >> "$LUMA_UPDATE_LOG_PATH" 2>&1; '
+            '"$@"; code=$?; printf "%s\\n" "$code" > "$LUMA_UPDATE_STATUS_PATH"; exit "$code"'
+        )
+        forwarded = (
+            UPDATE_DETACHED_ENV,
+            "LUMA_UPDATE_STATUS_PATH",
+            "LUMA_UPDATE_LOG_PATH",
+            "LUMA_CONTROL_IMAGE",
+            "LUMA_USER_HOME",
+            "LUMA_INSTALL_HOME",
+            "LUMA_BIN_DIR",
+            "LUMA_INSTALL_OWNER",
+            "LUMA_PIP_BUILD_ISOLATION",
+            "PIP_NO_INDEX",
+        )
+        invocation = [
+            "systemd-run",
+            f"--unit={unit}",
+            "--collect",
+            "--no-block",
+            "--property=Type=exec",
+        ]
+        invocation.extend(f"--setenv={key}={env[key]}" for key in forwarded if env.get(key) is not None)
+        invocation.extend(["sh", "-c", unit_wrapper, "luma-detached-update", *command, *raw_argv])
+        try:
+            subprocess.run(invocation, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except Exception:
+            log_path.unlink(missing_ok=True)
+            raise
+        print(f"[ok] Detached manager update started (unit {unit})")
+        print(f"[info] Log: {log_path}")
+        print(f"[info] Status: {status_path} (0 = succeeded; non-zero = failed)")
+        print(f"[info] Follow progress: tail -f {shlex.quote(str(log_path))}")
+        return 0
+    try:
+        process = subprocess.Popen(
+            ["sh", "-c", wrapper, "luma-detached-update", *command, *raw_argv],
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+            env=env,
+        )
+    except Exception as exc:
+        log_file.close()
+        log_path.unlink(missing_ok=True)
+        raise LumaError(f"unable to start detached manager update: {exc}") from exc
+    log_file.close()
+    print(f"[ok] Detached manager update started (pid {process.pid})")
+    print(f"[info] Log: {log_path}")
+    print(f"[info] Status: {status_path} (0 = succeeded; non-zero = failed)")
+    print(f"[info] Follow progress: tail -f {shlex.quote(str(log_path))}")
+    return 0
+
+
+def _manager_update_needs_transient_unit() -> bool:
+    return bool(
+        sys.platform.startswith("linux")
+        and hasattr(os, "geteuid")
+        and os.geteuid() == 0
+        and os.environ.get("INVOCATION_ID")
+        and shutil.which("systemd-run")
+    )
 
 
 def _reexec_after_luma_update() -> None:
@@ -1817,7 +1999,16 @@ def _refresh_manager_control(args: argparse.Namespace) -> None:
     if not state:
         raise LumaError("manager control state not found. Run luma bootstrap manager --domain <control-domain> for first install or repair.")
     state["domain"] = domain
-    config = load_config(args.config)
+    # A managed update runs in a transient systemd unit with no meaningful
+    # working directory.  Falling back to the installer checkout's example
+    # luma.yaml silently renders production ingress with example settings.
+    # The manager-owned config is authoritative unless the operator supplied
+    # an explicit --config path.
+    manager_config = Path("/opt/luma/luma.yaml")
+    config_path = args.config
+    if config_path is None and manager_config.exists():
+        config_path = manager_config
+    config = load_config(config_path)
     node = config.get_node(args.node) if args.node else (config.default_manager() or _local_node(args.profile))
     if not node:
         raise LumaError("no manager node configured. Add a node or pass --node.")
@@ -2587,6 +2778,8 @@ def cmd_import(args: argparse.Namespace) -> int:
         raise LumaError("repo is required unless --provider-id and --repository are provided")
     if args.repo and (args.provider_id or args.repository):
         raise LumaError("use either repo URL/owner-name or --provider-id + --repository, not both")
+    if args.compose_sidecar and args.manifest:
+        raise LumaError("--compose-sidecar cannot be combined with --manifest")
 
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     source_label = args.repo or f"{args.provider_id}:{args.repository}"
@@ -2609,11 +2802,13 @@ def cmd_import(args: argparse.Namespace) -> int:
         domain=args.domain,
         port=args.port,
         manifest=manifest_text,
+        compose_sidecar=args.compose_sidecar,
         env_secrets=env_secrets,
         platform=args.platform,
         context=args.build_context,
         dockerfile=args.dockerfile,
         registry_host=args.registry_host,
+        proxy_mode=args.proxy_mode,
         timeout=args.timeout,
     )
 
@@ -2655,6 +2850,11 @@ def cmd_import(args: argparse.Namespace) -> int:
                     _print_json({"type": "event", **step})
                 elif not quiet:
                     _print_deploy_step(step)
+
+    if args.compose_sidecar and result.get("composeSidecar") != args.compose_sidecar:
+        raise LumaError(
+            "Control did not confirm the selected Compose sidecar; refusing to report import success"
+        )
 
     if output_format != "text":
         _print_success(args, result)
@@ -2725,16 +2925,28 @@ def cmd_build(args: argparse.Namespace) -> int:
         if result.get("image"):
             print(f"Image built: {result.get('image')}")
         return 0
+    if args.build_command == "cancel":
+        result = client.cancel_build(args.id)
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        run = result.get("run") if isinstance(result.get("run"), dict) else {}
+        print(f"Build {run.get('id') or args.id}: {run.get('status') or 'canceling'}")
+        return 0
     if args.build_command == "config":
         nodes = [str(value).strip() for value in args.nodes if str(value).strip()]
         default_node = str(args.default_node or (nodes[0] if nodes else "")).strip()
-        if not nodes and not default_node and not args.registry_host and not args.push_host:
-            raise LumaError("build config requires --node, --default-node, --registry-host, or --push-host")
+        direct_egress_nodes = [] if args.clear_direct_egress else args.direct_egress_nodes
+        if args.clear_direct_egress and args.direct_egress_nodes:
+            raise LumaError("--clear-direct-egress cannot be combined with --direct-egress-node")
+        if not nodes and not default_node and not args.registry_host and not args.push_host and direct_egress_nodes is None:
+            raise LumaError("build config requires a builder, registry, or direct-egress option")
         result = client.configure_build(
             nodes=nodes or None,
             default_node=default_node,
             registry_host=args.registry_host,
             push_host=args.push_host,
+            direct_egress_nodes=direct_egress_nodes,
         )
         if output_format != "text":
             _print_success(args, result)
@@ -2744,6 +2956,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"  Default node: {build.get('defaultNode') or '-'}")
         print(f"  Registry host: {build.get('registryHost') or '-'}")
         print(f"  Push host: {build.get('pushHost') or '-'}")
+        print(f"  Direct egress: {', '.join(build.get('directEgressNodes') or []) or '-'}")
         rows = []
         for node in build.get("nodes") or []:
             if isinstance(node, dict):
@@ -2786,7 +2999,12 @@ def cmd_compose_validate(args: argparse.Namespace) -> int:
     _require_nomad_engine(_compose_engine(config, args))
     from .nomad_render import render_compose_job
 
-    stack = render_compose_job(config, deployment, resolve_secrets=False)
+    stack = render_compose_job(
+        config,
+        deployment,
+        resolve_secrets=False,
+        node_records=node_records,
+    )
     routes = render_compose_routes(config, deployment)
     result = {
         "deployment": _compose_summary(config, deployment, stack, routes, artifact_kind="job"),
@@ -2818,10 +3036,16 @@ def _inject_import_mode_placeholder_images(deployment: Any) -> None:
 def cmd_compose_render(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args))
+    node_records = _control_node_records_for_local(args)
     _require_nomad_engine(_compose_engine(config, args))
     from .nomad_render import render_compose_job
 
-    rendered = render_compose_job(config, deployment, resolve_secrets=False)
+    rendered = render_compose_job(
+        config,
+        deployment,
+        resolve_secrets=False,
+        node_records=node_records,
+    )
     for warning in _context_warnings(args):
         print(f"# warning: {warning}")
     print(rendered)
@@ -2844,7 +3068,12 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
     if args.dry_run:
         from .nomad_render import render_compose_job
 
-        stack = render_compose_job(config, deployment, resolve_secrets=False)
+        stack = render_compose_job(
+            config,
+            deployment,
+            resolve_secrets=False,
+            node_records=node_records,
+        )
         routes = render_compose_routes(config, deployment)
         result = {
             "deployment": _compose_summary(config, deployment, stack, routes, artifact_kind="job"),
@@ -2988,6 +3217,7 @@ def cmd_storage_set(args: argparse.Namespace) -> int:
         mount_options=args.mount_options,
         regions=args.regions,
         nodes=args.nodes,
+        timeout=args.timeout,
     )
     print(f"Storage class saved: {result.get('name', args.name)}")
     _print_storage_host_result(result.get("storageHost"))
@@ -2996,7 +3226,10 @@ def cmd_storage_set(args: argparse.Namespace) -> int:
 
 def cmd_storage_remove(args: argparse.Namespace) -> int:
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
-    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).remove_storage(name=args.name)
+    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).remove_storage(
+        name=args.name,
+        timeout=args.timeout,
+    )
     status = "removed" if result.get("removed") else "not configured"
     print(f"Storage class {status}: {args.name}")
     _print_storage_host_result(result.get("storageHost"))
@@ -3020,10 +3253,14 @@ def _print_storage_host_result(value: Any) -> None:
 def cmd_storage_apply(args: argparse.Namespace) -> int:
     storage_classes = _control_storage_classes_for_local(args, required=True)
     node_records = _control_node_records_for_local(args, required=True)
-    deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
-    from .nomad_render import render_compose_job
-
-    render_compose_job(load_config(args.config), deployment, resolve_secrets=False)
+    deployment = load_compose_deployment(
+        args.sidecar,
+        storage_classes=storage_classes,
+        allow_build_services=True,
+    )
+    # Storage preflight must validate placement/endpoints without requiring
+    # Builder-produced image references to exist yet.
+    resolve_storage_mounts(deployment, node_records=node_records)
     if args.dry_run:
         print(dump_yaml(storage_summary(deployment, node_records=node_records)))
         return 0
@@ -3049,7 +3286,11 @@ def cmd_storage_apply(args: argparse.Namespace) -> int:
 def cmd_storage_check(args: argparse.Namespace) -> int:
     storage_classes = _control_storage_classes_for_local(args, required=True)
     node_records = _control_node_records_for_local(args, required=True)
-    deployment = load_compose_deployment(args.sidecar, storage_classes=storage_classes)
+    deployment = load_compose_deployment(
+        args.sidecar,
+        storage_classes=storage_classes,
+        allow_build_services=True,
+    )
     result = storage_check_plan(deployment, node_records=node_records)
     if _output_format(args) != "text":
         _print_success(args, result)
@@ -3067,7 +3308,11 @@ def cmd_storage_check(args: argparse.Namespace) -> int:
 
 
 def cmd_storage_migrate(args: argparse.Namespace) -> int:
-    deployment = load_compose_deployment(args.sidecar, storage_classes=_control_storage_classes_for_local(args, required=True))
+    deployment = load_compose_deployment(
+        args.sidecar,
+        storage_classes=_control_storage_classes_for_local(args, required=True),
+        allow_build_services=True,
+    )
     result = storage_migration_plan(
         deployment,
         volume=args.volume,
@@ -3253,12 +3498,19 @@ def _append_deep_node_checks(checks: list[tuple[str, bool, str]], node_items: li
             )
         )
         cni = nomad.get("cniHostPorts") if isinstance(nomad.get("cniHostPorts"), dict) else {}
-        cni_fix = _cni_hostport_fix(cni.get("conflicts"))
+        cni_fixes = [
+            fix
+            for fix in (
+                _cni_missing_network_fix(cni.get("missingNetworks")),
+                _cni_hostport_fix(cni.get("conflicts")),
+            )
+            if fix
+        ]
         checks.append(
             (
                 f"Node {node_name} Nomad CNI hostports",
-                not cni_fix,
-                cni_fix or "No duplicated CNI hostport DNAT rules detected",
+                not cni_fixes,
+                " ".join(cni_fixes) or "Nomad allocation networks and CNI hostport rules look healthy",
             )
         )
         pull_errors = diagnostics.get("recentImagePullErrors") if isinstance(diagnostics.get("recentImagePullErrors"), list) else []
@@ -3287,6 +3539,24 @@ def _cni_hostport_fix(raw_conflicts: Any) -> str:
     if not details:
         return ""
     return "Clear stale CNI-HOSTPORT-DNAT rules or recreate the affected allocation after cleaning CNI state; duplicated hostports: " + "; ".join(details[:6])
+
+
+def _cni_missing_network_fix(raw_missing: Any) -> str:
+    if not isinstance(raw_missing, list) or not raw_missing:
+        return ""
+    allocations = sorted(
+        {
+            str(item.get("allocId") or "").strip()
+            for item in raw_missing
+            if isinstance(item, dict) and str(item.get("allocId") or "").strip()
+        }
+    )
+    if not allocations:
+        return ""
+    return (
+        "Recreate the affected allocation(s): their Nomad CNI namespace has only loopback after a Docker restart; "
+        "allocations: " + ", ".join(allocations[:8])
+    )
 
 
 def _docker_mirror_fix(raw_mirrors: Any) -> str:
@@ -3390,6 +3660,7 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     parser = build_parser()
     args = parser.parse_args(argv)
+    args._raw_argv = list(argv)
     try:
         if not args.no_env:
             load_env_file(args.env_file)

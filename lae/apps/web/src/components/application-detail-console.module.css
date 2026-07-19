@@ -1,0 +1,1460 @@
+.shell {
+  min-height: 100vh;
+}
+
+.shell :global(.topbar-breadcrumbs) a {
+  color: var(--text-subtle);
+  text-decoration: none;
+}
+
+.shell :global(.topbar-breadcrumbs) a:hover {
+  color: var(--text);
+}
+
+.breadcrumbs {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.breadcrumbs strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace {
+  display: grid;
+  gap: 12px;
+}
+
+.gateWorkspace {
+  min-height: calc(100vh - var(--topbar-height));
+  display: grid;
+  place-items: center;
+}
+
+.hero {
+  min-height: 116px;
+  padding: 4px 0 6px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.hero h1 {
+  margin: 0;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -.02em;
+}
+
+.hero > div > span {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.backLink {
+  width: max-content;
+  margin-bottom: 16px;
+  color: var(--text-subtle);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  text-decoration: none;
+}
+
+.backLink:hover {
+  color: var(--text);
+}
+
+.titleLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.openApplication,
+.primaryButton {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  color: #fff;
+  background: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.openApplication:hover,
+.primaryButton:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+.overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.overview article {
+  min-width: 0;
+  min-height: 84px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.overview span,
+.overview small {
+  color: var(--text-subtle);
+  display: block;
+  font-size: 9px;
+}
+
+.overview strong {
+  max-width: 100%;
+  margin: 8px 0 5px;
+  overflow: hidden;
+  color: var(--text);
+  display: block;
+  font-size: 18px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.controlPanel {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+}
+
+.panelHeading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.panelHeading > span {
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  background: var(--well);
+  display: grid;
+  place-items: center;
+}
+
+.panelHeading p,
+.panelHeading h2,
+.panelHeading small {
+  margin: 0;
+  display: block;
+}
+
+.panelHeading p {
+  margin: 0 0 3px;
+  color: var(--text-subtle);
+  font-size: 8px;
+  letter-spacing: .08em;
+}
+
+.panelHeading h2 {
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.panelHeading small {
+  margin-top: 4px;
+  color: var(--text-subtle);
+  font-size: 9px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.panelHeaderWithAction {
+  margin-bottom: 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.panelHeaderWithAction > button,
+.observabilityControls button,
+.actionBar button {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.panelHeaderWithAction > button:hover,
+.observabilityControls button:hover,
+.actionBar button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--well);
+}
+
+.actionBar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.actionBar .primaryButton {
+  border-color: var(--accent);
+  color: #fff;
+  background: var(--accent);
+}
+
+.dangerButton {
+  border-color: var(--red-line) !important;
+  color: var(--red) !important;
+  background: var(--red-soft) !important;
+}
+
+.actionBar button:disabled,
+.primaryButton:disabled,
+.dialog button:disabled,
+.environmentForm button:disabled {
+  cursor: not-allowed;
+  opacity: .46;
+}
+
+.inlineNotice,
+.errorNotice {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  background: var(--well);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.errorNotice {
+  margin-bottom: 12px;
+  border-color: var(--red-line);
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.twoColumn {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.serviceList,
+.routeList,
+.environmentList {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.serviceList article,
+.routeList article,
+.environmentList article {
+  min-height: 58px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.serviceList article:last-child,
+.routeList article:last-child,
+.environmentList article:last-child {
+  border-bottom: 0;
+}
+
+.serviceIdentity,
+.environmentIdentity,
+.routeList article > div:first-child {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.serviceIdentity > svg,
+.environmentIdentity > svg {
+  color: var(--text-subtle);
+}
+
+.serviceIdentity strong,
+.serviceIdentity span,
+.environmentIdentity strong,
+.environmentIdentity span,
+.routeList a,
+.routeList a + span {
+  display: block;
+}
+
+.serviceIdentity strong,
+.environmentIdentity strong,
+.routeList a {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routeList a {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  text-decoration: none;
+}
+
+.routeList a:hover {
+  color: var(--accent);
+}
+
+.serviceIdentity span,
+.environmentIdentity span,
+.routeList a + span {
+  margin-top: 3px;
+  color: var(--text-subtle);
+  font-size: 8px;
+}
+
+.serviceState {
+  flex: 0 0 auto;
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
+.serviceState small {
+  color: var(--text-subtle);
+  font-size: 8px;
+}
+
+.statusPill {
+  width: max-content;
+  min-height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--well);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 8px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.statusPill i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.toneGood {
+  border-color: var(--green-line);
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.toneWarn {
+  border-color: var(--amber-line);
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.toneBad {
+  border-color: var(--red-line);
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.toneMuted {
+  color: var(--text-subtle);
+}
+
+.routeIcon {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  background: var(--well);
+  display: grid;
+  place-items: center;
+}
+
+.routeMeta,
+.environmentMeta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.routeMeta > small,
+.environmentMeta > small {
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-subtle);
+  font-size: 7px;
+}
+
+.emptyState {
+  min-height: 100px;
+  color: var(--text-subtle);
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  font-size: 9px;
+  text-align: center;
+}
+
+.deliveryGrid {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: minmax(520px, 1.12fr) minmax(330px, .88fr);
+  gap: 12px;
+}
+
+.deploymentTableWrap,
+.operationInspector {
+  min-width: 0;
+  min-height: 360px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.deploymentTableWrap {
+  overflow-x: auto;
+}
+
+.deploymentTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 9px;
+}
+
+.deploymentTable th,
+.deploymentTable td {
+  height: 48px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-muted);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.deploymentTable th {
+  height: 36px;
+  color: var(--text-subtle);
+  background: var(--well);
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: .05em;
+}
+
+.deploymentTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.deploymentTable tbody tr:hover,
+.deploymentTable .activeRow {
+  background: var(--surface-raised);
+}
+
+.deploymentTable td:first-child strong,
+.deploymentTable td:first-child small {
+  display: block;
+}
+
+.deploymentTable td:first-child strong {
+  color: var(--text);
+  font-size: 9px;
+}
+
+.deploymentTable td:first-child small {
+  margin-top: 3px;
+  color: var(--accent);
+  font-size: 7px;
+}
+
+.deploymentTable .deploymentError {
+  max-width: 140px;
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--red);
+  display: block;
+  font-size: 7px;
+  text-overflow: ellipsis;
+}
+
+.deploymentTable td:last-child {
+  width: 34px;
+}
+
+.deploymentTable td:last-child button {
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--surface);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.deploymentTable td:last-child button:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--well);
+}
+
+.operationInspector {
+  padding: 13px;
+  overflow: auto;
+  background: var(--recess);
+}
+
+.operationHeader {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.operationHeader span,
+.operationHeader strong {
+  display: block;
+}
+
+.operationHeader span {
+  color: var(--text-subtle);
+  font-size: 7px;
+  letter-spacing: .08em;
+}
+
+.operationHeader strong {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.operationFacts {
+  margin: 9px 0 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line);
+}
+
+.operationFacts div {
+  min-width: 0;
+  padding: 7px;
+  background: var(--surface);
+}
+
+.operationFacts dt,
+.operationFacts dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operationFacts dt {
+  color: var(--text-subtle);
+  font-size: 7px;
+}
+
+.operationFacts dd {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+.updateCheck {
+  margin-top: 9px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.updateCheck > strong {
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+}
+
+.updateCheck > div {
+  margin-top: 7px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.updateCheck span {
+  color: var(--text-subtle);
+  font-size: 7px;
+}
+
+.updateCheck b {
+  margin-top: 3px;
+  color: var(--text-muted);
+  display: block;
+  font-size: 8px;
+  font-weight: 500;
+}
+
+.updateDiff {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.updateDiff section + section {
+  margin-top: 7px;
+}
+
+.updateDiff section > b {
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.updateDiff ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.updateDiff li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  font-size: 7px;
+}
+
+.updateDiff li i {
+  color: var(--blue);
+  font-style: normal;
+}
+
+.updateDiff li[data-kind="removed"] i {
+  color: var(--red);
+}
+
+.updateDiff li[data-kind="changed"] i {
+  color: var(--amber);
+}
+
+.updateWarning {
+  display: grid;
+  gap: 3px;
+  margin-top: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-sm);
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.updateWarning strong,
+.updateWarning span,
+.updateDiffUnavailable {
+  font-size: 7px;
+  line-height: 1.5;
+}
+
+.updateDeployButton {
+  width: 100%;
+  min-height: 29px;
+  margin-top: 8px;
+  border: 1px solid var(--blue);
+  border-radius: var(--radius-sm);
+  color: white;
+  background: var(--blue);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.updateDeployButton:disabled {
+  border-color: var(--line);
+  color: var(--text-subtle);
+  background: var(--surface-subtle);
+  cursor: not-allowed;
+}
+
+.updateWarning span {
+  color: var(--text-muted);
+}
+
+.updateDiffUnavailable {
+  margin: 8px 0 0;
+  color: var(--text-subtle);
+}
+
+.operationFailure {
+  margin: 9px 0 0;
+  padding: 7px 8px;
+  border: 1px solid var(--red-line);
+  border-radius: var(--radius-sm);
+  color: var(--red);
+  background: var(--red-soft);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.eventTimeline {
+  position: relative;
+  max-height: 240px;
+  margin-top: 10px;
+  overflow: auto;
+}
+
+.eventTimeline article {
+  position: relative;
+  min-height: 54px;
+  padding: 6px 0 8px 18px;
+}
+
+.eventTimeline article::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 16px;
+  bottom: -5px;
+  width: 1px;
+  background: var(--line);
+}
+
+.eventTimeline article:last-child::before {
+  display: none;
+}
+
+.eventTimeline article > i {
+  position: absolute;
+  left: 1px;
+  top: 9px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--recess);
+  border-radius: 50%;
+  background: var(--green);
+  box-sizing: content-box;
+}
+
+.eventTimeline .eventError > i {
+  background: var(--red);
+}
+
+.eventTimeline span,
+.eventTimeline strong,
+.eventTimeline small {
+  display: block;
+}
+
+.eventTimeline span {
+  color: var(--text-subtle);
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.eventTimeline strong {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.eventTimeline small {
+  margin-top: 3px;
+  color: var(--text-subtle);
+  font-size: 7px;
+}
+
+.eventWaiting {
+  padding: 12px 0;
+  color: var(--text-subtle);
+  display: block;
+  font-size: 8px;
+}
+
+.environmentLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.environmentLayout:has(.environmentForm) {
+  grid-template-columns: minmax(420px, 1fr) minmax(280px, 360px);
+}
+
+.environmentList {
+  margin-top: 0;
+}
+
+.environmentMeta > span {
+  color: var(--text-subtle);
+  font-size: 8px;
+}
+
+.environmentMeta > button,
+.inlineConfirm button {
+  min-height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--surface);
+  font-size: 8px;
+  cursor: pointer;
+}
+
+.environmentMeta > button:hover,
+.inlineConfirm button:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--well);
+}
+
+.environmentMeta .iconDanger {
+  width: 26px;
+  padding: 0;
+  color: var(--red);
+  display: grid;
+  place-items: center;
+}
+
+.inlineConfirm {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.inlineConfirm button:first-child {
+  border-color: var(--red-line);
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.environmentForm {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--well);
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.environmentForm > div:first-child {
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.environmentForm > div:first-child strong {
+  color: var(--text);
+  font-size: 10px;
+}
+
+.environmentForm > div:first-child button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--surface);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.environmentForm > label > span {
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  display: block;
+  font-size: 8px;
+}
+
+.environmentForm input:not([type="checkbox"]),
+.environmentForm select,
+.observabilityControls select {
+  width: 100%;
+  height: 36px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  outline: 0;
+  color: var(--text);
+  background: var(--recess);
+  font-size: 10px;
+}
+
+.environmentForm input:focus,
+.environmentForm select:focus,
+.observabilityControls select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.environmentForm input:disabled,
+.environmentForm select:disabled {
+  color: var(--text-subtle);
+  opacity: .7;
+}
+
+.environmentChecks {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.environmentChecks label {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 8px;
+}
+
+.environmentChecks input {
+  accent-color: var(--accent);
+}
+
+.environmentForm > p {
+  margin: 0;
+  color: var(--text-subtle);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.environmentForm > .primaryButton {
+  width: 100%;
+}
+
+.observabilityControls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.observabilityControls select {
+  min-width: 190px;
+  background: var(--surface);
+}
+
+.observabilityGrid {
+  display: grid;
+  grid-template-columns: minmax(400px, .9fr) minmax(480px, 1.1fr);
+  gap: 12px;
+}
+
+.metricBoard,
+.logTail {
+  min-width: 0;
+  min-height: 340px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--recess);
+}
+
+.observabilityHeading {
+  min-height: 26px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.observabilityHeading > div {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.observabilityHeading strong,
+.observabilityHeading span {
+  font-size: 8px;
+}
+
+.observabilityHeading span {
+  color: var(--text-subtle);
+}
+
+.metricGrid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.metricCard {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.metricCard > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.metricCard span {
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metricCard strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.metricCard svg {
+  width: 100%;
+  height: 58px;
+  margin-top: 8px;
+  overflow: visible;
+}
+
+.metricCard path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.metricCard small {
+  overflow: hidden;
+  color: var(--text-subtle);
+  display: block;
+  font-size: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logTail pre {
+  max-width: 100%;
+  height: 278px;
+  margin: 10px 0 0;
+  overflow: auto;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 8px;
+  line-height: 1.65;
+  white-space: pre;
+}
+
+.logTail pre span {
+  min-width: max-content;
+  display: block;
+}
+
+.logTail pre i {
+  width: 32px;
+  margin-right: 10px;
+  color: var(--text-subtle);
+  display: inline-block;
+  font-style: normal;
+  text-align: right;
+  user-select: none;
+}
+
+.truncated {
+  margin-top: 7px;
+  color: var(--amber);
+  display: block;
+  font-size: 7px;
+}
+
+.dialogBackdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  padding: 18px;
+  background: rgba(0, 0, 0, .64);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+}
+
+.dialog {
+  width: min(100%, 440px);
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  color: var(--text);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-heavy);
+}
+
+.dialog > span {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--red-line);
+  border-radius: var(--radius-md);
+  color: var(--red);
+  background: var(--red-soft);
+  display: grid;
+  place-items: center;
+}
+
+.dialog > p {
+  margin: 18px 0 5px;
+  color: var(--text-subtle);
+  font-size: 8px;
+  letter-spacing: .08em;
+}
+
+.dialog h2 {
+  margin: 0;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 18px;
+}
+
+.dialog > small {
+  margin-top: 9px;
+  color: var(--text-muted);
+  display: block;
+  font-size: 9px;
+  line-height: 1.65;
+}
+
+.dialog > div {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.dialog button {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.stateGate {
+  width: min(100%, 520px);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.stateGate > svg {
+  color: var(--text-muted);
+}
+
+.stateGate > p {
+  margin: 18px 0 5px;
+  color: var(--text-subtle);
+  font-size: 8px;
+  letter-spacing: .08em;
+}
+
+.stateGate h1 {
+  margin: 0;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 20px;
+}
+
+.stateGate > span {
+  margin-top: 9px;
+  color: var(--text-muted);
+  display: block;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.stateGate > div {
+  margin-top: 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stateGate a,
+.stateGate button {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.stateGate a:first-child {
+  border-color: var(--accent);
+  color: #fff;
+  background: var(--accent);
+}
+
+.spin {
+  animation: spin .8s linear infinite;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1180px) {
+  .deliveryGrid,
+  .observabilityGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .metricBoard,
+  .logTail {
+    min-height: 300px;
+  }
+
+  .environmentLayout:has(.environmentForm) {
+    grid-template-columns: minmax(360px, 1fr) 300px;
+  }
+}
+
+@media (max-width: 960px) {
+  .controlPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .actionBar {
+    justify-content: flex-start;
+  }
+
+  .twoColumn {
+    grid-template-columns: 1fr;
+  }
+
+  .environmentLayout:has(.environmentForm) {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .hero {
+    min-height: 100px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .hero h1 {
+    font-size: 23px;
+  }
+
+  .openApplication {
+    width: 100%;
+  }
+
+  .overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .overview article {
+    min-height: 74px;
+    padding: 10px;
+  }
+
+  .panel {
+    padding: 13px;
+  }
+
+  .panelHeaderWithAction {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .panelHeaderWithAction > button {
+    width: 100%;
+  }
+
+  .actionBar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .serviceList article,
+  .routeList article,
+  .environmentList article {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .serviceState,
+  .routeMeta,
+  .environmentMeta {
+    width: 100%;
+    justify-items: start;
+    justify-content: flex-start;
+  }
+
+  .deliveryGrid {
+    margin-left: -13px;
+    margin-right: -13px;
+  }
+
+  .deploymentTableWrap,
+  .operationInspector {
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+
+  .operationFacts,
+  .updateCheck > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .observabilityControls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .observabilityControls select {
+    min-width: 0;
+  }
+
+  .metricGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .metricBoard,
+  .logTail {
+    min-height: 260px;
+    padding: 9px;
+  }
+
+  .logTail pre {
+    height: 220px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation-duration: .01ms; animation-iteration-count: 1; }
+}

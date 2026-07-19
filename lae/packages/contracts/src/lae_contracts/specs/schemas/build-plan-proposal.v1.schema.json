@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.itool.tech/lae/build-plan-proposal.v1.schema.json",
+  "title": "LAE Internal Build Plan Proposal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sourceSnapshotDigest",
+    "resolvedCommit",
+    "policyVersion",
+    "builds",
+    "externalImages"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "lae.build-plan-proposal/v1"},
+    "sourceSnapshotDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "resolvedCommit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+    "policyVersion": {"type": "string", "minLength": 1},
+    "builds": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"$ref": "build-plan-candidate.v1.schema.json#/$defs/build"}
+    },
+    "externalImages": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/externalImage"}
+    }
+  },
+  "$defs": {
+    "externalImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "ref", "platform"],
+      "properties": {
+        "key": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "ref": {
+          "type": "string",
+          "pattern": "^(?=.{1,512}$)(?!.*(?:[?#]|://|\\s))(?:(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::(?![Ll][Aa][Tt][Ee][Ss][Tt]$)[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[a-f0-9]{64})$",
+          "$comment": "LAE semantic validation additionally rejects latest tags and localhost, IP, private, or custom-port registry hosts."
+        },
+        "resolvedDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "platform": {"const": "linux/amd64"}
+      }
+    }
+  }
+}

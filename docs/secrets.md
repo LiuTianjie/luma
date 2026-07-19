@@ -101,7 +101,7 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 luma registry list
 ```
 
-Luma uses these credentials only for target-node image pulls and for injecting the docker `config.auth` block into the Nomad jobspec during deploy. They are not rendered into manifest YAML and are not passed to service containers as environment variables. `luma registry list` returns only the registry host and username.
+With Builder Registry configured, Luma leases source credentials only to the Builder image-cache task. They are not persisted in agent tasks, rendered into manifest YAML, injected into runtime jobs, or passed to service containers. A separate credential for the internal Builder Registry may be injected into the Nomad docker `config.auth` block when that destination requires authentication. `luma registry list` returns only registry hosts and usernames.
 
 `luma registry remove <host>` removes the credential from Luma Control. It does not revoke provider-issued tokens and cannot remove auth already baked into a running job's spec; rotate or revoke the token at the registry provider when access must be invalidated.
 

@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.160 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.262 sh
 ```
 
 从源码开发：
@@ -146,6 +146,76 @@ EGRESS_SUBSCRIPTION_URL=...
 | `TAILSCALE_AUTHKEY` | 私有节点/home/tailscale-relay 按需 | 让服务器加入你的 tailnet。普通单公网 manager 和普通公开服务不强制需要。 |
 | `LUMA_SUDO_PASSWORD` | sudo 需要密码时按需 | 本机执行 sudo 命令的兜底密码。只保存在本机用户配置中，不会分发给 client。 |
 
+### Manager 端 LAE Control 文件
+
+Luma Control 为 LAE 提供服务时，Builder 与 Runtime 身份必须使用两套独立配置。Nomad job 已挂载 `/opt/luma/control`，所以传给 Control 的 principal、broker 和 admin 文件都必须放在这个目录下，并使用非软链接的私有常规文件（推荐 `0600`）。Token 内容只由 Control 在运行时读取，不会写进 Nomad Job 或 `control.json`。
+
+Builder principal 文件 `/opt/luma/control/lae-builder-principals.json`：
+
+```json
+{
+  "lae-builder": {
+    "tokenFile": "lae-builder.token",
+    "tenantRefs": ["*"],
+    "applicationRefs": ["*"]
+  }
+}
+```
+
+Runtime principal 文件 `/opt/luma/control/lae-runtime-principals.json`：
+
+```json
+{
+  "lae-runtime": {
+    "tokenFile": "lae-runtime.token",
+    "tenantRefs": ["*"],
+    "applicationRefs": ["*"],
+    "builderPrincipalRefs": ["lae-builder"],
+    "scopes": [
+      "runtime:volumes:prepare",
+      "runtime:deployments:write",
+      "runtime:deployments:read",
+      "runtime:logs",
+      "runtime:metrics",
+      "runtime:secrets:issue"
+    ]
+  }
+}
+```
+
+`tokenFile` 必须和对应 principal 文件在同一目录。准备好两个 token 文件后执行：
+
+```bash
+sudo install -d -m 700 /opt/luma/control
+sudo chmod 600 \
+  /opt/luma/control/lae-builder.token \
+  /opt/luma/control/lae-runtime.token \
+  /opt/luma/control/lae-builder-principals.json \
+  /opt/luma/control/lae-runtime-principals.json
+
+LUMA_LAE_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-builder-principals.json
+LUMA_LAE_RUNTIME_SERVICE_PRINCIPALS_FILE=/opt/luma/control/lae-runtime-principals.json
+```
+
+可选的 credential/object broker 与 LAE 超级管理员代理也使用服务端 token 文件：
+
+```bash
+LUMA_CREDENTIAL_BROKER_URL=https://lae-api.internal/v1/internal/credential-leases/redeem
+LUMA_CREDENTIAL_BROKER_TIMEOUT_SECONDS=5
+LUMA_CREDENTIAL_BROKER_TOKEN_FILE=/opt/luma/control/lae-broker.token
+
+LUMA_OBJECT_SOURCE_BROKER_URL=https://lae-api.internal/v1/internal/object-source-leases/redeem
+LUMA_OBJECT_SOURCE_BROKER_TIMEOUT_SECONDS=5
+# 有意复用 credential broker token 时可以省略下一项：
+LUMA_OBJECT_SOURCE_BROKER_TOKEN_FILE=/opt/luma/control/lae-object-broker.token
+
+LUMA_LAE_ADMIN_API_URL=https://lae-api.internal
+LUMA_LAE_ADMIN_TIMEOUT_SECONDS=8
+LUMA_LAE_ADMIN_TOKEN_FILE=/opt/luma/control/lae-admin.token
+```
+
+把这些路径和 URL 写进 manager 的 `.env`，然后执行 `luma bootstrap manager` 或 `luma update manager`。Manager bootstrap 只会把上述 HTTPS URL、受限 timeout 和 `/opt/luma/control` 内的文件路径传进 Nomad job。旧的 `LUMA_LAE_SERVICE_TOKEN`、`LUMA_LAE_*_PRINCIPALS_JSON` 仍可供直接运行 Control 或本地测试兼容使用，但不会被 manager bootstrap 转发；生产 Nomad manager 应使用文件模式。
+
 如果不想提前编辑 `.env`，也可以直接运行 `luma bootstrap manager --domain ...`。缺少本地配置时，CLI 会逐项说明用途并交互式询问。
 
 只有当 manager 能直接拉取配置的 control 镜像时，`EGRESS_SUBSCRIPTION_URL` 才可以先不配置。国内机器使用默认 GHCR control 镜像时，应先配置它，不建议用 `--skip-egress`。
@@ -174,6 +244,7 @@ luma tailscale connect
 | manager | 首次安装控制面 | `luma bootstrap manager --domain luma.example.com` |
 | manager | 更新 CLI 和控制面 | `luma update` |
 | 已登录 client | 更新 ready 的非 manager 节点 Luma | `luma update fleet` |
+| 可信设备上的浏览器 | 升级 Control、节点并检查全部公网路由 | `https://luma.example.com/dashboard/fleet` |
 | worker/home 节点 | 加入集群 | `luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1` |
 | client laptop | 登录控制面 | `luma login https://luma.example.com --token <management-token>` |
 | client laptop | 部署服务 | `luma deploy app.yaml` |
@@ -300,8 +371,8 @@ luma secret set DATABASE_URL --scope app
 
 | 问题 | 做法 |
 | --- | --- |
-| 更新 manager | 在 manager 上运行 `luma update`。如果 control API 已经和更新后的 CLI 同版本，会跳过 manager bootstrap；需要强制刷新时运行 `luma update manager`。 |
-| 更新 worker/home 节点 | manager 更新后，在已登录 client 上运行 `luma update fleet`。fleet 默认跳过 Nomad server（manager）节点；manager 请在 manager 本机单独执行 `luma update manager`。如果某个老 agent 还不支持 fleet update，会被标记为 skipped；在该节点本机跑一次 `luma update` 即可刷新。 |
+| 更新整个 Luma 集群 | 首选 Dashboard 的「节点 → 升级中心」：填写不可变 release tag，先记录全部公网路由基线。二次确认后由 Builder 先把 Control 镜像缓存到内网 registry 并校验，再启动 manager 更新；页面会自动重连并复查路由。随后只更新版本未对齐的非 manager 节点。镜像、Control 和逐节点结果都会持久化，关页或 Control 重启后仍可查看与重试。 |
+| 命令行升级兜底 | 只有 Dashboard 不可用或首次接入不支持 `luma-update` 的历史 agent 时，才在 manager 使用 `luma update manager`、在 client 使用 `luma update fleet`。正常日常升级无需 SSH 到节点。 |
 | 查看整个集群状态 | 任意已登录 client 运行 `luma status`，会输出控制面、DNS、编排器（Nomad）及其 leader、注册节点（role=client）。 |
 | 在 client 或 worker 上运行 `luma update` 会怎样 | 只更新本地 CLI，不刷新 manager 控制面。 |
 | `luma update` 什么时候需要 `--domain` | 只有 `/opt/luma/control/control.json` 缺失，或你确实要切换控制面域名时。 |

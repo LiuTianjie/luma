@@ -94,6 +94,8 @@ Luma validates pulls for the target node platform and deploys the digest returne
 
 ## Fleet update fails
 
+If Dashboard → Nodes → Update center reports that Control image preparation failed, keep the release ref unchanged and open the persisted image task in the same panel. The message distinguishes a missing Builder capability, missing `registryHost` / `pushHost`, an external registry transfer failure, and internal digest verification failure. Fix the displayed configuration or network condition, then press Update Control again; do not SSH to the manager or restart applications. The manager rollout is not started until the internal image is verified.
+
 If `luma update fleet` reports `HOME: parameter not set` or `HOME: unbound variable`, the node is running an older installer path from a service environment without `HOME`. Update the manager/CLI to a version with the installer HOME fallback, then rerun fleet update.
 
 If a node reports `unsupported node agent task action: update-luma` or `node agent does not support fleet update`, that node's agent is too old to update itself through fleet tasks. Run once on that node:
@@ -109,6 +111,22 @@ luma update --control-url https://luma.example.com --token <node-join-token>
 ```
 
 After that, future `luma update fleet` runs can update it remotely.
+
+## Application is running but its public domain hangs after restart
+
+Treat restart as incomplete until runtime and delivery both agree:
+
+```bash
+nomad job allocs <stack>
+curl -fsS --max-time 5 http://<allocation-node-tailscale-ip>:<publish-port>/
+curl -vk --max-time 15 https://<domain>/
+```
+
+Then inspect `/opt/luma/routes/<stack>.yml` on the manager and the Nomad service registration. A legacy `cn-edge` job may still advertise a provider-private address such as `10.x.x.x` while the manager must use the node's Tailscale address. Do not repeatedly restart the healthy application. On Control `0.1.200+`, run the normal Dashboard/CLI restart once; Control infers the Luma node from the actual allocation, atomically republishes a higher-priority file route, synchronizes DNS, and waits for a public probe before returning `delivery.status=ready`.
+
+If Control reports `delivery reconcile skipped: deployment record is unavailable`, the job predates Luma's stored deployment records. Re-import/redeploy its manifest once so future restart, remove, and route recovery operations have a durable source of truth. If the generated route is correct but Traefik still serves its default 404, use the route reload/certificate retry action or inspect the Traefik file-provider mount; do not edit DNS to point at a worker node.
+
+Manager updates must also preserve `/opt/luma/luma.yaml`. After an update, `luma status` should report DNS `ready=true`. If `providers.dns` disappeared on an older release, restore it from the latest `/opt/luma/backups/*/luma.yaml`, keep the current control state/tokens, and update to `0.1.198+`, whose manager config installation deep-merges existing operator-managed sections.
 
 ## Manager update prints `tmpfs: Unknown parameter 'noswap'`
 

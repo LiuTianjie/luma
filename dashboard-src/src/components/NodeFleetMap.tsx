@@ -183,7 +183,7 @@ export function NodeFleetMap({
                         <b>{nodeStateLabel(node, lang)}</b>
                       </span>
                       <span className="node-tile-meta">
-                        {[node.role, node.agentOs, node.availability].filter(Boolean).join(" / ") || "-"}
+                        {[node.role, node.agentOs, node.agentVersion ? `agent ${node.agentVersion}` : "", node.availability].filter(Boolean).join(" / ") || "-"}
                       </span>
                       <span className="node-meter-pair">
                         <span>

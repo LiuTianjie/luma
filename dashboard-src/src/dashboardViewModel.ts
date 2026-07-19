@@ -8,6 +8,7 @@ export type PageId =
   | "deploy"
   | "builder"
   | "deployments"
+  | "lae"
   | "observability"
   | "storage"
   | "nodes"

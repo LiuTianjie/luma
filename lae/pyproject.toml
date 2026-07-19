@@ -1,0 +1,26 @@
+[project]
+name = "lae-workspace"
+version = "0.1.0"
+description = "Luma Application Engine product workspace"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+build = ["setuptools==83.0.0"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+  "apps/api",
+  "cli",
+  "packages/contracts",
+  "packages/python/lae-agent-core",
+  "packages/python/lae-core",
+  "packages/python/lae-luma-adapter",
+  "packages/python/lae-store",
+  "services/agent-controller",
+  "services/agent-runner",
+  "services/worker",
+]

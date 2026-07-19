@@ -21,6 +21,10 @@ function isSystemService(service: DashboardService) {
   return SYSTEM_STACKS.has(stack) || stack.startsWith("luma-storage") || service.name === "cloudflared";
 }
 
+export function isPlatformManagedService(service: DashboardService) {
+  return Boolean(service.managedBy);
+}
+
 export function serviceRuntimeStatus(service: DashboardService) {
   return (service.status || service.health || "").toLowerCase();
 }
@@ -49,10 +53,13 @@ function serviceNodes(service: DashboardService) {
   ].filter(Boolean);
 }
 
-export function groupApplications(services: DashboardService[]): Application[] {
+export function groupApplications(
+  services: DashboardService[],
+  { includePlatformManaged = false }: { includePlatformManaged?: boolean } = {},
+): Application[] {
   const groups = new Map<string, DashboardService[]>();
   for (const service of services) {
-    if (isSystemService(service)) continue;
+    if (isSystemService(service) || (!includePlatformManaged && isPlatformManagedService(service))) continue;
     const stack = service.stack || service.name || "";
     if (!stack) continue;
     groups.set(stack, [...(groups.get(stack) || []), service]);

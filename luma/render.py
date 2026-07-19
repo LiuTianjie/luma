@@ -49,6 +49,11 @@ def render_tailscale_route(config: LumaConfig, service: ServiceSpec) -> str:
             "routers": {
                 service_name: {
                     "rule": f"Host(`{service.domain}`)",
+                    # File-provider routes are the durable recovery path for
+                    # cross-node services. Give them an explicit priority so a
+                    # legacy Nomad-provider router for the same Host cannot win
+                    # and send traffic to an unreachable private node address.
+                    "priority": int(service.relay.get("priority", 1000)),
                     "entryPoints": [config.entrypoint],
                     "tls": {"certResolver": config.cert_resolver},
                     "service": service_name,

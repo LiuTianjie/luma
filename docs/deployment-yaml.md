@@ -228,7 +228,7 @@ luma import acme/myapp --build-node build-1
 也可以使用保存的 provider 账户：
 
 ```bash
-luma build config --node builder --registry-host 100.66.177.70:5000 --push-host localhost:5000
+luma build config --node builder --registry-host 100.66.177.70:5000 --push-host 100.66.177.70:5000
 luma import --provider-id gitea:lin --repository acme/myapp --env .env
 ```
 
@@ -237,6 +237,20 @@ Compose 仓库同样支持 import：`luma import` 会发现 `luma.compose.yml` /
 ```bash
 luma compose validate --import-mode luma.compose.yml
 ```
+
+If a repository has separate staging/production sidecars, pass the exact
+repository-relative Compose sidecar to import:
+
+```bash
+luma import https://github.com/acme/app.git \
+  --ref v1.2.3 \
+  --compose-sidecar deploy/staging.luma.compose.yml
+```
+
+The path is resolved only after the Builder clones the repository. Absolute or
+non-normalized paths, `..`, missing files, invalid Luma Compose sidecars, and
+symlink escapes are rejected. Explicit selection is fail-closed and never
+falls back to another discovered manifest.
 
 普通 `luma compose validate` / `luma compose deploy` 不构建镜像，因此仍要求运行时 Compose 的每个 service 都已经有 `image:`。
 

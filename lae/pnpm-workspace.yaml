@@ -1,0 +1,8 @@
+packages:
+  - "apps/web"
+  - "packages/typescript/*"
+
+# The current console does not use next/image. Keep sharp's install script
+# disabled explicitly instead of silently widening workspace build-script trust.
+ignoredBuiltDependencies:
+  - sharp

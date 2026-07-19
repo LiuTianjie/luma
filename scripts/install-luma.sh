@@ -107,6 +107,14 @@ repair_install_ownership() {
   run_sudo chown -R "$(id -u):$(id -g)" "$INSTALL_HOME"
 }
 
+is_commit_ref() {
+  [ "${#1}" -eq 40 ] || return 1
+  case "$1" in
+    *[!0-9a-fA-F]*) return 1 ;;
+  esac
+  return 0
+}
+
 ensure_path() {
   case ":$PATH:" in
     *":$BIN_DIR:"*) return 0 ;;
@@ -150,16 +158,33 @@ download_source() {
       default_archive_url="$REPO_URL/archive/refs/tags/$INSTALL_REF.tar.gz"
       ;;
     *)
-      default_archive_url="$REPO_URL/archive/refs/heads/$INSTALL_REF.tar.gz"
+      if is_commit_ref "$INSTALL_REF"; then
+        default_archive_url="$REPO_URL/archive/$INSTALL_REF.tar.gz"
+      else
+        default_archive_url="$REPO_URL/archive/refs/heads/$INSTALL_REF.tar.gz"
+      fi
       ;;
   esac
   archive_url="${LUMA_ARCHIVE_URL:-$default_archive_url}"
   tmp_dir="$(mktemp -d)"
   archive="$tmp_dir/luma.tar.gz"
+  download_connect_timeout="${LUMA_DOWNLOAD_CONNECT_TIMEOUT_SECONDS:-20}"
+  download_max_time="${LUMA_DOWNLOAD_MAX_TIME_SECONDS:-300}"
+  download_retries="${LUMA_DOWNLOAD_RETRIES:-4}"
+  case "$download_connect_timeout" in *[!0-9]*|"") download_connect_timeout=20 ;; esac
+  case "$download_max_time" in *[!0-9]*|"") download_max_time=300 ;; esac
+  case "$download_retries" in *[!0-9]*|"") download_retries=4 ;; esac
+  echo "Downloading Luma source for $INSTALL_REF (timeout ${download_max_time}s, retries ${download_retries})"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$archive_url" -o "$archive"
+    if curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+      curl -fsSL --connect-timeout "$download_connect_timeout" --max-time "$download_max_time" \
+        --retry "$download_retries" --retry-delay 2 --retry-all-errors "$archive_url" -o "$archive"
+    else
+      curl -fsSL --connect-timeout "$download_connect_timeout" --max-time "$download_max_time" \
+        --retry "$download_retries" --retry-delay 2 "$archive_url" -o "$archive"
+    fi
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$archive" "$archive_url"
+    wget -q --tries="$download_retries" --timeout="$download_connect_timeout" -O "$archive" "$archive_url"
   else
     echo "curl or wget is required to download Luma." >&2
     exit 1
@@ -244,6 +269,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+EnvironmentFile=-/etc/default/luma-node-agent
 ExecStart=$BIN_DIR/luma node-agent run --config $agent_config
 Restart=always
 RestartSec=5
@@ -328,6 +354,16 @@ pip_install_luma() {
   return "$code"
 }
 
+prune_stale_luma_metadata() {
+  source_version="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$SOURCE_DIR/luma/__init__.py" | head -n 1)"
+  [ -n "$source_version" ] || return 0
+  expected="luma_infra-${source_version}.dist-info"
+  for metadata in "$VENV_DIR"/lib/python*/site-packages/luma_infra-*.dist-info; do
+    [ -d "$metadata" ] || continue
+    [ "$(basename "$metadata")" = "$expected" ] || rm -rf "$metadata"
+  done
+}
+
 INSTALL_SUCCEEDED=0
 if [ -n "$INSTALL_MODE" ]; then
   if pip_install_luma "$INSTALL_MODE" "$SOURCE_DIR"; then
@@ -340,6 +376,8 @@ else
 fi
 if [ "$INSTALL_SUCCEEDED" -eq 0 ]; then
   echo "[warn] package install failed; using source checkout with existing venv dependencies"
+else
+  prune_stale_luma_metadata
 fi
 
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
@@ -355,11 +393,21 @@ exec "$VENV_DIR/bin/python" -m luma.cli "\$@"
 EOF
   chmod +x "$BIN_DIR/luma"
   ensure_path
-  refresh_node_agent_service
+  if [ "${LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH:-0}" = "1" ]; then
+    echo "Luma node agent service refresh deferred"
+  else
+    refresh_node_agent_service
+  fi
   chown_install_paths
 fi
 
 echo "Luma installed in $VENV_DIR"
+installed_version="$(sed -n 's/^__version__ = "\([^"]*\)"/\1/p' "$SOURCE_DIR/luma/__init__.py" | head -n 1)"
+[ -n "$installed_version" ] || {
+  echo "Installed Luma source does not declare a version." >&2
+  exit 1
+}
+echo "Luma version: $installed_version"
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
   echo "Command shim: $BIN_DIR/luma"
   echo "Open a new shell or run: exec \$SHELL -l"

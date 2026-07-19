@@ -6,6 +6,7 @@ import { DeploymentsPage } from "./pages/DeploymentsPage";
 import { DeployPage, type DeployUpdateContext } from "./pages/DeployPage";
 import { CredentialsPage } from "./pages/CredentialsPage";
 import { NodesPage } from "./pages/NodesPage";
+import { LaeAdminPage } from "./pages/LaeAdminPage";
 import { NotFound } from "./pages/NotFound";
 import { ObservabilityPage } from "./pages/ObservabilityPage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -94,7 +95,9 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
     case "deployments":
       return <DeploymentsPage lang={lang} token={token} />;
     case "nodes":
-      return <NodesPage lang={lang} vm={vm} theme={theme} token={token} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
+      return <NodesPage lang={lang} vm={vm} theme={theme} token={token} controlVersion={payload.cluster?.version || ""} onSelectNode={props.onSelectNode} onTerminal={props.onTerminal} onRefresh={props.onRefresh} />;
+    case "lae":
+      return <LaeAdminPage lang={lang} token={token} />;
     case "observability":
       return <ObservabilityPage lang={lang} token={token} vm={vm} />;
     case "storage":

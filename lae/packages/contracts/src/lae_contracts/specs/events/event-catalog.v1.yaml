@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "lae.event-catalog/v1",
+  "events": [
+    {
+      "type": "operation.created",
+      "phase": "queued",
+      "terminal": false,
+      "description": "The durable operation record and initial event were committed."
+    },
+    {
+      "type": "builder.fetch.started",
+      "phase": "source.fetch",
+      "terminal": false,
+      "description": "A Luma builder began resolving an immutable source revision."
+    },
+    {
+      "type": "builder.analyze.progress",
+      "phase": "source.analyze",
+      "terminal": false,
+      "description": "The fixed LAE agent runner reported deterministic analysis progress."
+    },
+    {
+      "type": "builder.build.progress",
+      "phase": "image.build",
+      "terminal": false,
+      "description": "A signed BuildPlan service build reported structured progress."
+    },
+    {
+      "type": "deployment.preview.succeeded",
+      "phase": "deployment.preview",
+      "terminal": false,
+      "description": "Luma accepted and rendered the generated manifest without deploying it."
+    },
+    {
+      "type": "deployment.succeeded",
+      "phase": "deployment.verify",
+      "terminal": true,
+      "description": "Runtime health, route readiness, and public verification succeeded."
+    },
+    {
+      "type": "operation.failed",
+      "phase": "terminal",
+      "terminal": true,
+      "description": "The operation reached a durable failed state with a stable error code."
+    },
+    {
+      "type": "operation.cancelled",
+      "phase": "terminal",
+      "terminal": true,
+      "description": "Cancellation completed and leases, reservations, and workspaces were reconciled."
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.itool.tech/lae/build-plan.v1.schema.json",
+  "title": "LAE Build Plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sourceSnapshotDigest",
+    "resolvedCommit",
+    "policyVersion",
+    "builds",
+    "externalImages",
+    "signature"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "lae.build-plan/v1"},
+    "sourceSnapshotDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "resolvedCommit": {"type": "string", "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"},
+    "policyVersion": {"type": "string", "minLength": 1},
+    "builds": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/build"}
+    },
+    "externalImages": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/externalImage"}
+    },
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "context",
+        "dockerfile",
+        "target",
+        "platform",
+        "buildArgNames",
+        "secretMountNames",
+        "dependsOnBuilds"
+      ],
+      "properties": {
+        "key": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "context": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "dockerfile": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "target": {"type": ["string", "null"], "maxLength": 128},
+        "platform": {"const": "linux/amd64"},
+        "buildArgNames": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$"}
+        },
+        "secretMountNames": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$"}
+        },
+        "dependsOnBuilds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}
+        }
+      }
+    },
+    "externalImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "ref", "resolvedDigest", "platform"],
+      "properties": {
+        "key": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "ref": {
+          "type": "string",
+          "pattern": "^(?=.{1,512}$)(?!.*(?:[?#]|://|\\s))(?:(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::(?![Ll][Aa][Tt][Ee][Ss][Tt]$)[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[a-f0-9]{64})$",
+          "$comment": "LAE semantic validation additionally rejects latest tags and localhost, IP, private, or custom-port registry hosts."
+        },
+        "resolvedDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "platform": {"const": "linux/amd64"}
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keyId", "value"],
+      "properties": {
+        "keyId": {"type": "string", "pattern": "^lae-plan-[A-Za-z0-9_-]+$"},
+        "value": {"type": "string", "pattern": "^[A-Za-z0-9_-]{16,}$"}
+      }
+    }
+  }
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from .config import LumaConfig
 from .errors import LumaError
@@ -438,6 +438,12 @@ def _load_compose_volumes(raw: Any, storage_classes: Dict[str, StorageClassSpec]
         )
         if result[str(name)].kind == "local" and (not result[str(name)].local_node or not result[str(name)].local_path):
             raise LumaError(f"volumes.{name}.local requires node and path")
+        if result[str(name)].kind == "local":
+            local_path = Path(str(result[str(name)].local_path))
+            if not local_path.is_absolute() or ".." in local_path.parts or local_path == Path("/"):
+                raise LumaError(
+                    f"volumes.{name}.local.path must be an absolute path other than / without .."
+                )
     return result
 
 
@@ -508,6 +514,21 @@ def _render_storage_class_volume(storage_class: StorageClassSpec, volume: Compos
     }
 
 
+def render_storage_class_volume(
+    storage_class: StorageClassSpec,
+    volume: ComposeVolumeSpec,
+    endpoint: str,
+) -> Dict[str, Any]:
+    """Render Docker volume-driver options for a resolved storage class.
+
+    Kept as a public wrapper so trusted control-plane renderers can translate
+    the same storage policy into Nomad Docker ``mount.volume_options`` without
+    duplicating NFS endpoint parsing or mount option handling.
+    """
+
+    return _render_storage_class_volume(storage_class, volume, endpoint)
+
+
 def _parse_nfs_endpoint(storage_class: StorageClassSpec, endpoint: str) -> tuple[str, str]:
     if endpoint.startswith("nfs://"):
         endpoint = endpoint[len("nfs://") :]
@@ -521,6 +542,7 @@ def resolve_storage_mounts(
     deployment: ComposeDeploymentSpec,
     *,
     node_records: Dict[str, Any] | None = None,
+    admitted_nodes: Sequence[str] = (),
 ) -> List[Dict[str, Any]]:
     usage = _compose_service_volume_usage(deployment.compose)
     mounts: List[Dict[str, Any]] = []
@@ -532,7 +554,13 @@ def resolve_storage_mounts(
             if not volume or not volume.storage_class:
                 continue
             storage_class = deployment.storage_classes[volume.storage_class]
-            _validate_storage_class_service_use(storage_class, service_name=service_name, region=region, explicit_node=override.node if override else None)
+            _validate_storage_class_service_use(
+                storage_class,
+                service_name=service_name,
+                region=region,
+                explicit_node=override.node if override else None,
+                admitted_nodes=admitted_nodes,
+            )
             endpoint, network_path = _storage_endpoint_for_region(storage_class, region, node_records)
             mounts.append(
                 {
@@ -556,17 +584,25 @@ def _validate_storage_class_service_use(
     service_name: str,
     region: str,
     explicit_node: str | None,
+    admitted_nodes: Sequence[str] = (),
 ) -> None:
     if storage_class.regions and region not in storage_class.regions:
         raise LumaError(
             f"compose service {service_name} region {region} is not allowed by storageClass {storage_class.name}"
         )
     if storage_class.nodes:
+        admitted = {
+            str(value).strip() for value in admitted_nodes if str(value).strip()
+        }
         if explicit_node and explicit_node not in storage_class.nodes:
             raise LumaError(
                 f"compose service {service_name} node {explicit_node} is not allowed by storageClass {storage_class.name}"
             )
-        if len(storage_class.nodes) > 1 and not explicit_node:
+        if admitted and not admitted.issubset(set(storage_class.nodes)):
+            raise LumaError(
+                f"compose service {service_name} placement is not allowed by storageClass {storage_class.name}"
+            )
+        if len(storage_class.nodes) > 1 and not explicit_node and not admitted:
             raise LumaError(
                 f"compose service {service_name} must set node because storageClass {storage_class.name} allows multiple nodes"
             )
@@ -589,15 +625,20 @@ def _storage_endpoint_for_region(
     node_region = str(record.get("region") or "")
     if not node_region:
         raise LumaError(f"managed storageClass {storage_class.name} node {storage_class.node} has no region; rerun luma node join")
-    if node_region == region:
-        endpoint_host = _same_region_storage_host(storage_class, record)
-        return f"{endpoint_host}:{storage_class.path}", "same-region"
     tailscale_endpoint = str(record.get("tailscaleIP") or record.get("tailscaleName") or "").strip()
-    if not tailscale_endpoint:
+    # A Luma region is a scheduling/placement boundary, not a shared DNS or
+    # layer-2 network. Nodes in the same region can live in different clouds
+    # and a Docker volume driver cannot resolve Luma display names reliably.
+    # Prefer the cluster overlay for every cross-node managed NFS mount, even
+    # when producer and consumer have the same region label.
+    if tailscale_endpoint:
+        return f"{tailscale_endpoint}:{storage_class.path}", "tailscale"
+    if node_region != region:
         raise LumaError(
             f"managed storageClass {storage_class.name} crosses {region}->{node_region} but node {storage_class.node} has no tailscaleIP; rerun luma node join"
         )
-    return f"{tailscale_endpoint}:{storage_class.path}", "tailscale"
+    endpoint_host = _same_region_storage_host(storage_class, record)
+    return f"{endpoint_host}:{storage_class.path}", "same-region-fallback"
 
 
 def _same_region_storage_host(storage_class: StorageClassSpec, record: Dict[str, Any]) -> str:

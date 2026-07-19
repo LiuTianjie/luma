@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "lae.build-plan-candidate/v1",
+  "sourceSnapshotDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "resolvedCommit": "0123456789abcdef0123456789abcdef01234567",
+  "policyVersion": "2026-07-11",
+  "builds": [
+    {
+      "key": "web",
+      "context": ".",
+      "dockerfile": "services/web/Dockerfile",
+      "target": "runtime",
+      "platform": "linux/amd64",
+      "buildArgNames": ["APP_VERSION"],
+      "secretMountNames": ["NPM_TOKEN"],
+      "dependsOnBuilds": []
+    },
+    {
+      "key": "worker",
+      "context": ".",
+      "dockerfile": "services/worker/Dockerfile",
+      "target": null,
+      "platform": "linux/amd64",
+      "buildArgNames": [],
+      "secretMountNames": [],
+      "dependsOnBuilds": []
+    }
+  ],
+  "externalImages": [
+    {
+      "key": "postgres",
+      "ref": "postgres:17",
+      "resolvedDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "platform": "linux/amd64"
+    }
+  ]
+}

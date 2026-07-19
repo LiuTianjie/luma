@@ -171,6 +171,15 @@ export async function retryBuildRun(token: string, id: string, overrides?: { env
   return readJson(response);
 }
 
+export async function cancelBuildRun(token: string, id: string): Promise<{ run?: BuildRun; replayed?: boolean }> {
+  const response = await fetch(`/v1/builds/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    headers: authHeaders(token, true),
+    body: JSON.stringify({}),
+  });
+  return readJson(response) as Promise<{ run?: BuildRun; replayed?: boolean }>;
+}
+
 export async function retryBuildRunStream(token: string, id: string, onStep: (step: DeployStep) => void, overrides?: { envSecrets?: Record<string, string> }): Promise<unknown> {
   const body: Record<string, unknown> = {};
   if (overrides?.envSecrets) body.envSecrets = overrides.envSecrets;

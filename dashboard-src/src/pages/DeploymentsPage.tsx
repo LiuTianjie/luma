@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCw, RotateCcw } from "lucide-react";
-import { fetchBuildRun, fetchBuildRuns, fetchDeploymentEvent, fetchDeploymentHistory, retryBuildRunStream, type BuildRun, type DeploymentEvent } from "../deploy/deployApi";
+import { RefreshCw, RotateCcw, Square } from "lucide-react";
+import { cancelBuildRun, fetchBuildRun, fetchBuildRuns, fetchDeploymentEvent, fetchDeploymentHistory, retryBuildRunStream, type BuildRun, type DeploymentEvent } from "../deploy/deployApi";
 import type { DeployStep } from "../deploy/types";
 import { StepLog } from "../deploy/StepLog";
 import { Badge, CodeCell, StatePill } from "../components/ui";
@@ -25,12 +25,17 @@ type DetailState = {
   steps: DeployStep[];
   error: string;
   retrying: boolean;
+  canceling: boolean;
 };
 
 function isRetryableBuild(item: TimelineItem): boolean {
   // Only build runs can be retried (by their recorded parameters), and only when
   // they are not currently running.
   return item.origin === "build" && !["running", "succeeded", "active"].includes(item.status.toLowerCase());
+}
+
+function isCancelableBuild(item: TimelineItem): boolean {
+  return item.origin === "build" && ["running", "canceling"].includes(item.status.toLowerCase());
 }
 
 const REFRESH_MS = 20000;
@@ -85,17 +90,17 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
 
   // Open the detail drawer for a row and lazily fetch its step log.
   const openDetail = async (item: TimelineItem) => {
-    setDetail({ item, loading: true, steps: [], error: "", retrying: false });
+    setDetail({ item, loading: true, steps: [], error: "", retrying: false, canceling: false });
     try {
       if (item.origin === "build") {
         const { run } = await fetchBuildRun(token, item.id);
-        setDetail({ item, loading: false, steps: (run?.events as DeployStep[]) || [], error: "", retrying: false });
+        setDetail({ item: { ...item, status: run?.status || item.status }, loading: false, steps: (run?.events as DeployStep[]) || [], error: "", retrying: false, canceling: false });
       } else {
         const { event } = await fetchDeploymentEvent(token, item.id);
-        setDetail({ item, loading: false, steps: event?.steps || [], error: "", retrying: false });
+        setDetail({ item, loading: false, steps: event?.steps || [], error: "", retrying: false, canceling: false });
       }
     } catch (err) {
-      setDetail({ item, loading: false, steps: [], error: err instanceof Error ? err.message : String(err), retrying: false });
+      setDetail({ item, loading: false, steps: [], error: err instanceof Error ? err.message : String(err), retrying: false, canceling: false });
     }
   };
 
@@ -114,6 +119,30 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
       setDetail((prev) => (prev && prev.item.id === item.id ? { ...prev, error: err instanceof Error ? err.message : String(err) } : prev));
     } finally {
       setDetail((prev) => (prev && prev.item.id === item.id ? { ...prev, retrying: false } : prev));
+    }
+  };
+
+  const cancelBuild = async () => {
+    const item = detail?.item;
+    if (!item) return;
+    setDetail((prev) => (prev ? { ...prev, canceling: true, error: "" } : prev));
+    try {
+      const result = await cancelBuildRun(token, item.id);
+      const status = result.run?.status || "canceling";
+      setDetail((prev) => (
+        prev && prev.item.id === item.id
+          ? {
+              ...prev,
+              item: { ...prev.item, status },
+              steps: (result.run?.events as DeployStep[]) || prev.steps,
+            }
+          : prev
+      ));
+      await load();
+    } catch (err) {
+      setDetail((prev) => (prev && prev.item.id === item.id ? { ...prev, error: err instanceof Error ? err.message : String(err) } : prev));
+    } finally {
+      setDetail((prev) => (prev && prev.item.id === item.id ? { ...prev, canceling: false } : prev));
     }
   };
 
@@ -251,6 +280,14 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
               <button type="button" className="ghost" disabled={detail.retrying} onClick={() => void retryBuild()}>
                 <RotateCcw size={15} aria-hidden="true" />
                 {detail.retrying ? (zh ? "重试中…" : "Retrying…") : (zh ? "按原参数重试" : "Retry build")}
+              </button>
+            ) : null}
+            {isCancelableBuild(detail.item) ? (
+              <button type="button" className="ghost danger" disabled={detail.canceling || detail.item.status.toLowerCase() === "canceling"} onClick={() => void cancelBuild()}>
+                <Square size={14} aria-hidden="true" />
+                {detail.canceling || detail.item.status.toLowerCase() === "canceling"
+                  ? (zh ? "正在取消…" : "Canceling…")
+                  : (zh ? "取消构建" : "Cancel build")}
               </button>
             ) : null}
             <h3>{zh ? "步骤日志" : "Step log"}</h3>
