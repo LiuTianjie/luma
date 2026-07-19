@@ -674,6 +674,34 @@ class ControlClient:
     def list_builds(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/builds")
 
+    def prepare_local_build(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        return self.request("POST", "/v1/builds/local/prepare", body)
+
+    def complete_local_build(
+        self,
+        build_id: str,
+        *,
+        build_result: Dict[str, Any],
+        env_secrets: Dict[str, str] | None = None,
+        timeout: int = 2400,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"buildResult": build_result}
+        if env_secrets is not None:
+            body["envSecrets"] = env_secrets
+        return self.request(
+            "POST",
+            f"/v1/builds/local/{urllib.parse.quote(build_id, safe='')}/complete",
+            body,
+            timeout=timeout,
+        )
+
+    def fail_local_build(self, build_id: str, message: str) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            f"/v1/builds/local/{urllib.parse.quote(build_id, safe='')}/fail",
+            {"message": str(message)},
+        )
+
     def get_build(self, build_id: str) -> Dict[str, Any]:
         return self.request("GET", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}")
 

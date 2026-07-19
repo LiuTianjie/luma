@@ -90,7 +90,7 @@ class ImportComposeSidecarTests(unittest.TestCase):
         self.assertIn("process canceled", result.output)
         self.assertLess(time.monotonic() - started, 2)
 
-    def test_staging_runbook_uses_explicit_sidecar(self) -> None:
+    def test_production_only_runbooks_do_not_reference_removed_staging_sidecar(self) -> None:
         root = Path(__file__).resolve().parents[1]
         deployment_readme = (
             root / "lae" / "deploy" / "luma" / "README.md"
@@ -98,12 +98,10 @@ class ImportComposeSidecarTests(unittest.TestCase):
         runbook = (
             root / "docs" / "lae" / "11-deployment-and-upgrade.md"
         ).read_text(encoding="utf-8")
-        command = (
-            "--compose-sidecar "
-            "lae/deploy/luma/luma.compose.staging.itool.yml"
-        )
-        self.assertIn(command, deployment_readme)
-        self.assertIn('--compose-sidecar "$STAGING_SIDECAR"', runbook)
+        removed_sidecar = "lae/deploy/luma/luma.compose.staging.itool.yml"
+        self.assertFalse((root / removed_sidecar).exists())
+        self.assertNotIn(removed_sidecar, deployment_readme)
+        self.assertNotIn(removed_sidecar, runbook)
         self.assertIn("repository-compose-sidecar-v1", runbook)
 
     def test_cli_and_client_send_explicit_sidecar_path(self) -> None:

@@ -214,6 +214,7 @@ BUILDER_TASK_EVENT_LIMIT = int(os.environ.get("LUMA_BUILDER_TASK_EVENT_LIMIT", "
 BUILD_RUN_EVENT_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_EVENT_LIMIT", "300"))
 BUILD_RUN_MESSAGE_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_MESSAGE_LIMIT", "4000"))
 BUILD_RUN_SUMMARY_MESSAGE_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_SUMMARY_MESSAGE_LIMIT", "500"))
+LOCAL_BUILD_LEASE_SECONDS = int(os.environ.get("LUMA_LOCAL_BUILD_LEASE_SECONDS", "7200"))
 LAE_RUNTIME_RECORD_RETENTION_SECONDS = int(
     os.environ.get("LUMA_LAE_RUNTIME_RECORD_RETENTION_SECONDS", str(30 * 24 * 3600))
 )
@@ -1716,23 +1717,68 @@ def _sanitize_git_source(source: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
-def _create_build_run(body: Dict[str, Any], *, source: str, build_node: str) -> str:
+def _expire_stale_local_build_runs(runs: Dict[str, Any], now: int) -> None:
+    for run in runs.values():
+        if not isinstance(run, dict) or str(run.get("mode") or "builder") != "local":
+            continue
+        if str(run.get("status") or "") not in {"running", "canceling"}:
+            continue
+        expires_at = int(run.get("expiresAt") or 0)
+        if expires_at and expires_at <= now:
+            run["status"] = "failed"
+            run["message"] = "local build lease expired before upload completed"
+            run["updatedAt"] = now
+            run["completedAt"] = now
+
+
+def _require_build_project_available(
+    runs: Dict[str, Any], project_key: str, *, current_run_id: str = ""
+) -> None:
+    if not project_key:
+        return
+    for run_id, run in runs.items():
+        if str(run_id) == current_run_id or not isinstance(run, dict):
+            continue
+        if str(run.get("projectKey") or "") != project_key:
+            continue
+        if str(run.get("status") or "") in {"running", "canceling", "finalizing"}:
+            raise LumaError(
+                f"project {project_key} already has an active build: {run_id}; "
+                "wait for it to finish or cancel it before starting another build"
+            )
+
+
+def _create_build_run(
+    body: Dict[str, Any],
+    *,
+    source: str,
+    build_node: str,
+    project_key: str = "",
+    mode: str = "builder",
+    expires_at: int = 0,
+) -> str:
     run_id = f"build-{secrets.token_hex(8)}"
     now = int(time.time())
 
     def mutate(state: Dict[str, Any]) -> None:
         runs = _build_runs(state)
+        _expire_stale_local_build_runs(runs, now)
+        _require_build_project_available(runs, project_key)
         runs[run_id] = {
             "id": run_id,
             "status": "running",
             "controlProcessInstanceId": _CONTROL_PROCESS_INSTANCE_ID,
             "source": source,
             "buildNode": build_node,
+            "projectKey": project_key,
+            "mode": mode,
             "request": _redact_build_request(body),
             "events": [],
             "createdAt": now,
             "updatedAt": now,
         }
+        if expires_at:
+            runs[run_id]["expiresAt"] = int(expires_at)
         _prune_build_runs(state)
 
     _mutate_control_state(mutate)
@@ -1791,17 +1837,28 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
     _mutate_control_state(mutate)
 
 
-def _restart_build_run(run_id: str, body: Dict[str, Any], *, source: str, build_node: str) -> None:
+def _restart_build_run(
+    run_id: str,
+    body: Dict[str, Any],
+    *,
+    source: str,
+    build_node: str,
+    project_key: str = "",
+) -> None:
     now = int(time.time())
 
     def mutate(state: Dict[str, Any]) -> None:
         run = _build_runs(state).get(run_id)
         if not isinstance(run, dict):
             raise LumaError(f"build run not found: {run_id}")
+        _expire_stale_local_build_runs(_build_runs(state), now)
+        _require_build_project_available(_build_runs(state), project_key, current_run_id=run_id)
         run["status"] = "running"
         run["controlProcessInstanceId"] = _CONTROL_PROCESS_INSTANCE_ID
         run["source"] = source
         run["buildNode"] = build_node
+        run["projectKey"] = project_key
+        run["mode"] = "builder"
         run["request"] = _redact_build_request(body)
         run["events"] = []
         run["message"] = ""
@@ -1810,6 +1867,7 @@ def _restart_build_run(run_id: str, body: Dict[str, Any], *, source: str, build_
         run.pop("canceledAt", None)
         run.pop("cancelRequestedAt", None)
         run.pop("agentTaskId", None)
+        run.pop("expiresAt", None)
         run["updatedAt"] = now
 
     _mutate_control_state(mutate)
@@ -7213,6 +7271,8 @@ def handle_build_run_cancel(
         run_status = str(run.get("status") or "")
         if run_status in {"succeeded", "failed", "canceled", "canceling"}:
             return _build_run_public(run), True
+        if run_status == "finalizing":
+            raise LumaError("local build upload is already deploying and cannot be canceled")
 
         task_id, task = _build_run_agent_task(current, run)
         task_status = str(task.get("status") or "") if isinstance(task, dict) else ""
@@ -7404,6 +7464,8 @@ def _build_run_public_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         "status": str(run.get("status") or ""),
         "source": str(run.get("source") or request.get("repoUrl") or request.get("repository") or ""),
         "buildNode": str(run.get("buildNode") or request.get("buildNode") or ""),
+        "mode": str(run.get("mode") or "builder"),
+        "projectKey": str(run.get("projectKey") or ""),
         "providerId": str(request.get("providerId") or ""),
         "repository": str(request.get("repository") or ""),
         "ref": str(request.get("ref") or ""),
@@ -8065,6 +8127,216 @@ def _rewrite_compose_import_images(
     return yaml.safe_dump(compose, sort_keys=False, allow_unicode=False)
 
 
+def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    repo_url = normalize_import_repo_url(str(body.get("repoUrl") or "").strip())
+    if not repo_url:
+        raise LumaError("repoUrl is required for a local build")
+    project_key = _image_repo_from_repo_url(repo_url)
+    build_config = _build_config(state)
+    registry_host = normalize_registry_host(str(build_config.get("registryHost") or "").strip())
+    now = int(time.time())
+    expires_at = now + max(LOCAL_BUILD_LEASE_SECONDS, 300)
+    request = dict(body)
+    request["repoUrl"] = repo_url
+    request["registryHost"] = registry_host
+    request["localBuild"] = True
+    run_id = _create_build_run(
+        request,
+        source=repo_url,
+        build_node="local",
+        project_key=project_key,
+        mode="local",
+        expires_at=expires_at,
+    )
+    tag = f"local-{run_id.removeprefix('build-')}"
+    _append_build_run_event(
+        run_id,
+        {
+            "name": "Reserve project build",
+            "status": "ok",
+            "message": f"Reserved {project_key} for local build and upload",
+        },
+    )
+    return {
+        "run": handle_build_run_get(token, run_id)["run"],
+        "upload": {
+            "registryHost": registry_host,
+            "repository": project_key,
+            "tag": tag,
+            "image": f"{registry_host}/{project_key}:{tag}",
+        },
+    }
+
+
+def _validate_local_build_result(run: Dict[str, Any], build_result: Dict[str, Any]) -> None:
+    project_key = str(run.get("projectKey") or "")
+    request = run.get("request") if isinstance(run.get("request"), dict) else {}
+    registry_host = normalize_registry_host(str(request.get("registryHost") or "").strip())
+    tag = f"local-{str(run.get('id') or '').removeprefix('build-')}"
+    expected_root = f"{registry_host}/{project_key}"
+    images: list[str] = []
+    primary = str(build_result.get("image") or "").strip()
+    if primary:
+        images.append(primary)
+    raw_images = build_result.get("images")
+    if isinstance(raw_images, dict):
+        images.extend(str(value or "").strip() for value in raw_images.values())
+    if not images:
+        raise LumaError("local build result must include at least one image")
+    for image in images:
+        repository = _image_repository(image)
+        if repository != expected_root and not repository.startswith(expected_root + "/"):
+            raise LumaError(
+                f"local build image must use the reserved project repository {expected_root}: {image}"
+            )
+        if not image.endswith(f":{tag}"):
+            raise LumaError(f"local build image must use reserved tag {tag}: {image}")
+    if str(request.get("repoUrl") or "") != str(run.get("source") or ""):
+        raise LumaError("local build source binding is invalid")
+
+
+def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    run = _build_runs(state).get(build_id)
+    if not isinstance(run, dict):
+        raise LumaError(f"build run not found: {build_id}")
+    if str(run.get("mode") or "") != "local":
+        raise LumaError(f"build run is not a local build: {build_id}")
+    if str(run.get("status") or "") != "running":
+        raise LumaError(f"local build run is not active: {build_id}")
+    if int(run.get("expiresAt") or 0) <= int(time.time()):
+        _complete_build_run(build_id, "failed", message="local build lease expired before upload completed")
+        raise LumaError(f"local build lease expired: {build_id}")
+    build_result = body.get("buildResult") if isinstance(body.get("buildResult"), dict) else {}
+    _validate_local_build_result(run, build_result)
+
+    def claim(current: Dict[str, Any]) -> Dict[str, Any]:
+        require_token(current, token, token_type="deploy")
+        current_run = _build_runs(current).get(build_id)
+        if not isinstance(current_run, dict) or str(current_run.get("mode") or "") != "local":
+            raise LumaError(f"local build run not found: {build_id}")
+        if str(current_run.get("status") or "") != "running":
+            raise LumaError(f"local build run is not active: {build_id}")
+        current_run["status"] = "finalizing"
+        current_run["updatedAt"] = int(time.time())
+        return dict(current_run)
+
+    run = _mutate_control_state(claim)
+    request = run.get("request") if isinstance(run.get("request"), dict) else {}
+    deploy_request = dict(request)
+    if body.get("envSecrets") is not None:
+        deploy_request["envSecrets"] = _request_env_secrets(body)
+    repo_url = str(run.get("source") or "")
+    build_config = _build_config(state)
+    update_node = str(build_config.get("defaultNode") or DEFAULT_BUILD_NODE_NAME)
+    git_source = _git_source_from_build_body(
+        deploy_request,
+        repo_url=repo_url,
+        build_node=update_node,
+        build_run_id=build_id,
+    )
+    _append_build_run_event(
+        build_id,
+        {
+            "name": "Local build upload",
+            "status": "ok",
+            "message": str(build_result.get("message") or "Local image uploaded"),
+        },
+    )
+
+    def run_progress(event: dict[str, str]) -> None:
+        _append_build_run_event(build_id, event)
+
+    try:
+        kind = str(build_result.get("kind") or "service")
+        manifest_text = str(build_result.get("manifest") or "").strip()
+        if not manifest_text:
+            raise LumaError("local build result is missing the Luma deployment manifest")
+        if kind == "compose":
+            compose_content = str(build_result.get("composeContent") or "").strip()
+            if not compose_content:
+                raise LumaError("local Compose build result is missing composeContent")
+            manifest_data = yaml.safe_load(manifest_text) or {}
+            if not isinstance(manifest_data, dict):
+                raise LumaError("local luma.compose.yml must contain a YAML mapping")
+            if deploy_request.get("region"):
+                manifest_data["region"] = deploy_request["region"]
+            manifest_text = yaml.safe_dump(
+                manifest_data, sort_keys=False, allow_unicode=False
+            )
+            deploy_body = dict(deploy_request)
+            deploy_body.update(
+                {
+                    "manifest": manifest_text,
+                    "composeContent": compose_content,
+                    "sourceName": repo_url,
+                    "gitSource": git_source,
+                }
+            )
+            deploy_body.pop("repoUrl", None)
+            result = handle_compose_deployment(token, deploy_body, progress=run_progress)
+            if isinstance(result, dict):
+                result = {
+                    **result,
+                    "image": str(build_result.get("image") or ""),
+                    "images": build_result.get("images") or {},
+                    "buildRunId": build_id,
+                }
+        elif kind == "service":
+            data = yaml.safe_load(manifest_text) or {}
+            if not isinstance(data, dict):
+                raise LumaError("local .luma.yml must contain a YAML mapping")
+            data.pop("build", None)
+            data["image"] = str(build_result.get("image") or "")
+            for key in ("region", "exposure", "domain"):
+                if deploy_request.get(key):
+                    data[key] = deploy_request[key]
+            if deploy_request.get("port"):
+                data["port"] = int(deploy_request["port"])
+            deploy_body = dict(deploy_request)
+            deploy_body.update(
+                {
+                    "manifest": yaml.safe_dump(data, sort_keys=False, allow_unicode=False),
+                    "sourceName": repo_url,
+                    "gitSource": git_source,
+                }
+            )
+            deploy_body.pop("repoUrl", None)
+            result = handle_deployment(token, deploy_body, progress=run_progress)
+            if isinstance(result, dict):
+                result = {
+                    **result,
+                    "image": str(build_result.get("image") or ""),
+                    "buildRunId": build_id,
+                }
+        else:
+            raise LumaError(f"unsupported local build result kind: {kind}")
+        _complete_build_run(build_id, "succeeded", result=result if isinstance(result, dict) else {})
+        return result
+    except Exception as exc:
+        _complete_build_run(build_id, "failed", message=str(exc))
+        raise
+
+
+def handle_local_build_fail(token: str, build_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    run = _build_runs(state).get(build_id)
+    if not isinstance(run, dict) or str(run.get("mode") or "") != "local":
+        raise LumaError(f"local build run not found: {build_id}")
+    status = str(run.get("status") or "")
+    if status in {"succeeded", "failed", "canceled"}:
+        return {"run": _build_run_public(run), "replayed": True}
+    if status != "running":
+        raise LumaError(f"local build run cannot be failed while status is {status}")
+    message = str(body.get("message") or "local build failed")[:BUILD_RUN_MESSAGE_LIMIT]
+    _complete_build_run(build_id, "failed", message=message)
+    return {**handle_build_run_get(token, build_id), "replayed": False}
+
+
 
 
 def handle_build_deploy(
@@ -8137,9 +8409,20 @@ def handle_build_deploy(
     if provider_id:
         run_body["providerId"] = provider_id
     if build_run_id:
-        _restart_build_run(build_run_id, run_body, source=repo_url, build_node=build_node)
+        _restart_build_run(
+            build_run_id,
+            run_body,
+            source=repo_url,
+            build_node=build_node,
+            project_key=repo,
+        )
     else:
-        build_run_id = _create_build_run(run_body, source=repo_url, build_node=build_node)
+        build_run_id = _create_build_run(
+            run_body,
+            source=repo_url,
+            build_node=build_node,
+            project_key=repo,
+        )
     git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
 
     def run_progress(event: dict[str, str]) -> None:
@@ -16493,12 +16776,23 @@ class ControlHandler(BaseHTTPRequestHandler):
             if build_cancel_match:
                 self._json(200, handle_build_run_cancel(token, urllib.parse.unquote(build_cancel_match.group(1)), body))
                 return
+            local_build_complete_match = re.fullmatch(r"/v1/builds/local/([^/]+)/complete", self.path)
+            if local_build_complete_match:
+                self._json(200, handle_local_build_complete(token, urllib.parse.unquote(local_build_complete_match.group(1)), body))
+                return
+            local_build_fail_match = re.fullmatch(r"/v1/builds/local/([^/]+)/fail", self.path)
+            if local_build_fail_match:
+                self._json(200, handle_local_build_fail(token, urllib.parse.unquote(local_build_fail_match.group(1)), body))
+                return
             build_retry_stream_match = re.fullmatch(r"/v1/builds/([^/]+)/retry/stream", self.path)
             if build_retry_stream_match:
                 self._stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)), body)
                 return
             if self.path == "/v1/builds/config":
                 self._json(200, handle_build_config_set(token, body))
+                return
+            if self.path == "/v1/builds/local/prepare":
+                self._json(200, handle_local_build_prepare(token, body))
                 return
             if self.path == "/v1/builds/stream":
                 self._stream_build_deploy(token, body)
@@ -17387,11 +17681,19 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         build_cancel_match = re.fullmatch(r"/v1/builds/([^/]+)/cancel", path)
         if build_cancel_match:
             return _json_response(200, await run_in_threadpool(handle_build_run_cancel, token, urllib.parse.unquote(build_cancel_match.group(1)), body))
+        local_build_complete_match = re.fullmatch(r"/v1/builds/local/([^/]+)/complete", path)
+        if local_build_complete_match:
+            return _json_response(200, await run_in_threadpool(handle_local_build_complete, token, urllib.parse.unquote(local_build_complete_match.group(1)), body))
+        local_build_fail_match = re.fullmatch(r"/v1/builds/local/([^/]+)/fail", path)
+        if local_build_fail_match:
+            return _json_response(200, await run_in_threadpool(handle_local_build_fail, token, urllib.parse.unquote(local_build_fail_match.group(1)), body))
         build_retry_stream_match = re.fullmatch(r"/v1/builds/([^/]+)/retry/stream", path)
         if build_retry_stream_match:
             return _asgi_stream_build_run_retry(token, urllib.parse.unquote(build_retry_stream_match.group(1)), body)
         if path == "/v1/builds/config":
             return _json_response(200, await run_in_threadpool(handle_build_config_set, token, body))
+        if path == "/v1/builds/local/prepare":
+            return _json_response(200, await run_in_threadpool(handle_local_build_prepare, token, body))
         if path == "/v1/builds/stream":
             return _asgi_stream_build_deploy(token, body)
         if path == "/v1/applications/update/stream":

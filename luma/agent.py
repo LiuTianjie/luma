@@ -3254,6 +3254,7 @@ def _build_compose_images(
     payload: Dict[str, Any],
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    allow_repo_overrides: bool = True,
 ) -> Dict[str, Any]:
     import yaml
 
@@ -3309,7 +3310,11 @@ def _build_compose_images(
         if not dockerfile_path.is_file():
             raise LumaError(f"Dockerfile not found in repository: {dockerfile_rel}")
         platform = str(payload.get("platform") or spec.get("platform") or service_body.get("platform") or "linux/amd64").strip() or "linux/amd64"
-        repo_override = str(spec.get("repo") or spec.get("x-luma-repo") or "").strip()
+        repo_override = (
+            str(spec.get("repo") or spec.get("x-luma-repo") or "").strip()
+            if allow_repo_overrides
+            else ""
+        )
         image_repo = _safe_image_repo(repo_override or (repo if single_build else f"{repo}/{slugify(service_name)}"))
         image = _docker_buildx_build(
             docker=docker,

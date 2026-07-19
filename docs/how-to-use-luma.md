@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.262 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.263 sh
 ```
 
 For local development from a checkout:
@@ -480,6 +480,26 @@ luma import https://github.com/acme/myapp \
   --ref release \
   --region cn --exposure cn-edge --domain myapp.example.com --port 8080
 ```
+
+如果 Builder 排队或构建较慢，也可以直接用当前电脑的 Docker Buildx 构建：
+
+```bash
+cd myapp
+luma build local . --env .env
+```
+
+这个命令从本地 Git `origin` 识别项目（没有 origin 时传
+`--repo-url https://github.com/acme/myapp.git`），先向 Control 申请项目构建租约，
+再把本地构建结果推到 Luma 内部 registry，最后沿用正常部署链路。镜像仍写入
+`acme/myapp` 这一项目命名空间，不会因为改走本地构建而产生另一套项目。
+本机需要能访问 `build.registryHost`；registry 开启鉴权时，先执行对应的
+`docker login`。单服务与 Compose 都支持，也可以传 `--compose-sidecar`、
+`--platform`、`--context`、`--dockerfile`。
+
+同一个项目在任意时刻只允许一个活动构建：Builder import 与本地构建互相
+排斥，不同项目仍可并行。Control 给本地构建分配唯一 tag，并校验完成请求中
+的所有镜像都属于这个项目的 registry 路径，避免两条链路互相覆盖或把产物
+散落到别的仓库。
 
 构建节点来自控制面声明的 builder 节点；通常不用传 `--build-node`，只有需要临时覆盖到另一个已声明 builder 时才传。单服务 import 还可用 `--context`（build 上下文目录，默认 `.`）、`--dockerfile`（默认 `Dockerfile`）、`--registry-host`（其它节点拉取用的 registry 主机，默认 `<build-node>:5000`）覆盖仓库里的 `build:` 字段。对 Compose import，`--region` 会覆盖 sidecar 的 region；`--exposure`、`--domain`、`--port` 是单服务覆盖项，会被忽略并打印 warning。Compose 的服务级路由请写在 `luma.compose.yml` 的 `services:` 里。`luma import` 默认等待 `3600` 秒的 build+deploy 响应，用 `--timeout <seconds>` 覆盖。
 

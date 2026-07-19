@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.262 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.263 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -361,6 +361,24 @@ def build_parser() -> argparse.ArgumentParser:
     build_cancel.add_argument("id")
     _add_control_arguments(build_cancel)
     _add_output_arguments(build_cancel)
+    build_local = build_sub.add_parser(
+        "local",
+        help="Build a local checkout, push it to the project's Luma registry path, and deploy it",
+    )
+    build_local.add_argument("path", nargs="?", type=Path, default=Path("."))
+    build_local.add_argument("--repo-url", default="", help="Project Git URL (default: local origin remote)")
+    build_local.add_argument("--compose-sidecar", default="", help="Select one repository-relative Luma Compose sidecar")
+    build_local.add_argument("--region", default="", help="Override deployment region")
+    build_local.add_argument("--exposure", default="", help="Override single-service exposure")
+    build_local.add_argument("--domain", default="", help="Override single-service domain")
+    build_local.add_argument("--port", type=int, default=None, help="Override single-service container port")
+    build_local.add_argument("--platform", default="", help="Build platform override")
+    build_local.add_argument("--context", dest="build_context", default="", help="Docker build context within the local project")
+    build_local.add_argument("--dockerfile", default="", help="Dockerfile path within the local project")
+    build_local.add_argument("--env", dest="deploy_env_file", type=Path, help="Import this .env file as scoped deployment secrets")
+    build_local.add_argument("--timeout", type=int, default=7200, help="Seconds allowed for the local build and deploy")
+    _add_control_arguments(build_local)
+    _add_output_arguments(build_local)
     build_config = build_sub.add_parser("config", help="Declare builder nodes and internal registry defaults")
     build_config.add_argument("--node", action="append", dest="nodes", default=[], help="Declared builder node; repeat for multiple builders")
     build_config.add_argument("--default-node", default="", help="Default builder node for luma import")
@@ -2875,6 +2893,70 @@ def cmd_build(args: argparse.Namespace) -> int:
     endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     output_format = _output_format(args)
+    if args.build_command == "local":
+        from .local_build import build_and_push_local_source, local_source_metadata
+
+        quiet = _quiet(args) or output_format != "text"
+        if args.timeout < 1:
+            raise LumaError("--timeout must be at least 1 second")
+        metadata = local_source_metadata(args.path, repo_url=args.repo_url)
+        prepare_body: Dict[str, Any] = {
+            "repoUrl": metadata["repoUrl"],
+            "sourceRevision": metadata["revision"],
+        }
+        for key, value in {
+            "region": args.region,
+            "exposure": args.exposure,
+            "domain": args.domain,
+            "port": args.port,
+            "platform": args.platform,
+            "context": args.build_context,
+            "dockerfile": args.dockerfile,
+            "composeSidecar": args.compose_sidecar,
+        }.items():
+            if value not in (None, ""):
+                prepare_body[key] = value
+        prepared = client.prepare_local_build(prepare_body)
+        run = prepared.get("run") if isinstance(prepared.get("run"), dict) else {}
+        upload = prepared.get("upload") if isinstance(prepared.get("upload"), dict) else {}
+        build_id = str(run.get("id") or "")
+        if not build_id:
+            raise LumaError("control API did not return a local build reservation")
+        if not quiet:
+            print(f"[ok] Project reserved: {upload.get('repository')} ({build_id})", flush=True)
+            print(f"[start] Building locally and pushing to {upload.get('registryHost')}", flush=True)
+        try:
+            build_result = build_and_push_local_source(
+                Path(metadata["path"]),
+                registry_host=str(upload.get("registryHost") or ""),
+                repository=str(upload.get("repository") or ""),
+                tag=str(upload.get("tag") or ""),
+                compose_sidecar=args.compose_sidecar,
+                context=args.build_context,
+                dockerfile=args.dockerfile,
+                platform=args.platform,
+                timeout=args.timeout,
+                progress=(lambda line: print(line, flush=True)) if not quiet else None,
+            )
+            result = client.complete_local_build(
+                build_id,
+                build_result=build_result,
+                env_secrets=_import_env_secrets(args.deploy_env_file),
+                timeout=args.timeout,
+            )
+        except Exception as exc:
+            try:
+                client.fail_local_build(build_id, str(exc))
+            except Exception:
+                pass
+            raise
+        if output_format != "text":
+            _print_success(args, result)
+            return 0
+        print(f"[ok] Local build deployed: {result.get('service') or result.get('deployment') or upload.get('repository')}")
+        print(f"Image: {result.get('image') or build_result.get('image')}")
+        print(f"Build run: {build_id}")
+        return 0
     if args.build_command == "list":
         result = client.list_builds()
         if output_format != "text":
