@@ -154,11 +154,13 @@ def build_and_push_local_source(
     dockerfile: str = "",
     platform: str = "",
     builder: str = "",
+    proxy: str = "",
     timeout: int = 7200,
     progress: Callable[[str], None] | None = None,
 ) -> Dict[str, Any]:
     root = source.expanduser().resolve()
     selected_builder = str(builder or "").strip()
+    local_proxy = str(proxy or "").strip()
     if selected_builder and not all(
         char.isalnum() or char in "_.-" for char in selected_builder
     ):
@@ -220,7 +222,7 @@ def build_and_push_local_source(
                 push_host=registry_host,
                 repo=repository,
                 sha=tag,
-                proxy="",
+                proxy=local_proxy,
                 build_timeout=timeout,
                 payload=payload,
                 progress=emit,
@@ -251,7 +253,7 @@ def build_and_push_local_source(
             if "," not in build_platform
             else _ensure_buildx_builder(
                 docker,
-                proxy="",
+                proxy=local_proxy,
                 no_proxy=f"localhost,127.0.0.1,::1,{registry_host}",
                 registry_host=registry_host,
                 env=buildx_env,
@@ -268,7 +270,7 @@ def build_and_push_local_source(
             context_dir=context_dir,
             dockerfile_path=dockerfile_path,
             platform=build_platform,
-            proxy="",
+            proxy=local_proxy,
             build_timeout=timeout,
             progress=emit,
             buildx_config_root=user_buildx_root,

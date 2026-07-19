@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.266 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.267 sh
 ```
 
 For local development from a checkout:
@@ -496,7 +496,8 @@ luma build local . --env .env
 `docker login`。单服务与 Compose 都支持，也可以传 `--compose-sidecar`、
 `--platform`、`--context`、`--dockerfile`。
 如果本机已有带镜像加速或多架构能力的 Buildx builder，可以传
-`--builder <名称>` 直接复用。
+`--builder <名称>` 直接复用；本地拉取镜像和 Dockerfile 网络访问需要代理时，
+可以传 `--proxy <地址>`，内部 registry 会自动保留在 `NO_PROXY`。
 
 本地构建和 Builder 构建都会以实际部署目标为准选择容器架构：固定到
 Mac/ARM 节点时构建 `linux/arm64`，目标区域同时存在 amd64 和 arm64 节点时

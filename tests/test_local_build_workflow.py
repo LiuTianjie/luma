@@ -92,12 +92,14 @@ class LocalBuildWorkflowTests(unittest.TestCase):
                 "build", "local", ".",
                 "--repo-url", "https://github.com/acme/app.git",
                 "--builder", "desktop-linux",
+                "--proxy", "http://host.docker.internal:7890",
             ]
         )
         self.assertEqual(args.command, "build")
         self.assertEqual(args.build_command, "local")
         self.assertEqual(args.path, Path("."))
         self.assertEqual(args.builder, "desktop-linux")
+        self.assertEqual(args.proxy, "http://host.docker.internal:7890")
 
     def test_local_docker_config_keeps_buildx_plugin_and_context_visible(self):
         user_home = self.root / "home"
@@ -247,8 +249,12 @@ class LocalBuildWorkflowTests(unittest.TestCase):
                 tag="local-run",
                 platform="linux/amd64",
                 builder="desktop-linux",
+                proxy="http://host.docker.internal:7890",
             )
         self.assertEqual(build.call_args.kwargs["buildx_builder"], "desktop-linux")
+        self.assertEqual(
+            build.call_args.kwargs["proxy"], "http://host.docker.internal:7890"
+        )
 
     def test_local_service_upload_deploys_under_reserved_project(self):
         prepared = handle_local_build_prepare(
