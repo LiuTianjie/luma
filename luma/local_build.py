@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import tempfile
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict
 
@@ -143,6 +144,76 @@ def local_deployment_target(
     return {"targetNodes": sorted(nodes), "targetRegions": sorted(regions)}
 
 
+def _dockerfile_base_images(path: Path) -> list[str]:
+    args: Dict[str, str] = {}
+    stages: set[str] = set()
+    images: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        arg_match = re.match(r"(?i)^ARG\s+([A-Za-z_][A-Za-z0-9_]*)(?:=(\S+))?", line)
+        if arg_match and not stages and arg_match.group(2):
+            args[arg_match.group(1)] = arg_match.group(2)
+            continue
+        from_match = re.match(r"(?i)^FROM\s+(?:--\S+\s+)*([^\s]+)(?:\s+AS\s+([^\s]+))?", line)
+        if not from_match:
+            continue
+        image = from_match.group(1)
+        image = re.sub(
+            r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+            lambda match: args.get(match.group(1) or match.group(2), match.group(0)),
+            image,
+        )
+        if "$" in image:
+            raise LumaError(f"cannot resolve Dockerfile base image: {from_match.group(1)}")
+        if image.lower() != "scratch" and image.lower() not in stages:
+            images.append(image)
+        if from_match.group(2):
+            stages.add(from_match.group(2).lower())
+    return list(dict.fromkeys(images))
+
+
+def local_build_base_images(
+    source: Path, *, compose_sidecar: str = "", context: str = "", dockerfile: str = ""
+) -> list[str]:
+    root = source.expanduser().resolve()
+    selected_sidecar = str(compose_sidecar or "").strip()
+    deployment_manifest = (
+        ("compose", _select_luma_compose_manifest(root, selected_sidecar))
+        if selected_sidecar
+        else _find_luma_deployment_manifest(root)
+    )
+    if not deployment_manifest:
+        raise LumaError("no Luma deployment manifest found in the local project")
+    dockerfiles: list[Path] = []
+    if deployment_manifest[0] == "compose":
+        sidecar = yaml.safe_load(deployment_manifest[1].read_text(encoding="utf-8")) or {}
+        compose_value = str(sidecar.get("compose") or "docker-compose.yml").strip()
+        compose_path = _safe_repo_path_from(deployment_manifest[1].parent, root, compose_value)
+        compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+        for service in (compose.get("services") or {}).values():
+            if not isinstance(service, dict) or "build" not in service:
+                continue
+            build = service.get("build")
+            spec = build if isinstance(build, dict) else {"context": build}
+            context_rel = str(context or spec.get("context") or ".").strip() or "."
+            context_dir = _safe_repo_path_from(compose_path.parent, root, context_rel)
+            dockerfile_rel = str(dockerfile or spec.get("dockerfile") or "Dockerfile").strip()
+            dockerfiles.append(_safe_repo_path_from(context_dir, root, dockerfile_rel))
+    else:
+        manifest = yaml.safe_load(deployment_manifest[1].read_text(encoding="utf-8")) or {}
+        build = manifest.get("build") if isinstance(manifest.get("build"), dict) else {}
+        context_dir = _safe_repo_subpath(root, str(context or build.get("context") or "."))
+        dockerfiles.append(_safe_repo_subpath(root, str(dockerfile or build.get("dockerfile") or "Dockerfile")))
+    images: list[str] = []
+    for path in dockerfiles:
+        if not path.is_file():
+            raise LumaError(f"Dockerfile not found in local project: {path.relative_to(root)}")
+        images.extend(_dockerfile_base_images(path))
+    return list(dict.fromkeys(images))
+
+
 def build_and_push_local_source(
     source: Path,
     *,
@@ -157,6 +228,7 @@ def build_and_push_local_source(
     proxy: str = "",
     timeout: int = 7200,
     progress: Callable[[str], None] | None = None,
+    build_contexts: Dict[str, str] | None = None,
 ) -> Dict[str, Any]:
     root = source.expanduser().resolve()
     selected_builder = str(builder or "").strip()
@@ -229,6 +301,7 @@ def build_and_push_local_source(
                 allow_repo_overrides=False,
                 buildx_builder=local_builder,
                 buildx_config_root=user_buildx_root,
+                build_contexts=build_contexts,
             )
 
         manifest_path = deployment_manifest[1]
@@ -272,6 +345,7 @@ def build_and_push_local_source(
             platform=build_platform,
             proxy=local_proxy,
             build_timeout=timeout,
+            build_contexts=build_contexts,
             progress=emit,
             buildx_config_root=user_buildx_root,
         )

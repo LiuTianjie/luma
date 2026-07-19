@@ -3094,6 +3094,7 @@ def _docker_buildx_build(
     proxy: str,
     build_timeout: int,
     build_args: Mapping[str, str] | None = None,
+    build_contexts: Mapping[str, str] | None = None,
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
     buildx_config_root: Path | None = None,
@@ -3119,11 +3120,17 @@ def _docker_buildx_build(
         for name, value in sorted((build_args or {}).items())
         for item in ("--build-arg", f"{name}={value}")
     ]
+    declared_build_contexts = [
+        item
+        for name, value in sorted((build_contexts or {}).items())
+        for item in ("--build-context", f"{name}=docker-image://{value}")
+    ]
     command = [
         docker, "buildx", "build",
         "--builder", builder,
         "--platform", platform,
         *declared_build_args,
+        *declared_build_contexts,
         *proxy_build_args,
         # Luma's managed build registry is intentionally served over the
         # tailnet as plain HTTP. Host dockerd already knows it as an insecure
@@ -3320,6 +3327,7 @@ def _build_compose_images(
     allow_repo_overrides: bool = True,
     buildx_builder: str = "",
     buildx_config_root: Path | None = None,
+    build_contexts: Mapping[str, str] | None = None,
 ) -> Dict[str, Any]:
     import yaml
 
@@ -3410,6 +3418,7 @@ def _build_compose_images(
             proxy=proxy,
             build_timeout=build_timeout,
             build_args=_compose_build_args(spec),
+            build_contexts=build_contexts,
             progress=progress,
             cancel_event=cancel_event,
             buildx_config_root=buildx_config_root,

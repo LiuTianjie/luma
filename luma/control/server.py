@@ -8281,6 +8281,44 @@ def handle_local_build_prepare(token: str, body: Dict[str, Any]) -> Dict[str, An
     }
 
 
+def handle_local_build_base_images(
+    token: str, build_id: str, body: Dict[str, Any]
+) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    run = _build_runs(state).get(build_id)
+    if not isinstance(run, dict) or str(run.get("mode") or "") != "local":
+        raise LumaError(f"local build run not found: {build_id}")
+    if str(run.get("status") or "") != "running":
+        raise LumaError(f"local build run is not active: {build_id}")
+    raw_images = body.get("images")
+    images = list(dict.fromkeys(
+        str(value or "").strip()
+        for value in (raw_images if isinstance(raw_images, list) else [])
+        if str(value or "").strip()
+    ))
+    if not images or len(images) > 32:
+        raise LumaError("local build base images must contain 1 to 32 image references")
+    platform = str(body.get("platform") or "").strip()
+    cache_platform = platform if platform in {"linux/amd64", "linux/arm64"} else ""
+    config = load_config(_control_config_path())
+    cached: Dict[str, str] = {}
+    for image in images:
+        result = _cache_runtime_image_on_builder(
+            config, state, image, platform=cache_platform
+        )
+        cached[image] = str(result.get("deployed") or "")
+    _append_build_run_event(
+        build_id,
+        {
+            "name": "Cache local build base images",
+            "status": "ok",
+            "message": f"{len(cached)} base image(s) ready in Builder Registry",
+        },
+    )
+    return {"images": cached, "platform": platform}
+
+
 def _validate_local_build_result(run: Dict[str, Any], build_result: Dict[str, Any]) -> None:
     project_key = str(run.get("projectKey") or "")
     request = run.get("request") if isinstance(run.get("request"), dict) else {}
@@ -16894,6 +16932,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             if local_build_complete_match:
                 self._json(200, handle_local_build_complete(token, urllib.parse.unquote(local_build_complete_match.group(1)), body))
                 return
+            local_build_base_match = re.fullmatch(r"/v1/builds/local/([^/]+)/base-images", self.path)
+            if local_build_base_match:
+                self._json(200, handle_local_build_base_images(token, urllib.parse.unquote(local_build_base_match.group(1)), body))
+                return
             local_build_fail_match = re.fullmatch(r"/v1/builds/local/([^/]+)/fail", self.path)
             if local_build_fail_match:
                 self._json(200, handle_local_build_fail(token, urllib.parse.unquote(local_build_fail_match.group(1)), body))
@@ -17798,6 +17840,9 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         local_build_complete_match = re.fullmatch(r"/v1/builds/local/([^/]+)/complete", path)
         if local_build_complete_match:
             return _json_response(200, await run_in_threadpool(handle_local_build_complete, token, urllib.parse.unquote(local_build_complete_match.group(1)), body))
+        local_build_base_match = re.fullmatch(r"/v1/builds/local/([^/]+)/base-images", path)
+        if local_build_base_match:
+            return _json_response(200, await run_in_threadpool(handle_local_build_base_images, token, urllib.parse.unquote(local_build_base_match.group(1)), body))
         local_build_fail_match = re.fullmatch(r"/v1/builds/local/([^/]+)/fail", path)
         if local_build_fail_match:
             return _json_response(200, await run_in_threadpool(handle_local_build_fail, token, urllib.parse.unquote(local_build_fail_match.group(1)), body))
