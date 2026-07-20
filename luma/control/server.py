@@ -12598,6 +12598,28 @@ def _guard_compose_storage_switch(
     *,
     previous_record: Dict[str, Any] | None = None,
 ) -> str:
+    # The generated Nomad job is the runtime source of truth.  Deployment
+    # records describe the manifest intent, but an older renderer may have
+    # produced a different mount (for example a Docker named volume instead of
+    # the bind mount declared by the sidecar).  Compare the previous and next
+    # job artifacts first so a Luma upgrade cannot silently orphan live data.
+    if target.exists():
+        previous_mounts = _compose_nomad_mount_signatures(target.read_text(encoding="utf-8"))
+        current_mounts = _compose_nomad_mount_signatures(stack_text)
+        if previous_mounts is not None and current_mounts is not None:
+            exemptions = _compose_storage_mount_change_exemptions(deployment)
+            changed_mounts = [
+                key
+                for key in sorted(set(previous_mounts) | set(current_mounts))
+                if previous_mounts.get(key) != current_mounts.get(key) and key not in exemptions
+            ]
+            if changed_mounts:
+                raise LumaError(
+                    "storage backend changed: runtime storage mount changed for "
+                    + ", ".join(changed_mounts)
+                    + "; preserve the existing mount, or run luma storage migrate and set adopted: true after verification"
+                )
+
     previous_volumes = _compose_storage_backend_signatures_from_record(previous_record)
     source = "deployment record"
     if previous_volumes is None:
@@ -12611,12 +12633,12 @@ def _guard_compose_storage_switch(
     current_volumes = _compose_storage_backend_signatures(deployment)
     changed = []
     for name, spec in deployment.volumes.items():
-        if spec.kind == "unmanaged":
-            continue
         if spec.initialize == "empty" or spec.adopted:
             continue
         before = previous_volumes.get(name)
         after = current_volumes.get(name)
+        if before is None and spec.kind == "unmanaged":
+            continue
         if before != after:
             changed.append(name)
     if changed:
@@ -12626,6 +12648,61 @@ def _guard_compose_storage_switch(
                 + "; run luma storage migrate and set adopted: true after verification, or set initialize: empty for a fresh volume"
             )
     return f"Storage backend unchanged from {source}"
+
+
+def _compose_nomad_mount_signatures(text: str) -> Dict[str, Dict[str, Any]] | None:
+    artifact = _safe_yaml_mapping(text)
+    job = artifact.get("Job")
+    if not isinstance(job, dict):
+        return None
+    signatures: Dict[str, Dict[str, Any]] = {}
+    groups = job.get("TaskGroups") if isinstance(job.get("TaskGroups"), list) else []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        tasks = group.get("Tasks") if isinstance(group.get("Tasks"), list) else []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            task_name = str(task.get("Name") or "").strip()
+            config = task.get("Config") if isinstance(task.get("Config"), dict) else {}
+            mounts = config.get("mount") if isinstance(config.get("mount"), list) else []
+            for mount in mounts:
+                if not isinstance(mount, dict):
+                    continue
+                mount_type = str(mount.get("type") or "").strip().lower()
+                source = str(mount.get("source") or "").strip()
+                target_path = str(mount.get("target") or "").strip().rstrip("/")
+                if mount_type not in {"bind", "volume"} or not source or not target_path:
+                    continue
+                signatures[f"{task_name}:{target_path}"] = {
+                    "type": mount_type,
+                    "source": source,
+                    "readonly": bool(mount.get("readonly", False)),
+                }
+    return signatures
+
+
+def _compose_storage_mount_change_exemptions(deployment: ComposeDeploymentSpec) -> set[str]:
+    exemptions: set[str] = set()
+    services = deployment.compose.get("services") if isinstance(deployment.compose.get("services"), dict) else {}
+    for service_name, service in services.items():
+        if not isinstance(service, dict):
+            continue
+        for volume in service.get("volumes") or []:
+            if isinstance(volume, str):
+                parts = volume.split(":")
+                source = parts[0].strip() if parts else ""
+                target_path = parts[1].strip().rstrip("/") if len(parts) > 1 else ""
+            elif isinstance(volume, dict):
+                source = str(volume.get("source") or "").strip()
+                target_path = str(volume.get("target") or "").strip().rstrip("/")
+            else:
+                continue
+            spec = deployment.volumes.get(source)
+            if spec and target_path and (spec.adopted or spec.initialize == "empty"):
+                exemptions.add(f"{service_name}:{target_path}")
+    return exemptions
 
 
 def _compose_storage_backend_signatures(deployment: ComposeDeploymentSpec) -> Dict[str, Dict[str, Any]]:

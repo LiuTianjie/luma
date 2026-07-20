@@ -10117,6 +10117,163 @@ class ControlApiTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
+    def test_compose_storage_guard_uses_previous_runtime_mount_when_record_drifted(self):
+        from luma.control.server import _guard_compose_storage_switch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            compose_path = root / "docker-compose.yml"
+            sidecar_path = root / "luma.compose.yml"
+            compose_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "services": {
+                            "postgres": {
+                                "image": "postgres:17",
+                                "volumes": ["pg-data:/var/lib/postgresql/data"],
+                            }
+                        },
+                        "volumes": {"pg-data": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sidecar_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "volumes": {
+                            "pg-data": {
+                                "local": {"node": "tecent", "path": "/opt/luma/state/app-stack/postgres"}
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(sidecar_path)
+
+            def job(mount_type: str, source: str) -> str:
+                return json.dumps(
+                    {
+                        "Job": {
+                            "TaskGroups": [
+                                {
+                                    "Tasks": [
+                                        {
+                                            "Name": "postgres",
+                                            "Config": {
+                                                "mount": [
+                                                    {
+                                                        "type": mount_type,
+                                                        "source": source,
+                                                        "target": "/var/lib/postgresql/data",
+                                                        "readonly": False,
+                                                    }
+                                                ]
+                                            },
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                )
+
+            target = root / "app-stack.nomad.json"
+            target.write_text(job("volume", "pg-data"), encoding="utf-8")
+            previous_record = {
+                "storageBackends": {
+                    "pg-data": {
+                        "kind": "local",
+                        "node": "tecent",
+                        "path": "/opt/luma/state/app-stack/postgres",
+                    }
+                }
+            }
+
+            with self.assertRaisesRegex(LumaError, "runtime storage mount changed"):
+                _guard_compose_storage_switch(
+                    target,
+                    job("bind", "/opt/luma/state/app-stack/postgres"),
+                    deployment,
+                    previous_record=previous_record,
+                )
+
+    def test_compose_storage_guard_allows_verified_runtime_mount_adoption(self):
+        from luma.control.server import _guard_compose_storage_switch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docker-compose.yml").write_text(
+                yaml.safe_dump(
+                    {
+                        "services": {"postgres": {"image": "postgres:17", "volumes": ["pg-data:/data"]}},
+                        "volumes": {"pg-data": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            sidecar = root / "luma.compose.yml"
+            sidecar.write_text(
+                yaml.safe_dump(
+                    {
+                        "name": "app-stack",
+                        "compose": "docker-compose.yml",
+                        "region": "cn",
+                        "volumes": {
+                            "pg-data": {
+                                "local": {"node": "tecent", "path": "/srv/app-stack/data"},
+                                "adopted": True,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            deployment = load_compose_deployment(sidecar)
+            target = root / "app-stack.nomad.json"
+            target.write_text(
+                json.dumps(
+                    {
+                        "Job": {
+                            "TaskGroups": [
+                                {
+                                    "Tasks": [
+                                        {
+                                            "Name": "postgres",
+                                            "Config": {"mount": [{"type": "volume", "source": "pg-data", "target": "/data"}]},
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            current = json.dumps(
+                {
+                    "Job": {
+                        "TaskGroups": [
+                            {
+                                "Tasks": [
+                                    {
+                                        "Name": "postgres",
+                                        "Config": {"mount": [{"type": "bind", "source": "/srv/app-stack/data", "target": "/data"}]},
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            )
+
+            result = _guard_compose_storage_switch(target, current, deployment)
+            self.assertIn("unchanged", result)
+
     def test_compose_deployment_allows_storage_backend_switch_after_adoption(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
