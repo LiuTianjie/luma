@@ -186,6 +186,36 @@ curl -I http://<builder-tailscale-ip>:5000/v2/
 
 Run the same check from at least one target node when debugging pull failures.
 
+### Local Build, Upload, And Deploy
+
+Use Local Build when the checked-out source on the caller's computer is the build source of truth:
+
+```bash
+luma build local . --platform linux/amd64
+```
+
+This is one transaction with three distinct stages:
+
+1. The caller's Docker/Buildx builds the image locally for the architecture resolved from the live target node or region.
+2. The caller pushes the result to the project's reserved repository in Builder Registry.
+3. Control injects the immutable `local-<build-id>` image and deploys the same service or Compose stack.
+
+The remote Builder node hosts the internal Registry and distribution path; it does not perform the source build in this lane. Repository Import remains the separate lane where the Builder node clones and builds source. Both lanes must converge on the same project identity, stack name, scoped secrets, internal repository, deployment history, and storage contract.
+
+Control derives project identity from Git `origin` and the repository deployment manifest. A later Local Build must update the existing project instead of creating a parallel project or repository. The first run may use `--env <file>` to submit referenced scoped secrets; later runs reuse the stored scope.
+
+Platform selection is target-driven. Control returns the target platform from the ready pinned node or target region; an explicit `--platform` is a constraint and must cover the resolved architecture. Never build for the caller's native architecture merely because Docker defaults to it.
+
+For an internal HTTP Registry, the default local workflow must use Luma's managed docker-container Buildx builder with an explicit Registry HTTP/insecure stanza. Do not default to the current Docker context's `docker` driver. Luma 0.1.271 and later enforce this behavior while still honoring an explicitly selected compatible `--builder`.
+
+For a stateful Compose stack before completion:
+
+- verify top-level production volumes use the existing external Docker volume names when appropriate;
+- verify stateful services remain pinned to the node that owns those volumes;
+- compare the previous and next generated Nomad mount `type`, `source`, and `target`;
+- require explicit adoption or initialization for intentional storage changes;
+- never use an unrelated local database as an implicit recovery source.
+
 ### Common Failures
 
 - `registry serve` fails immediately on `storageClass: local`: the control plane probably has no `local` storage class. Re-run with an existing class such as `builder-registry-nfs` or `cn-nfs`.
@@ -205,6 +235,8 @@ luma service restart luma-registry --mode recreate
 ```
 
 - Build fails before push with `invalid value "127.0.0.1", expecting k=v`: suspect buildx driver option parsing of comma-separated `NO_PROXY`. Update Luma or ensure commas are escaped in `--driver-opt env.NO_PROXY=...`; do not treat this as a registry health failure.
+- Local Build reaches the push step but fails with `server gave HTTP response to HTTPS client`: the current Docker-context builder handled the exporter and upgraded Builder Registry to HTTPS. Use Luma 0.1.271 or newer so the default path creates the managed docker-container builder. Do not switch to Docker Hub, request a Docker Hub token, or bypass the one-command workflow with an ad hoc push.
+- A resource increase renders correctly but the rollout is blocked with `DimensionExhausted: memory`: inspect all existing allocations on the pinned node and account for old/new overlap during rolling placement. `limits.memory` maps to `MemoryMaxMB`, which is ineffective without Nomad memory oversubscription; verify the live cgroup/container limit before diagnosing the application.
 
 ### Repository Import Semantics
 

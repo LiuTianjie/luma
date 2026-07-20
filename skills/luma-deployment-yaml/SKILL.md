@@ -1,6 +1,6 @@
 ---
 name: luma-deployment-yaml
-description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, repository import/build from GitHub or Gitea, builder nodes, in-cluster registry setup with luma registry serve, Docker/buildx/NO_PROXY issues, region/exposure choices, storageClass volumes, private registry credentials, service removal, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
+description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, local build/upload/deploy, repository import/build from GitHub or Gitea, builder nodes, in-cluster registry setup with luma registry serve, Docker/buildx/NO_PROXY issues, region/exposure choices, storageClass volumes, private registry credentials, service removal, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
 ---
 
 # Luma Deployment YAML
@@ -16,7 +16,7 @@ Compose files stay standard for local development. Put Luma-specific deployment 
 
 For complete field tables and examples, read `references/manifest-reference.md`.
 
-For repository import, builder registry setup, or registry pull/proxy failures, read the "Builder Registry And Repository Import" section in `references/manifest-reference.md`.
+For local build/upload/deploy, repository import, builder registry setup, or registry pull/proxy failures, read the "Builder Registry And Repository Import" section in `references/manifest-reference.md`.
 
 ## Token Vocabulary
 
@@ -29,6 +29,7 @@ For repository import, builder registry setup, or registry pull/proxy failures, 
 1. Choose the deployment path:
    - Use single-service YAML for one container or a simple service.
    - Use Compose when the app has multiple services, existing Compose config, dependencies, shared networks, or named volumes across services.
+   - Use `luma build local` when source must be built on the caller's machine, uploaded to Builder Registry, and deployed in one CLI transaction. Do not substitute Repository Import, SSH, or an ad hoc `docker push` sequence.
 2. Identify the service access pattern:
    - China public HTTPS: `region: cn`, `exposure: cn-edge`
    - Global public HTTPS: `region: global`, `exposure: external-edge`
@@ -42,6 +43,22 @@ For repository import, builder registry setup, or registry pull/proxy failures, 
 5. Use `${ENV_NAME}` for secrets; never put secret values in YAML. If the project has a `.env`, recommend `luma deploy service.yaml --env .env`, `luma compose deploy luma.compose.yml --env .env`, or `luma import ... --env .env` so Luma stores referenced variables under the application/stack scope.
 6. For private images, do not put registry tokens in YAML or container env. Use `luma registry login <host> --username <user> --password-stdin`.
 7. Recommend targeted validation and dry runs, not live deploys, unless the user explicitly asks to deploy.
+
+## Local Build Upload And Deploy
+
+- `luma build local .` builds with Docker on the caller's machine. It does not ask the remote Builder node to build the project. After the local build, Luma pushes the image to the configured Builder Registry and completes the normal deployment in the same command.
+- Local Build and Repository Import are two build lanes for the same project. Project identity comes from the Git `origin` plus the deployment manifest/Compose stack name; Control reserves the same internal repository namespace. Do not invent a second service, stack, or registry repository for the local lane.
+- The deployed image must use the immutable `local-<build-id>` tag returned by Control under the project's fixed internal repository. `latest` is only a rolling alias.
+- Resolve the build platform from the live deployment target node or region. An explicit `--platform` must cover that target architecture; it must never make an incompatible image authoritative. For a pinned `linux/amd64` target, the normal command is:
+
+```bash
+luma build local . --platform linux/amd64
+```
+
+- For Compose, keep `build:` in the repository Compose file. Local Build replaces it with the pushed internal `image:` only in the deployment payload; it does not rewrite the repository Compose source.
+- The default path must use Luma's managed docker-container Buildx builder because Builder Registry may intentionally use HTTP over Tailscale. Reusing the current Docker-context `docker` driver can upgrade the push to HTTPS and fail with `server gave HTTP response to HTTPS client`. Use Luma 0.1.271 or newer; an explicit `--builder` is only valid when that builder is already compatible with the internal Registry transport.
+- First deployment may pass `--env <file>` to save only referenced scoped secrets. Later local builds reuse the same service/stack secret scope unless the user explicitly supplies replacements.
+- Keep the entire build, upload, and deploy flow inside `luma build local`. If the command exposes an infrastructure gap, fix Luma's workflow rather than finishing with SSH or unrelated registry commands.
 
 ## Single-Service Rules
 
@@ -149,9 +166,18 @@ luma storage set company-nfs \
 - A sidecar volume can reference registered storage with `storageClass: <name>` and optional `path`, `accessMode`, `adopted`, or `initialize: empty`.
 - `local.node` is the explicit local bind storage escape hatch. Luma pins every service using that volume to the specified Luma node.
 - Bare Compose named volumes are allowed but unmanaged; pin stateful services to the node that owns the local data.
-- Switching an already deployed volume to another backend is blocked unless `adopted: true` follows verified migration, or `initialize: empty` explicitly accepts a fresh path.
+- When production data already lives in a node-local Docker volume, declare the Compose volume `external: true` with its exact `name:` and pin every consumer to that Luma node. This prevents Compose from silently creating a project-prefixed empty replacement.
+- Before updating a stateful stack, compare the live Nomad task mounts and job history with the next rendered job. Do not infer the previous runtime backend only from the current repository manifest or deployment record.
+- Switching an already deployed volume to another backend or changing the actual Nomad mount `type`, `source`, or `target` is blocked unless `adopted: true` follows verified migration, or `initialize: empty` explicitly accepts a fresh path.
+- Never substitute a developer-machine database for an existing online volume unless the user explicitly requests and verifies a migration. Recover the prior online mount first when data appears empty after an update.
 - Managed cross-region NFS requires the storage node to have a `tailscaleIP`; otherwise validation/render/deploy should block.
 - If one top-level Compose volume is used by services in different regions and managed storage would resolve to different endpoints, split it into separate region-specific volume names.
+
+## Runtime Resources And OOM
+
+- Luma maps Compose/Nomad memory reservations to `MemoryMB` and limits to `MemoryMaxMB`. Nomad honors `MemoryMaxMB` only when memory oversubscription is enabled; otherwise the reservation can remain the effective container hard limit. Verify the rendered job and live container limit before claiming that a larger `limits.memory` fixed an OOM.
+- A rolling update on a pinned node may need capacity for both the old and new allocations. Before increasing reservations, inspect live node allocations and the failed evaluation's `DimensionExhausted`; a host with free physical memory can still be fully reserved and reject placement.
+- Do not disable a worker, scheduler, scraper, or other application feature as a memory workaround unless the user explicitly requests that product change. Preserve the requested topology and address the query peak, reservation, node capacity, placement policy, or host size.
 
 ## Templates
 
