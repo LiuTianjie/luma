@@ -225,7 +225,7 @@ class LocalBuildWorkflowTests(unittest.TestCase):
         self.assertFalse(build.call_args.kwargs["allow_repo_overrides"])
         self.assertEqual(build.call_args.kwargs["buildx_builder"], "")
 
-    def test_local_single_platform_compose_can_reuse_existing_builder(self):
+    def test_local_single_platform_compose_uses_managed_builder_by_default(self):
         project = self.root / "single-platform"
         project.mkdir()
         (project / "luma.compose.yml").write_text(
@@ -239,9 +239,35 @@ class LocalBuildWorkflowTests(unittest.TestCase):
             "luma.local_build._docker_buildx_available", return_value=True
         ), patch(
             "luma.local_build._build_compose_images", return_value={"kind": "compose"}
-        ) as build, patch(
-            "luma.local_build._current_docker_context_builder", return_value="desktop-linux"
-        ):
+        ) as build:
+            build_and_push_local_source(
+                project,
+                registry_host="registry",
+                repository="acme/app",
+                tag="local-run",
+                platform="linux/amd64",
+                proxy="http://host.docker.internal:7890",
+            )
+        self.assertEqual(build.call_args.kwargs["buildx_builder"], "")
+        self.assertEqual(
+            build.call_args.kwargs["proxy"], "http://host.docker.internal:7890"
+        )
+
+    def test_local_single_platform_compose_honors_explicit_builder(self):
+        project = self.root / "explicit-builder"
+        project.mkdir()
+        (project / "luma.compose.yml").write_text(
+            "name: app\ncompose: docker-compose.yml\nregion: cn\nservices:\n  web: {}\n",
+            encoding="utf-8",
+        )
+        (project / "docker-compose.yml").write_text(
+            "services:\n  web:\n    build: .\n", encoding="utf-8"
+        )
+        with patch("luma.local_build._docker_binary", return_value="docker"), patch(
+            "luma.local_build._docker_buildx_available", return_value=True
+        ), patch(
+            "luma.local_build._build_compose_images", return_value={"kind": "compose"}
+        ) as build:
             build_and_push_local_source(
                 project,
                 registry_host="registry",
@@ -249,12 +275,8 @@ class LocalBuildWorkflowTests(unittest.TestCase):
                 tag="local-run",
                 platform="linux/amd64",
                 builder="desktop-linux",
-                proxy="http://host.docker.internal:7890",
             )
         self.assertEqual(build.call_args.kwargs["buildx_builder"], "desktop-linux")
-        self.assertEqual(
-            build.call_args.kwargs["proxy"], "http://host.docker.internal:7890"
-        )
 
     def test_local_service_upload_deploys_under_reserved_project(self):
         prepared = handle_local_build_prepare(

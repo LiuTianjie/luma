@@ -208,11 +208,14 @@ def build_and_push_local_source(
             local_env = _buildx_environment(
                 docker_config, buildx_config_root=user_buildx_root
             )
-            local_builder = selected_builder or (
-                _current_docker_context_builder(docker, env=local_env)
-                if platform and "," not in platform
-                else ""
-            )
+            # The default Docker-context builder commonly uses the ``docker``
+            # driver. Its image exporter delegates pushes to the host daemon,
+            # which may upgrade Luma's tailnet HTTP registry to HTTPS even
+            # though BuildKit received ``registry.insecure=true``. Let the
+            # compose builder path create Luma's managed docker-container
+            # builder (with an explicit HTTP registry stanza) unless the user
+            # deliberately selected a compatible builder.
+            local_builder = selected_builder
             return _build_compose_images(
                 src=root,
                 sidecar_path=deployment_manifest[1],
@@ -248,16 +251,12 @@ def build_and_push_local_source(
         buildx_env = _buildx_environment(
             docker_config, buildx_config_root=user_buildx_root
         )
-        builder = selected_builder or (
-            _current_docker_context_builder(docker, env=buildx_env)
-            if "," not in build_platform
-            else _ensure_buildx_builder(
-                docker,
-                proxy=local_proxy,
-                no_proxy=f"localhost,127.0.0.1,::1,{registry_host}",
-                registry_host=registry_host,
-                env=buildx_env,
-            )
+        builder = selected_builder or _ensure_buildx_builder(
+            docker,
+            proxy=local_proxy,
+            no_proxy=f"localhost,127.0.0.1,::1,{registry_host}",
+            registry_host=registry_host,
+            env=buildx_env,
         )
         image = _docker_buildx_build(
             docker=docker,
