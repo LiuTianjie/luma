@@ -1,5 +1,6 @@
 import base64
 import errno
+import gzip
 import io
 import json
 import os
@@ -1675,9 +1676,14 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIsNone(_parse_kernel_version(""))
 
     def test_packaged_dashboard_assets_are_available(self):
-        self.assertIn("Luma · 控制台", asset_text("dashboard/index.html"))
-        self.assertIn("/v1/dashboard", asset_text("dashboard/app.js"))
-        self.assertGreater(asset_path("dashboard/asset-luma-logo-mark.png").stat().st_size, 0)
+        index_html = asset_text("dashboard/index.html")
+        self.assertIn("Luma · 控制台", index_html)
+        scripts = re.findall(r'<script[^>]+src="/dashboard/([^\"]+\.js)"', index_html)
+        self.assertTrue(scripts)
+        self.assertIn("/v1/dashboard", asset_text(f"dashboard/{scripts[0]}"))
+        images = list(asset_path("dashboard").glob("*.png"))
+        self.assertTrue(images)
+        self.assertGreater(images[0].stat().st_size, 0)
         root = Path(__file__).resolve().parents[1]
         self.assertIn('"assets/dashboard/*"', (root / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -9618,11 +9624,22 @@ class ControlApiTests(unittest.TestCase):
         try:
             with urllib.request.urlopen(base + "/dashboard/", timeout=5) as response:
                 self.assertEqual(response.status, 200)
-                self.assertIn("Luma · 控制台".encode("utf-8"), response.read())
-            with urllib.request.urlopen(base + "/dashboard/app.js", timeout=5) as response:
+                index_body = response.read()
+                self.assertIn("Luma · 控制台".encode("utf-8"), index_body)
+                self.assertEqual(response.headers["Cache-Control"], "no-cache")
+            main_script = re.search(rb'<script[^>]+src="(/dashboard/[^\"]+\.js)"', index_body)
+            self.assertIsNotNone(main_script)
+            script_request = urllib.request.Request(
+                base + main_script.group(1).decode("utf-8"),
+                headers={"Accept-Encoding": "gzip"},
+            )
+            with urllib.request.urlopen(script_request, timeout=5) as response:
                 self.assertEqual(response.status, 200)
-                self.assertIn(b"/v1/dashboard", response.read())
-            with urllib.request.urlopen(base + "/dashboard/asset-luma-logo-mark.png", timeout=5) as response:
+                self.assertEqual(response.headers["Content-Encoding"], "gzip")
+                self.assertEqual(response.headers["Cache-Control"], "public, max-age=31536000, immutable")
+                self.assertIn(b"/v1/dashboard", gzip.decompress(response.read()))
+            image_name = next(asset_path("dashboard").glob("*.png")).name
+            with urllib.request.urlopen(base + f"/dashboard/{image_name}", timeout=5) as response:
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers.get_content_type(), "image/png")
                 self.assertGreater(len(response.read()), 0)
@@ -9675,6 +9692,14 @@ class ControlApiTests(unittest.TestCase):
                     response = client.get("/dashboard/")
                     self.assertEqual(response.status_code, 200)
                     self.assertIn("Luma · 控制台", response.text)
+                    self.assertEqual(response.headers["cache-control"], "no-cache")
+                    main_script = re.search(r'<script[^>]+src="(/dashboard/[^\"]+\.js)"', response.text)
+                    self.assertIsNotNone(main_script)
+                    main_asset = client.get(main_script.group(1), headers={"Accept-Encoding": "gzip"})
+                    self.assertEqual(main_asset.status_code, 200)
+                    self.assertEqual(main_asset.headers["content-encoding"], "gzip")
+                    self.assertEqual(main_asset.headers["cache-control"], "public, max-age=31536000, immutable")
+                    self.assertIn("/v1/dashboard", main_asset.text)
                     # A deep client-side route falls back to index.html (SPA routing).
                     deep = client.get("/dashboard/apps/granary/logs")
                     self.assertEqual(deep.status_code, 200)

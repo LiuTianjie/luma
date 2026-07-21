@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { ErrorBanner } from "./components/ErrorBanner";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
 import { LoginPanel } from "./components/LoginPanel";
-import { TerminalDrawer } from "./components/TerminalDrawer";
 import { Topbar } from "./components/Topbar";
 import { AppRoutes } from "./AppRoutes";
 import { Sidebar } from "./Sidebar";
@@ -17,6 +16,8 @@ import { t } from "./i18n";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
 import { useDashboardData } from "./useDashboardData";
 import { useTheme } from "./useTheme";
+
+const TerminalDrawer = lazy(() => import("./components/TerminalDrawer").then((module) => ({ default: module.TerminalDrawer })));
 
 const LANG_KEY = "luma.dashboard.lang";
 const SIDEBAR_KEY = "luma.dashboard.sidebar";
@@ -187,7 +188,9 @@ export function App() {
 
       <DetailDrawer lang={lang} detail={detail} onClose={() => setDetail(null)} />
       {terminalNode ? (
-        <TerminalDrawer lang={lang} node={terminalNode} token={token} onClose={() => setTerminalNode(null)} />
+        <Suspense fallback={null}>
+          <TerminalDrawer lang={lang} node={terminalNode} token={token} onClose={() => setTerminalNode(null)} />
+        </Suspense>
       ) : null}
     </div>
   );

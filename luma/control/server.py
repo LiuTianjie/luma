@@ -7,11 +7,13 @@ import concurrent.futures
 import copy
 import errno
 import functools
+import gzip
 import hashlib
 import hmac
 import http.client
 import json
 import math
+import mimetypes
 import os
 import re
 import secrets
@@ -16136,12 +16138,9 @@ def _has_registry(image: str) -> bool:
     return "." in first or ":" in first or first == "localhost"
 
 
-DASHBOARD_ASSETS = {
-    "/dashboard/": ("dashboard/index.html", "text/html; charset=utf-8"),
-    "/dashboard/app.js": ("dashboard/app.js", "application/javascript; charset=utf-8"),
-    "/dashboard/styles.css": ("dashboard/styles.css", "text/css; charset=utf-8"),
-    "/dashboard/asset-luma-logo-mark.png": ("dashboard/asset-luma-logo-mark.png", "image/png"),
-}
+DASHBOARD_INDEX_ASSET = "dashboard/index.html"
+DASHBOARD_IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+DASHBOARD_DOCUMENT_CACHE_CONTROL = "no-cache"
 
 
 # Any path whose last segment has a file extension is treated as a static asset:
@@ -16152,20 +16151,84 @@ def _dashboard_path_looks_like_asset(path: str) -> bool:
     return "." in last_segment
 
 
-def _dashboard_asset(path: str) -> tuple[bytes, str]:
-    entry = DASHBOARD_ASSETS.get(path)
-    if entry is not None:
-        relative_path, content_type = entry
-        return asset_path(relative_path).read_bytes(), content_type
-    # A request that looks like a static asset (has a file extension) but is not in the
-    # allowlist is a genuine miss -> let the caller 404 (do not return HTML for it).
-    if _dashboard_path_looks_like_asset(path):
+def _dashboard_content_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".js":
+        return "application/javascript; charset=utf-8"
+    if suffix == ".css":
+        return "text/css; charset=utf-8"
+    if suffix in {".html", ".htm"}:
+        return "text/html; charset=utf-8"
+    if suffix == ".json" or suffix == ".map":
+        return "application/json; charset=utf-8"
+    guessed, _encoding = mimetypes.guess_type(path.name)
+    return guessed or "application/octet-stream"
+
+
+def _dashboard_asset_path(path: str) -> Path:
+    if not path.startswith("/dashboard/"):
         raise LumaError("dashboard asset not found")
+    relative_path = urllib.parse.unquote(path.removeprefix("/dashboard/"))
+    dashboard_root = asset_path("dashboard").resolve()
+    candidate = (dashboard_root / relative_path).resolve()
+    try:
+        candidate.relative_to(dashboard_root)
+    except ValueError as exc:
+        raise LumaError("dashboard asset not found") from exc
+    if not candidate.is_file():
+        raise LumaError("dashboard asset not found")
+    return candidate
+
+
+def _dashboard_asset(path: str) -> tuple[bytes, str]:
+    # A request that looks like a static asset (has a file extension) but is not in the
+    # generated dashboard directory is a genuine miss -> never return HTML for it.
+    if _dashboard_path_looks_like_asset(path):
+        candidate = _dashboard_asset_path(path)
+        return candidate.read_bytes(), _dashboard_content_type(candidate)
     # Otherwise this is a client-side route (e.g. /dashboard/apps/foo) served by the SPA
     # router -> fall back to index.html. index.html references assets with absolute
-    # /dashboard/* URLs, so deep routes still load app.js/styles.css correctly.
-    relative_path, content_type = DASHBOARD_ASSETS["/dashboard/"]
-    return asset_path(relative_path).read_bytes(), content_type
+    # /dashboard/* URLs, so deep routes still load the hashed JS/CSS files correctly.
+    return asset_path(DASHBOARD_INDEX_ASSET).read_bytes(), "text/html; charset=utf-8"
+
+
+def _dashboard_cache_control(path: str) -> str:
+    if not _dashboard_path_looks_like_asset(path):
+        return DASHBOARD_DOCUMENT_CACHE_CONTROL
+    filename = urllib.parse.unquote(path.rsplit("/", 1)[-1])
+    if re.search(r"-[A-Za-z0-9_-]{8,}\.", filename):
+        return DASHBOARD_IMMUTABLE_CACHE_CONTROL
+    return DASHBOARD_DOCUMENT_CACHE_CONTROL
+
+
+def _dashboard_encode(body: bytes, content_type: str, accept_encoding: str) -> tuple[bytes, Dict[str, str]]:
+    compressible = (
+        content_type.startswith("text/")
+        or content_type.startswith("application/javascript")
+        or content_type.startswith("application/json")
+        or content_type.startswith("image/svg+xml")
+    )
+    if not compressible or len(body) < 500:
+        return body, {}
+    headers = {"Vary": "Accept-Encoding"}
+    accepts_gzip = False
+    for item in accept_encoding.split(","):
+        parts = [part.strip().lower() for part in item.split(";")]
+        if not parts or parts[0] not in {"gzip", "*"}:
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            if parameter.startswith("q="):
+                try:
+                    quality = float(parameter.removeprefix("q="))
+                except ValueError:
+                    quality = 0.0
+        if quality > 0:
+            accepts_gzip = True
+            break
+    if accepts_gzip:
+        return gzip.compress(body, compresslevel=6), {**headers, "Content-Encoding": "gzip"}
+    return body, headers
 
 
 def _request_id() -> str:
@@ -16468,8 +16531,14 @@ class ControlHandler(BaseHTTPRequestHandler):
         if parsed_path.startswith("/dashboard/"):
             try:
                 body, content_type = _dashboard_asset(parsed_path)
-                cache_control = "no-store"
-                self._bytes(200, body, content_type, cache_control=cache_control)
+                body, response_headers = _dashboard_encode(body, content_type, self.headers.get("Accept-Encoding", ""))
+                self._bytes(
+                    200,
+                    body,
+                    content_type,
+                    cache_control=_dashboard_cache_control(parsed_path),
+                    headers=response_headers,
+                )
             except (LumaError, OSError):
                 self._json(404, {"error": "not found"})
             return
@@ -17308,11 +17377,21 @@ class ControlHandler(BaseHTTPRequestHandler):
             print(f"requestId={request_id} control API error: {exc}", file=sys.stderr, flush=True)
         self._json(status, _error_payload(code, str(exc), request_id=request_id))
 
-    def _bytes(self, status: int, body: bytes, content_type: str, *, cache_control: str = "no-store") -> None:
+    def _bytes(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        *,
+        cache_control: str = "no-store",
+        headers: Dict[str, str] | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", cache_control)
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -17344,8 +17423,14 @@ async def _asgi_dashboard_asset(request: Request) -> Response:
         return RedirectResponse("/dashboard/", status_code=308)
     try:
         body, content_type = await run_in_threadpool(_dashboard_asset, parsed_path)
-        cache_control = "no-store"
-        return Response(body, media_type=content_type, headers={"Cache-Control": cache_control})
+        body, response_headers = await run_in_threadpool(
+            _dashboard_encode,
+            body,
+            content_type,
+            request.headers.get("accept-encoding", ""),
+        )
+        response_headers["Cache-Control"] = _dashboard_cache_control(parsed_path)
+        return Response(body, media_type=content_type, headers=response_headers)
     except (LumaError, OSError):
         return _json_response(404, {"error": "not found"})
 

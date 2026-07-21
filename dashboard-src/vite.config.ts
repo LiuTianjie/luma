@@ -628,18 +628,16 @@ export default defineConfig({
     },
   ],
   build: {
-    chunkSizeWarningLimit: 900,
+    chunkSizeWarningLimit: 600,
     outDir: "../luma/assets/dashboard",
     emptyOutDir: true,
-    cssCodeSplit: false,
+    assetsDir: ".",
+    cssCodeSplit: true,
     rollupOptions: {
       output: {
-        entryFileNames: "app.js",
-        chunkFileNames: "app.js",
-        assetFileNames: (assetInfo) => {
-          if (assetInfo.name?.endsWith(".css")) return "styles.css";
-          return "asset-[name][extname]";
-        },
+        entryFileNames: "app-[hash].js",
+        chunkFileNames: "chunk-[name]-[hash].js",
+        assetFileNames: "asset-[name]-[hash][extname]",
       },
     },
   },

@@ -1,7 +1,7 @@
 # LAE Design System — Luma Dashboard
 
 LAE directly inherits the existing Luma Dashboard visual language. The source
-of truth is `luma/assets/dashboard/styles.css`; LAE must not introduce a second
+of truth is `dashboard-src/src/styles.css`; LAE must not introduce a second
 brand system.
 
 ## Non-negotiable inheritance
