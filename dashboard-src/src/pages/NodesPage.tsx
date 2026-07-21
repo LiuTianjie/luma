@@ -84,6 +84,25 @@ export function NodesPage({
         }}
       />
 
+      <article className="panel fleet-command-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">{zh ? "加入节点" : "Join node"}</p>
+            <h2>{zh ? "在目标机器上执行" : "Run on the target host"}</h2>
+          </div>
+          <button type="button" className="ghost" onClick={() => void copyCommand()}>
+            {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
+            {copied ? (zh ? "已复制" : "Copied") : (zh ? "复制命令" : "Copy command")}
+          </button>
+        </div>
+        <pre className="command-snippet"><code>{command}</code></pre>
+        <p>
+          {zh
+            ? "控制域名已按当前访问地址填好。把 <node-join-token> 换成 luma node join token，<node-name> 换成节点名后在目标机器执行。"
+            : "The control domain is filled from the current address. Replace <node-join-token> with a node join token and <node-name> with the node name, then run it on the target host."}
+        </p>
+      </article>
+
       <SystemUpdatePanel
         lang={lang}
         token={token}
@@ -104,25 +123,6 @@ export function NodesPage({
         <TrafficPaths lang={lang} paths={vm.trafficPaths} theme={theme} token={token} onRefresh={onRefresh} />
         <NodeTopology lang={lang} nodes={vm.nodes} services={vm.services} theme={theme} />
       </div>
-
-      <article className="panel fleet-command-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">{zh ? "加入节点" : "Join node"}</p>
-            <h2>{zh ? "在目标机器上执行" : "Run on the target host"}</h2>
-          </div>
-          <button type="button" className="ghost" onClick={() => void copyCommand()}>
-            {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
-            {copied ? (zh ? "已复制" : "Copied") : (zh ? "复制命令" : "Copy command")}
-          </button>
-        </div>
-        <pre className="command-snippet"><code>{command}</code></pre>
-        <p>
-          {zh
-            ? "控制域名已按当前访问地址填好。把 <node-join-token> 换成 luma node join token，<node-name> 换成节点名后在目标机器执行。"
-            : "The control domain is filled from the current address. Replace <node-join-token> with a node join token and <node-name> with the node name, then run it on the target host."}
-        </p>
-      </article>
     </>
   );
 }
