@@ -69,8 +69,10 @@ class LocalExecutor:
         password = os.environ.get("LUMA_SUDO_PASSWORD")
         quoted = shlex.quote(command)
         if password:
+            # Keep the sudo prompt empty so it cannot leak into stdout when
+            # callers capture command output (for example base64-encoded files).
             return self.run_result(
-                f"printf '%s\\n' {shlex.quote(password)} | sudo -S bash -lc {quoted}",
+                f"printf '%s\\n' {shlex.quote(password)} | sudo -S -p '' bash -lc {quoted}",
                 timeout=timeout,
             )
         return self.run_result(f"sudo -n bash -lc {quoted}", timeout=timeout)
