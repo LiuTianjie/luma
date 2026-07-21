@@ -39,7 +39,7 @@ export function BuilderPage({
           ],
         }}
       />
-      <section className="builder-page" id="section-6">
+      <section className="builder-page">
         <GithubImportPanel
           lang={lang}
           token={token}

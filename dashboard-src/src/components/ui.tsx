@@ -140,10 +140,13 @@ export function CodeCell({ value }: { value: string }) {
 }
 
 export function StatePill({ label, value }: { label: string; value?: string }) {
-  const kind = ["ready", "running", "healthy"].includes(value || "")
+  const normalized = (value || "").toLowerCase();
+  const kind = ["ready", "running", "healthy", "active", "succeeded", "stable", "available"].includes(normalized)
     ? "good"
-    : ["failed", "missing", "bad"].includes(value || "")
+    : ["failed", "missing", "bad", "down", "error", "failed_partial", "critical"].includes(normalized)
       ? "danger"
-      : "warn";
+      : ["pending", "degraded", "drain", "draining", "warning", "starting", "deploying", "unknown", ""].includes(normalized)
+        ? "warn"
+        : "warn";
   return <span className={`badge ${kind}`}>{label}</span>;
 }

@@ -48,22 +48,24 @@ export function DeployPage({
 
   return (
     <>
-      {deployTemplateLanding || updating ? (
-        <PageHeader
-          meta={{
-            eyebrow: updating ? (zh ? "应用更新" : "Application update") : (zh ? "部署工作台" : "Deploy workspace"),
-            title,
-            description: updating
-              ? (zh ? "沿用当前应用配置作为起点，提交时按同名应用更新。" : "Start from current configuration and update the same application.")
+      <PageHeader
+        meta={{
+          eyebrow: updating ? (zh ? "应用更新" : "Application update") : (zh ? "部署工作台" : "Deploy workspace"),
+          title: !deployTemplateLanding && !updating
+            ? (zh ? "配置并部署" : "Configure and deploy")
+            : title,
+          description: updating
+            ? (zh ? "沿用当前应用配置作为起点，提交时按同名应用更新。" : "Start from current configuration and update the same application.")
+            : !deployTemplateLanding
+              ? (zh ? "表单与 YAML 同步；校验通过后再部署。" : "Form and YAML stay in sync. Validate, then deploy.")
               : (zh ? "模板、表单和 YAML 收敛在一个流程内，先校验再部署。" : "Templates, forms, and YAML stay in one flow with validation before deploy."),
-            metrics: [
-              { label: zh ? "单服务" : "Service", value: vm.deployServiceTemplates },
-              { label: "Compose", value: vm.deployComposeTemplates },
-              { label: "storageClass", value: vm.storageClasses.length },
-            ],
-          }}
-        />
-      ) : null}
+          metrics: [
+            { label: zh ? "单服务" : "Service", value: vm.deployServiceTemplates },
+            { label: "Compose", value: vm.deployComposeTemplates },
+            { label: "storageClass", value: vm.storageClasses.length },
+          ],
+        }}
+      />
       <DeployWorkspace
         lang={lang}
         token={token}

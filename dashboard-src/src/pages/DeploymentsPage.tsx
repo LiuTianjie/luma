@@ -227,7 +227,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
             </button>
           ))}
         </div>
-        {error ? <div className="storage-warnings"><span>{error}</span></div> : null}
+        {error ? <div className="alert alert-error"><span>{error}</span></div> : null}
         {visible.length ? (
           <ol className="deployments-timeline">
             {visible.map((item) => (

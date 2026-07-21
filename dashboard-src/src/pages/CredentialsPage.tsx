@@ -317,17 +317,17 @@ export function CredentialsPage({
       />
 
       {state.error ? (
-        <div className="storage-warnings credentials-warning">
+        <div className="alert alert-error">
           <span>{state.error}</span>
         </div>
       ) : null}
       {notice ? (
-        <div className="storage-warnings credentials-notice">
+        <div className="alert alert-success">
           <span>{notice}</span>
         </div>
       ) : null}
       {writeError ? (
-        <div className="storage-warnings credentials-warning">
+        <div className="alert alert-error">
           <span>{writeError}</span>
         </div>
       ) : null}

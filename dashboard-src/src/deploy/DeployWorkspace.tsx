@@ -437,7 +437,7 @@ export function DeployWorkspace({
   };
 
   return (
-    <section className={`deploy-workspace-panel ${modalTitle ? "modal-deploy-workspace" : ""}`} id="section-6">
+    <section className={`deploy-workspace-panel ${modalTitle ? "modal-deploy-workspace" : ""}`}>
       {importView ? (
         <GithubImportPanel
           lang={lang}
@@ -550,7 +550,7 @@ export function DeployWorkspace({
               <ListChecks size={16} aria-hidden="true" />
               {status === "previewing" ? (lang === "zh" ? "校验中..." : "Validating...") : (lang === "zh" ? "校验" : "Validate")}
             </button>
-            <button type="button" disabled={status !== "idle" || validationErrors.length > 0} onClick={() => void runDeploy()}>
+            <button type="button" className="primary" disabled={status !== "idle" || validationErrors.length > 0} onClick={() => void runDeploy()}>
               <Rocket size={16} aria-hidden="true" />
               {status === "deploying" ? (lang === "zh" ? "部署中..." : "Deploying...") : (lang === "zh" ? "部署" : "Deploy")}
             </button>

@@ -47,7 +47,7 @@ export function ApplicationsPage({
             { label: zh ? "失败" : "Failed", value: failed },
           ],
           action: (
-            <button type="button" className="page-toolbar-cta" onClick={onCreateApplication}>
+            <button type="button" className="primary page-toolbar-cta" onClick={onCreateApplication}>
               <Plus size={16} aria-hidden="true" />
               {t(lang, "createApplication")}
             </button>

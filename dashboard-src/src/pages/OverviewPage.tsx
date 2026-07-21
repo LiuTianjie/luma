@@ -6,6 +6,7 @@ import type { Application } from "../components/applicationModel";
 import type { DashboardIssue, DashboardNode, DashboardPayload, Lang } from "../types";
 import type { DashboardViewModel, NavPage } from "../dashboardViewModel";
 import { issueKey, useDismissedIssues } from "../useDismissedIssues";
+import { PageHeader } from "./PageHeader";
 
 function accessHref(domain: string) {
   return domain.startsWith("http://") || domain.startsWith("https://") ? domain : `https://${domain}`;
@@ -40,6 +41,13 @@ function percent(value?: number) {
 function boundedPercent(value?: number) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
   return Math.min(100, Math.max(0, value));
+}
+
+function pressureClass(value?: number) {
+  const n = boundedPercent(value);
+  if (n >= 85) return "pressure-high";
+  if (n >= 70) return "pressure-warn";
+  return "";
 }
 
 function healthLabel(score: number, lang: Lang) {
@@ -77,33 +85,30 @@ export function OverviewPage({
 
   return (
     <>
-      <section className="ops-hero" aria-labelledby="overview-title">
-        <div className="ops-hero-copy">
-          <p className="eyebrow">{t(lang, "controlPlane")}</p>
-          <h1 id="overview-title">{zh ? "集群运行中枢" : "Cluster operations hub"}</h1>
-          <p>{zh ? "实时状态与风险总览" : "Real-time status and risk overview"}</p>
-          <button type="button" className="ops-hero-action" onClick={() => onNavigate("deploy")}>
-            <Plus size={16} aria-hidden="true" />
-            {t(lang, "createApplication")}
-          </button>
-        </div>
-        <div className="ops-hero-status">
-          <div className="ops-hero-score" aria-label={zh ? "健康分" : "Health score"}>
-            <div className="score-ring" style={{ "--score": `${vm.healthScore}%` } as CSSProperties}>
-              <strong>{vm.healthScore}</strong>
-            </div>
-            <span>
-              {zh ? "健康分" : "Health score"}
-              <b>{healthLabel(vm.healthScore, lang)}</b>
-            </span>
-          </div>
-          <div className="ops-hero-metrics">
-            <span><strong>{issueTotal}</strong><small>{zh ? "待处理" : "Open issues"}</small></span>
-            <span><strong>{vm.activeNodes}/{vm.nodes.length}</strong><small>{t(lang, "nodes")}</small></span>
-            <span><strong>{vm.applications.length}</strong><small>{t(lang, "applications")}</small></span>
-          </div>
-        </div>
-      </section>
+      <PageHeader
+        meta={{
+          variant: "ops",
+          eyebrow: t(lang, "controlPlane"),
+          title: zh ? "集群运行中枢" : "Cluster operations hub",
+          description: zh ? "实时状态与风险总览" : "Real-time status and risk overview",
+          score: {
+            value: vm.healthScore,
+            label: zh ? "健康分" : "Health score",
+            status: healthLabel(vm.healthScore, lang),
+          },
+          metrics: [
+            { label: zh ? "待处理" : "Open issues", value: issueTotal },
+            { label: t(lang, "nodes"), value: `${vm.activeNodes}/${vm.nodes.length}` },
+            { label: t(lang, "applications"), value: vm.applications.length },
+          ],
+          action: (
+            <button type="button" className="primary page-toolbar-cta" onClick={() => onNavigate("deploy")}>
+              <Plus size={16} aria-hidden="true" />
+              {t(lang, "createApplication")}
+            </button>
+          ),
+        }}
+      />
 
       <section className="platform-strip" aria-label={zh ? "平台组件状态" : "Platform components"}>
         <span className="platform-strip-title">{zh ? "平台组件" : "Platform"}</span>
@@ -198,7 +203,7 @@ export function OverviewPage({
               </div>
             </div>
             <div className="risk-queue-list">
-              {visibleIssues.length ? visibleIssues.slice(0, 5).map((issue, index) => {
+              {visibleIssues.length ? visibleIssues.slice(0, 5).map((issue) => {
                 const key = issueKey(issue);
                 return (
                   <div className={`risk-queue-row ${issue.severity || "info"}`} key={key}>
@@ -207,7 +212,6 @@ export function OverviewPage({
                       <strong>{issue.message || "-"}</strong>
                       <small>{severityLabel(issue, lang)} · {[issue.kind, issue.target].filter(Boolean).join(" / ") || "-"}</small>
                     </div>
-                    <em>{index ? `${index * 5 + 2}m` : "now"}</em>
                     <button
                       type="button"
                       className="risk-queue-dismiss"
@@ -242,25 +246,29 @@ export function OverviewPage({
               </button>
             </div>
             <div className="overview-node-grid">
-              {nodeCards.map((node) => (
-                <button className="overview-node-card" type="button" key={node.name || "-"} onClick={() => onSelectNode(node)}>
-                  <span className="overview-node-title"><i aria-hidden="true" />{node.name || "-"}</span>
-                  <small>{[node.role, node.region].filter(Boolean).join(" / ") || "-"}</small>
-                  <div className="overview-node-metrics">
-                    <span>
-                      <em>CPU</em>
-                      <b>{percent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}</b>
-                      <i style={{ width: `${boundedPercent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}%` }} aria-hidden="true" />
-                    </span>
-                    <span>
-                      <em>MEM</em>
-                      <b>{percent(node.metrics?.memoryUsedPercent)}</b>
-                      <i style={{ width: `${boundedPercent(node.metrics?.memoryUsedPercent)}%` }} aria-hidden="true" />
-                    </span>
-                  </div>
-                  <StatePill label={localizeState(lang, node.state)} value={node.state} />
-                </button>
-              ))}
+              {nodeCards.map((node) => {
+                const cpu = node.metrics?.cpuPercent ?? node.metrics?.loadPercent;
+                const mem = node.metrics?.memoryUsedPercent;
+                return (
+                  <button className="overview-node-card" type="button" key={node.name || "-"} onClick={() => onSelectNode(node)}>
+                    <span className="overview-node-title"><i aria-hidden="true" />{node.name || "-"}</span>
+                    <small>{[node.role, node.region].filter(Boolean).join(" / ") || "-"}</small>
+                    <div className="overview-node-metrics">
+                      <span>
+                        <em>CPU</em>
+                        <b>{percent(cpu)}</b>
+                        <i className={pressureClass(cpu)} style={{ width: `${boundedPercent(cpu)}%` } as CSSProperties} aria-hidden="true" />
+                      </span>
+                      <span>
+                        <em>MEM</em>
+                        <b>{percent(mem)}</b>
+                        <i className={pressureClass(mem)} style={{ width: `${boundedPercent(mem)}%` } as CSSProperties} aria-hidden="true" />
+                      </span>
+                    </div>
+                    <StatePill label={localizeState(lang, node.state)} value={node.state} />
+                  </button>
+                );
+              })}
             </div>
           </article>
         </aside>

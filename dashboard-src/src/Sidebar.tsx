@@ -52,12 +52,14 @@ export function Sidebar({
             {group.label ? <p className="nav-section">{group.label}</p> : null}
             {group.items.map((item) => {
               const Icon = item.icon;
+              const showValue = typeof item.value === "number";
+              const tip = sidebarCollapsed ? `${item.label} — ${item.detail}` : item.detail;
               return (
                 <button
                   className={activeNavPage === item.id ? "nav-item active" : "nav-item"}
                   type="button"
                   key={item.id}
-                  title={sidebarCollapsed ? item.label : undefined}
+                  title={tip}
                   onClick={() => onNavigate(item.id)}
                 >
                   <Icon size={16} aria-hidden="true" />
@@ -65,7 +67,7 @@ export function Sidebar({
                     <b>{item.label}</b>
                     <small>{item.detail}</small>
                   </span>
-                  <strong>{item.value}</strong>
+                  {showValue ? <strong>{item.value}</strong> : null}
                 </button>
               );
             })}

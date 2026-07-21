@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { FileText, History, Loader2, Pencil, RotateCw, Search, Settings2 } from "lucide-react";
+import { FileText, History, Loader2, MoreHorizontal, Pencil, RotateCw, Search, Settings2 } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
 import { fetchServiceHistory, restartApplication, rollbackService, updateApplicationStream } from "../lifecycleApi";
@@ -101,6 +101,8 @@ export function ApplicationManagementPanel({
   const [rollbackState, setRollbackState] = useState<RollbackState | null>(null);
   const [logsTarget, setLogsTarget] = useState<LogsTarget | null>(null);
   const [filters, setFilters] = useState<ApplicationFilterState>({ query: "", status: "all", region: "all" });
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const statusOptions = useMemo(() => [...new Set(applications.map((app) => app.status).filter(Boolean))].sort(), [applications]);
   const regionOptions = useMemo(() => [...new Set(applications.flatMap((app) => app.regions).filter(Boolean))].sort(), [applications]);
   const filteredApplications = useMemo(() => {
@@ -117,6 +119,22 @@ export function ApplicationManagementPanel({
       return matchesStatus && matchesRegion && (!query || haystack.includes(query));
     });
   }, [applications, filters]);
+
+  useEffect(() => {
+    if (!openMenu) return;
+    const close = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setOpenMenu(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenMenu(null);
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [openMenu]);
 
   const restart = async (app: Application) => {
     setActionError("");
@@ -308,8 +326,8 @@ export function ApplicationManagementPanel({
           <div className="application-detail-actions">
             <button type="button" className="ghost" disabled={Boolean(selectedRollback?.loading || selectedRollbackBusy)} onClick={() => void openVersions(selected)}>{selectedRollback?.loading ? t(lang, "loadingHistory") : t(lang, "versions")}</button>
             <button type="button" className="ghost" disabled={Boolean(configBusy)} onClick={() => void openConfig(selected)}>{configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "viewConfig")}</button>
-            <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(selected)}>{actionBusy === selected.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
-            <button type="button" disabled={Boolean(configBusy || updatingApp)} onClick={() => void openUpdate(selected)}>
+            <button type="button" className="ghost danger" disabled={Boolean(actionBusy)} onClick={() => void restart(selected)}>{actionBusy === selected.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
+            <button type="button" className="primary" disabled={Boolean(configBusy || updatingApp)} onClick={() => void openUpdate(selected)}>
               {updatingApp === selected.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
             </button>
             <button type="button" className="icon-button" onClick={() => setSelected(null)}>{t(lang, "close")}</button>
@@ -338,7 +356,7 @@ export function ApplicationManagementPanel({
                 <button type="button" className="ghost" disabled={selectedRollback.loading || selectedRollback.busyVersion !== null} onClick={() => void loadVersions(selected)}>{selectedRollback.loading ? t(lang, "loadingHistory") : t(lang, "refresh")}</button>
               </div>
               {selectedRollback.message ? <div className="rollback-message">{selectedRollback.message}</div> : null}
-              {selectedRollback.error ? <div className="storage-warnings"><span>{selectedRollback.error}</span></div> : null}
+              {selectedRollback.error ? <div className="alert alert-error"><span>{selectedRollback.error}</span></div> : null}
               {selectedRollback.loading ? (
                 <p className="deployment-config-empty">{t(lang, "loadingHistory")}</p>
               ) : selectedRollback.versions.length ? (
@@ -458,10 +476,100 @@ export function ApplicationManagementPanel({
     />
   ) : null;
 
+  const moreLabel = lang === "zh" ? "更多操作" : "More actions";
+
+  const renderActions = (app: Application, compact: boolean) => {
+    const hasLogs = Boolean(firstLogService(app));
+    const menuOpen = openMenu === app.stack;
+    return (
+      <div
+        className="app-action-row"
+        ref={menuOpen ? menuRef : undefined}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="ghost app-log-action"
+          disabled={!hasLogs}
+          onClick={() => openApplicationLogs(app)}
+        >
+          <FileText size={15} aria-hidden="true" />
+          {logLabel}
+        </button>
+        <button
+          type="button"
+          className="primary"
+          disabled={Boolean(configBusy || updatingApp)}
+          onClick={() => void openUpdate(app)}
+        >
+          {updatingApp === app.stack ? <Loader2 size={15} aria-hidden="true" className="spin" /> : <Pencil size={15} aria-hidden="true" />}
+          {updatingApp === app.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
+        </button>
+        {compact ? (
+          <div className="app-action-menu">
+            <button
+              type="button"
+              className="ghost app-action-menu-trigger"
+              aria-label={moreLabel}
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
+              onClick={() => setOpenMenu(menuOpen ? null : app.stack)}
+            >
+              <MoreHorizontal size={15} aria-hidden="true" />
+            </button>
+            {menuOpen ? (
+              <div className="app-action-menu-panel" role="menu">
+                <button type="button" role="menuitem" onClick={() => { setOpenMenu(null); openDetails(app); }}>
+                  <Settings2 size={14} aria-hidden="true" />
+                  {t(lang, "details")}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={rollbackState?.app === app.stack && rollbackState.loading}
+                  onClick={() => { setOpenMenu(null); void openVersions(app); }}
+                >
+                  <History size={14} aria-hidden="true" />
+                  {rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="danger"
+                  disabled={Boolean(actionBusy)}
+                  onClick={() => { setOpenMenu(null); void restart(app); }}
+                >
+                  <RotateCw size={14} aria-hidden="true" />
+                  {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            <button type="button" className="ghost" onClick={() => openDetails(app)}>
+              <Settings2 size={15} aria-hidden="true" />
+              {t(lang, "details")}
+            </button>
+            <button type="button" className="ghost" disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={() => void openVersions(app)}>
+              <History size={15} aria-hidden="true" />
+              {rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}
+            </button>
+            <button type="button" className="ghost danger" disabled={Boolean(actionBusy)} onClick={() => void restart(app)}>
+              <RotateCw size={15} aria-hidden="true" />
+              {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
+            </button>
+          </>
+        )}
+      </div>
+    );
+  };
+
   return (
     <article className="panel app-management-panel" id="section-1">
-      {actionError ? <div className="storage-warnings"><span>{actionError}</span></div> : null}
-      {actionNotice ? <div className="application-action-notice"><span>{actionNotice}</span></div> : null}
+      {actionError ? <div className="alert alert-error"><span>{actionError}</span></div> : null}
+      {actionNotice ? <div className="alert alert-success"><span>{actionNotice}</span></div> : null}
       <div className="application-filter-bar" aria-label={lang === "zh" ? "应用筛选" : "Application filters"}>
         <label className="application-search-field">
           <Search size={16} aria-hidden="true" />
@@ -515,7 +623,6 @@ export function ApplicationManagementPanel({
           <tbody>
             {filteredApplications.length ? filteredApplications.map((app) => {
               const openApp = () => openDetails(app);
-              const hasLogs = Boolean(firstLogService(app));
               return (
               <tr
                 aria-label={`${t(lang, "details")}: ${app.stack}`}
@@ -544,35 +651,7 @@ export function ApplicationManagementPanel({
                   )}
                 </td>
                 <td><Badge value={`${app.running}/${app.desired}`} /></td>
-                <td>
-                  <div className="app-action-row">
-                    <button
-                      type="button"
-                      className="ghost app-log-action"
-                      disabled={!hasLogs}
-                      onClick={(event) => { event.stopPropagation(); openApplicationLogs(app); }}
-                    >
-                      <FileText size={15} aria-hidden="true" />
-                      {logLabel}
-                    </button>
-                    <button type="button" className="ghost" onClick={(event) => { event.stopPropagation(); openDetails(app); }}>
-                      <Settings2 size={15} aria-hidden="true" />
-                      {t(lang, "details")}
-                    </button>
-                    <button type="button" className="ghost" disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={(event) => { event.stopPropagation(); void openVersions(app); }}>
-                      <History size={15} aria-hidden="true" />
-                      {rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}
-                    </button>
-                    <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={(event) => { event.stopPropagation(); void restart(app); }}>
-                      <RotateCw size={15} aria-hidden="true" />
-                      {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
-                    </button>
-                    <button type="button" disabled={Boolean(configBusy || updatingApp)} onClick={(event) => { event.stopPropagation(); void openUpdate(app); }}>
-                      {updatingApp === app.stack ? <Loader2 size={15} aria-hidden="true" className="spin" /> : <Pencil size={15} aria-hidden="true" />}
-                      {updatingApp === app.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
-                    </button>
-                  </div>
-                </td>
+                <td>{renderActions(app, true)}</td>
               </tr>
               );
             }) : (
@@ -595,26 +674,7 @@ export function ApplicationManagementPanel({
               <div><dt>{t(lang, "replicas")}</dt><dd>{app.running}/{app.desired}</dd></div>
             </dl>
             <div className="app-card-actions">
-              <button type="button" className="ghost app-log-action" disabled={!firstLogService(app)} onClick={() => openApplicationLogs(app)}>
-                <FileText size={15} aria-hidden="true" />
-                {logLabel}
-              </button>
-              <button type="button" className="ghost" onClick={() => openDetails(app)}>
-                <Settings2 size={15} aria-hidden="true" />
-                {t(lang, "details")}
-              </button>
-              <button type="button" className="ghost" disabled={rollbackState?.app === app.stack && rollbackState.loading} onClick={() => void openVersions(app)}>
-                <History size={15} aria-hidden="true" />
-                {rollbackState?.app === app.stack && rollbackState.loading ? t(lang, "loadingHistory") : t(lang, "versions")}
-              </button>
-              <button type="button" className="ghost" disabled={Boolean(actionBusy)} onClick={() => void restart(app)}>
-                <RotateCw size={15} aria-hidden="true" />
-                {actionBusy === app.stack ? t(lang, "restarting") : t(lang, "restart")}
-              </button>
-              <button type="button" disabled={Boolean(configBusy || updatingApp)} onClick={() => void openUpdate(app)}>
-                {updatingApp === app.stack ? <Loader2 size={15} aria-hidden="true" className="spin" /> : <Pencil size={15} aria-hidden="true" />}
-                {updatingApp === app.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === app.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
-              </button>
+              {renderActions(app, false)}
             </div>
           </article>
         )) : <div className="empty-inline">{t(lang, "noApplications")}</div>}

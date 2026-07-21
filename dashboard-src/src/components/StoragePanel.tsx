@@ -23,7 +23,7 @@ export function StoragePanel({
         <span>{volumes.length + (storageClasses?.length || 0)}</span>
       </div>
       {warnings.length ? (
-        <div className="storage-warnings">
+        <div className="alert alert-warning">
           {warnings.map((warning) => (
             <span key={warning}>{warning}</span>
           ))}

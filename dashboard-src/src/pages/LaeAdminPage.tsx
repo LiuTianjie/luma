@@ -108,7 +108,7 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
         action: <button type="button" className="ghost page-toolbar-cta" disabled={loading} onClick={() => void load()}><RefreshCw size={15} className={loading ? "spin" : ""} />{zh ? "刷新" : "Refresh"}</button>,
       }} />
 
-      {error ? <div className="storage-warnings"><span>{error}</span></div> : null}
+      {error ? <div className="alert alert-error"><span>{error}</span></div> : null}
       <section className="panel lae-admin-panel">
         <div className="lae-admin-tabs" role="tablist" aria-label="LAE admin resources">
           {tabs.map(({ id, label, icon: Icon }) => (

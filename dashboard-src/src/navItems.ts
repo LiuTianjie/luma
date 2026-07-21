@@ -6,7 +6,8 @@ export type NavItem = {
   id: NavPage;
   icon: LucideIcon;
   label: string;
-  value: number;
+  /** Omit or null to hide the count badge (unreliable / always-zero values). */
+  value?: number | null;
   detail: string;
 };
 
@@ -23,11 +24,12 @@ export type NavGroup = {
 // config). Overview stays ungrouped at the top as the home anchor.
 export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
   const zh = lang === "zh";
+  const openIssues = vm.issueCounts.critical + vm.issueCounts.warning;
   const overview: NavItem = {
     id: "overview",
     icon: LayoutDashboard,
     label: zh ? "总览" : "Overview",
-    value: vm.issueCounts.critical + vm.issueCounts.warning || vm.healthyServices,
+    value: openIssues > 0 ? openIssues : null,
     detail: zh ? `${vm.healthyServices}/${vm.services.length} 服务正常` : `${vm.healthyServices}/${vm.services.length} services ok`,
   };
   const apps: NavItem = {
@@ -48,49 +50,49 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
     id: "observability",
     icon: Activity,
     label: zh ? "观察" : "Observe",
-    value: vm.metricNodes,
+    value: vm.metricNodes || null,
     detail: zh ? "节点资源 · 日志" : "Resources · logs",
   };
   const storage: NavItem = {
     id: "storage",
     icon: HardDrive,
     label: zh ? "存储" : "Storage",
-    value: vm.storageVolumes.length + vm.storageClasses.length,
+    value: vm.storageVolumes.length + vm.storageClasses.length || null,
     detail: zh ? `${vm.storageClasses.length} 类 · ${vm.storageVolumes.length} 卷` : `${vm.storageClasses.length} classes · ${vm.storageVolumes.length} volumes`,
   };
   const builder: NavItem = {
     id: "builder",
     icon: Hammer,
     label: zh ? "构建" : "Builder",
-    value: vm.builderNodes,
+    value: vm.builderNodes || null,
     detail: zh ? "仓库导入 · 构建历史" : "Repo import · history",
   };
   const deployments: NavItem = {
     id: "deployments",
     icon: ScrollText,
     label: zh ? "部署记录" : "Deployments",
-    value: 0,
+    value: null,
     detail: zh ? "构建 · CLI · 面板" : "Build · CLI · UI",
   };
   const lae: NavItem = {
     id: "lae",
     icon: CloudCog,
     label: "LAE",
-    value: 0,
+    value: null,
     detail: zh ? "用户 · 租户 · 应用" : "Users · tenants · apps",
   };
   const create: NavItem = {
     id: "deploy",
     icon: Plus,
     label: zh ? "创建" : "Create",
-    value: vm.templateCount,
+    value: vm.templateCount || null,
     detail: zh ? "模板、表单、YAML" : "Templates, form, YAML",
   };
   const credentials: NavItem = {
     id: "credentials",
     icon: KeyRound,
     label: zh ? "凭据" : "Credentials",
-    value: vm.storageClasses.length,
+    value: null,
     detail: zh ? "Secret · Registry" : "Secrets · registry",
   };
 
