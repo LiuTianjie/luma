@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ReactNode } from "react";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import type { DeployUpdateContext } from "./pages/DeployPage";
+import { PageLoading } from "./pages/PageLoading";
 import type { ResolvedPage } from "./routes";
 import type { DashboardNode, DashboardPayload, DashboardService, Lang } from "./types";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
@@ -120,5 +121,11 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       content = <NotFound lang={lang} onHome={() => props.onNavigate("overview")} />;
   }
 
-  return <Suspense fallback={<section className="empty-state" aria-busy="true" />}>{content}</Suspense>;
+  return (
+    <Suspense fallback={<PageLoading lang={lang} />}>
+      <div className="page-route" key={props.updateContext ? "update" : page}>
+        {content}
+      </div>
+    </Suspense>
+  );
 }

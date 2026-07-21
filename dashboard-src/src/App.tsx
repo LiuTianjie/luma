@@ -11,6 +11,7 @@ import { nodeDetail, serviceDetail, type DetailState } from "./detailRecords";
 import { useRouter } from "./router";
 import { pageForPath, ROUTE_BY_PAGE } from "./routes";
 import type { DeployUpdateContext } from "./pages/DeployPage";
+import { PageLoading } from "./pages/PageLoading";
 import { createDashboardViewModel, type NavPage } from "./dashboardViewModel";
 import { t } from "./i18n";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
@@ -178,9 +179,7 @@ export function App() {
                 onTemplateLandingChange={setDeployTemplateLanding}
               />
             ) : (
-              <section className="empty-state">
-                <p>{t(lang, visibleStatus)}</p>
-              </section>
+              <PageLoading lang={lang} />
             )}
           </>
         )}

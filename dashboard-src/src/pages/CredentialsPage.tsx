@@ -332,7 +332,17 @@ export function CredentialsPage({
         </div>
       ) : null}
 
-      <section className="credentials-layout">
+      {state.loading && !state.secrets.length && !state.registries.length ? (
+        <div className="panel page-loading-inline" aria-busy="true">
+          <span className="skeleton skeleton-line skeleton-panel-title" />
+          <span className="skeleton skeleton-line" />
+          <span className="skeleton skeleton-line skeleton-medium" />
+          <span className="skeleton skeleton-line skeleton-wide" />
+          <p className="page-loading-label">{zh ? "加载凭据…" : "Loading credentials…"}</p>
+        </div>
+      ) : null}
+
+      <section className="credentials-layout" hidden={state.loading && !state.secrets.length && !state.registries.length}>
         <article className="panel credentials-index-panel">
           <div className="credentials-tabs" role="tablist" aria-label={zh ? "凭据视图" : "Credential views"}>
             <button type="button" className={activeTab === "secrets" ? "active" : ""} onClick={() => setActiveTab("secrets")}>

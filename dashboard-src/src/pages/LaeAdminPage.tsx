@@ -109,7 +109,16 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
       }} />
 
       {error ? <div className="alert alert-error"><span>{error}</span></div> : null}
-      <section className="panel lae-admin-panel">
+      {loading && !state.applications.length && !state.users.length ? (
+        <div className="panel page-loading-inline" aria-busy="true">
+          <span className="skeleton skeleton-line skeleton-panel-title" />
+          <span className="skeleton skeleton-line" />
+          <span className="skeleton skeleton-line skeleton-medium" />
+          <span className="skeleton skeleton-line skeleton-wide" />
+          <p className="page-loading-label">{zh ? "加载 LAE 数据…" : "Loading LAE data…"}</p>
+        </div>
+      ) : null}
+      <section className="panel lae-admin-panel" hidden={loading && !state.applications.length && !state.users.length}>
         <div className="lae-admin-tabs" role="tablist" aria-label="LAE admin resources">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button key={id} type="button" className={view === id ? "active" : ""} onClick={() => setView(id)}>

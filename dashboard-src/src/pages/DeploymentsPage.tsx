@@ -84,7 +84,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
   const [builds, setBuilds] = useState<BuildRun[]>([]);
   const [events, setEvents] = useState<DeploymentEvent[]>([]);
   const [filter, setFilter] = useState<"all" | "build" | "dashboard" | "cli">("all");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [detail, setDetail] = useState<DetailState | null>(null);
 
@@ -228,6 +228,15 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
           ))}
         </div>
         {error ? <div className="alert alert-error"><span>{error}</span></div> : null}
+        {loading && !visible.length ? (
+          <div className="page-loading-inline" aria-busy="true">
+            <span className="skeleton skeleton-line" />
+            <span className="skeleton skeleton-line skeleton-medium" />
+            <span className="skeleton skeleton-line" />
+            <span className="skeleton skeleton-line skeleton-wide" />
+            <p className="page-loading-label">{zh ? "加载部署记录…" : "Loading deployments…"}</p>
+          </div>
+        ) : null}
         {visible.length ? (
           <ol className="deployments-timeline">
             {visible.map((item) => (
@@ -255,9 +264,9 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
               </li>
             ))}
           </ol>
-        ) : (
+        ) : !loading ? (
           <div className="empty-inline">{zh ? "暂无部署记录" : "No deployments yet"}</div>
-        )}
+        ) : null}
       </article>
 
       {detail ? (
