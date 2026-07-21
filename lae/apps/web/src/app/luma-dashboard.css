@@ -219,16 +219,39 @@ summary:focus-visible {
 .console-anchor { scroll-margin-top: 84px; }
 
 .console-shell .hero-copy {
-  margin: 0 0 18px;
-  padding: 0;
+  margin: 0 0 14px;
+  padding: 0 0 14px;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 24px;
+  gap: 16px;
+  border-bottom: 1px solid var(--line-soft);
 }
-.console-shell .section-kicker { margin: 0 0 5px; color: var(--text-subtle); font-size: 10px; letter-spacing: .08em; }
-.console-shell .hero-copy h1 { margin: 0; color: var(--text); font-family: inherit; font-size: 28px; font-weight: 700; line-height: 1.25; letter-spacing: -.02em; }
-.console-shell .hero-copy > div > span { display: block; margin-top: 7px; color: var(--text-muted); font-size: 12px; line-height: 1.55; }
+.console-shell .section-kicker {
+  margin: 0 0 4px;
+  color: var(--text-subtle);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.console-shell .hero-copy h1 {
+  margin: 0;
+  color: var(--text);
+  font-family: inherit;
+  font-size: clamp(1.35rem, 2vw, 1.55rem);
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+.console-shell .hero-copy > div > span {
+  display: block;
+  max-width: 56ch;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
 .hero-primary,
 .console-shell .primary-action,
 .console-shell .source-submit {
@@ -763,17 +786,21 @@ summary:focus-visible {
 .console-shell .lifecycle-confirmation-veil,
 .console-shell .observatory-veil { background: rgba(0, 0, 0, .64); backdrop-filter: blur(4px); }
 .console-shell .lifecycle-confirmation,
+.console-shell .observatory,
 .console-shell .application-observatory { border: 1px solid var(--line); border-radius: var(--radius-lg); color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-heavy); }
 .console-shell .lifecycle-confirmation::before,
+.console-shell .observatory::before,
 .console-shell .application-observatory::before { display: none; }
 .console-shell .lifecycle-confirmation-mark { border-color: var(--line); border-radius: var(--radius-md); color: var(--text-muted); background: var(--well); }
 .console-shell .lifecycle-confirmation p,
-.console-shell .observatory-heading p { color: var(--text-subtle); font-size: 9px; }
+.console-shell .observatory-heading p { color: var(--text-subtle); font-size: 11px; }
 .console-shell .lifecycle-confirmation h2,
-.console-shell .observatory-heading h2 { color: var(--text); font-size: 20px; font-weight: 700; }
+.console-shell .observatory-heading h2 { color: var(--text); font-size: 18px; font-weight: 700; }
 .console-shell .lifecycle-confirmation-description,
-.console-shell .observatory-heading span { color: var(--text-muted); font-size: 10px; }
+.console-shell .observatory-heading span,
+.console-shell .observatory-heading small { color: var(--text-muted); font-size: 12px; }
 .console-shell .lifecycle-confirmation-actions button,
+.console-shell .observatory-tools button,
 .console-shell .observatory-close,
 .console-shell .observatory-refresh { border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-muted); background: var(--surface); }
 .console-shell .observatory-panel,

@@ -165,7 +165,7 @@ export function AuthPortal() {
           <span><strong>LAE</strong><small>Luma Application Engine</small></span>
         </Link>
         <div className="auth-story-copy">
-          <p>BUILT ON LUMA</p>
+          <p>基于 Luma</p>
           <h1>部署服务</h1>
           <span>连接源码，交给 LAE Agent 诊断，然后确认 Luma 部署计划。Git、静态产物和多服务 Compose 使用同一条流程。</span>
         </div>
@@ -187,7 +187,7 @@ export function AuthPortal() {
             >
               {step === "request" && deliveryMode === "loading" && (
                 <div className="auth-magic-progress" aria-live="polite">
-                  <p className="auth-step">01 · IDENTITY</p>
+                  <p className="auth-step">01 · 身份</p>
                   <span aria-hidden="true" />
                   <h2 id="auth-title">正在确认邮件通道</h2>
                   <p className="auth-description">LAE 正在读取此环境可用的登录方式。</p>
@@ -196,7 +196,7 @@ export function AuthPortal() {
 
               {step === "request" && deliveryMode === "unavailable" && (
                 <div>
-                  <p className="auth-step">01 · IDENTITY</p>
+                  <p className="auth-step">01 · 身份</p>
                   <h2 id="auth-title">身份服务正在准备</h2>
                   <p className="auth-description">当前无法签发登录凭据。稍后刷新即可，不需要重复提交邮箱。</p>
                 </div>
@@ -204,7 +204,7 @@ export function AuthPortal() {
 
               {step === "request" && deliveryMode === "email" && (
                 <form onSubmit={requestChallenge}>
-                  <p className="auth-step">01 · EMAIL</p>
+                  <p className="auth-step">01 · 邮箱</p>
                   <h2 id="auth-title">使用邮箱继续</h2>
                   <p className="auth-description">已有账户将直接登录，新邮箱会自动创建部署空间。没有密码，也不把凭据放进浏览器存储。</p>
                   <label className="auth-field">
@@ -219,7 +219,7 @@ export function AuthPortal() {
 
               {step === "verify" && (
                 <form onSubmit={verifyChallenge}>
-                  <p className="auth-step">02 · VERIFY</p>
+                  <p className="auth-step">02 · 验证</p>
                   <h2 id="auth-title">检查你的邮箱</h2>
                   <p className="auth-description">验证码已发送到 <strong>{email}</strong>。验证后会自动登录或创建账户。</p>
                   <label className="auth-field auth-code-field">
@@ -238,7 +238,7 @@ export function AuthPortal() {
 
               {step === "magic" && (
                 <div className="auth-magic-progress" aria-live="polite">
-                  <p className="auth-step">02 · VERIFY</p>
+                  <p className="auth-step">02 · 验证</p>
                   <span aria-hidden="true" />
                   <h2 id="auth-title">正在验证一次性链接</h2>
                   <p className="auth-description">凭据已从地址栏移除。验证完成后，这个链接将不能再次使用。</p>

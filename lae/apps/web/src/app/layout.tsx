@@ -2,8 +2,9 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "@fontsource/ibm-plex-mono/700.css";
-import "./globals.css";
+/* Dashboard tokens first, then LAE structural helpers that consume those tokens. */
 import "./luma-dashboard.css";
+import "./globals.css";
 
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";

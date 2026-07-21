@@ -167,25 +167,25 @@ const sectionCopy: Record<
   { eyebrow: string; title: string; note: string; breadcrumb: string }
 > = {
   deployment: {
-    eyebrow: "APPLICATION DELIVERY",
+    eyebrow: "部署工作台",
     title: "部署应用",
     note: "LAE Agent 诊断源码并生成 Luma 部署计划；支持 Git、静态产物与多服务 Compose。",
     breadcrumb: "部署",
   },
   applications: {
-    eyebrow: "APPLICATIONS",
+    eyebrow: "运行中的应用",
     title: "应用",
     note: "查看运行状态、公开域名和服务拓扑，并执行暂停、重启、更新检查与回滚。",
     breadcrumb: "应用",
   },
   activity: {
-    eyebrow: "OPERATIONS",
+    eyebrow: "操作记录",
     title: "部署活动",
     note: "诊断、构建和部署都保留结构化进度；中断的操作可以从这里继续查看或恢复。",
     breadcrumb: "活动",
   },
   cli: {
-    eyebrow: "AGENT INTERFACE",
+    eyebrow: "Agent 接口",
     title: "LAE CLI",
     note: "为用户自己的 Agent 提供与控制台等价、机器可读的诊断与部署协议。",
     breadcrumb: "CLI",
@@ -239,12 +239,12 @@ type GitSourceInput = {
 };
 
 const stateCopy: Record<FlowState, { eyebrow: string; title: string; note: string }> = {
-  idle: { eyebrow: "NEW DEPLOYMENT", title: "从哪里开始？", note: "选择源码，LAE Agent 会先判断它是否适合部署。" },
-  configuring: { eyebrow: "SOURCE · 01", title: "给应用一个起点", note: "来源信息只用于创建受租户隔离的诊断任务。" },
-  diagnosing: { eyebrow: "LAE AGENT · 02", title: "正在读懂这个应用", note: "源码仅在隔离的 Luma Builder 中展开与分析。" },
-  ready: { eyebrow: "READY · 03", title: "可以部署", note: "拓扑与端口已确认。部署文件将由 LAE 保存，无需写回仓库。" },
-  deploying: { eyebrow: "DEPLOYING · 04", title: "正在部署服务", note: "构建镜像、分配路由并逐个验证 HTTP 服务。" },
-  live: { eyebrow: "LIVE · 05", title: "部署完成", note: "应用已进入列表，域名在更新与重启时保持稳定。" },
+  idle: { eyebrow: "新建部署", title: "从哪里开始？", note: "选择源码，LAE Agent 会先判断它是否适合部署。" },
+  configuring: { eyebrow: "来源 · 01", title: "给应用一个起点", note: "来源信息只用于创建受租户隔离的诊断任务。" },
+  diagnosing: { eyebrow: "诊断 · 02", title: "正在读懂这个应用", note: "源码仅在隔离的 Luma Builder 中展开与分析。" },
+  ready: { eyebrow: "就绪 · 03", title: "可以部署", note: "拓扑与端口已确认。部署文件将由 LAE 保存，无需写回仓库。" },
+  deploying: { eyebrow: "部署中 · 04", title: "正在部署服务", note: "构建镜像、分配路由并逐个验证 HTTP 服务。" },
+  live: { eyebrow: "已上线 · 05", title: "部署完成", note: "应用已进入列表，域名在更新与重启时保持稳定。" },
 };
 
 const operationKindCopy: Record<string, string> = {
@@ -1149,7 +1149,7 @@ export function LaeConsole() {
           <div className="brand-mark"><span /><span /><span /></div>
           <div><strong>LAE</strong><small>Luma Application Engine</small></div>
         </Link>
-        <p className="rail-label">APPLICATION ENGINE</p>
+        <p className="rail-label">应用引擎</p>
         <a
           className={`rail-button${activeSection === "deployment" ? " is-active" : ""}`}
           href="#deployment"
@@ -1409,10 +1409,10 @@ function TemplateLake({
     <section className="lake starter-shelf" aria-labelledby="template-title">
       <div className="lake-heading">
         <div>
-          <span className="section-index">STARTERS</span>
+          <span className="section-index">01</span>
           <div>
-            <h2 id="template-title">从一个可靠的起点开始</h2>
-            <p>模板已经通过 LAE Agent 验证，点击后直接创建诊断任务。</p>
+            <h2 id="template-title">模板起点</h2>
+            <p>已通过 LAE Agent 验证的模板；点击后创建诊断任务。</p>
           </div>
         </div>
         <span className="lake-note">{loading ? "同步模板目录" : `${templates.length} 个已验证模板`}</span>
@@ -1520,8 +1520,8 @@ function DeploymentInstrument({
   return (
     <section className="instrument" aria-labelledby="deployment-title" aria-live="polite">
       <div className="instrument-topline">
-        <span>DEPLOYMENT WORKBENCH · {copy.eyebrow}</span>
-        <span>{locked ? "IN PROGRESS" : flow === "live" ? "VERIFIED" : "READY FOR INPUT"}</span>
+        <span>部署工作台 · {copy.eyebrow}</span>
+        <span>{locked ? "进行中" : flow === "live" ? "已验证" : "等待输入"}</span>
       </div>
       <div className="instrument-layout">
         <nav className="deployment-steps" aria-label={`部署阶段：${phases[phaseIndex]}`}>
@@ -2516,7 +2516,7 @@ function ConsoleUtilities({
         <div className="utility-heading">
           <span className="section-index">03</span>
           <div>
-            <p>OPERATION STREAM</p>
+            <p>操作流</p>
             <h2 id="activity-title">部署活动</h2>
           </div>
           <span className={`utility-status is-${flow}`}>{stateCopy[flow].eyebrow}</span>
@@ -2561,7 +2561,7 @@ function ConsoleUtilities({
           <div className="utility-heading">
             <span className="section-index">04</span>
             <div>
-              <p>AGENT-FRIENDLY</p>
+              <p>Agent 友好</p>
               <h2 id="cli-title">LAE CLI</h2>
             </div>
             <SquareTerminal size={18} strokeWidth={1.4} />
@@ -2649,7 +2649,7 @@ function LifecycleConfirmation({
         <div className="lifecycle-confirmation-mark">
           {rollback ? <Undo2 size={19} /> : <Trash2 size={19} />}
         </div>
-        <p>{rollback ? "REVISION RESTORE" : "APPLICATION RETIREMENT"}</p>
+        <p>{rollback ? "版本恢复" : "删除应用"}</p>
         <h2 id="lifecycle-confirmation-title">{title}</h2>
         <div id="lifecycle-confirmation-description">
           <strong>{application.name}</strong>
@@ -2725,7 +2725,7 @@ function ApplicationObservatory({
           <div className="observatory-heading">
             <span className={`app-status ${application.tone}`} />
             <div>
-              <p>RUNTIME OBSERVATORY</p>
+              <p>运行观测</p>
               <h2 id="observatory-title">{application.name}</h2>
               <small>{logs?.serviceKey || "正在定位主服务"} · {application.domain}</small>
             </div>
