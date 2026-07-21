@@ -3840,6 +3840,11 @@ tbody tr.is-selected {
   align-items: start;
 }
 
+/* Single control that should not leave an empty second column */
+.deploy-field-grid-single {
+  grid-template-columns: minmax(0, min(420px, 100%));
+}
+
 .deploy-field-grid.compact,
 .service-volume-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3987,15 +3992,39 @@ tbody tr.is-selected {
 }
 
 .compose-yaml-shortcut {
+  grid-column: 1 / -1;
   min-height: 0;
-  align-self: end;
+  align-self: stretch;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--well);
 }
 
-.compose-yaml-shortcut > span,
+.compose-yaml-shortcut-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.compose-yaml-shortcut-copy > span,
 .compose-file-field > span {
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.compose-yaml-shortcut-copy > small {
   color: var(--text-muted);
   font-size: 0.75rem;
-  font-weight: 500;
+}
+
+.compose-yaml-shortcut > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .compose-env-header > div {
@@ -5745,27 +5774,158 @@ dd {
   margin-top: 14px;
   border-top: 1px solid var(--line);
   padding-top: 12px;
+  display: grid;
+  gap: 10px;
 }
+
+.registry-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--well);
+}
+
+.registry-status-strip > svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.registry-status-strip > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 160px;
+}
+
+.registry-status-strip strong {
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.registry-status-strip small {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.registry-status-strip > button {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.8125rem;
+}
+
+.form-disclosure-toggle,
 .registry-setup-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  justify-content: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
   font-size: 0.875rem;
 }
-.registry-setup-toggle > span {
+
+.form-disclosure-toggle .disclosure-chevron,
+.registry-setup-toggle .disclosure-chevron {
   color: var(--text-subtle);
+  transition: transform var(--motion-fast) var(--ease-standard);
 }
+
+.form-disclosure-toggle .disclosure-chevron.open,
+.registry-setup-toggle .disclosure-chevron.open {
+  transform: rotate(180deg);
+}
+
+.form-disclosure-body,
 .registry-setup-body {
-  margin-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--well);
 }
+
+.registry-setup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.registry-setup-row > label {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.registry-deploy-btn {
+  flex: 0 0 auto;
+  width: auto;
+  white-space: nowrap;
+}
+
 .registry-done {
   color: var(--green);
 }
+
 .registry-error {
   color: var(--red);
+}
+
+.deploy-inline-link {
+  display: inline;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.deploy-inline-link:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+}
+
+.alert-list {
+  margin: 0;
+  padding-left: 1.1em;
+}
+
+.service-volume-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.service-volume-row-main > .deploy-field-grid {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.row-remove-btn {
+  flex: 0 0 auto;
+  min-height: 30px;
+  margin-top: 22px;
+  padding: 0 10px;
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 .application-update-context-title strong {

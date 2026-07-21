@@ -101,19 +101,27 @@ export function SingleServiceDeployForm({
           </div>
           {volumeMounts.length ? volumeMounts.map((volume) => (
             <article className="service-volume-row" key={volume.id}>
-              <div className="deploy-field-grid compact service-volume-grid">
-                <label><span>volume</span><input value={volume.name} onChange={(event) => updateVolumeMount(volume.id, { name: event.target.value })} placeholder="code-server-config" /></label>
-                <label><span>{zh ? "挂载到" : "Mount target"}</span><input value={volume.target} onChange={(event) => updateVolumeMount(volume.id, { target: event.target.value })} placeholder="/config" /></label>
-                <label><span>{zh ? "存储模式" : "Storage mode"}</span><select value={volume.storageMode} onChange={(event) => updateVolumeMount(volume.id, { storageMode: event.target.value as ServiceVolumeDraft["storageMode"] })}><option value="unmanaged">unmanaged volume</option><option value="storageClass">storageClass</option></select></label>
-                {volume.storageMode === "storageClass" ? (
-                  <>
-                    <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolumeMount(volume.id, { storageClass: event.target.value })}><option value="">{zh ? "选择已注册存储" : "Select registered storage"}</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
-                    <label><span>path</span><input value={volume.path} onChange={(event) => updateVolumeMount(volume.id, { path: event.target.value })} placeholder={`${draft.name || "app"}/${volume.name || "data"}`} /></label>
-                  </>
-                ) : (
-                  <label><span>{zh ? "说明" : "Note"}</span><input value={zh ? "普通 Docker 命名卷，Luma 不接管存储后端" : "Plain Docker named volume; Luma does not manage the storage backend"} disabled /></label>
-                )}
-                <button type="button" className="ghost" onClick={() => patch({ volumeMounts: volumeMounts.filter((item) => item.id !== volume.id) })}>{zh ? "删除" : "Remove"}</button>
+              <div className="service-volume-row-main">
+                <div className="deploy-field-grid compact service-volume-grid">
+                  <label><span>volume</span><input value={volume.name} onChange={(event) => updateVolumeMount(volume.id, { name: event.target.value })} placeholder="code-server-config" /></label>
+                  <label><span>{zh ? "挂载到" : "Mount target"}</span><input value={volume.target} onChange={(event) => updateVolumeMount(volume.id, { target: event.target.value })} placeholder="/config" /></label>
+                  <label><span>{zh ? "存储模式" : "Storage mode"}</span><select value={volume.storageMode} onChange={(event) => updateVolumeMount(volume.id, { storageMode: event.target.value as ServiceVolumeDraft["storageMode"] })}><option value="unmanaged">unmanaged volume</option><option value="storageClass">storageClass</option></select></label>
+                  {volume.storageMode === "storageClass" ? (
+                    <>
+                      <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolumeMount(volume.id, { storageClass: event.target.value })}><option value="">{zh ? "选择已注册存储" : "Select registered storage"}</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
+                      <label><span>path</span><input value={volume.path} onChange={(event) => updateVolumeMount(volume.id, { path: event.target.value })} placeholder={`${draft.name || "app"}/${volume.name || "data"}`} /></label>
+                    </>
+                  ) : (
+                    <label><span>{zh ? "说明" : "Note"}</span><input value={zh ? "普通 Docker 命名卷，Luma 不接管存储后端" : "Plain Docker named volume; Luma does not manage the storage backend"} disabled /></label>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="ghost row-remove-btn"
+                  onClick={() => patch({ volumeMounts: volumeMounts.filter((item) => item.id !== volume.id) })}
+                >
+                  {zh ? "删除" : "Remove"}
+                </button>
               </div>
             </article>
           )) : <p className="deploy-muted">{zh ? "还没有声明命名卷。需要持久化配置或数据时添加一个卷。" : "No named volumes yet. Add one when configuration or data should persist."}</p>}

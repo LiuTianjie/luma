@@ -68,7 +68,10 @@ export function ComposeDeployForm({
             <small>{zh ? "这里只改提交文件名，Compose 内容在 YAML 文件里编辑。" : "This only changes the submitted file name. Edit Compose content in the YAML view."}</small>
           </label>
           <div className="compose-yaml-shortcut">
-            <span>{zh ? "Compose 内容" : "Compose content"}</span>
+            <div className="compose-yaml-shortcut-copy">
+              <span>{zh ? "Compose 内容" : "Compose content"}</span>
+              <small className="deploy-muted">{zh ? "在 YAML 视图中编辑完整 docker-compose.yml" : "Edit the full docker-compose.yml in the YAML view"}</small>
+            </div>
             <button type="button" className="ghost" onClick={onEditYaml}>{zh ? "编辑 docker-compose.yml" : "Edit docker-compose.yml"}</button>
           </div>
           <label><span>{zh ? "默认区域" : "Default region"}</span><select value={draft.region} onChange={(event) => updateDefaultRegion(event.target.value as Region)}>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
