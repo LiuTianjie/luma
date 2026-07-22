@@ -380,6 +380,10 @@ export function LaeConsole() {
   const [operationEvents, setOperationEvents] = useState<OperationEvent[]>([]);
   const [recentOperations, setRecentOperations] = useState<OperationListItem[]>([]);
   const [recoveryBusy, setRecoveryBusy] = useState<string | null>(null);
+  const [inspectedOperation, setInspectedOperation] =
+    useState<OperationListItem | null>(null);
+  const [inspectedEvents, setInspectedEvents] = useState<OperationEvent[]>([]);
+  const [inspectNotice, setInspectNotice] = useState<string | null>(null);
   const [deploymentConfiguration, setDeploymentConfiguration] =
     useState<DeploymentConfiguration | null>(null);
   const [deploymentPlan, setDeploymentPlan] =
@@ -629,52 +633,117 @@ export function LaeConsole() {
     throw new DOMException("Operation watch canceled", "AbortError");
   };
 
-  const recoverHistoricalOperation = async (operation: OperationListItem) => {
+  const closeOperationInspect = () => {
+    setInspectedOperation(null);
+    setInspectedEvents([]);
+    setInspectNotice(null);
+  };
+
+  const scrollToActivityDetail = () => {
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById("activity-detail")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
+  /**
+   * Open a readable operation detail on the activity page.
+   * Terminal ops stay here with a full event timeline; in-flight ops also resume watch.
+   */
+  const inspectOrRecoverOperation = async (operation: OperationListItem) => {
     if (recoveryBusy) return;
     stopRun();
     const controller = new AbortController();
     runController.current = controller;
+    setActiveSection("activity");
     setRecoveryBusy(operation.id);
     setFlowError(null);
+    setInspectNotice(null);
+    setInspectedOperation(operation);
+    setInspectedEvents([]);
     try {
       const recovered = await recoverOperation(operation.id, {}, controller.signal);
-      setOperationEvents(recovered.events.slice(-12));
+      const events = recovered.events.slice(-40);
+      const snapshot: OperationListItem = {
+        ...operation,
+        ...recovered.operation,
+        applicationId: operation.applicationId,
+        createdAt: operation.createdAt,
+        startedAt: operation.startedAt,
+        finishedAt: operation.finishedAt,
+      };
+      setInspectedOperation(snapshot);
+      setInspectedEvents(events);
+      setOperationEvents(events.slice(-12));
+      scrollToActivityDetail();
+
       let status = recovered.operation.status;
       if (!recovered.terminal) {
         setFlow(operation.kind === "deployment.create" ? "deploying" : "diagnosing");
         status = await watchOperation(operation.id, controller.signal);
+        if (controller.signal.aborted) return;
+        const latest = await getOperation(operation.id, controller.signal);
+        setInspectedOperation((current) =>
+          current && current.id === operation.id
+            ? {
+                ...current,
+                ...latest,
+                applicationId: current.applicationId,
+                createdAt: current.createdAt,
+                startedAt: current.startedAt,
+                finishedAt: current.finishedAt,
+              }
+            : current,
+        );
+        const tail = await recoverOperation(operation.id, {}, controller.signal);
+        setInspectedEvents(tail.events.slice(-40));
+        setOperationEvents(tail.events.slice(-12));
       }
+
       if (
         operation.kind === "deployment.create" &&
         status === "succeeded" &&
         operation.applicationId
       ) {
-        const application = await getApplication(operation.applicationId, controller.signal);
-        const deploymentId = application.application.currentDeploymentId;
-        if (deploymentId) {
-          setLiveDeployment({ application, deploymentId, operationId: operation.id });
-          setFlow("live");
-        } else {
-          setFlow("idle");
-        }
-      } else {
-        setFlow("idle");
-        if (status !== "succeeded") {
-          setFlowError(
-            operationFailureMessage(
-              recovered.operation.error,
-              "该操作已结束但未成功；历史事件已恢复，现有健康版本未被替换。",
-            ),
+        try {
+          const application = await getApplication(
+            operation.applicationId,
+            controller.signal,
           );
+          const deploymentId = application.application.currentDeploymentId;
+          if (deploymentId) {
+            setLiveDeployment({
+              application,
+              deploymentId,
+              operationId: operation.id,
+            });
+          }
+        } catch {
+          // App may already be deleted; detail panel still shows events.
         }
+      }
+
+      if (status !== "succeeded") {
+        const message = operationFailureMessage(
+          recovered.operation.error,
+          "该操作已结束但未成功；事件时间线已展开，可据此排查。",
+        );
+        setInspectNotice(message);
+        setFlowError(message);
+      } else {
+        setInspectNotice(null);
       }
       setCatalogRefresh((value) => value + 1);
     } catch (error) {
       if (!controller.signal.aborted) {
-        setFlow("idle");
-        setFlowError(
-          error instanceof LaeApiError ? error.message : "操作历史暂时无法恢复。",
-        );
+        const message =
+          error instanceof LaeApiError
+            ? error.message
+            : "操作历史暂时无法打开。";
+        setInspectNotice(message);
+        setFlowError(message);
+        scrollToActivityDetail();
       }
     } finally {
       if (runController.current === controller) runController.current = null;
@@ -689,7 +758,7 @@ export function LaeConsole() {
     );
     if (!active) return;
     recoveredOnLoad.current = true;
-    void recoverHistoricalOperation(active);
+    void inspectOrRecoverOperation(active);
   }, [flow, recentOperations]);
 
   const runLifecycleAction = async (
@@ -1348,7 +1417,12 @@ export function LaeConsole() {
                   operations={recentOperations}
                   recoveryBusy={recoveryBusy}
                   error={flowError}
-                  onRecover={(operation) => void recoverHistoricalOperation(operation)}
+                  inspectedOperation={inspectedOperation}
+                  inspectedEvents={inspectedEvents}
+                  inspectNotice={inspectNotice}
+                  onInspect={(operation) => void inspectOrRecoverOperation(operation)}
+                  onCloseInspect={closeOperationInspect}
+                  onOpenDeployment={() => setActiveSection("deployment")}
                 />
               )}
             </motion.div>
@@ -2664,7 +2738,12 @@ function ConsoleUtilities({
   operations,
   recoveryBusy,
   error,
-  onRecover,
+  inspectedOperation,
+  inspectedEvents,
+  inspectNotice,
+  onInspect,
+  onCloseInspect,
+  onOpenDeployment,
 }: {
   section: "activity" | "cli";
   flow: FlowState;
@@ -2672,11 +2751,17 @@ function ConsoleUtilities({
   operations: OperationListItem[];
   recoveryBusy: string | null;
   error: string | null;
-  onRecover: (operation: OperationListItem) => void;
+  inspectedOperation: OperationListItem | null;
+  inspectedEvents: OperationEvent[];
+  inspectNotice: string | null;
+  onInspect: (operation: OperationListItem) => void;
+  onCloseInspect: () => void;
+  onOpenDeployment: () => void;
 }) {
   const recentEvents = events.slice(-8).reverse();
   const recentOperations = operations.slice(0, 8);
   const liveFlow = flow !== "idle" && flow !== "live";
+  const detailEvents = (inspectedEvents.length ? inspectedEvents : []).slice().reverse();
   return (
     <div className="console-utilities is-single">
       {section === "activity" && (
@@ -2687,7 +2772,7 @@ function ConsoleUtilities({
               <h2 id="activity-title">最近运行</h2>
               <span>
                 {recentOperations.length
-                  ? `${recentOperations.length} 条操作 · 诊断与部署进度可从这里续看`
+                  ? `${recentOperations.length} 条操作 · 点「查看」展开事件时间线`
                   : "开始诊断后，进度与失败原因会留在这里"}
               </span>
             </div>
@@ -2697,7 +2782,111 @@ function ConsoleUtilities({
             </div>
           </div>
 
-          {error && (
+          {inspectedOperation && (
+            <section
+              className={`activity-detail${inspectedOperation.status === "failed" ? " is-error" : ""}`}
+              id="activity-detail"
+              aria-labelledby="activity-detail-title"
+            >
+              <div className="activity-detail-head">
+                <div>
+                  <p className="section-kicker">操作详情</p>
+                  <h3 id="activity-detail-title">
+                    {operationKindLabel(inspectedOperation.kind)}
+                  </h3>
+                  <div className="activity-detail-meta">
+                    <span className={`activity-op-pill is-${inspectedOperation.status || "unknown"}`}>
+                      {operationProgressLabel(
+                        inspectedOperation.phase,
+                        inspectedOperation.status,
+                      )}
+                    </span>
+                    <code>{shortReference(inspectedOperation.id)}</code>
+                    <span>{inspectedOperation.kind}</span>
+                  </div>
+                </div>
+                <div className="activity-detail-actions">
+                  {!inspectedOperation.terminal && (
+                    <button
+                      type="button"
+                      className="activity-op-action"
+                      onClick={onOpenDeployment}
+                    >
+                      去部署台
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="activity-op-action"
+                    onClick={onCloseInspect}
+                  >
+                    关闭
+                  </button>
+                </div>
+              </div>
+
+              {(inspectNotice || (error && inspectedOperation.status === "failed")) && (
+                <div className="activity-alert" role="alert">
+                  <span className="activity-alert-mark" aria-hidden="true">!</span>
+                  <div>
+                    <strong>
+                      {inspectedOperation.status === "failed"
+                        ? "操作未成功"
+                        : "操作提示"}
+                    </strong>
+                    <p>{inspectNotice || error}</p>
+                  </div>
+                </div>
+              )}
+
+              {recoveryBusy === inspectedOperation.id && !detailEvents.length ? (
+                <div className="activity-detail-loading" role="status">
+                  <RefreshCw className="stage-spin" size={16} />
+                  <span>正在加载事件…</span>
+                </div>
+              ) : detailEvents.length ? (
+                <ol className="activity-timeline activity-detail-timeline" aria-label="操作事件">
+                  {detailEvents.map((event, index) => (
+                    <li
+                      key={event.eventId}
+                      className={[
+                        event.level === "error" ? "is-error" : "",
+                        event.level === "warning" ? "is-warning" : "",
+                        index === 0 ? "is-latest" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                    >
+                      <span className="activity-timeline-rail" aria-hidden="true">
+                        <i />
+                      </span>
+                      <div className="activity-timeline-body">
+                        <div className="activity-timeline-top">
+                          <strong>{operationEventLabel(event)}</strong>
+                          <code>#{String(event.cursor).padStart(2, "0")}</code>
+                        </div>
+                        <small>
+                          {operationProgressLabel(event.phase, event.status)}
+                          {event.message ? ` · ${event.message}` : ""}
+                          {event.level === "error"
+                            ? " · 失败"
+                            : event.level === "warning"
+                              ? " · 需关注"
+                              : ""}
+                        </small>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <div className="activity-detail-empty">
+                  没有可展示的事件（操作可能尚未写入进度）。
+                </div>
+              )}
+            </section>
+          )}
+
+          {!inspectedOperation && error && (
             <div className="activity-alert" role="alert">
               <span className="activity-alert-mark" aria-hidden="true">!</span>
               <div>
@@ -2707,7 +2896,7 @@ function ConsoleUtilities({
             </div>
           )}
 
-          {recentEvents.length > 0 && (
+          {!inspectedOperation && recentEvents.length > 0 && (
             <div className="activity-block">
               <div className="activity-block-head">
                 <h3>当前事件流</h3>
@@ -2754,10 +2943,15 @@ function ConsoleUtilities({
                 {recentOperations.map((operation) => {
                   const failed = operation.status === "failed";
                   const running = !operation.terminal;
+                  const selected = inspectedOperation?.id === operation.id;
                   return (
                     <li
                       key={operation.id}
-                      className={[failed ? "is-error" : "", running ? "is-running" : ""]
+                      className={[
+                        failed ? "is-error" : "",
+                        running ? "is-running" : "",
+                        selected ? "is-selected" : "",
+                      ]
                         .filter(Boolean)
                         .join(" ")}
                     >
@@ -2778,8 +2972,9 @@ function ConsoleUtilities({
                       <button
                         type="button"
                         className="activity-op-action"
-                        onClick={() => onRecover(operation)}
+                        onClick={() => onInspect(operation)}
                         disabled={recoveryBusy !== null}
+                        aria-pressed={selected}
                       >
                         {recoveryBusy === operation.id ? (
                           <RefreshCw className="stage-spin" size={13} />
@@ -2794,7 +2989,7 @@ function ConsoleUtilities({
               </ul>
             </div>
           ) : (
-            !recentEvents.length && (
+            !recentEvents.length && !inspectedOperation && (
               <div className="utility-empty activity-empty">
                 <Activity size={20} strokeWidth={1.45} />
                 <div>

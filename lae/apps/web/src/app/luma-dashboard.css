@@ -1473,6 +1473,74 @@ summary:focus-visible {
 .console-shell .activity-ops li.is-running {
   border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
 }
+.console-shell .activity-ops li.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.console-shell .activity-detail {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--recess);
+  scroll-margin-top: 88px;
+}
+.console-shell .activity-detail.is-error {
+  border-color: var(--red-line);
+  background: color-mix(in srgb, var(--red-soft) 28%, var(--recess));
+}
+.console-shell .activity-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.console-shell .activity-detail-head h3 {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.console-shell .activity-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+.console-shell .activity-detail-meta code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.console-shell .activity-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.console-shell .activity-detail-loading,
+.console-shell .activity-detail-empty {
+  min-height: 72px;
+  padding: 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.console-shell .activity-detail-timeline {
+  background: var(--surface);
+}
 .console-shell .activity-op-status {
   width: 8px;
   height: 8px;
