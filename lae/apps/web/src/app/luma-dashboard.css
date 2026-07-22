@@ -130,6 +130,39 @@ summary:focus-visible {
   gap: 4px;
 }
 
+/* Three-bar mark used by rail / auth / account (empty spans need size + position). */
+.brand-mark {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--well);
+  display: block;
+  overflow: hidden;
+}
+.brand-mark span {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--text);
+  transform: rotate(-14deg);
+}
+.brand-mark span:nth-child(1) { top: 11px; }
+.brand-mark span:nth-child(2) {
+  top: 17px;
+  left: 6px;
+  right: 6px;
+  opacity: 0.72;
+}
+.brand-mark span:nth-child(3) {
+  top: 23px;
+  opacity: 0.42;
+}
+
 .rail-brand {
   min-height: 50px;
   margin-bottom: 10px;
@@ -141,8 +174,6 @@ summary:focus-visible {
   gap: 10px;
   text-decoration: none;
 }
-.rail-brand .brand-mark { width: 36px; height: 36px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--well); }
-.rail-brand .brand-mark span { background: var(--text); }
 .rail-brand strong,
 .rail-brand small { display: block; }
 .rail-brand strong { font-size: 14px; letter-spacing: .08em; }
@@ -178,24 +209,62 @@ summary:focus-visible {
   padding: 0 22px;
   border-bottom: 1px solid var(--line);
   color: var(--text);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
   backdrop-filter: blur(12px);
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  gap: 18px;
+  gap: 16px;
   box-shadow: none;
 }
-.topbar-breadcrumbs { color: var(--text-subtle); display: flex; align-items: center; gap: 7px; font-size: 12px; }
-.topbar-breadcrumbs strong { color: var(--text); font-weight: 500; }
-.console-shell .runtime-status { justify-self: auto; padding: 0; border: 0; color: var(--text-muted); background: transparent; font-size: 11px; letter-spacing: 0; text-transform: none; }
-.console-shell .runtime-pulse { width: 7px; height: 7px; background: var(--green); box-shadow: none; }
-.console-shell .runtime-pulse.is-muted { background: var(--amber); box-shadow: none; }
-.console-shell .account { gap: 7px; }
+.topbar-breadcrumbs {
+  min-width: 0;
+  color: var(--text-subtle);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+.topbar-breadcrumbs strong { color: var(--text); font-weight: 600; }
+.console-shell .runtime-status {
+  justify-self: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--recess);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+}
+.console-shell .runtime-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft);
+  flex: 0 0 auto;
+}
+.console-shell .runtime-pulse.is-muted {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px var(--amber-soft);
+}
+.console-shell .account {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .theme-toggle,
 .console-shell .account-button {
   min-height: 34px;
-  padding: 0 9px;
+  padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   color: var(--text-muted);
@@ -205,11 +274,36 @@ summary:focus-visible {
   gap: 7px;
   text-decoration: none;
   cursor: pointer;
+  box-shadow: var(--shadow);
 }
-.theme-toggle { width: 34px; justify-content: center; }
+.theme-toggle { width: 34px; padding: 0; justify-content: center; }
 .theme-toggle:hover,
-.console-shell .account-button:hover { color: var(--text); background: var(--well); }
-.console-shell .plan-badge { padding: 4px 7px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 9px; }
+.console-shell .account-button:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--well);
+}
+.console-shell .account-button span {
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+}
+.console-shell .plan-badge {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--recess);
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
 
 .console-shell .workspace { position: relative; z-index: auto; max-width: none; margin: 0; padding: 22px; }
 .console-shell .workspace-view { min-height: calc(100vh - var(--topbar-height) - 44px); }
@@ -1212,8 +1306,7 @@ summary:focus-visible {
   letter-spacing: 0;
   text-decoration: none;
 }
-.auth-shell .auth-back .brand-mark { width: 36px; height: 36px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--well); }
-.auth-shell .auth-back .brand-mark span { background: var(--text); }
+/* brand-mark base applies; keep auth row alignment only */
 .auth-shell .auth-back strong,
 .auth-shell .auth-back small { display: block; }
 .auth-shell .auth-back strong { font-size: 14px; letter-spacing: .08em; }
@@ -1283,8 +1376,7 @@ summary:focus-visible {
 .account-shell { min-height: 100vh; overflow: visible; color: var(--text); background: var(--bg); }
 .account-shell .account-topbar { position: sticky; z-index: 20; top: 0; height: var(--topbar-height); padding: 0 22px; border-bottom: 1px solid var(--line); color: var(--text); background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(12px); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; }
 .account-shell .account-brand { width: max-content; color: var(--text); display: flex; align-items: center; gap: 10px; text-decoration: none; }
-.account-shell .account-brand .brand-mark { width: 36px; height: 36px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--well); }
-.account-shell .account-brand .brand-mark span { background: var(--text); }
+
 .account-shell .account-brand strong { color: var(--text); font-size: 13px; letter-spacing: .08em; }
 .account-shell .account-brand small { color: var(--text-subtle); font-size: 9px; }
 .account-shell .account-return { color: var(--text-muted); font-size: 10px; letter-spacing: 0; }
@@ -1367,8 +1459,7 @@ summary:focus-visible {
 .mock-checkout-shell * { font-family: inherit; }
 .mock-checkout-shell .mock-checkout-topbar { position: sticky; z-index: 20; top: 0; height: var(--topbar-height); padding: 0 22px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(12px); }
 .mock-checkout-shell .account-brand { color: var(--text); }
-.mock-checkout-shell .account-brand .brand-mark { width: 36px; height: 36px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--well); }
-.mock-checkout-shell .account-brand .brand-mark span { background: var(--text); }
+
 .mock-checkout-shell .account-brand strong { color: var(--text); font-size: 13px; }
 .mock-checkout-shell .account-brand small { color: var(--text-subtle); font-size: 9px; }
 .mock-checkout-shell .mock-checkout-environment { padding: 4px 7px; border: 1px solid var(--amber-line); border-radius: var(--radius-sm); color: var(--amber); background: var(--amber-soft); font-size: 9px; }
