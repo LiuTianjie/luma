@@ -2508,51 +2508,136 @@ function ConsoleUtilities({
   error: string | null;
   onRecover: (operation: OperationListItem) => void;
 }) {
-  const recentEvents = events.slice(-4).reverse();
+  const recentEvents = events.slice(-8).reverse();
+  const recentOperations = operations.slice(0, 8);
+  const liveFlow = flow !== "idle" && flow !== "live";
   return (
     <div className="console-utilities is-single">
       {section === "activity" && (
-        <section className="utility-panel console-anchor" id="activity" aria-labelledby="activity-title">
-        <div className="utility-heading">
-          <span className="section-index">03</span>
-          <div>
-            <p>操作流</p>
-            <h2 id="activity-title">部署活动</h2>
-          </div>
-          <span className={`utility-status is-${flow}`}>{stateCopy[flow].eyebrow}</span>
-        </div>
-        {error && <p className="shore-notice" role="alert">{error}</p>}
-        {recentEvents.length ? (
-          <ol className="activity-ledger" aria-live="polite">
-            {recentEvents.map((event) => (
-              <li key={event.eventId} className={event.level === "error" ? "is-error" : ""}>
-                <span>{String(event.cursor).padStart(2, "0")}</span>
-                <div><strong>{operationEventLabel(event)}</strong><small>{operationProgressLabel(event.phase, event.status)}</small></div>
-              </li>
-            ))}
-          </ol>
-        ) : operations.length ? (
-          <ol className="activity-ledger operation-history" aria-label="最近操作">
-            {operations.slice(0, 5).map((operation) => (
-              <li key={operation.id} className={operation.status === "failed" ? "is-error" : ""}>
-                <span>{operation.kind.split(".")[0].slice(0, 2).toUpperCase()}</span>
-                <div><strong>{operationKindLabel(operation.kind)}</strong><small>{operationProgressLabel(operation.phase, operation.status)} · {shortReference(operation.id)}</small></div>
-                <button type="button" onClick={() => onRecover(operation)} disabled={recoveryBusy !== null}>
-                  {recoveryBusy === operation.id ? <RefreshCw className="stage-spin" size={12} /> : <Activity size={12} />}
-                  {operation.terminal ? "查看" : "恢复"}
-                </button>
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <div className="utility-empty">
-            <Activity size={17} strokeWidth={1.45} />
-            <div>
-              <strong>{error ? "最近一次诊断需要处理" : "还没有部署活动"}</strong>
-              <span>{error || "开始一次诊断后，结构化进度会留在这里。"}</span>
+        <section className="utility-panel activity-panel console-anchor" id="activity" aria-labelledby="activity-title">
+          <div className="activity-toolbar">
+            <div className="activity-toolbar-copy">
+              <p className="section-kicker">操作记录</p>
+              <h2 id="activity-title">最近运行</h2>
+              <span>
+                {recentOperations.length
+                  ? `${recentOperations.length} 条操作 · 诊断与部署进度可从这里续看`
+                  : "开始诊断后，进度与失败原因会留在这里"}
+              </span>
+            </div>
+            <div className="activity-toolbar-meta">
+              <span className={`utility-status is-${flow}`}>{stateCopy[flow].eyebrow}</span>
+              {liveFlow && <span className="activity-live-dot" aria-hidden="true" />}
             </div>
           </div>
-        )}
+
+          {error && (
+            <div className="activity-alert" role="alert">
+              <span className="activity-alert-mark" aria-hidden="true">!</span>
+              <div>
+                <strong>最近一次操作未成功</strong>
+                <p>{error}</p>
+              </div>
+            </div>
+          )}
+
+          {recentEvents.length > 0 && (
+            <div className="activity-block">
+              <div className="activity-block-head">
+                <h3>当前事件流</h3>
+                <span>{recentEvents.length} 条</span>
+              </div>
+              <ol className="activity-timeline" aria-live="polite">
+                {recentEvents.map((event, index) => (
+                  <li
+                    key={event.eventId}
+                    className={[
+                      event.level === "error" ? "is-error" : "",
+                      event.level === "warning" ? "is-warning" : "",
+                      index === 0 ? "is-latest" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
+                    <span className="activity-timeline-rail" aria-hidden="true">
+                      <i />
+                    </span>
+                    <div className="activity-timeline-body">
+                      <div className="activity-timeline-top">
+                        <strong>{operationEventLabel(event)}</strong>
+                        <code>#{String(event.cursor).padStart(2, "0")}</code>
+                      </div>
+                      <small>
+                        {operationProgressLabel(event.phase, event.status)}
+                        {event.level === "error" ? " · 失败" : event.level === "warning" ? " · 需关注" : ""}
+                      </small>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {recentOperations.length > 0 ? (
+            <div className="activity-block">
+              <div className="activity-block-head">
+                <h3>操作历史</h3>
+                <span>最多显示 8 条</span>
+              </div>
+              <ul className="activity-ops" aria-label="最近操作">
+                {recentOperations.map((operation) => {
+                  const failed = operation.status === "failed";
+                  const running = !operation.terminal;
+                  return (
+                    <li
+                      key={operation.id}
+                      className={[failed ? "is-error" : "", running ? "is-running" : ""]
+                        .filter(Boolean)
+                        .join(" ")}
+                    >
+                      <span className={`activity-op-status is-${operation.status || "unknown"}`} aria-hidden="true" />
+                      <div className="activity-op-body">
+                        <div className="activity-op-top">
+                          <strong>{operationKindLabel(operation.kind)}</strong>
+                          <span className={`activity-op-pill is-${operation.status || "unknown"}`}>
+                            {operationProgressLabel(operation.phase, operation.status)}
+                          </span>
+                        </div>
+                        <small>
+                          <span>{operation.kind}</span>
+                          <span aria-hidden="true">·</span>
+                          <code>{shortReference(operation.id)}</code>
+                        </small>
+                      </div>
+                      <button
+                        type="button"
+                        className="activity-op-action"
+                        onClick={() => onRecover(operation)}
+                        disabled={recoveryBusy !== null}
+                      >
+                        {recoveryBusy === operation.id ? (
+                          <RefreshCw className="stage-spin" size={13} />
+                        ) : (
+                          <Activity size={13} />
+                        )}
+                        {operation.terminal ? "查看" : "恢复"}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : (
+            !recentEvents.length && (
+              <div className="utility-empty activity-empty">
+                <Activity size={20} strokeWidth={1.45} />
+                <div>
+                  <strong>{error ? "最近一次诊断需要处理" : "还没有部署活动"}</strong>
+                  <span>{error || "从「部署」开始一次诊断后，结构化进度会留在这里。"}</span>
+                </div>
+              </div>
+            )
+          )}
         </section>
       )}
 
