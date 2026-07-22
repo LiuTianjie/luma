@@ -258,26 +258,55 @@ summary:focus-visible {
   justify-self: end;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
 }
-.theme-toggle,
+/* One control height for theme / plan / account — no mixed sizes. */
+.console-shell .theme-toggle,
+.console-shell .plan-badge,
 .console-shell .account-button {
-  min-height: 34px;
+  box-sizing: border-box;
+  height: 32px;
+  min-height: 32px;
+  max-height: 32px;
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   color: var(--text-muted);
   background: var(--surface);
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 7px;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
   text-decoration: none;
-  cursor: pointer;
-  box-shadow: var(--shadow);
+  box-shadow: none;
+  vertical-align: middle;
 }
-.theme-toggle { width: 34px; padding: 0; justify-content: center; }
-.theme-toggle:hover,
+.console-shell .theme-toggle {
+  width: 32px;
+  padding: 0;
+  cursor: pointer;
+}
+.console-shell .theme-toggle svg,
+.console-shell .account-button svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+.console-shell .plan-badge {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: default;
+  user-select: none;
+}
+.console-shell .account-button {
+  cursor: pointer;
+  padding: 0 10px 0 9px;
+}
+.console-shell .theme-toggle:hover,
 .console-shell .account-button:hover {
   border-color: var(--line-strong);
   color: var(--text);
@@ -290,19 +319,7 @@ summary:focus-visible {
   white-space: nowrap;
   font-size: 12px;
   font-weight: 500;
-}
-.console-shell .plan-badge {
-  min-height: 28px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  background: var(--recess);
-  display: inline-flex;
-  align-items: center;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  line-height: 1;
 }
 
 .console-shell .workspace { position: relative; z-index: auto; max-width: none; margin: 0; padding: 22px; }
@@ -1922,7 +1939,7 @@ summary:focus-visible {
 .console-shell .phase-track li small,
 .console-shell .section-index,
 .console-shell .cell-label { font-size: 11px; line-height: 1.35; }
-.console-shell .plan-badge { font-size: 11px; }
+/* plan-badge shares 12px with topbar account controls */
 .console-shell small { font-weight: 400; }
 
 /* Operational text must remain readable on wide desktop canvases. */
