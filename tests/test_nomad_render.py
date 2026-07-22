@@ -95,7 +95,10 @@ replicas: 2
             job["Constraints"],
         )
         # dynamic port for edge
+        self.assertEqual(group["Networks"][0]["Mode"], "bridge")
         self.assertEqual(group["Networks"][0]["DynamicPorts"][0]["To"], 3000)
+        self.assertEqual(group["Tasks"][0]["Config"]["ports"], ["http"])
+        self.assertNotIn("network_mode", group["Tasks"][0]["Config"])
         # traefik nomad-provider service
         svc = group["Services"][0]
         self.assertEqual(svc["Provider"], "nomad")

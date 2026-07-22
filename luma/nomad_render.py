@@ -1100,7 +1100,14 @@ def _network(service: ServiceSpec) -> tuple[Dict[str, Any] | None, str | None]:
                 ],
             }
         else:
-            net = {"Mode": "host", "DynamicPorts": [{"Label": "http", "To": int(service.port)}]}
+            # Keep public edge services in an allocation network namespace and
+            # let Nomad's CNI portmap expose the scheduler-assigned host port.
+            # Traefik may reach that port through the node's Tailscale address;
+            # Docker's host-mode port binding can instead attach only to the
+            # provider-private/default host address and produce a 502 even
+            # while the container is healthy. Compose edge services already
+            # use this bridge/CNI path, so single-service rendering must match.
+            net = {"Mode": "bridge", "DynamicPorts": [{"Label": "http", "To": int(service.port)}]}
         return net, "http"
     # none / cloudflare-tunnel: only add a port if the manifest declares one.
     if service.port:
