@@ -286,7 +286,12 @@ summary:focus-visible {
 .console-shell .application-shore,
 .console-shell .utility-panel { border: 1px solid var(--line); border-radius: var(--radius-lg); color: var(--text); background: var(--surface); box-shadow: var(--shadow); backdrop-filter: none; }
 
-.console-shell .instrument { min-height: 570px; padding: 0; overflow: hidden; }
+.console-shell .instrument {
+  min-height: 570px;
+  padding: 0;
+  overflow: hidden;
+  background: var(--surface-raised);
+}
 .console-shell .instrument-topline { min-height: 39px; padding: 0 16px; border-bottom: 1px solid var(--line); color: var(--text-subtle); display: flex; align-items: center; justify-content: space-between; font-size: 9px; letter-spacing: .06em; }
 .console-shell .instrument-layout { min-height: 530px; display: grid; grid-template-columns: 132px minmax(0, 1fr) 254px; }
 .console-shell .deployment-steps { padding: 22px 14px; border-right: 1px solid var(--line); background: var(--recess); }
@@ -303,23 +308,148 @@ summary:focus-visible {
 .console-shell .phase-track li.is-complete::after { background: var(--green-line); }
 .console-shell .phase-track li.is-current { color: var(--text); }
 .console-shell .phase-track li.is-current > span { border-color: var(--accent); color: #fff; background: var(--accent); box-shadow: none; }
-.console-shell .deployment-stage { min-width: 0; padding: 28px 30px 22px; display: flex; flex-direction: column; }
+.console-shell .deployment-stage {
+  min-width: 0;
+  padding: 28px 30px 22px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
 .console-shell .instrument-copy { margin: 0 0 24px; }
 .console-shell .instrument-copy > span { display: block; margin-bottom: 8px; color: var(--accent); font-size: 9px; letter-spacing: .08em; }
 .console-shell .instrument-copy h2 { margin: 0 0 7px; color: var(--text); font-family: inherit; font-size: 24px; font-weight: 650; letter-spacing: -.025em; }
 .console-shell .instrument-copy p { max-width: 620px; margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.65; }
 
-.console-shell .source-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
-.console-shell .source-row { min-height: 86px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text); background: var(--surface); transition: background var(--motion-fast), border-color var(--motion-fast); }
-.console-shell .source-row:hover { border-color: var(--line-strong); color: var(--text); background: var(--well); transform: none; box-shadow: none; }
-.console-shell .source-icon { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--accent); background: var(--well); }
-.console-shell .source-row strong { color: var(--text); font-size: 12px; font-weight: 500; }
-.console-shell .source-row small { margin-top: 3px; color: var(--text-subtle); font-size: 10px; }
-.console-shell .source-compose { cursor: default; }
-.console-shell .source-compose:hover { border-color: var(--line); background: var(--surface); }
-.console-shell .source-badge { padding: 3px 5px; border: 1px solid var(--green-line); border-radius: var(--radius-sm); color: var(--green); background: var(--green-soft); font-size: 8px; }
-.console-shell .template-launch { min-height: 36px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text-muted); background: var(--surface); font-size: 11px; }
-.console-shell .template-launch:hover { border-color: var(--line-strong); color: var(--text); background: var(--well); }
+.console-shell .source-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+/* Structural layout was lost in the Dashboard reskin — cards looked empty. */
+.console-shell .source-row {
+  position: relative;
+  width: 100%;
+  min-height: 78px;
+  margin: 0;
+  padding: 14px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  background: var(--recess);
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: background var(--motion-fast), border-color var(--motion-fast);
+}
+.console-shell .source-row:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--well);
+  transform: none;
+  box-shadow: none;
+}
+.console-shell .source-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.console-shell .source-row input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+}
+.console-shell .source-icon {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  background: var(--surface);
+  display: grid;
+  place-items: center;
+}
+.console-shell .source-row > span:not(.source-icon):not(.source-badge) {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  align-content: center;
+}
+.console-shell .source-row strong,
+.console-shell .source-row small {
+  display: block;
+  min-width: 0;
+}
+.console-shell .source-row strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.console-shell .source-row small {
+  margin-top: 0;
+  color: var(--text-subtle);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: normal;
+}
+.console-shell .source-row > svg {
+  flex: 0 0 auto;
+  color: var(--text-subtle);
+  justify-self: end;
+}
+.console-shell .source-compose {
+  cursor: default;
+}
+.console-shell .source-compose:hover {
+  border-color: var(--line);
+  background: var(--recess);
+}
+.console-shell .source-badge {
+  justify-self: end;
+  padding: 3px 6px;
+  border: 1px solid var(--green-line);
+  border-radius: var(--radius-sm);
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.console-shell .template-launch {
+  min-height: 36px;
+  margin-top: 4px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.console-shell .template-launch:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--well);
+}
 
 .console-shell .deployment-contract { min-width: 0; padding: 22px 18px; border-left: 1px solid var(--line); background: var(--recess); display: flex; flex-direction: column; }
 .console-shell .contract-heading { padding-bottom: 12px; border-bottom: 1px solid var(--line); color: var(--text-subtle); display: flex; align-items: center; justify-content: space-between; font-size: 9px; letter-spacing: .06em; }
@@ -333,40 +463,280 @@ summary:focus-visible {
 .console-shell .contract-source { margin-top: 16px; padding: 9px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text-muted); display: flex; align-items: center; gap: 7px; font-size: 9px; }
 .console-shell .deployment-contract .trust-note { position: static; left: auto; bottom: auto; margin-top: auto; padding-top: 18px; border-top: 1px solid var(--line); line-height: 1.55; }
 
-.console-shell .source-form { color: var(--text); }
+.console-shell .source-form {
+  color: var(--text);
+  display: grid;
+  gap: 12px;
+}
+.console-shell .source-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
 .console-shell .source-form > label,
-.console-shell .source-form-grid label { color: var(--text-muted); font-size: 10px; }
+.console-shell .source-form-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 .console-shell .source-form input,
-.console-shell .source-form select { height: 38px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); color: var(--text); background: var(--recess); font-size: 12px; }
+.console-shell .source-form select {
+  min-width: 0;
+  width: 100%;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  outline: 0;
+  color: var(--text);
+  background: var(--recess);
+  font: inherit;
+  font-size: 13px;
+}
 .console-shell .source-form input:focus,
-.console-shell .source-form select:focus { border-color: var(--accent); background: var(--recess); box-shadow: 0 0 0 2px var(--accent-soft); }
+.console-shell .source-form select:focus {
+  border-color: var(--accent);
+  background: var(--recess);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.console-shell .source-form input::placeholder {
+  color: var(--text-subtle);
+}
 .console-shell .source-form-assurance,
-.console-shell .trust-note { color: var(--text-subtle); font-size: 10px; }
-.console-shell .secondary-action { min-height: 34px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); color: var(--text-muted); background: var(--surface); font-size: 11px; }
+.console-shell .trust-note {
+  color: var(--text-subtle);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.console-shell .source-form-assurance {
+  min-height: 38px;
+  align-self: end;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.console-shell .private-source-stack {
+  display: grid;
+  gap: 12px;
+}
+.console-shell .secondary-action {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.console-shell .secondary-action:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: var(--well);
+}
+.console-shell .instrument-actions {
+  min-height: 46px;
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .console-shell .capability-note,
 .console-shell .upload-selection,
 .console-shell .connection-loading,
 .console-shell .connection-notice,
-.console-shell .flow-error { border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text-muted); background: var(--well); font-size: 11px; }
+.console-shell .flow-error {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  background: var(--well);
+  font-size: 12px;
+}
+.console-shell .capability-note {
+  min-height: 120px;
+  padding: 18px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-content: center;
+  gap: 10px 12px;
+}
 .console-shell .capability-note strong,
-.console-shell .upload-selection strong { color: var(--text); font-size: 12px; }
-.console-shell .capability-note span,
-.console-shell .upload-selection span { color: var(--text-subtle); font-size: 10px; }
-.console-shell .capability-note a { color: var(--accent); font-size: 11px; }
+.console-shell .capability-note span {
+  display: block;
+}
+.console-shell .capability-note strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.console-shell .capability-note span {
+  margin-top: 6px;
+  max-width: 42ch;
+  color: var(--text-subtle);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.console-shell .capability-note a {
+  grid-column: 2;
+  justify-self: start;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.console-shell .upload-selection {
+  min-width: 0;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.console-shell .upload-selection div { min-width: 0; }
+.console-shell .upload-selection strong,
+.console-shell .upload-selection span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.console-shell .upload-selection strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.console-shell .upload-selection span {
+  margin-top: 3px;
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+.console-shell .connection-loading {
+  min-height: 64px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.console-shell .connection-notice,
+.console-shell .flow-error {
+  padding: 10px 12px;
+  line-height: 1.55;
+}
 .console-shell .flow-error,
-.console-shell .connection-notice { border-color: var(--red-line); color: var(--red); background: var(--red-soft); }
-.console-shell .connection-creator { border-color: var(--line); border-radius: var(--radius-md); background: var(--well); }
-.console-shell .connection-creator summary { color: var(--text-muted); font-size: 11px; }
-.console-shell .environment-heading strong { color: var(--text); font-size: 12px; }
+.console-shell .connection-notice {
+  border-color: var(--red-line);
+  color: var(--red);
+  background: var(--red-soft);
+}
+.console-shell .connection-creator {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--well);
+}
+.console-shell .connection-creator summary {
+  padding: 12px;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+}
+.console-shell .connection-creator summary::-webkit-details-marker { display: none; }
+.console-shell .connection-form {
+  margin: 0 12px 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.console-shell .environment-form {
+  max-height: 340px;
+  overflow: auto;
+  padding-right: 2px;
+}
+.console-shell .environment-heading {
+  padding: 2px 0 10px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+.console-shell .environment-heading strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
 .console-shell .environment-heading span,
-.console-shell .environment-label small { color: var(--text-subtle); font-size: 10px; }
-.console-shell .environment-label > span { color: var(--text-muted); font-size: 11px; }
+.console-shell .environment-label small {
+  color: var(--text-subtle);
+  font-size: 12px;
+}
+.console-shell .environment-fields {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.console-shell .environment-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 9px;
+}
+.console-shell .environment-label > span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
 
-.console-shell .diagnosis-list li { min-height: 44px; border-color: var(--line-soft); color: var(--text-muted); font-size: 11px; }
+.console-shell .diagnosis-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 0;
+}
+.console-shell .diagnosis-list li {
+  min-height: 48px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-muted);
+  font-size: 13px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
 .console-shell .diagnosis-list li.is-done { color: var(--green); }
 .console-shell .diagnosis-list li.is-current { color: var(--amber); }
-.console-shell .stage-marker { border-color: var(--line-strong); color: var(--text-muted); background: var(--well); font-size: 9px; }
-.console-shell .diagnosis-list small { color: var(--text-subtle); font-size: 9px; }
+.console-shell .diagnosis-list li.is-failed { color: var(--red); }
+.console-shell .stage-marker {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--text-muted);
+  background: var(--well);
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+}
+.console-shell .diagnosis-list li.is-done .stage-marker {
+  border-color: var(--green-line);
+  color: var(--green);
+  background: var(--green-soft);
+}
+.console-shell .diagnosis-list small {
+  color: var(--text-subtle);
+  font-size: 11px;
+}
 
 .console-shell .lake { min-height: 0; margin-top: 12px; padding: 18px; overflow: hidden; background: var(--template-canvas); }
 .console-shell .lake-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
