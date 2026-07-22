@@ -616,37 +616,41 @@ export function AccountConsole() {
               <SectionHeading
                 index="04"
                 title="套餐与付费周期"
-                note="月付或年付"
+                note="月付或年付 · 支付通道"
                 icon={Gauge}
                 id="plans-title"
               />
-              <div className="interval-switch" role="group" aria-label="付费周期">
-                <button
-                  type="button"
-                  aria-pressed={interval === "monthly"}
-                  className={interval === "monthly" ? "is-active" : ""}
-                  onClick={() => setInterval("monthly")}
-                >月付</button>
-                <button
-                  type="button"
-                  aria-pressed={interval === "yearly"}
-                  className={interval === "yearly" ? "is-active" : ""}
-                  onClick={() => setInterval("yearly")}
-                >年付</button>
-              </div>
-              <div className="interval-switch" role="group" aria-label="支付方式">
-                <button
-                  type="button"
-                  aria-pressed={paymentProvider === "wechat_pay"}
-                  className={paymentProvider === "wechat_pay" ? "is-active" : ""}
-                  onClick={() => setPaymentProvider("wechat_pay")}
-                >微信支付</button>
-                <button
-                  type="button"
-                  aria-pressed={paymentProvider === "alipay"}
-                  className={paymentProvider === "alipay" ? "is-active" : ""}
-                  onClick={() => setPaymentProvider("alipay")}
-                >支付宝</button>
+              <div className="plan-switches">
+                <div className="interval-switch" role="group" aria-label="付费周期">
+                  <button
+                    type="button"
+                    aria-pressed={interval === "monthly"}
+                    className={interval === "monthly" ? "is-active" : ""}
+                    onClick={() => setInterval("monthly")}
+                  >月付</button>
+                  <button
+                    type="button"
+                    aria-pressed={interval === "yearly"}
+                    className={interval === "yearly" ? "is-active" : ""}
+                    onClick={() => setInterval("yearly")}
+                  >年付</button>
+                </div>
+                {!resourceErrors.plans && plans ? (
+                  <div className="interval-switch" role="group" aria-label="支付方式">
+                    <button
+                      type="button"
+                      aria-pressed={paymentProvider === "wechat_pay"}
+                      className={paymentProvider === "wechat_pay" ? "is-active" : ""}
+                      onClick={() => setPaymentProvider("wechat_pay")}
+                    >微信</button>
+                    <button
+                      type="button"
+                      aria-pressed={paymentProvider === "alipay"}
+                      className={paymentProvider === "alipay" ? "is-active" : ""}
+                      onClick={() => setPaymentProvider("alipay")}
+                    >支付宝</button>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -675,20 +679,28 @@ export function AccountConsole() {
               {checkoutError && <InlineError message={checkoutError} />}
               {checkoutOrder && <CheckoutHandoff order={checkoutOrder} />}
             </div>
-            <p className="account-footnote">
-              生产环境启用微信/支付宝后，结算会打开对应渠道页面；未配置商户时会返回计费不可用。
-            </p>
+            {resourceErrors.plans ? (
+              <p className="account-footnote">
+                当前环境未开放付费通道；套餐与用量只读展示。微信/支付宝商户配置完成前不会发起真实扣款。
+              </p>
+            ) : (
+              <p className="account-footnote">
+                创建结算后会生成订单并跳转支付页。支付通道未就绪时请勿重复下单。
+              </p>
+            )}
           </section>
 
-          <section className="account-surface" aria-labelledby="support-title">
-            <SectionHeading
-              index="05"
-              title="支持工单"
-              note="失败时附上错误码与操作 ID"
-              icon={ShieldCheck}
-              id="support-title"
-            />
-            <form className="token-create-form" onSubmit={(event) => void submitSupportTicket(event)}>
+          <section className="account-surface account-support" aria-labelledby="support-title">
+            <div className="account-section-top">
+              <SectionHeading
+                index="05"
+                title="支持工单"
+                note="失败时附上错误码与操作 ID"
+                icon={ShieldCheck}
+                id="support-title"
+              />
+            </div>
+            <form className="support-ticket-form" onSubmit={(event) => void submitSupportTicket(event)}>
               <label>
                 <span>主题</span>
                 <input
@@ -708,7 +720,7 @@ export function AccountConsole() {
                   placeholder="LAE_…"
                 />
               </label>
-              <label>
+              <label className="full">
                 <span>详情</span>
                 <textarea
                   value={ticketBody}
@@ -719,24 +731,22 @@ export function AccountConsole() {
                   placeholder="描述复现步骤，并粘贴操作 ID / 请求 ID"
                 />
               </label>
-              <div className="dialog-actions">
+              <div className="form-actions">
                 <button type="submit" disabled={ticketBusy}>
                   {ticketBusy ? "提交中…" : "提交工单"}
                 </button>
+                {ticketNotice ? <span className="account-footnote" role="status">{ticketNotice}</span> : null}
               </div>
-              {ticketNotice ? <p className="account-footnote" role="status">{ticketNotice}</p> : null}
             </form>
             {tickets && tickets.length > 0 ? (
-              <ul className="token-list" aria-label="我的工单">
+              <ul className="support-ticket-list" aria-label="我的工单">
                 {tickets.map((ticket) => (
                   <li key={ticket.id}>
-                    <div>
-                      <strong>{ticket.subject}</strong>
-                      <span>
-                        {ticket.status} · {ticket.id}
-                        {ticket.errorCode ? ` · ${ticket.errorCode}` : ""}
-                      </span>
-                    </div>
+                    <strong>{ticket.subject}</strong>
+                    <span>
+                      {ticket.status} · {ticket.id}
+                      {ticket.errorCode ? ` · ${ticket.errorCode}` : ""}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -1081,41 +1091,47 @@ function PlanSounding({
 
 function CheckoutHandoff({ order }: { order: BillingOrder }) {
   const safeUrl = safeCheckoutUrl(order.checkout?.url || null);
+  const channelLabel =
+    order.provider === "mock"
+      ? "模拟结算"
+      : order.provider === "wechat_pay"
+        ? "微信支付"
+        : order.provider === "alipay"
+          ? "支付宝"
+          : "在线结算";
+  const statusLabel =
+    order.status === "pending"
+      ? "待支付"
+      : order.status === "paid"
+        ? "已支付"
+        : order.status;
   return (
     <div className="checkout-handoff">
-      <div className="checkout-handoff-mark"><CreditCard size={17} /></div>
+      <div className="checkout-handoff-mark" aria-hidden="true">
+        <CreditCard size={17} />
+      </div>
       <div>
-        <p>
-          {order.provider === "mock"
-            ? "MOCK CHECKOUT READY"
-            : order.provider === "wechat_pay"
-              ? "WECHAT PAY READY"
-              : order.provider === "alipay"
-                ? "ALIPAY READY"
-                : "CHECKOUT READY"}
-        </p>
-        <strong>{PLAN_COPY[order.plan.code].title} · {formatPrice(order.price.amountMinor, order.price.currency)}</strong>
+        <p>{channelLabel} · 订单已创建</p>
+        <strong>
+          {PLAN_COPY[order.plan.code].title} ·{" "}
+          {formatPrice(order.price.amountMinor, order.price.currency)}
+          <small> / {order.interval === "yearly" ? "年" : "月"}</small>
+        </strong>
         <span>
-          订单 {order.id} · {order.interval === "yearly" ? "年付" : "月付"} ·{" "}
-          {order.provider} · {order.status}
+          {statusLabel} · {order.id}
         </span>
-        {safeUrl && <code>{safeUrl}</code>}
+        {safeUrl ? (
+          <code title={safeUrl}>{safeUrl}</code>
+        ) : (
+          <span className="checkout-unavailable">结算地址未通过安全校验</span>
+        )}
       </div>
       {safeUrl ? (
         <a href={safeUrl} target="_blank" rel="noopener noreferrer">
-          打开
-          {order.provider === "mock"
-            ? "模拟"
-            : order.provider === "wechat_pay"
-              ? "微信"
-              : order.provider === "alipay"
-                ? "支付宝"
-                : ""}
-          结算 <ExternalLink size={13} />
+          继续{channelLabel}
+          <ExternalLink size={13} />
         </a>
-      ) : (
-        <span className="checkout-unavailable">结算地址未通过安全校验</span>
-      )}
+      ) : null}
     </div>
   );
 }
