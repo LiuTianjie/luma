@@ -187,10 +187,13 @@ class RecordingBillingStore:
         plan_code: str,
         interval: str,
         idempotency_key: str,
+        provider_code: str | None = None,
     ):
         if plan_code == "lite":
             raise ValueError("lite")
-        self.calls.append((scope, principal, plan_code, interval, idempotency_key))
+        self.calls.append(
+            (scope, principal, plan_code, interval, idempotency_key, provider_code)
+        )
         replay = self.replayed
         self.replayed = True
         return self.order(scope.tenant_id, replayed=replay)

@@ -84,7 +84,7 @@ validation 要求 AI 诊断，controller/provider 失败会返回 `diagnostic_fa
    `0600`、不可 symlink，Builder/Runtime/management/broker/admin token 彼此独立。
    检查和轮换流程见 [运维 SOP](../../../docs/lae/10-operations-troubleshooting-sop.md)。
 
-5. 生产 SMTP 必须支持隐式 TLS 465。生产 Compose 固定 `LAE_SMTP_SECURITY=tls`；API 启动时还会拒绝 Mailpit/本地域名、保留测试域发件人和缺少用户名/密码的配置。配置校验通过只表示形状有效，发布门禁仍需真实 canary、退信和送达率验证。
+5. 生产 SMTP 默认 `LAE_SMTP_SECURITY=starttls`（常见 587）或 `tls`（465 隐式 TLS）。API 启动时拒绝 Mailpit/本地域名、保留测试域发件人和缺少用户名/密码的配置。当前生产可用 Gmail App Password 过渡；长期应迁至 `itool.tech` 事务邮并配置 SPF/DKIM/DMARC。配置校验通过只表示形状有效，发布门禁仍需真实 canary、退信和送达率验证。
 6. 将 `.env.example` 复制为被 Git 忽略的 `.env`，填充后按 deployment scope 导入；不要把值贴进命令历史、YAML 或工单：
 
    ```bash
@@ -93,7 +93,7 @@ validation 要求 AI 诊断，controller/provider 失败会返回 `diagnostic_fa
 
 `LAE_DATABASE_URL` 是完整的 `postgresql+asyncpg://...` secret；它必须与 `LAE_POSTGRES_PASSWORD` 表示同一凭据。认证、Worker state、应用/部署幂等、环境变量 checksum、私有 Git connection 和 billing 使用的 HMAC key 必须彼此独立，均为至少 256-bit 随机值并以 base64 编码。`LAE_ENVIRONMENT_AEAD_KEYS` 与 `LAE_SOURCE_CONNECTION_AEAD_KEYS` 都是版本号到 32-byte AES key 的 JSON/base64 keyring；私有 Git 另有独立的版本化 HMAC keyring。当前版本由 Compose 固定为 `1`；轮换时先加入新 key，再切换 current version，旧 key 需保留到密文重加密完成。Valkey password 也必须是无换行的高熵值，避免生成的临时配置出现额外指令。`LAE_ANALYZER_IMAGE_DIGEST` 必须是固定的 `name@sha256:...`，不能是 tag。
 
-生产 Compose 显式使用 `LAE_BILLING_DRIVER=disabled`：在微信/支付宝真实 provider 尚未接入时，付费端点按 capability 返回 503，但不会让注册、Lite 应用与分析 API readiness 失败。validation 显式使用 `mock`，价格只来自服务端 `LAE_MOCK_PRICING_JSON`；checkout URL、merchant id、存储 HMAC 与回调签名 key 均需配置，两个 billing key 不得相同。Mock complete route 只在 dev/validation/test 注册，production 即使误配 mock 也会 fail closed。
+生产 Compose 默认 `LAE_BILLING_DRIVER=disabled`：付费端点按 capability 返回 503，但不会让注册、Lite 应用与分析 API readiness 失败。接入微信/支付宝时设 `LAE_BILLING_DRIVER=china`（或单渠道 `wechat_pay` / `alipay`），并注入 `LAE_BILLING_PRICING_JSON`（或 `LAE_MOCK_PRICING_JSON` 同结构）、`LAE_BILLING_HMAC_KEY` 以及渠道商户密钥：`LAE_WECHAT_*` / `LAE_ALIPAY_*`。Webhook 路径为 `/v1/billing/webhooks/wechat` 与 `/v1/billing/webhooks/alipay`（受 `X-LAE-China-Signature` 或渠道签名头保护；生产边缘应先验签再转发）。validation 仍可用 `mock`；Mock complete route 只在 dev/validation/test 注册。
 
 Production/validation Compose 都显式设置 `LAE_DEPLOYMENT_WORKER_ENABLED=1` 与 `LAE_LIFECYCLE_WORKER_ENABLED=1`。Lifecycle timeout 当前为 1800 秒；suspend/resume/restart/rollback/delete 使用独立 durable lane。普通 delete 固定 `volumePolicy=retain`，V1 rollback 只接受与 application catalog 的 service/route/volume binding 拓扑兼容的历史 deployment。PostgreSQL 17 migration-backed lifecycle 集成已通过；真实 Luma 故障/恢复演练未通过前，这些配置仍不代表生产验收完成。
 

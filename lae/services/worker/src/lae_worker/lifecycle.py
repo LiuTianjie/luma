@@ -770,6 +770,7 @@ class LifecycleStepRunner:
         config: LifecycleWorkerConfig,
         worker_id: str,
         clock: Callable[[], datetime] | None = None,
+        history_purge: Any | None = None,
     ) -> None:
         self._operations = operations
         self._contexts = contexts
@@ -778,6 +779,19 @@ class LifecycleStepRunner:
         self._config = config
         self._worker_id = worker_id
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._history_purge = history_purge
+
+    async def _maybe_purge_history(self, context: LifecycleContext) -> None:
+        if context.action != "delete" or self._history_purge is None:
+            return
+        try:
+            await self._history_purge.purge_deleted_application_history(
+                tenant_id=context.tenant_id,
+                application_id=context.application_id,
+            )
+        except Exception:
+            # Soft-delete already committed; history GC is best-effort.
+            return
 
     async def step(self, operation: OperationRecord) -> LifecycleStepResult:
         _validate_operation(operation)
@@ -821,6 +835,7 @@ class LifecycleStepRunner:
             completed = await self._states.succeed(
                 current, context, None, worker_id=self._worker_id
             )
+            await self._maybe_purge_history(context)
             return LifecycleStepResult(LifecycleStepStatus.TERMINAL, completed)
         assert context.source is not None
         try:
@@ -842,6 +857,7 @@ class LifecycleStepRunner:
             completed = await self._states.succeed(
                 current, context, runtime, worker_id=self._worker_id
             )
+            await self._maybe_purge_history(context)
             return LifecycleStepResult(LifecycleStepStatus.TERMINAL, completed)
         except LeaseLost:
             raise
@@ -850,6 +866,7 @@ class LifecycleStepRunner:
                 completed = await self._states.succeed(
                     current, context, None, worker_id=self._worker_id
                 )
+                await self._maybe_purge_history(context)
                 return LifecycleStepResult(LifecycleStepStatus.TERMINAL, completed)
             if exc.retryable:
                 return LifecycleStepResult(LifecycleStepStatus.WAITING, current)

@@ -26,6 +26,7 @@ from lae_store import (
     create_postgres_engine,
     create_session_factory,
 )
+from lae_store.application_purge import ApplicationHistoryPurgeStore
 
 from .analyze import (
     AnalysisResultRecorder,
@@ -423,6 +424,7 @@ def build_worker_from_env(
             runtime=runtime_adapter,
             config=lifecycle_config,
             worker_id=worker_id,
+            history_purge=ApplicationHistoryPurgeStore(sessions),
         )
         lifecycle_worker = LifecycleWorker(
             operations,

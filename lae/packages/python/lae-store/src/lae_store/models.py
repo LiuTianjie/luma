@@ -2286,3 +2286,28 @@ class BillingPaymentEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class SupportTicket(TimestampMixin, Base):
+    __tablename__ = "support_tickets"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open','triaged','resolved','closed')",
+            name="status",
+        ),
+        Index("ix_support_tickets_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=lambda: new_id("tkt")
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(String(8000), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(96))
+    operation_id: Mapped[str | None] = mapped_column(String(64))
+    application_id: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), nullable=False, server_default="open")

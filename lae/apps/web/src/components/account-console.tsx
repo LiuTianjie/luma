@@ -42,6 +42,7 @@ import {
   createCheckoutSession,
   createDeployToken,
   createSourceConnection,
+  createSupportTicket,
   DeployToken,
   DeployTokenIssue,
   DeployTokenScope,
@@ -53,12 +54,14 @@ import {
   listBillingPlans,
   listDeployTokens,
   listSourceConnections,
+  listSupportTickets,
   logout,
   newIdempotencyKey,
   revokeDeployToken,
   revokeSourceConnection,
   rotateDeployToken,
   SourceConnection,
+  SupportTicket,
 } from "../lib/lae-api";
 
 const DEFAULT_SCOPES: DeployTokenScope[] = [
@@ -149,9 +152,18 @@ export function AccountConsole() {
   const [issuedSecret, setIssuedSecret] = useState<IssuedSecret | null>(null);
 
   const [interval, setInterval] = useState<BillingInterval>("monthly");
+  const [paymentProvider, setPaymentProvider] = useState<"wechat_pay" | "alipay">(
+    "wechat_pay",
+  );
   const [checkoutBusy, setCheckoutBusy] = useState<BillingPlanCode | null>(null);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [checkoutOrder, setCheckoutOrder] = useState<BillingOrder | null>(null);
+  const [tickets, setTickets] = useState<SupportTicket[] | null>(null);
+  const [ticketSubject, setTicketSubject] = useState("");
+  const [ticketBody, setTicketBody] = useState("");
+  const [ticketErrorCode, setTicketErrorCode] = useState("");
+  const [ticketBusy, setTicketBusy] = useState(false);
+  const [ticketNotice, setTicketNotice] = useState<string | null>(null);
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [connectionProvider, setConnectionProvider] = useState<SourceConnection["provider"]>("github");
   const [connectionName, setConnectionName] = useState("");
@@ -187,14 +199,21 @@ export function AccountConsole() {
         setPrincipal(currentPrincipal);
         setSessionState("ready");
 
-        const [tokenResult, planResult, subscriptionResult, usageResult, connectionResult] =
-          await Promise.allSettled([
-            listDeployTokens(controller.signal),
-            listBillingPlans(controller.signal),
-            getBillingSubscription(controller.signal),
-            getBillingUsage(controller.signal),
-            listSourceConnections(controller.signal),
-          ]);
+        const [
+          tokenResult,
+          planResult,
+          subscriptionResult,
+          usageResult,
+          connectionResult,
+          ticketResult,
+        ] = await Promise.allSettled([
+          listDeployTokens(controller.signal),
+          listBillingPlans(controller.signal),
+          getBillingSubscription(controller.signal),
+          getBillingUsage(controller.signal),
+          listSourceConnections(controller.signal),
+          listSupportTickets(controller.signal),
+        ]);
         if (!active) return;
 
         const nextErrors: ResourceErrors = {};
@@ -222,6 +241,11 @@ export function AccountConsole() {
           setConnections(connectionResult.value.connections);
         } else {
           nextErrors.connections = accountErrorMessage(connectionResult.reason);
+        }
+        if (ticketResult.status === "fulfilled") {
+          setTickets(ticketResult.value.tickets);
+        } else {
+          setTickets([]);
         }
         setResourceErrors(nextErrors);
       } catch (error) {
@@ -325,8 +349,13 @@ export function AccountConsole() {
     setCheckoutError(null);
     setCheckoutOrder(null);
     try {
+      const preferChina = plan.pricing.commerciallyApproved;
       const result = await createCheckoutSession(
-        { plan: plan.code, interval },
+        {
+          plan: plan.code,
+          interval,
+          provider: preferChina ? paymentProvider : undefined,
+        },
         newIdempotencyKey("account-checkout"),
       );
       setCheckoutOrder(result.order);
@@ -334,6 +363,29 @@ export function AccountConsole() {
       setCheckoutError(accountErrorMessage(error));
     } finally {
       setCheckoutBusy(null);
+    }
+  };
+
+  const submitSupportTicket = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (ticketBusy) return;
+    setTicketBusy(true);
+    setTicketNotice(null);
+    try {
+      const result = await createSupportTicket({
+        subject: ticketSubject.trim(),
+        body: ticketBody.trim(),
+        errorCode: ticketErrorCode.trim() || null,
+      });
+      setTickets((current) => [result.ticket, ...(current || [])]);
+      setTicketSubject("");
+      setTicketBody("");
+      setTicketErrorCode("");
+      setTicketNotice(`工单已创建：${result.ticket.id}`);
+    } catch (error) {
+      setTicketNotice(accountErrorMessage(error));
+    } finally {
+      setTicketBusy(false);
     }
   };
 
@@ -582,6 +634,20 @@ export function AccountConsole() {
                   onClick={() => setInterval("yearly")}
                 >年付</button>
               </div>
+              <div className="interval-switch" role="group" aria-label="支付方式">
+                <button
+                  type="button"
+                  aria-pressed={paymentProvider === "wechat_pay"}
+                  className={paymentProvider === "wechat_pay" ? "is-active" : ""}
+                  onClick={() => setPaymentProvider("wechat_pay")}
+                >微信支付</button>
+                <button
+                  type="button"
+                  aria-pressed={paymentProvider === "alipay"}
+                  className={paymentProvider === "alipay" ? "is-active" : ""}
+                  onClick={() => setPaymentProvider("alipay")}
+                >支付宝</button>
+              </div>
             </div>
 
             {resourceErrors.plans ? (
@@ -609,6 +675,74 @@ export function AccountConsole() {
               {checkoutError && <InlineError message={checkoutError} />}
               {checkoutOrder && <CheckoutHandoff order={checkoutOrder} />}
             </div>
+            <p className="account-footnote">
+              生产环境启用微信/支付宝后，结算会打开对应渠道页面；未配置商户时会返回计费不可用。
+            </p>
+          </section>
+
+          <section className="account-surface" aria-labelledby="support-title">
+            <SectionHeading
+              index="05"
+              title="支持工单"
+              note="失败时附上错误码与操作 ID"
+              icon={ShieldCheck}
+              id="support-title"
+            />
+            <form className="token-create-form" onSubmit={(event) => void submitSupportTicket(event)}>
+              <label>
+                <span>主题</span>
+                <input
+                  value={ticketSubject}
+                  onChange={(event) => setTicketSubject(event.target.value)}
+                  maxLength={200}
+                  required
+                  placeholder="例如：部署失败无法回滚"
+                />
+              </label>
+              <label>
+                <span>错误码（可选）</span>
+                <input
+                  value={ticketErrorCode}
+                  onChange={(event) => setTicketErrorCode(event.target.value)}
+                  maxLength={96}
+                  placeholder="LAE_…"
+                />
+              </label>
+              <label>
+                <span>详情</span>
+                <textarea
+                  value={ticketBody}
+                  onChange={(event) => setTicketBody(event.target.value)}
+                  maxLength={8000}
+                  required
+                  rows={4}
+                  placeholder="描述复现步骤，并粘贴操作 ID / 请求 ID"
+                />
+              </label>
+              <div className="dialog-actions">
+                <button type="submit" disabled={ticketBusy}>
+                  {ticketBusy ? "提交中…" : "提交工单"}
+                </button>
+              </div>
+              {ticketNotice ? <p className="account-footnote" role="status">{ticketNotice}</p> : null}
+            </form>
+            {tickets && tickets.length > 0 ? (
+              <ul className="token-list" aria-label="我的工单">
+                {tickets.map((ticket) => (
+                  <li key={ticket.id}>
+                    <div>
+                      <strong>{ticket.subject}</strong>
+                      <span>
+                        {ticket.status} · {ticket.id}
+                        {ticket.errorCode ? ` · ${ticket.errorCode}` : ""}
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="account-footnote">暂无工单。</p>
+            )}
           </section>
 
           <p className="account-footnote">
@@ -951,14 +1085,33 @@ function CheckoutHandoff({ order }: { order: BillingOrder }) {
     <div className="checkout-handoff">
       <div className="checkout-handoff-mark"><CreditCard size={17} /></div>
       <div>
-        <p>{order.provider === "mock" ? "MOCK CHECKOUT READY" : "CHECKOUT READY"}</p>
+        <p>
+          {order.provider === "mock"
+            ? "MOCK CHECKOUT READY"
+            : order.provider === "wechat_pay"
+              ? "WECHAT PAY READY"
+              : order.provider === "alipay"
+                ? "ALIPAY READY"
+                : "CHECKOUT READY"}
+        </p>
         <strong>{PLAN_COPY[order.plan.code].title} · {formatPrice(order.price.amountMinor, order.price.currency)}</strong>
-        <span>订单 {order.id} · {order.interval === "yearly" ? "年付" : "月付"} · {order.status}</span>
+        <span>
+          订单 {order.id} · {order.interval === "yearly" ? "年付" : "月付"} ·{" "}
+          {order.provider} · {order.status}
+        </span>
         {safeUrl && <code>{safeUrl}</code>}
       </div>
       {safeUrl ? (
         <a href={safeUrl} target="_blank" rel="noopener noreferrer">
-          打开{order.provider === "mock" ? "模拟" : ""}结算 <ExternalLink size={13} />
+          打开
+          {order.provider === "mock"
+            ? "模拟"
+            : order.provider === "wechat_pay"
+              ? "微信"
+              : order.provider === "alipay"
+                ? "支付宝"
+                : ""}
+          结算 <ExternalLink size={13} />
         </a>
       ) : (
         <span className="checkout-unavailable">结算地址未通过安全校验</span>

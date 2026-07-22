@@ -59,6 +59,7 @@ class StrictModel(BaseModel):
 class CheckoutRequest(StrictModel):
     plan: Literal["lite", "pro", "ultra"]
     interval: Literal["monthly", "yearly"]
+    provider: Literal["mock", "wechat_pay", "alipay"] | None = None
 
 
 class MockCompleteRequest(StrictModel):
@@ -188,7 +189,7 @@ def _order_body(order: BillingOrderRecord) -> dict[str, Any]:
                 "amountMinor": order.amount_minor,
                 "currency": order.currency,
                 "pricingVersion": order.pricing_version,
-                "commerciallyApproved": False,
+                "commerciallyApproved": order.provider in {"wechat_pay", "alipay"},
             },
             "checkout": checkout,
             "paidSubscriptionId": order.paid_subscription_id,
@@ -219,39 +220,58 @@ def billing_runtime_from_env(
 ) -> BillingRuntime:
     values = os.environ if environ is None else environ
     normalized_environment = environment.strip().lower()
-    pricing_raw = values.get("LAE_MOCK_PRICING_JSON", "")
+    driver = values.get("LAE_BILLING_DRIVER", "disabled").strip().lower()
+    pricing_raw = values.get("LAE_MOCK_PRICING_JSON", "") or values.get(
+        "LAE_BILLING_PRICING_JSON", ""
+    )
     if not pricing_raw:
-        raise BillingConfigurationError("LAE_MOCK_PRICING_JSON is required")
+        raise BillingConfigurationError("billing pricing JSON is required")
     pricing = MockPricingCatalog.parse(
         pricing_raw,
         environment=normalized_environment,
+        allow_production=driver in {"china", "wechat_pay", "alipay"},
     )
     hash_key = decode_billing_key(
         values.get("LAE_BILLING_HMAC_KEY", ""), label="billing HMAC key"
     )
-    signing_key = decode_billing_key(
-        values.get("LAE_MOCK_PAYMENT_SIGNING_KEY", ""),
-        label="mock payment signing key",
-    )
-    if hash_key == signing_key:
-        raise BillingConfigurationError(
-            "billing storage and mock callback keys must be separated"
+    if driver in {"mock", "development", "dev", "test"}:
+        signing_key = decode_billing_key(
+            values.get("LAE_MOCK_PAYMENT_SIGNING_KEY", ""),
+            label="mock payment signing key",
         )
-    try:
-        checkout_ttl_seconds = int(
-            values.get("LAE_MOCK_CHECKOUT_TTL_SECONDS", "600")
-        )
-    except ValueError as exc:
-        raise BillingConfigurationError("mock checkout TTL is invalid") from exc
-    try:
-        provider = MockPaymentProvider(
-            merchant_id=values.get("LAE_MOCK_PAYMENT_MERCHANT_ID", ""),
-            checkout_base_url=values.get("LAE_MOCK_CHECKOUT_BASE_URL", ""),
-            signing_key=signing_key,
-            checkout_ttl=timedelta(seconds=checkout_ttl_seconds),
-        )
-    except ValueError as exc:
-        raise BillingConfigurationError("mock payment configuration is invalid") from exc
+        if hash_key == signing_key:
+            raise BillingConfigurationError(
+                "billing storage and mock callback keys must be separated"
+            )
+        try:
+            checkout_ttl_seconds = int(
+                values.get("LAE_MOCK_CHECKOUT_TTL_SECONDS", "600")
+            )
+        except ValueError as exc:
+            raise BillingConfigurationError("mock checkout TTL is invalid") from exc
+        try:
+            provider: PaymentProviderPort = MockPaymentProvider(
+                merchant_id=values.get("LAE_MOCK_PAYMENT_MERCHANT_ID", ""),
+                checkout_base_url=values.get("LAE_MOCK_CHECKOUT_BASE_URL", ""),
+                signing_key=signing_key,
+                checkout_ttl=timedelta(seconds=checkout_ttl_seconds),
+            )
+        except ValueError as exc:
+            raise BillingConfigurationError(
+                "mock payment configuration is invalid"
+            ) from exc
+    elif driver in {"china", "wechat_pay", "alipay"}:
+        from lae_store.china_payments import china_payment_hub_from_env
+
+        hub = china_payment_hub_from_env(values)
+        if driver == "wechat_pay":
+            provider = hub.select("wechat_pay")
+        elif driver == "alipay":
+            provider = hub.select("alipay")
+        else:
+            provider = hub
+    else:
+        raise BillingConfigurationError(f"billing driver {driver!r} is unsupported")
     store = PostgresBillingStore(
         create_session_factory(engine),
         pricing=pricing,
@@ -270,6 +290,7 @@ def create_billing_router(
     *,
     environment: str,
     mock_enabled: bool,
+    china_enabled: bool = False,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -285,6 +306,28 @@ def create_billing_router(
                 "Billing service is temporarily unavailable",
                 retryable=True,
             ) from exc
+
+    def channel_provider(billing: BillingRuntime, channel: str) -> Any:
+        provider = billing.provider
+        select = getattr(provider, "select", None)
+        if callable(select):
+            try:
+                return select(channel)
+            except ValueError as exc:
+                raise BillingHttpError(
+                    503,
+                    "LAE_BILLING_UNAVAILABLE",
+                    "Payment channel is not configured",
+                    retryable=False,
+                ) from exc
+        if getattr(provider, "code", None) != channel:
+            raise BillingHttpError(
+                503,
+                "LAE_BILLING_UNAVAILABLE",
+                "Payment channel is not configured",
+                retryable=False,
+            )
+        return provider
 
     async def read_principal(request: Request) -> Any:
         return await request.app.state.require_scoped_principal(
@@ -371,6 +414,7 @@ def create_billing_router(
                 plan_code=payload.plan,
                 interval=payload.interval,
                 idempotency_key=idempotency_key,
+                provider_code=payload.provider,
             )
         except IdempotencyKeyReused as exc:
             raise BillingHttpError(
@@ -603,6 +647,163 @@ def create_billing_router(
                 "true" if result.replayed else "false"
             )
             return _no_store(response)
+
+    if china_enabled:
+
+        async def _china_webhook(
+            *,
+            channel: str,
+            request: Request,
+            signature_header: str,
+        ) -> JSONResponse:
+            billing = runtime()
+            provider = channel_provider(billing, channel)
+            try:
+                payload = await request.json()
+            except Exception as exc:  # noqa: BLE001
+                raise BillingHttpError(
+                    400,
+                    "LAE_PAYMENT_EVENT_REJECTED",
+                    "Payment event payload is invalid",
+                ) from exc
+            if not isinstance(payload, dict):
+                raise BillingHttpError(
+                    400,
+                    "LAE_PAYMENT_EVENT_REJECTED",
+                    "Payment event payload is invalid",
+                )
+            signature = request.headers.get(signature_header) or request.headers.get(
+                "X-LAE-China-Signature"
+            )
+            if signature is None or not provider.verify_callback(payload, signature):
+                raise BillingHttpError(
+                    401,
+                    "LAE_PAYMENT_EVENT_UNAUTHENTICATED",
+                    "Payment event authentication failed",
+                )
+            order_id = str(
+                payload.get("out_trade_no")
+                or payload.get("orderId")
+                or payload.get("out_trade_no".upper())
+                or ""
+            )
+            event_id = str(
+                payload.get("transaction_id")
+                or payload.get("trade_no")
+                or payload.get("eventId")
+                or ""
+            )
+            if not order_id or not event_id:
+                raise BillingHttpError(
+                    400,
+                    "LAE_PAYMENT_EVENT_REJECTED",
+                    "Payment event is missing order or event id",
+                )
+            try:
+                order = await billing.store.get_order_by_id(order_id)
+            except (ResourceNotFound, ValueError) as exc:
+                raise BillingHttpError(
+                    404,
+                    "LAE_BILLING_ORDER_NOT_FOUND",
+                    "Billing order not found",
+                ) from exc
+            if order.provider not in {"wechat_pay", "alipay"}:
+                raise BillingHttpError(
+                    409,
+                    "LAE_PAYMENT_EVENT_REJECTED",
+                    "Payment event was rejected",
+                )
+            if order.provider != channel:
+                raise BillingHttpError(
+                    409,
+                    "LAE_PAYMENT_EVENT_REJECTED",
+                    "Payment channel does not match the order",
+                )
+            outcome_raw = str(
+                payload.get("outcome")
+                or payload.get("trade_status")
+                or payload.get("trade_state")
+                or "paid"
+            ).lower()
+            if outcome_raw in {"success", "trade_success", "paid", "success_pay"}:
+                outcome = "paid"
+            elif outcome_raw in {"closed", "canceled", "cancelled", "revoked"}:
+                outcome = "canceled"
+            elif outcome_raw in {"expired", "timeout"}:
+                outcome = "expired"
+            else:
+                outcome = "failed"
+            occurred_raw = payload.get("occurredAt") or payload.get("success_time")
+            if isinstance(occurred_raw, str) and occurred_raw:
+                try:
+                    occurred_at = datetime.fromisoformat(
+                        occurred_raw.replace("Z", "+00:00")
+                    )
+                except ValueError as exc:
+                    raise BillingHttpError(
+                        400,
+                        "LAE_PAYMENT_EVENT_REJECTED",
+                        "Payment event timestamp is invalid",
+                    ) from exc
+            else:
+                occurred_at = order.created_at
+            if occurred_at.tzinfo is None:
+                occurred_at = occurred_at.replace(tzinfo=timezone.utc)
+            try:
+                result = await billing.store.process_provider_event(
+                    ProviderPaymentEvent(
+                        idempotency_key=event_id,
+                        provider_event_id=event_id,
+                        path_order_id=order.id,
+                        reported_order_id=order.id,
+                        merchant_id=provider.merchant_id,
+                        plan_code=order.plan_code,
+                        interval=order.interval,  # type: ignore[arg-type]
+                        currency=order.currency,
+                        amount_minor=order.amount_minor,
+                        outcome=outcome,  # type: ignore[arg-type]
+                        occurred_at=occurred_at,
+                    )
+                )
+            except ResourceNotFound as exc:
+                raise BillingHttpError(
+                    404,
+                    "LAE_BILLING_ORDER_NOT_FOUND",
+                    "Billing order not found",
+                ) from exc
+            except BillingEventConflict as exc:
+                raise BillingHttpError(
+                    409,
+                    "LAE_PAYMENT_EVENT_CONFLICT",
+                    "Payment event conflicts with a previous delivery",
+                ) from exc
+            except (BillingUnavailable, ValueError) as exc:
+                raise BillingHttpError(
+                    409,
+                    "LAE_PAYMENT_EVENT_REJECTED",
+                    "Payment event was rejected",
+                ) from exc
+            response = JSONResponse(_payment_result_body(result))
+            response.headers["Idempotency-Replayed"] = (
+                "true" if result.replayed else "false"
+            )
+            return _no_store(response)
+
+        @router.post("/v1/billing/webhooks/wechat")
+        async def wechat_webhook(request: Request) -> JSONResponse:
+            return await _china_webhook(
+                channel="wechat_pay",
+                request=request,
+                signature_header="Wechatpay-Signature",
+            )
+
+        @router.post("/v1/billing/webhooks/alipay")
+        async def alipay_webhook(request: Request) -> JSONResponse:
+            return await _china_webhook(
+                channel="alipay",
+                request=request,
+                signature_header="X-Alipay-Signature",
+            )
 
     return router
 

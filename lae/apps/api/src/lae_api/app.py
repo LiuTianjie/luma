@@ -78,6 +78,7 @@ from .billing import (
     billing_runtime_from_env,
     create_billing_router,
 )
+from .support_api import create_support_router, support_store_from_engine
 from .deployment_api import deployment_service_from_env, register_deployment_routes
 from .credential_broker_api import (
     credential_broker_runtime_from_env,
@@ -717,7 +718,8 @@ def create_app(
         if (
             runtime["engine"] is not None
             and runtime["billing"] is None
-            and runtime["billing_driver"] == "mock"
+            and runtime["billing_driver"]
+            in {"mock", "china", "wechat_pay", "alipay"}
         ):
             try:
                 runtime["billing"] = billing_runtime_from_env(
@@ -728,7 +730,13 @@ def create_app(
                 # apps and analysis remain ready while every billing endpoint
                 # fails closed with 503.
                 runtime["billing_error"] = "billing unavailable"
-        elif runtime["billing_driver"] not in {"disabled", "mock"}:
+        elif runtime["billing_driver"] not in {
+            "disabled",
+            "mock",
+            "china",
+            "wechat_pay",
+            "alipay",
+        }:
             runtime["billing_error"] = "billing driver unsupported"
         yield
         if runtime["engine"] is not None:
@@ -1058,8 +1066,22 @@ def create_app(
             billing,
             environment=environment,
             mock_enabled=selected_billing_driver == "mock",
+            china_enabled=selected_billing_driver
+            in {"china", "wechat_pay", "alipay"},
         )
     )
+
+    def support_store() -> Any:
+        if runtime["engine"] is None:
+            raise ApiError(
+                503,
+                "LAE_SUPPORT_UNAVAILABLE",
+                "Support service is temporarily unavailable",
+                retryable=True,
+            )
+        return support_store_from_engine(runtime["engine"])
+
+    app.include_router(create_support_router(support_store))
 
     @app.middleware("http")
     async def request_context(request: Request, call_next: Any) -> Response:

@@ -47,6 +47,7 @@ import {
 import {
   cancelOperation,
   createDeployment,
+  createSupportTicket,
   getApplication,
   getApplicationLogs,
   getApplicationMetrics,
@@ -652,7 +653,7 @@ export function ApplicationDetailConsole({
                     action: "rollback",
                     deploymentId: rollbackTarget.id,
                     title: "回滚到上一个成功部署？",
-                    note: `目标部署 ${shortId(rollbackTarget.id)}，创建于 ${formatTimestamp(rollbackTarget.createdAt)}。LAE 会保留当前部署记录。`,
+                    note: `目标部署 ${shortId(rollbackTarget.id)}，创建于 ${formatTimestamp(rollbackTarget.createdAt)}。仅当目标版本与当前服务/路由/卷拓扑兼容时才会成功；不兼容会返回 LAE_ROLLBACK_UNAVAILABLE。LAE 会保留当前部署记录。`,
                   })
                 }
               >
@@ -804,6 +805,7 @@ export function ApplicationDetailConsole({
                 events={operationEvents}
                 error={operationError}
                 interactionLocked={interactionLocked}
+                applicationId={applicationId}
                 onDeployUpdate={(analysisId, confirmations, note) => {
                   const destructive = confirmations.length > 0;
                   if (destructive) {
@@ -1148,6 +1150,7 @@ function OperationInspector({
   events,
   error,
   interactionLocked,
+  applicationId,
   onDeployUpdate,
 }: {
   operationId: string | null;
@@ -1155,15 +1158,48 @@ function OperationInspector({
   events: OperationEvent[];
   error: string | null;
   interactionLocked: boolean;
+  applicationId: string;
   onDeployUpdate: (
     analysisId: string,
     confirmations: UpdateConfirmationCode[],
     note: string,
   ) => void;
 }) {
+  const [ticketBusy, setTicketBusy] = useState(false);
+  const [ticketNotice, setTicketNotice] = useState<string | null>(null);
   if (!operationId) {
     return <div className={styles.operationInspector}><EmptyState icon={Activity} text="选择一条部署记录查看操作事件。" /></div>;
   }
+  const submitTicket = async () => {
+    if (ticketBusy || !operation) return;
+    setTicketBusy(true);
+    setTicketNotice(null);
+    try {
+      const result = await createSupportTicket({
+        subject: `应用操作失败：${operation.kind}`,
+        body: [
+          `应用 ID：${applicationId}`,
+          `操作 ID：${operation.id}`,
+          operation.error
+            ? `错误：${operation.error.code} · ${operation.error.message}`
+            : null,
+          error ? `界面错误：${error}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        errorCode: operation.error?.code || null,
+        operationId: operation.id,
+        applicationId,
+      });
+      setTicketNotice(`工单已创建：${result.ticket.id}`);
+    } catch (cause) {
+      setTicketNotice(
+        cause instanceof LaeApiError ? cause.message : "工单提交失败，请稍后重试。",
+      );
+    } finally {
+      setTicketBusy(false);
+    }
+  };
   return (
     <div className={styles.operationInspector}>
       <div className={styles.operationHeader}>
@@ -1188,8 +1224,23 @@ function OperationInspector({
           onDeployUpdate={onDeployUpdate}
         />
       ) : null}
-      {operation?.error ? <p className={styles.operationFailure}>{operation.error.code} · {operation.error.message}</p> : null}
+      {operation?.error ? (
+        <p className={styles.operationFailure}>
+          {operation.error.code} · {operation.error.message}
+        </p>
+      ) : null}
       {error ? <p className={styles.operationFailure}>{error}</p> : null}
+      {operation?.status === "failed" ? (
+        <button
+          type="button"
+          className={styles.dangerButton}
+          disabled={ticketBusy}
+          onClick={() => void submitTicket()}
+        >
+          {ticketBusy ? "提交工单中…" : "提交支持工单"}
+        </button>
+      ) : null}
+      {ticketNotice ? <p className={styles.inlineNotice}>{ticketNotice}</p> : null}
       <div className={styles.eventTimeline}>
         {events.length ? events.map((event) => (
           <article key={event.eventId} className={event.level === "error" ? styles.eventError : undefined}>

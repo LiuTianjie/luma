@@ -37,11 +37,13 @@ import Link from "next/link";
 import { FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import {
+  cleanupDraftApplications,
   createApplication,
   createDeployment,
   createGitAnalysis,
   createSourceConnection,
   createStaticUpload,
+  createSupportTicket,
   createUploadAnalysis,
   completeStaticUpload,
   getApplication,
@@ -213,6 +215,7 @@ type ShoreApplication = {
   status: string;
   services: number;
   tone: "healthy" | "paused" | "pending" | "degraded" | "failed";
+  isDraft: boolean;
   desiredState: "running" | "suspended" | "deleted";
   lifecycleEnabled: boolean;
   rollbackDeploymentId: string | null;
@@ -554,6 +557,11 @@ export function LaeConsole() {
                     : failed
                       ? "failed"
                       : "pending",
+              isDraft:
+                application.kind === "pending" &&
+                application.currentDeploymentId === null &&
+                application.currentRevisionId === null &&
+                application.desiredState !== "deleted",
               desiredState: application.desiredState,
               lifecycleEnabled:
                 application.currentDeploymentId !== null && application.kind !== "pending",
@@ -760,6 +768,28 @@ export function LaeConsole() {
     recoveredOnLoad.current = true;
     void inspectOrRecoverOperation(active);
   }, [flow, recentOperations]);
+
+  const cleanupDrafts = async () => {
+    setCatalogNotice(null);
+    setCatalogLoading(true);
+    try {
+      const result = await cleanupDraftApplications();
+      setCatalogNotice(
+        result.deleted.length
+          ? `已删除 ${result.deleted.length} 个草稿应用。`
+          : "没有可清理的草稿应用。",
+      );
+      setCatalogRefresh((value) => value + 1);
+    } catch (error) {
+      setCatalogNotice(
+        error instanceof LaeApiError
+          ? error.message
+          : "草稿清理失败，请稍后重试。",
+      );
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
 
   const runLifecycleAction = async (
     application: ShoreApplication,
@@ -1400,6 +1430,7 @@ export function LaeConsole() {
                   loading={catalogLoading}
                   notice={catalogNotice}
                   onRefresh={() => setCatalogRefresh((value) => value + 1)}
+                  onCleanupDrafts={() => void cleanupDrafts()}
                   busyApplicationIds={lifecycleBusy}
                   onAction={runLifecycleAction}
                   onConfirmAction={(application, action) =>
@@ -2536,6 +2567,7 @@ function ApplicationShore({
   loading,
   notice,
   onRefresh,
+  onCleanupDrafts,
   busyApplicationIds,
   onAction,
   onConfirmAction,
@@ -2546,6 +2578,7 @@ function ApplicationShore({
   loading: boolean;
   notice: string | null;
   onRefresh: () => void;
+  onCleanupDrafts: () => void;
   busyApplicationIds: Set<string>;
   onAction: (application: ShoreApplication, action: ApplicationAction) => void;
   onConfirmAction: (
@@ -2560,6 +2593,7 @@ function ApplicationShore({
   const attentionCount = applications.filter((app) =>
     ["pending", "degraded", "failed"].includes(app.tone),
   ).length;
+  const draftCount = applications.filter((app) => app.isDraft).length;
   return (
     <section
       className="application-shore console-anchor"
@@ -2583,6 +2617,18 @@ function ApplicationShore({
           <RefreshCw className={loading ? "is-spinning" : undefined} size={14} />
           {loading ? "同步中" : "刷新"}
         </button>
+        {authenticated && draftCount > 0 ? (
+          <button
+            className="shore-refresh"
+            type="button"
+            onClick={onCleanupDrafts}
+            disabled={loading}
+            title="删除尚未部署的草稿应用，减少清单噪音"
+          >
+            <Trash2 size={14} />
+            清理草稿 ({draftCount})
+          </button>
+        ) : null}
         {notice && <p className="shore-notice" role="status">{notice}</p>}
       </header>
       <div className="application-ribbon">
@@ -2762,6 +2808,38 @@ function ConsoleUtilities({
   const recentOperations = operations.slice(0, 8);
   const liveFlow = flow !== "idle" && flow !== "live";
   const detailEvents = (inspectedEvents.length ? inspectedEvents : []).slice().reverse();
+  const [ticketBusy, setTicketBusy] = useState(false);
+  const [ticketNotice, setTicketNotice] = useState<string | null>(null);
+  const submitTicketForOperation = async (operation: OperationListItem) => {
+    if (ticketBusy) return;
+    setTicketBusy(true);
+    setTicketNotice(null);
+    try {
+      const code = operation.error?.code || null;
+      const result = await createSupportTicket({
+        subject: `操作失败：${operationKindLabel(operation.kind)}`,
+        body: [
+          `操作 ID：${operation.id}`,
+          code ? `错误码：${code}` : null,
+          operation.error?.message ? `错误信息：${operation.error.message}` : null,
+          inspectNotice ? `界面提示：${inspectNotice}` : null,
+          error ? `额外错误：${error}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        errorCode: code,
+        operationId: operation.id,
+        applicationId: operation.applicationId || null,
+      });
+      setTicketNotice(`工单已创建：${result.ticket.id}（也可在账户中心查看）`);
+    } catch (cause) {
+      setTicketNotice(
+        cause instanceof LaeApiError ? cause.message : "工单提交失败，请稍后重试。",
+      );
+    } finally {
+      setTicketBusy(false);
+    }
+  };
   return (
     <div className="console-utilities is-single">
       {section === "activity" && (
@@ -2815,6 +2893,16 @@ function ConsoleUtilities({
                       去部署台
                     </button>
                   )}
+                  {inspectedOperation.status === "failed" && (
+                    <button
+                      type="button"
+                      className="activity-op-action"
+                      disabled={ticketBusy}
+                      onClick={() => void submitTicketForOperation(inspectedOperation)}
+                    >
+                      {ticketBusy ? "提交中…" : "提交工单"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="activity-op-action"
@@ -2825,7 +2913,10 @@ function ConsoleUtilities({
                 </div>
               </div>
 
-              {(inspectNotice || (error && inspectedOperation.status === "failed")) && (
+              {(inspectNotice ||
+                ticketNotice ||
+                (error && inspectedOperation.status === "failed") ||
+                inspectedOperation.error) && (
                 <div className="activity-alert" role="alert">
                   <span className="activity-alert-mark" aria-hidden="true">!</span>
                   <div>
@@ -2834,7 +2925,19 @@ function ConsoleUtilities({
                         ? "操作未成功"
                         : "操作提示"}
                     </strong>
-                    <p>{inspectNotice || error}</p>
+                    <p>
+                      {inspectedOperation.error
+                        ? `${inspectedOperation.error.code}：${inspectedOperation.error.message}`
+                        : inspectNotice || error}
+                    </p>
+                    {ticketNotice ? <p>{ticketNotice}</p> : null}
+                    {inspectedOperation.error?.code ? (
+                      <p>
+                        错误码 <code>{inspectedOperation.error.code}</code>
+                        ，可提交工单并由支持人员对照操作 ID{" "}
+                        <code>{shortReference(inspectedOperation.id)}</code> 排查。
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               )}

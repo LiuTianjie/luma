@@ -39,9 +39,12 @@
 
 ## 4. 发布基线
 
-- Luma 正式版本：`v0.1.258`，release commit `a16a81001a2aaaf936947074b3d98c98882f1849`。
-- Control 镜像：`ghcr.io/liutianjie/luma-control:v0.1.258`。
-- 在线节点 `manager/bot/builder/lab/m4/tecent` 已升级到 `0.1.258`。
+> 2026-07-22 注：线上 Luma Control 已迭代到 `0.1.27x` 一带；下表保留 2026-07-15
+> validation 冻结点。以 `luma status` / Nomad job image 为准，勿把本节当作永远当前版本。
+
+- Luma 正式版本（2026-07-15 冻结）：`v0.1.258`，release commit `a16a81001a2aaaf936947074b3d98c98882f1849`。
+- Control 镜像：`ghcr.io/liutianjie/luma-control:v0.1.258`（冻结点）。
+- 在线节点 `manager/bot/builder/lab/m4/tecent` 已升级到 `0.1.258`（冻结点）。
 - `gaojiu` 当前离线，无法升级；`blg` 按明确要求不处理；`aly` 为历史节点，不参与调度。
 - 平台镜像全部由 Builder 构建并写入 Builder registry；manager 不承载 registry。
 

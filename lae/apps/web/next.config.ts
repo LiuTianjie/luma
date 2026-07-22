@@ -31,6 +31,14 @@ const nextConfig: NextConfig = {
         source: "/v1/:path*",
         destination: `${apiOrigin}/v1/:path*`,
       },
+      {
+        source: "/health/:path*",
+        destination: `${apiOrigin}/health/:path*`,
+      },
+      {
+        source: "/version",
+        destination: `${apiOrigin}/version`,
+      },
     ];
   },
   async headers() {

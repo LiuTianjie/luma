@@ -497,11 +497,17 @@ export class LaeApiError extends Error {
     retryable?: boolean;
   }) {
     const code = ERROR_CODE.test(input.code) ? input.code : "LAE_API_REQUEST_FAILED";
-    super(publicMessage(input.status, code));
+    const base = publicMessage(input.status, code);
+    const requestId = input.requestId || null;
+    super(
+      requestId
+        ? `${base}（请求 ${requestId.slice(0, 12)}）`
+        : base,
+    );
     this.name = "LaeApiError";
     this.code = code;
     this.status = input.status;
-    this.requestId = input.requestId || null;
+    this.requestId = requestId;
     this.retryable = Boolean(input.retryable);
   }
 }
@@ -603,13 +609,21 @@ export async function getBillingUsage(signal?: AbortSignal) {
 }
 
 export async function createCheckoutSession(
-  input: { plan: "pro" | "ultra"; interval: BillingInterval },
+  input: {
+    plan: "pro" | "ultra";
+    interval: BillingInterval;
+    provider?: "mock" | "wechat_pay" | "alipay" | null;
+  },
   idempotencyKey: string,
   signal?: AbortSignal,
 ) {
   return requestJson<{ order: BillingOrder }>("/billing/checkout-sessions", {
     method: "POST",
-    body: input,
+    body: {
+      plan: input.plan,
+      interval: input.interval,
+      ...(input.provider ? { provider: input.provider } : {}),
+    },
     idempotencyKey,
     mutation: true,
     signal,
@@ -644,6 +658,70 @@ export async function listApplications(signal?: AbortSignal) {
   return requestJson<{ applications: ApplicationSummary[] }>("/applications", {
     signal,
   });
+}
+
+export type SupportTicket = {
+  id: string;
+  subject: string;
+  status: string;
+  errorCode: string | null;
+  operationId: string | null;
+  applicationId: string | null;
+  createdAt: string;
+};
+
+export async function createSupportTicket(
+  input: {
+    subject: string;
+    body: string;
+    errorCode?: string | null;
+    operationId?: string | null;
+    applicationId?: string | null;
+  },
+  signal?: AbortSignal,
+) {
+  return requestJson<{ ticket: SupportTicket }>("/support/tickets", {
+    method: "POST",
+    body: {
+      subject: input.subject,
+      body: input.body,
+      errorCode: input.errorCode || null,
+      operationId: input.operationId || null,
+      applicationId: input.applicationId || null,
+    },
+    mutation: true,
+    signal,
+  });
+}
+
+export async function listSupportTickets(signal?: AbortSignal) {
+  return requestJson<{ tickets: SupportTicket[] }>("/support/tickets", {
+    signal,
+  });
+}
+
+/** Delete every pending draft app (no deployment) — reduces list noise. */
+export async function cleanupDraftApplications(signal?: AbortSignal) {
+  const catalog = await listApplications(signal);
+  const drafts = catalog.applications.filter(
+    (app) =>
+      app.kind === "pending" &&
+      !app.currentDeploymentId &&
+      !app.currentRevisionId &&
+      app.desiredState !== "deleted",
+  );
+  const deleted: string[] = [];
+  for (const app of drafts) {
+    await requestApplicationAction(
+      app.id,
+      "delete",
+      {},
+      newIdempotencyKey(`draft-del-${app.id.slice(-8)}`),
+      signal,
+    );
+    deleted.push(app.id);
+  }
+  return { deleted };
 }
 
 export async function listTemplates(signal?: AbortSignal) {
@@ -1283,26 +1361,42 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function publicMessage(status: number, code: string) {
-  if (code === "LAE_APPLICATION_QUOTA_EXCEEDED") {
-    return "当前套餐的应用数量已达上限；请删除不再使用的应用，或升级套餐后继续。";
-  }
-  if (code === "LAE_TEMPLATE_LAUNCH_CONFLICT") {
-    return "模板创建与当前应用状态冲突；刷新应用列表后再试一次。";
-  }
-  if (code === "LAE_IDEMPOTENCY_KEY_REUSED") {
-    return "这次请求标识已经用于其他操作；请重新发起。";
-  }
-  if (code === "LAE_UPLOAD_ORIGIN_REJECTED") {
-    return "上传域名未进入当前 Web 构建的允许列表；请联系管理员重新发布 Web。";
-  }
-  if (code === "LAE_UPLOAD_TRANSFER_FAILED") {
-    return "文件未能传入对象存储；请检查网络后重试。";
-  }
+  const messages: Record<string, string> = {
+    LAE_APPLICATION_QUOTA_EXCEEDED:
+      "当前套餐的应用数量已达上限；请删除不再使用的应用，或升级套餐后继续。",
+    LAE_TEMPLATE_LAUNCH_CONFLICT:
+      "模板创建与当前应用状态冲突；刷新应用列表后再试一次。",
+    LAE_IDEMPOTENCY_KEY_REUSED: "这次请求标识已经用于其他操作；请重新发起。",
+    LAE_UPLOAD_ORIGIN_REJECTED:
+      "上传域名未进入当前 Web 构建的允许列表；请联系管理员重新发布 Web。",
+    LAE_UPLOAD_TRANSFER_FAILED: "文件未能传入对象存储；请检查网络后重试。",
+    LAE_ARTIFACT_TRANSFER_UNAVAILABLE:
+      "构建产物传输通道暂时不可用（产物中转失败）。请稍后重试；若持续出现，可提交工单并附上操作 ID。",
+    LAE_ROLLBACK_UNAVAILABLE:
+      "当前没有可回滚的健康版本，或目标版本与现有服务拓扑不兼容。",
+    LAE_APPLICATION_STATE_CONFLICT:
+      "应用状态不允许此操作（可能正在部署/删除中）。请刷新后重试。",
+    LAE_BILLING_UNAVAILABLE:
+      "计费服务未启用或暂时不可用。微信/支付宝支付需在平台配置商户后开放。",
+    LAE_BILLING_PLAN_INVALID: "所选套餐或计费周期不可购买。",
+    LAE_BILLING_ORDER_NOT_FOUND: "找不到该订单。",
+    LAE_CAPACITY_UNAVAILABLE:
+      "当前区域暂时没有足够容量完成部署。请稍后重试或联系支持。",
+    LAE_IDENTITY_UNAVAILABLE: "登录服务暂时不可用，请稍后重试。",
+    LAE_ANALYSIS_UNAVAILABLE: "诊断服务暂时不可用，请稍后重试。",
+    LAE_UPDATE_SOURCE_UNAVAILABLE:
+      "应用没有可复用的 Git 来源，无法执行更新检查。",
+    LAE_SOURCE_CONNECTIONS_UNAVAILABLE:
+      "私有代码源连接服务暂时不可用，请稍后重试。",
+  };
+  if (messages[code]) return messages[code];
   if (status === 401) return "请先登录 LAE。";
   if (status === 403) return "当前凭据没有执行此操作的权限。";
   if (status === 409) return "状态已发生变化，请刷新后重试。";
   if (status === 422) return "当前应用还不满足部署条件。";
   if (status === 429) return "请求过于频繁或已达到当前套餐限制。";
   if (status >= 500) return "LAE 暂时不可用，请稍后重试。";
-  return "请求未能完成，请检查输入。";
+  return code.startsWith("LAE_")
+    ? `操作失败（${code}）。可复制错误码提交工单。`
+    : "请求未能完成，请检查输入。";
 }

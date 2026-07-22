@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .errors import ResourceNotFound
 from .ids import require_opaque_id
-from .models import Analysis, Operation, OperationEvent, Upload
+from .models import Analysis, Application, Operation, OperationEvent, Upload
 from .repositories import OperationRecord, OperationStore, TenantScope
 from .state import TERMINAL_OPERATION_STATUSES, OperationStatus
 from .update_checks import UpdateCheckResult, public_update_check_from_operation
@@ -473,6 +473,14 @@ class PostgresPublicResourceStore:
 
         async with self._sessions() as session:
             rows = (await session.execute(statement)).all()
+            active_apps = set(
+                await session.scalars(
+                    select(Application.id).where(
+                        Application.tenant_id == scope.tenant_id,
+                        Application.deleted_at.is_(None),
+                    )
+                )
+            )
 
         has_more = len(rows) > limit
         records = []
@@ -482,6 +490,12 @@ class PostgresPublicResourceStore:
                 if operation.target_type == "application"
                 else analysis_application_id or upload_application_id
             )
+            # Hide ghost history for soft-deleted applications.
+            if (
+                resolved_application_id is not None
+                and resolved_application_id not in active_apps
+            ):
+                continue
             records.append(
                 PublicOperationListRecord(
                     operation=_public_operation(operation),

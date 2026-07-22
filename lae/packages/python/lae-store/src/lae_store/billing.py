@@ -103,8 +103,13 @@ class MockPricingCatalog:
         object.__setattr__(self, "prices", MappingProxyType(copied))
 
     @classmethod
-    def parse(cls, raw: str, *, environment: str) -> MockPricingCatalog:
-        if environment.strip().lower() not in _MOCK_ENVIRONMENTS:
+    def parse(
+        cls, raw: str, *, environment: str, allow_production: bool = False
+    ) -> MockPricingCatalog:
+        if (
+            not allow_production
+            and environment.strip().lower() not in _MOCK_ENVIRONMENTS
+        ):
             raise BillingConfigurationError(
                 "mock billing is forbidden outside development/test"
             )
@@ -161,7 +166,7 @@ class ProviderCheckout:
 
 
 class PaymentProviderPort(Protocol):
-    """Minimal provider boundary; WeChat/Alipay adapters are not implemented."""
+    """Checkout + callback verification boundary (mock, WeChat Pay, Alipay)."""
 
     code: str
     merchant_id: str
@@ -400,8 +405,11 @@ async def _db_now(session: AsyncSession) -> datetime:
     return value
 
 
+_IMPLEMENTED_PROVIDER_CODES = frozenset({"mock", "wechat_pay", "alipay"})
+
+
 class PostgresBillingStore:
-    """Tenant-fenced billing read model and signed mock fulfillment state."""
+    """Tenant-fenced billing read model and provider fulfillment state."""
 
     def __init__(
         self,
@@ -411,9 +419,11 @@ class PostgresBillingStore:
         provider: PaymentProviderPort,
         hash_key: bytes,
     ) -> None:
-        if provider.code != "mock":
+        # ChinaPaymentHub exposes the currently selected channel via ``code``.
+        code = getattr(provider, "code", "")
+        if code not in _IMPLEMENTED_PROVIDER_CODES and not hasattr(provider, "select"):
             raise BillingConfigurationError(
-                "only the explicit mock provider is implemented in this slice"
+                f"payment provider {code!r} is not implemented"
             )
         if not isinstance(hash_key, bytes) or len(hash_key) < 32:
             raise ValueError("billing hash key must contain at least 256 bits")
@@ -616,6 +626,7 @@ class PostgresBillingStore:
         plan_code: str,
         interval: BillingInterval,
         idempotency_key: str,
+        provider_code: str | None = None,
     ) -> BillingOrderRecord:
         if plan_code == "lite":
             raise ValueError("Lite is not a paid checkout target")
@@ -636,7 +647,12 @@ class PostgresBillingStore:
             domain="lae.billing-idempotency-key.v1",
         )
         request_hash = keyed_request_hash(
-            {"plan": plan_code, "interval": interval}, self._hash_key
+            {
+                "plan": plan_code,
+                "interval": interval,
+                "provider": provider_code or getattr(self.provider, "code", ""),
+            },
+            self._hash_key,
         )
         try:
             return await self._create_checkout_once(
@@ -646,6 +662,7 @@ class PostgresBillingStore:
                 interval=interval,
                 idempotency_hash=idempotency_hash,
                 request_hash=request_hash,
+                provider_code=provider_code,
             )
         except IntegrityError as exc:
             # A concurrent request may win the unique idempotency scope.  The
@@ -660,6 +677,12 @@ class PostgresBillingStore:
             except BillingUnavailable:
                 raise exc
 
+    def _resolve_provider(self, provider_code: str | None) -> PaymentProviderPort:
+        provider = self.provider
+        if provider_code and hasattr(provider, "select"):
+            return provider.select(provider_code)  # type: ignore[no-any-return]
+        return provider
+
     async def _create_checkout_once(
         self,
         *,
@@ -669,6 +692,7 @@ class PostgresBillingStore:
         interval: BillingInterval,
         idempotency_hash: bytes,
         request_hash: bytes,
+        provider_code: str | None = None,
     ) -> BillingOrderRecord:
         async with self._sessions() as session:
             async with session.begin():
@@ -692,24 +716,30 @@ class PostgresBillingStore:
                     raise BillingUnavailable("purchasable plan version is missing")
                 price = self.pricing.price(plan_code, interval)
                 order_id = new_id("ord")
-                checkout = self.provider.create_checkout(order_id=order_id, now=now)
+                provider = self._resolve_provider(provider_code)
+                checkout = provider.create_checkout(order_id=order_id, now=now)
                 snapshot = {
-                    "mode": "mock-development-only",
-                    "commerciallyApproved": False,
+                    "mode": (
+                        "mock-development-only"
+                        if provider.code == "mock"
+                        else "china-payment"
+                    ),
+                    "commerciallyApproved": provider.code != "mock",
                     "pricingVersion": self.pricing.version,
                     "plan": plan.code,
                     "planVersion": plan.version,
                     "interval": interval,
                     "currency": price.currency,
                     "amountMinor": price.amount_minor,
+                    "provider": provider.code,
                 }
                 order = BillingOrder(
                     id=order_id,
                     tenant_id=scope.tenant_id,
                     principal_type=principal.type,
                     principal_id=principal.id,
-                    provider=self.provider.code,
-                    provider_merchant_id=self.provider.merchant_id,
+                    provider=provider.code,
+                    provider_merchant_id=provider.merchant_id,
                     plan_version_id=plan.id,
                     plan_code=plan.code,
                     interval=interval,
@@ -789,6 +819,17 @@ class PostgresBillingStore:
                     order.updated_at = now
                     await session.flush()
                 return self._order_record(order)
+
+    async def get_order_by_id(self, order_id: str) -> BillingOrderRecord:
+        """Load an order for authenticated provider webhooks (no tenant cookie)."""
+        require_opaque_id(order_id, prefix="ord")
+        async with self._sessions() as session:
+            order = await session.scalar(
+                select(BillingOrder).where(BillingOrder.id == order_id)
+            )
+            if order is None:
+                raise ResourceNotFound("billing order not found")
+            return self._order_record(order)
 
     async def process_provider_event(
         self, command: ProviderPaymentEvent
@@ -1039,11 +1080,13 @@ class PostgresBillingStore:
     ) -> BillingOrderRecord:
         checkout_url = None
         if order.status == "pending":
-            checkout_url = self.provider.create_checkout(
+            provider = self._resolve_provider(
+                None if order.provider == "mock" else order.provider
+            )
+            checkout_url = provider.create_checkout(
                 order_id=order.id,
-                now=order.checkout_expires_at - getattr(
-                    self.provider, "checkout_ttl", timedelta(minutes=10)
-                ),
+                now=order.checkout_expires_at
+                - getattr(provider, "checkout_ttl", timedelta(minutes=10)),
             ).url
         if plan_version is None:
             snapshot_version = order.pricing_snapshot.get("planVersion")
