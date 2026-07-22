@@ -239,12 +239,36 @@ type GitSourceInput = {
 };
 
 const stateCopy: Record<FlowState, { eyebrow: string; title: string; note: string }> = {
-  idle: { eyebrow: "新建部署", title: "从哪里开始？", note: "选择源码，LAE Agent 会先判断它是否适合部署。" },
-  configuring: { eyebrow: "来源 · 01", title: "给应用一个起点", note: "来源信息只用于创建受租户隔离的诊断任务。" },
-  diagnosing: { eyebrow: "诊断 · 02", title: "正在读懂这个应用", note: "源码仅在隔离的 Luma Builder 中展开与分析。" },
-  ready: { eyebrow: "就绪 · 03", title: "可以部署", note: "拓扑与端口已确认。部署文件将由 LAE 保存，无需写回仓库。" },
-  deploying: { eyebrow: "部署中 · 04", title: "正在部署服务", note: "构建镜像、分配路由并逐个验证 HTTP 服务。" },
-  live: { eyebrow: "已上线 · 05", title: "部署完成", note: "应用已进入列表，域名在更新与重启时保持稳定。" },
+  idle: {
+    eyebrow: "新建部署",
+    title: "从哪里开始？",
+    note: "选择 Git、上传产物或模板。选中模板不会创建应用，提交确认后才会。",
+  },
+  configuring: {
+    eyebrow: "来源 · 01",
+    title: "给应用一个起点",
+    note: "填写名称与来源后才会创建应用并启动诊断；可随时点「重新选择」放弃。",
+  },
+  diagnosing: {
+    eyebrow: "诊断 · 02",
+    title: "正在读懂这个应用",
+    note: "源码仅在隔离的 Luma Builder 中展开与分析。",
+  },
+  ready: {
+    eyebrow: "就绪 · 03",
+    title: "可以部署",
+    note: "拓扑与端口已确认。确认部署计划后再提交到 Luma。",
+  },
+  deploying: {
+    eyebrow: "部署中 · 04",
+    title: "正在部署服务",
+    note: "构建镜像、分配路由并逐个验证 HTTP 服务。",
+  },
+  live: {
+    eyebrow: "已上线 · 05",
+    title: "部署完成",
+    note: "应用已进入列表，域名在更新与重启时保持稳定。",
+  },
 };
 
 const operationKindCopy: Record<string, string> = {
@@ -555,11 +579,13 @@ export function LaeConsole() {
   const selectSource = (nextSource: SourceKind) => {
     stopRun();
     setSource(nextSource);
+    if (nextSource !== "template") setSelectedTemplate(null);
     setFlowError(null);
     setOperationEvents([]);
     setDeploymentConfiguration(null);
     setDeploymentPlan(null);
     setLiveDeployment(null);
+    setActiveRun(null);
     setFlow("configuring");
   };
 
@@ -567,6 +593,22 @@ export function LaeConsole() {
     if (!file) return;
     setSelectedFile(file);
     selectSource("file");
+  };
+
+  /** Template cards only select — no API create until the user confirms name/slug. */
+  const selectTemplate = (template: Template) => {
+    stopRun();
+    setSelectedTemplate(template);
+    setSource("template");
+    setSelectedFile(null);
+    setFlowError(null);
+    setOperationEvents([]);
+    setDeploymentConfiguration(null);
+    setDeploymentPlan(null);
+    setLiveDeployment(null);
+    setActiveRun(null);
+    setFlow("configuring");
+    setActiveSection("deployment");
   };
 
   const watchOperation = async (operationId: string, signal: AbortSignal) => {
@@ -956,28 +998,36 @@ export function LaeConsole() {
     }
   };
 
-  const beginTemplateDiagnosis = async (template: Template) => {
-    setSelectedTemplate(template);
-    setSource("template");
+  const beginTemplateDiagnosis = async (input: { name: string; slug: string }) => {
+    const template = selectedTemplate;
+    if (!template) {
+      setFlowError("请先选择一个模板。");
+      return;
+    }
     if (!principal) {
       setFlowError("请先注册或登录，再从模板创建属于你的应用。");
+      return;
+    }
+    const name = input.name.trim();
+    const slug = input.slug.trim();
+    if (!name || !slug) {
+      setFlowError("请填写应用名称与 slug。");
       return;
     }
     stopRun();
     const controller = new AbortController();
     runController.current = controller;
+    setSource("template");
     setFlowError(null);
     setOperationEvents([]);
     setDeploymentConfiguration(null);
     setDeploymentPlan(null);
     setFlow("diagnosing");
     try {
+      // Application row is created only here — after explicit confirm.
       const result = await launchTemplate(
         template.id,
-        {
-          name: `${template.name} Application`,
-          slug: `${template.id}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`,
-        },
+        { name, slug },
         newIdempotencyKey("template-launch"),
         controller.signal,
       );
@@ -1130,6 +1180,7 @@ export function LaeConsole() {
     stopRun();
     setFlow("idle");
     setSource(null);
+    setSelectedTemplate(null);
     setSelectedFile(null);
     setActiveRun(null);
     setOperationEvents([]);
@@ -1255,6 +1306,7 @@ export function LaeConsole() {
                       onFile={selectFile}
                       onAnalyzeGit={beginGitDiagnosis}
                       onAnalyzeUpload={beginUploadDiagnosis}
+                      onAnalyzeTemplate={beginTemplateDiagnosis}
                       onSaveEnvironment={saveEnvironment}
                       onDeploy={deploy}
                       onReset={resetFlow}
@@ -1263,7 +1315,7 @@ export function LaeConsole() {
                     <TemplateLake
                       templates={templates}
                       selected={selectedTemplate}
-                      onLaunch={beginTemplateDiagnosis}
+                      onSelect={selectTemplate}
                       loading={templatesLoading}
                       notice={templatesNotice}
                       reduced={Boolean(reduceMotion)}
@@ -1393,14 +1445,14 @@ function Header({
 function TemplateLake({
   templates,
   selected,
-  onLaunch,
+  onSelect,
   loading,
   notice,
   reduced,
 }: {
   templates: Template[];
   selected: Template | null;
-  onLaunch: (template: Template) => void | Promise<void>;
+  onSelect: (template: Template) => void;
   loading: boolean;
   notice: string | null;
   reduced: boolean;
@@ -1412,7 +1464,7 @@ function TemplateLake({
           <span className="section-index">01</span>
           <div>
             <h2 id="template-title">模板起点</h2>
-            <p>已通过 LAE Agent 验证的模板；点击后创建诊断任务。</p>
+            <p>已通过 LAE Agent 验证的模板；点击仅选中，确认名称后再创建应用。</p>
           </div>
         </div>
         <span className="lake-note">{loading ? "同步模板目录" : `${templates.length} 个已验证模板`}</span>
@@ -1438,7 +1490,8 @@ function TemplateLake({
                 duration: 0.18,
                 delay: Math.min(index * 0.035, 0.18),
               }}
-              onClick={() => void onLaunch(template)}
+              onClick={() => onSelect(template)}
+              aria-pressed={active}
               aria-current={active ? "step" : undefined}
             >
               <span className="template-icon"><Icon size={22} strokeWidth={1.45} /></span>
@@ -1447,7 +1500,9 @@ function TemplateLake({
                 <small>{template.stack}</small>
                 <em>{template.description}</em>
               </span>
-              <span className="template-action">部署 <ArrowRight size={13} /></span>
+              <span className="template-action">
+                {active ? "已选中 · 去确认" : "选择"} <ArrowRight size={13} />
+              </span>
             </motion.button>
           );
         })}
@@ -1473,6 +1528,7 @@ function DeploymentInstrument({
   onFile,
   onAnalyzeGit,
   onAnalyzeUpload,
+  onAnalyzeTemplate,
   onSaveEnvironment,
   onDeploy,
   onReset,
@@ -1494,6 +1550,7 @@ function DeploymentInstrument({
   onFile: (file: File | null) => void;
   onAnalyzeGit: (input: GitSourceInput) => Promise<void>;
   onAnalyzeUpload: (input: { name: string; slug: string; file: File }) => Promise<void>;
+  onAnalyzeTemplate: (input: { name: string; slug: string }) => Promise<void>;
   onSaveEnvironment: (
     values: Record<string, { value: string }>,
   ) => Promise<void>;
@@ -1586,10 +1643,12 @@ function DeploymentInstrument({
             ) : (
               <SourceConfiguration
                 source={source}
+                template={template}
                 selectedFile={selectedFile}
                 authenticated={authenticated}
                 onAnalyzeGit={onAnalyzeGit}
                 onAnalyzeUpload={onAnalyzeUpload}
+                onAnalyzeTemplate={onAnalyzeTemplate}
               />
             )
           ) : flow === "ready" && plan ? (
@@ -1759,16 +1818,20 @@ function SourceButton({ icon: Icon, title, note, onClick }: { icon: LucideIcon; 
 
 function SourceConfiguration({
   source,
+  template,
   selectedFile,
   authenticated,
   onAnalyzeGit,
   onAnalyzeUpload,
+  onAnalyzeTemplate,
 }: {
   source: SourceKind | null;
+  template: Template | null;
   selectedFile: File | null;
   authenticated: boolean;
   onAnalyzeGit: (input: GitSourceInput) => Promise<void>;
   onAnalyzeUpload: (input: { name: string; slug: string; file: File }) => Promise<void>;
+  onAnalyzeTemplate: (input: { name: string; slug: string }) => Promise<void>;
 }) {
   if (!authenticated) {
     return (
@@ -1798,7 +1861,110 @@ function SourceConfiguration({
       </div>
     );
   }
+  if (source === "template") {
+    return template ? (
+      <TemplateLaunchForm key={template.id} template={template} onSubmit={onAnalyzeTemplate} />
+    ) : (
+      <div className="capability-note">
+        <Sparkles size={18} />
+        <div>
+          <strong>还没有选中模板</strong>
+          <span>在下方「模板起点」点选一张卡片，再确认名称后才会创建应用。</span>
+        </div>
+      </div>
+    );
+  }
   return null;
+}
+
+function TemplateLaunchForm({
+  template,
+  onSubmit,
+}: {
+  template: Template;
+  onSubmit: (input: { name: string; slug: string }) => Promise<void>;
+}) {
+  const baseSlug = template.id
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  const [name, setName] = useState(`${template.name} Application`);
+  const [slug, setSlug] = useState(
+    `${baseSlug || "app"}-${crypto.randomUUID().replaceAll("-", "").slice(0, 6)}`,
+  );
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const Icon = template.icon;
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const nextName = name.trim();
+    const nextSlug = slug.trim().toLowerCase();
+    if (!nextName) {
+      setNotice("请填写应用名称。");
+      return;
+    }
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(nextSlug)) {
+      setNotice("slug 只能包含小写字母、数字与连字符，且不能以连字符开头或结尾。");
+      return;
+    }
+    setNotice(null);
+    setBusy(true);
+    void onSubmit({ name: nextName, slug: nextSlug }).finally(() => setBusy(false));
+  };
+
+  return (
+    <form className="source-form template-launch-form" onSubmit={submit}>
+      <div className="template-confirm-card">
+        <span className="template-confirm-icon" aria-hidden="true">
+          <Icon size={20} strokeWidth={1.5} />
+        </span>
+        <div>
+          <strong>{template.name}</strong>
+          <span>{template.stack} · 已通过 LAE Agent 验证</span>
+        </div>
+      </div>
+      <p className="source-form-assurance">
+        确认后才会创建应用并启动诊断；仅选中模板不会写入应用列表。
+      </p>
+      <div className="source-form-grid">
+        <label>
+          <span>应用名称</span>
+          <input
+            required
+            maxLength={160}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="My Application"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+        <label>
+          <span>Slug</span>
+          <input
+            required
+            maxLength={80}
+            value={slug}
+            onChange={(event) => setSlug(event.target.value.toLowerCase())}
+            placeholder="my-application"
+            autoComplete="off"
+            spellCheck={false}
+            pattern="[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+          />
+        </label>
+      </div>
+      {notice && (
+        <div className="connection-notice" role="alert">
+          {notice}
+        </div>
+      )}
+      <button className="source-submit" type="submit" disabled={busy}>
+        {busy ? "正在创建并诊断…" : "确认并开始诊断"} <ArrowRight size={15} />
+      </button>
+    </form>
+  );
 }
 
 function EnvironmentConfigurationForm({
