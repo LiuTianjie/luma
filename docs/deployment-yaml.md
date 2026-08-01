@@ -49,7 +49,7 @@ luma deploy status.yaml
 | `labels` | 否 | string[] | 追加服务标签。公开 Traefik 路由所需的 service tags 会自动生成。 |
 | `networks` | 否 | string[] | 追加网络声明。公开服务的入口由 Traefik Nomad provider 自动发现。 |
 | `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动挂上 egress 代理和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
-| `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，用于限制 CPU/内存。支持 `limits` 和 `reservations`。Luma 把 `cpus` 换算成 Nomad CPU MHz，把内存后缀串换算成 Nomad memory MB。 |
+| `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，用于限制 CPU/内存。支持 `limits` 和 `reservations`。Luma 把 `cpus` 换算成 Nomad CPU MHz，把 reservation 映射到 `memory`、limit 映射到 `memory_max`；首次部署这类任务时会自动启用 Nomad 内存超卖，确保 limit 真正成为容器硬上限。 |
 | `healthcheck` | 否 | map | 渲染成 Nomad `check`（脚本/http）。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
 | `publishPort` | 公开服务可用 | integer | 显式启用 Nomad bridge 端口映射，把宿主机 `publishPort` 转到容器 `port`。Linux 节点可用；Mac/OrbStack 节点不要设置，保持 host mode 并让 route 指向真实 `port`。 |
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随实际运行 allocation 所在的 home 节点自动推导。 |

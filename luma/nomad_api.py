@@ -87,6 +87,8 @@ def deploy_to_nomad(
     if not job_id:
         raise LumaError(f"rendered Nomad job for {slug} missing Job.ID")
 
+    _ensure_memory_oversubscription(client, job, slug=slug)
+
     timeout_seconds = _rollout_timeout_seconds(
         config,
         rollout_timeout_seconds,
@@ -218,6 +220,74 @@ def deploy_to_nomad(
         f"Nomad job {slug} rollout healthy "
         f"(v{target_version}, {healthy_allocations} allocations, eval {eval_id}{suffix})"
     )
+
+
+def _ensure_memory_oversubscription(
+    client: "NomadApi",
+    job: Mapping[str, Any],
+    *,
+    slug: str,
+) -> None:
+    """Enable the scheduler feature required for Nomad ``memory_max``.
+
+    Compose exposes reservations and limits as separate values. Nomad silently
+    treats the reservation as the Docker hard limit when cluster memory
+    oversubscription is disabled, so a rendered 512 MiB reservation plus 2 GiB
+    limit otherwise becomes a real 512 MiB container. Keep deployments that do
+    not use ``MemoryMaxMB`` untouched and make the cluster capability explicit
+    before registering jobs that do.
+    """
+    if not _job_uses_memory_max(job):
+        return
+
+    raw = client.request("GET", "/v1/operator/scheduler/configuration")
+    scheduler = raw.get("SchedulerConfig") if isinstance(raw, dict) else None
+    if not isinstance(scheduler, dict):
+        raise LumaError(
+            f"Nomad scheduler configuration for {slug} is invalid; "
+            "cannot safely apply memory limits"
+        )
+    if scheduler.get("MemoryOversubscriptionEnabled") is True:
+        return
+
+    updated = dict(scheduler)
+    updated["MemoryOversubscriptionEnabled"] = True
+    response = client.request(
+        "PUT",
+        "/v1/operator/scheduler/configuration",
+        updated,
+    )
+    if isinstance(response, dict) and response.get("Updated") is True:
+        return
+
+    current = client.request("GET", "/v1/operator/scheduler/configuration")
+    current_scheduler = (
+        current.get("SchedulerConfig") if isinstance(current, dict) else None
+    )
+    if (
+        not isinstance(current_scheduler, dict)
+        or current_scheduler.get("MemoryOversubscriptionEnabled") is not True
+    ):
+        raise LumaError(
+            f"Nomad did not enable memory oversubscription for {slug}; "
+            "refusing to deploy misleading reservation/limit values"
+        )
+
+
+def _job_uses_memory_max(job: Mapping[str, Any]) -> bool:
+    for group in job.get("TaskGroups") or []:
+        if not isinstance(group, Mapping):
+            continue
+        for task in group.get("Tasks") or []:
+            if not isinstance(task, Mapping):
+                continue
+            resources = task.get("Resources")
+            if not isinstance(resources, Mapping):
+                continue
+            value = resources.get("MemoryMaxMB")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                return True
+    return False
 
 
 def _rollout_timeout_seconds(

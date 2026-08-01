@@ -175,7 +175,7 @@ luma storage set company-nfs \
 
 ## Runtime Resources And OOM
 
-- Luma maps Compose/Nomad memory reservations to `MemoryMB` and limits to `MemoryMaxMB`. Nomad honors `MemoryMaxMB` only when memory oversubscription is enabled; otherwise the reservation can remain the effective container hard limit. Verify the rendered job and live container limit before claiming that a larger `limits.memory` fixed an OOM.
+- Luma maps Compose/Nomad memory reservations to `MemoryMB` and limits to `MemoryMaxMB`. Live deploys automatically enable Nomad memory oversubscription before registering a job that uses `MemoryMaxMB`; older Control versions may leave the reservation as the effective container hard limit. Verify the rendered job, scheduler configuration, and live container limit before claiming that a larger `limits.memory` fixed an OOM.
 - A rolling update on a pinned node may need capacity for both the old and new allocations. Before increasing reservations, inspect live node allocations and the failed evaluation's `DimensionExhausted`; a host with free physical memory can still be fully reserved and reject placement.
 - Do not disable a worker, scheduler, scraper, or other application feature as a memory workaround unless the user explicitly requests that product change. Preserve the requested topology and address the query peak, reservation, node capacity, placement policy, or host size.
 
@@ -290,7 +290,7 @@ The dashboard exposes the same Nomad job-version rollback from Applications -> V
 For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.1.278"
+python -m pip install "luma-infra==0.1.279"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

@@ -100,6 +100,60 @@ class NomadApiTests(unittest.TestCase):
             "http://100.1.1.1:4646",
         )
 
+    def test_enables_memory_oversubscription_before_memory_max_job(self):
+        fake = _FakeApi(
+            {
+                "GET /v1/operator/scheduler/configuration": {
+                    "SchedulerConfig": {
+                        "SchedulerAlgorithm": "binpack",
+                        "MemoryOversubscriptionEnabled": False,
+                    }
+                },
+                "PUT /v1/operator/scheduler/configuration": {"Updated": True},
+            }
+        )
+        job = {
+            "TaskGroups": [
+                {
+                    "Tasks": [
+                        {
+                            "Resources": {
+                                "MemoryMB": 512,
+                                "MemoryMaxMB": 2048,
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        nomad_api._ensure_memory_oversubscription(fake, job, slug="app")
+
+        self.assertEqual(
+            fake.calls,
+            [
+                ("GET", "/v1/operator/scheduler/configuration", None),
+                (
+                    "PUT",
+                    "/v1/operator/scheduler/configuration",
+                    {
+                        "SchedulerAlgorithm": "binpack",
+                        "MemoryOversubscriptionEnabled": True,
+                    },
+                ),
+            ],
+        )
+
+    def test_memory_job_does_not_touch_scheduler_without_memory_max(self):
+        fake = _FakeApi({})
+        job = {
+            "TaskGroups": [{"Tasks": [{"Resources": {"MemoryMB": 512}}]}]
+        }
+
+        nomad_api._ensure_memory_oversubscription(fake, job, slug="app")
+
+        self.assertEqual(fake.calls, [])
+
     def test_deploy_waits_for_exact_deployment_and_new_allocations(self):
         old = _allocation(alloc_id="alloc-old", version=1)
         new = _allocation(alloc_id="alloc-new", version=2)
