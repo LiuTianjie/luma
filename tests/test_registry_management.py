@@ -249,6 +249,21 @@ class RegistryControlTests(unittest.TestCase):
         self.assertEqual(response.headers["content-encoding"], "gzip")
         self.assertEqual(json.loads(gzip.decompress(response.body)), compacted)
 
+    def test_dashboard_inventory_paginates_and_filters_server_side(self) -> None:
+        result = {
+            "entries": [
+                {"repository": "acme/api", "digest": DIGEST_A, "tags": ["latest"], "protectionStatus": "protected"},
+                {"repository": "acme/worker", "digest": DIGEST_B, "tags": ["old"], "protectionStatus": "candidate"},
+                {"repository": "docs/site", "digest": CONFIG_A, "tags": ["old"], "protectionStatus": "candidate"},
+            ]
+        }
+        page = control_server._registry_inventory_page(
+            result, offset=0, limit=1, query="old", status="candidate"
+        )
+        self.assertEqual(page["page"], {"offset": 0, "limit": 1, "total": 2, "hasMore": True})
+        self.assertEqual(page["entries"][0]["repository"], "acme/worker")
+        self.assertEqual(len(result["entries"]), 3)
+
     @patch.object(control_server, "_start_registry_background_scan")
     @patch.object(control_server, "_load_registry_scan_snapshot", return_value=None)
     @patch.object(control_server, "_managed_registry_spec")

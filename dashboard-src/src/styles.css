@@ -6395,6 +6395,13 @@ dd {
   overflow: auto;
 }
 
+.registry-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--border);
+}
+
 .registry-table {
   min-width: 1080px;
 }

@@ -41,6 +41,7 @@ const DEFAULT_POLICY: RegistryPolicy = {
   criticalPercent: 85,
   emergencyPercent: 92,
 };
+const REGISTRY_PAGE_SIZE = 100;
 
 function formatBytes(value?: number) {
   const bytes = Number(value || 0);
@@ -94,26 +95,37 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const [showPolicy, setShowPolicy] = useState(false);
   const [policy, setPolicy] = useState<RegistryPolicy>(DEFAULT_POLICY);
 
-  const load = useCallback(async (refresh = false) => {
+  const load = useCallback(async (refresh = false, offset = 0, append = false) => {
     setLoading(true);
     setError("");
     try {
-      const next = await fetchRegistryInventory(token, refresh);
-      setInventory(next);
-      setPolicy(next.policy || DEFAULT_POLICY);
-      setSelected((current) => {
-        const available = new Set((next.entries || []).map(keyFor));
-        return new Set([...current].filter((key) => available.has(key)));
+      const next = await fetchRegistryInventory(token, refresh, undefined, {
+        offset,
+        limit: REGISTRY_PAGE_SIZE,
+        query,
+        status: filter,
       });
+      setInventory((current) => append && current ? {
+        ...next,
+        entries: [...(current.entries || []), ...(next.entries || [])],
+      } : next);
+      setPolicy(next.policy || DEFAULT_POLICY);
+      if (!append) {
+        setSelected((current) => {
+          const available = new Set((next.entries || []).map(keyFor));
+          return new Set([...current].filter((key) => available.has(key)));
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [filter, query, token]);
 
   useEffect(() => {
-    void load(false);
+    const timer = window.setTimeout(() => void load(false), query.trim() ? 180 : 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   useEffect(() => {
@@ -122,14 +134,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     return () => window.clearTimeout(timer);
   }, [inventory?.scanPending, load]);
 
-  const entries = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return (inventory?.entries || []).filter((item) => {
-      if (filter !== "all" && item.protectionStatus !== filter) return false;
-      if (!needle) return true;
-      return `${item.repository} ${(item.tags || []).join(" ")} ${item.digest}`.toLowerCase().includes(needle);
-    });
-  }, [filter, inventory?.entries, query]);
+  const entries = inventory?.entries || [];
 
   const selectable = entries;
   const allVisibleSelected = selectable.length > 0 && selectable.every((item) => selected.has(keyFor(item)));
@@ -347,6 +352,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               </tbody>
             </table>
           </div>
+          {inventory?.page?.hasMore ? <div className="registry-load-more"><button type="button" className="ghost" disabled={loading || !!busy} onClick={() => void load(false, (inventory.page?.offset || 0) + (inventory.page?.limit || REGISTRY_PAGE_SIZE), true)}>{loading ? (zh ? "加载中…" : "Loading…") : (zh ? `加载更多（已显示 ${entries.length} / ${inventory.page.total || 0}）` : `Load more (${entries.length} / ${inventory.page.total || 0})`)}</button></div> : null}
         </section>
 
         <section className="registry-lifecycle-grid">

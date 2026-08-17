@@ -83,10 +83,23 @@ export type RegistryInventory = {
   referenceError?: string;
   policy?: RegistryPolicy;
   deletions?: RegistryDeletion[];
+  page?: { offset?: number; limit?: number; total?: number; hasMore?: boolean };
 };
 
-export async function fetchRegistryInventory(token: string, refresh = false, signal?: AbortSignal) {
-  return apiGet<RegistryInventory>(`/v1/registry/inventory${refresh ? "?refresh=true" : ""}`, token, signal);
+export async function fetchRegistryInventory(
+  token: string,
+  refresh = false,
+  signal?: AbortSignal,
+  options: { offset?: number; limit?: number; query?: string; status?: string } = {},
+) {
+  const params = new URLSearchParams();
+  if (refresh) params.set("refresh", "true");
+  if (options.offset) params.set("offset", String(options.offset));
+  if (options.limit) params.set("limit", String(options.limit));
+  if (options.query?.trim()) params.set("q", options.query.trim());
+  if (options.status && options.status !== "all") params.set("status", options.status);
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return apiGet<RegistryInventory>(`/v1/registry/inventory${suffix}`, token, signal);
 }
 
 export async function saveRegistryPolicy(token: string, policy: RegistryPolicy) {

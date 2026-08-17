@@ -9258,6 +9258,48 @@ def _compact_registry_inventory_result(result: Dict[str, Any]) -> Dict[str, Any]
     return result
 
 
+def _registry_inventory_page(
+    result: Dict[str, Any],
+    *,
+    offset: int = 0,
+    limit: int = 0,
+    query: str = "",
+    status: str = "",
+) -> Dict[str, Any]:
+    if offset < 0 or limit < 0 or limit > 200:
+        raise LumaError("registry inventory pagination requires offset >= 0 and limit between 0 and 200")
+    needle = str(query or "").strip().lower()
+    status_filter = str(status or "").strip().lower()
+    entries = [item for item in result.get("entries") or [] if isinstance(item, dict)]
+    if needle:
+        entries = [
+            item for item in entries
+            if needle in " ".join(
+                [
+                    str(item.get("repository") or ""),
+                    str(item.get("digest") or ""),
+                    *[str(tag) for tag in item.get("tags") or []],
+                ]
+            ).lower()
+        ]
+    if status_filter and status_filter != "all":
+        entries = [
+            item for item in entries
+            if str(item.get("protectionStatus") or "unknown").lower() == status_filter
+        ]
+    total = len(entries)
+    page_entries = entries if limit == 0 else entries[offset:offset + limit]
+    page = copy.deepcopy(result)
+    page["entries"] = copy.deepcopy(page_entries)
+    page["page"] = {
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+        "hasMore": bool(limit and offset + len(page_entries) < total),
+    }
+    return page
+
+
 def _invalidate_registry_scan(host: str) -> None:
     with _REGISTRY_CACHE_LOCK:
         _REGISTRY_SCAN_CACHE.pop(str(host), None)
@@ -18718,7 +18760,19 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             payload = await run_in_threadpool(
                 functools.partial(handle_registry_inventory, token, refresh=refresh)
             )
-            return _compact_json_response(request, payload)
+            try:
+                offset = int(str(request.query_params.get("offset") or "0"))
+                limit = int(str(request.query_params.get("limit") or "0"))
+            except ValueError as exc:
+                raise LumaError("registry inventory offset and limit must be integers") from exc
+            page = _registry_inventory_page(
+                payload,
+                offset=offset,
+                limit=limit,
+                query=str(request.query_params.get("q") or ""),
+                status=str(request.query_params.get("status") or ""),
+            )
+            return _compact_json_response(request, page)
         if parsed_path == "/v1/registry/policy":
             return _json_response(200, await run_in_threadpool(handle_registry_policy_get, token))
         if parsed_path == "/v1/secrets":
