@@ -174,7 +174,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
       setPreview(null);
       setSelected(new Set());
       setNotice(zh ? "已加入清理队列；宽限期内可以取消。" : "Added to the cleanup queue; it can be canceled during the grace period.");
-      await load(true);
+      await load(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -188,7 +188,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     try {
       await registryDeletionAction(token, deletion.id, action, force);
       setNotice(zh ? "Registry 操作已完成。" : "Registry operation completed.");
-      await load(true);
+      await load(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -204,7 +204,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
       setPolicy(result.policy);
       setNotice(zh ? "保留策略已保存。" : "Retention policy saved.");
       setShowPolicy(false);
-      await load(true);
+      await load(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -224,7 +224,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           ? (zh ? `GC 完成，释放 ${formatBytes(Number(payload.reclaimedBytes || 0))}。` : `GC completed; reclaimed ${formatBytes(Number(payload.reclaimedBytes || 0))}.`)
           : (zh ? `GC 预检完成：${Number(payload.eligibleBlobs || 0)} 个 blob 可回收。` : `GC preview: ${Number(payload.eligibleBlobs || 0)} blobs are eligible.`),
       );
-      await load(true);
+      await load(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
