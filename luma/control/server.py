@@ -9246,7 +9246,16 @@ def _load_registry_scan_snapshot(spec: Dict[str, Any]) -> Dict[str, Any] | None:
     if str(snapshot.get("host") or "") != str(spec.get("host") or ""):
         return None
     result = snapshot.get("result")
-    return copy.deepcopy(result) if isinstance(result, dict) else None
+    if not isinstance(result, dict):
+        return None
+    return _compact_registry_inventory_result(copy.deepcopy(result))
+
+
+def _compact_registry_inventory_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    for entry in result.get("entries") or []:
+        if isinstance(entry, dict):
+            entry.pop("blobDigests", None)
+    return result
 
 
 def _invalidate_registry_scan(host: str) -> None:
@@ -9444,6 +9453,7 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
             complete=complete,
             policy=management["policy"],
         )
+        _compact_registry_inventory_result(result)
         result["referenceError"] = nomad_error
         result["scanPending"] = False
         with _REGISTRY_CACHE_LOCK:
@@ -18531,6 +18541,17 @@ def _json_response(status: int, payload: Dict[str, Any]) -> JSONResponse:
     return JSONResponse(payload, status_code=status)
 
 
+def _compact_json_response(request: Request, payload: Dict[str, Any]) -> Response:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if "gzip" in str(request.headers.get("Accept-Encoding") or "").lower() and len(body) >= 1024:
+        return Response(
+            gzip.compress(body, compresslevel=5),
+            media_type="application/json",
+            headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding", "Cache-Control": "no-store"},
+        )
+    return Response(body, media_type="application/json", headers={"Cache-Control": "no-store"})
+
+
 def _asgi_error(status: int, exc: Exception, *, code: str = "luma_error") -> JSONResponse:
     request_id = _request_id()
     if status >= 500:
@@ -18694,12 +18715,10 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_registry_list, token))
         if parsed_path == "/v1/registry/inventory":
             refresh = str(request.query_params.get("refresh") or "").lower() in {"1", "true", "yes"}
-            return _json_response(
-                200,
-                await run_in_threadpool(
-                    functools.partial(handle_registry_inventory, token, refresh=refresh)
-                ),
+            payload = await run_in_threadpool(
+                functools.partial(handle_registry_inventory, token, refresh=refresh)
             )
+            return _compact_json_response(request, payload)
         if parsed_path == "/v1/registry/policy":
             return _json_response(200, await run_in_threadpool(handle_registry_policy_get, token))
         if parsed_path == "/v1/secrets":

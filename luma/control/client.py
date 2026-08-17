@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import socket
 import ssl
@@ -37,7 +38,14 @@ class ControlClient:
         headers: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
         with self._open(method, path, body, timeout=timeout, headers=headers) as response:
-            raw = response.read().decode("utf-8", errors="replace")
+            raw_bytes = response.read()
+            content_encoding = response.headers.get("Content-Encoding")
+            if isinstance(content_encoding, str) and content_encoding.lower() == "gzip":
+                try:
+                    raw_bytes = gzip.decompress(raw_bytes)
+                except OSError as exc:
+                    raise LumaError("control API returned invalid gzip data") from exc
+            raw = raw_bytes.decode("utf-8", errors="replace")
         if not raw:
             return {}
         try:
@@ -866,7 +874,12 @@ class ControlClient:
 
     def registry_inventory(self, *, refresh: bool = False, timeout: int = 900) -> Dict[str, Any]:
         suffix = "?refresh=true" if refresh else ""
-        return self.request("GET", f"/v1/registry/inventory{suffix}", timeout=timeout)
+        return self.request(
+            "GET",
+            f"/v1/registry/inventory{suffix}",
+            timeout=timeout,
+            headers={"Accept-Encoding": "gzip"},
+        )
 
     def registry_policy(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/registry/policy")

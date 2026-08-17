@@ -3998,6 +3998,19 @@ class CliTests(unittest.TestCase):
         self.assertIn("control API error 400", str(raised.exception))
         self.assertIn("nodeName, profile, and region are required", str(raised.exception))
 
+    def test_control_client_decodes_gzip_registry_inventory(self):
+        client = ControlClient("https://luma.example.com", "secret")
+        response = MagicMock()
+        response.headers = {"Content-Encoding": "gzip"}
+        response.read.return_value = gzip.compress(b'{"summary":{"repositoryCount":12}}')
+        response.__enter__.return_value = response
+        with patch("urllib.request.urlopen", return_value=response) as urlopen:
+            payload = client.registry_inventory()
+
+        self.assertEqual(payload["summary"]["repositoryCount"], 12)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.headers["Accept-encoding"], "gzip")
+
     def test_control_client_reports_storage_api_error_directly(self):
         client = ControlClient("https://luma.example.com", "secret")
         error = urllib.error.HTTPError(

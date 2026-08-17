@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from luma.cli import build_parser
@@ -226,6 +228,26 @@ class RegistryControlTests(unittest.TestCase):
         self.assertEqual(result["summary"]["repositoryCount"], 12)
         self.assertFalse(result["scanPending"])
         refresh_inventory.assert_not_called()
+
+    def test_dashboard_inventory_drops_blob_lists_and_uses_gzip(self) -> None:
+        result = {
+            "entries": [
+                {
+                    "repository": "acme/api",
+                    "digest": DIGEST_A,
+                    "blobDigests": [LAYER_A, LAYER_B],
+                }
+            ],
+            "padding": "x" * 2000,
+        }
+        compacted = control_server._compact_registry_inventory_result(result)
+        self.assertNotIn("blobDigests", compacted["entries"][0])
+        response = control_server._compact_json_response(
+            SimpleNamespace(headers={"Accept-Encoding": "gzip"}),
+            compacted,
+        )
+        self.assertEqual(response.headers["content-encoding"], "gzip")
+        self.assertEqual(json.loads(gzip.decompress(response.body)), compacted)
 
     @patch.object(control_server, "_start_registry_background_scan")
     @patch.object(control_server, "_load_registry_scan_snapshot", return_value=None)
