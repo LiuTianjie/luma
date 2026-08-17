@@ -313,6 +313,37 @@ Then:
 luma cloudflare connect --zone example.com
 ```
 
+## Manager public IP changed
+
+Do not bootstrap a healthy cluster from scratch and do not replace the old IP
+globally in `/opt/luma/control/control.json`. First confirm that Nomad
+allocations and Traefik survived, then preview the bounded recovery on the
+manager:
+
+```bash
+luma manager ip-change --old <old-ip> --new <new-ip> --domain <control-domain> --dry-run
+```
+
+The preview must show the expected manager node, typed config fields, all
+Cloudflare A records still pointing to the old address, a valid direct HTTPS
+health check on the new address, and the currently running `luma-control`
+image. Apply by removing `--dry-run`. The command keeps a timestamped config
+backup, patches only exact A-record contents, reconciles with the already
+running control image, and checks `/v1/health` plus `/dashboard/` again.
+
+After it succeeds, validate the ordinary DNS path from a network that does not
+share the manager's resolver cache:
+
+```bash
+curl -fsS https://<control-domain>/v1/health
+curl -fsS https://<control-domain>/dashboard/ >/dev/null
+luma status
+```
+
+If the direct new-IP checks pass but the ordinary hostname still fails, inspect
+authoritative DNS and wait for the old record's remaining TTL. Do not roll DNS
+back to a stopped address merely because one local resolver is stale.
+
 ## Sudo fails
 
 Run bootstrap with sudo, configure passwordless sudo, or set:

@@ -36,6 +36,7 @@ from .errors import LumaError
 from .io import dump_yaml, write_yaml
 from .installer import luma_installer_command
 from .local import LocalExecutor
+from .manager import manager_ip_change
 from .profiles import PROFILES
 from .render import render_tailscale_route, render_tcp_route, route_path, stack_path
 from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
@@ -57,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-env", action="store_true", help="Do not load .env")
     visible_commands = (
         "init,version,status,preflight,configure,login,context,secret,registry,git-provider,"
-        "bootstrap,update,doctor,node,cloudflare,egress,tailscale,"
+        "bootstrap,update,doctor,manager,node,cloudflare,egress,tailscale,"
         "service,validate,render,dns-sync,deploy,import,build,rollback,history,compose,storage"
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="{" + visible_commands + "}")
@@ -172,7 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.279 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.280 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -189,6 +190,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_arguments(update_fleet)
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks")
+
+    manager_ops = sub.add_parser("manager", help="Manager recovery and maintenance operations")
+    manager_ops_sub = manager_ops.add_subparsers(dest="manager_command", required=True)
+    manager_ip = manager_ops_sub.add_parser(
+        "ip-change", help="Recover the manager control plane after its public IPv4 address changes"
+    )
+    manager_ip.add_argument(
+        "--old", dest="old_ip", required=True, help="Previous manager public IPv4 address"
+    )
+    manager_ip.add_argument(
+        "--new", dest="new_ip", required=True, help="New manager public IPv4 address"
+    )
+    manager_ip.add_argument("--domain", required=True, help="Control-plane hostname, without scheme")
+    manager_ip.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate and show the recovery plan without changing anything",
+    )
 
     node = sub.add_parser("node")
     node_sub = node.add_subparsers(dest="node_command", required=True)
@@ -2373,6 +2392,30 @@ def cmd_cloudflare(args: argparse.Namespace) -> int:
     raise LumaError(f"unknown cloudflare command: {args.cloudflare_command}")
 
 
+def cmd_manager(args: argparse.Namespace) -> int:
+    if args.manager_command != "ip-change":
+        raise LumaError(f"unknown manager command: {args.manager_command}")
+    state = _existing_control_state()
+    if not state:
+        raise LumaError(
+            "manager control state not found; run this command on the manager host "
+            "after the original Luma bootstrap"
+        )
+    config_path = args.config
+    if config_path is None:
+        config_path = Path("/opt/luma/luma.yaml")
+    manager_ip_change(
+        old_ip=args.old_ip,
+        new_ip=args.new_ip,
+        domain=args.domain,
+        state=state,
+        config_path=config_path,
+        dry_run=bool(args.dry_run),
+        emit=log,
+    )
+    return 0
+
+
 def cmd_egress(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     ensure_interactive_config("manager", keys=["EGRESS_SUBSCRIPTION_URL"])
@@ -3787,6 +3830,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_update(args)
         if args.command == "doctor":
             return cmd_doctor(args)
+        if args.command == "manager":
+            return cmd_manager(args)
         if args.command == "node":
             return cmd_node(args)
         if args.command == "node-agent":
