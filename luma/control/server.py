@@ -267,6 +267,7 @@ _CONTROL_IMAGE_PREPARE_LOCK = threading.RLock()
 _CONTROL_IMAGE_PREPARE_THREADS: dict[str, threading.Thread] = {}
 _REGISTRY_SCAN_LOCK = threading.RLock()
 _REGISTRY_SCAN_CACHE: dict[str, Any] = {}
+_REGISTRY_BACKGROUND_SCAN_THREADS: dict[str, threading.Thread] = {}
 _REGISTRY_MAINTENANCE_LOCK = threading.RLock()
 _REGISTRY_AUTOMATION_LOCK = threading.RLock()
 _REGISTRY_AUTOMATION_THREAD: threading.Thread | None = None
@@ -9222,6 +9223,38 @@ def _persist_registry_scan(spec: Dict[str, Any], result: Dict[str, Any]) -> None
         _registry_management_state(state)["lastScan"] = snapshot
 
     _mutate_control_state(mutate)
+    durable_result = copy.deepcopy(result)
+    durable_result.pop("audit", None)
+    durable_result.pop("deletions", None)
+    durable_result["scanPending"] = False
+    save_state(
+        {
+            "schemaVersion": "luma.registry-inventory-snapshot/v1",
+            "host": str(spec.get("host") or ""),
+            "result": durable_result,
+        },
+        state_dir() / "registry-inventory.json",
+    )
+
+
+def _load_registry_scan_snapshot(spec: Dict[str, Any]) -> Dict[str, Any] | None:
+    try:
+        snapshot = load_state(state_dir() / "registry-inventory.json")
+    except LumaError:
+        return None
+    if str(snapshot.get("host") or "") != str(spec.get("host") or ""):
+        return None
+    result = snapshot.get("result")
+    return copy.deepcopy(result) if isinstance(result, dict) else None
+
+
+def _invalidate_registry_scan(host: str) -> None:
+    with _REGISTRY_SCAN_LOCK:
+        _REGISTRY_SCAN_CACHE.pop(str(host), None)
+    try:
+        (state_dir() / "registry-inventory.json").unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _managed_registry_spec(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -9361,35 +9394,89 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
     _apply_state_secrets(state)
     spec = _managed_registry_spec(state)
     cache_key = str(spec["host"])
-    refreshed = False
-    with _REGISTRY_SCAN_LOCK:
-        cached = _REGISTRY_SCAN_CACHE.get(cache_key)
-        if (
-            refresh
-            or not isinstance(cached, dict)
-            or int(time.time()) - int(cached.get("cachedAt") or 0) > 60
-        ):
-            raw = _refresh_registry_inventory(state, spec)
-            cached = {"cachedAt": int(time.time()), "inventory": raw}
-            _REGISTRY_SCAN_CACHE[cache_key] = cached
-            refreshed = True
-        inventory = copy.deepcopy(cached["inventory"])
-    references = collect_state_image_references(state, str(spec["host"]))
-    nomad_references, complete, nomad_error = _registry_nomad_references(state, spec)
-    references.extend(nomad_references)
     management = _registry_management_state(state)
-    result = apply_protection(
-        inventory,
-        references,
-        complete=complete,
-        policy=management["policy"],
-    )
-    result["referenceError"] = nomad_error
+    if not refresh:
+        with _REGISTRY_SCAN_LOCK:
+            cached = _REGISTRY_SCAN_CACHE.get(cache_key)
+            result = (
+                copy.deepcopy(cached.get("result"))
+                if isinstance(cached, dict) and isinstance(cached.get("result"), dict)
+                else None
+            )
+            if result is None:
+                result = _load_registry_scan_snapshot(spec)
+                if result is not None:
+                    _REGISTRY_SCAN_CACHE[cache_key] = {
+                        "cachedAt": int(time.time()),
+                        "result": copy.deepcopy(result),
+                    }
+        if result is None:
+            _start_registry_background_scan(cache_key)
+            result = {
+                "registry": {
+                    "host": spec["host"],
+                    "node": spec["node"],
+                    "volumeName": spec["volumeName"],
+                    "jobId": spec["jobId"],
+                },
+                "summary": {},
+                "usage": {},
+                "entries": [],
+                "errors": [],
+                "protectionComplete": False,
+                "referenceError": "Initial Registry inventory scan is running in the background.",
+                "scanPending": True,
+            }
+        result["policy"] = dict(management["policy"])
+        result["deletions"] = _registry_deletion_public_list(management["deletions"])
+        result["audit"] = [dict(item) for item in management["audit"][-100:] if isinstance(item, dict)]
+        return result
+
+    with _REGISTRY_SCAN_LOCK:
+        inventory = _refresh_registry_inventory(state, spec)
+        references = collect_state_image_references(state, str(spec["host"]))
+        nomad_references, complete, nomad_error = _registry_nomad_references(state, spec)
+        references.extend(nomad_references)
+        result = apply_protection(
+            inventory,
+            references,
+            complete=complete,
+            policy=management["policy"],
+        )
+        result["referenceError"] = nomad_error
+        result["scanPending"] = False
+        _REGISTRY_SCAN_CACHE[cache_key] = {
+            "cachedAt": int(time.time()),
+            "result": copy.deepcopy(result),
+        }
     result["deletions"] = _registry_deletion_public_list(management["deletions"])
     result["audit"] = [dict(item) for item in management["audit"][-100:] if isinstance(item, dict)]
-    if refreshed:
-        _persist_registry_scan(spec, result)
+    _persist_registry_scan(spec, result)
     return result
+
+
+def _start_registry_background_scan(cache_key: str) -> None:
+    with _REGISTRY_SCAN_LOCK:
+        current = _REGISTRY_BACKGROUND_SCAN_THREADS.get(cache_key)
+        if current is not None and current.is_alive():
+            return
+
+        def run() -> None:
+            try:
+                _registry_inventory_for_state(load_state(), refresh=True)
+            except Exception as exc:
+                print(f"background Registry inventory scan failed: {exc}", file=sys.stderr, flush=True)
+            finally:
+                with _REGISTRY_SCAN_LOCK:
+                    _REGISTRY_BACKGROUND_SCAN_THREADS.pop(cache_key, None)
+
+        thread = threading.Thread(
+            target=run,
+            name=f"luma-registry-scan-{hashlib.sha256(cache_key.encode('utf-8')).hexdigest()[:8]}",
+            daemon=True,
+        )
+        _REGISTRY_BACKGROUND_SCAN_THREADS[cache_key] = thread
+        thread.start()
 
 
 def handle_registry_inventory(token: str, *, refresh: bool = False) -> Dict[str, Any]:
@@ -9532,11 +9619,12 @@ def handle_registry_deletion_preview(token: str, body: Dict[str, Any]) -> Dict[s
     state = load_state()
     require_token(state, token, token_type="deploy")
     requested = _registry_requested_manifests(body)
-    inventory = _registry_inventory_for_state(state, refresh=True)
+    manual_override = bool(body.get("manualOverride"))
+    inventory = _registry_inventory_for_state(state, refresh=not manual_override)
     return _registry_deletion_preview_from_inventory(
         inventory,
         requested,
-        manual_override=bool(body.get("manualOverride")),
+        manual_override=manual_override,
     )
 
 
@@ -9595,8 +9683,8 @@ def handle_registry_deletion_create(token: str, body: Dict[str, Any]) -> Dict[st
     require_token(state, token, token_type="deploy")
     _apply_state_secrets(state)
     requested = _registry_requested_manifests(body)
-    inventory = _registry_inventory_for_state(state, refresh=True)
     manual_override = bool(body.get("manualOverride"))
+    inventory = _registry_inventory_for_state(state, refresh=not manual_override)
     preview = _registry_deletion_preview_from_inventory(
         inventory,
         requested,
@@ -9795,8 +9883,7 @@ def _run_registry_offline_task(
         raise LumaError(f"Registry restart failed after maintenance: {restart_error}") from restart_error
     if primary_error is not None:
         raise primary_error
-    with _REGISTRY_SCAN_LOCK:
-        _REGISTRY_SCAN_CACHE.pop(str(spec["host"]), None)
+    _invalidate_registry_scan(str(spec["host"]))
     return result
 
 
@@ -9925,8 +10012,7 @@ def handle_registry_deletion_restore(token: str, deletion_id: str) -> Dict[str, 
             return _registry_deletion_public(current_record)
 
         result = _mutate_control_state(mark_restored)
-        with _REGISTRY_SCAN_LOCK:
-            _REGISTRY_SCAN_CACHE.pop(str(_managed_registry_spec(state)["host"]), None)
+        _invalidate_registry_scan(str(_managed_registry_spec(state)["host"]))
         return {"deletion": result}
 
 

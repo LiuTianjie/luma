@@ -199,6 +199,51 @@ class RegistryInventoryTests(unittest.TestCase):
 
 
 class RegistryControlTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        control_server._REGISTRY_SCAN_CACHE.clear()
+        control_server._REGISTRY_BACKGROUND_SCAN_THREADS.clear()
+
+    @patch.object(control_server, "_load_registry_scan_snapshot")
+    @patch.object(control_server, "_refresh_registry_inventory")
+    @patch.object(control_server, "_managed_registry_spec")
+    def test_page_inventory_uses_durable_snapshot_without_rescanning(
+        self, managed_spec, refresh_inventory, load_snapshot
+    ) -> None:
+        managed_spec.return_value = {
+            "host": "registry.internal",
+            "node": "builder",
+            "volumeName": "registry-data",
+            "jobId": "registry",
+        }
+        load_snapshot.return_value = {
+            "summary": {"repositoryCount": 12},
+            "entries": [],
+            "protectionComplete": True,
+            "scanPending": False,
+        }
+        state = {"registryManagement": {"policy": {"mode": "recommend"}, "deletions": [], "audit": []}}
+        result = control_server._registry_inventory_for_state(state, refresh=False)
+        self.assertEqual(result["summary"]["repositoryCount"], 12)
+        self.assertFalse(result["scanPending"])
+        refresh_inventory.assert_not_called()
+
+    @patch.object(control_server, "_start_registry_background_scan")
+    @patch.object(control_server, "_load_registry_scan_snapshot", return_value=None)
+    @patch.object(control_server, "_managed_registry_spec")
+    def test_first_page_inventory_starts_background_scan(
+        self, managed_spec, _load_snapshot, start_scan
+    ) -> None:
+        managed_spec.return_value = {
+            "host": "registry.internal",
+            "node": "builder",
+            "volumeName": "registry-data",
+            "jobId": "registry",
+        }
+        state = {"registryManagement": {"policy": {"mode": "recommend"}, "deletions": [], "audit": []}}
+        result = control_server._registry_inventory_for_state(state, refresh=False)
+        self.assertTrue(result["scanPending"])
+        start_scan.assert_called_once_with("registry.internal")
+
     def test_delete_preview_blocks_any_protected_alias(self) -> None:
         inventory = {
             "protectionComplete": True,

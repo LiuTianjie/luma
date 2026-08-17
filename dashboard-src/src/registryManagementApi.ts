@@ -79,6 +79,7 @@ export type RegistryInventory = {
   entries?: RegistryManifest[];
   errors?: Array<{ repository?: string; tag?: string; digest?: string; message?: string }>;
   protectionComplete?: boolean;
+  scanPending?: boolean;
   referenceError?: string;
   policy?: RegistryPolicy;
   deletions?: RegistryDeletion[];

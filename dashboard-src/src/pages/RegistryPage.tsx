@@ -116,6 +116,12 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     void load(false);
   }, [load]);
 
+  useEffect(() => {
+    if (!inventory?.scanPending) return;
+    const timer = window.setTimeout(() => void load(false), 3000);
+    return () => window.clearTimeout(timer);
+  }, [inventory?.scanPending, load]);
+
   const entries = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return (inventory?.entries || []).filter((item) => {
@@ -254,7 +260,12 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
       />
 
       <main className="registry-page">
-        {!inventory?.protectionComplete ? (
+        {inventory?.scanPending ? (
+          <div className="registry-alert warning" role="status">
+            <RefreshCw size={18} className="spin" />
+            <span><strong>{zh ? "首次镜像快照正在后台建立" : "Building the first image snapshot in the background"}</strong><small>{zh ? "可以离开本页；完成后再次进入会直接读取快照。" : "You may leave this page; future visits load the snapshot immediately."}</small></span>
+          </div>
+        ) : !inventory?.protectionComplete ? (
           <div className="registry-alert critical" role="alert">
             <AlertTriangle size={18} />
             <span><strong>{zh ? "引用扫描不完整，自动清理已暂停" : "Reference scan incomplete; automatic cleanup paused"}</strong><small>{inventory?.referenceError || (zh ? "人工删除仍可继续，风险由操作者确认承担。" : "Manual deletion remains available after operator confirmation.")}</small></span>
