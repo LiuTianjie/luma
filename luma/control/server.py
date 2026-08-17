@@ -266,6 +266,7 @@ _FLEET_UPDATE_THREADS: dict[str, threading.Thread] = {}
 _CONTROL_IMAGE_PREPARE_LOCK = threading.RLock()
 _CONTROL_IMAGE_PREPARE_THREADS: dict[str, threading.Thread] = {}
 _REGISTRY_SCAN_LOCK = threading.RLock()
+_REGISTRY_CACHE_LOCK = threading.RLock()
 _REGISTRY_SCAN_CACHE: dict[str, Any] = {}
 _REGISTRY_BACKGROUND_SCAN_THREADS: dict[str, threading.Thread] = {}
 _REGISTRY_MAINTENANCE_LOCK = threading.RLock()
@@ -9249,7 +9250,7 @@ def _load_registry_scan_snapshot(spec: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def _invalidate_registry_scan(host: str) -> None:
-    with _REGISTRY_SCAN_LOCK:
+    with _REGISTRY_CACHE_LOCK:
         _REGISTRY_SCAN_CACHE.pop(str(host), None)
     try:
         (state_dir() / "registry-inventory.json").unlink(missing_ok=True)
@@ -9396,7 +9397,7 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
     cache_key = str(spec["host"])
     management = _registry_management_state(state)
     if not refresh:
-        with _REGISTRY_SCAN_LOCK:
+        with _REGISTRY_CACHE_LOCK:
             cached = _REGISTRY_SCAN_CACHE.get(cache_key)
             result = (
                 copy.deepcopy(cached.get("result"))
@@ -9445,10 +9446,11 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
         )
         result["referenceError"] = nomad_error
         result["scanPending"] = False
-        _REGISTRY_SCAN_CACHE[cache_key] = {
-            "cachedAt": int(time.time()),
-            "result": copy.deepcopy(result),
-        }
+        with _REGISTRY_CACHE_LOCK:
+            _REGISTRY_SCAN_CACHE[cache_key] = {
+                "cachedAt": int(time.time()),
+                "result": copy.deepcopy(result),
+            }
     result["deletions"] = _registry_deletion_public_list(management["deletions"])
     result["audit"] = [dict(item) for item in management["audit"][-100:] if isinstance(item, dict)]
     _persist_registry_scan(spec, result)
@@ -9456,7 +9458,7 @@ def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = Fals
 
 
 def _start_registry_background_scan(cache_key: str) -> None:
-    with _REGISTRY_SCAN_LOCK:
+    with _REGISTRY_CACHE_LOCK:
         current = _REGISTRY_BACKGROUND_SCAN_THREADS.get(cache_key)
         if current is not None and current.is_alive():
             return
@@ -9467,7 +9469,7 @@ def _start_registry_background_scan(cache_key: str) -> None:
             except Exception as exc:
                 print(f"background Registry inventory scan failed: {exc}", file=sys.stderr, flush=True)
             finally:
-                with _REGISTRY_SCAN_LOCK:
+                with _REGISTRY_CACHE_LOCK:
                     _REGISTRY_BACKGROUND_SCAN_THREADS.pop(cache_key, None)
 
         thread = threading.Thread(
