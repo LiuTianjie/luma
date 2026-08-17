@@ -125,7 +125,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     });
   }, [filter, inventory?.entries, query]);
 
-  const selectable = entries.filter((item) => !item.protectionReasons?.length && item.protectionStatus !== "unknown");
+  const selectable = entries;
   const allVisibleSelected = selectable.length > 0 && selectable.every((item) => selected.has(keyFor(item)));
   const summary = inventory?.summary || {};
   const usage = inventory?.usage || {};
@@ -257,7 +257,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         {!inventory?.protectionComplete ? (
           <div className="registry-alert critical" role="alert">
             <AlertTriangle size={18} />
-            <span><strong>{zh ? "引用扫描不完整，删除已锁定" : "Reference scan incomplete; deletion locked"}</strong><small>{inventory?.referenceError || (zh ? "等待 Nomad 返回完整 job version。" : "Waiting for complete Nomad job versions.")}</small></span>
+            <span><strong>{zh ? "引用扫描不完整，自动清理已暂停" : "Reference scan incomplete; automatic cleanup paused"}</strong><small>{inventory?.referenceError || (zh ? "人工删除仍可继续，风险由操作者确认承担。" : "Manual deletion remains available after operator confirmation.")}</small></span>
           </div>
         ) : null}
         {error ? <div className="registry-alert critical" role="alert"><AlertTriangle size={18} /><span><strong>{zh ? "操作失败" : "Operation failed"}</strong><small>{error}</small></span></div> : null}
@@ -322,9 +322,8 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               <thead><tr><th><input type="checkbox" checked={allVisibleSelected} aria-label={zh ? "选择所有可操作项" : "Select all actionable items"} onChange={() => setSelected((current) => { const next = new Set(current); selectable.forEach((item) => allVisibleSelected ? next.delete(keyFor(item)) : next.add(keyFor(item))); return next; })} /></th><th>{zh ? "仓库 / Digest" : "Repository / Digest"}</th><th>Tags</th><th>{zh ? "平台" : "Platforms"}</th><th>{zh ? "体积" : "Size"}</th><th>{zh ? "创建时间" : "Created"}</th><th>{zh ? "保护状态" : "Protection"}</th></tr></thead>
               <tbody>
                 {entries.map((item) => {
-                  const disabled = !!item.protectionReasons?.length || item.protectionStatus === "unknown";
                   return <tr key={keyFor(item)} className={selected.has(keyFor(item)) ? "selected" : ""}>
-                    <td><input type="checkbox" disabled={disabled} checked={selected.has(keyFor(item))} onChange={() => toggle(item)} aria-label={`${item.repository} ${item.digest}`} /></td>
+                    <td><input type="checkbox" checked={selected.has(keyFor(item))} onChange={() => toggle(item)} aria-label={`${item.repository} ${item.digest}`} /></td>
                     <td><span className="registry-repository"><strong>{item.repository}</strong><CodeCell value={item.digest.replace("sha256:", "sha256:​")} /></span></td>
                     <td><span className="registry-tags">{(item.tags || []).slice(0, 4).map((tag) => <code key={tag}>{tag}</code>)}{(item.tags || []).length > 4 ? <small>+{item.tags.length - 4}</small> : null}</span></td>
                     <td><span className="registry-platforms">{(item.platforms || []).length ? item.platforms?.map((platform) => <small key={platform}>{platform}</small>) : <small>-</small>}</span></td>
@@ -362,7 +361,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         </section>
       </main>
 
-      {preview ? <div className="registry-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setPreview(null)}><section className="registry-dialog" role="dialog" aria-modal="true" aria-labelledby="registry-delete-title" onMouseDown={(event) => event.stopPropagation()}><div className="registry-dialog-icon"><Trash2 size={22} /></div><h2 id="registry-delete-title">{zh ? "加入清理队列" : "Add to cleanup queue"}</h2><p>{zh ? `将 ${preview.selected?.length || 0} 个顶层 manifest 加入队列，并安全处理 ${preview.dependentManifests?.length || 0} 个仅由它们引用的平台 manifest。所有指向同一 digest 的 tag 会一起删除。` : `Queue ${preview.selected?.length || 0} root manifests and safely include ${preview.dependentManifests?.length || 0} platform manifests referenced only by them. Every tag pointing to the same digest will be deleted together.`}</p><div className="registry-dialog-summary"><span><strong>{preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0}</strong><small>tags</small></span><span><strong>{formatBytes(preview.logicalBytes)}</strong><small>{zh ? "逻辑体积" : "logical size"}</small></span><span><strong>{policy.queueGraceHours}h</strong><small>{zh ? "可取消窗口" : "cancel window"}</small></span></div>{preview.blocked?.length ? <div className="registry-dialog-blocked"><AlertTriangle size={16} /> {zh ? `${preview.blocked.length} 项被引用保护拦截。` : `${preview.blocked.length} items are blocked by references.`}</div> : null}<div className="registry-dialog-actions"><button type="button" className="ghost" disabled={!!busy} onClick={() => setPreview(null)}>{zh ? "返回" : "Back"}</button><button type="button" className="danger" disabled={!preview.allowed || !!busy} onClick={() => void queueDeletion()}>{busy === "queue" ? (zh ? "排队中…" : "Queueing…") : (zh ? "确认加入队列" : "Confirm queue")}</button></div></section></div> : null}
+      {preview ? <div className="registry-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setPreview(null)}><section className="registry-dialog" role="dialog" aria-modal="true" aria-labelledby="registry-delete-title" onMouseDown={(event) => event.stopPropagation()}><div className="registry-dialog-icon"><Trash2 size={22} /></div><h2 id="registry-delete-title">{zh ? "加入清理队列" : "Add to cleanup queue"}</h2><p>{zh ? `将 ${preview.selected?.length || 0} 个顶层 manifest 加入队列，并处理 ${preview.dependentManifests?.length || 0} 个仅由它们引用的平台 manifest。所有指向同一 digest 的 tag 会一起删除。` : `Queue ${preview.selected?.length || 0} root manifests and include ${preview.dependentManifests?.length || 0} platform manifests referenced only by them. Every tag pointing to the same digest will be deleted together.`}</p><div className="registry-dialog-summary"><span><strong>{preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0}</strong><small>tags</small></span><span><strong>{formatBytes(preview.logicalBytes)}</strong><small>{zh ? "逻辑体积" : "logical size"}</small></span><span><strong>{policy.queueGraceHours}h</strong><small>{zh ? "可取消窗口" : "cancel window"}</small></span></div>{preview.risks?.length ? <div className="registry-dialog-blocked"><AlertTriangle size={16} /> {zh ? `${preview.risks.length} 条引用或扫描风险；继续即表示由你承担删除后果。` : `${preview.risks.length} reference or scan risks; continuing accepts responsibility for the deletion.`}</div> : null}{preview.blocked?.length ? <div className="registry-dialog-blocked"><AlertTriangle size={16} /> {zh ? `${preview.blocked.length} 项因不存在或批量范围过大而无法处理。` : `${preview.blocked.length} items cannot be processed because they are missing or the batch is too large.`}</div> : null}<div className="registry-dialog-actions"><button type="button" className="ghost" disabled={!!busy} onClick={() => setPreview(null)}>{zh ? "返回" : "Back"}</button><button type="button" className="danger" disabled={!preview.allowed || !!busy} onClick={() => void queueDeletion()}>{busy === "queue" ? (zh ? "排队中…" : "Queueing…") : (preview.risks?.length ? (zh ? "确认风险并加入队列" : "Accept risk and queue") : (zh ? "确认加入队列" : "Confirm queue"))}</button></div></section></div> : null}
     </>
   );
 }

@@ -218,7 +218,42 @@ class RegistryControlTests(unittest.TestCase):
             [{"repository": "acme/api", "digest": DIGEST_A}],
         )
         self.assertFalse(preview["allowed"])
-        self.assertIn("protected", preview["blocked"][0]["reason"])
+        self.assertIn("referenced", preview["blocked"][0]["reason"])
+
+        manual = control_server._registry_deletion_preview_from_inventory(
+            inventory,
+            [{"repository": "acme/api", "digest": DIGEST_A}],
+            manual_override=True,
+        )
+        self.assertTrue(manual["allowed"])
+        self.assertEqual(manual["blocked"], [])
+        self.assertIn("referenced", manual["risks"][0]["reason"])
+
+    def test_manual_delete_remains_available_when_reference_scan_is_incomplete(self) -> None:
+        inventory = {
+            "protectionComplete": False,
+            "entries": [
+                {
+                    "repository": "acme/api",
+                    "digest": DIGEST_A,
+                    "tags": ["old"],
+                    "logicalBytes": 1000,
+                    "protectionStatus": "unknown",
+                    "protectionReasons": [],
+                }
+            ],
+        }
+        automatic = control_server._registry_deletion_preview_from_inventory(
+            inventory, [{"repository": "acme/api", "digest": DIGEST_A}]
+        )
+        manual = control_server._registry_deletion_preview_from_inventory(
+            inventory,
+            [{"repository": "acme/api", "digest": DIGEST_A}],
+            manual_override=True,
+        )
+        self.assertFalse(automatic["allowed"])
+        self.assertTrue(manual["allowed"])
+        self.assertEqual(manual["risks"][0]["reason"], "reference scan is incomplete")
 
     def test_delete_preview_includes_only_exclusive_platform_manifests(self) -> None:
         inventory = {

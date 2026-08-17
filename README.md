@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.282"
+python -m pip install "luma-infra==0.1.283"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.282 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.283 sh
 ```
 
 Develop from source:
@@ -336,7 +336,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.282"
+python -m pip install "luma-infra==0.1.283"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -383,7 +383,7 @@ Private registry image pulls are separate from runtime `proxy: true`. If a sched
 
 ### Manage Luma Registry images
 
-Dashboard's **Registry** page groups images by manifest digest and shows repositories, every alias tag, platforms, logical size, creation time, host filesystem usage, and recent blob-write trends. Control protects references from current deployments, Compose, Builder results, LAE runtime, active agent tasks, and every retained Nomad job version. Deletion and GC fail closed whenever that reference scan is incomplete.
+Dashboard's **Registry** page groups images by manifest digest and shows repositories, every alias tag, platforms, logical size, creation time, host filesystem usage, and recent blob-write trends. Control identifies references from current deployments, Compose, Builder results, LAE runtime, active agent tasks, and every retained Nomad job version. Automatic cleanup and GC fail closed whenever that reference scan is incomplete; an operator may still explicitly delete any selected manifest after accepting the displayed reference risks.
 
 The CLI exposes the same workflow:
 

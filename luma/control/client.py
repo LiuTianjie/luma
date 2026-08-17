@@ -874,11 +874,21 @@ class ControlClient:
     def set_registry_policy(self, policy: Dict[str, Any]) -> Dict[str, Any]:
         return self.request("POST", "/v1/registry/policy", policy)
 
-    def preview_registry_deletion(self, manifests: list[Dict[str, str]], *, timeout: int = 900) -> Dict[str, Any]:
-        return self.request("POST", "/v1/registry/deletions/preview", {"manifests": manifests}, timeout=timeout)
+    def preview_registry_deletion(self, manifests: list[Dict[str, str]], *, manual_override: bool = False, timeout: int = 900) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/registry/deletions/preview",
+            {"manifests": manifests, "manualOverride": bool(manual_override)},
+            timeout=timeout,
+        )
 
-    def create_registry_deletion(self, manifests: list[Dict[str, str]], *, timeout: int = 900) -> Dict[str, Any]:
-        return self.request("POST", "/v1/registry/deletions", {"manifests": manifests, "confirm": "delete"}, timeout=timeout)
+    def create_registry_deletion(self, manifests: list[Dict[str, str]], *, manual_override: bool = False, timeout: int = 900) -> Dict[str, Any]:
+        return self.request(
+            "POST",
+            "/v1/registry/deletions",
+            {"manifests": manifests, "confirm": "delete", "manualOverride": bool(manual_override)},
+            timeout=timeout,
+        )
 
     def registry_deletion_action(self, deletion_id: str, action: str, *, force: bool = False, timeout: int = 4200) -> Dict[str, Any]:
         if action not in {"cancel", "execute", "restore"}:

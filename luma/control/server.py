@@ -9447,7 +9447,10 @@ def _registry_requested_manifests(body: Dict[str, Any]) -> list[Dict[str, str]]:
 
 
 def _registry_deletion_preview_from_inventory(
-    inventory: Dict[str, Any], requested: list[Dict[str, str]]
+    inventory: Dict[str, Any],
+    requested: list[Dict[str, str]],
+    *,
+    manual_override: bool = False,
 ) -> Dict[str, Any]:
     entries = {
         (str(item.get("repository") or ""), str(item.get("digest") or "")): item
@@ -9456,6 +9459,7 @@ def _registry_deletion_preview_from_inventory(
     }
     selected: list[Dict[str, Any]] = []
     blocked: list[Dict[str, Any]] = []
+    risks: list[Dict[str, Any]] = []
     for item in requested:
         entry = entries.get((item["repository"], item["digest"]))
         if entry is None:
@@ -9472,10 +9476,14 @@ def _registry_deletion_preview_from_inventory(
             "protectionReasons": list(entry.get("protectionReasons") or []),
         }
         if not inventory.get("protectionComplete"):
-            blocked.append({**public, "reason": "reference scan is incomplete"})
-        elif public["protectionReasons"]:
-            blocked.append({**public, "reason": "manifest is protected by a live or rollback reference"})
-        else:
+            target = risks if manual_override else blocked
+            target.append({**public, "reason": "reference scan is incomplete"})
+        if public["protectionReasons"]:
+            target = risks if manual_override else blocked
+            target.append({**public, "reason": "manifest is referenced by a live or rollback workload"})
+        if manual_override or (
+            inventory.get("protectionComplete") and not public["protectionReasons"]
+        ):
             selected.append(public)
     selected_keys = {(item["repository"], item["digest"]) for item in selected}
     child_parents: dict[tuple[str, str], set[tuple[str, str]]] = {}
@@ -9513,6 +9521,8 @@ def _registry_deletion_preview_from_inventory(
         "selected": selected,
         "dependentManifests": dependencies,
         "blocked": blocked,
+        "risks": risks,
+        "manualOverride": bool(manual_override),
         "logicalBytes": sum(int(item.get("logicalBytes") or 0) for item in selected),
         "warning": "Deleting a manifest removes every tag pointing to that digest. Disk space is reclaimed only after GC.",
     }
@@ -9523,7 +9533,11 @@ def handle_registry_deletion_preview(token: str, body: Dict[str, Any]) -> Dict[s
     require_token(state, token, token_type="deploy")
     requested = _registry_requested_manifests(body)
     inventory = _registry_inventory_for_state(state, refresh=True)
-    return _registry_deletion_preview_from_inventory(inventory, requested)
+    return _registry_deletion_preview_from_inventory(
+        inventory,
+        requested,
+        manual_override=bool(body.get("manualOverride")),
+    )
 
 
 def _registry_deletion_backup_root(deletion_id: str) -> Path:
@@ -9582,7 +9596,12 @@ def handle_registry_deletion_create(token: str, body: Dict[str, Any]) -> Dict[st
     _apply_state_secrets(state)
     requested = _registry_requested_manifests(body)
     inventory = _registry_inventory_for_state(state, refresh=True)
-    preview = _registry_deletion_preview_from_inventory(inventory, requested)
+    manual_override = bool(body.get("manualOverride"))
+    preview = _registry_deletion_preview_from_inventory(
+        inventory,
+        requested,
+        manual_override=manual_override,
+    )
     if not preview["allowed"]:
         raise LumaError("registry deletion is blocked by current references")
     deletion_id = f"registry-delete-{secrets.token_hex(8)}"
@@ -9626,6 +9645,7 @@ def handle_registry_deletion_create(token: str, body: Dict[str, Any]) -> Dict[st
         "notBefore": now + int(policy["queueGraceHours"]) * 3600,
         "gcAfter": 0,
         "message": "Deletion queued",
+        "manualOverride": manual_override,
     }
 
     def mutate(current: Dict[str, Any]) -> None:
@@ -9800,7 +9820,11 @@ def handle_registry_deletion_execute(token: str, deletion_id: str, body: Dict[st
             for item in record.get("manifests") or []
             if isinstance(item, dict) and str(item.get("role") or "root") != "dependency"
         ]
-        preview = _registry_deletion_preview_from_inventory(inventory, root_requested)
+        preview = _registry_deletion_preview_from_inventory(
+            inventory,
+            root_requested,
+            manual_override=bool(record.get("manualOverride")),
+        )
         if not preview["allowed"]:
             raise LumaError("registry deletion became protected or changed; execution was blocked")
         expected = {

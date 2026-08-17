@@ -439,9 +439,10 @@ export default defineConfig({
           const body = await readBody(request);
           const requested = Array.isArray(body.manifests) ? body.manifests : [];
           const selected = devRegistryPayload.entries.filter((entry) => requested.some((item: any) => item.repository === entry.repository && item.digest === entry.digest));
+          const risks = selected.flatMap((entry) => (entry.protectionReasons || []).map((reason) => ({ ...entry, reason: `manifest is referenced by ${reason.source || reason.kind}` })));
           response.statusCode = 200;
           response.setHeader("Content-Type", "application/json; charset=utf-8");
-          response.end(JSON.stringify({ allowed: selected.length > 0, selected, dependentManifests: [], blocked: [], logicalBytes: selected.reduce((total, item) => total + item.logicalBytes, 0) }));
+          response.end(JSON.stringify({ allowed: selected.length > 0, selected, dependentManifests: [], blocked: [], risks, logicalBytes: selected.reduce((total, item) => total + item.logicalBytes, 0) }));
         });
         server.middlewares.use("/v1/storage", (request, response, next) => {
           if (request.method !== "GET") {

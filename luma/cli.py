@@ -206,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.282 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.283 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1573,10 +1573,10 @@ def cmd_registry(args: argparse.Namespace) -> int:
         return 0
     if args.registry_command == "delete":
         manifests = [{"repository": args.repository, "digest": args.digest}]
-        preview = client.preview_registry_deletion(manifests)
+        preview = client.preview_registry_deletion(manifests, manual_override=True)
         if not preview.get("allowed"):
             raise LumaError(f"Registry deletion blocked: {preview.get('blocked')}")
-        result = client.create_registry_deletion(manifests)
+        result = client.create_registry_deletion(manifests, manual_override=True)
         deletion = result.get("deletion") if isinstance(result.get("deletion"), dict) else {}
         if args.execute_now:
             result = client.registry_deletion_action(str(deletion.get("id") or ""), "execute", force=True)

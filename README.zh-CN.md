@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.282 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.283 sh
 ```
 
 从源码开发：
@@ -348,7 +348,7 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 
 ### 管理 Luma Registry 镜像
 
-Dashboard 的「Registry」页会按 manifest digest 展示仓库、全部 tag、平台、逻辑体积、创建时间、宿主磁盘占用和近月 blob 写入趋势。Control 会联合检查当前部署、Compose、Builder 结果、LAE runtime、运行中的 agent task，以及 Nomad 保留的每一个 job version；只要引用扫描不完整，删除和 GC 都会锁定。
+Dashboard 的「Registry」页会按 manifest digest 展示仓库、全部 tag、平台、逻辑体积、创建时间、宿主磁盘占用和近月 blob 写入趋势。Control 会联合检查当前部署、Compose、Builder 结果、LAE runtime、运行中的 agent task，以及 Nomad 保留的每一个 job version；引用扫描不完整时自动清理和 GC 会暂停，但操作者接受页面列出的引用风险后，仍可明确删除任意选中的 manifest。
 
 CLI 也提供同一套能力：
 

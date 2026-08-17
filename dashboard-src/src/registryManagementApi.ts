@@ -93,15 +93,15 @@ export async function saveRegistryPolicy(token: string, policy: RegistryPolicy) 
 }
 
 export async function previewRegistryDeletion(token: string, manifests: Array<{ repository: string; digest: string }>) {
-  return apiPost<{ allowed: boolean; selected?: RegistryManifest[]; dependentManifests?: RegistryManifest[]; blocked?: Array<RegistryManifest & { reason?: string }>; logicalBytes?: number; warning?: string }>(
+  return apiPost<{ allowed: boolean; selected?: RegistryManifest[]; dependentManifests?: RegistryManifest[]; blocked?: Array<RegistryManifest & { reason?: string }>; risks?: Array<RegistryManifest & { reason?: string }>; logicalBytes?: number; warning?: string }>(
     "/v1/registry/deletions/preview",
     token,
-    { manifests },
+    { manifests, manualOverride: true },
   );
 }
 
 export async function createRegistryDeletion(token: string, manifests: Array<{ repository: string; digest: string }>) {
-  return apiPost<{ deletion: RegistryDeletion }>("/v1/registry/deletions", token, { manifests, confirm: "delete" });
+  return apiPost<{ deletion: RegistryDeletion }>("/v1/registry/deletions", token, { manifests, confirm: "delete", manualOverride: true });
 }
 
 export async function registryDeletionAction(token: string, id: string, action: "cancel" | "execute" | "restore", force = false) {
