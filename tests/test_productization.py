@@ -70,7 +70,7 @@ from luma.bootstrap import (
 )
 from luma.control.client import ControlClient
 from luma.control.context import load_current_context, save_context
-from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _DEPLOY_LOCK, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_git_provider_list, handle_git_provider_refs, handle_git_provider_remove, handle_git_provider_repositories, handle_git_provider_set, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_set, handle_service_history, handle_service_pull_diagnostics, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_registry_image_digest, resolve_service_image, resolve_service_node_pin
+from luma.control.server import ControlHandler, TAILSCALE_RELAY_RESOLVE_TIMEOUT_SECONDS, _DEPLOY_LOCK, _ensure_compose_exposure_supported_on_nodes, _node_record_for_name, _normalize_container_stats_for_engine, _run_host_prep_container, _tcp_relay_ports_needing_ingress_refresh, _service_stats_by_name, _state_nodes, ensure_image_present, ensure_image_pull_egress_proxy, ensure_image_pull_network, handle_application_restart, handle_certificate_retry, handle_compose_deployment, handle_compose_deployment_preview, handle_control_status, handle_dashboard, handle_dashboard_logs, handle_deployment, handle_deployment_config, handle_deployment_preview, handle_fleet_update, handle_git_provider_list, handle_git_provider_refs, handle_git_provider_remove, handle_git_provider_repositories, handle_git_provider_set, handle_node_agent_complete, handle_node_agent_lease, handle_node_agent_token, handle_node_label, handle_node_nomad_join, handle_node_register, handle_node_unregister, handle_registry_list, handle_registry_remove, handle_registry_set, handle_secret_list, handle_secret_remove, handle_secret_set, handle_service_history, handle_service_pull_diagnostics, handle_service_remove, handle_service_rollback, handle_storage_apply, handle_storage_list, handle_storage_remove, handle_storage_set, image_pull_requires_egress, resolve_registry_image_digest, resolve_service_image, resolve_service_node_pin
 from luma.compose import DEFAULT_NFS_MOUNT_OPTIONS
 from luma.control.state import init_state, load_state, save_state
 from luma.envfile import load_env_file
@@ -12642,6 +12642,53 @@ class ControlApiTests(unittest.TestCase):
                 handle_secret_set(state["deployToken"], {"name": "DATABASE_URL", "value": "postgres://secret"})
                 result = handle_secret_list(state["deployToken"])
                 self.assertEqual(result, {"secrets": ["DATABASE_URL"]})
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_secret_remove_cleans_global_and_scoped_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_secret_set(state["deployToken"], {"name": "DATABASE_URL", "value": "postgres://global"})
+                handle_secret_set(state["deployToken"], {"name": "DATABASE_URL", "value": "postgres://api", "scope": "api"})
+                handle_secret_set(state["deployToken"], {"name": "DATABASE_URL", "value": "postgres://global-scope", "scope": "global"})
+
+                global_scope = handle_secret_remove(state["deployToken"], {"name": "DATABASE_URL", "scope": "global"})
+                self.assertEqual(global_scope, {"name": "DATABASE_URL", "scope": "global", "removed": True})
+                self.assertIn("DATABASE_URL", load_state().get("secrets", {}))
+                scoped = handle_secret_remove(state["deployToken"], {"name": "DATABASE_URL", "scope": "api"})
+                global_secret = handle_secret_remove(state["deployToken"], {"name": "DATABASE_URL"})
+                missing = handle_secret_remove(state["deployToken"], {"name": "DATABASE_URL", "scope": "api"})
+
+                self.assertEqual(scoped, {"name": "DATABASE_URL", "scope": "api", "removed": True})
+                self.assertEqual(global_secret, {"name": "DATABASE_URL", "scope": "", "removed": True})
+                self.assertEqual(missing, {"name": "DATABASE_URL", "scope": "api", "removed": False})
+                self.assertEqual(handle_secret_list(state["deployToken"]), {"secrets": []})
+                persisted = load_state()
+                self.assertNotIn("DATABASE_URL", persisted.get("secrets", {}))
+                self.assertNotIn("api", persisted.get("scopedSecrets", {}))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_secret_remove_is_exposed_by_control_api(self):
+        from starlette.testclient import TestClient
+        from luma.control.server import create_app
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", tmp)
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                handle_secret_set(state["deployToken"], {"name": "OPENAI_API_KEY", "value": "secret", "scope": "api"})
+                with TestClient(create_app()) as client:
+                    response = client.post(
+                        "/v1/secrets/remove",
+                        json={"name": "OPENAI_API_KEY", "scope": "api"},
+                        headers={"Authorization": f"Bearer {state['deployToken']}"},
+                    )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"name": "OPENAI_API_KEY", "scope": "api", "removed": True})
+                self.assertEqual(handle_secret_list(state["deployToken"]), {"secrets": []})
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 

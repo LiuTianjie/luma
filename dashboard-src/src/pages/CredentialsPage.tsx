@@ -7,6 +7,7 @@ import {
   fetchStorageClasses,
   removeGitProvider,
   removeRegistry,
+  removeSecret,
   setGitProvider,
   setRegistry,
   setSecret,
@@ -28,8 +29,9 @@ type CredentialsState = {
 };
 
 function parseSecretName(value: string) {
-  const [maybeScope, maybeName] = value.includes("/") ? value.split("/", 2) : ["global", value];
-  return { scope: maybeName ? maybeScope : "global", name: maybeName || maybeScope };
+  if (!value.includes("/")) return { scope: "", name: value };
+  const [scope, name] = value.split("/", 2);
+  return { scope, name: name || scope };
 }
 
 function registryLabel(item: RegistryCredential) {
@@ -49,8 +51,12 @@ function gitProviderTypeLabel(item: GitProviderCredential) {
 }
 
 function secretScopeLabel(scope: string, lang: Lang) {
-  if (scope === "global") return lang === "zh" ? "全局" : "global";
+  if (!scope) return lang === "zh" ? "全局" : "global";
   return scope;
+}
+
+function secretLabel(secret: ParsedSecret) {
+  return secret.scope ? `${secret.scope}/${secret.name}` : secret.name;
 }
 
 type ParsedSecret = ReturnType<typeof parseSecretName>;
@@ -77,7 +83,7 @@ function buildSecretGroups(secrets: ParsedSecret[], lang: Lang): SecretGroup[] {
   const groups = new Map<string, SecretGroup>();
 
   for (const secret of secrets) {
-    if (secret.scope !== "global") {
+    if (secret.scope) {
       const id = `scope:${secret.scope}`;
       const current = groups.get(id) || {
         id,
@@ -183,7 +189,7 @@ export function CredentialsPage({
 
   const parsedSecrets = useMemo(() => state.secrets.map(parseSecretName), [state.secrets]);
   const secretGroups = useMemo(() => buildSecretGroups(parsedSecrets, lang), [lang, parsedSecrets]);
-  const scopedSecrets = parsedSecrets.filter((item) => item.scope !== "global").length;
+  const scopedSecrets = parsedSecrets.filter((item) => item.scope).length;
   const configuredRegistries = state.registries.filter((item) => item.configured).length;
   const configuredGitProviders = state.gitProviders.filter((item) => item.configured).length;
 
@@ -228,6 +234,25 @@ export function CredentialsPage({
       await setRegistry({ token, host: registryForm.host.trim(), username: registryForm.username.trim(), password: registryForm.password });
       setRegistryForm({ host: "", username: "", password: "" });
       setNotice(zh ? `Registry 凭据已保存：${registryForm.host.trim()}` : `Registry credential saved: ${registryForm.host.trim()}`);
+      await refresh();
+    } catch (error) {
+      setWriteError(String(error instanceof Error ? error.message : error));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const deleteSecret = async (secret: ParsedSecret) => {
+    const label = secretLabel(secret);
+    if (!window.confirm(zh
+      ? `删除 Secret ${label}？删除后，后续部署将无法再使用这个值。`
+      : `Remove secret ${label}? Future deployments will no longer be able to use this value.`)) return;
+    setBusy(`remove-secret-${label}`);
+    setNotice("");
+    setWriteError("");
+    try {
+      await removeSecret({ token, name: secret.name, scope: secret.scope || undefined });
+      setNotice(zh ? `Secret 已删除：${label}` : `Secret removed: ${label}`);
       await refresh();
     } catch (error) {
       setWriteError(String(error instanceof Error ? error.message : error));
@@ -405,6 +430,7 @@ export function CredentialsPage({
                                 <th>{zh ? "作用域" : "Scope"}</th>
                                 <th>{zh ? "值" : "Value"}</th>
                                 <th>{zh ? "状态" : "Status"}</th>
+                                <th>{zh ? "操作" : "Actions"}</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -414,6 +440,18 @@ export function CredentialsPage({
                                   <td><Badge value={secretScopeLabel(secret.scope, lang)} /></td>
                                   <td><CodeCell value="write-only" /></td>
                                   <td><StatePill label={zh ? "已保存" : "saved"} value="ready" /></td>
+                                  <td>
+                                    <button
+                                      className="ghost danger"
+                                      type="button"
+                                      disabled={busy !== ""}
+                                      onClick={() => void deleteSecret(secret)}
+                                    >
+                                      {busy === `remove-secret-${secretLabel(secret)}`
+                                        ? (zh ? "删除中..." : "Removing...")
+                                        : (zh ? "删除" : "Remove")}
+                                    </button>
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>
@@ -650,7 +688,7 @@ export function CredentialsPage({
                   <ShieldCheck size={16} aria-hidden="true" />
                   {busy === "secret" ? (zh ? "保存中..." : "Saving...") : (zh ? "保存 Secret" : "Save secret")}
                 </button>
-                <p className="credential-hint">{zh ? "同名保存即轮换。值保存后不回显，也不能从这里删除（如需删除请用 CLI）。GitHub 私有仓库导入用名称 GITHUB_TOKEN。" : "Saving the same name rotates it. Values are not echoed back and cannot be deleted here (use the CLI). For private GitHub imports use the name GITHUB_TOKEN."}</p>
+                <p className="credential-hint">{zh ? "同名保存即轮换。值保存后不回显；删除只影响后续部署，不会修改已经运行的实例。GitHub 私有仓库导入用名称 GITHUB_TOKEN。" : "Saving the same name rotates it. Values are never echoed back; removal affects future deployments and does not modify running instances. For private GitHub imports use the name GITHUB_TOKEN."}</p>
               </div>
             </>
           )}

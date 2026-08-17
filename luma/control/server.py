@@ -12882,6 +12882,37 @@ def handle_secret_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     return {"name": name, "scope": scope, "saved": True}
 
 
+def handle_secret_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    name = str(body.get("name") or "").strip()
+    raw_scope = str(body.get("scope") or "").strip()
+    scope = slugify(raw_scope) if raw_scope else ""
+    if not _valid_env_name(name):
+        raise LumaError("secret name must be a valid environment variable name")
+
+    result = {"removed": False}
+
+    def mutate(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        if scope:
+            scoped = state.get("scopedSecrets") if isinstance(state.get("scopedSecrets"), dict) else {}
+            secrets = scoped.get(scope) if isinstance(scoped.get(scope), dict) else {}
+            result["removed"] = name in secrets
+            secrets.pop(name, None)
+            if secrets:
+                scoped[scope] = secrets
+            else:
+                scoped.pop(scope, None)
+            state["scopedSecrets"] = scoped
+            return
+        secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+        result["removed"] = name in secrets
+        secrets.pop(name, None)
+        state["secrets"] = secrets
+
+    mutate_state(mutate)
+    return {"name": name, "scope": scope, "removed": result["removed"]}
+
+
 def handle_registry_list(token: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -17122,6 +17153,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/secrets":
                 self._json(200, handle_secret_set(token, body))
                 return
+            if self.path == "/v1/secrets/remove":
+                self._json(200, handle_secret_remove(token, body))
+                return
             if self.path == "/v1/git-providers":
                 self._json(200, handle_git_provider_set(token, body))
                 return
@@ -17942,6 +17976,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/certificates/retry": handle_certificate_retry,
             "/v1/fleet/update": handle_fleet_update,
             "/v1/secrets": handle_secret_set,
+            "/v1/secrets/remove": handle_secret_remove,
             "/v1/git-providers": handle_git_provider_set,
             "/v1/git-providers/remove": handle_git_provider_remove,
             "/v1/registries": handle_registry_set,

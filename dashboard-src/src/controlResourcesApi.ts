@@ -100,6 +100,12 @@ export async function setSecret({ token, name, value, scope }: { token: string; 
   return apiPost("/v1/secrets", token, body);
 }
 
+export async function removeSecret({ token, name, scope }: { token: string; name: string; scope?: string }) {
+  const body: Record<string, unknown> = { name };
+  if (scope) body.scope = scope;
+  return apiPost("/v1/secrets/remove", token, body);
+}
+
 export async function setRegistry({ token, host, username, password }: { token: string; host: string; username: string; password: string }) {
   return apiPost("/v1/registries", token, { host, username, password });
 }

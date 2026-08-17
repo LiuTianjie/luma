@@ -849,6 +849,12 @@ class ControlClient:
             body["scope"] = scope
         return self.request("POST", "/v1/secrets", body)
 
+    def remove_secret(self, *, name: str, scope: str = "") -> Dict[str, Any]:
+        body: Dict[str, Any] = {"name": name}
+        if scope:
+            body["scope"] = scope
+        return self.request("POST", "/v1/secrets/remove", body)
+
     def list_registries(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/registries")
 
