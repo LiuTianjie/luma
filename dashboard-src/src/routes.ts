@@ -12,6 +12,7 @@ export const ROUTE_BY_PAGE: Record<NavPage, string> = {
   nodes: "/fleet",
   observability: "/observe",
   storage: "/storage",
+  registry: "/registry",
   credentials: "/settings/secrets",
 };
 
@@ -29,6 +30,7 @@ export function pageForPath(path: string): ResolvedPage {
   if (path === "/fleet" || path.startsWith("/fleet/")) return "nodes";
   if (path === "/observe" || path.startsWith("/observe/")) return "observability";
   if (path === "/storage" || path.startsWith("/storage/")) return "storage";
+  if (path === "/registry" || path.startsWith("/registry/")) return "registry";
   if (path === "/settings" || path.startsWith("/settings/")) return "credentials";
   return "notfound";
 }

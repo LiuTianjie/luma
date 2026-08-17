@@ -130,6 +130,39 @@ def build_parser() -> argparse.ArgumentParser:
     _add_control_arguments(registry_serve)
     _add_output_arguments(registry_serve)
     registry_serve.add_argument("--timeout", type=int, default=1800)
+    registry_images = registry_sub.add_parser("images", help="List managed Registry manifests and protection state")
+    registry_images.add_argument("--refresh", action="store_true")
+    _add_control_arguments(registry_images)
+    _add_output_arguments(registry_images)
+    registry_delete = registry_sub.add_parser("delete", help="Queue a protected manifest deletion")
+    registry_delete.add_argument("repository")
+    registry_delete.add_argument("digest")
+    registry_delete.add_argument("--execute-now", action="store_true", help="Bypass the queue grace period after a fresh protection check")
+    _add_control_arguments(registry_delete)
+    _add_output_arguments(registry_delete)
+    registry_deletion = registry_sub.add_parser("deletion", help="Cancel, execute, or restore a deletion")
+    registry_deletion.add_argument("id")
+    registry_deletion.add_argument("action", choices=("cancel", "execute", "restore"))
+    registry_deletion.add_argument("--force", action="store_true")
+    _add_control_arguments(registry_deletion)
+    _add_output_arguments(registry_deletion)
+    registry_gc = registry_sub.add_parser("gc", help="Preview or execute offline Registry garbage collection")
+    registry_gc.add_argument("--execute", action="store_true")
+    registry_gc.add_argument("--force", action="store_true")
+    _add_control_arguments(registry_gc)
+    _add_output_arguments(registry_gc)
+    registry_policy = registry_sub.add_parser("policy", help="Show or update Registry retention policy")
+    registry_policy.add_argument("--mode", choices=("off", "recommend", "enforce"))
+    registry_policy.add_argument("--keep-last", type=int)
+    registry_policy.add_argument("--max-age-days", type=int)
+    registry_policy.add_argument("--system-keep-last", type=int)
+    registry_policy.add_argument("--queue-grace-hours", type=int)
+    registry_policy.add_argument("--gc-grace-days", type=int)
+    registry_policy.add_argument("--warning-percent", type=int)
+    registry_policy.add_argument("--critical-percent", type=int)
+    registry_policy.add_argument("--emergency-percent", type=int)
+    _add_control_arguments(registry_policy)
+    _add_output_arguments(registry_policy)
     git_provider = sub.add_parser("git-provider")
     git_provider_sub = git_provider.add_subparsers(dest="git_provider_command", required=True)
     git_provider_list = git_provider_sub.add_parser("list")
@@ -173,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.281 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.282 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -1418,7 +1451,7 @@ def cmd_secret(args: argparse.Namespace) -> int:
 
 
 def cmd_registry(args: argparse.Namespace) -> int:
-    if args.registry_command in {"list", "login", "remove", "serve"}:
+    if args.registry_command in {"list", "login", "remove", "serve", "images", "delete", "deletion", "gc", "policy"}:
         endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
         client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
     if args.registry_command == "list":
@@ -1507,6 +1540,96 @@ def cmd_registry(args: argparse.Namespace) -> int:
             print(f"insecure-registries configured on: {', '.join(result['configuredNodes'])}")
         if result.get("skippedNodes"):
             print(f"Skipped nodes: {', '.join(str(n) for n in result['skippedNodes'])}")
+        return 0
+    if args.registry_command == "images":
+        result = client.registry_inventory(refresh=bool(args.refresh))
+        if _output_format(args) != "text":
+            _print_success(args, result)
+            return 0
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        print(
+            f"Registry {result.get('registry', {}).get('host', '-')}: "
+            f"{summary.get('repositoryCount', 0)} repositories, {summary.get('tagCount', 0)} tags, "
+            f"{summary.get('manifestCount', 0)} manifests"
+        )
+        print(
+            f"Protected {summary.get('protectedCount', 0)}, retained {summary.get('retainedCount', 0)}, "
+            f"candidates {summary.get('candidateCount', 0)}, unknown {summary.get('unknownCount', 0)}"
+        )
+        if usage.get("volumeBytes") is not None:
+            print(
+                f"Storage {usage.get('volumeBytes')} bytes; filesystem "
+                f"{usage.get('filesystemUsePercent', '-')}% used"
+            )
+        for item in result.get("entries") or []:
+            if not isinstance(item, dict):
+                continue
+            print(
+                f"{item.get('repository')}@{item.get('digest')}\t"
+                f"{','.join(str(tag) for tag in item.get('tags') or [])}\t"
+                f"{item.get('protectionStatus')}\t{item.get('logicalBytes', 0)}"
+            )
+        return 0
+    if args.registry_command == "delete":
+        manifests = [{"repository": args.repository, "digest": args.digest}]
+        preview = client.preview_registry_deletion(manifests)
+        if not preview.get("allowed"):
+            raise LumaError(f"Registry deletion blocked: {preview.get('blocked')}")
+        result = client.create_registry_deletion(manifests)
+        deletion = result.get("deletion") if isinstance(result.get("deletion"), dict) else {}
+        if args.execute_now:
+            result = client.registry_deletion_action(str(deletion.get("id") or ""), "execute", force=True)
+        if _output_format(args) != "text":
+            _print_success(args, result)
+        else:
+            current = result.get("deletion") if isinstance(result.get("deletion"), dict) else deletion
+            print(f"Registry deletion {current.get('id')}: {current.get('status')}")
+        return 0
+    if args.registry_command == "deletion":
+        result = client.registry_deletion_action(args.id, args.action, force=bool(args.force))
+        if _output_format(args) != "text":
+            _print_success(args, result)
+        else:
+            deletion = result.get("deletion") if isinstance(result.get("deletion"), dict) else {}
+            print(f"Registry deletion {deletion.get('id', args.id)}: {deletion.get('status', args.action)}")
+        return 0
+    if args.registry_command == "gc":
+        result = client.registry_gc(preview=not bool(args.execute), force=bool(args.force))
+        if _output_format(args) != "text":
+            _print_success(args, result)
+        else:
+            payload = result.get("preview") if isinstance(result.get("preview"), dict) else result.get("result") if isinstance(result.get("result"), dict) else result
+            print(
+                f"Registry GC {'complete' if args.execute else 'preview complete'}: "
+                f"eligible={payload.get('eligibleBlobs', 0)}, reclaimed={payload.get('reclaimedBytes', 0)} bytes"
+            )
+        return 0
+    if args.registry_command == "policy":
+        changes = {
+            key: value
+            for key, value in {
+                "mode": args.mode,
+                "keepLast": args.keep_last,
+                "maxAgeDays": args.max_age_days,
+                "systemKeepLast": args.system_keep_last,
+                "queueGraceHours": args.queue_grace_hours,
+                "gcGraceDays": args.gc_grace_days,
+                "warningPercent": args.warning_percent,
+                "criticalPercent": args.critical_percent,
+                "emergencyPercent": args.emergency_percent,
+            }.items()
+            if value is not None
+        }
+        if changes:
+            current = client.registry_policy().get("policy") or {}
+            result = client.set_registry_policy({**current, **changes})
+        else:
+            result = client.registry_policy()
+        if _output_format(args) != "text":
+            _print_success(args, result)
+        else:
+            print(json.dumps(result.get("policy") or {}, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     raise LumaError(f"unknown registry command: {args.registry_command}")
 

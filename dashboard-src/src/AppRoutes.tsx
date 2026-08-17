@@ -17,6 +17,7 @@ const NotFound = lazy(() => import("./pages/NotFound").then((module) => ({ defau
 const ObservabilityPage = lazy(() => import("./pages/ObservabilityPage").then((module) => ({ default: module.ObservabilityPage })));
 const OverviewPage = lazy(() => import("./pages/OverviewPage").then((module) => ({ default: module.OverviewPage })));
 const StoragePage = lazy(() => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage })));
+const RegistryPage = lazy(() => import("./pages/RegistryPage").then((module) => ({ default: module.RegistryPage })));
 
 export type AppRoutesProps = {
   page: ResolvedPage;
@@ -113,6 +114,9 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       break;
     case "storage":
       content = <StoragePage lang={lang} vm={vm} />;
+      break;
+    case "registry":
+      content = <RegistryPage lang={lang} token={token} />;
       break;
     case "credentials":
       content = <CredentialsPage lang={lang} token={token} vm={vm} />;

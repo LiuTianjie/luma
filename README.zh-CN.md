@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.281 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.282 sh
 ```
 
 从源码开发：
@@ -345,6 +345,24 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 之后 manifest 仍然只写镜像名，例如 `image: ghcr.io/acme/private-api:1.0.0`。部署时 Luma 会按 image 推断 registry host，把 registry auth 注入 Nomad jobspec 的 docker `config.auth` 块，让被调度到的节点能拉取镜像。这适合 GitHub Actions 构建出来的私有 GHCR 镜像；同一个仓库即使还用 GitHub Pages 发布文档或营销页，也不需要把 GHCR token 写到 Luma manifest 里。
 
 私有镜像拉取和运行时 `proxy: true` 是两条路径。如果 Docker daemon 配了全局代理，而私有 registry 在认证前就 EOF/timeout，先看 `docker info` 的 HTTPProxy/HTTPSProxy/NO_PROXY，并确保私有 registry host 在 Docker daemon 的 `NO_PROXY` 里；`curl https://<registry>/v2/` 返回 `401` 通常说明 registry 本身可达，下一步应查 Docker daemon 的代理绕过。
+
+### 管理 Luma Registry 镜像
+
+Dashboard 的「Registry」页会按 manifest digest 展示仓库、全部 tag、平台、逻辑体积、创建时间、宿主磁盘占用和近月 blob 写入趋势。Control 会联合检查当前部署、Compose、Builder 结果、LAE runtime、运行中的 agent task，以及 Nomad 保留的每一个 job version；只要引用扫描不完整，删除和 GC 都会锁定。
+
+CLI 也提供同一套能力：
+
+```bash
+luma registry images --refresh
+luma registry delete acme/api sha256:<digest>
+luma registry deletion <deletion-id> cancel
+luma registry deletion <deletion-id> restore
+luma registry gc                 # 只做离线预检
+luma registry gc --execute       # 恢复窗口结束后真正回收
+luma registry policy --mode recommend --keep-last 20 --max-age-days 30
+```
+
+删除按 digest 排队；同一 digest 的所有 tag 会一起处理。多架构 index 只会带上未被其他保留 index 共享的平台 manifest。默认 `recommend` 只标记候选，不自动删除；显式切换到 `enforce` 后才会按队列宽限期执行删除，并在恢复窗口结束后离线 GC。Registry 在删除和 GC 期间会短暂停止，Control 无论维护成功或失败都会重新注册原 Nomad job。GC 前可从 Dashboard 或 CLI 恢复原 tag；GC 完成后不可恢复。
 
 敏感值不要直接写进 manifest。如果项目已经有 `.env`，部署时直接传入：
 

@@ -214,6 +214,41 @@ const devNodeAddresses: Record<string, string> = {
   }));
 });
 
+const devRegistryPayload = {
+  registry: { host: "100.66.177.70:5000", node: "builder", volumeName: "luma-registry-data", jobId: "luma-registry" },
+  summary: { repositoryCount: 144, tagCount: 1122, manifestCount: 486, protectedCount: 173, retainedCount: 284, candidateCount: 29, unknownCount: 0, scanErrors: 0, scannedAt: Math.floor(Date.now() / 1000), durationMs: 4380 },
+  usage: {
+    volumeBytes: 27_742_000_000,
+    filesystemTotalBytes: 250_000_000_000,
+    filesystemUsedBytes: 162_500_000_000,
+    filesystemAvailableBytes: 87_500_000_000,
+    filesystemUsePercent: 65,
+    monthlyBlobs: [
+      { month: "2026-03", bytes: 1_900_000_000, files: 126 },
+      { month: "2026-04", bytes: 2_600_000_000, files: 183 },
+      { month: "2026-05", bytes: 3_200_000_000, files: 207 },
+      { month: "2026-06", bytes: 4_800_000_000, files: 315 },
+      { month: "2026-07", bytes: 6_100_000_000, files: 442 },
+      { month: "2026-08", bytes: 5_300_000_000, files: 381 },
+    ],
+  },
+  protectionComplete: true,
+  referenceError: "",
+  policy: { mode: "recommend", keepLast: 20, maxAgeDays: 30, systemKeepLast: 3, queueGraceHours: 24, gcGraceDays: 7, warningPercent: 75, criticalPercent: 85, emergencyPercent: 92 },
+  entries: [
+    { repository: "lae/agent-controller", digest: `sha256:${"a".repeat(64)}`, tags: ["2026.08.17-8d91ab", "latest"], logicalBytes: 724_000_000, createdAt: 1786900000, platforms: ["linux/amd64", "linux/arm64"], protectionStatus: "protected", protectionReasons: [{ kind: "nomad-version", source: "nomad:lae-agent-controller:v18" }] },
+    { repository: "luma-control", digest: `sha256:${"b".repeat(64)}`, tags: ["0.1.281", "latest"], logicalBytes: 381_000_000, createdAt: 1786800000, platforms: ["linux/amd64"], protectionStatus: "protected", protectionReasons: [{ kind: "system", source: "system retention" }] },
+    { repository: "tifenxia/api", digest: `sha256:${"c".repeat(64)}`, tags: ["release-20260815"], logicalBytes: 1_840_000_000, createdAt: 1786500000, platforms: ["linux/amd64"], protectionStatus: "protected", protectionReasons: [{ kind: "deployment", source: "services:tifenxia-api" }] },
+    { repository: "granary/frontend", digest: `sha256:${"d".repeat(64)}`, tags: ["main-f81d2c"], logicalBytes: 186_000_000, createdAt: 1784300000, platforms: ["linux/amd64"], protectionStatus: "retained", protectionReasons: [] },
+    { repository: "granary/frontend", digest: `sha256:${"e".repeat(64)}`, tags: ["main-25a90a"], logicalBytes: 181_000_000, createdAt: 1781200000, platforms: ["linux/amd64"], protectionStatus: "candidate", protectionReasons: [] },
+    { repository: "docs/tifenxia-docs", digest: `sha256:${"f".repeat(64)}`, tags: ["preview-418", "preview-latest"], logicalBytes: 93_000_000, createdAt: 1779000000, platforms: ["linux/amd64"], protectionStatus: "candidate", protectionReasons: [] },
+  ],
+  deletions: [
+    { id: "registry-delete-7f13b2c4", status: "deleted_pending_gc", manifests: [{ repository: "sandbox/old-worker", digest: `sha256:${"1".repeat(64)}` }], logicalBytes: 612_000_000, createdAt: 1786600000, updatedAt: 1786686400, gcAfter: 1787291200, message: "2 manifests deleted; blobs retained until GC" },
+    { id: "registry-delete-a19c3d28", status: "queued", manifests: [{ repository: "granary/frontend", digest: `sha256:${"e".repeat(64)}` }], logicalBytes: 181_000_000, createdAt: 1786900000, updatedAt: 1786900000, notBefore: 1786986400, message: "Deletion queued" },
+  ],
+};
+
 export default defineConfig({
   base: "/dashboard/",
   root: __dirname,
@@ -388,6 +423,25 @@ export default defineConfig({
               { host: "gcode.gaojiua.com:3000", serverAddress: "gcode.gaojiua.com:3000", username: "deploy", configured: true },
             ],
           }));
+        });
+        server.middlewares.use("/v1/registry/inventory", (request, response) => {
+          if (request.method !== "GET") {
+            response.statusCode = 405;
+            response.end(JSON.stringify({ error: "method not allowed" }));
+            return;
+          }
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.setHeader("Cache-Control", "no-store");
+          response.end(JSON.stringify(devRegistryPayload));
+        });
+        server.middlewares.use("/v1/registry/deletions/preview", async (request, response) => {
+          const body = await readBody(request);
+          const requested = Array.isArray(body.manifests) ? body.manifests : [];
+          const selected = devRegistryPayload.entries.filter((entry) => requested.some((item: any) => item.repository === entry.repository && item.digest === entry.digest));
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.end(JSON.stringify({ allowed: selected.length > 0, selected, dependentManifests: [], blocked: [], logicalBytes: selected.reduce((total, item) => total + item.logicalBytes, 0) }));
         });
         server.middlewares.use("/v1/storage", (request, response, next) => {
           if (request.method !== "GET") {

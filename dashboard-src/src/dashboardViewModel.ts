@@ -11,6 +11,7 @@ export type PageId =
   | "lae"
   | "observability"
   | "storage"
+  | "registry"
   | "nodes"
   | "credentials"
   | "update";

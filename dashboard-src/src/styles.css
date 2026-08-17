@@ -6093,3 +6093,626 @@ dd {
   display: grid;
   gap: 8px;
 }
+
+/* Registry lifecycle console — dense, reference-first, and deliberately operational. */
+.registry-page {
+  display: grid;
+  gap: 16px;
+}
+
+.registry-header-actions,
+.registry-gc-actions,
+.registry-policy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.registry-alert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.registry-alert.critical {
+  border-color: var(--red-line);
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.registry-alert.warning {
+  border-color: color-mix(in srgb, var(--amber) 42%, var(--line));
+  background: color-mix(in srgb, var(--amber) 9%, var(--surface));
+  color: var(--amber);
+}
+
+.registry-alert.success {
+  border-color: var(--green-line);
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.registry-alert > span {
+  display: grid;
+  gap: 2px;
+  flex: 1;
+}
+
+.registry-alert small {
+  color: var(--text-muted);
+}
+
+.registry-alert > button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.registry-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.registry-usage-card {
+  position: relative;
+  display: grid;
+  min-height: 142px;
+  gap: 8px;
+  overflow: hidden;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--surface-raised) 92%, transparent), var(--surface));
+}
+
+.registry-usage-card::after {
+  position: absolute;
+  inset: auto -24px -48px auto;
+  width: 112px;
+  height: 112px;
+  border: 1px solid var(--line-soft);
+  border-radius: 50%;
+  content: "";
+}
+
+.registry-usage-card > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.registry-usage-card > strong {
+  align-self: end;
+  font-size: clamp(1.45rem, 2.5vw, 2.2rem);
+  letter-spacing: -0.06em;
+}
+
+.registry-usage-card > small {
+  overflow: hidden;
+  color: var(--text-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.registry-usage-card > i {
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--line);
+}
+
+.registry-usage-card > i::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--registry-meter);
+  border-radius: inherit;
+  background: var(--green);
+  content: "";
+}
+
+.registry-usage-card.disk-warning > i::after {
+  background: var(--amber);
+}
+
+.registry-usage-card.disk-critical > i::after {
+  background: var(--red);
+}
+
+.registry-growth-panel {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.5fr) minmax(0, 1.5fr);
+  align-items: stretch;
+  gap: 24px;
+  min-height: 160px;
+  padding: 18px;
+}
+
+.registry-growth-panel h2,
+.registry-growth-panel p {
+  margin: 0;
+}
+
+.registry-growth-panel > div:first-child {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.registry-growth-panel > div:first-child small {
+  color: var(--text-subtle);
+  line-height: 1.5;
+}
+
+.registry-growth-bars {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(50px, 1fr));
+  align-items: end;
+  gap: 7px;
+  min-height: 112px;
+}
+
+.registry-growth-bars > span {
+  display: grid;
+  grid-template-rows: 72px auto auto;
+  align-items: end;
+  gap: 4px;
+  min-width: 0;
+  text-align: center;
+}
+
+.registry-growth-bars i {
+  width: 100%;
+  max-width: 54px;
+  justify-self: center;
+  border: 1px solid color-mix(in srgb, var(--green) 35%, var(--line));
+  border-radius: 2px 2px 0 0;
+  background: color-mix(in srgb, var(--green) 23%, var(--surface-raised));
+}
+
+.registry-growth-bars strong {
+  overflow: hidden;
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.registry-growth-bars small {
+  color: var(--text-subtle);
+  font-size: 0.64rem;
+}
+
+.registry-policy-panel {
+  padding: 18px;
+  animation: registry-reveal var(--motion-slow) var(--ease-out) both;
+}
+
+.registry-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.registry-policy-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.registry-policy-grid label > span {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.registry-policy-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.registry-policy-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line));
+  background: color-mix(in srgb, var(--amber) 8%, var(--surface));
+  color: var(--amber);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.registry-inventory-panel {
+  overflow: hidden;
+  padding: 0;
+}
+
+.registry-inventory-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.registry-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.registry-search > svg {
+  position: absolute;
+  left: 11px;
+  z-index: 1;
+  color: var(--text-subtle);
+}
+
+.registry-search input {
+  padding-left: 36px;
+}
+
+.registry-filters {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--recess);
+}
+
+.registry-filters button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-subtle);
+  font-size: 0.72rem;
+}
+
+.registry-filters button.active {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.registry-table-wrap {
+  max-height: min(66vh, 760px);
+  overflow: auto;
+}
+
+.registry-table {
+  min-width: 1080px;
+}
+
+.registry-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+
+.registry-table tr.selected td {
+  background: var(--accent-soft);
+}
+
+.registry-table th:first-child,
+.registry-table td:first-child {
+  width: 42px;
+  text-align: center;
+}
+
+.registry-table input[type="checkbox"] {
+  width: 15px;
+  min-height: 15px;
+  accent-color: var(--accent);
+}
+
+.registry-repository,
+.registry-protection,
+.registry-platforms {
+  display: grid;
+  gap: 4px;
+}
+
+.registry-repository strong {
+  color: var(--text);
+}
+
+.registry-repository code {
+  display: block;
+  max-width: 310px;
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.registry-tags {
+  display: flex;
+  max-width: 260px;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.registry-tags code,
+.registry-platforms small {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--well);
+  color: var(--text-muted);
+  font-size: 0.67rem;
+}
+
+.registry-tags > small,
+.registry-protection > small {
+  color: var(--text-subtle);
+  font-size: 0.67rem;
+}
+
+.registry-empty {
+  height: 160px;
+  color: var(--text-subtle);
+  text-align: center;
+}
+
+.registry-lifecycle-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(300px, 0.75fr);
+  gap: 12px;
+}
+
+.registry-queue-panel,
+.registry-gc-panel {
+  padding: 18px;
+}
+
+.registry-queue-list {
+  display: grid;
+  max-height: 410px;
+  gap: 0;
+  overflow: auto;
+}
+
+.registry-queue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 72px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.registry-queue-row > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.registry-queue-row > span strong,
+.registry-queue-row > span small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.registry-queue-row small {
+  color: var(--text-subtle);
+  font-size: 0.69rem;
+}
+
+.registry-queue-row > div {
+  display: flex;
+  gap: 5px;
+}
+
+.registry-queue-row button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 0.7rem;
+}
+
+.registry-empty-state {
+  display: grid;
+  min-height: 170px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: var(--text-subtle);
+}
+
+.registry-gc-panel > p {
+  min-height: 112px;
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+.registry-gc-actions {
+  align-items: stretch;
+}
+
+.registry-gc-actions button {
+  flex: 1;
+}
+
+.registry-dialog-backdrop {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgba(5, 4, 4, 0.7);
+  backdrop-filter: blur(8px);
+  animation: registry-fade var(--motion-standard) var(--ease-out) both;
+}
+
+.registry-dialog {
+  display: grid;
+  width: min(520px, 100%);
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid var(--red-line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-heavy);
+  animation: registry-dialog-in var(--motion-slow) var(--ease-out) both;
+}
+
+.registry-dialog-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--red-line);
+  border-radius: 50%;
+  place-items: center;
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.registry-dialog h2,
+.registry-dialog p {
+  margin: 0;
+}
+
+.registry-dialog p {
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+
+.registry-dialog-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.registry-dialog-summary > span {
+  display: grid;
+  gap: 3px;
+  padding: 12px;
+  border-right: 1px solid var(--line);
+}
+
+.registry-dialog-summary > span:last-child {
+  border: 0;
+}
+
+.registry-dialog-summary small {
+  color: var(--text-subtle);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+}
+
+.registry-dialog-blocked {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--red-line);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 0.75rem;
+}
+
+.registry-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+@keyframes registry-reveal {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes registry-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes registry-dialog-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (max-width: 1180px) {
+  .registry-usage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .registry-inventory-toolbar {
+    grid-template-columns: 1fr auto;
+  }
+
+  .registry-filters {
+    grid-column: 1 / -1;
+    width: fit-content;
+  }
+
+  .registry-lifecycle-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .registry-usage-grid,
+  .registry-policy-grid,
+  .registry-dialog-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .registry-inventory-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .registry-growth-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .registry-growth-bars {
+    overflow-x: auto;
+  }
+
+  .registry-filters {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .registry-queue-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px 0;
+  }
+
+  .registry-dialog-summary > span {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .registry-policy-panel,
+  .registry-dialog-backdrop,
+  .registry-dialog {
+    animation: none;
+  }
+}

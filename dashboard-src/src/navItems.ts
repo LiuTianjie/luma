@@ -1,4 +1,4 @@
-import { Activity, Boxes, CloudCog, Hammer, HardDrive, KeyRound, LayoutDashboard, Plus, ScrollText, ServerCog, type LucideIcon } from "lucide-react";
+import { Activity, Boxes, CloudCog, Container, Hammer, HardDrive, KeyRound, LayoutDashboard, Plus, ScrollText, ServerCog, type LucideIcon } from "lucide-react";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 import type { Lang } from "./types";
 
@@ -67,6 +67,13 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
     value: vm.builderNodes || null,
     detail: zh ? "仓库导入 · 构建历史" : "Repo import · history",
   };
+  const registry: NavItem = {
+    id: "registry",
+    icon: Container,
+    label: "Registry",
+    value: null,
+    detail: zh ? "镜像 · 保留 · GC" : "Images · retention · GC",
+  };
   const deployments: NavItem = {
     id: "deployments",
     icon: ScrollText,
@@ -98,7 +105,7 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
 
   return [
     { key: "home", label: null, items: [overview] },
-    { key: "run", label: zh ? "运行" : "Run", items: [apps, fleet, observe, storage, builder, deployments] },
+    { key: "run", label: zh ? "运行" : "Run", items: [apps, fleet, observe, storage, registry, builder, deployments] },
     { key: "platform", label: zh ? "平台" : "Platform", items: [lae] },
     { key: "deliver", label: zh ? "交付" : "Deliver", items: [create] },
     { key: "settings", label: zh ? "设置" : "Settings", items: [credentials] },

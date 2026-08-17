@@ -101,6 +101,17 @@ from ..registry import (
     registry_auth_for_image,
     registry_auth_matches_image,
 )
+from ..registry_management import (
+    INDEX_MEDIA_TYPES,
+    RegistryHttpClient,
+    apply_protection,
+    collect_state_image_references,
+    managed_image_reference,
+    normalize_policy,
+    scan_registry,
+    validate_digest,
+    validate_repository,
+)
 from ..render import named_volume_sources, render_tailscale_route, render_tcp_route, route_path, stack_path
 from ..repo_paths import normalize_repo_relative_path
 from ..service import TCP_RELAY_RESERVED_PORTS, VALID_REGIONS, ServiceSpec, load_service, slugify, tcp_entrypoint_name
@@ -254,6 +265,12 @@ _FLEET_UPDATE_LOCK = threading.RLock()
 _FLEET_UPDATE_THREADS: dict[str, threading.Thread] = {}
 _CONTROL_IMAGE_PREPARE_LOCK = threading.RLock()
 _CONTROL_IMAGE_PREPARE_THREADS: dict[str, threading.Thread] = {}
+_REGISTRY_SCAN_LOCK = threading.RLock()
+_REGISTRY_SCAN_CACHE: dict[str, Any] = {}
+_REGISTRY_MAINTENANCE_LOCK = threading.RLock()
+_REGISTRY_AUTOMATION_LOCK = threading.RLock()
+_REGISTRY_AUTOMATION_THREAD: threading.Thread | None = None
+_REGISTRY_AUTOMATION_WAKE = threading.Event()
 _LAE_RUNTIME_DEPLOY_THREAD_LOCK = threading.RLock()
 _LAE_RUNTIME_DEPLOY_THREADS: dict[str, threading.Thread] = {}
 # Repository Import is a request-owned workflow rather than a resumable
@@ -3168,6 +3185,8 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     storage = _dashboard_storage(services, _storage_classes_summary(state))
     public_services = [_public_dashboard_service(item) for item in services]
     issues = _dashboard_issues(nodes, public_services)
+    issues.extend(_registry_dashboard_issues(state))
+    issues.sort(key=lambda item: (0 if item.get("severity") == "critical" else 1, str(item.get("target") or "")))
 
     lae_admin_available = _lae_admin_proxy_available()
     readiness = {
@@ -9139,6 +9158,923 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
         "dockerRestartRecoveries": docker_recoveries,
         "steps": steps,
     }
+
+
+def _registry_management_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    management = state.setdefault("registryManagement", {})
+    if not isinstance(management, dict):
+        management = {}
+        state["registryManagement"] = management
+    management["policy"] = normalize_policy(
+        management.get("policy") if isinstance(management.get("policy"), dict) else {}
+    )
+    for key in ("deletions", "audit"):
+        if not isinstance(management.get(key), list):
+            management[key] = []
+    return management
+
+
+def _registry_dashboard_issues(state: Dict[str, Any]) -> list[Dict[str, Any]]:
+    raw = state.get("registryManagement")
+    if not isinstance(raw, dict):
+        return []
+    last_scan = raw.get("lastScan") if isinstance(raw.get("lastScan"), dict) else {}
+    policy = normalize_policy(raw.get("policy") if isinstance(raw.get("policy"), dict) else {})
+    usage = last_scan.get("usage") if isinstance(last_scan.get("usage"), dict) else {}
+    percent = float(usage.get("filesystemUsePercent") or 0)
+    if not percent:
+        return []
+    severity = ""
+    if percent >= int(policy["criticalPercent"]):
+        severity = "critical"
+    elif percent >= int(policy["warningPercent"]):
+        severity = "warning"
+    if not severity:
+        return []
+    available = int(usage.get("filesystemAvailableBytes") or 0)
+    return [
+        {
+            "severity": severity,
+            "kind": "registry-storage",
+            "target": "Luma Registry",
+            "message": (
+                f"Registry filesystem is {percent:.1f}% used"
+                + (f" with {available} bytes available" if available else "")
+            ),
+        }
+    ]
+
+
+def _persist_registry_scan(spec: Dict[str, Any], result: Dict[str, Any]) -> None:
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+    snapshot = {
+        "host": str(spec.get("host") or ""),
+        "node": str(spec.get("node") or ""),
+        "summary": copy.deepcopy(summary),
+        "usage": copy.deepcopy(usage),
+        "protectionComplete": bool(result.get("protectionComplete")),
+        "referenceError": str(result.get("referenceError") or ""),
+        "updatedAt": int(time.time()),
+    }
+
+    def mutate(state: Dict[str, Any]) -> None:
+        _registry_management_state(state)["lastScan"] = snapshot
+
+    _mutate_control_state(mutate)
+
+
+def _managed_registry_spec(state: Dict[str, Any]) -> Dict[str, Any]:
+    build = _build_config(state)
+    host = normalize_registry_host(str(build.get("registryHost") or ""))
+    deployments = _deployments_state(state)
+    selected: tuple[str, Dict[str, Any], Dict[str, Any]] | None = None
+    for slug, record in deployments["services"].items():
+        if not isinstance(record, dict):
+            continue
+        manifest = _safe_manifest_dict(record.get("manifest"))
+        image = str(manifest.get("image") or "")
+        volumes = manifest.get("volumes") if isinstance(manifest.get("volumes"), list) else []
+        if str(slug) == "luma-registry" or image == "registry:2" or any(
+            isinstance(value, str) and value.endswith(":/var/lib/registry")
+            for value in volumes
+        ):
+            selected = (str(slug), record, manifest)
+            if str(slug) == "luma-registry":
+                break
+    if selected is None:
+        raise LumaError("managed Registry deployment was not found")
+    slug, _record, manifest = selected
+    node = str(manifest.get("node") or "").strip()
+    image = str(manifest.get("image") or "registry:2").strip()
+    volume_name = ""
+    for value in manifest.get("volumes") or []:
+        if not isinstance(value, str) or not value.endswith(":/var/lib/registry"):
+            continue
+        volume_name = value.split(":", 1)[0].strip()
+        break
+    if not node or not volume_name:
+        raise LumaError("managed Registry node or data volume is unavailable")
+    domain = str(manifest.get("domain") or "").strip()
+    base_url = f"https://{host}" if domain or ":" not in host else f"http://{host}"
+    return {
+        "host": host,
+        "baseUrl": base_url,
+        "node": node,
+        "image": image,
+        "volumeName": volume_name,
+        "jobId": slug,
+    }
+
+
+def _managed_registry_client(state: Dict[str, Any], spec: Dict[str, Any] | None = None) -> RegistryHttpClient:
+    spec = spec or _managed_registry_spec(state)
+    registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    credential = registries.get(spec["host"]) if isinstance(registries.get(spec["host"]), dict) else {}
+    return RegistryHttpClient(
+        str(spec["baseUrl"]),
+        username=str(credential.get("username") or ""),
+        password=str(credential.get("password") or ""),
+        timeout=30,
+    )
+
+
+def _images_from_nomad_job(job: Any) -> list[str]:
+    if not isinstance(job, dict):
+        return []
+    images: list[str] = []
+    for group in job.get("TaskGroups") or []:
+        if not isinstance(group, dict):
+            continue
+        for task in group.get("Tasks") or []:
+            config = task.get("Config") if isinstance(task, dict) and isinstance(task.get("Config"), dict) else {}
+            image = str(config.get("image") or "").strip()
+            if image:
+                images.append(image)
+    return images
+
+
+def _registry_nomad_references(state: Dict[str, Any], spec: Dict[str, Any]) -> tuple[list[Dict[str, str]], bool, str]:
+    config = load_config(_control_config_path())
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    references: list[Dict[str, str]] = []
+    try:
+        jobs = client.request("GET", "/v1/jobs")
+        if not isinstance(jobs, list):
+            raise LumaError("Nomad job list is unavailable")
+        for summary in jobs:
+            if not isinstance(summary, dict):
+                continue
+            job_id = str(summary.get("ID") or summary.get("Name") or "").strip()
+            if not job_id:
+                continue
+            versions_response = client.request(
+                "GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/versions"
+            )
+            versions = versions_response.get("Versions") if isinstance(versions_response, dict) else []
+            if not isinstance(versions, list):
+                raise LumaError(f"Nomad job versions are unavailable: {job_id}")
+            for version in versions:
+                if not isinstance(version, dict):
+                    continue
+                version_id = str(version.get("Version") if version.get("Version") is not None else "unknown")
+                for image in _images_from_nomad_job(version):
+                    parsed = managed_image_reference(image, str(spec["host"]))
+                    if parsed:
+                        references.append(
+                            {
+                                **parsed,
+                                "kind": "nomad-version",
+                                "source": f"nomad:{job_id}:v{version_id}",
+                            }
+                        )
+        return references, True, ""
+    except LumaError as exc:
+        return references, False, str(exc)
+
+
+def _refresh_registry_inventory(state: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
+    client = _managed_registry_client(state, spec)
+    inventory = scan_registry(client)
+    try:
+        usage = _run_node_agent_task(
+            state,
+            str(spec["node"]),
+            "inspect-registry-storage",
+            {"volumeName": str(spec["volumeName"])},
+            timeout=600,
+            required_capability="registry-management-v1",
+        )
+    except LumaError as exc:
+        usage = {"error": str(exc)}
+    inventory["usage"] = usage
+    inventory["registry"] = {
+        "host": spec["host"],
+        "node": spec["node"],
+        "volumeName": spec["volumeName"],
+        "jobId": spec["jobId"],
+    }
+    return inventory
+
+
+def _registry_inventory_for_state(state: Dict[str, Any], *, refresh: bool = False) -> Dict[str, Any]:
+    _apply_state_secrets(state)
+    spec = _managed_registry_spec(state)
+    cache_key = str(spec["host"])
+    refreshed = False
+    with _REGISTRY_SCAN_LOCK:
+        cached = _REGISTRY_SCAN_CACHE.get(cache_key)
+        if (
+            refresh
+            or not isinstance(cached, dict)
+            or int(time.time()) - int(cached.get("cachedAt") or 0) > 60
+        ):
+            raw = _refresh_registry_inventory(state, spec)
+            cached = {"cachedAt": int(time.time()), "inventory": raw}
+            _REGISTRY_SCAN_CACHE[cache_key] = cached
+            refreshed = True
+        inventory = copy.deepcopy(cached["inventory"])
+    references = collect_state_image_references(state, str(spec["host"]))
+    nomad_references, complete, nomad_error = _registry_nomad_references(state, spec)
+    references.extend(nomad_references)
+    management = _registry_management_state(state)
+    result = apply_protection(
+        inventory,
+        references,
+        complete=complete,
+        policy=management["policy"],
+    )
+    result["referenceError"] = nomad_error
+    result["deletions"] = _registry_deletion_public_list(management["deletions"])
+    result["audit"] = [dict(item) for item in management["audit"][-100:] if isinstance(item, dict)]
+    if refreshed:
+        _persist_registry_scan(spec, result)
+    return result
+
+
+def handle_registry_inventory(token: str, *, refresh: bool = False) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    return _registry_inventory_for_state(state, refresh=refresh)
+
+
+def handle_registry_policy_get(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    management = _registry_management_state(state)
+    return {"policy": dict(management["policy"])}
+
+
+def handle_registry_policy_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    policy = normalize_policy(body)
+    if int(policy["warningPercent"]) >= int(policy["criticalPercent"]):
+        raise LumaError("registry warningPercent must be lower than criticalPercent")
+    if int(policy["criticalPercent"]) >= int(policy["emergencyPercent"]):
+        raise LumaError("registry criticalPercent must be lower than emergencyPercent")
+
+    def mutate(state: Dict[str, Any]) -> None:
+        require_token(state, token, token_type="deploy")
+        management = _registry_management_state(state)
+        management["policy"] = dict(policy)
+        management["audit"].append(
+            {"id": f"registry-audit-{secrets.token_hex(8)}", "action": "policy-updated", "createdAt": int(time.time()), "policy": dict(policy)}
+        )
+        management["audit"] = management["audit"][-500:]
+
+    _mutate_control_state(mutate)
+    _REGISTRY_AUTOMATION_WAKE.set()
+    return {"policy": policy, "saved": True}
+
+
+def _registry_requested_manifests(body: Dict[str, Any]) -> list[Dict[str, str]]:
+    raw_items = body.get("manifests") if isinstance(body.get("manifests"), list) else []
+    if not raw_items or len(raw_items) > 50:
+        raise LumaError("registry deletion requires between 1 and 50 manifests")
+    items: list[Dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            raise LumaError("registry deletion manifests must be objects")
+        item = {
+            "repository": validate_repository(raw.get("repository")),
+            "digest": validate_digest(raw.get("digest")),
+        }
+        key = (item["repository"], item["digest"])
+        if key not in seen:
+            seen.add(key)
+            items.append(item)
+    return items
+
+
+def _registry_deletion_preview_from_inventory(
+    inventory: Dict[str, Any], requested: list[Dict[str, str]]
+) -> Dict[str, Any]:
+    entries = {
+        (str(item.get("repository") or ""), str(item.get("digest") or "")): item
+        for item in inventory.get("entries") or []
+        if isinstance(item, dict)
+    }
+    selected: list[Dict[str, Any]] = []
+    blocked: list[Dict[str, Any]] = []
+    for item in requested:
+        entry = entries.get((item["repository"], item["digest"]))
+        if entry is None:
+            blocked.append({**item, "reason": "manifest is no longer present"})
+            continue
+        public = {
+            "repository": item["repository"],
+            "digest": item["digest"],
+            "role": "root",
+            "tags": list(entry.get("tags") or []),
+            "logicalBytes": int(entry.get("logicalBytes") or 0),
+            "childManifestDigests": list(entry.get("childManifestDigests") or []),
+            "protectionStatus": str(entry.get("protectionStatus") or "unknown"),
+            "protectionReasons": list(entry.get("protectionReasons") or []),
+        }
+        if not inventory.get("protectionComplete"):
+            blocked.append({**public, "reason": "reference scan is incomplete"})
+        elif public["protectionReasons"]:
+            blocked.append({**public, "reason": "manifest is protected by a live or rollback reference"})
+        else:
+            selected.append(public)
+    selected_keys = {(item["repository"], item["digest"]) for item in selected}
+    child_parents: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for parent_key, entry in entries.items():
+        for child_digest in entry.get("childManifestDigests") or []:
+            child_parents.setdefault((parent_key[0], str(child_digest)), set()).add(parent_key)
+    dependencies: list[Dict[str, Any]] = []
+    for child_key, parents in sorted(child_parents.items()):
+        if not parents or not parents.issubset(selected_keys) or child_key in selected_keys:
+            continue
+        tagged_child = entries.get(child_key)
+        if tagged_child is not None:
+            # A separately tagged child remains reachable even if its parent
+            # index is removed, so it is not part of this deletion unit.
+            continue
+        dependencies.append(
+            {
+                "repository": child_key[0],
+                "digest": child_key[1],
+                "role": "dependency",
+                "tags": [],
+                "logicalBytes": 0,
+                "protectionStatus": "candidate",
+                "protectionReasons": [],
+            }
+        )
+    if len(selected) + len(dependencies) > 100:
+        blocked.append(
+            {
+                "reason": "selection expands to more than 100 root and platform manifests; choose a smaller batch",
+            }
+        )
+    return {
+        "allowed": bool(selected) and not blocked,
+        "selected": selected,
+        "dependentManifests": dependencies,
+        "blocked": blocked,
+        "logicalBytes": sum(int(item.get("logicalBytes") or 0) for item in selected),
+        "warning": "Deleting a manifest removes every tag pointing to that digest. Disk space is reclaimed only after GC.",
+    }
+
+
+def handle_registry_deletion_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    requested = _registry_requested_manifests(body)
+    inventory = _registry_inventory_for_state(state, refresh=True)
+    return _registry_deletion_preview_from_inventory(inventory, requested)
+
+
+def _registry_deletion_backup_root(deletion_id: str) -> Path:
+    safe_id = re.sub(r"[^a-zA-Z0-9._-]", "", deletion_id)
+    if safe_id != deletion_id or not safe_id:
+        raise LumaError("invalid registry deletion id")
+    return state_dir() / "registry-deletions" / safe_id
+
+
+def _registry_write_manifest_backup(
+    deletion_id: str,
+    item: Dict[str, Any],
+    *,
+    body: bytes,
+    media_type: str,
+) -> str:
+    if len(body) > 2 * 1024 * 1024:
+        raise LumaError("registry manifest is too large to back up safely")
+    root = _registry_deletion_backup_root(deletion_id)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    filename = hashlib.sha256(f"{item['repository']}@{item['digest']}".encode("utf-8")).hexdigest() + ".json"
+    target = root / filename
+    temporary = root / (filename + f".{os.getpid()}.tmp")
+    payload = {
+        "repository": item["repository"],
+        "digest": item["digest"],
+        "role": str(item.get("role") or "root"),
+        "tags": list(item.get("tags") or []),
+        "mediaType": media_type,
+        "manifest": base64.b64encode(body).decode("ascii"),
+    }
+    temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, target)
+    return filename
+
+
+def _registry_read_manifest_backup(deletion_id: str, filename: str) -> Dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{64}\.json", str(filename or "")):
+        raise LumaError("invalid registry manifest backup")
+    path = _registry_deletion_backup_root(deletion_id) / filename
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise LumaError("registry manifest backup is unavailable") from exc
+    if not isinstance(payload, dict):
+        raise LumaError("registry manifest backup is invalid")
+    return payload
+
+
+def handle_registry_deletion_create(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    if str(body.get("confirm") or "").strip().lower() != "delete":
+        raise LumaError("registry deletion requires confirm=delete")
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    _apply_state_secrets(state)
+    requested = _registry_requested_manifests(body)
+    inventory = _registry_inventory_for_state(state, refresh=True)
+    preview = _registry_deletion_preview_from_inventory(inventory, requested)
+    if not preview["allowed"]:
+        raise LumaError("registry deletion is blocked by current references")
+    deletion_id = f"registry-delete-{secrets.token_hex(8)}"
+    client = _managed_registry_client(state)
+    backups: list[Dict[str, Any]] = []
+    try:
+        backup_targets = list(preview["selected"]) + list(preview.get("dependentManifests") or [])
+        for item in backup_targets:
+            manifest, response = client.manifest(item["repository"], item["digest"])
+            raw = response.body
+            actual_digest = validate_digest(
+                next(
+                    (str(value) for key, value in response.headers.items() if str(key).lower() == "docker-content-digest"),
+                    item["digest"],
+                )
+            )
+            if actual_digest != item["digest"]:
+                raise LumaError("registry manifest changed while deletion was being queued")
+            media_type = str(manifest.get("mediaType") or response.headers.get("Content-Type") or "application/vnd.oci.image.manifest.v1+json").split(";", 1)[0]
+            backups.append(
+                {
+                    **item,
+                    "backup": _registry_write_manifest_backup(
+                        deletion_id, item, body=raw, media_type=media_type
+                    ),
+                    "mediaType": media_type,
+                }
+            )
+    except Exception:
+        shutil.rmtree(_registry_deletion_backup_root(deletion_id), ignore_errors=True)
+        raise
+    now = int(time.time())
+    policy = normalize_policy(inventory.get("policy") if isinstance(inventory.get("policy"), dict) else {})
+    record = {
+        "id": deletion_id,
+        "status": "queued",
+        "manifests": backups,
+        "logicalBytes": int(preview.get("logicalBytes") or 0),
+        "createdAt": now,
+        "updatedAt": now,
+        "notBefore": now + int(policy["queueGraceHours"]) * 3600,
+        "gcAfter": 0,
+        "message": "Deletion queued",
+    }
+
+    def mutate(current: Dict[str, Any]) -> None:
+        require_token(current, token, token_type="deploy")
+        management = _registry_management_state(current)
+        management["deletions"].append(copy.deepcopy(record))
+        management["deletions"] = management["deletions"][-500:]
+        management["audit"].append({"id": f"registry-audit-{secrets.token_hex(8)}", "action": "deletion-queued", "deletionId": deletion_id, "createdAt": now, "manifestCount": len(backups)})
+        management["audit"] = management["audit"][-500:]
+
+    _mutate_control_state(mutate)
+    return {"deletion": _registry_deletion_public(record), "preview": preview}
+
+
+def _registry_deletion_public(record: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: copy.deepcopy(value)
+        for key, value in record.items()
+        if key not in {"errorDetails"}
+    }
+
+
+def _registry_deletion_public_list(records: list[Any]) -> list[Dict[str, Any]]:
+    items = [_registry_deletion_public(item) for item in records if isinstance(item, dict)]
+    items.sort(key=lambda item: int(item.get("updatedAt") or item.get("createdAt") or 0), reverse=True)
+    return items
+
+
+def _registry_deletion_record(state: Dict[str, Any], deletion_id: str) -> Dict[str, Any]:
+    management = _registry_management_state(state)
+    for record in management["deletions"]:
+        if isinstance(record, dict) and str(record.get("id") or "") == deletion_id:
+            return record
+    raise LumaError(f"registry deletion not found: {deletion_id}")
+
+
+def handle_registry_deletion_cancel(token: str, deletion_id: str) -> Dict[str, Any]:
+    now = int(time.time())
+
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
+        require_token(state, token, token_type="deploy")
+        record = _registry_deletion_record(state, deletion_id)
+        if str(record.get("status") or "") != "queued":
+            raise LumaError("only a queued registry deletion can be canceled")
+        record.update({"status": "canceled", "updatedAt": now, "message": "Deletion canceled"})
+        _registry_management_state(state)["audit"].append({"id": f"registry-audit-{secrets.token_hex(8)}", "action": "deletion-canceled", "deletionId": deletion_id, "createdAt": now})
+        return _registry_deletion_public(record)
+
+    result = _mutate_control_state(mutate)
+    shutil.rmtree(_registry_deletion_backup_root(deletion_id), ignore_errors=True)
+    return {"deletion": result}
+
+
+def _wait_registry_job_stopped(client: NomadApi, job_id: str, *, timeout: int = 180) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            allocations = client.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}/allocations")
+        except LumaError as exc:
+            if "Nomad API error 404" in str(exc):
+                return
+            raise
+        active = [
+            item
+            for item in allocations if isinstance(item, dict)
+            and str(item.get("ClientStatus") or "").lower() in {"pending", "running"}
+        ] if isinstance(allocations, list) else []
+        if not active:
+            return
+        time.sleep(1)
+    raise LumaError("Registry Nomad allocation did not stop for maintenance")
+
+
+def _registry_restorable_nomad_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    restored = copy.deepcopy(job)
+    for key in (
+        "Status",
+        "StatusDescription",
+        "Stable",
+        "Version",
+        "SubmitTime",
+        "CreateIndex",
+        "ModifyIndex",
+        "JobModifyIndex",
+    ):
+        restored.pop(key, None)
+    restored["Stop"] = False
+    return restored
+
+
+def _wait_registry_healthy(client: RegistryHttpClient, *, timeout: int = 180) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            client.request("GET", "/v2/")
+            return
+        except LumaError as exc:
+            last_error = str(exc)
+            time.sleep(1)
+    raise LumaError(f"Registry did not recover after maintenance: {last_error}")
+
+
+def _run_registry_offline_task(
+    state: Dict[str, Any],
+    spec: Dict[str, Any],
+    *,
+    operation: str,
+    manifests: list[Dict[str, str]] | None = None,
+) -> Dict[str, Any]:
+    config = load_config(_control_config_path())
+    nomad = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    job_id = str(spec["jobId"])
+    job = nomad.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}")
+    if not isinstance(job, dict):
+        raise LumaError("Registry Nomad job is unavailable")
+    nomad.request("DELETE", f"/v1/job/{urllib.parse.quote(job_id, safe='')}?purge=false")
+    primary_error: Exception | None = None
+    result: Dict[str, Any] = {}
+    try:
+        _wait_registry_job_stopped(nomad, job_id)
+        result = _run_node_agent_task(
+            state,
+            str(spec["node"]),
+            "registry-maintenance",
+            {
+                "volumeName": str(spec["volumeName"]),
+                "image": str(spec["image"]),
+                "operation": operation,
+                "manifests": list(manifests or []),
+            },
+            timeout=3900,
+            required_capability="registry-management-v1",
+        )
+    except Exception as exc:
+        primary_error = exc
+    restart_error: Exception | None = None
+    try:
+        restored_job = _registry_restorable_nomad_job(job)
+        nomad.request("POST", "/v1/jobs", {"Job": restored_job})
+        _wait_registry_healthy(_managed_registry_client(state, spec), timeout=300)
+    except Exception as exc:
+        restart_error = exc
+    if restart_error is not None:
+        if primary_error is not None:
+            raise LumaError(f"Registry maintenance failed ({primary_error}) and Registry restart failed ({restart_error})") from restart_error
+        raise LumaError(f"Registry restart failed after maintenance: {restart_error}") from restart_error
+    if primary_error is not None:
+        raise primary_error
+    with _REGISTRY_SCAN_LOCK:
+        _REGISTRY_SCAN_CACHE.pop(str(spec["host"]), None)
+    return result
+
+
+def handle_registry_deletion_execute(token: str, deletion_id: str, body: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    body = body if isinstance(body, dict) else {}
+    with _REGISTRY_MAINTENANCE_LOCK:
+        state = load_state()
+        require_token(state, token, token_type="deploy")
+        record = _registry_deletion_record(state, deletion_id)
+        if str(record.get("status") or "") != "queued":
+            raise LumaError("registry deletion is not queued")
+        if int(record.get("notBefore") or 0) > int(time.time()) and not bool(body.get("force")):
+            raise LumaError("registry deletion grace period has not elapsed")
+        inventory = _registry_inventory_for_state(state, refresh=True)
+        requested = [
+            {"repository": str(item.get("repository") or ""), "digest": str(item.get("digest") or "")}
+            for item in record.get("manifests") or [] if isinstance(item, dict)
+        ]
+        root_requested = [
+            {"repository": str(item.get("repository") or ""), "digest": str(item.get("digest") or "")}
+            for item in record.get("manifests") or []
+            if isinstance(item, dict) and str(item.get("role") or "root") != "dependency"
+        ]
+        preview = _registry_deletion_preview_from_inventory(inventory, root_requested)
+        if not preview["allowed"]:
+            raise LumaError("registry deletion became protected or changed; execution was blocked")
+        expected = {
+            (str(item.get("repository") or ""), str(item.get("digest") or ""))
+            for item in list(preview["selected"]) + list(preview.get("dependentManifests") or [])
+            if isinstance(item, dict)
+        }
+        actual = {(item["repository"], item["digest"]) for item in requested}
+        if expected != actual:
+            raise LumaError("registry manifest relationships changed; execution was blocked")
+        now = int(time.time())
+
+        def mark_deleting(current: Dict[str, Any]) -> None:
+            current_record = _registry_deletion_record(current, deletion_id)
+            current_record.update({"status": "deleting", "updatedAt": now, "message": "Registry maintenance in progress"})
+
+        _mutate_control_state(mark_deleting)
+        spec = _managed_registry_spec(state)
+        try:
+            result = _run_registry_offline_task(state, spec, operation="delete", manifests=requested)
+        except Exception as exc:
+            error_message = str(exc)[:900]
+
+            def mark_failed(current: Dict[str, Any]) -> None:
+                current_record = _registry_deletion_record(current, deletion_id)
+                current_record.update(
+                    {
+                        "status": "failed_recoverable",
+                        "updatedAt": int(time.time()),
+                        "message": f"Maintenance failed; manifest backups are available for restore: {error_message}",
+                    }
+                )
+            _mutate_control_state(mark_failed)
+            raise
+        completed = int(time.time())
+        policy = normalize_policy(inventory.get("policy") if isinstance(inventory.get("policy"), dict) else {})
+
+        def mark_deleted(current: Dict[str, Any]) -> Dict[str, Any]:
+            current_record = _registry_deletion_record(current, deletion_id)
+            current_record.update(
+                {
+                    "status": "deleted_pending_gc",
+                    "updatedAt": completed,
+                    "deletedAt": completed,
+                    "gcAfter": completed + int(policy["gcGraceDays"]) * 86400,
+                    "message": str(result.get("message") or "Manifests deleted; blobs retained until GC"),
+                }
+            )
+            management = _registry_management_state(current)
+            management["audit"].append({"id": f"registry-audit-{secrets.token_hex(8)}", "action": "manifests-deleted", "deletionId": deletion_id, "createdAt": completed, "manifestCount": len(requested)})
+            management["audit"] = management["audit"][-500:]
+            return _registry_deletion_public(current_record)
+
+        return {"deletion": _mutate_control_state(mark_deleted), "result": result}
+
+
+def handle_registry_deletion_restore(token: str, deletion_id: str) -> Dict[str, Any]:
+    with _REGISTRY_MAINTENANCE_LOCK:
+        state = load_state()
+        require_token(state, token, token_type="deploy")
+        _apply_state_secrets(state)
+        record = _registry_deletion_record(state, deletion_id)
+        if str(record.get("status") or "") not in {"deleted_pending_gc", "failed_recoverable"}:
+            raise LumaError("only a deletion pending GC or a recoverable failed deletion can be restored")
+        backups = []
+        for item in record.get("manifests") or []:
+            if not isinstance(item, dict):
+                continue
+            backup = _registry_read_manifest_backup(deletion_id, str(item.get("backup") or ""))
+            backup["role"] = str(item.get("role") or backup.get("role") or "root")
+            backups.append(backup)
+        backups.sort(key=lambda item: str(item.get("mediaType") or "") in INDEX_MEDIA_TYPES)
+        client = _managed_registry_client(state)
+        restored_tags = 0
+        for backup in backups:
+            try:
+                manifest_body = base64.b64decode(str(backup.get("manifest") or ""), validate=True)
+            except (ValueError, TypeError) as exc:
+                raise LumaError("registry manifest backup is invalid") from exc
+            tags = [str(tag) for tag in backup.get("tags") or [] if tag]
+            if not tags:
+                tags = [str(backup.get("digest") or "")] if backup.get("role") == "dependency" else [f"luma-restore-{str(backup.get('digest') or '').split(':')[-1][:12]}"]
+            for tag in tags:
+                restored_digest = client.put_manifest(
+                    str(backup["repository"]), tag, manifest_body, str(backup["mediaType"])
+                )
+                if restored_digest != str(backup["digest"]):
+                    raise LumaError("restored Registry manifest digest does not match its backup")
+                restored_tags += 1
+        now = int(time.time())
+
+        def mark_restored(current: Dict[str, Any]) -> Dict[str, Any]:
+            current_record = _registry_deletion_record(current, deletion_id)
+            current_record.update({"status": "restored", "updatedAt": now, "restoredAt": now, "message": f"Restored {restored_tags} tag(s)"})
+            management = _registry_management_state(current)
+            management["audit"].append({"id": f"registry-audit-{secrets.token_hex(8)}", "action": "manifests-restored", "deletionId": deletion_id, "createdAt": now, "tagCount": restored_tags})
+            management["audit"] = management["audit"][-500:]
+            return _registry_deletion_public(current_record)
+
+        result = _mutate_control_state(mark_restored)
+        with _REGISTRY_SCAN_LOCK:
+            _REGISTRY_SCAN_CACHE.pop(str(_managed_registry_spec(state)["host"]), None)
+        return {"deletion": result}
+
+
+def handle_registry_gc(token: str, *, execute: bool, force: bool = False) -> Dict[str, Any]:
+    with _REGISTRY_MAINTENANCE_LOCK:
+        state = load_state()
+        require_token(state, token, token_type="deploy")
+        inventory = _registry_inventory_for_state(state, refresh=True)
+        if not inventory.get("protectionComplete"):
+            raise LumaError("Registry GC is blocked because the reference scan is incomplete")
+        management = _registry_management_state(state)
+        pending = [
+            record for record in management["deletions"]
+            if isinstance(record, dict) and str(record.get("status") or "") == "deleted_pending_gc"
+        ]
+        if execute and not pending:
+            raise LumaError("no Registry deletions are pending GC")
+        now = int(time.time())
+        if execute and not force and any(int(record.get("gcAfter") or 0) > now for record in pending):
+            raise LumaError("Registry GC recovery window has not elapsed")
+        spec = _managed_registry_spec(state)
+        result = _run_registry_offline_task(state, spec, operation="gc" if execute else "gc-preview")
+        if not execute:
+            return {"preview": result, "pendingDeletions": _registry_deletion_public_list(pending)}
+
+        def mark_gc(current: Dict[str, Any]) -> list[str]:
+            current_management = _registry_management_state(current)
+            completed_ids: list[str] = []
+            for record in current_management["deletions"]:
+                if not isinstance(record, dict) or str(record.get("status") or "") != "deleted_pending_gc":
+                    continue
+                record.update({"status": "gc_completed", "updatedAt": now, "gcCompletedAt": now, "message": "Garbage collection completed"})
+                completed_ids.append(str(record.get("id") or ""))
+            current_management["audit"].append({"id": f"registry-audit-{secrets.token_hex(8)}", "action": "gc-completed", "createdAt": now, "deletionIds": completed_ids, "reclaimedBytes": int(result.get("reclaimedBytes") or 0)})
+            current_management["audit"] = current_management["audit"][-500:]
+            return completed_ids
+
+        completed_ids = _mutate_control_state(mark_gc)
+        for completed_id in completed_ids:
+            shutil.rmtree(_registry_deletion_backup_root(completed_id), ignore_errors=True)
+        return {"result": result, "completedDeletionIds": completed_ids}
+
+
+def _record_registry_automation(*, status: str, message: str = "") -> None:
+    now = int(time.time())
+
+    def mutate(state: Dict[str, Any]) -> None:
+        management = _registry_management_state(state)
+        previous = management.get("automation") if isinstance(management.get("automation"), dict) else {}
+        management["automation"] = {
+            "status": status,
+            "lastRunAt": now,
+            "lastSuccessAt": now if status == "ready" else int(previous.get("lastSuccessAt") or 0),
+            "message": str(message or "")[:1000],
+        }
+
+    _mutate_control_state(mutate)
+
+
+def _registry_automation_tick() -> None:
+    state = load_state()
+    management = _registry_management_state(state)
+    policy = normalize_policy(management.get("policy") if isinstance(management.get("policy"), dict) else {})
+    token = str(state.get("deployToken") or "")
+    if not token:
+        raise LumaError("Registry automation requires the management token")
+
+    inventory = _registry_inventory_for_state(state, refresh=True)
+    if policy["mode"] != "enforce":
+        _record_registry_automation(status="ready", message="Registry inventory refreshed; automatic deletion is disabled")
+        return
+    if not inventory.get("protectionComplete"):
+        raise LumaError("Registry automation is blocked because the reference scan is incomplete")
+
+    now = int(time.time())
+    current_records = [
+        item for item in inventory.get("deletions") or [] if isinstance(item, dict)
+    ]
+    due = next(
+        (
+            item
+            for item in current_records
+            if str(item.get("status") or "") == "queued"
+            and int(item.get("notBefore") or 0) <= now
+        ),
+        None,
+    )
+    if due is not None:
+        handle_registry_deletion_execute(token, str(due.get("id") or ""))
+        state = load_state()
+        inventory = _registry_inventory_for_state(state, refresh=True)
+        current_records = [
+            item for item in inventory.get("deletions") or [] if isinstance(item, dict)
+        ]
+
+    active_statuses = {"queued", "deleting", "deleted_pending_gc", "failed_recoverable"}
+    active = {
+        (str(manifest.get("repository") or ""), str(manifest.get("digest") or ""))
+        for record in current_records
+        if str(record.get("status") or "") in active_statuses
+        for manifest in record.get("manifests") or []
+        if isinstance(manifest, dict)
+    }
+    candidates = [
+        {"repository": str(item.get("repository") or ""), "digest": str(item.get("digest") or "")}
+        for item in inventory.get("entries") or []
+        if isinstance(item, dict)
+        and str(item.get("protectionStatus") or "") == "candidate"
+        and (str(item.get("repository") or ""), str(item.get("digest") or "")) not in active
+    ][:20]
+    queued_count = 0
+    if candidates:
+        handle_registry_deletion_create(
+            token,
+            {"confirm": "delete", "manifests": candidates},
+        )
+        queued_count = len(candidates)
+
+    latest_state = load_state()
+    latest_management = _registry_management_state(latest_state)
+    latest_records = [
+        item for item in latest_management["deletions"] if isinstance(item, dict)
+    ]
+    pending = [
+        item for item in latest_records if str(item.get("status") or "") == "deleted_pending_gc"
+    ]
+    blocked_gc = any(
+        str(item.get("status") or "") in {"queued", "deleting", "failed_recoverable"}
+        for item in latest_records
+    )
+    if pending and not blocked_gc and all(int(item.get("gcAfter") or 0) <= now for item in pending):
+        handle_registry_gc(token, execute=True)
+
+    _record_registry_automation(
+        status="ready",
+        message=(
+            f"Registry policy enforced; queued {queued_count} manifest(s)"
+            if queued_count
+            else "Registry policy enforced; no new cleanup candidates"
+        ),
+    )
+
+
+def _start_registry_automation() -> None:
+    global _REGISTRY_AUTOMATION_THREAD
+    if str(os.environ.get("LUMA_REGISTRY_AUTOMATION_DISABLED") or "").lower() in {"1", "true", "yes"}:
+        return
+    with _REGISTRY_AUTOMATION_LOCK:
+        if _REGISTRY_AUTOMATION_THREAD is not None and _REGISTRY_AUTOMATION_THREAD.is_alive():
+            return
+
+        def run() -> None:
+            initial_delay = max(int(os.environ.get("LUMA_REGISTRY_AUTOMATION_INITIAL_DELAY_SECONDS", "30")), 1)
+            interval = max(int(os.environ.get("LUMA_REGISTRY_AUTOMATION_INTERVAL_SECONDS", "900")), 60)
+            _REGISTRY_AUTOMATION_WAKE.wait(initial_delay)
+            while True:
+                _REGISTRY_AUTOMATION_WAKE.clear()
+                try:
+                    _registry_automation_tick()
+                except Exception as exc:
+                    try:
+                        _record_registry_automation(status="error", message=str(exc))
+                    except Exception:
+                        pass
+                _REGISTRY_AUTOMATION_WAKE.wait(interval)
+
+        _REGISTRY_AUTOMATION_THREAD = threading.Thread(
+            target=run,
+            name="luma-registry-automation",
+            daemon=True,
+        )
+        _REGISTRY_AUTOMATION_THREAD.start()
 
 
 def _deployments_state(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -16598,6 +17534,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "system-update-v1",
                         "control-image-preparation-v1",
                         "route-sentinel-v1",
+                        "registry-management-v1",
                     ],
                 },
             )
@@ -16668,6 +17605,14 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if parsed_path == "/v1/registries":
                 self._json(200, handle_registry_list(token))
+                return
+            if parsed_path == "/v1/registry/inventory":
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                refresh = str((query.get("refresh") or [""])[0]).lower() in {"1", "true", "yes"}
+                self._json(200, handle_registry_inventory(token, refresh=refresh))
+                return
+            if parsed_path == "/v1/registry/policy":
+                self._json(200, handle_registry_policy_get(token))
                 return
             if parsed_path == "/v1/secrets":
                 self._json(200, handle_secret_list(token))
@@ -17103,6 +18048,36 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/registry/serve":
                 self._json(200, handle_registry_serve(token, body))
                 return
+            if parsed_path == "/v1/registry/deletions/preview":
+                self._json(200, handle_registry_deletion_preview(token, body))
+                return
+            if parsed_path == "/v1/registry/deletions":
+                self._json(201, handle_registry_deletion_create(token, body))
+                return
+            registry_deletion_action = re.fullmatch(
+                r"/v1/registry/deletions/([^/]+)/(cancel|execute|restore)", parsed_path
+            )
+            if registry_deletion_action:
+                deletion_id = urllib.parse.unquote(registry_deletion_action.group(1))
+                action = str(registry_deletion_action.group(2))
+                result = (
+                    handle_registry_deletion_cancel(token, deletion_id)
+                    if action == "cancel"
+                    else handle_registry_deletion_execute(token, deletion_id, body)
+                    if action == "execute"
+                    else handle_registry_deletion_restore(token, deletion_id)
+                )
+                self._json(200, result)
+                return
+            if parsed_path == "/v1/registry/gc/preview":
+                self._json(200, handle_registry_gc(token, execute=False))
+                return
+            if parsed_path == "/v1/registry/gc":
+                self._json(200, handle_registry_gc(token, execute=True, force=bool(body.get("force"))))
+                return
+            if parsed_path == "/v1/registry/policy":
+                self._json(200, handle_registry_policy_set(token, body))
+                return
             if self.path == "/v1/storage/apply":
                 self._json(200, handle_storage_apply(token, body))
                 return
@@ -17494,6 +18469,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "system-update-v1",
                 "control-image-preparation-v1",
                 "route-sentinel-v1",
+                "registry-management-v1",
             ],
         },
     )
@@ -17604,6 +18580,16 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_git_provider_refs, token, provider_id, repository))
         if parsed_path == "/v1/registries":
             return _json_response(200, await run_in_threadpool(handle_registry_list, token))
+        if parsed_path == "/v1/registry/inventory":
+            refresh = str(request.query_params.get("refresh") or "").lower() in {"1", "true", "yes"}
+            return _json_response(
+                200,
+                await run_in_threadpool(
+                    functools.partial(handle_registry_inventory, token, refresh=refresh)
+                ),
+            )
+        if parsed_path == "/v1/registry/policy":
+            return _json_response(200, await run_in_threadpool(handle_registry_policy_get, token))
         if parsed_path == "/v1/secrets":
             return _json_response(200, await run_in_threadpool(handle_secret_list, token))
         if parsed_path == "/v1/storage":
@@ -17948,6 +18934,34 @@ async def _asgi_authenticated_post(request: Request) -> Response:
                     body,
                 ),
             )
+        if path == "/v1/registry/deletions/preview":
+            return _json_response(200, await run_in_threadpool(handle_registry_deletion_preview, token, body))
+        if path == "/v1/registry/deletions":
+            return _json_response(201, await run_in_threadpool(handle_registry_deletion_create, token, body))
+        registry_deletion_action = re.fullmatch(
+            r"/v1/registry/deletions/([^/]+)/(cancel|execute|restore)", path
+        )
+        if registry_deletion_action:
+            deletion_id = urllib.parse.unquote(registry_deletion_action.group(1))
+            action = str(registry_deletion_action.group(2))
+            if action == "cancel":
+                result = await run_in_threadpool(handle_registry_deletion_cancel, token, deletion_id)
+            elif action == "execute":
+                result = await run_in_threadpool(handle_registry_deletion_execute, token, deletion_id, body)
+            else:
+                result = await run_in_threadpool(handle_registry_deletion_restore, token, deletion_id)
+            return _json_response(200, result)
+        if path == "/v1/registry/gc/preview":
+            return _json_response(200, await run_in_threadpool(functools.partial(handle_registry_gc, token, execute=False)))
+        if path == "/v1/registry/gc":
+            return _json_response(
+                200,
+                await run_in_threadpool(
+                    functools.partial(handle_registry_gc, token, execute=True, force=bool(body.get("force")))
+                ),
+            )
+        if path == "/v1/registry/policy":
+            return _json_response(200, await run_in_threadpool(handle_registry_policy_set, token, body))
         routes: dict[str, Callable[..., Dict[str, Any]]] = {
             "/v1/auth/login/verify": handle_login_verify,
             "/v1/nodes/register": handle_node_register,
@@ -18285,6 +19299,7 @@ def create_app() -> Starlette:
 def serve(host: str, port: int) -> None:
     import uvicorn
 
+    _start_registry_automation()
     uvicorn.run(create_app(), host=host, port=port, log_level=os.environ.get("LUMA_CONTROL_LOG_LEVEL", "info"))
 
 

@@ -40,6 +40,7 @@ from .builder_executor import (
 from .errors import LumaError
 from .installer import luma_installer_command
 from .local import LocalExecutor, LocalResult
+from .registry_management import RegistryHttpClient, validate_digest, validate_repository
 from .service import slugify
 
 DEFAULT_AGENT_CONFIG = Path("/opt/luma/node-agent/agent.json")
@@ -122,6 +123,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "managed-volume-path",
             "docker-volume",
             "docker-image",
+            "registry-management-v1",
             "docker-egress-proxy",
             "luma-update",
             "luma-update-proxy-v1",
@@ -2062,6 +2064,18 @@ def execute_agent_task(
         name = _safe_docker_volume_name(_required(payload, "name"))
         _run_fixed_host_task(_docker_volume_remove_command(name), prefer_container=False)
         return {"name": name, "message": "Docker volume removed"}
+    if action == "inspect-registry-storage":
+        return inspect_registry_storage(
+            volume_name=_safe_docker_volume_name(_required(payload, "volumeName"))
+        )
+    if action == "registry-maintenance":
+        return registry_maintenance(
+            volume_name=_safe_docker_volume_name(_required(payload, "volumeName")),
+            image=_safe_docker_image_ref(_required(payload, "image")),
+            operation=str(payload.get("operation") or ""),
+            manifests=payload.get("manifests") if isinstance(payload.get("manifests"), list) else [],
+            progress=progress,
+        )
     if action == "remove-managed-nfs-export":
         name = _required(payload, "name")
         return remove_managed_nfs_export(name=name)
@@ -2179,6 +2193,228 @@ def execute_agent_task(
     if action == "repair-nomad-cni-hostports":
         return repair_nomad_cni_hostports(ports=payload.get("ports"))
     raise LumaError(f"unsupported node agent task action: {action}")
+
+
+def inspect_registry_storage(*, volume_name: str) -> Dict[str, Any]:
+    docker = _docker_binary()
+    if not docker:
+        raise LumaError("Docker is required for registry storage inspection")
+    inspected = subprocess.run(
+        [docker, "volume", "inspect", volume_name, "--format", "{{.Mountpoint}}"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+        check=False,
+    )
+    mountpoint = inspected.stdout.strip()
+    if inspected.returncode != 0 or not mountpoint:
+        raise LumaError(f"registry Docker volume is unavailable: {volume_name}")
+    root = Path(mountpoint).resolve()
+    if not root.is_dir():
+        raise LumaError(f"registry Docker volume path is unavailable: {volume_name}")
+    total_bytes = 0
+    file_count = 0
+    monthly: Dict[str, Dict[str, int]] = {}
+    blobs_root = root / "docker" / "registry" / "v2" / "blobs"
+    try:
+        for directory, _subdirs, files in os.walk(root):
+            for filename in files:
+                path = Path(directory) / filename
+                try:
+                    metadata = path.stat()
+                except OSError:
+                    continue
+                size = int(metadata.st_size)
+                total_bytes += size
+                file_count += 1
+                if filename == "data" and blobs_root in path.parents:
+                    month = time.strftime("%Y-%m", time.localtime(metadata.st_mtime))
+                    bucket = monthly.setdefault(month, {"bytes": 0, "files": 0})
+                    bucket["bytes"] += size
+                    bucket["files"] += 1
+        filesystem = os.statvfs(root)
+    except OSError as exc:
+        raise LumaError(f"registry storage inspection failed: {exc}") from exc
+    block_size = int(filesystem.f_frsize or filesystem.f_bsize or 1)
+    filesystem_total = int(filesystem.f_blocks) * block_size
+    filesystem_available = int(filesystem.f_bavail) * block_size
+    filesystem_used = max(filesystem_total - int(filesystem.f_bfree) * block_size, 0)
+    use_percent = round((filesystem_used / filesystem_total) * 100, 1) if filesystem_total else 0.0
+    return {
+        "volumeName": volume_name,
+        "volumeBytes": total_bytes,
+        "fileCount": file_count,
+        "filesystemTotalBytes": filesystem_total,
+        "filesystemUsedBytes": filesystem_used,
+        "filesystemAvailableBytes": filesystem_available,
+        "filesystemUsePercent": use_percent,
+        "monthlyBlobs": [
+            {"month": month, **monthly[month]}
+            for month in sorted(monthly)
+        ],
+        "inspectedAt": int(time.time()),
+        "message": f"Registry storage inspected: {total_bytes} bytes",
+    }
+
+
+def registry_maintenance(
+    *,
+    volume_name: str,
+    image: str,
+    operation: str,
+    manifests: list[Any],
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+) -> Dict[str, Any]:
+    if node_agent_os() != "linux":
+        raise LumaError("registry maintenance requires a Linux node")
+    if operation not in {"delete", "gc-preview", "gc"}:
+        raise LumaError("registry maintenance operation must be delete, gc-preview, or gc")
+    docker = _docker_binary()
+    if not docker:
+        raise LumaError("Docker is required for registry maintenance")
+    normalized: list[Dict[str, str]] = []
+    if len(manifests) > 100:
+        raise LumaError("registry maintenance accepts at most 100 manifests")
+    for raw in manifests:
+        if not isinstance(raw, dict):
+            raise LumaError("registry maintenance manifest entries must be objects")
+        normalized.append(
+            {
+                "repository": validate_repository(raw.get("repository")),
+                "digest": validate_digest(raw.get("digest")),
+            }
+        )
+    if operation == "delete" and not normalized:
+        raise LumaError("registry delete requires at least one manifest")
+    active = subprocess.run(
+        [docker, "ps", "-q", "--filter", f"volume={volume_name}"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+        check=False,
+    )
+    if active.returncode != 0:
+        raise LumaError("failed to verify registry maintenance isolation")
+    if active.stdout.strip():
+        raise LumaError("registry volume is still mounted by a running container")
+    before = inspect_registry_storage(volume_name=volume_name)
+    if operation == "delete":
+        return _registry_delete_manifests(
+            docker=docker,
+            volume_name=volume_name,
+            image=image,
+            manifests=normalized,
+            before=before,
+            progress=progress,
+        )
+    command = [docker, "run", "--rm", "-v", f"{volume_name}:/var/lib/registry", image, "garbage-collect"]
+    if operation == "gc-preview":
+        command.append("--dry-run")
+    command.append("/etc/docker/registry/config.yml")
+    if progress:
+        progress({"type": "status", "message": "Scanning Registry blob reachability"})
+    result = _run_process_streaming(
+        command,
+        timeout=3600,
+        on_line=(lambda line: progress({"type": "output", "line": line}) if progress else None),
+        heartbeat_interval=30,
+        heartbeat_message="Registry garbage collection is still running",
+    )
+    if result.code != 0:
+        raise LumaError(f"registry garbage collection failed: {result.output[-2000:]}")
+    after = inspect_registry_storage(volume_name=volume_name)
+    eligible = len(re.findall(r"blob eligible for deletion", result.output, re.IGNORECASE))
+    return {
+        "operation": operation,
+        "eligibleBlobs": eligible,
+        "beforeBytes": int(before.get("volumeBytes") or 0),
+        "afterBytes": int(after.get("volumeBytes") or 0),
+        "reclaimedBytes": max(int(before.get("volumeBytes") or 0) - int(after.get("volumeBytes") or 0), 0),
+        "storage": after,
+        "message": "Registry garbage collection preview complete" if operation == "gc-preview" else "Registry garbage collection complete",
+    }
+
+
+def _registry_delete_manifests(
+    *,
+    docker: str,
+    volume_name: str,
+    image: str,
+    manifests: list[Dict[str, str]],
+    before: Dict[str, Any],
+    progress: Callable[[Dict[str, Any]], None] | None,
+) -> Dict[str, Any]:
+    container_name = "luma-registry-maintenance"
+    subprocess.run(
+        [docker, "rm", "-f", container_name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    port = int(listener.getsockname()[1])
+    listener.close()
+    started = subprocess.run(
+        [
+            docker,
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name,
+            "-p",
+            f"127.0.0.1:{port}:5000",
+            "-e",
+            "REGISTRY_STORAGE_DELETE_ENABLED=true",
+            "-v",
+            f"{volume_name}:/var/lib/registry",
+            image,
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=120,
+        check=False,
+    )
+    if started.returncode != 0:
+        raise LumaError(f"temporary Registry failed to start: {started.stdout[-1000:]}")
+    client = RegistryHttpClient(f"http://127.0.0.1:{port}", timeout=30)
+    deleted: list[Dict[str, str]] = []
+    try:
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                client.request("GET", "/v2/")
+                break
+            except LumaError:
+                if time.monotonic() >= deadline:
+                    raise LumaError("temporary Registry did not become ready")
+                time.sleep(0.5)
+        for item in manifests:
+            if progress:
+                progress({"type": "status", "message": f"Deleting {item['repository']}@{item['digest']}"})
+            client.delete_manifest(item["repository"], item["digest"])
+            deleted.append(dict(item))
+    finally:
+        subprocess.run(
+            [docker, "rm", "-f", container_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
+    return {
+        "operation": "delete",
+        "deleted": deleted,
+        "beforeBytes": int(before.get("volumeBytes") or 0),
+        "afterBytes": int(before.get("volumeBytes") or 0),
+        "reclaimedBytes": 0,
+        "message": f"Deleted {len(deleted)} Registry manifest(s); blobs retained until GC",
+    }
 
 
 def join_nomad_node(

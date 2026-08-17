@@ -864,6 +864,32 @@ class ControlClient:
     def remove_registry(self, *, host: str) -> Dict[str, Any]:
         return self.request("POST", "/v1/registries/remove", {"host": host})
 
+    def registry_inventory(self, *, refresh: bool = False, timeout: int = 900) -> Dict[str, Any]:
+        suffix = "?refresh=true" if refresh else ""
+        return self.request("GET", f"/v1/registry/inventory{suffix}", timeout=timeout)
+
+    def registry_policy(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/registry/policy")
+
+    def set_registry_policy(self, policy: Dict[str, Any]) -> Dict[str, Any]:
+        return self.request("POST", "/v1/registry/policy", policy)
+
+    def preview_registry_deletion(self, manifests: list[Dict[str, str]], *, timeout: int = 900) -> Dict[str, Any]:
+        return self.request("POST", "/v1/registry/deletions/preview", {"manifests": manifests}, timeout=timeout)
+
+    def create_registry_deletion(self, manifests: list[Dict[str, str]], *, timeout: int = 900) -> Dict[str, Any]:
+        return self.request("POST", "/v1/registry/deletions", {"manifests": manifests, "confirm": "delete"}, timeout=timeout)
+
+    def registry_deletion_action(self, deletion_id: str, action: str, *, force: bool = False, timeout: int = 4200) -> Dict[str, Any]:
+        if action not in {"cancel", "execute", "restore"}:
+            raise LumaError("registry deletion action must be cancel, execute, or restore")
+        encoded = urllib.parse.quote(str(deletion_id), safe="")
+        return self.request("POST", f"/v1/registry/deletions/{encoded}/{action}", {"force": bool(force)}, timeout=timeout)
+
+    def registry_gc(self, *, preview: bool = True, force: bool = False, timeout: int = 4200) -> Dict[str, Any]:
+        path = "/v1/registry/gc/preview" if preview else "/v1/registry/gc"
+        return self.request("POST", path, {"force": bool(force)}, timeout=timeout)
+
     def list_git_providers(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/git-providers")
 

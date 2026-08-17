@@ -73,7 +73,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.281"
+python -m pip install "luma-infra==0.1.282"
 ```
 
 Install without cloning the repository:
@@ -88,7 +88,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.281 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.282 sh
 ```
 
 Develop from source:
@@ -336,7 +336,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.281"
+python -m pip install "luma-infra==0.1.282"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -380,6 +380,24 @@ printf '%s' "$GHCR_TOKEN" | luma registry login ghcr.io --username <user> --pass
 
 After that, manifests still only contain the source image name, for example `image: ghcr.io/acme/private-api:1.0.0`. When Builder Registry is configured, Luma leases matching source credentials only to Builder, copies the image into `registryHost/luma-cache/...`, verifies the digest, and renders that internal digest into the Nomad job. Runtime nodes therefore pull only from Builder Registry; deployment does not dynamically rewrite their Docker daemon proxy. Docker Hub sources may fall back to configured `defaults.imageMirrors` during the Builder copy. Set `defaults.imageMirrors: []` to disable source mirror fallback.
 Private registry image pulls are separate from runtime `proxy: true`. If a scheduled node has a global Docker proxy and a private registry fails before auth, check `docker info` proxy settings on that node and make sure that registry host is in Docker daemon `NO_PROXY`; `curl https://<registry>/v2/` returning `401` usually means the registry is reachable and Docker proxy routing is the next thing to inspect.
+
+### Manage Luma Registry images
+
+Dashboard's **Registry** page groups images by manifest digest and shows repositories, every alias tag, platforms, logical size, creation time, host filesystem usage, and recent blob-write trends. Control protects references from current deployments, Compose, Builder results, LAE runtime, active agent tasks, and every retained Nomad job version. Deletion and GC fail closed whenever that reference scan is incomplete.
+
+The CLI exposes the same workflow:
+
+```bash
+luma registry images --refresh
+luma registry delete acme/api sha256:<digest>
+luma registry deletion <deletion-id> cancel
+luma registry deletion <deletion-id> restore
+luma registry gc                 # offline preview only
+luma registry gc --execute       # reclaim after the recovery window
+luma registry policy --mode recommend --keep-last 20 --max-age-days 30
+```
+
+Deletion is queued by digest, so every tag that aliases the same digest is handled together. For multi-platform indexes, Luma includes only platform manifests that are not shared by another retained index. The default `recommend` mode marks candidates without deleting anything. Only an explicit switch to `enforce` queues candidates automatically, executes them after the queue grace period, and runs offline GC after the recovery window. Registry is briefly stopped during deletion and GC; Control re-registers the original Nomad job whether maintenance succeeds or fails. Tags can be restored from Dashboard or CLI before GC, but GC is irreversible.
 
 Do not put sensitive values directly in manifests. If the project already has a `.env` file, pass it during deploy:
 
