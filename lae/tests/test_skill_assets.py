@@ -59,6 +59,17 @@ class SkillAssetTests(unittest.TestCase):
         for reference in references:
             self.assertTrue((SKILL / reference).is_file(), reference)
 
+        contract = (SKILL / "references" / "cli-contract.md").read_text(
+            encoding="utf-8"
+        )
+        for expected in (
+            "lae version",
+            "lae doctor",
+            "lae templates list",
+            "lae templates launch",
+        ):
+            self.assertIn(expected, contract)
+
     def test_skill_metadata_and_secret_guardrails(self) -> None:
         metadata = (SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
         self.assertIn('default_prompt: "Use $lae-deploy ', metadata)

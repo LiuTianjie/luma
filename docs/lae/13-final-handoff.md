@@ -1,7 +1,8 @@
 # 13. LAE validation 最终交付说明
 
 > 基线日期：2026-07-15  
-> 产品环境：validation；不是 production GA 声明。
+> 产品环境：validation；不是 production GA 声明。  
+> 仓库 Luma 包版本现为 `0.1.289`。下文拓扑与镜像 tag 是 2026-07-15 冻结点；线上 Control/节点以 `luma status` 与 Nomad job image 为准。
 
 ## 1. 当前可用入口
 
@@ -39,8 +40,8 @@
 
 ## 4. 发布基线
 
-> 2026-07-22 注：线上 Luma Control 已迭代到 `0.1.27x` 一带；下表保留 2026-07-15
-> validation 冻结点。以 `luma status` / Nomad job image 为准，勿把本节当作永远当前版本。
+> 2026-08-18 注：本仓库 Luma 包已到 `0.1.289`。下表仍是 2026-07-15 validation
+> 冻结点（当时 `v0.1.258`）。以 `luma status` / Nomad job image 为准，勿把本节当作永远当前版本。
 
 - Luma 正式版本（2026-07-15 冻结）：`v0.1.258`，release commit `a16a81001a2aaaf936947074b3d98c98882f1849`。
 - Control 镜像：`ghcr.io/liutianjie/luma-control:v0.1.258`（冻结点）。

@@ -427,31 +427,24 @@ luma secret set DATABASE_URL --scope app
 | [docs/secrets.md](docs/secrets.md) | secret 和环境变量处理。 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 常见失败和修复。 |
 | [docs/release.md](docs/release.md) | 发布 tag、安装器和 control image 的流程。 |
-| [docs/agent-skill.md](docs/agent-skill.md) | AI 助手 (Agent Skill) 技能的安装与使用文档。 |
+| [docs/agent-skill.md](docs/agent-skill.md) | Luma / LAE Agent Skill 的安装与使用。 |
+| [docs/lae/README.md](docs/lae/README.md) | LAE 产品设计、CLI/Skill 契约与 validation 状态。 |
 | [docs/compose-storage.zh-CN.md](docs/compose-storage.zh-CN.md) | Docker Compose 部署与 NFS/本地共享存储的管理和迁移说明。 |
 
 ## Agent Skill
 
-Agent 可以使用 [skills/luma-deployment-yaml](skills/luma-deployment-yaml) 里的可安装 skill 来生成或审阅部署 YAML。具体安装、配置与使用方式详见 [docs/agent-skill.md](docs/agent-skill.md)。
+Luma 部署 YAML 用 [skills/luma-deployment-yaml](skills/luma-deployment-yaml)；租户侧 `lae` CLI 用 [lae/skills/lae-deploy](lae/skills/lae-deploy)。Claude/Cursor（`~/.claude/skills`）和 Codex（`~/.codex/skills`）的安装步骤见 [docs/agent-skill.md](docs/agent-skill.md)。
 
-在 Codex 里可以直接说：
-
-```text
-Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml
-```
-
-手动安装：
+从本仓库 checkout 安装：
 
 ```bash
-mkdir -p ~/.codex/skills
-tmp="$(mktemp -d)"
-git clone --depth 1 https://github.com/LiuTianjie/luma.git "$tmp/luma"
-rm -rf ~/.codex/skills/luma-deployment-yaml
-cp -R "$tmp/luma/skills/luma-deployment-yaml" ~/.codex/skills/
-rm -rf "$tmp"
+for dest in ~/.claude/skills ~/.codex/skills; do
+  mkdir -p "$dest"
+  rm -rf "$dest/luma-deployment-yaml" "$dest/lae-deploy"
+  cp -R skills/luma-deployment-yaml "$dest/"
+  cp -R lae/skills/lae-deploy "$dest/"
+done
 ```
-
-安装后重启 Codex，让 skill 生效。
 
 ## 安全边界
 

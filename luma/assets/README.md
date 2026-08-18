@@ -352,31 +352,24 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | [docs/secrets.md](docs/secrets.md) | secret and environment variable handling. |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | common failures and fixes. |
 | [docs/release.md](docs/release.md) | publishing tags, installer, and control image releases. |
-| [docs/agent-skill.md](docs/agent-skill.md) | Installation and usage guide for the AI Agent Skill. |
+| [docs/agent-skill.md](docs/agent-skill.md) | Installation and usage guide for the Luma and LAE agent skills. |
+| [docs/lae/README.md](docs/lae/README.md) | LAE product design, CLI/Skill contract, and validation status. |
 | [docs/compose-storage.md](docs/compose-storage.md) | Multi-service Docker Compose deployment and NFS/local storage class setup and migration. |
 
 ## Agent Skill
 
-Agents can use the installable skill in [skills/luma-deployment-yaml](skills/luma-deployment-yaml) to generate or review deployment YAML. See [docs/agent-skill.md](docs/agent-skill.md) for detailed installation and usage guidelines.
+Agents can use [skills/luma-deployment-yaml](skills/luma-deployment-yaml) for Luma deploy YAML, and [lae/skills/lae-deploy](lae/skills/lae-deploy) for tenant `lae` CLI workflows. See [docs/agent-skill.md](docs/agent-skill.md) for Claude/Cursor (`~/.claude/skills`) and Codex (`~/.codex/skills`) install steps.
 
-In Codex, ask:
-
-```text
-Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-deployment-yaml
-```
-
-Manual install:
+From this checkout:
 
 ```bash
-mkdir -p ~/.codex/skills
-tmp="$(mktemp -d)"
-git clone --depth 1 https://github.com/LiuTianjie/luma.git "$tmp/luma"
-rm -rf ~/.codex/skills/luma-deployment-yaml
-cp -R "$tmp/luma/skills/luma-deployment-yaml" ~/.codex/skills/
-rm -rf "$tmp"
+for dest in ~/.claude/skills ~/.codex/skills; do
+  mkdir -p "$dest"
+  rm -rf "$dest/luma-deployment-yaml" "$dest/lae-deploy"
+  cp -R skills/luma-deployment-yaml "$dest/"
+  cp -R lae/skills/lae-deploy "$dest/"
+done
 ```
-
-Restart Codex after installing so the skill is loaded.
 
 ## Security Boundary
 

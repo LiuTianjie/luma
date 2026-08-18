@@ -1,7 +1,7 @@
 # Luma Application Engine（LAE）产品与工程设计
 
-> 状态：validation delivery v1.0；2026-07-15 Luma `v0.1.258` 已正式发布，Control/manager 与在线节点 `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE 10 个平台 service 在 `manager` 本地盘运行 exact ref `6c718c61b2dae421078c92a2b2542d6a9b2e960c`（Nomad v11）。详细现状见 [最终交付说明](./13-final-handoff.md)。
-> 日期：2026-07-15
+> 状态：validation delivery v1.0。仓库 Luma 包版本现为 `0.1.289`。2026-07-15 冻结点为 Luma `v0.1.258`，当时 Control/manager 与在线节点 `bot/builder/lab/m4/tecent` 已收敛；`gaojiu` 离线、`blg` 按要求未触碰、`aly` 为历史节点。LAE 10 个平台 service 当时在 `manager` 本地盘运行 exact ref `6c718c61b2dae421078c92a2b2542d6a9b2e960c`（Nomad v11）。live 拓扑以 `luma status` 和 [最终交付说明](./13-final-handoff.md) 为准，不要把冻结点版本号当成永远当前。
+> 日期：2026-07-15（冻结）；文档修订 2026-08-18
 > 目标：在 Luma 之上建设面向普通用户和 AI Agent 的多租户应用部署平台；LAE 自身及其依赖全部由 Luma 部署和管理。
 
 ## 1. 结论先行

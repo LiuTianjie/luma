@@ -1,8 +1,13 @@
 # Luma Progress Handoff
 
+> Historical snapshot from 2026-07-12 (`0.1.200` / LAE 9-task on `lab`).
+> Do not treat the live numbers below as current. End-user commands:
+> `README.md`, `docs/how-to-use-luma.md`, `docs/bootstrap.md`.
+> LAE status: `docs/lae/08-implementation-status.md` and `docs/lae/13-final-handoff.md`.
+
 Date: 2026-07-12
 
-This is a short handoff for the current control-plane implementation. Public docs such as `README.md`, `docs/how-to-use-luma.md`, and `docs/bootstrap.md` are authoritative for end-user commands.
+This is a short handoff for the control-plane implementation as of that date.
 
 ## Current Live Snapshot
 

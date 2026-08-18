@@ -11,6 +11,8 @@ Progress and diagnostics go to stderr in text/JSON mode. stdout must never mix p
 ## Core commands
 
 ```text
+lae version
+lae doctor
 lae login --token-stdin
 lae whoami
 lae inspect --app <id> --repo <https-repository> --ref <ref> [--connection-id <id>] --idempotency-key <key> --format json
@@ -39,14 +41,17 @@ lae config show --app <id> --analysis <id>
 lae env list <app>
 lae env set <app> <name> --service <service-or-*> --expected-version <version> --value-stdin --idempotency-key <key>
 lae env unset <app> <name> --service <service-or-*> --expected-version <version> --idempotency-key <key>
+lae templates list
+lae templates launch <template-id> --name <name> --slug <slug> [--region cn] --wait --idempotency-key <key>
 lae plans list
 lae billing checkout --plan <lite|pro|ultra> --interval <month|year> --idempotency-key <key>
 ```
 
-The CLI exposes pending-app creation, public/private Git inspection, static
-upload inspection, environment management, deployment and lifecycle
-operations, bounded deployment history/logs/metrics, plan discovery, and
-checkout-session creation. Token management remains a Web/API session flow;
+The CLI exposes capability checks (`version`, `doctor`), pending-app creation,
+public/private Git inspection, static upload inspection, curated template
+launch, environment management, deployment and lifecycle operations, bounded
+deployment history/logs/metrics, plan discovery, and checkout-session creation.
+Token management remains a Web/API session flow;
 if `lae --help` does not advertise a flow, stop instead of substituting raw
 Luma calls.
 

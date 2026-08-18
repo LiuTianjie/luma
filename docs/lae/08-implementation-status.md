@@ -14,7 +14,7 @@
 
 禁止用以下证据单独标记 `Done`：页面截图、静态 mock、只测 happy path、只验证 manifest 能解析、只看到 Nomad allocation running、只看到 HTTP 200、未覆盖租户隔离的单元测试。
 
-### 当前结论（2026-07-14）
+### 当前结论（2026-07-14 live 证据；仓库包版本现为 `0.1.289`）
 
 - **真实 Luma validation：** 10 个平台 service 全部健康，Web、API live/ready、Agent ready 和 artifact ready 探针均返回 200。Agent ready 显示 `mode=ai`、`configured=true`、无 configuration error。平台与平台本地卷当前在 `manager`；构建和内部 registry 在 `builder`，租户 runtime 候选池为 `manager + tecent`。Traefik 通过 Cloudflare DNS-01 持有 `itool.tech`/`*.itool.tech` 证书，Cloudflare token 只以 manager 上的只读 token file 注入。
 - **P0 可用性：** `0.1.229-0.1.249` 已关闭随机域名逐主机 HTTP-01 超时、manager 更新误读示例配置、生命周期/初次部署 DNS 凭据缺失、runtime deploy 假异步、首次冷拉永久误失败、installer egress/升级路由基线误判，以及 Agent 重启遗留 task、队列等待挤占执行预算、lease/alias 竞态和注销节点 task 不回收问题。Runtime deploy 先精确注册 Nomad Job、持久化提交关联并由 observer 收敛；Builder task 的 queue timeout 与 execution timeout 独立，执行 deadline 从 `leasedAt` 计算，超时会下发 cancel。Agent lease 会回收同节点 orphan task，并在 handoff grace 内保护刚兑换凭据的任务；已注销/退休节点任务走相同中断路径。最终 manager 更新期间 LAE Web/API/Agent/Artifact 与 Gateway 五入口连续 5 轮均为 200，更新后 60 秒稳定期各 14/14、零失败。PITR/备份还原和 Docker/CNI/route reconciliation 故障注入仍未关闭。
@@ -107,7 +107,7 @@ Web 工作台的 `Stillwater Instrument` 视觉基线已可运行：模板湖面
 
 LAE Agent 已形成“确定性基线 + AI 提案 + 确定性终审”的闭环：OpenAI-compatible provider 使用 `LAE_AGENT_LLM_BASE_URL/API_KEY/MODEL` 配置，validation 当前映射 ARK；版本化 Knowledge Pack 明确 LAE/Luma 能力、限制、manifest 形状、环境变量规则和四态 verdict。用户无需编写 Luma 文件；平台保存与 revision 绑定的 manifest candidate/最终 manifest。公开分析返回 `deployable`、`needs_input`、`unsupported` 或 `diagnostic_failed`；只有 `unsupported` 携带结构化 blocker，`diagnostic_failed` 表示诊断基础设施失败，不能污名化为用户代码不支持。AI 不能删除确定性 blocker、修改拓扑/route/volume、伪造 secret 或弱化环境变量要求。
 
-CLI 已具备严格 HTTPS/localhost endpoint、stdin/env deploy token、稳定错误/退出码、应用 draft/查询、公开与私有 Git connection、HTML/ZIP upload、模板、env、部署、日志指标、lifecycle、billing checkout、operation show/watch/cancel、cursor resume 和 NDJSON；项目内 `lae-deploy` Skill 已固化先创建应用再 inspect/deploy、secret 人机边界、取消恢复与支付确认规则。本地完整 validation Compose 已完成 CLI E2E，真实 Luma validation 也已完成平台 import，但 CLI 的 Builder/Runtime 完整纵向 E2E 仍在收尾；默认注册 token 仍故意没有 `billing:checkout`。因此 CLI/Skill 仍不能标为 `Verified` 或 `Done`。
+CLI 已具备严格 HTTPS/localhost endpoint、stdin/env deploy token、稳定错误/退出码、应用 draft/查询、公开与私有 Git connection、HTML/ZIP upload、模板、env、部署、日志指标、lifecycle、billing checkout、operation show/watch/cancel、cursor resume 和 NDJSON；项目内 `lae-deploy` Skill 已固化先创建应用再 inspect/deploy、secret 人机边界、取消恢复与支付确认规则。clean-room CLI/Skill 已在真实 validation 跑通模板诊断、部署、deployment history、restart、route ready 与 delete，对应 R-011/R-012 为 `Verified`。默认注册 token 仍故意没有 `billing:checkout`，checkout 继续走 Web 确认。production `Done` 仍要求真实邮件、支付 provider、独立 Skill 包发布和跨 Agent runtime 矩阵，不回退已经完成的 validation Verified。
 
 模板 catalog 当前是 checked-in、commit-pinned、带版本和 Agent verification metadata 的四个 starter；launch 不绕过诊断，而是创建正常 application 与新的 Builder analysis。validation 已部署每日 smoke service：每次以独立预览租户凭据真实执行 analysis/build/runtime/HTTPS/delete，再用独立内部 token 上报结果。`template_health` 在 PostgreSQL 中按模板版本保存连续失败计数；同一 run id 重放不重复计数，连续三次失败从公开 catalog 下架，后续 smoke 仍可用双重凭据访问隐藏模板并在成功后自动恢复。版本回退与告警通知仍属于运营增强，不再是自动下架闭环的缺口。
 

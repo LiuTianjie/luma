@@ -413,7 +413,7 @@ Lite 是注册后的默认免费 entitlement，不需要购买。支付 provider
 
 ## 6. 给 AI Agent 使用的 Skill
 
-仓库内 Skill 位于 [`lae/skills/lae-deploy`](../../lae/skills/lae-deploy/)。它覆盖能力检查、认证、Git/文件诊断、环境变量、部署、续看、应用操作和支付的人机边界。
+仓库内 Skill 位于 [`lae/skills/lae-deploy`](../../lae/skills/lae-deploy/)。安装到 Claude/Cursor（`~/.claude/skills`）或 Codex（`~/.codex/skills`）的步骤见 [Agent Skill](../agent-skill.md)。它覆盖能力检查、认证、Git/文件诊断、环境变量、部署、续看、应用操作和支付的人机边界。
 
 推荐给 Agent 的指令是：
 
@@ -434,7 +434,7 @@ Agent 必须遵守：
 - rollback、delete、connection revoke、套餐变化和 checkout 需要人工确认；
 - 不读取用户邮箱、不代填验证码、不代付。
 
-当前 Skill 文件和安全校验已实现；正式分发/版本发布和 clean-room Agent 验收仍是门禁。
+当前 Skill 文件、安全校验和 clean-room Agent validation 已通过（R-012 `Verified`）。独立包发布与跨 Agent runtime 兼容矩阵仍是 production `Done` 门槛。
 
 ## 7. Compose 的用户语义
 
