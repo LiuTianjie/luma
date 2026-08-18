@@ -456,7 +456,7 @@ def normalize_policy(value: Mapping[str, Any] | None) -> Dict[str, Any]:
         "keepLast": _bounded_int(raw.get("keepLast"), default=20, minimum=1, maximum=500),
         "maxAgeDays": _bounded_int(raw.get("maxAgeDays"), default=30, minimum=1, maximum=3650),
         "systemKeepLast": _bounded_int(raw.get("systemKeepLast"), default=3, minimum=1, maximum=100),
-        "queueGraceHours": _bounded_int(raw.get("queueGraceHours"), default=24, minimum=1, maximum=24 * 30),
+        "queueGraceHours": _bounded_int(raw.get("queueGraceHours"), default=0, minimum=0, maximum=24 * 30),
         "gcGraceDays": _bounded_int(raw.get("gcGraceDays"), default=7, minimum=1, maximum=365),
         "warningPercent": _bounded_int(raw.get("warningPercent"), default=75, minimum=1, maximum=99),
         "criticalPercent": _bounded_int(raw.get("criticalPercent"), default=85, minimum=2, maximum=100),

@@ -35,7 +35,7 @@ const DEFAULT_POLICY: RegistryPolicy = {
   keepLast: 20,
   maxAgeDays: 30,
   systemKeepLast: 3,
-  queueGraceHours: 24,
+  queueGraceHours: 0,
   gcGraceDays: 7,
   warningPercent: 75,
   criticalPercent: 85,
@@ -178,7 +178,11 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
       await createRegistryDeletion(token, selectionItems.map(({ repository, digest }) => ({ repository, digest })));
       setPreview(null);
       setSelected(new Set());
-      setNotice(zh ? "已加入清理队列；宽限期内可以取消。" : "Added to the cleanup queue; it can be canceled during the grace period.");
+      setNotice(
+        policy.queueGraceHours > 0
+          ? (zh ? "已加入清理队列；宽限期内可以取消。" : "Added to the cleanup queue; it can be canceled during the grace period.")
+          : (zh ? "已加入清理队列，可以立即执行。" : "Added to the cleanup queue; it can be executed immediately."),
+      );
       await load(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -314,13 +318,13 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               <label><span>{zh ? "每仓库至少保留" : "Keep per repository"}</span><input type="number" min={1} value={policy.keepLast} onChange={(event) => setPolicy({ ...policy, keepLast: Number(event.target.value) })} /></label>
               <label><span>{zh ? "保留天数" : "Max age days"}</span><input type="number" min={1} value={policy.maxAgeDays} onChange={(event) => setPolicy({ ...policy, maxAgeDays: Number(event.target.value) })} /></label>
               <label><span>{zh ? "系统版本保留" : "System versions"}</span><input type="number" min={1} value={policy.systemKeepLast} onChange={(event) => setPolicy({ ...policy, systemKeepLast: Number(event.target.value) })} /></label>
-              <label><span>{zh ? "删除宽限期（小时）" : "Queue grace hours"}</span><input type="number" min={1} value={policy.queueGraceHours} onChange={(event) => setPolicy({ ...policy, queueGraceHours: Number(event.target.value) })} /></label>
+              <label><span>{zh ? "删除宽限期（小时，0 为立即执行）" : "Queue grace hours (0 = immediate)"}</span><input type="number" min={0} value={policy.queueGraceHours} onChange={(event) => setPolicy({ ...policy, queueGraceHours: Number(event.target.value) })} /></label>
               <label><span>{zh ? "GC 恢复窗口（天）" : "GC grace days"}</span><input type="number" min={1} value={policy.gcGraceDays} onChange={(event) => setPolicy({ ...policy, gcGraceDays: Number(event.target.value) })} /></label>
               <label><span>{zh ? "容量预警（%）" : "Warning usage (%)"}</span><input type="number" min={1} max={99} value={policy.warningPercent} onChange={(event) => setPolicy({ ...policy, warningPercent: Number(event.target.value) })} /></label>
               <label><span>{zh ? "容量严重（%）" : "Critical usage (%)"}</span><input type="number" min={2} max={100} value={policy.criticalPercent} onChange={(event) => setPolicy({ ...policy, criticalPercent: Number(event.target.value) })} /></label>
               <label><span>{zh ? "容量紧急（%）" : "Emergency usage (%)"}</span><input type="number" min={3} max={100} value={policy.emergencyPercent} onChange={(event) => setPolicy({ ...policy, emergencyPercent: Number(event.target.value) })} /></label>
             </div>
-            {policy.mode === "enforce" ? <div className="registry-policy-warning"><AlertTriangle size={16} /><span>{zh ? "Enforce 会自动把候选 manifest 加入队列，宽限期后删除，并在恢复窗口结束后执行离线 GC。" : "Enforce automatically queues candidates, deletes them after the grace period, and runs offline GC after the recovery window."}</span></div> : null}
+            {policy.mode === "enforce" ? <div className="registry-policy-warning"><AlertTriangle size={16} /><span>{policy.queueGraceHours > 0 ? (zh ? "Enforce 会自动把候选 manifest 加入队列，宽限期后删除，并在恢复窗口结束后执行离线 GC。" : "Enforce automatically queues candidates, deletes them after the grace period, and runs offline GC after the recovery window.") : (zh ? "Enforce 会自动把候选 manifest 加入队列并立即删除；最终 GC 仍会等待恢复窗口结束。" : "Enforce automatically queues and immediately deletes candidates; final GC still waits for the recovery window.")}</span></div> : null}
             <div className="registry-policy-actions"><button type="button" className="ghost" onClick={() => setShowPolicy(false)}>{zh ? "取消" : "Cancel"}</button><button type="button" className="primary" disabled={busy === "policy"} onClick={() => void savePolicy()}>{busy === "policy" ? (zh ? "保存中…" : "Saving…") : (zh ? "保存策略" : "Save policy")}</button></div>
           </section>
         ) : null}
@@ -378,7 +382,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         </section>
       </main>
 
-      {preview ? <div className="registry-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setPreview(null)}><section className="registry-dialog" role="dialog" aria-modal="true" aria-labelledby="registry-delete-title" onMouseDown={(event) => event.stopPropagation()}><div className="registry-dialog-icon"><Trash2 size={22} /></div><h2 id="registry-delete-title">{zh ? "加入清理队列" : "Add to cleanup queue"}</h2><p>{zh ? `将 ${preview.selected?.length || 0} 个顶层 manifest 加入队列，并处理 ${preview.dependentManifests?.length || 0} 个仅由它们引用的平台 manifest。所有指向同一 digest 的 tag 会一起删除。` : `Queue ${preview.selected?.length || 0} root manifests and include ${preview.dependentManifests?.length || 0} platform manifests referenced only by them. Every tag pointing to the same digest will be deleted together.`}</p><div className="registry-dialog-summary"><span><strong>{preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0}</strong><small>tags</small></span><span><strong>{formatBytes(preview.logicalBytes)}</strong><small>{zh ? "逻辑体积" : "logical size"}</small></span><span><strong>{policy.queueGraceHours}h</strong><small>{zh ? "可取消窗口" : "cancel window"}</small></span></div>{preview.risks?.length ? <div className="registry-dialog-blocked"><AlertTriangle size={16} /> {zh ? `${preview.risks.length} 条引用或扫描风险；继续即表示由你承担删除后果。` : `${preview.risks.length} reference or scan risks; continuing accepts responsibility for the deletion.`}</div> : null}{preview.blocked?.length ? <div className="registry-dialog-blocked"><AlertTriangle size={16} /> {zh ? `${preview.blocked.length} 项因不存在或批量范围过大而无法处理。` : `${preview.blocked.length} items cannot be processed because they are missing or the batch is too large.`}</div> : null}<div className="registry-dialog-actions"><button type="button" className="ghost" disabled={!!busy} onClick={() => setPreview(null)}>{zh ? "返回" : "Back"}</button><button type="button" className="danger" disabled={!preview.allowed || !!busy} onClick={() => void queueDeletion()}>{busy === "queue" ? (zh ? "排队中…" : "Queueing…") : (preview.risks?.length ? (zh ? "确认风险并加入队列" : "Accept risk and queue") : (zh ? "确认加入队列" : "Confirm queue"))}</button></div></section></div> : null}
+      {preview ? <div className="registry-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setPreview(null)}><section className="registry-dialog" role="dialog" aria-modal="true" aria-labelledby="registry-delete-title" onMouseDown={(event) => event.stopPropagation()}><div className="registry-dialog-icon"><Trash2 size={22} /></div><h2 id="registry-delete-title">{zh ? "加入清理队列" : "Add to cleanup queue"}</h2><p>{zh ? `将 ${preview.selected?.length || 0} 个顶层 manifest 加入队列，并处理 ${preview.dependentManifests?.length || 0} 个仅由它们引用的平台 manifest。所有指向同一 digest 的 tag 会一起删除。` : `Queue ${preview.selected?.length || 0} root manifests and include ${preview.dependentManifests?.length || 0} platform manifests referenced only by them. Every tag pointing to the same digest will be deleted together.`}</p><div className="registry-dialog-summary"><span><strong>{preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0}</strong><small>tags</small></span><span><strong>{formatBytes(preview.logicalBytes)}</strong><small>{zh ? "逻辑体积" : "logical size"}</small></span><span><strong>{policy.queueGraceHours > 0 ? `${policy.queueGraceHours}h` : (zh ? "立即" : "Immediate")}</strong><small>{policy.queueGraceHours > 0 ? (zh ? "可取消窗口" : "cancel window") : (zh ? "可执行" : "executable")}</small></span></div>{preview.risks?.length ? <div className="registry-dialog-blocked"><AlertTriangle size={16} /> {zh ? `${preview.risks.length} 条引用或扫描风险；继续即表示由你承担删除后果。` : `${preview.risks.length} reference or scan risks; continuing accepts responsibility for the deletion.`}</div> : null}{preview.blocked?.length ? <div className="registry-dialog-blocked"><AlertTriangle size={16} /> {zh ? `${preview.blocked.length} 项因不存在或批量范围过大而无法处理。` : `${preview.blocked.length} items cannot be processed because they are missing or the batch is too large.`}</div> : null}<div className="registry-dialog-actions"><button type="button" className="ghost" disabled={!!busy} onClick={() => setPreview(null)}>{zh ? "返回" : "Back"}</button><button type="button" className="danger" disabled={!preview.allowed || !!busy} onClick={() => void queueDeletion()}>{busy === "queue" ? (zh ? "排队中…" : "Queueing…") : (preview.risks?.length ? (zh ? "确认风险并加入队列" : "Accept risk and queue") : (zh ? "确认加入队列" : "Confirm queue"))}</button></div></section></div> : null}
     </>
   );
 }

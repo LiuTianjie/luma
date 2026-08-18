@@ -183,9 +183,14 @@ class RegistryInventoryTests(unittest.TestCase):
         self.assertEqual({item["kind"] for item in references}, {"deployment", "build", "lae", "agent-task"})
 
     def test_policy_bounds_and_threshold_order(self) -> None:
-        self.assertEqual(normalize_policy({})["mode"], "recommend")
+        policy = normalize_policy({})
+        self.assertEqual(policy["mode"], "recommend")
+        self.assertEqual(policy["queueGraceHours"], 0)
+        self.assertEqual(normalize_policy({"queueGraceHours": 0})["queueGraceHours"], 0)
         with self.assertRaises(LumaError):
             normalize_policy({"keepLast": 0})
+        with self.assertRaises(LumaError):
+            normalize_policy({"queueGraceHours": -1})
 
     def test_off_policy_never_marks_automatic_candidates(self) -> None:
         inventory = scan_registry(FakeRegistryClient(), workers=2)
@@ -204,6 +209,34 @@ class RegistryControlTests(unittest.TestCase):
     def tearDown(self) -> None:
         control_server._REGISTRY_SCAN_CACHE.clear()
         control_server._REGISTRY_BACKGROUND_SCAN_THREADS.clear()
+
+    @patch.object(control_server.time, "time", return_value=1_800_000_000)
+    def test_zero_grace_policy_unlocks_existing_queued_deletions(self, _time) -> None:
+        state = {
+            "deployToken": "token",
+            "registryManagement": {
+                "policy": {"mode": "recommend", "queueGraceHours": 24},
+                "deletions": [
+                    {"id": "delete-1", "status": "queued", "notBefore": 1_800_086_400, "updatedAt": 1},
+                    {"id": "delete-2", "status": "deleted_pending_gc", "notBefore": 1_800_086_400, "updatedAt": 1},
+                ],
+                "audit": [],
+            },
+        }
+
+        def mutate(callback):
+            callback(state)
+
+        with patch.object(control_server, "_mutate_control_state", side_effect=mutate):
+            result = control_server.handle_registry_policy_set(
+                "token", {"mode": "recommend", "queueGraceHours": 0}
+            )
+
+        self.assertEqual(result["policy"]["queueGraceHours"], 0)
+        self.assertEqual(state["registryManagement"]["deletions"][0]["notBefore"], 1_800_000_000)
+        self.assertEqual(state["registryManagement"]["deletions"][0]["updatedAt"], 1_800_000_000)
+        self.assertEqual(state["registryManagement"]["deletions"][1]["notBefore"], 1_800_086_400)
+        self.assertEqual(state["registryManagement"]["audit"][-1]["rescheduledDeletions"], 1)
 
     @patch.object(control_server, "_load_registry_scan_snapshot")
     @patch.object(control_server, "_refresh_registry_inventory")

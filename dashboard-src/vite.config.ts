@@ -234,7 +234,7 @@ const devRegistryPayload = {
   },
   protectionComplete: true,
   referenceError: "",
-  policy: { mode: "recommend", keepLast: 20, maxAgeDays: 30, systemKeepLast: 3, queueGraceHours: 24, gcGraceDays: 7, warningPercent: 75, criticalPercent: 85, emergencyPercent: 92 },
+  policy: { mode: "recommend", keepLast: 20, maxAgeDays: 30, systemKeepLast: 3, queueGraceHours: 0, gcGraceDays: 7, warningPercent: 75, criticalPercent: 85, emergencyPercent: 92 },
   entries: [
     { repository: "lae/agent-controller", digest: `sha256:${"a".repeat(64)}`, tags: ["2026.08.17-8d91ab", "latest"], logicalBytes: 724_000_000, createdAt: 1786900000, platforms: ["linux/amd64", "linux/arm64"], protectionStatus: "protected", protectionReasons: [{ kind: "nomad-version", source: "nomad:lae-agent-controller:v18" }] },
     { repository: "luma-control", digest: `sha256:${"b".repeat(64)}`, tags: ["0.1.281", "latest"], logicalBytes: 381_000_000, createdAt: 1786800000, platforms: ["linux/amd64"], protectionStatus: "protected", protectionReasons: [{ kind: "system", source: "system retention" }] },

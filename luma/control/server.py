@@ -9553,12 +9553,32 @@ def handle_registry_policy_set(token: str, body: Dict[str, Any]) -> Dict[str, An
     if int(policy["criticalPercent"]) >= int(policy["emergencyPercent"]):
         raise LumaError("registry criticalPercent must be lower than emergencyPercent")
 
+    now = int(time.time())
+
     def mutate(state: Dict[str, Any]) -> None:
         require_token(state, token, token_type="deploy")
         management = _registry_management_state(state)
         management["policy"] = dict(policy)
+        # A shorter grace period also applies to deletions that are already
+        # queued. Increasing the policy never extends an existing deadline.
+        not_before = now + int(policy["queueGraceHours"]) * 3600
+        rescheduled = 0
+        for deletion in management["deletions"]:
+            if not isinstance(deletion, dict) or str(deletion.get("status") or "") != "queued":
+                continue
+            if int(deletion.get("notBefore") or 0) <= not_before:
+                continue
+            deletion["notBefore"] = not_before
+            deletion["updatedAt"] = now
+            rescheduled += 1
         management["audit"].append(
-            {"id": f"registry-audit-{secrets.token_hex(8)}", "action": "policy-updated", "createdAt": int(time.time()), "policy": dict(policy)}
+            {
+                "id": f"registry-audit-{secrets.token_hex(8)}",
+                "action": "policy-updated",
+                "createdAt": now,
+                "policy": dict(policy),
+                "rescheduledDeletions": rescheduled,
+            }
         )
         management["audit"] = management["audit"][-500:]
 
