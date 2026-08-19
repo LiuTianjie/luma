@@ -124,6 +124,33 @@ export function OverviewPage({
         </span>
       </section>
 
+      <section className="overview-action-dock" aria-label={zh ? "快捷入口" : "Shortcuts"}>
+        <button type="button" onClick={() => onNavigate("nodes")}>
+          <GitBranch size={20} aria-hidden="true" />
+          <span>{t(lang, "trafficPaths")}</span>
+          <small>{zh ? "节点、拓扑与流量路径" : "Nodes, topology, and traffic paths"}</small>
+          <ArrowRight size={16} aria-hidden="true" />
+        </button>
+        <button type="button" onClick={() => onNavigate("observability")}>
+          <TerminalSquare size={20} aria-hidden="true" />
+          <span>{zh ? "日志" : "Logs"}</span>
+          <small>{zh ? "搜索并 tail 日志" : "Search and tail logs"}</small>
+          <ArrowRight size={16} aria-hidden="true" />
+        </button>
+        <button type="button" onClick={() => onNavigate("storage")}>
+          <HardDrive size={20} aria-hidden="true" />
+          <span>{t(lang, "storage")}</span>
+          <small>{zh ? "卷和分配关系" : "Volumes and allocations"}</small>
+          <ArrowRight size={16} aria-hidden="true" />
+        </button>
+        <button type="button" onClick={() => onNavigate("applications")}>
+          <Server size={20} aria-hidden="true" />
+          <span>{t(lang, "applications")}</span>
+          <small>{zh ? "浏览全部应用" : "Browse all applications"}</small>
+          <ArrowRight size={16} aria-hidden="true" />
+        </button>
+      </section>
+
       <section className="overview-workbench" aria-label={zh ? "运维工作台" : "Operations workbench"}>
         <article className="panel overview-apps-panel">
           <div className="panel-heading">
@@ -272,33 +299,6 @@ export function OverviewPage({
             </div>
           </article>
         </aside>
-      </section>
-
-      <section className="overview-action-dock" aria-label={zh ? "快捷入口" : "Shortcuts"}>
-        <button type="button" onClick={() => onNavigate("nodes")}>
-          <GitBranch size={20} aria-hidden="true" />
-          <span>{t(lang, "trafficPaths")}</span>
-          <small>{zh ? "节点、拓扑与流量路径" : "Nodes, topology, and traffic paths"}</small>
-          <ArrowRight size={16} aria-hidden="true" />
-        </button>
-        <button type="button" onClick={() => onNavigate("observability")}>
-          <TerminalSquare size={20} aria-hidden="true" />
-          <span>{zh ? "日志" : "Logs"}</span>
-          <small>{zh ? "搜索并 tail 日志" : "Search and tail logs"}</small>
-          <ArrowRight size={16} aria-hidden="true" />
-        </button>
-        <button type="button" onClick={() => onNavigate("storage")}>
-          <HardDrive size={20} aria-hidden="true" />
-          <span>{t(lang, "storage")}</span>
-          <small>{zh ? "卷和分配关系" : "Volumes and allocations"}</small>
-          <ArrowRight size={16} aria-hidden="true" />
-        </button>
-        <button type="button" onClick={() => onNavigate("applications")}>
-          <Server size={20} aria-hidden="true" />
-          <span>{t(lang, "applications")}</span>
-          <small>{zh ? "浏览全部应用" : "Browse all applications"}</small>
-          <ArrowRight size={16} aria-hidden="true" />
-        </button>
       </section>
     </>
   );

@@ -204,12 +204,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
           description: zh
             ? "汇总仓库构建、CLI 和控制台发起的部署，按时间倒序，可按来源筛选。"
             : "Every repository build, CLI deploy, and dashboard deploy in one timeline, newest first, filterable by source.",
-          metrics: [
-            { label: zh ? "全部" : "Total", value: counts.all },
-            { label: zh ? "构建" : "Build", value: counts.build },
-            { label: "CLI", value: counts.cli },
-            { label: zh ? "面板" : "Dashboard", value: counts.dashboard },
-          ],
+          metrics: [],
           action: (
             <button type="button" className="ghost" onClick={() => void load()} disabled={loading}>
               <RefreshCw size={16} aria-hidden="true" className={loading ? "spin" : undefined} />
@@ -219,7 +214,7 @@ export function DeploymentsPage({ lang, token }: { lang: Lang; token: string }) 
         }}
       />
       <article className="panel deployments-panel">
-        <div className="credentials-tabs" role="tablist" aria-label={zh ? "来源筛选" : "Source filter"}>
+        <div className="deployments-filters" role="tablist" aria-label={zh ? "来源筛选" : "Source filter"}>
           {filters.map((f) => (
             <button key={f.key} type="button" className={filter === f.key ? "active" : ""} onClick={() => setFilter(f.key)}>
               {f.label}

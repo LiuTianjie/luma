@@ -18,6 +18,8 @@ function resolve(mode: ThemeMode): ResolvedTheme {
 
 function apply(theme: ResolvedTheme) {
   document.documentElement.dataset.theme = theme;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", theme === "light" ? "#f5f3f3" : "#1a1818");
 }
 
 /** Three-state theme: follow system (default) / light / dark. Persists explicit

@@ -17,7 +17,7 @@ function stripBase(pathname: string): string {
   return pathname || "/";
 }
 
-function toHref(path: string): string {
+export function toHref(path: string): string {
   const clean = path.startsWith("/") ? path : `/${path}`;
   return clean === "/" ? `${BASENAME}/` : `${BASENAME}${clean}`;
 }

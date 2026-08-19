@@ -125,6 +125,9 @@ export function App() {
 
   return (
     <div className={`dashboard-shell page-${activeNavPage}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+      <a className="skip-link" href="#main">
+        {lang === "zh" ? "跳到主内容" : "Skip to main content"}
+      </a>
       <Sidebar
         lang={lang}
         vm={vm}
@@ -134,7 +137,7 @@ export function App() {
         onToggle={toggleSidebar}
       />
 
-      <main className="workspace">
+      <main id="main" className="workspace" tabIndex={-1}>
         <div className="topbar-wrapper">
           <Topbar
             clusterId={vm.clusterId}
@@ -149,40 +152,42 @@ export function App() {
           />
         </div>
 
-        {!token ? (
-          <div className="login-panel-container">
-            <LoginPanel lang={lang} onSubmit={setToken} />
-          </div>
-        ) : (
-          <>
-            <ErrorBanner errors={errors} />
-            {payload ? (
-              <AppRoutes
-                page={resolvedPage}
-                lang={lang}
-                token={token}
-                theme={theme}
-                payload={payload}
-                vm={vm}
-                updateContext={updateContext}
-                updateContextNode={updateContextNode}
-                deployTemplateLanding={deployTemplateLanding}
-                onNavigate={navigate}
-                onNavigateToDeployments={() => navigate("deployments")}
-                onSelectNode={openNodeDetail}
-                onSelectService={openServiceDetail}
-                onTerminal={setTerminalNode}
-                onRefresh={loadDashboard}
-                onCreateApplication={() => navigate("deploy")}
-                onUpdateApplication={openUpdatePage}
-                onCloseUpdate={closeUpdatePage}
-                onTemplateLandingChange={setDeployTemplateLanding}
-              />
-            ) : (
-              <PageLoading lang={lang} />
-            )}
-          </>
-        )}
+        <div className="workspace-body">
+          {!token ? (
+            <div className="login-panel-container">
+              <LoginPanel lang={lang} onSubmit={setToken} />
+            </div>
+          ) : (
+            <>
+              <ErrorBanner errors={errors} />
+              {payload ? (
+                <AppRoutes
+                  page={resolvedPage}
+                  lang={lang}
+                  token={token}
+                  theme={theme}
+                  payload={payload}
+                  vm={vm}
+                  updateContext={updateContext}
+                  updateContextNode={updateContextNode}
+                  deployTemplateLanding={deployTemplateLanding}
+                  onNavigate={navigate}
+                  onNavigateToDeployments={() => navigate("deployments")}
+                  onSelectNode={openNodeDetail}
+                  onSelectService={openServiceDetail}
+                  onTerminal={setTerminalNode}
+                  onRefresh={loadDashboard}
+                  onCreateApplication={() => navigate("deploy")}
+                  onUpdateApplication={openUpdatePage}
+                  onCloseUpdate={closeUpdatePage}
+                  onTemplateLandingChange={setDeployTemplateLanding}
+                />
+              ) : (
+                <PageLoading lang={lang} />
+              )}
+            </>
+          )}
+        </div>
       </main>
 
       <DetailDrawer lang={lang} detail={detail} onClose={() => setDetail(null)} />

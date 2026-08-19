@@ -55,7 +55,7 @@ export function SingleServiceDeployForm({
         <header><span>01</span><h3>{zh ? "基础配置" : "Basics"}</h3></header>
         <div className="deploy-field-grid">
           <label><span>{zh ? "服务名" : "Service name"}</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
-          <label className="deploy-field-wide"><span>{zh ? "镜像" : "Image"}</span><input value={draft.image} onChange={(event) => patch({ image: event.target.value })} /></label>
+          <label><span>{zh ? "镜像" : "Image"}</span><input value={draft.image} onChange={(event) => patch({ image: event.target.value })} /></label>
           <label><span>{zh ? "区域" : "Region"}</span><select value={draft.region} onChange={(event) => patchRegion(event.target.value as Region)}>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
           <label>
             <span>{zh ? "节点" : "Node"}</span>

@@ -1,6 +1,8 @@
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { buildNavGroups, type NavGroup } from "./navItems";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
+import { ROUTE_BY_PAGE } from "./routes";
+import { toHref } from "./router";
 import type { Lang } from "./types";
 import { t } from "./i18n";
 import lumaLogoMark from "./assets/luma-logo-mark.png";
@@ -53,14 +55,20 @@ export function Sidebar({
             {group.items.map((item) => {
               const Icon = item.icon;
               const showValue = typeof item.value === "number";
-              const tip = sidebarCollapsed ? `${item.label} — ${item.detail}` : item.detail;
+              const active = activeNavPage === item.id;
+              const tip = sidebarCollapsed ? `${item.label} - ${item.detail}` : item.detail;
               return (
-                <button
-                  className={activeNavPage === item.id ? "nav-item active" : "nav-item"}
-                  type="button"
+                <a
+                  className={active ? "nav-item active" : "nav-item"}
                   key={item.id}
+                  href={toHref(ROUTE_BY_PAGE[item.id])}
                   title={tip}
-                  onClick={() => onNavigate(item.id)}
+                  aria-current={active ? "page" : undefined}
+                  onClick={(event) => {
+                    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                    event.preventDefault();
+                    onNavigate(item.id);
+                  }}
                 >
                   <Icon size={16} aria-hidden="true" />
                   <span>
@@ -68,7 +76,7 @@ export function Sidebar({
                     <small>{item.detail}</small>
                   </span>
                   {showValue ? <strong>{item.value}</strong> : null}
-                </button>
+                </a>
               );
             })}
           </div>
@@ -77,6 +85,9 @@ export function Sidebar({
       <div className="sidebar-status" aria-label={lang === "zh" ? "当前运行状态" : "Current runtime status"}>
         <span>{lang === "zh" ? "健康分" : "Health score"}</span>
         <strong>{vm.healthScore}%</strong>
+        <span className="sidebar-health-track" aria-hidden="true">
+          <span className="sidebar-health-fill" style={{ width: `${Math.min(100, Math.max(0, vm.healthScore))}%` }} />
+        </span>
         <small>{vm.activeNodes}/{vm.nodes.length || 0} {lang === "zh" ? "节点在线" : "nodes online"}</small>
       </div>
     </aside>

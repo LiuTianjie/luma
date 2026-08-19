@@ -437,7 +437,7 @@ export function DeployWorkspace({
   };
 
   return (
-    <section className={`deploy-workspace-panel ${modalTitle ? "modal-deploy-workspace" : ""}`}>
+    <section className={`deploy-workspace-panel ${modalTitle ? "modal-deploy-workspace" : ""} ${templateLanding ? "" : "is-form"}`.trim()}>
       {importView ? (
         <GithubImportPanel
           lang={lang}
@@ -453,6 +453,13 @@ export function DeployWorkspace({
         <div>
           <p className="eyebrow">{templateLanding ? (lang === "zh" ? "模板库" : "Template gallery") : (lang === "zh" ? "配置应用" : "Configure application")}</p>
           <h2>{modalTitle || (templateLanding ? (lang === "zh" ? "选择一个模板开始" : "Choose a template to start") : (lang === "zh" ? "配置并部署" : "Configure and deploy"))}</h2>
+          {!templateLanding ? (
+            <p className="deploy-heading-meta">
+              <strong translate="no">{configTitle}</strong>
+              <span>{mode === "service" ? (lang === "zh" ? "单服务" : "Single service") : "Compose"}</span>
+              {configFacts.map((fact) => <span key={fact}>{fact}</span>)}
+            </p>
+          ) : null}
           {modalSubtitle || contextLabel ? <small className="deploy-context-label">{modalSubtitle || contextLabel}</small> : null}
         </div>
         <div className="deploy-heading-actions">
@@ -494,18 +501,6 @@ export function DeployWorkspace({
         </div>
       ) : (
         <>
-          {showTemplates ? (
-            <div className="selected-template-strip">
-              <div>
-                <span>{lang === "zh" ? "当前配置" : "Current config"}</span>
-                <strong>{configTitle}</strong>
-                <small>{mode === "service" ? (lang === "zh" ? "单服务" : "Single service") : "Compose"}</small>
-              </div>
-              <div className="selected-template-facts">
-                {configFacts.map((fact) => <small key={fact}>{fact}</small>)}
-              </div>
-            </div>
-          ) : null}
           {editorMode === "form" ? (
             <nav className="deploy-step-rail" aria-label={lang === "zh" ? "配置分段" : "Configuration sections"}>
               {flowSteps.map((step, index) => (

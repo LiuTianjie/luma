@@ -30,7 +30,7 @@ export function PageHeader({ meta }: { meta: PageHeaderMeta }) {
       <div className="page-toolbar-copy">
         <p className="eyebrow">{meta.eyebrow}</p>
         <h1 id="page-title">{meta.title}</h1>
-        <p>{meta.description}</p>
+        {meta.description ? <p>{meta.description}</p> : null}
         {isOps && meta.action ? <div className="page-toolbar-action">{meta.action}</div> : null}
       </div>
       <div className={isOps ? "page-toolbar-side ops-side" : "page-toolbar-side"}>
