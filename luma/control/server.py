@@ -9911,37 +9911,138 @@ def _wait_registry_healthy(client: RegistryHttpClient, *, timeout: int = 180) ->
     raise LumaError(f"Registry did not recover after maintenance: {last_error}")
 
 
+def _registry_mark_maintenance_open(*, job_id: str, job: Dict[str, Any], host: str) -> None:
+    """Record that the Registry was deliberately stopped for maintenance.
+
+    The stored job definition is what makes recovery possible after a Control
+    crash: the running job is gone from Nomad, so it cannot be read back.
+    """
+    snapshot = copy.deepcopy(job)
+
+    def mutate(state: Dict[str, Any]) -> None:
+        management = _registry_management_state(state)
+        management["maintenance"] = {
+            "jobId": job_id,
+            "job": snapshot,
+            "host": host,
+            "openedAt": int(time.time()),
+        }
+
+    _mutate_control_state(mutate)
+
+
+def _registry_clear_maintenance_open(job_id: str) -> None:
+    def mutate(state: Dict[str, Any]) -> None:
+        management = _registry_management_state(state)
+        current = management.get("maintenance")
+        if isinstance(current, dict) and str(current.get("jobId") or "") == job_id:
+            management.pop("maintenance", None)
+
+    _mutate_control_state(mutate)
+
+
+def _registry_recover_pending_maintenance() -> Dict[str, Any] | None:
+    """Restart a Registry left stopped by a Control crash mid-maintenance.
+
+    Safe to call at any time: it is a no-op unless a maintenance marker exists,
+    and the maintenance lock keeps it from racing an in-flight purge or GC. The
+    marker is only cleared once the Registry answers a health check.
+    """
+    state = load_state()
+    management = _registry_management_state(state)
+    marker = management.get("maintenance")
+    if not isinstance(marker, dict) or not marker.get("job"):
+        return None
+    job_id = str(marker.get("jobId") or "")
+    if not job_id:
+        _registry_clear_maintenance_open(job_id)
+        return None
+    if not _REGISTRY_MAINTENANCE_LOCK.acquire(blocking=False):
+        # A maintenance window is active in this process; it owns the restart.
+        return None
+    try:
+        config = load_config(_control_config_path())
+        nomad = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+        spec = _managed_registry_spec(state)
+        restored_job = _registry_restorable_nomad_job(marker["job"])
+        nomad.request("POST", "/v1/jobs", {"Job": restored_job})
+        _wait_registry_healthy(_managed_registry_client(state, spec), timeout=300)
+        _registry_clear_maintenance_open(job_id)
+        _invalidate_registry_scan(str(marker.get("host") or spec["host"]))
+        print(
+            f"recovered Registry job {job_id} left stopped by an interrupted maintenance window",
+            file=sys.stderr,
+            flush=True,
+        )
+        return {"recovered": True, "jobId": job_id, "openedAt": int(marker.get("openedAt") or 0)}
+    except Exception as exc:
+        # Keep the marker: the next tick retries. Never propagate, so recovery
+        # cannot block Control startup or the automation loop.
+        print(f"Registry maintenance recovery failed for {job_id}: {exc}", file=sys.stderr, flush=True)
+        return {"recovered": False, "jobId": job_id, "error": str(exc)}
+    finally:
+        _REGISTRY_MAINTENANCE_LOCK.release()
+
+
 def _run_registry_offline_task(
     state: Dict[str, Any],
     spec: Dict[str, Any],
     *,
-    operation: str,
+    operation: str | None = None,
     manifests: list[Dict[str, str]] | None = None,
+    operations: list[Dict[str, Any]] | None = None,
 ) -> Dict[str, Any]:
+    """Stop the Registry, run one or more maintenance steps, then restart it.
+
+    ``operations`` runs several steps inside a single downtime window, which is
+    what lets a purge delete manifests and garbage-collect their blobs without
+    stopping the Registry twice. Each step is a ``{"operation", "manifests"}``
+    mapping and uses the same agent action as a single-step call, so no new node
+    agent capability is required. The returned mapping is the last step's result
+    with a ``steps`` list carrying every individual result.
+    """
+    steps = (
+        [dict(item) for item in operations]
+        if operations
+        else [{"operation": str(operation or ""), "manifests": list(manifests or [])}]
+    )
+    if not steps:
+        raise LumaError("registry maintenance requires at least one operation")
     config = load_config(_control_config_path())
     nomad = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
     job_id = str(spec["jobId"])
     job = nomad.request("GET", f"/v1/job/{urllib.parse.quote(job_id, safe='')}")
     if not isinstance(job, dict):
         raise LumaError("Registry Nomad job is unavailable")
+    # Persist everything needed to restart the Registry *before* stopping it. If
+    # this process dies inside the maintenance window, the in-memory `job` is
+    # lost and the Registry would stay down until someone noticed; with this
+    # record, _registry_recover_pending_maintenance() brings it back on the next
+    # Control start or automation tick.
+    _registry_mark_maintenance_open(job_id=job_id, job=job, host=str(spec["host"]))
     nomad.request("DELETE", f"/v1/job/{urllib.parse.quote(job_id, safe='')}?purge=false")
     primary_error: Exception | None = None
     result: Dict[str, Any] = {}
+    step_results: list[Dict[str, Any]] = []
     try:
         _wait_registry_job_stopped(nomad, job_id)
-        result = _run_node_agent_task(
-            state,
-            str(spec["node"]),
-            "registry-maintenance",
-            {
-                "volumeName": str(spec["volumeName"]),
-                "image": str(spec["image"]),
-                "operation": operation,
-                "manifests": list(manifests or []),
-            },
-            timeout=3900,
-            required_capability="registry-management-v1",
-        )
+        for step in steps:
+            result = _run_node_agent_task(
+                state,
+                str(spec["node"]),
+                "registry-maintenance",
+                {
+                    "volumeName": str(spec["volumeName"]),
+                    "image": str(spec["image"]),
+                    "operation": str(step.get("operation") or ""),
+                    "manifests": list(step.get("manifests") or []),
+                },
+                timeout=3900,
+                required_capability="registry-management-v1",
+            )
+            step_results.append(result if isinstance(result, dict) else {})
+        if len(step_results) > 1:
+            result = {**(step_results[-1] or {}), "steps": step_results}
     except Exception as exc:
         primary_error = exc
     restart_error: Exception | None = None
@@ -9949,6 +10050,9 @@ def _run_registry_offline_task(
         restored_job = _registry_restorable_nomad_job(job)
         nomad.request("POST", "/v1/jobs", {"Job": restored_job})
         _wait_registry_healthy(_managed_registry_client(state, spec), timeout=300)
+        # Only clear the marker once the Registry answers: if it never came back,
+        # the marker must survive so the recovery path keeps retrying.
+        _registry_clear_maintenance_open(job_id)
     except Exception as exc:
         restart_error = exc
     if restart_error is not None:
@@ -10130,6 +10234,105 @@ def handle_registry_gc(token: str, *, execute: bool, force: bool = False) -> Dic
         return {"result": result, "completedDeletionIds": completed_ids}
 
 
+def handle_registry_purge(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Delete manifests and reclaim their blobs in one operation.
+
+    This is the direct path behind the dashboard's "delete and reclaim" action.
+    Unlike ``handle_registry_deletion_create`` it keeps no queue record, honours
+    no grace period, writes no manifest backup, and is therefore not
+    recoverable. Reference protection is reported back to the caller but never
+    blocks: the operator has already confirmed in the UI.
+
+    Both steps run inside a single Registry downtime window, and platform child
+    manifests of a selected index are included so that deleting a multi-arch
+    image actually frees its layers instead of orphaning them untagged.
+    """
+    if str(body.get("confirm") or "").strip().lower() != "delete":
+        raise LumaError("registry purge requires confirm=delete")
+    with _REGISTRY_MAINTENANCE_LOCK:
+        state = load_state()
+        require_token(state, token, token_type="deploy")
+        _apply_state_secrets(state)
+        requested = _registry_requested_manifests(body)
+        # The cached snapshot is enough: it only supplies tag/child topology, and
+        # the agent deletes by digest. A refresh here would add a full scan to
+        # every purge for no safety gain, since protection never blocks.
+        inventory = _registry_inventory_for_state(state, refresh=False)
+        preview = _registry_deletion_preview_from_inventory(
+            inventory,
+            requested,
+            manual_override=True,
+        )
+        targets = [
+            {"repository": str(item.get("repository") or ""), "digest": str(item.get("digest") or "")}
+            for item in list(preview["selected"]) + list(preview.get("dependentManifests") or [])
+            if isinstance(item, dict)
+        ]
+        if not targets:
+            raise LumaError("no Registry manifests matched the purge request")
+        blocking = [
+            item for item in preview.get("blocked") or []
+            if isinstance(item, dict) and "more than 100" in str(item.get("reason") or "")
+        ]
+        if blocking:
+            raise LumaError(str(blocking[0].get("reason") or "registry purge batch is too large"))
+        spec = _managed_registry_spec(state)
+        result = _run_registry_offline_task(
+            state,
+            spec,
+            operations=[
+                {"operation": "delete", "manifests": targets},
+                {"operation": "gc"},
+            ],
+        )
+        now = int(time.time())
+        steps = [item for item in result.get("steps") or [] if isinstance(item, dict)]
+        delete_step = next((item for item in steps if str(item.get("operation") or "") == "delete"), {})
+        gc_step = next((item for item in steps if str(item.get("operation") or "") == "gc"), result)
+        # Measure across the whole window: the delete step's "before" is the true
+        # starting size, the gc step's "after" is what the operator ends up with.
+        before_bytes = int(delete_step.get("beforeBytes") or gc_step.get("beforeBytes") or 0)
+        after_bytes = int(gc_step.get("afterBytes") or 0)
+        reclaimed = max(before_bytes - after_bytes, 0)
+        eligible = int(gc_step.get("eligibleBlobs") or 0)
+        deleted_count = len(gc_step.get("deleted") or delete_step.get("deleted") or targets)
+        if deleted_count and eligible <= 0:
+            # Deleting a manifest always orphans at least its own manifest blob,
+            # so a collector that found nothing collectable did not observe the
+            # deletion. Returning success here would leave the operator guessing.
+            raise LumaError(
+                f"deleted {deleted_count} manifest(s) but garbage collection found no "
+                "collectable blobs; disk space was not reclaimed and the Registry "
+                "storage backend may not permit blob deletion"
+            )
+
+        def mutate(current: Dict[str, Any]) -> None:
+            management = _registry_management_state(current)
+            management["audit"].append(
+                {
+                    "id": f"registry-audit-{secrets.token_hex(8)}",
+                    "action": "manifests-purged",
+                    "createdAt": now,
+                    "manifestCount": len(targets),
+                    "reclaimedBytes": reclaimed,
+                }
+            )
+            management["audit"] = management["audit"][-500:]
+
+        _mutate_control_state(mutate)
+        return {
+            "purged": targets,
+            "manifestCount": len(targets),
+            "reclaimedBytes": reclaimed,
+            "collectedBlobs": eligible,
+            # A small or zero byte delta with blobs collected is legitimate: the
+            # deleted image may have shared every layer with an image that stays.
+            "sharedLayersOnly": bool(eligible > 0 and reclaimed == 0),
+            "risks": preview.get("risks") or [],
+            "result": result,
+        }
+
+
 def _record_registry_automation(*, status: str, message: str = "") -> None:
     now = int(time.time())
 
@@ -10147,6 +10350,10 @@ def _record_registry_automation(*, status: str, message: str = "") -> None:
 
 
 def _registry_automation_tick() -> None:
+    # A Registry stranded by an interrupted maintenance window is an outage, not
+    # a retention concern: recover it first, whatever the policy mode, and before
+    # anything that could raise below.
+    _registry_recover_pending_maintenance()
     state = load_state()
     management = _registry_management_state(state)
     policy = normalize_policy(management.get("policy") if isinstance(management.get("policy"), dict) else {})
@@ -10230,9 +10437,27 @@ def _registry_automation_tick() -> None:
     )
 
 
+def _registry_recovery_only_once() -> None:
+    """Run maintenance recovery once, for when retention automation is disabled."""
+    delay = max(int(os.environ.get("LUMA_REGISTRY_AUTOMATION_INITIAL_DELAY_SECONDS", "30")), 1)
+    time.sleep(delay)
+    try:
+        _registry_recover_pending_maintenance()
+    except Exception as exc:
+        print(f"Registry maintenance recovery thread failed: {exc}", file=sys.stderr, flush=True)
+
+
 def _start_registry_automation() -> None:
     global _REGISTRY_AUTOMATION_THREAD
     if str(os.environ.get("LUMA_REGISTRY_AUTOMATION_DISABLED") or "").lower() in {"1", "true", "yes"}:
+        # Retention automation is off, but a Registry stranded mid-maintenance
+        # still has to come back: recovery is an availability guarantee, not a
+        # retention feature, so it runs on its own one-shot thread.
+        threading.Thread(
+            target=_registry_recovery_only_once,
+            name="luma-registry-recovery",
+            daemon=True,
+        ).start()
         return
     with _REGISTRY_AUTOMATION_LOCK:
         if _REGISTRY_AUTOMATION_THREAD is not None and _REGISTRY_AUTOMATION_THREAD.is_alive():
@@ -18253,6 +18478,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                 )
                 self._json(200, result)
                 return
+            if parsed_path == "/v1/registry/purge":
+                self._json(200, handle_registry_purge(token, body))
+                return
             if parsed_path == "/v1/registry/gc/preview":
                 self._json(200, handle_registry_gc(token, execute=False))
                 return
@@ -19156,6 +19384,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             else:
                 result = await run_in_threadpool(handle_registry_deletion_restore, token, deletion_id)
             return _json_response(200, result)
+        if path == "/v1/registry/purge":
+            return _json_response(200, await run_in_threadpool(handle_registry_purge, token, body))
         if path == "/v1/registry/gc/preview":
             return _json_response(200, await run_in_threadpool(functools.partial(handle_registry_gc, token, execute=False)))
         if path == "/v1/registry/gc":

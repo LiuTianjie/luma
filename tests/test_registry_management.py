@@ -469,6 +469,542 @@ class RegistryControlTests(unittest.TestCase):
         self.assertEqual(request["confirm"], "delete")
         record.assert_called_once()
 
+    @patch.object(control_server, "_managed_registry_spec")
+    @patch.object(control_server, "_registry_inventory_for_state")
+    @patch.object(control_server, "_apply_state_secrets")
+    @patch.object(control_server, "require_token")
+    @patch.object(control_server, "load_state")
+    def test_purge_deletes_and_collects_in_one_offline_window(
+        self, load_state, _require, _secrets, inventory, managed_spec
+    ) -> None:
+        state = {"deployToken": "token", "registryManagement": {"deletions": [], "audit": []}}
+        load_state.return_value = state
+        managed_spec.return_value = {
+            "host": "registry.internal",
+            "node": "builder",
+            "volumeName": "registry-data",
+            "jobId": "registry",
+        }
+        inventory.return_value = {
+            "protectionComplete": True,
+            "entries": [
+                {
+                    "repository": "acme/api",
+                    "digest": DIGEST_A,
+                    "tags": ["old"],
+                    "logicalBytes": 4096,
+                    "protectionStatus": "candidate",
+                    "protectionReasons": [],
+                }
+            ],
+        }
+
+        def mutate(callback):
+            return callback(state)
+
+        with patch.object(control_server, "_run_registry_offline_task") as offline, patch.object(
+            control_server, "_mutate_control_state", side_effect=mutate
+        ):
+            offline.return_value = {
+                "operation": "gc",
+                "steps": [
+                    {"operation": "delete", "deleted": [{"repository": "acme/api", "digest": DIGEST_A}], "beforeBytes": 10240},
+                    {"operation": "gc", "eligibleBlobs": 3, "beforeBytes": 10240, "afterBytes": 6144},
+                ],
+            }
+            result = control_server.handle_registry_purge(
+                "token", {"confirm": "delete", "manifests": [{"repository": "acme/api", "digest": DIGEST_A}]}
+            )
+
+        # One offline window, two ordered steps: delete then gc.
+        self.assertEqual(offline.call_count, 1)
+        operations = offline.call_args.kwargs["operations"]
+        self.assertEqual([step["operation"] for step in operations], ["delete", "gc"])
+        self.assertEqual(operations[0]["manifests"], [{"repository": "acme/api", "digest": DIGEST_A}])
+        # Measured across the whole window: delete's before, gc's after.
+        self.assertEqual(result["reclaimedBytes"], 4096)
+        self.assertEqual(result["collectedBlobs"], 3)
+        self.assertFalse(result["sharedLayersOnly"])
+        self.assertEqual(result["manifestCount"], 1)
+        # The cached snapshot is reused; a purge must not pay for a full rescan.
+        self.assertFalse(inventory.call_args.kwargs["refresh"])
+        self.assertEqual(state["registryManagement"]["audit"][-1]["action"], "manifests-purged")
+
+    @patch.object(control_server, "_managed_registry_spec")
+    @patch.object(control_server, "_registry_inventory_for_state")
+    @patch.object(control_server, "_apply_state_secrets")
+    @patch.object(control_server, "require_token")
+    @patch.object(control_server, "load_state")
+    def test_purge_includes_child_manifests_and_reports_but_ignores_protection(
+        self, load_state, _require, _secrets, inventory, managed_spec
+    ) -> None:
+        state = {"deployToken": "token", "registryManagement": {"deletions": [], "audit": []}}
+        load_state.return_value = state
+        managed_spec.return_value = {
+            "host": "registry.internal",
+            "node": "builder",
+            "volumeName": "registry-data",
+            "jobId": "registry",
+        }
+        # A protected multi-arch index whose platform child is untagged.
+        inventory.return_value = {
+            "protectionComplete": True,
+            "entries": [
+                {
+                    "repository": "acme/api",
+                    "digest": DIGEST_A,
+                    "tags": ["latest"],
+                    "logicalBytes": 8192,
+                    "childManifestDigests": [DIGEST_B],
+                    "protectionStatus": "protected",
+                    "protectionReasons": [{"kind": "deployment", "source": "service:api"}],
+                }
+            ],
+        }
+
+        def mutate(callback):
+            return callback(state)
+
+        with patch.object(control_server, "_run_registry_offline_task") as offline, patch.object(
+            control_server, "_mutate_control_state", side_effect=mutate
+        ):
+            offline.return_value = {
+                "steps": [
+                    {"operation": "delete", "beforeBytes": 16384},
+                    {"operation": "gc", "eligibleBlobs": 5, "beforeBytes": 16384, "afterBytes": 8192},
+                ]
+            }
+            result = control_server.handle_registry_purge(
+                "token", {"confirm": "delete", "manifests": [{"repository": "acme/api", "digest": DIGEST_A}]}
+            )
+
+        targets = offline.call_args.kwargs["operations"][0]["manifests"]
+        # The untagged platform child goes with its index, otherwise its layers leak.
+        self.assertEqual(
+            [item["digest"] for item in targets],
+            [DIGEST_A, DIGEST_B],
+        )
+        # Protection is surfaced as a risk, never as a block.
+        self.assertIn("referenced", result["risks"][0]["reason"])
+
+    @patch.object(control_server, "_managed_registry_spec")
+    @patch.object(control_server, "_registry_inventory_for_state")
+    @patch.object(control_server, "_apply_state_secrets")
+    @patch.object(control_server, "require_token")
+    @patch.object(control_server, "load_state")
+    def test_purge_fails_loudly_when_no_blobs_were_collected(
+        self, load_state, _require, _secrets, inventory, managed_spec
+    ) -> None:
+        """Deleting a manifest must never report success without reclaiming."""
+        state = {"deployToken": "token", "registryManagement": {"deletions": [], "audit": []}}
+        load_state.return_value = state
+        managed_spec.return_value = {
+            "host": "registry.internal",
+            "node": "builder",
+            "volumeName": "registry-data",
+            "jobId": "registry",
+        }
+        inventory.return_value = {
+            "protectionComplete": True,
+            "entries": [
+                {
+                    "repository": "acme/api",
+                    "digest": DIGEST_A,
+                    "tags": ["old"],
+                    "logicalBytes": 4096,
+                    "protectionStatus": "candidate",
+                    "protectionReasons": [],
+                }
+            ],
+        }
+
+        def mutate(callback):
+            return callback(state)
+
+        with patch.object(control_server, "_run_registry_offline_task") as offline, patch.object(
+            control_server, "_mutate_control_state", side_effect=mutate
+        ):
+            # The collector ran but found nothing: a Registry that silently
+            # refuses blob deletion looks exactly like this.
+            offline.return_value = {
+                "steps": [
+                    {"operation": "delete", "deleted": [{"repository": "acme/api", "digest": DIGEST_A}], "beforeBytes": 10240},
+                    {"operation": "gc", "eligibleBlobs": 0, "beforeBytes": 10240, "afterBytes": 10240},
+                ]
+            }
+            with self.assertRaises(LumaError) as caught:
+                control_server.handle_registry_purge(
+                    "token", {"confirm": "delete", "manifests": [{"repository": "acme/api", "digest": DIGEST_A}]}
+                )
+        self.assertIn("not reclaimed", str(caught.exception))
+
+    @patch.object(control_server, "_managed_registry_spec")
+    @patch.object(control_server, "_registry_inventory_for_state")
+    @patch.object(control_server, "_apply_state_secrets")
+    @patch.object(control_server, "require_token")
+    @patch.object(control_server, "load_state")
+    def test_purge_reports_shared_layers_instead_of_failing(
+        self, load_state, _require, _secrets, inventory, managed_spec
+    ) -> None:
+        """Blobs collected but no bytes freed is legitimate layer sharing."""
+        state = {"deployToken": "token", "registryManagement": {"deletions": [], "audit": []}}
+        load_state.return_value = state
+        managed_spec.return_value = {
+            "host": "registry.internal",
+            "node": "builder",
+            "volumeName": "registry-data",
+            "jobId": "registry",
+        }
+        inventory.return_value = {
+            "protectionComplete": True,
+            "entries": [
+                {
+                    "repository": "acme/api",
+                    "digest": DIGEST_A,
+                    "tags": ["old"],
+                    "logicalBytes": 4096,
+                    "protectionStatus": "candidate",
+                    "protectionReasons": [],
+                }
+            ],
+        }
+
+        def mutate(callback):
+            return callback(state)
+
+        with patch.object(control_server, "_run_registry_offline_task") as offline, patch.object(
+            control_server, "_mutate_control_state", side_effect=mutate
+        ):
+            offline.return_value = {
+                "steps": [
+                    {"operation": "delete", "beforeBytes": 10240},
+                    {"operation": "gc", "eligibleBlobs": 1, "beforeBytes": 10240, "afterBytes": 10240},
+                ]
+            }
+            result = control_server.handle_registry_purge(
+                "token", {"confirm": "delete", "manifests": [{"repository": "acme/api", "digest": DIGEST_A}]}
+            )
+        self.assertEqual(result["reclaimedBytes"], 0)
+        self.assertTrue(result["sharedLayersOnly"])
+
+    @patch.object(control_server, "load_state")
+    def test_purge_requires_explicit_confirmation(self, load_state) -> None:
+        load_state.return_value = {"deployToken": "token"}
+        with self.assertRaises(LumaError):
+            control_server.handle_registry_purge("token", {"manifests": []})
+
+    @patch.object(control_server, "_managed_registry_client")
+    @patch.object(control_server, "_wait_registry_healthy")
+    @patch.object(control_server, "_wait_registry_job_stopped")
+    @patch.object(control_server, "_run_node_agent_task")
+    @patch.object(control_server, "_invalidate_registry_scan")
+    @patch.object(control_server, "NomadApi")
+    @patch.object(control_server, "load_config")
+    def test_offline_task_runs_every_step_then_restarts_registry(
+        self, _config, nomad_api, _invalidate, run_task, _stopped, _healthy, _client
+    ) -> None:
+        nomad = nomad_api.return_value
+        nomad.request.return_value = {"ID": "registry", "TaskGroups": []}
+        run_task.side_effect = [
+            {"operation": "delete", "reclaimedBytes": 0},
+            {"operation": "gc", "reclaimedBytes": 512},
+        ]
+        marker_state = {"registryManagement": {"deletions": [], "audit": []}}
+        marker_patch = patch.object(
+            control_server,
+            "_mutate_control_state",
+            side_effect=lambda callback: callback(marker_state),
+        )
+        marker_patch.start()
+        self.addCleanup(marker_patch.stop)
+        result = control_server._run_registry_offline_task(
+            {"nomadToken": "t"},
+            {
+                "host": "registry.internal",
+                "baseUrl": "https://registry.internal",
+                "node": "builder",
+                "volumeName": "vol",
+                "image": "registry:2",
+                "jobId": "registry",
+            },
+            operations=[
+                {"operation": "delete", "manifests": [{"repository": "acme/api", "digest": DIGEST_A}]},
+                {"operation": "gc"},
+            ],
+        )
+        self.assertEqual(run_task.call_count, 2)
+        self.assertEqual(
+            [call.args[3]["operation"] for call in run_task.call_args_list],
+            ["delete", "gc"],
+        )
+        # The last step carries the reclaimed total; every step is still reported.
+        self.assertEqual(result["reclaimedBytes"], 512)
+        self.assertEqual(len(result["steps"]), 2)
+        # The Registry job is recreated after the final step.
+        self.assertTrue(any(call.args[0] == "POST" for call in nomad.request.call_args_list))
+
+    @patch.object(control_server, "_managed_registry_client")
+    @patch.object(control_server, "_wait_registry_healthy")
+    @patch.object(control_server, "_wait_registry_job_stopped")
+    @patch.object(control_server, "_run_node_agent_task")
+    @patch.object(control_server, "_invalidate_registry_scan")
+    @patch.object(control_server, "NomadApi")
+    @patch.object(control_server, "load_config")
+    def test_offline_task_records_then_clears_maintenance_marker(
+        self, _config, nomad_api, _invalidate, run_task, _stopped, _healthy, _client
+    ) -> None:
+        """The marker is what lets a crashed Control restart the Registry."""
+        state = {"nomadToken": "t", "registryManagement": {"deletions": [], "audit": []}}
+        nomad = nomad_api.return_value
+        nomad.request.return_value = {"ID": "registry", "TaskGroups": []}
+        run_task.return_value = {"operation": "gc", "reclaimedBytes": 1}
+        seen_during_window: list[Any] = []
+
+        def mutate(callback):
+            result = callback(state)
+            marker = state["registryManagement"].get("maintenance")
+            seen_during_window.append(copy.deepcopy(marker) if marker else None)
+            return result
+
+        with patch.object(control_server, "_mutate_control_state", side_effect=mutate):
+            control_server._run_registry_offline_task(
+                state,
+                {
+                    "host": "registry.internal",
+                    "baseUrl": "https://registry.internal",
+                    "node": "builder",
+                    "volumeName": "vol",
+                    "image": "registry:2",
+                    "jobId": "registry",
+                },
+                operation="gc",
+            )
+
+        # Recorded before the stop, carrying the job needed to rebuild it...
+        self.assertEqual(seen_during_window[0]["jobId"], "registry")
+        self.assertEqual(seen_during_window[0]["job"]["ID"], "registry")
+        # ...and cleared only after the Registry answered a health check.
+        self.assertIsNone(seen_during_window[-1])
+        self.assertNotIn("maintenance", state["registryManagement"])
+
+    @patch.object(control_server, "_managed_registry_client")
+    @patch.object(control_server, "_wait_registry_healthy")
+    @patch.object(control_server, "_wait_registry_job_stopped")
+    @patch.object(control_server, "_run_node_agent_task")
+    @patch.object(control_server, "NomadApi")
+    @patch.object(control_server, "load_config")
+    def test_maintenance_marker_survives_a_failed_restart(
+        self, _config, nomad_api, run_task, _stopped, healthy, _client
+    ) -> None:
+        state = {"nomadToken": "t", "registryManagement": {"deletions": [], "audit": []}}
+        nomad = nomad_api.return_value
+        nomad.request.return_value = {"ID": "registry", "TaskGroups": []}
+        run_task.return_value = {"operation": "gc"}
+        healthy.side_effect = LumaError("registry never became healthy")
+
+        def mutate(callback):
+            return callback(state)
+
+        with patch.object(control_server, "_mutate_control_state", side_effect=mutate):
+            with self.assertRaises(LumaError):
+                control_server._run_registry_offline_task(
+                    state,
+                    {
+                        "host": "registry.internal",
+                        "baseUrl": "https://registry.internal",
+                        "node": "builder",
+                        "volumeName": "vol",
+                        "image": "registry:2",
+                        "jobId": "registry",
+                    },
+                    operation="gc",
+                )
+        # The Registry did not come back, so the marker must remain for recovery.
+        self.assertEqual(state["registryManagement"]["maintenance"]["jobId"], "registry")
+
+    @patch.object(control_server, "_managed_registry_client")
+    @patch.object(control_server, "_invalidate_registry_scan")
+    @patch.object(control_server, "_wait_registry_healthy")
+    @patch.object(control_server, "_managed_registry_spec")
+    @patch.object(control_server, "NomadApi")
+    @patch.object(control_server, "load_config")
+    @patch.object(control_server, "load_state")
+    def test_recovery_restarts_a_registry_stranded_by_a_crash(
+        self, load_state, _config, nomad_api, managed_spec, _healthy, _invalidate, _client
+    ) -> None:
+        """A Control crash inside the window must not leave the Registry down."""
+        state = {
+            "nomadToken": "t",
+            "registryManagement": {
+                "deletions": [],
+                "audit": [],
+                "maintenance": {
+                    "jobId": "registry",
+                    "job": {"ID": "registry", "Stop": True, "TaskGroups": []},
+                    "host": "registry.internal",
+                    "openedAt": 1_800_000_000,
+                },
+            },
+        }
+        load_state.return_value = state
+        managed_spec.return_value = {
+            "host": "registry.internal",
+            "baseUrl": "https://registry.internal",
+            "node": "builder",
+            "volumeName": "vol",
+            "image": "registry:2",
+            "jobId": "registry",
+        }
+        nomad = nomad_api.return_value
+
+        def mutate(callback):
+            return callback(state)
+
+        with patch.object(control_server, "_mutate_control_state", side_effect=mutate):
+            result = control_server._registry_recover_pending_maintenance()
+
+        self.assertTrue(result["recovered"])
+        submitted = [call for call in nomad.request.call_args_list if call.args[0] == "POST"]
+        self.assertEqual(len(submitted), 1)
+        # Stop is cleared so the job actually runs again.
+        self.assertFalse(submitted[0].args[2]["Job"]["Stop"])
+        self.assertNotIn("maintenance", state["registryManagement"])
+
+    @patch.object(control_server, "load_state")
+    def test_recovery_is_a_noop_without_a_marker(self, load_state) -> None:
+        load_state.return_value = {"registryManagement": {"deletions": [], "audit": []}}
+        self.assertIsNone(control_server._registry_recover_pending_maintenance())
+
+    @patch.object(control_server, "_managed_registry_spec")
+    @patch.object(control_server, "load_config")
+    @patch.object(control_server, "load_state")
+    def test_recovery_keeps_marker_and_never_raises_when_restart_fails(
+        self, load_state, _config, managed_spec
+    ) -> None:
+        state = {
+            "nomadToken": "t",
+            "registryManagement": {
+                "deletions": [],
+                "audit": [],
+                "maintenance": {
+                    "jobId": "registry",
+                    "job": {"ID": "registry", "TaskGroups": []},
+                    "host": "registry.internal",
+                },
+            },
+        }
+        load_state.return_value = state
+        managed_spec.side_effect = LumaError("registry spec unavailable")
+
+        def mutate(callback):
+            return callback(state)
+
+        with patch.object(control_server, "_mutate_control_state", side_effect=mutate):
+            # Must not propagate: recovery runs on Control startup and in the
+            # automation loop, neither of which may be blocked by it.
+            result = control_server._registry_recover_pending_maintenance()
+
+        self.assertFalse(result["recovered"])
+        self.assertEqual(state["registryManagement"]["maintenance"]["jobId"], "registry")
+
+    @patch.object(control_server, "_record_registry_automation")
+    @patch.object(control_server, "_registry_inventory_for_state")
+    @patch.object(control_server, "load_state")
+    def test_automation_tick_recovers_registry_before_anything_else(
+        self, load_state, inventory, _record
+    ) -> None:
+        load_state.return_value = {
+            "deployToken": "token",
+            "registryManagement": {"policy": {"mode": "off"}, "deletions": [], "audit": []},
+        }
+        inventory.return_value = {"protectionComplete": True, "entries": []}
+        with patch.object(control_server, "_registry_recover_pending_maintenance") as recover:
+            control_server._registry_automation_tick()
+        # Recovery is an availability guarantee: it runs even with retention off.
+        recover.assert_called_once()
+
+    def test_gc_container_enables_blob_deletion(self) -> None:
+        """Without delete.enabled, garbage-collect exits 0 and frees nothing."""
+        from luma import agent as luma_agent
+
+        captured: list[list[str]] = []
+
+        def fake_stream(command, **_kwargs):
+            captured.append(list(command))
+            return SimpleNamespace(code=0, output="blob eligible for deletion: sha256:x")
+
+        with patch.object(luma_agent, "_docker_binary", return_value="/usr/bin/docker"), patch.object(
+            luma_agent, "node_agent_os", return_value="linux"
+        ), patch.object(luma_agent.subprocess, "run") as run, patch.object(
+            luma_agent, "inspect_registry_storage"
+        ) as storage, patch.object(luma_agent, "_run_process_streaming", side_effect=fake_stream):
+            run.return_value = SimpleNamespace(returncode=0, stdout="")
+            storage.side_effect = [{"volumeBytes": 10240}, {"volumeBytes": 4096}]
+            result = luma_agent.registry_maintenance(
+                volume_name="vol", image="registry:2", operation="gc", manifests=[]
+            )
+
+        self.assertIn("REGISTRY_STORAGE_DELETE_ENABLED=true", captured[0])
+        self.assertEqual(result["reclaimedBytes"], 6144)
+
+    def test_gc_refuses_to_report_success_when_nothing_shrank(self) -> None:
+        from luma import agent as luma_agent
+
+        with patch.object(luma_agent, "_docker_binary", return_value="/usr/bin/docker"), patch.object(
+            luma_agent, "node_agent_os", return_value="linux"
+        ), patch.object(luma_agent.subprocess, "run") as run, patch.object(
+            luma_agent, "inspect_registry_storage"
+        ) as storage, patch.object(luma_agent, "_run_process_streaming") as stream:
+            run.return_value = SimpleNamespace(returncode=0, stdout="")
+            # Collector claims two blobs were collectable, volume never shrank.
+            stream.return_value = SimpleNamespace(
+                code=0,
+                output="blob eligible for deletion: a\nblob eligible for deletion: b",
+            )
+            storage.side_effect = [{"volumeBytes": 10240}, {"volumeBytes": 10240}]
+            with self.assertRaises(LumaError) as caught:
+                luma_agent.registry_maintenance(
+                    volume_name="vol", image="registry:2", operation="gc", manifests=[]
+                )
+        self.assertIn("reclaimed no space", str(caught.exception))
+
+    def test_gc_preview_stays_a_dry_run_and_never_asserts_shrinkage(self) -> None:
+        from luma import agent as luma_agent
+
+        captured: list[list[str]] = []
+
+        def fake_stream(command, **_kwargs):
+            captured.append(list(command))
+            return SimpleNamespace(code=0, output="blob eligible for deletion: sha256:x")
+
+        with patch.object(luma_agent, "_docker_binary", return_value="/usr/bin/docker"), patch.object(
+            luma_agent, "node_agent_os", return_value="linux"
+        ), patch.object(luma_agent.subprocess, "run") as run, patch.object(
+            luma_agent, "inspect_registry_storage"
+        ) as storage, patch.object(luma_agent, "_run_process_streaming", side_effect=fake_stream):
+            run.return_value = SimpleNamespace(returncode=0, stdout="")
+            storage.side_effect = [{"volumeBytes": 10240}, {"volumeBytes": 10240}]
+            result = luma_agent.registry_maintenance(
+                volume_name="vol", image="registry:2", operation="gc-preview", manifests=[]
+            )
+        self.assertIn("--dry-run", captured[0])
+        self.assertEqual(result["eligibleBlobs"], 1)
+        self.assertEqual(result["reclaimedBytes"], 0)
+
+    def test_maintenance_refuses_to_run_while_the_volume_is_mounted(self) -> None:
+        """Collecting against a live volume risks corrupting it."""
+        from luma import agent as luma_agent
+
+        with patch.object(luma_agent, "_docker_binary", return_value="/usr/bin/docker"), patch.object(
+            luma_agent, "node_agent_os", return_value="linux"
+        ), patch.object(luma_agent.subprocess, "run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout="abc123\n")
+            with self.assertRaises(LumaError) as caught:
+                luma_agent.registry_maintenance(
+                    volume_name="vol", image="registry:2", operation="gc", manifests=[]
+                )
+        self.assertIn("still mounted", str(caught.exception))
+
     def test_cli_exposes_registry_management_commands_without_overloading_credentials(self) -> None:
         parser = build_parser()
         images = parser.parse_args(["registry", "images", "--refresh"])

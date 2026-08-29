@@ -2309,7 +2309,22 @@ def registry_maintenance(
             before=before,
             progress=progress,
         )
-    command = [docker, "run", "--rm", "-v", f"{volume_name}:/var/lib/registry", image, "garbage-collect"]
+    # REGISTRY_STORAGE_DELETE_ENABLED is mandatory, not cosmetic: with deletes
+    # disabled, `garbage-collect` still walks every manifest, still logs "blob
+    # eligible for deletion", and still exits 0 -- while removing nothing. That
+    # silent no-op is exactly the "deleted but no space came back" case, so the
+    # flag is set here rather than relying on the served Registry's own config.
+    command = [
+        docker,
+        "run",
+        "--rm",
+        "-e",
+        "REGISTRY_STORAGE_DELETE_ENABLED=true",
+        "-v",
+        f"{volume_name}:/var/lib/registry",
+        image,
+        "garbage-collect",
+    ]
     if operation == "gc-preview":
         command.append("--dry-run")
     command.append("/etc/docker/registry/config.yml")
@@ -2326,12 +2341,22 @@ def registry_maintenance(
         raise LumaError(f"registry garbage collection failed: {result.output[-2000:]}")
     after = inspect_registry_storage(volume_name=volume_name)
     eligible = len(re.findall(r"blob eligible for deletion", result.output, re.IGNORECASE))
+    before_bytes = int(before.get("volumeBytes") or 0)
+    after_bytes = int(after.get("volumeBytes") or 0)
+    if operation == "gc" and eligible > 0 and after_bytes >= before_bytes:
+        # The collector claimed blobs were collectable but the volume did not
+        # shrink. Reporting success here would hand back an unreclaimed disk.
+        raise LumaError(
+            f"registry garbage collection reported {eligible} collectable blob(s) "
+            f"but reclaimed no space ({before_bytes} bytes before, {after_bytes} after); "
+            "the Registry image may not permit blob deletion"
+        )
     return {
         "operation": operation,
         "eligibleBlobs": eligible,
-        "beforeBytes": int(before.get("volumeBytes") or 0),
-        "afterBytes": int(after.get("volumeBytes") or 0),
-        "reclaimedBytes": max(int(before.get("volumeBytes") or 0) - int(after.get("volumeBytes") or 0), 0),
+        "beforeBytes": before_bytes,
+        "afterBytes": after_bytes,
+        "reclaimedBytes": max(before_bytes - after_bytes, 0),
         "storage": after,
         "message": "Registry garbage collection preview complete" if operation == "gc-preview" else "Registry garbage collection complete",
     }

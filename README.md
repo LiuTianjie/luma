@@ -387,7 +387,11 @@ Dashboard's **Registry** page groups images by manifest digest and shows reposit
 
 Opening the Registry page reads the last durable inventory snapshot and never starts a synchronous full scan. **Rescan**, deletion execution, GC, and enforced automation refresh the snapshot; on a brand-new installation, the first snapshot is built in the background.
 
-The CLI exposes the same workflow:
+Dashboard's **Delete and reclaim** button deletes the selected manifests and garbage-collects their blobs inside a single Registry downtime window, so disk space comes back immediately. That path keeps no queue record, honours no grace period, and writes no manifest backup: it cannot be undone. It reports how many blobs were collected, and says so explicitly when blobs were collected but usage did not drop because every layer is shared with an image that stays. Use the CLI queue below when you want a cancellable window and tag restore instead.
+
+If Control dies while the Registry is stopped for maintenance, it records the original Nomad job before stopping it and restarts the Registry on the next Control start or automation tick, even when retention automation is disabled.
+
+The CLI exposes the queued workflow:
 
 ```bash
 luma registry images --refresh

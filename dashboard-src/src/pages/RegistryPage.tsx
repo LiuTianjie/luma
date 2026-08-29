@@ -16,9 +16,9 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "r
 import { CodeCell, StatePill } from "../components/ui";
 import { formatTimestamp } from "../format";
 import {
-  createRegistryDeletion,
   fetchRegistryInventory,
   previewRegistryDeletion,
+  purgeRegistryManifests,
   registryDeletionAction,
   registryGc,
   saveRegistryPolicy,
@@ -171,19 +171,29 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     }
   };
 
-  const queueDeletion = async () => {
-    if (!preview?.allowed) return;
-    setBusy("queue");
+  // One request does the whole job: stop Registry, delete the manifests,
+  // garbage-collect their blobs, restart. Not recoverable by design.
+  const purgeSelection = async () => {
+    if (!selectionItems.length) return;
+    setBusy("purge");
+    setError("");
     try {
-      await createRegistryDeletion(token, selectionItems.map(({ repository, digest }) => ({ repository, digest })));
+      const result = await purgeRegistryManifests(
+        token,
+        selectionItems.map(({ repository, digest }) => ({ repository, digest })),
+      );
       setPreview(null);
       setSelected(new Set());
       setNotice(
-        policy.queueGraceHours > 0
-          ? (zh ? "已加入清理队列；宽限期内可以取消。" : "Added to the cleanup queue; it can be canceled during the grace period.")
-          : (zh ? "已加入清理队列，可以立即执行。" : "Added to the cleanup queue; it can be executed immediately."),
+        result.sharedLayersOnly
+          ? (zh
+            ? `已删除 ${result.manifestCount || 0} 个 manifest，回收了 ${result.collectedBlobs || 0} 个 blob，但磁盘占用没有下降：这些镜像的 layer 全部与保留的镜像共享。`
+            : `Deleted ${result.manifestCount || 0} manifest(s) and collected ${result.collectedBlobs || 0} blob(s), but disk usage did not drop: every layer is shared with images that remain.`)
+          : (zh
+            ? `已删除 ${result.manifestCount || 0} 个 manifest，释放 ${formatBytes(result.reclaimedBytes)}。`
+            : `Deleted ${result.manifestCount || 0} manifest(s); reclaimed ${formatBytes(result.reclaimedBytes)}.`),
       );
-      await load(false);
+      await load(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -226,7 +236,9 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     setBusy(execute ? "gc" : "gc-preview");
     setError("");
     try {
-      const result = await registryGc(token, execute);
+      // force: the operator clicked deliberately, so the gcGraceDays recovery
+      // window should not keep the button inert for days.
+      const result = await registryGc(token, execute, execute);
       const payload = (execute ? result.result : result.preview) || {};
       setNotice(
         execute
@@ -248,8 +260,8 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           eyebrow: zh ? "镜像生命周期" : "Image lifecycle",
           title: zh ? "Registry 镜像管理" : "Registry image management",
           description: zh
-            ? "按 digest 追踪引用、排队删除并在受控维护窗口回收空间。"
-            : "Track references by digest, queue deletions, and reclaim space in controlled maintenance windows.",
+            ? "按 digest 追踪引用，选中镜像即可一步删除并回收磁盘空间。"
+            : "Track references by digest, then delete images and reclaim disk space in one step.",
           metrics: [
             { label: zh ? "仓库" : "Repositories", value: summary.repositoryCount || 0 },
             { label: "Tags", value: summary.tagCount || 0 },
@@ -335,7 +347,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
             <div className="registry-filters">
               {["all", "protected", "retained", "candidate", "unknown"].map((value) => <button type="button" key={value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{value === "all" ? (zh ? "全部" : "All") : statusLabel(value, zh)}</button>)}
             </div>
-            <button type="button" className="danger" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `清理 ${selected.size} 项` : `Clean ${selected.size}`}</button>
+            <button type="button" className="danger" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `删除并回收 ${selected.size} 项` : `Delete and reclaim ${selected.size}`}</button>
           </div>
           <div className="table-wrap registry-table-wrap">
             <table className="registry-table">
@@ -376,13 +388,89 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           </article>
           <article className="panel registry-gc-panel">
             <div className="panel-heading"><div><p className="eyebrow">Garbage collection</p><h2>{zh ? "空间回收" : "Space reclamation"}</h2></div><Database size={18} /></div>
-            <p>{zh ? "GC 会短暂停止 Registry，扫描所有 manifest 引用后删除失去引用的 blob。执行前始终可以先做预检。" : "GC briefly stops Registry, marks every manifest reference, then removes unreachable blobs. Always preview first."}</p>
-            <div className="registry-gc-actions"><button type="button" className="ghost" disabled={!!busy} onClick={() => void runGc(false)}><Search size={15} /> {busy === "gc-preview" ? (zh ? "预检中…" : "Previewing…") : (zh ? "GC 预检" : "Preview GC")}</button><button type="button" className="danger" disabled={!!busy || !(inventory?.deletions || []).some((item) => item.status === "deleted_pending_gc" && Number(item.gcAfter || 0) <= Date.now() / 1000)} onClick={() => void runGc(true)}><Play size={15} /> {busy === "gc" ? (zh ? "回收中…" : "Reclaiming…") : (zh ? "执行 GC" : "Run GC")}</button></div>
+            <p>{zh ? "上面的「删除并回收」已经自动完成回收，这里只用于处理保留策略自动删除后待回收的记录，或手动清理历史遗留的无引用 blob。" : "\"Delete and reclaim\" above already reclaims space. This panel is for records left pending by automatic policy enforcement, or to sweep unreferenced blobs left over from earlier deletions."}</p>
+            <div className="registry-gc-actions">
+              <button type="button" className="ghost" disabled={!!busy} onClick={() => void runGc(false)}>
+                <Search size={15} /> {busy === "gc-preview" ? (zh ? "预检中…" : "Previewing…") : (zh ? "GC 预检" : "Preview GC")}
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={!!busy || !(inventory?.deletions || []).some((item) => item.status === "deleted_pending_gc")}
+                onClick={() => void runGc(true)}
+              >
+                <Play size={15} /> {busy === "gc" ? (zh ? "回收中…" : "Reclaiming…") : (zh ? "执行 GC" : "Run GC")}
+              </button>
+            </div>
           </article>
         </section>
       </main>
 
-      {preview ? <div className="registry-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setPreview(null)}><section className="registry-dialog" role="dialog" aria-modal="true" aria-labelledby="registry-delete-title" onMouseDown={(event) => event.stopPropagation()}><div className="registry-dialog-icon"><Trash2 size={22} /></div><h2 id="registry-delete-title">{zh ? "加入清理队列" : "Add to cleanup queue"}</h2><p>{zh ? `将 ${preview.selected?.length || 0} 个顶层 manifest 加入队列，并处理 ${preview.dependentManifests?.length || 0} 个仅由它们引用的平台 manifest。所有指向同一 digest 的 tag 会一起删除。` : `Queue ${preview.selected?.length || 0} root manifests and include ${preview.dependentManifests?.length || 0} platform manifests referenced only by them. Every tag pointing to the same digest will be deleted together.`}</p><div className="registry-dialog-summary"><span><strong>{preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0}</strong><small>tags</small></span><span><strong>{formatBytes(preview.logicalBytes)}</strong><small>{zh ? "逻辑体积" : "logical size"}</small></span><span><strong>{policy.queueGraceHours > 0 ? `${policy.queueGraceHours}h` : (zh ? "立即" : "Immediate")}</strong><small>{policy.queueGraceHours > 0 ? (zh ? "可取消窗口" : "cancel window") : (zh ? "可执行" : "executable")}</small></span></div>{preview.risks?.length ? <div className="registry-dialog-blocked"><AlertTriangle size={16} /> {zh ? `${preview.risks.length} 条引用或扫描风险；继续即表示由你承担删除后果。` : `${preview.risks.length} reference or scan risks; continuing accepts responsibility for the deletion.`}</div> : null}{preview.blocked?.length ? <div className="registry-dialog-blocked"><AlertTriangle size={16} /> {zh ? `${preview.blocked.length} 项因不存在或批量范围过大而无法处理。` : `${preview.blocked.length} items cannot be processed because they are missing or the batch is too large.`}</div> : null}<div className="registry-dialog-actions"><button type="button" className="ghost" disabled={!!busy} onClick={() => setPreview(null)}>{zh ? "返回" : "Back"}</button><button type="button" className="danger" disabled={!preview.allowed || !!busy} onClick={() => void queueDeletion()}>{busy === "queue" ? (zh ? "排队中…" : "Queueing…") : (preview.risks?.length ? (zh ? "确认风险并加入队列" : "Accept risk and queue") : (zh ? "确认加入队列" : "Confirm queue"))}</button></div></section></div> : null}
+      {preview ? (
+        <div className="registry-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setPreview(null)}>
+          <section
+            className="registry-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="registry-delete-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="registry-dialog-icon"><Trash2 size={22} /></div>
+            <h2 id="registry-delete-title">{zh ? "删除并回收空间" : "Delete and reclaim space"}</h2>
+            <p>
+              {zh
+                ? `将删除 ${preview.selected?.length || 0} 个顶层 manifest 与 ${preview.dependentManifests?.length || 0} 个仅由它们引用的平台 manifest，然后立即回收其 blob。指向同一 digest 的 tag 会一起删除。`
+                : `Deletes ${preview.selected?.length || 0} root manifests plus ${preview.dependentManifests?.length || 0} platform manifests referenced only by them, then reclaims their blobs immediately. Every tag pointing to the same digest is deleted together.`}
+            </p>
+            <div className="registry-dialog-summary">
+              <span>
+                <strong>{preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0}</strong>
+                <small>tags</small>
+              </span>
+              <span>
+                <strong>{formatBytes(preview.logicalBytes)}</strong>
+                <small>{zh ? "预计释放" : "expected"}</small>
+              </span>
+              <span>
+                <strong>{zh ? "不可恢复" : "Permanent"}</strong>
+                <small>{zh ? "无备份" : "no backup"}</small>
+              </span>
+            </div>
+            <div className="registry-dialog-blocked">
+              <AlertTriangle size={16} />
+              {zh
+                ? "Registry 会短暂停止以完成删除与回收，期间无法推送或拉取镜像。删除后不可恢复。"
+                : "Registry stops briefly to delete and reclaim; pushes and pulls fail during that window. This cannot be undone."}
+            </div>
+            {preview.risks?.length ? (
+              <div className="registry-dialog-blocked">
+                <AlertTriangle size={16} />
+                {zh
+                  ? `${preview.risks.length} 项仍被运行中或可回滚的服务引用。删除后这些服务重启或回滚时会拉不到镜像。`
+                  : `${preview.risks.length} item(s) are still referenced by running or rollback-eligible services. Deleting them breaks restart and rollback for those services.`}
+              </div>
+            ) : null}
+            {preview.blocked?.length ? (
+              <div className="registry-dialog-blocked">
+                <AlertTriangle size={16} />
+                {zh
+                  ? `${preview.blocked.length} 项因不存在或批量范围过大而无法处理。`
+                  : `${preview.blocked.length} items cannot be processed because they are missing or the batch is too large.`}
+              </div>
+            ) : null}
+            <div className="registry-dialog-actions">
+              <button type="button" className="ghost" disabled={!!busy} onClick={() => setPreview(null)}>
+                {zh ? "返回" : "Back"}
+              </button>
+              <button type="button" className="danger" disabled={!preview.allowed || !!busy} onClick={() => void purgeSelection()}>
+                {busy === "purge"
+                  ? (zh ? "删除并回收中…" : "Deleting and reclaiming…")
+                  : (zh ? "确认删除并回收" : "Delete and reclaim")}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </>
   );
 }

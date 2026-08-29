@@ -444,6 +444,22 @@ export default defineConfig({
           response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.end(JSON.stringify({ allowed: selected.length > 0, selected, dependentManifests: [], blocked: [], risks, logicalBytes: selected.reduce((total, item) => total + item.logicalBytes, 0) }));
         });
+        server.middlewares.use("/v1/registry/purge", async (request, response) => {
+          const body = await readBody(request);
+          const requested = Array.isArray(body.manifests) ? body.manifests : [];
+          const purged = devRegistryPayload.entries.filter((entry) => requested.some((item: any) => item.repository === entry.repository && item.digest === entry.digest));
+          devRegistryPayload.entries = devRegistryPayload.entries.filter((entry) => !purged.includes(entry));
+          response.statusCode = 200;
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
+          response.end(JSON.stringify({
+            purged: purged.map((item) => ({ repository: item.repository, digest: item.digest })),
+            manifestCount: purged.length,
+            reclaimedBytes: purged.reduce((total, item) => total + item.logicalBytes, 0),
+            collectedBlobs: purged.length,
+            sharedLayersOnly: false,
+            risks: [],
+          }));
+        });
         server.middlewares.use("/v1/storage", (request, response, next) => {
           if (request.method !== "GET") {
             next();

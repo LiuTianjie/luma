@@ -122,6 +122,24 @@ export async function registryDeletionAction(token: string, id: string, action: 
   return apiPost<{ deletion: RegistryDeletion }>(`/v1/registry/deletions/${encodeURIComponent(id)}/${action}`, token, { force });
 }
 
+export type RegistryPurgeResult = {
+  purged?: Array<{ repository: string; digest: string }>;
+  manifestCount?: number;
+  reclaimedBytes?: number;
+  collectedBlobs?: number;
+  /** Blobs were collected but no bytes freed: every layer is shared with an image that stays. */
+  sharedLayersOnly?: boolean;
+  risks?: Array<RegistryManifest & { reason?: string }>;
+};
+
+/**
+ * Delete the selected manifests and reclaim their blobs in one request.
+ * Not recoverable: no queue record, no grace period, no manifest backup.
+ */
+export async function purgeRegistryManifests(token: string, manifests: Array<{ repository: string; digest: string }>) {
+  return apiPost<RegistryPurgeResult>("/v1/registry/purge", token, { manifests, confirm: "delete" });
+}
+
 export async function registryGc(token: string, execute: boolean, force = false) {
   return apiPost<{ preview?: Record<string, unknown>; result?: Record<string, unknown> }>(
     execute ? "/v1/registry/gc" : "/v1/registry/gc/preview",

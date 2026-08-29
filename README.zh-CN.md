@@ -352,7 +352,11 @@ Dashboard 的「Registry」页会按 manifest digest 展示仓库、全部 tag�
 
 进入 Registry 页面只读取上一次持久化快照，不会同步触发全量扫描。「重新扫描」、删除执行、GC 和 Enforce 自动策略会刷新快照；全新安装尚无快照时，首次扫描会在后台建立。
 
-CLI 也提供同一套能力：
+Dashboard 的「删除并回收」会在一次 Registry 停机窗口内删除选中的 manifest 并回收其 blob，磁盘空间立刻释放。这条路径不留队列记录、没有宽限期、也不做 manifest 备份，**删除后不可恢复**。返回结果会报告回收了多少 blob；如果 blob 被回收但磁盘占用没有下降（这些镜像的 layer 全部与保留镜像共享），会明确说明。需要可取消窗口与 tag 恢复时，用下面的 CLI 队列。
+
+Control 在停止 Registry 之前会先记录原 Nomad job，所以即使 Control 在维护窗口中崩溃，下一次 Control 启动或自动化 tick 也会把 Registry 拉回来——即便保留策略自动化被关闭。
+
+CLI 提供排队式的删除流程：
 
 ```bash
 luma registry images --refresh
