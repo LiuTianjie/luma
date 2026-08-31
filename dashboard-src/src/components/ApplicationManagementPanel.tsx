@@ -10,6 +10,7 @@ import type { DashboardPayload, DashboardService, Lang, ServiceVersion } from ".
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
 import { ServiceLogsModal } from "./ServiceLogsModal";
 import { OverlayShell } from "../useOverlay";
+import { useConfirm } from "./ConfirmDialog";
 import { Badge, BadgeGroup, CodeCell, PrimaryCell, SelectControl, StatePill } from "./ui";
 
 export type ApplicationUpdateRequest = {
@@ -83,6 +84,7 @@ export function ApplicationManagementPanel({
   onNavigateToDeployments?: () => void;
   initialSelect?: string | null;
 }) {
+  const { confirm, element: confirmDialog } = useConfirm(lang);
   const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
   const [selected, setSelected] = useState<Application | null>(() => {
     if (initialSelect) {
@@ -140,7 +142,17 @@ export function ApplicationManagementPanel({
   const restart = async (app: Application) => {
     setActionError("");
     setActionNotice("");
-    if (!window.confirm(lang === "zh" ? `确认重启应用 ${app.stack}？运行实例将被重建。` : `Restart ${app.stack}? Its runtime allocation will be recreated.`)) return;
+    const ok = await confirm({
+      title: lang === "zh" ? `重启 ${app.stack}？` : `Restart ${app.stack}?`,
+      body: lang === "zh"
+        ? <p>当前运行实例会被销毁并重建，重建期间该应用短暂不可用。配置和数据卷不受影响。</p>
+        : <p>The running allocation is destroyed and recreated, so the application is briefly unavailable. Configuration and volumes are untouched.</p>,
+      confirmLabel: lang === "zh" ? "重启" : "Restart",
+      warning: lang === "zh"
+        ? `影响 ${app.services.length} 个服务 · ${app.running}/${app.desired} 副本`
+        : `Affects ${app.services.length} service(s) · ${app.running}/${app.desired} replicas`,
+    });
+    if (!ok) return;
     setActionBusy(app.stack);
     try {
       const result = await restartApplication({ token, stack: app.stack });
@@ -173,10 +185,21 @@ export function ApplicationManagementPanel({
       const config = await fetchDeploymentConfig({ token, name: app.stack });
       if (config.gitSource) {
         const source = config.gitSource.repository || config.gitSource.repoUrl || config.sourceName || app.stack;
-        const prompt = lang === "zh"
-          ? `确认从 Git 更新 ${app.stack}？\n${source}${config.gitSource.ref ? ` @ ${config.gitSource.ref}` : ""}`
-          : `Update ${app.stack} from Git?\n${source}${config.gitSource.ref ? ` @ ${config.gitSource.ref}` : ""}`;
-        if (!window.confirm(prompt)) return;
+        const ref = config.gitSource.ref;
+        const ok = await confirm({
+          title: lang === "zh" ? `从 Git 更新 ${app.stack}？` : `Update ${app.stack} from Git?`,
+          tone: "neutral",
+          body: (
+            <>
+              <p>{lang === "zh"
+                ? "会重新拉取仓库、构建镜像并部署，构建进度在“部署记录”查看。"
+                : "Re-clones the repository, builds a new image and deploys it. Progress appears under Deployments."}</p>
+              <p><code>{source}{ref ? ` @ ${ref}` : ""}</code></p>
+            </>
+          ),
+          confirmLabel: lang === "zh" ? "开始更新" : "Start update",
+        });
+        if (!ok) return;
         setConfigBusy("");
         gitUpdateStarted = true;
         // Navigate to deployments page before starting the update
@@ -277,10 +300,14 @@ export function ApplicationManagementPanel({
   };
 
   const rollbackToVersion = async (app: Application, version: number) => {
-    const prompt = lang === "zh"
-      ? `确认将 ${app.stack} 的运行态回滚到 v${version}？`
-      : `Rollback ${app.stack} runtime to v${version}?`;
-    if (!window.confirm(prompt)) return;
+    const ok = await confirm({
+      title: lang === "zh" ? `将 ${app.stack} 回滚到 v${version}？` : `Roll ${app.stack} back to v${version}?`,
+      body: lang === "zh"
+        ? <p>运行态会切换回 v{version} 的镜像并重建实例。这本身也是一次新部署，之后仍可回滚到当前版本。</p>
+        : <p>The runtime switches back to the v{version} image and its allocation is recreated. This is itself a new deployment, so you can roll forward again afterwards.</p>,
+      confirmLabel: lang === "zh" ? `回滚到 v${version}` : `Roll back to v${version}`,
+    });
+    if (!ok) return;
     setActionError("");
     setRollbackState((current) => current && current.app === app.stack
       ? { ...current, error: "", message: "", busyVersion: version }
@@ -692,6 +719,7 @@ export function ApplicationManagementPanel({
 
       {detailOverlay}
       {logsOverlay}
+      {confirmDialog}
     </article>
   );
 }

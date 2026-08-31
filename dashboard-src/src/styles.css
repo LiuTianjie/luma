@@ -6446,7 +6446,8 @@ dd {
   flex: 1;
 }
 
-.registry-dialog-backdrop {
+.registry-dialog-backdrop,
+.confirm-dialog-backdrop {
   position: fixed;
   z-index: 90;
   inset: 0;
@@ -6527,11 +6528,94 @@ dd {
   font-size: var(--text-label);
 }
 
-.registry-dialog-actions {
+.registry-dialog-actions,
+.confirm-dialog-actions {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-sm);
   margin-top: var(--space-2xs);
+}
+
+/* Generic confirmation dialog, same shape as the registry delete dialog above:
+   tone-coloured icon, title, consequence copy, optional warning, cancel first. */
+.confirm-dialog {
+  display: grid;
+  width: min(480px, 100%);
+  gap: var(--space-lg);
+  padding: var(--space-4xl);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-heavy);
+  animation: registry-dialog-in var(--motion-slow) var(--ease-out) both;
+}
+
+.confirm-dialog.tone-danger {
+  border-color: var(--red-line);
+}
+
+.confirm-dialog h2 {
+  margin: 0;
+}
+
+.confirm-dialog-body {
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+
+.confirm-dialog-body p {
+  margin: 0 0 var(--space-xs);
+}
+
+.confirm-dialog-body p:last-child {
+  margin-bottom: 0;
+}
+
+.confirm-dialog-body code {
+  font-size: var(--text-meta);
+}
+
+.confirm-dialog-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  place-items: center;
+  background: var(--well);
+  color: var(--text-muted);
+}
+
+.confirm-dialog.tone-danger .confirm-dialog-icon {
+  border-color: var(--red-line);
+  background: var(--red-soft);
+  color: var(--red-text);
+}
+
+.confirm-dialog-warning {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: var(--space-md);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  color: var(--amber-text);
+  font-size: var(--text-label);
+}
+
+.confirm-dialog.tone-danger .confirm-dialog-warning {
+  border-color: var(--red-line);
+  background: var(--red-soft);
+  color: var(--red-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm-dialog,
+  .confirm-dialog-backdrop {
+    animation: none;
+  }
 }
 
 @keyframes registry-reveal {

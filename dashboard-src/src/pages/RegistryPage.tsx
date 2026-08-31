@@ -29,6 +29,7 @@ import {
 } from "../registryManagementApi";
 import type { Lang } from "../types";
 import { OverlayShell } from "../useOverlay";
+import { useConfirm } from "../components/ConfirmDialog";
 import { PageHeader } from "./PageHeader";
 
 const DEFAULT_POLICY: RegistryPolicy = {
@@ -88,6 +89,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const { confirm, element: confirmDialog } = useConfirm(lang);
   const [notice, setNotice] = useState("");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -233,7 +235,19 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   };
 
   const runGc = async (execute: boolean) => {
-    if (execute && !window.confirm(zh ? "执行 GC 后不可恢复，确认继续？" : "GC is irreversible. Continue?")) return;
+    if (execute) {
+      const ok = await confirm({
+        title: zh ? "执行垃圾回收？" : "Run garbage collection?",
+        body: zh
+          ? <p>未被任何 manifest 引用的 blob 会被永久删除，不可恢复，也没有备份。Registry 在回收期间会短暂停止，推送和拉取会失败。</p>
+          : <p>Blobs no longer referenced by any manifest are deleted permanently — this cannot be undone and there is no backup. The registry stops briefly during the sweep, so pushes and pulls fail in that window.</p>,
+        warning: zh
+          ? "会绕过 gcGraceDays 保护期立即回收。"
+          : "Runs immediately, bypassing the gcGraceDays grace period.",
+        confirmLabel: zh ? "执行 GC" : "Run GC",
+      });
+      if (!ok) return;
+    }
     setBusy(execute ? "gc" : "gc-preview");
     setError("");
     try {
@@ -480,6 +494,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           )}
         </OverlayShell>
       ) : null}
+      {confirmDialog}
     </>
   );
 }

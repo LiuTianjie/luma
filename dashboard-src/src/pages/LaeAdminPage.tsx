@@ -65,7 +65,17 @@ export function LaeAdminPage({ lang, token }: { lang: Lang; token: string }) {
       setState({
         users: users.users || [], tenants: tenants.tenants || [], applications: applications.applications || [],
         placements: placements.placements || [], operations: operations.operations || [], usage: usage.usage || [],
-        pages: { users: users.page, tenants: tenants.page, applications: applications.page, placements: placements.page, operations: operations.page, usage: usage.page },
+        // `page` is declared non-optional but comes off the wire, so a response
+        // that omits it made `pages.users.total` throw and blanked the whole page.
+        // Fall back to emptyPage the same way the initial state does.
+        pages: {
+          users: users.page || emptyPage,
+          tenants: tenants.page || emptyPage,
+          applications: applications.page || emptyPage,
+          placements: placements.page || emptyPage,
+          operations: operations.page || emptyPage,
+          usage: usage.page || emptyPage,
+        },
       });
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") return;

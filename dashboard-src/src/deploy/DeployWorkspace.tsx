@@ -12,6 +12,7 @@ import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion } from "./o
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
 import { SingleServiceDeployForm } from "./SingleServiceDeployForm";
 import { YamlPreviewEditor } from "./YamlPreviewEditor";
+import { useConfirm } from "../components/ConfirmDialog";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -293,6 +294,7 @@ export function DeployWorkspace({
   const [status, setStatus] = useState<"idle" | "previewing" | "deploying">("idle");
   const [runtimeErrors, setRuntimeErrors] = useState<string[]>([]);
   const [importView, setImportView] = useState(false);
+  const { confirm, element: confirmDialog } = useConfirm(lang);
   const nodes = payload?.nodes || [];
   const storageClasses = payload?.storage?.storageClasses || [];
 
@@ -415,10 +417,21 @@ export function DeployWorkspace({
     setSteps([]);
     if (validationErrors.length) return;
     const target = mode === "service" ? serviceDraft.name : composeDraft.name;
-    const confirmMessage = lang === "zh"
-      ? `确认部署 ${target} 到当前 Luma Control 集群？`
-      : `Deploy ${target} to the current Luma Control cluster?`;
-    if (!window.confirm(confirmMessage)) return;
+    const region = mode === "service" ? serviceDraft.region : composeDraft.region;
+    const ok = await confirm({
+      title: lang === "zh" ? `部署 ${target}？` : `Deploy ${target}?`,
+      tone: "neutral",
+      body: (
+        <>
+          <p>{lang === "zh"
+            ? "会提交到当前 Luma Control 集群。同名应用会被更新而不是新建。"
+            : "Submits to the current Luma Control cluster. An application with the same name is updated, not created alongside."}</p>
+          <p><code>{[mode === "service" ? (lang === "zh" ? "单服务" : "single service") : "compose", region, ...configFacts].filter(Boolean).join(" · ")}</code></p>
+        </>
+      ),
+      confirmLabel: lang === "zh" ? "部署" : "Deploy",
+    });
+    if (!ok) return;
     setStatus("deploying");
     try {
       await deployStream(
@@ -554,6 +567,7 @@ export function DeployWorkspace({
       )}
       </>
       )}
+      {confirmDialog}
     </section>
   );
 }

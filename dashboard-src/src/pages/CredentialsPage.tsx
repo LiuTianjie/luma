@@ -15,6 +15,7 @@ import {
   type RegistryCredential,
 } from "../controlResourcesApi";
 import { Badge, CodeCell, PrimaryCell, SelectControl, StatePill } from "../components/ui";
+import { useConfirm } from "../components/ConfirmDialog";
 import type { DashboardStorageClass, Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
@@ -155,6 +156,7 @@ export function CredentialsPage({
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [writeError, setWriteError] = useState("");
+  const { confirm, element: confirmDialog } = useConfirm(lang);
   const [expandedSecretGroups, setExpandedSecretGroups] = useState<Set<string>>(new Set());
   const initializedSecretGroups = useRef(false);
 
@@ -244,9 +246,14 @@ export function CredentialsPage({
 
   const deleteSecret = async (secret: ParsedSecret) => {
     const label = secretLabel(secret);
-    if (!window.confirm(zh
-      ? `删除 Secret ${label}？删除后，后续部署将无法再使用这个值。`
-      : `Remove secret ${label}? Future deployments will no longer be able to use this value.`)) return;
+    const ok = await confirm({
+      title: zh ? `删除 Secret ${label}？` : `Remove secret ${label}?`,
+      body: zh
+        ? <p>值是只写的，删除后无法恢复，需要重新录入。已经运行的实例不受影响，但后续部署将拿不到这个值。</p>
+        : <p>Values are write-only, so this cannot be recovered — it would have to be entered again. Running instances are unaffected, but future deployments will no longer resolve this value.</p>,
+      confirmLabel: zh ? "删除" : "Remove",
+    });
+    if (!ok) return;
     setBusy(`remove-secret-${label}`);
     setNotice("");
     setWriteError("");
@@ -263,7 +270,14 @@ export function CredentialsPage({
 
   const deleteRegistry = async (host: string) => {
     if (!host || host === "-") return;
-    if (!window.confirm(zh ? `删除 ${host} 的 registry 凭据？` : `Remove registry credential for ${host}?`)) return;
+    const ok = await confirm({
+      title: zh ? `删除 ${host} 的 registry 凭据？` : `Remove registry credential for ${host}?`,
+      body: zh
+        ? <p>之后从该 registry 拉取私有镜像会失败，已经拉取到节点上的镜像不受影响。凭据需要重新录入。</p>
+        : <p>Pulling private images from this registry will fail afterwards; images already on the nodes are unaffected. The credential would have to be entered again.</p>,
+      confirmLabel: zh ? "删除" : "Remove",
+    });
+    if (!ok) return;
     setBusy(`remove-${host}`);
     setNotice("");
     setWriteError("");
@@ -307,7 +321,14 @@ export function CredentialsPage({
 
   const deleteGitProvider = async (id: string) => {
     if (!id || id === "-") return;
-    if (!window.confirm(zh ? `删除 ${id} 的 Git 凭据？` : `Remove Git credential for ${id}?`)) return;
+    const ok = await confirm({
+      title: zh ? `删除 ${id} 的 Git 凭据？` : `Remove Git credential for ${id}?`,
+      body: zh
+        ? <p>使用该账户的仓库导入和“从 Git 更新”会失败，直到重新录入凭据。已部署的应用继续运行。</p>
+        : <p>Repository imports and "update from Git" for this account will fail until the credential is re-entered. Already-deployed applications keep running.</p>,
+      confirmLabel: zh ? "删除" : "Remove",
+    });
+    if (!ok) return;
     setBusy(`remove-git-${id}`);
     setNotice("");
     setWriteError("");
@@ -694,6 +715,7 @@ export function CredentialsPage({
           )}
         </aside>
       </section>
+      {confirmDialog}
     </>
   );
 }
