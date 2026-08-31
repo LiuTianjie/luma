@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Copy, Download, RefreshCw, X } from "lucide-react";
 import { t } from "../i18n";
 import type { DashboardService, Lang } from "../types";
+import { useOverlay } from "../useOverlay";
 import { SelectControl, type SelectOption } from "./ui";
 
 type LogsState = {
@@ -124,6 +125,7 @@ export function ServiceLogsModal({
       : []),
     [appServices],
   );
+  const overlayRef = useOverlay<HTMLElement>(onClose);
   const [selectedService, setSelectedService] = useState(() => initialService?.fullName || firstService);
   const [sinceLabel, setSinceLabel] = useState("tail");
   const [keyword, setKeyword] = useState("");
@@ -438,7 +440,7 @@ export function ServiceLogsModal({
 
   return createPortal(
     <div className="logs-modal-backdrop" onClick={onClose}>
-      <section className="logs-modal" aria-modal="true" role="dialog" aria-labelledby="logs-modal-title" onClick={(event) => event.stopPropagation()}>
+      <section className="logs-modal" ref={overlayRef} aria-modal="true" role="dialog" aria-labelledby="logs-modal-title" onClick={(event) => event.stopPropagation()}>
         <header className="logs-modal-header">
           <div>
             <p className="eyebrow">Logs</p>

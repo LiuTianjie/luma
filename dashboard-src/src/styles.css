@@ -1050,9 +1050,13 @@ tbody tr,
   gap: 10px;
 }
 
+/* One track per metric, sized to content with a floor — pages carry 2 to 5
+   metrics, and a fixed 4-column grid left a phantom gap on 3-metric pages and
+   wrapped the 5-metric one onto a second row. */
 .page-toolbar-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(92px, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(92px, max-content);
   gap: 8px;
 }
 
@@ -1088,7 +1092,7 @@ tbody tr,
 }
 
 .page-toolbar.ops .page-toolbar-metrics {
-  grid-template-columns: repeat(3, auto);
+  grid-auto-columns: auto;
   gap: 0;
 }
 
@@ -5169,11 +5173,23 @@ dd {
     min-height: 100dvh;
   }
 
+  /* minmax(0, ...) is load-bearing, not decoration: below this breakpoint the
+     sidebar becomes a horizontal nav whose items have a min-width, so a bare
+     `1fr` resolves to max-content and stretches the whole shell past the
+     viewport. html's overflow-x then clips the excess, putting the trailing nav
+     items and topbar actions permanently off-screen with no way to scroll to
+     them. Every child in this single-column track needs min-width: 0 too, or it
+     re-imposes its content width on the track. */
   .dashboard-shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     height: auto;
     max-height: none;
     overflow: visible;
+  }
+
+  .sidebar,
+  .workspace {
+    min-width: 0;
   }
 
   .workspace,
@@ -5258,7 +5274,7 @@ dd {
   }
 
   .dashboard-shell.sidebar-collapsed {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .sidebar-collapsed .sidebar {
@@ -5321,8 +5337,30 @@ dd {
     justify-content: space-between;
   }
 
+  /* The metrics grid is a flex item here; without this it shrinks to one tile
+     wide and stacks its tiles vertically instead of filling the row. */
   .page-toolbar-metrics {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  /* Single-column toolbar from here down, so metrics get the full row: let them
+     fill it and wrap when there is no longer room for another tile. The ops
+     variant's divider treatment (border-right, no gap) only reads as one
+     continuous row, so once it can wrap it reverts to bordered tiles. */
+  .page-toolbar-metrics,
+  .page-toolbar.ops .page-toolbar-metrics {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+  }
+
+  .page-toolbar.ops .page-toolbar-metrics span,
+  .page-toolbar.ops .page-toolbar-metrics span:first-child,
+  .page-toolbar.ops .page-toolbar-metrics span:last-child {
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
   }
 
   .summary-grid,
@@ -5478,8 +5516,10 @@ dd {
     display: none;
   }
 
-  .page-toolbar-metrics {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+  .page-toolbar-metrics,
+  .page-toolbar.ops .page-toolbar-metrics {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
     gap: 6px;
   }
 

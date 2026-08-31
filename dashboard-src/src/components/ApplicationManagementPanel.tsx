@@ -9,6 +9,7 @@ import type { DeployStep } from "../deploy/types";
 import type { DashboardPayload, DashboardService, Lang, ServiceVersion } from "../types";
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
 import { ServiceLogsModal } from "./ServiceLogsModal";
+import { OverlayShell } from "../useOverlay";
 import { Badge, BadgeGroup, CodeCell, PrimaryCell, SelectControl, StatePill } from "./ui";
 
 export type ApplicationUpdateRequest = {
@@ -315,12 +316,20 @@ export function ApplicationManagementPanel({
   const replicaLabel = (running: number, desired: number) => lang === "zh" ? `${running}/${desired} 副本` : `${running}/${desired} replicas`;
   const logLabel = lang === "zh" ? "日志" : "Logs";
   const detailOverlay = selected && DEPLOY_ROOT ? createPortal(
-    <div className="application-detail-backdrop" onClick={() => setSelected(null)}>
-      <section className="application-detail-page" onClick={(event) => event.stopPropagation()}>
+    <OverlayShell className="application-detail-backdrop" onClose={() => setSelected(null)}>
+      {(overlayRef) => (
+      <section
+        className="application-detail-page"
+        ref={overlayRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="application-detail-title"
+        onClick={(event) => event.stopPropagation()}
+      >
         <header className="application-detail-header">
           <div>
             <p className="eyebrow">{lang === "zh" ? "应用详情" : "Application"}</p>
-            <h2>{selected.stack}</h2>
+            <h2 id="application-detail-title">{selected.stack}</h2>
             <span>{serviceCountLabel(selected.services.length)} · {replicaLabel(selected.running, selected.desired)}</span>
           </div>
           <div className="application-detail-actions">
@@ -463,7 +472,8 @@ export function ApplicationManagementPanel({
           </section>
         </div>
       </section>
-    </div>,
+      )}
+    </OverlayShell>,
     DEPLOY_ROOT,
   ) : null;
   const logsOverlay = logsTarget ? (

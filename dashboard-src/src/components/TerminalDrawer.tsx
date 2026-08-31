@@ -4,6 +4,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import type { DashboardNode, Lang } from "../types";
 import { t } from "../i18n";
+import { useOverlay } from "../useOverlay";
 
 type TerminalStatus = "connecting" | "connected" | "ended" | "error";
 
@@ -25,14 +26,12 @@ export function TerminalDrawer({
   const sessionRef = useRef("");
   const reportedCloseRef = useRef(false);
   const [status, setStatus] = useState<TerminalStatus>("connecting");
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  // Escape-to-close, focus trap and focus restore, shared with the other overlays.
+  // xterm calls stopPropagation on the keys it consumes, so Escape and Tab typed
+  // into the terminal reach the shell rather than this handler — which is what a
+  // terminal user expects. The xterm effect below runs after this one and takes
+  // focus back off the close button, so the caret lands in the terminal on open.
+  const overlayRef = useOverlay<HTMLElement>(onClose);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -53,6 +52,9 @@ export function TerminalDrawer({
     term.loadAddon(fit);
     term.open(container);
     fit.fit();
+    // Take focus off whatever useOverlay picked (the first control in the
+    // dialog): in a terminal the caret belongs in the terminal.
+    term.focus();
     terminalRef.current = term;
     fitRef.current = fit;
 
@@ -151,6 +153,7 @@ export function TerminalDrawer({
     <div className="terminal-modal-backdrop" onClick={onClose}>
       <section
         className={`terminal-modal terminal-modal-${status}`}
+        ref={overlayRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="terminal-modal-title"

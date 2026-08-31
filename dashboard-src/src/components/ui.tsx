@@ -54,6 +54,11 @@ export function SelectControl({
 
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "Escape") {
+      // Only swallow Escape when there is a menu to dismiss. Selects inside a
+      // modal (the logs toolbar, the application filter bar) would otherwise
+      // close the dropdown and the modal in one keystroke; with the menu shut,
+      // Escape belongs to the modal.
+      if (open) event.stopPropagation();
       setOpen(false);
       return;
     }

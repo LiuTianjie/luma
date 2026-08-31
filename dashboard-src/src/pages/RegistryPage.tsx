@@ -28,6 +28,7 @@ import {
   type RegistryPolicy,
 } from "../registryManagementApi";
 import type { Lang } from "../types";
+import { OverlayShell } from "../useOverlay";
 import { PageHeader } from "./PageHeader";
 
 const DEFAULT_POLICY: RegistryPolicy = {
@@ -407,13 +408,20 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
       </main>
 
       {preview ? (
-        <div className="registry-dialog-backdrop" role="presentation" onMouseDown={() => !busy && setPreview(null)}>
+        <OverlayShell<HTMLElement>
+          className="registry-dialog-backdrop"
+          // Dismissal stays blocked while the purge is running: the dialog is the
+          // only place that reports its progress, and Escape must not orphan it.
+          onClose={() => { if (!busy) setPreview(null); }}
+        >
+          {(overlayRef) => (
           <section
             className="registry-dialog"
+            ref={overlayRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="registry-delete-title"
-            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
           >
             <div className="registry-dialog-icon"><Trash2 size={22} /></div>
             <h2 id="registry-delete-title">{zh ? "删除并回收空间" : "Delete and reclaim space"}</h2>
@@ -469,7 +477,8 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               </button>
             </div>
           </section>
-        </div>
+          )}
+        </OverlayShell>
       ) : null}
     </>
   );
