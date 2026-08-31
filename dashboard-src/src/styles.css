@@ -21,9 +21,13 @@
   --line-soft: rgba(253, 252, 252, 0.06);
   --line-strong: #6a6767;
   --border: var(--line);
+  /* Three text tiers, each clearing 4.5:1 against every surface in the ladder —
+     including --well, the worst case, where the old --text-subtle (#737176) sat
+     at 2.94:1. The whole ramp shifts up rather than just lifting subtle, which
+     would have collapsed it onto muted and lost the tier. */
   --text: #f6f4f3;
-  --text-muted: #9c9999;
-  --text-subtle: #737176;
+  --text-muted: #c2bfbf;
+  --text-subtle: #9c9999;
   --muted: var(--text-subtle);
   --inverse: #1f1c1c;
   --accent: #007aff;
@@ -31,6 +35,18 @@
   --accent-active: #004085;
   --accent-strong: #2b8cff;
   --accent-soft: rgba(0, 122, 255, 0.14);
+  /* Accent as *text* on --accent-soft (active nav item, selected tab, language
+     toggle): --accent-strong only reaches 3.72:1 there over --well. Same split
+     as the status hues — fills keep the base, text uses this. */
+  --accent-text: #63adff;
+  /* Accent as a *filled surface carrying white text* — primary buttons above
+     all. #007aff under white is 3.92:1, so those get a darker ramp. --accent
+     itself stays for bars, borders and indicators, which only need 3:1 as
+     graphical objects and clear it on every surface. Shared by both themes:
+     white text pins the required lightness regardless of the page behind it. */
+  --accent-fill: #0068dd;
+  --accent-fill-hover: #005ec6;
+  --accent-fill-active: #0052ad;
   --green: #30d158;
   --green-soft: rgba(48, 209, 88, 0.12);
   --green-line: rgba(48, 209, 88, 0.32);
@@ -38,10 +54,16 @@
   --amber-hover: #cc7f08;
   --amber-soft: rgba(255, 159, 10, 0.12);
   --amber-line: rgba(255, 159, 10, 0.32);
+  /* #ff3b30 stays the fill/border red. As *text* on --red-soft it only reaches
+     3.56:1 over --well, so status text gets a lifted variant. Green and amber
+     already clear 4.5:1 as text in dark mode and reuse their base hue. */
   --red: #ff3b30;
   --red-hover: #d70015;
   --red-soft: rgba(255, 59, 48, 0.12);
   --red-line: rgba(255, 59, 48, 0.32);
+  --red-text: #ff6b61;
+  --green-text: var(--green);
+  --amber-text: var(--amber);
   --blue: #007aff;
   /* Overlays only. In-flow cards/panels stay flat (border, no drop shadow). */
   --shadow: 0 1px 3px rgba(21, 12, 12, 0.06);
@@ -115,9 +137,12 @@
   --line-strong: #9a9898;
   --text: #201d1d;
   --text-muted: #424245;
-  --text-subtle: #6e6e73;
+  /* Darkened from #6e6e73, which cleared 4.5:1 on --surface but not on the
+     tinted surfaces below it (4.4 on --well, 4.16 on --recess). */
+  --text-subtle: #636367;
   --inverse: #fdfcfc;
   --accent-soft: rgba(0, 122, 255, 0.1);
+  --accent-text: #0059bb;
   --green: #1e7e3e;
   --green-soft: rgba(48, 209, 88, 0.14);
   --green-line: rgba(30, 126, 62, 0.35);
@@ -127,6 +152,12 @@
   --red: #d70015;
   --red-soft: rgba(255, 59, 48, 0.1);
   --red-line: rgba(215, 0, 21, 0.3);
+  /* Status text sits on a translucent *-soft fill. Over the darker surfaces
+     (--well, --recess) the base hues land at ~4.1:1, so text darkens a step
+     while the fills and borders keep the brighter base. */
+  --green-text: #1a7038;
+  --amber-text: #8a5605;
+  --red-text: #c50013;
   --btn-bg: #fdfcfc;
   --btn-bg-hover: #f1eeee;
   --btn-bg-active: #e8e4e4;
@@ -199,7 +230,7 @@ a {
 }
 
 a:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 button,
@@ -256,7 +287,7 @@ button:disabled {
 button.primary,
 .primary {
   border-color: transparent;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   font-weight: 600;
 }
@@ -264,14 +295,14 @@ button.primary,
 button.primary:hover:where(:not(:disabled)),
 .primary:hover:where(:not(:disabled)) {
   border-color: transparent;
-  background: var(--accent-hover);
+  background: var(--accent-fill-hover);
   color: #fff;
 }
 
 button.primary:active:where(:not(:disabled)),
 .primary:active:where(:not(:disabled)) {
   border-color: transparent;
-  background: var(--accent-active);
+  background: var(--accent-fill-active);
   color: #fff;
 }
 
@@ -306,7 +337,7 @@ button.ghost.danger,
 .ghost.danger {
   border-color: var(--red-line);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 button.danger:not(.ghost):hover:not(:disabled),
@@ -354,7 +385,7 @@ textarea::placeholder {
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--accent-soft);
@@ -386,7 +417,7 @@ textarea:focus-visible {
 }
 
 .luma-select-trigger:focus-visible {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--accent-soft);
@@ -399,7 +430,7 @@ textarea:focus-visible {
 }
 
 .luma-select.open .luma-select-trigger svg {
-  color: var(--accent);
+  color: var(--accent-text);
   transform: rotate(180deg);
 }
 
@@ -459,7 +490,7 @@ textarea:focus-visible {
 
 .luma-select-option:hover:not(:disabled),
 .luma-select-option.active {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
 }
 
@@ -815,7 +846,7 @@ tbody tr,
 }
 
 .nav-item.active b {
-  color: var(--accent-strong);
+  color: var(--accent-text);
   font-weight: 700;
 }
 
@@ -843,7 +874,7 @@ tbody tr,
 .nav-item.active strong {
   border-color: rgba(0, 122, 255, 0.35);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .sidebar-status {
@@ -1019,7 +1050,7 @@ tbody tr,
 
 .lang-switch button.active {
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--accent-text);
   font-weight: 700;
 }
 
@@ -1169,7 +1200,7 @@ tbody tr,
 }
 
 .page-toolbar .ops-hero-score b {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .page-toolbar-metrics strong {
@@ -1299,11 +1330,13 @@ tbody tr,
   grid-template-columns: minmax(220px, 1.25fr) repeat(3, minmax(140px, 1fr));
 }
 
+/* Status chips: translucent fill, matching border, and the *-text hue, which is
+   tuned to clear 4.5:1 once the fill is composited over the darker surfaces. */
 .ok,
 .badge.good {
   border-color: var(--green-line);
   background: var(--green-soft);
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .bad,
@@ -1311,7 +1344,7 @@ tbody tr,
 .danger {
   border-color: var(--red-line);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .warning,
@@ -1319,7 +1352,7 @@ tbody tr,
 .warn {
   border-color: var(--amber-line);
   background: var(--amber-soft);
-  color: var(--amber);
+  color: var(--amber-text);
 }
 
 .badge {
@@ -1578,14 +1611,14 @@ tbody tr.is-selected {
   padding: 0 var(--space-md) 0 var(--space-lg);
   border-color: transparent;
   background: transparent;
-  color: var(--accent);
+  color: var(--accent-text);
   white-space: nowrap;
 }
 
 .text-link-button:hover:not(:disabled) {
   border-color: transparent;
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--accent-text);
 }
 
 .overview-app-table-wrap {
@@ -1867,7 +1900,7 @@ tbody tr.is-selected {
 .overview-action-dock button > svg:first-child {
   grid-row: 1 / -1;
   align-self: center;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .overview-action-dock span {
@@ -2054,7 +2087,7 @@ tbody tr.is-selected {
 }
 
 .resource-shortcut strong {
-  color: var(--accent-strong);
+  color: var(--accent-text);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2428,7 +2461,7 @@ tbody tr.is-selected {
 .app-log-action,
 .service-log-button {
   border-color: var(--line-strong);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .application-card-list {
@@ -2514,7 +2547,7 @@ tbody tr.is-selected {
   border: 1px solid var(--green-line);
   border-radius: var(--radius-xs);
   background: var(--green-soft);
-  color: var(--green);
+  color: var(--green-text);
   font-size: var(--text-label);
   font-weight: 500;
 }
@@ -2522,13 +2555,13 @@ tbody tr.is-selected {
 .region-pressure.busy {
   border-color: var(--amber-line);
   background: var(--amber-soft);
-  color: var(--amber);
+  color: var(--amber-text);
 }
 
 .region-pressure.hot {
   border-color: var(--red-line);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .node-tile-grid {
@@ -3049,7 +3082,7 @@ tbody tr.is-selected {
   border: 1px solid var(--red-line);
   border-radius: var(--radius-sm);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .alert-error,
@@ -3059,7 +3092,7 @@ tbody tr.is-selected {
 .credentials-warning {
   border-color: var(--red-line);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .alert-success,
@@ -3068,13 +3101,13 @@ tbody tr.is-selected {
 .credentials-notice {
   border-color: var(--green-line);
   background: var(--green-soft);
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .alert-warning {
   border-color: var(--amber-line);
   background: var(--amber-soft);
-  color: var(--amber);
+  color: var(--amber-text);
 }
 
 .alert-info {
@@ -3560,7 +3593,7 @@ tbody tr.is-selected {
 
 .logs-toggle.active {
   background: var(--amber-soft);
-  color: var(--amber);
+  color: var(--amber-text);
 }
 
 .logs-live-icon {
@@ -3890,7 +3923,11 @@ tbody tr.is-selected {
 .template-card-action {
   border-color: color-mix(in srgb, var(--template-accent, #007aff) 40%, transparent);
   background: color-mix(in srgb, var(--template-accent, #007aff) 14%, transparent);
-  color: color-mix(in srgb, var(--template-accent, #007aff) 55%, var(--text));
+  /* Keep enough --text in the mix that pale brand hues stay legible: Ghost and
+     Coder are #ffffff, which at the previous 55% accent fell to 2.77:1 on light.
+     35% is the point where every accent in TEMPLATE_LOGOS clears 4.5:1 in both
+     themes while the chip still reads as brand-tinted. */
+  color: color-mix(in srgb, var(--template-accent, #007aff) 35%, var(--text));
 }
 
 .template-feature-copy h3 {
@@ -3959,9 +3996,9 @@ tbody tr.is-selected {
   min-width: 0;
   min-height: 40px;
   margin-top: auto;
-  border-color: var(--accent);
+  border-color: var(--accent-fill);
   border-radius: var(--radius-xs);
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fdfcfc;
   font-weight: 500;
 }
@@ -4227,7 +4264,7 @@ tbody tr.is-selected {
   place-items: center;
   border-radius: var(--radius-xs);
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--accent-text);
   font-size: var(--text-label);
   font-weight: 700;
 }
@@ -4923,13 +4960,13 @@ dd {
 .terminal-modal-connected .terminal-status-pill {
   border-color: var(--green-line);
   background: var(--green-soft);
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .terminal-modal-error .terminal-status-pill {
   border-color: var(--red-line);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .terminal-surface {
@@ -4997,7 +5034,7 @@ dd {
 }
 
 .system-update-version strong {
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: var(--text-title);
 }
 
@@ -5033,7 +5070,7 @@ dd {
 .system-update-form input:focus {
   outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
   outline-offset: 1px;
-  border-color: var(--accent);
+  border-color: var(--accent-text);
 }
 
 .system-update-actions {
@@ -5072,8 +5109,8 @@ dd {
 }
 
 .system-update-reconnect {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--accent-text);
+  color: var(--accent-text);
 }
 
 .system-update-progress-grid article,
@@ -5107,7 +5144,7 @@ dd {
 .update-status.interrupted { color: var(--danger, #ef7777); }
 .update-status.attention { color: var(--warning, #d99a34); }
 .update-status.running,
-.update-status.queued { color: var(--accent); }
+.update-status.queued { color: var(--accent-text); }
 
 .system-update-image-progress {
   display: grid;
@@ -5139,7 +5176,7 @@ dd {
 .system-update-image-progress.failed,
 .system-update-image-progress.interrupted { color: var(--danger, #ef7777); }
 .system-update-image-progress.running,
-.system-update-image-progress.queued { color: var(--accent); }
+.system-update-image-progress.queued { color: var(--accent-text); }
 
 .system-update-progress-grid pre {
   max-height: 150px;
@@ -5896,11 +5933,11 @@ dd {
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 .github-import-entry:hover {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   background: var(--well);
 }
 .github-import-entry > svg {
-  color: var(--accent);
+  color: var(--accent-text);
   flex-shrink: 0;
 }
 .github-import-entry > div {
@@ -6071,19 +6108,19 @@ dd {
 .build-run-status[data-status="succeeded"] {
   border-color: var(--green-line);
   background: var(--green-soft);
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .build-run-status[data-status="failed"] {
   border-color: var(--red-line);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .build-run-status[data-status="running"] {
-  border-color: var(--accent);
+  border-color: var(--accent-text);
   background: var(--accent-soft);
-  color: var(--accent-strong);
+  color: var(--accent-text);
 }
 
 .build-run-actions {
@@ -6178,7 +6215,7 @@ dd {
   display: inline-flex;
   align-items: center;
   gap: var(--space-xs);
-  color: var(--accent-strong);
+  color: var(--accent-text);
   font-size: var(--text-meta);
   font-weight: 700;
   white-space: nowrap;
@@ -6192,7 +6229,7 @@ dd {
   border: 1px solid var(--red-line);
   border-radius: var(--radius-sm);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
   font-size: var(--text-body);
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -6269,7 +6306,7 @@ dd {
 .deploy-step-log li.step-fail { color: var(--red); }
 .deploy-step-log li.step-ok { color: var(--green); }
 .deploy-step-log li.step-progress {
-  color: var(--accent-strong);
+  color: var(--accent-text);
 }
 .deploy-step-log li span { color: var(--text-muted); }
 
@@ -6301,7 +6338,7 @@ dd {
 .credentials-notice {
   border-color: var(--green-line);
   background: var(--green-soft);
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .credential-form {
@@ -6358,7 +6395,7 @@ dd {
 
 .registry-status-strip > svg {
   flex: 0 0 auto;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .registry-status-strip > span {
@@ -6456,7 +6493,7 @@ dd {
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: inherit;
   font-weight: 600;
   text-decoration: underline;
@@ -6466,7 +6503,7 @@ dd {
 .deploy-inline-link:hover:not(:disabled) {
   border: 0;
   background: transparent;
-  color: var(--accent-strong);
+  color: var(--accent-text);
 }
 
 .alert-list {
@@ -6536,7 +6573,7 @@ dd {
 .registry-alert.critical {
   border-color: var(--red-line);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .registry-alert.warning {
@@ -6548,7 +6585,7 @@ dd {
 .registry-alert.success {
   border-color: var(--green-line);
   background: var(--green-soft);
-  color: var(--green);
+  color: var(--green-text);
 }
 
 .registry-alert > span {
@@ -6839,7 +6876,7 @@ dd {
 .registry-table input[type="checkbox"] {
   width: 15px;
   min-height: 15px;
-  accent-color: var(--accent);
+  accent-color: var(--accent-text);
 }
 
 .registry-repository,
@@ -7003,7 +7040,7 @@ dd {
   border-radius: 50%;
   place-items: center;
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
 }
 
 .registry-dialog h2,
@@ -7048,7 +7085,7 @@ dd {
   padding: 9px;
   border: 1px solid var(--red-line);
   background: var(--red-soft);
-  color: var(--red);
+  color: var(--red-text);
   font-size: var(--text-label);
 }
 
