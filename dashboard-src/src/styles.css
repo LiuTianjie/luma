@@ -3065,6 +3065,7 @@ tbody tr.is-selected {
 }
 
 .trend-chart-empty,
+
 .sparkline-empty {
   display: grid;
   place-items: center;
@@ -5114,6 +5115,11 @@ dd {
     top: 76px;
   }
 
+  /* minmax(0, ...) again, for the same reason as .dashboard-shell above: these
+     panels contain intrinsically-wide content (a sparkline with width="104", a
+     cytoscape canvas, wide tables), and a bare `1fr` resolves to max-content and
+     leaks that width out to the viewport. .observability-grid was pushing the
+     page to 1156px at a 375px viewport. */
   .page-toolbar,
   .overview-priority-grid,
   .overview-workbench,
@@ -5123,7 +5129,7 @@ dd {
   .node-topology-split,
   .deploy-workspace-grid,
   .credentials-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .overview-node-grid {
