@@ -26,7 +26,7 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping
+from typing import Any, Callable, Dict, Iterable, Mapping
 
 from . import __version__
 from .builder_build_executor import build_plan, builder_build_available
@@ -2057,6 +2057,10 @@ def _terminal_open_argv(message: Dict[str, Any]) -> list[str]:
 
 
 def _resolve_nomad_container_id(docker: str, alloc_id: str, task: str) -> str:
+    # Newer Nomad Docker drivers may expose a task_name label, so try the most
+    # specific and cheapest lookup first. Luma's currently deployed Nomad
+    # clients only attach alloc_id, though; their task identity lives in the
+    # driver-generated container name: <task>-<allocation-id>.
     result = subprocess.run(
         [
             docker,
@@ -2076,16 +2080,66 @@ def _resolve_nomad_container_id(docker: str, alloc_id: str, task: str) -> str:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "docker ps failed").strip()
         raise RuntimeError(f"could not look up application container: {detail}")
-    ids = []
-    for raw in result.stdout.splitlines():
-        container_id = raw.strip()
-        if _TERMINAL_CONTAINER_ID_RE.fullmatch(container_id):
-            ids.append(container_id)
+    labeled_ids = _terminal_container_ids(result.stdout.splitlines())
+    if labeled_ids:
+        return _single_terminal_container_id(labeled_ids, alloc_id, task)
+
+    fallback = subprocess.run(
+        [
+            docker,
+            "ps",
+            "--filter",
+            f"label=com.hashicorp.nomad.alloc_id={alloc_id}",
+            "--format",
+            '{{.ID}}|{{.Names}}|{{.Label "com.hashicorp.nomad.task_name"}}',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=8,
+        check=False,
+    )
+    if fallback.returncode != 0:
+        detail = (fallback.stderr or fallback.stdout or "docker ps failed").strip()
+        raise RuntimeError(f"could not look up application container: {detail}")
+
+    expected_name = f"{task}-{alloc_id}"
+    named_ids: list[str] = []
+    unlabelled_application_ids: list[str] = []
+    for raw in fallback.stdout.splitlines():
+        container_id, separator, remainder = raw.strip().partition("|")
+        if not separator or not _TERMINAL_CONTAINER_ID_RE.fullmatch(container_id):
+            continue
+        container_name, separator, task_label = remainder.partition("|")
+        if not separator:
+            continue
+        if task_label.strip() == task or container_name.strip() == expected_name:
+            named_ids.append(container_id)
+            continue
+        if container_name.strip() != f"nomad_init_{alloc_id}":
+            unlabelled_application_ids.append(container_id)
+
+    if named_ids:
+        return _single_terminal_container_id(named_ids, alloc_id, task)
+    # If the driver changed its generated name but the allocation contains only
+    # one non-init container, that container is still unambiguous. Multi-task
+    # allocations fail closed rather than opening the wrong sidecar.
+    if len(set(unlabelled_application_ids)) == 1:
+        return unlabelled_application_ids[0]
+    if len(set(unlabelled_application_ids)) > 1:
+        raise RuntimeError(f"multiple application containers matched alloc {alloc_id} task {task}")
+    raise RuntimeError(f"application container not found for alloc {alloc_id} task {task}")
+
+
+def _terminal_container_ids(lines: Iterable[str]) -> list[str]:
+    return [value for raw in lines if _TERMINAL_CONTAINER_ID_RE.fullmatch(value := raw.strip())]
+
+
+def _single_terminal_container_id(ids: Iterable[str], alloc_id: str, task: str) -> str:
     unique = list(dict.fromkeys(ids))
-    if not unique:
-        raise RuntimeError(f"application container not found for alloc {alloc_id} task {task}")
     if len(unique) > 1:
         raise RuntimeError(f"multiple application containers matched alloc {alloc_id} task {task}")
+    if not unique:
+        raise RuntimeError(f"application container not found for alloc {alloc_id} task {task}")
     return unique[0]
 
 

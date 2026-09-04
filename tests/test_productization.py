@@ -10025,6 +10025,44 @@ class ControlApiTests(unittest.TestCase):
         self.assertIn("label=com.hashicorp.nomad.alloc_id=alloc-running", args)
         self.assertIn("label=com.hashicorp.nomad.task_name=api", args)
 
+    def test_resolve_nomad_container_id_falls_back_to_driver_container_name_without_task_label(self):
+        from luma.agent import _resolve_nomad_container_id
+
+        strict = Mock(returncode=0, stdout="", stderr="")
+        fallback = Mock(
+            returncode=0,
+            stdout=(
+                "0123456789abcdef|api-alloc-running|\n"
+                "fedcba9876543210|nomad_init_alloc-running|\n"
+            ),
+            stderr="",
+        )
+        with patch("luma.agent.subprocess.run", side_effect=[strict, fallback]) as run:
+            container_id = _resolve_nomad_container_id("/usr/bin/docker", "alloc-running", "api")
+
+        self.assertEqual(container_id, "0123456789abcdef")
+        fallback_args = run.call_args_list[1].args[0]
+        self.assertIn("label=com.hashicorp.nomad.alloc_id=alloc-running", fallback_args)
+        self.assertNotIn("label=com.hashicorp.nomad.task_name=api", fallback_args)
+        self.assertIn("{{.Names}}", fallback_args[-1])
+
+    def test_resolve_nomad_container_id_fails_closed_for_ambiguous_unlabelled_allocation(self):
+        from luma.agent import _resolve_nomad_container_id
+
+        strict = Mock(returncode=0, stdout="", stderr="")
+        fallback = Mock(
+            returncode=0,
+            stdout=(
+                "0123456789abcdef|web-alloc-running|\n"
+                "fedcba9876543210|worker-alloc-running|\n"
+                "aaaaaaaaaaaaaaaa|nomad_init_alloc-running|\n"
+            ),
+            stderr="",
+        )
+        with patch("luma.agent.subprocess.run", side_effect=[strict, fallback]):
+            with self.assertRaisesRegex(RuntimeError, "multiple application containers"):
+                _resolve_nomad_container_id("/usr/bin/docker", "alloc-running", "api")
+
     def test_terminal_broker_closes_browser_and_only_cleans_old_agent_sessions(self):
         import asyncio
         from luma.control.server import TerminalBroker, _TerminalAgentConnection, _TerminalSession
