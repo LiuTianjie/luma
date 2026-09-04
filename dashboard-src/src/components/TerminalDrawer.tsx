@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -7,6 +8,11 @@ import { t } from "../i18n";
 import { useOverlay } from "../useOverlay";
 
 type TerminalStatus = "connecting" | "connected" | "ended" | "error";
+
+// The application detail dialog is also portalled to <body>. Keep the terminal
+// at the same root so the dashboard shell's isolated stacking context cannot
+// trap it underneath that dialog; the overlay z-index then orders them correctly.
+const TERMINAL_ROOT = typeof document === "undefined" ? null : document.body;
 
 export type TerminalSessionTarget = {
   kind: "node" | "container";
@@ -174,7 +180,9 @@ export function TerminalDrawer({
     error: lang === "zh" ? "错误" : "Error",
   }[status];
 
-  return (
+  if (!TERMINAL_ROOT) return null;
+
+  return createPortal(
     <div className="terminal-modal-backdrop" onClick={onClose}>
       <section
         className={`terminal-modal terminal-modal-${status}`}
@@ -197,6 +205,7 @@ export function TerminalDrawer({
         </header>
         <div className="terminal-surface" ref={containerRef} />
       </section>
-    </div>
+    </div>,
+    TERMINAL_ROOT,
   );
 }
