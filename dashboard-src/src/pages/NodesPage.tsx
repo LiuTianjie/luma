@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { NodeFleetMap } from "../components/NodeFleetMap";
+import { RegionPanel } from "../components/RegionPanel";
 import { NodeTopology } from "../components/NodeTopology";
 import { SystemUpdatePanel } from "../components/SystemUpdatePanel";
 import { TrafficPaths } from "../components/TrafficPaths";
@@ -84,6 +85,8 @@ export function NodesPage({
         }}
       />
 
+      <RegionPanel lang={lang} token={token} regions={vm.regions} nodes={vm.nodes} onRefresh={onRefresh} />
+
       <article className="panel fleet-command-panel">
         <div className="panel-heading">
           <div>
@@ -98,8 +101,8 @@ export function NodesPage({
         <pre className="command-snippet"><code>{command}</code></pre>
         <p>
           {zh
-            ? "控制域名已按当前访问地址填好。把 <node-join-token> 换成 luma node join token，<node-name> 换成节点名后在目标机器执行。"
-            : "The control domain is filled from the current address. Replace <node-join-token> with a node join token and <node-name> with the node name, then run it on the target host."}
+            ? "控制域名已按当前访问地址填好。把 <node-join-token> 换成 luma node join token，--region 换成上面创建的 Region 名，<node-name> 换成节点名后在目标机器执行。"
+            : "The control domain is filled from the current address. Replace <node-join-token> with a node join token, --region with a created region name, and <node-name> with the node name, then run it on the target host."}
         </p>
       </article>
 

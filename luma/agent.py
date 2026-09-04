@@ -2458,8 +2458,9 @@ def join_nomad_node(
     safe_server_addr = str(server_addr or "").strip()
     if not safe_node_name:
         raise LumaError("nodeName is required")
-    if safe_region not in {"cn", "global", "home"}:
-        raise LumaError("region must be one of cn, global, home")
+    from .regions import parse_region_name
+
+    safe_region = parse_region_name(safe_region)
     if not safe_server_addr:
         raise LumaError("serverAddr is required")
     node = NodeConfig(
@@ -3268,7 +3269,7 @@ def _select_luma_compose_manifest(repo: Path, value: str) -> Path:
 
     from .compose import load_compose_deployment
     from .repo_paths import normalize_repo_relative_path
-    from .service import VALID_REGIONS
+    from .regions import VALID_REGIONS, parse_region_name
 
     selected = normalize_repo_relative_path(value, label="composeSidecar")
     repo_root = repo.resolve()
@@ -3310,12 +3311,25 @@ def _select_luma_compose_manifest(repo: Path, value: str) -> Path:
         if isinstance(volumes, dict)
         else set()
     )
+    sidecar_regions = set(VALID_REGIONS)
+    try:
+        sidecar_regions.add(parse_region_name(raw.get("region", "cn")))
+    except LumaError:
+        pass
+    services = raw.get("services") if isinstance(raw.get("services"), dict) else {}
+    for spec in services.values():
+        if not isinstance(spec, dict) or not spec.get("region"):
+            continue
+        try:
+            sidecar_regions.add(parse_region_name(spec.get("region")))
+        except LumaError:
+            pass
     validation_storage = {
         name: {
             "provider": "nfs",
             "mode": "external",
             "endpoint": "nfs.invalid:/luma-sidecar-validation",
-            "regions": sorted(VALID_REGIONS),
+            "regions": sorted(sidecar_regions),
         }
         for name in storage_names
     }

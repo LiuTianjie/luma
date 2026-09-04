@@ -1,7 +1,27 @@
 import type { DashboardNode, Lang } from "../types";
 import type { Exposure, Region } from "./types";
 
-export const REGIONS: Region[] = ["cn", "global", "home"];
+export const BUILTIN_REGIONS: Region[] = ["cn", "global", "home"];
+export const REGIONS = BUILTIN_REGIONS;
+
+export function regionChoices(registered: Array<{ name?: string } | string> = [], nodes: DashboardNode[] = []): Region[] {
+  const names = new Set<string>(BUILTIN_REGIONS);
+  for (const item of registered) {
+    const name = typeof item === "string" ? item : item.name;
+    if (name) names.add(name);
+  }
+  for (const node of nodes) {
+    if (node.region) names.add(node.region);
+  }
+  return [...names].sort((left, right) => {
+    const leftBuiltin = BUILTIN_REGIONS.indexOf(left);
+    const rightBuiltin = BUILTIN_REGIONS.indexOf(right);
+    if (leftBuiltin >= 0 && rightBuiltin >= 0) return leftBuiltin - rightBuiltin;
+    if (leftBuiltin >= 0) return -1;
+    if (rightBuiltin >= 0) return 1;
+    return left.localeCompare(right);
+  });
+}
 export const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"];
 
 const EXPOSURE_REGION: Partial<Record<Exposure, Region>> = {

@@ -185,6 +185,14 @@ export type TrafficDestination = {
   state?: string;
 };
 
+export type DashboardRegion = {
+  name: string;
+  builtin?: boolean;
+  egress?: "proxy" | "direct" | string;
+  exposures?: string[];
+  createdAt?: number;
+};
+
 export type DashboardPayload = {
   cluster?: {
     id?: string;
@@ -192,6 +200,7 @@ export type DashboardPayload = {
   };
   readiness?: Readiness;
   nodes?: DashboardNode[];
+  regions?: DashboardRegion[];
   services?: DashboardService[];
   trafficPaths?: TrafficPath[];
   storage?: {

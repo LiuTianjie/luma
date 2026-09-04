@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional, Sequence
 from .config import LumaConfig
 from .errors import LumaError
 from .io import dump_yaml, load_yaml
-from .service import VALID_EXPOSURES, VALID_REGIONS, slugify, tcp_entrypoint_name
+from .regions import parse_region_name, validate_region_exposure
+from .service import VALID_EXPOSURES, slugify, tcp_entrypoint_name
 
 
 VALID_STORAGE_PROVIDERS = {"nfs"}
@@ -97,9 +98,7 @@ def load_compose_deployment(
     name = sidecar.get("name")
     if not isinstance(name, str) or not name.strip():
         raise LumaError("compose deployment requires string field: name")
-    region = sidecar.get("region", "cn")
-    if region not in VALID_REGIONS:
-        raise LumaError(f"compose deployment region must be one of {sorted(VALID_REGIONS)}")
+    region = parse_region_name(sidecar.get("region", "cn"))
     compose_value = sidecar.get("compose", "docker-compose.yml")
     if not isinstance(compose_value, str) or not compose_value.strip():
         raise LumaError("compose deployment requires string field: compose")
@@ -320,9 +319,7 @@ def validate_compose_deployment_data(
         if len(nodes) > 1:
             raise LumaError(f"compose service {service_name} has conflicting local volume nodes: {sorted(nodes)}")
     for service_name, override in services.items():
-        region = override.region or default_region
-        if region not in VALID_REGIONS:
-            raise LumaError(f"compose service {service_name} region must be one of {sorted(VALID_REGIONS)}")
+        region = parse_region_name(override.region or default_region)
         if override.exposure not in VALID_EXPOSURES:
             raise LumaError(f"compose service {service_name} exposure must be one of {sorted(VALID_EXPOSURES)}")
         if override.exposure == "cloudflare-tunnel":
@@ -339,12 +336,10 @@ def validate_compose_deployment_data(
                 raise LumaError(f"compose service {service_name} public exposure requires domain")
             if not isinstance(override.port, int):
                 raise LumaError(f"compose service {service_name} public exposure requires integer port")
-        if override.exposure == "cn-edge" and region != "cn":
-            raise LumaError(f"compose service {service_name} exposure=cn-edge requires region=cn")
-        if override.exposure == "external-edge" and region != "global":
-            raise LumaError(f"compose service {service_name} exposure=external-edge requires region=global")
-        if override.exposure == "tailscale-relay" and region != "home":
-            raise LumaError(f"compose service {service_name} exposure=tailscale-relay requires region=home")
+        try:
+            validate_region_exposure(region, override.exposure)
+        except LumaError as exc:
+            raise LumaError(f"compose service {service_name} {exc}") from exc
     tcp_ports: dict[int, str] = {}
     for service_name, override in services.items():
         if override.exposure != "tcp-relay":
@@ -383,9 +378,13 @@ def _load_storage_classes(raw: Any) -> Dict[str, StorageClassSpec]:
         regions = _string_list(value.get("regions") or [])
         if mode == "external" and not regions:
             raise LumaError(f"storageClasses.{name}.regions requires at least one region for external nfs")
+        parsed_regions = []
         for region in regions:
-            if region not in VALID_REGIONS:
-                raise LumaError(f"storageClasses.{name}.regions contains invalid region: {region}")
+            try:
+                parsed_regions.append(parse_region_name(region))
+            except LumaError as exc:
+                raise LumaError(f"storageClasses.{name}.regions contains invalid region: {exc}") from exc
+        regions = parsed_regions
         result[str(name)] = StorageClassSpec(
             name=str(name),
             provider=provider,
@@ -467,7 +466,7 @@ def _load_compose_services(raw: Any) -> Dict[str, ComposeServiceSpec]:
             raise LumaError(f"services.{name}.tcp must be a mapping")
         result[str(name)] = ComposeServiceSpec(
             name=str(name),
-            region=str(value["region"]) if value.get("region") else None,
+            region=parse_region_name(value["region"]) if value.get("region") else None,
             node=str(value["node"]).strip() if value.get("node") else None,
             exposure=str(value.get("exposure") or "none"),
             domain=str(value["domain"]).strip() if value.get("domain") else None,

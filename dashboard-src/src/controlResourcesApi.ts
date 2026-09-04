@@ -141,3 +141,11 @@ export async function setGitProvider({
 export async function removeGitProvider({ token, id }: { token: string; id: string }) {
   return apiPost("/v1/git-providers/remove", token, { id });
 }
+
+export async function createRegion({ token, name, egress }: { token: string; name: string; egress: "proxy" | "direct" }) {
+  return apiPost("/v1/regions", token, { name, egress });
+}
+
+export async function removeRegion({ token, name }: { token: string; name: string }) {
+  return apiPost("/v1/regions/remove", token, { name });
+}

@@ -270,6 +270,15 @@ class ControlClient:
         body: Dict[str, Any] = {"stack": stack, "service": service, "mode": mode}
         return self.request("POST", "/v1/applications/restart", body, timeout=timeout)
 
+    def list_regions(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/regions")
+
+    def create_region(self, *, name: str, egress: str = "proxy") -> Dict[str, Any]:
+        return self.request("POST", "/v1/regions", {"name": name, "egress": egress})
+
+    def remove_region(self, *, name: str) -> Dict[str, Any]:
+        return self.request("POST", "/v1/regions/remove", {"name": name})
+
     def register_node(self, *, node_name: str, region: str) -> Dict[str, Any]:
         return self.request(
             "POST",

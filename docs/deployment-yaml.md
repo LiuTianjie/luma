@@ -36,7 +36,7 @@ luma deploy status.yaml
 | `name` | 是 | string | 服务名。Luma 会转成 slug，用作 Nomad job/group/task 名称。 |
 | `image` | 是* | string | 容器镜像，例如 `ghcr.io/acme/api:1.0.0`。`latest` 或未带 tag 会在部署时解析成 `name@sha256:...` 再部署。*提供 `build` 块时可省略，镜像由构建产出。 |
 | `build` | 否 | map | 从源码构建镜像（`luma import`）。子字段：`context`（默认 `.`）、`dockerfile`（默认 `Dockerfile`）、`platform`（默认 `linux/amd64`）。提供 `build` 时 `image` 可省略。见下方「从 Git 仓库构建部署」。 |
-| `region` | 是 | `cn` / `global` / `home` | 服务运行区域。 |
+| `region` | 是 | `cn` / `global` / `home` 或已创建的自定义 Region | 服务运行区域。自定义 Region 需先 `luma region create`。 |
 | `engine` | 否 | `nomad` | 该服务的编排后端。当前集群默认是 Nomad，通常不需要填。 |
 | `node` | 否 | string | 指定 Luma 节点名，也就是 `luma node join --name` 的值。用于把服务钉到某台机器；控制面会渲染成 Nomad 的 `${node.unique.name}`（或 `meta.luma_node_name`）约束，仍会同时加 region 约束。 |
 | `exposure` | 否 | 见下方 | 访问方式。新文件必须显式表达公开、隧道或内部访问语义。 |

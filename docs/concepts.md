@@ -17,11 +17,15 @@ nodes:
 
 ## Region
 
-Where a service should run:
+Where a service should run. A node belongs to exactly one region. `replicas` then spread across ready nodes in that region; you only pin `node` when a service must stay on one machine.
 
-- `cn`: domestic public services and core workloads.
-- `global`: overseas or external-network workers/services.
-- `home`: home or private nodes.
+Built-in regions also carry ingress topology and default egress:
+
+- `cn`: domestic public services and core workloads. Join/image-pull uses the manager egress proxy. Allows `cn-edge`.
+- `global`: overseas or external-network workers/services. Direct egress. Allows `external-edge`.
+- `home`: home or private nodes. Join/image-pull uses the manager egress proxy. Allows `tailscale-relay`.
+
+Create additional scheduling pools with `luma region create <name>` (or the Nodes page). Custom regions default to `exposure: none` and an explicit `egress: proxy|direct`. Join nodes with `--region <name>`, then deploy with the same `region` and a replica count.
 
 ## Exposure
 

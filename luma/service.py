@@ -7,9 +7,8 @@ from typing import Any, Dict, List, Optional
 
 from .errors import LumaError
 from .io import load_yaml
+from .regions import parse_region_name, validate_region_exposure
 
-
-VALID_REGIONS = {"cn", "global", "home"}
 VALID_EXPOSURES = {"none", "cn-edge", "tailscale-relay", "cloudflare-tunnel", "external-edge", "tcp-relay"}
 VALID_ACCESS_MODES = {"ReadWriteOnce", "ReadWriteMany"}
 VALID_ENGINES = {"nomad"}
@@ -128,7 +127,9 @@ class ServiceSpec:
             return "global-internal-service"
         if self.region == "home":
             return "home-internal-service"
-        return "internal-cn-service"
+        if self.region == "cn":
+            return "internal-cn-service"
+        return "internal-region-service"
 
 
 def tcp_relay_publish_port(service: ServiceSpec) -> int:
@@ -160,8 +161,7 @@ def load_service(path: Path) -> ServiceSpec:
         raise LumaError("service manifest requires string field: image (or a build block)")
     if not has_image:
         image = ""
-    if region not in VALID_REGIONS:
-        raise LumaError(f"service region must be one of {sorted(VALID_REGIONS)}")
+    region = parse_region_name(region)
     node = raw.get("node")
     if node is not None and (not isinstance(node, str) or not node.strip()):
         raise LumaError("node must be a non-empty string when provided")
@@ -189,12 +189,7 @@ def load_service(path: Path) -> ServiceSpec:
             raise LumaError("public service requires string field: domain")
         if not isinstance(port, int):
             raise LumaError("public service requires integer field: port")
-    if exposure == "cn-edge" and region != "cn":
-        raise LumaError("exposure=cn-edge requires region=cn")
-    if exposure == "external-edge" and region != "global":
-        raise LumaError("exposure=external-edge requires region=global")
-    if exposure == "tailscale-relay" and region != "home":
-        raise LumaError("exposure=tailscale-relay requires region=home")
+    validate_region_exposure(region, exposure)
 
     relay = raw.get("relay") or {}
     if not isinstance(relay, dict):

@@ -1,5 +1,5 @@
 import { DEPLOY_TEMPLATES } from "./deploy/templates";
-import type { DashboardIssue, DashboardNode, DashboardPayload, DashboardService, TrafficPath } from "./types";
+import type { DashboardIssue, DashboardNode, DashboardPayload, DashboardRegion, DashboardService, TrafficPath } from "./types";
 import { groupApplications, isServiceHealthy, type Application } from "./components/applicationModel";
 
 export type PageId =
@@ -26,6 +26,7 @@ export type IssueCounts = {
 export type DashboardViewModel = {
   clusterId: string;
   nodes: DashboardNode[];
+  regions: DashboardRegion[];
   services: DashboardService[];
   applications: Application[];
   trafficPaths: TrafficPath[];
@@ -82,6 +83,7 @@ export function createDashboardViewModel(payload: DashboardPayload | null): Dash
   return {
     clusterId: payload?.cluster?.id || "-",
     nodes,
+    regions: payload?.regions || [],
     services,
     applications: groupApplications(services),
     trafficPaths,

@@ -8,7 +8,7 @@ import { DeployTemplates } from "./DeployTemplates";
 import { GithubImportEntryCard, GithubImportPanel } from "./GithubImportPanel";
 import { DEPLOY_TEMPLATES } from "./templates";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, DeployTemplate, ServiceManifestDraft } from "./types";
-import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion } from "./options";
+import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion, regionChoices } from "./options";
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
 import { SingleServiceDeployForm } from "./SingleServiceDeployForm";
 import { YamlPreviewEditor } from "./YamlPreviewEditor";
@@ -297,6 +297,7 @@ export function DeployWorkspace({
   const { confirm, element: confirmDialog } = useConfirm(lang);
   const nodes = payload?.nodes || [];
   const storageClasses = payload?.storage?.storageClasses || [];
+  const regions = regionChoices(payload?.regions || [], nodes);
 
   useEffect(() => {
     onTemplateLandingChange?.(templateLanding);
@@ -457,6 +458,7 @@ export function DeployWorkspace({
           token={token}
           nodes={nodes}
           build={payload?.build}
+          regions={regions}
           onBack={showTemplates ? () => setImportView(false) : undefined}
           onRefresh={onRefresh}
         />
@@ -529,8 +531,8 @@ export function DeployWorkspace({
             <main className="deploy-config-main">
               {editorMode === "form" ? (
                 mode === "service"
-                  ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateServiceDraft} />
-                  : <ComposeDeployForm lang={lang} draft={composeDraft} nodes={nodes} storageClasses={storageClasses} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />
+                  ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} onChange={updateServiceDraft} />
+                  : <ComposeDeployForm lang={lang} draft={composeDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} onChange={updateComposeDraft} onEditYaml={() => setEditorMode("yaml")} />
               ) : (
                 <YamlPreviewEditor
                   mode={mode}

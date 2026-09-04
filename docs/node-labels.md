@@ -4,7 +4,7 @@ Nomad 用 client 的 `meta` 控制服务调度。所有生产 job 都应该显�
 
 当前 Luma 的正常路径是通过 `luma node join --name <luma-node-name> --region <region>` 自动写入 client `meta`。Luma 会写入：
 
-- `region=<cn|global|home>`：服务 `region` 调度使用。
+- `region=<name>`：服务 `region` 调度使用。内置值为 `cn` / `global` / `home`，也可以是 `luma region create` 建出来的自定义 Region。
 - `luma_node_name=<luma-node-name>`：人类可读的 Luma 节点名，固定节点调度使用。
 - `ingress`/`egress`：入口和出站网关角色标记。
 
@@ -39,6 +39,10 @@ client {
 ### `region=home`
 
 家庭服务器、NAS 或家里电脑。默认只运行备份、内部工具、低频任务和测试服务，不参与核心公网服务调度。
+
+### 自定义 Region
+
+`luma region create batch-a --egress proxy` 之后，新节点用 `luma node join ... --region batch-a` 加入。服务 YAML 写 `region: batch-a` 和 `replicas: N` 即可，不必指定 `node`。自定义 Region 默认只允许 `exposure: none`。
 
 ### `ingress=true`
 

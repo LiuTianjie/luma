@@ -50,7 +50,7 @@ Luma's user-facing model is five words:
 | Concept | Meaning |
 | --- | --- |
 | `node` | A machine joined to the cluster. The manager runs the Nomad server; other machines run as Nomad clients (worker or home). |
-| `region` | Scheduling boundary. A service with `region: cn` only runs on nodes whose Nomad client `meta.region=cn`. |
+| `region` | Scheduling boundary. Built-in `cn` / `global` / `home`, or a custom pool from `luma region create`. A service with `region: batch-a` only runs on nodes in that region. |
 | `exposure` | How the service is reached, such as `cn-edge`, `external-edge`, `tailscale-relay`, `tcp-relay`, `cloudflare-tunnel`, or `none`. |
 | `egress` | Outbound proxy capability for image pulls and runtime HTTP/HTTPS proxying for `proxy: true` services. |
 | `service` | One deployment unit described by a Luma YAML manifest. |
@@ -65,6 +65,7 @@ Set manifest `node` only when a service must be pinned to one Luma node name; Lu
 | `region: home` + `exposure: tailscale-relay` | `region=home` nodes | Public Traefik -> Tailscale -> home service |
 | `region: home` + `exposure: tcp-relay` | `region=home` nodes | Cloudflare DNS -> edge Traefik TCP entrypoint -> task host port |
 | `region: cn` + `exposure: none` | `region=cn` nodes | No public ingress; useful for workers/jobs |
+| `region: batch-a` + `exposure: none` | custom region nodes | No public ingress; replica count schedules inside that pool |
 
 A public `cn-edge` domain does not bypass the server and jump directly to a container. DNS points to the configured CN edge target, traffic enters Traefik on that node, and Traefik routes to the Nomad allocation it discovered through the Nomad provider. If you add several CN nodes, service allocations may run on them, but public traffic still enters through the selected edge Traefik.
 
@@ -73,7 +74,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.292"
+python -m pip install "luma-infra==0.1.293"
 ```
 
 Install without cloning the repository:
@@ -88,7 +89,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.292 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.293 sh
 ```
 
 Develop from source:
@@ -263,6 +264,7 @@ The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For p
 | manager | Update CLI and control plane | `luma update` |
 | logged-in client | Update ready non-manager node agents | `luma update fleet` |
 | browser on trusted device | Update Control and nodes, then verify every public route | `https://luma.example.com/dashboard/fleet` |
+| logged-in client | Create a custom region | `luma region create batch-a --egress proxy` |
 | worker/home node | Join the cluster | `luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1` |
 | client laptop | Login to control plane | `luma login https://luma.example.com --token <management-token>` |
 | client laptop | Deploy a service | `luma deploy app.yaml` |
@@ -336,7 +338,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.292"
+python -m pip install "luma-infra==0.1.293"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"

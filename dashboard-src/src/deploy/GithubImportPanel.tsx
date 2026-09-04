@@ -12,11 +12,9 @@ import { useRouter } from "../router";
 import { ROUTE_BY_PAGE } from "../routes";
 import type { DashboardBuildNode, DashboardNode, Lang } from "../types";
 import { buildImportStream, registryServeStream } from "./deployApi";
-import { isReadyNode } from "./options";
+import { isReadyNode, regionChoices } from "./options";
 import { StepLog } from "./StepLog";
 import type { DeployStep, Exposure, Region } from "./types";
-
-const REGIONS: Region[] = ["cn", "global", "home"];
 const EXPOSURES: Exposure[] = ["none", "cn-edge", "external-edge", "tailscale-relay", "cloudflare-tunnel", "tcp-relay"];
 const PROVIDER_TYPES = ["github", "gitea"] as const;
 
@@ -76,6 +74,7 @@ export function GithubImportPanel({
   token,
   nodes,
   build,
+  regions,
   onBack,
   onRefresh,
   onImported,
@@ -83,6 +82,7 @@ export function GithubImportPanel({
   lang: Lang;
   token: string;
   nodes: DashboardNode[];
+  regions?: Region[];
   build?: {
     defaultNode?: string;
     registryHost?: string;
@@ -94,6 +94,7 @@ export function GithubImportPanel({
   onImported?: () => void;
 }) {
   const zh = lang === "zh";
+  const regionOptions = regions && regions.length ? regions : regionChoices([], nodes);
   const router = useRouter();
   const candidates = useMemo(() => buildNodes(nodes, build?.nodes || []), [build?.nodes, nodes]);
   const preferredBuildNode = useMemo(() => {
@@ -466,7 +467,7 @@ export function GithubImportPanel({
               <span>{zh ? "区域" : "Region"}</span>
               <select value={region} onChange={(event) => setRegion(event.target.value as Region | "")}>
                 <option value="">{zh ? "不覆盖（跟随仓库）" : "No override (use repo)"}</option>
-                {REGIONS.map((value) => <option key={value} value={value}>{value}</option>)}
+                {regionOptions.map((value) => <option key={value} value={value}>{value}</option>)}
               </select>
             </label>
             <label>

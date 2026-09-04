@@ -50,7 +50,7 @@ Luma 的用户模型只有 5 个词：
 | 概念 | 含义 |
 | --- | --- |
 | `node` | 加入集群的机器。manager 跑 Nomad server，其余机器作为 Nomad client（worker 或 home）。 |
-| `region` | 调度边界。服务写 `region: cn` 就只会放到 Nomad client `meta.region=cn` 的节点。 |
+| `region` | 调度边界。内置 `cn` / `global` / `home`，也可以 `luma region create` 建自定义池。服务写 `region: batch-a` 就只会放到该 Region 的节点。 |
 | `exposure` | 服务如何被访问，例如 `cn-edge`、`external-edge`、`tailscale-relay`、`cloudflare-tunnel`、`none`。 |
 | `egress` | 出站代理能力。影响镜像拉取和 `proxy: true` 服务的运行时 HTTP/HTTPS 代理。 |
 | `service` | 一份 Luma YAML manifest 描述的部署单元。 |
@@ -66,6 +66,7 @@ Luma 的用户模型只有 5 个词：
 | `region: global` + `exposure: external-edge` | `region=global` 节点 | Cloudflare DNS -> global edge Traefik -> Nomad allocation |
 | `region: home` + `exposure: tailscale-relay` | `region=home` 节点 | 公网 Traefik -> Tailscale -> home service |
 | `region: cn` + `exposure: none` | `region=cn` 节点 | 无公网入口，适合 worker/job |
+| `region: batch-a` + `exposure: none` | 自定义 Region 节点 | 无公网入口；副本数在该池内调度 |
 
 国内公开域名不会“绕过服务器直接到容器”。`cn-edge` 的 DNS 会指向你配置的国内 edge target，流量先进入该节点上的 Traefik，再由 Traefik 通过 Nomad provider 发现的 allocation 转发。即使你有多台国内节点，公开入口仍然是当前选定的 edge Traefik；服务 allocation 可以分布到其他 `cn` 节点。
 
@@ -83,7 +84,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.292 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.293 sh
 ```
 
 从源码开发：
@@ -245,6 +246,7 @@ luma tailscale connect
 | manager | 更新 CLI 和控制面 | `luma update` |
 | 已登录 client | 更新 ready 的非 manager 节点 Luma | `luma update fleet` |
 | 可信设备上的浏览器 | 升级 Control、节点并检查全部公网路由 | `https://luma.example.com/dashboard/fleet` |
+| 已登录 client | 创建自定义 Region | `luma region create batch-a --egress proxy` |
 | worker/home 节点 | 加入集群 | `luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1` |
 | client laptop | 登录控制面 | `luma login https://luma.example.com --token <management-token>` |
 | client laptop | 部署服务 | `luma deploy app.yaml` |

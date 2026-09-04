@@ -72,7 +72,7 @@ luma build local . --platform linux/amd64
   inject them into the runtime job; only internal-registry credentials, when
   configured, belong in the Nomad docker auth block.
 - For repository import builds, prefer omitting `image` and adding `build:`. Luma builds and pushes to the configured builder registry, removes the `build` block from the runtime deploy payload, and injects the built image reference.
-- Valid regions: `cn`, `global`, `home`.
+- Valid regions: built-in `cn`, `global`, `home`, or a custom region created with `luma region create` / the Nodes page. Custom regions only allow `exposure: none` unless later extended.
 - Valid exposures: `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `cloudflare-tunnel`, `tcp-relay`.
 - Public exposures require `domain` and integer `port`.
 - `cn-edge` requires `region: cn`; `external-edge` requires `region: global`; `tailscale-relay` requires `region: home`.
@@ -290,7 +290,7 @@ The dashboard exposes the same Nomad job-version rollback from Applications -> V
 For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.1.292"
+python -m pip install "luma-infra==0.1.293"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

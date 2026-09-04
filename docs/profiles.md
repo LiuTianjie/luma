@@ -1,6 +1,6 @@
 # Profiles
 
-Profiles are Luma's manager bootstrap presets. Ordinary worker joins do not use profiles; run `luma node join ... --region cn|global|home --name <node-name>` on each worker.
+Profiles are Luma's manager bootstrap presets. Ordinary worker joins do not use profiles; run `luma node join ... --region <cn|global|home|custom> --name <node-name>` on each worker. Custom regions are created with `luma region create`.
 
 ## `single-node`
 

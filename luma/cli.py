@@ -39,7 +39,8 @@ from .local import LocalExecutor
 from .manager import manager_ip_change
 from .profiles import PROFILES
 from .render import render_tailscale_route, render_tcp_route, route_path, stack_path
-from .service import VALID_EXPOSURES, VALID_REGIONS, load_service, slugify
+from .regions import parse_region_name
+from .service import VALID_EXPOSURES, load_service, slugify
 from .storage import storage_check_plan, storage_migration_plan
 from .userconfig import configured_keys, ensure_interactive_config, interactive_configure, load_user_config, masked_config_lines, user_config_path
 from . import __version__
@@ -59,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     visible_commands = (
         "init,version,status,preflight,configure,login,context,secret,registry,git-provider,"
         "bootstrap,update,doctor,manager,node,cloudflare,egress,tailscale,"
-        "service,validate,render,dns-sync,deploy,import,build,rollback,history,compose,storage"
+        "service,validate,render,dns-sync,deploy,import,build,rollback,history,compose,storage,region"
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="{" + visible_commands + "}")
 
@@ -206,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.292 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.293 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -252,7 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
     node_join = node_sub.add_parser("join")
     node_join.add_argument("endpoint")
     node_join.add_argument("--token", required=True)
-    node_join.add_argument("--region", choices=sorted(VALID_REGIONS))
+    node_join.add_argument("--region", help="Built-in region (cn, global, home) or a region created with luma region create")
     node_join.add_argument("--name", default=os.uname().nodename)
     node_join.add_argument("--engine", choices=("nomad",), default="nomad", metavar="{nomad}", help="Orchestrator to join; Nomad is the only supported engine")
     node_join.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
@@ -277,11 +278,25 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_arguments(node_status)
     node_nomad_join = node_sub.add_parser("nomad-join", help="ask a ready node agent to install and join Nomad on that node")
     node_nomad_join.add_argument("name")
-    node_nomad_join.add_argument("--region", choices=sorted(VALID_REGIONS), help="Override the node's registered region")
+    node_nomad_join.add_argument("--region", help="Override the node's registered region")
     node_nomad_join.add_argument("--server-addr", help="Nomad RPC address to join; defaults to the control-plane join address")
     node_nomad_join.add_argument("--timeout", type=int, default=1200, help="Join timeout in seconds")
     _add_control_arguments(node_nomad_join)
     _add_output_arguments(node_nomad_join)
+    region_cmd = sub.add_parser("region", help="Create and list scheduling regions")
+    region_sub = region_cmd.add_subparsers(dest="region_command", required=True)
+    region_list = region_sub.add_parser("list", help="List built-in and custom regions")
+    _add_control_arguments(region_list)
+    _add_output_arguments(region_list)
+    region_create = region_sub.add_parser("create", help="Create a custom scheduling region")
+    region_create.add_argument("name")
+    region_create.add_argument("--egress", choices=("proxy", "direct"), default="proxy", help="Join/image-pull egress: proxy uses the manager gateway, direct does not")
+    _add_control_arguments(region_create)
+    _add_output_arguments(region_create)
+    region_remove = region_sub.add_parser("remove", help="Remove an unused custom region")
+    region_remove.add_argument("name")
+    _add_control_arguments(region_remove)
+    _add_output_arguments(region_remove)
 
     node_agent = sub.add_parser("node-agent", help=argparse.SUPPRESS)
     node_agent_sub = node_agent.add_subparsers(dest="node_agent_command", required=True)
@@ -831,6 +846,8 @@ def _command_name(args: argparse.Namespace) -> str:
         return f"registry {getattr(args, 'registry_command', '')}".strip()
     if command == "git-provider":
         return f"git-provider {getattr(args, 'git_provider_command', '')}".strip()
+    if command == "region":
+        return f"region {getattr(args, 'region_command', '')}".strip()
     return command
 
 
@@ -1168,7 +1185,8 @@ def cmd_node(args: argparse.Namespace) -> int:
         return 0
     if args.node_command == "join":
         if not args.region:
-            raise LumaError("node join requires --region (cn, global, or home)")
+            raise LumaError("node join requires --region")
+        args.region = parse_region_name(args.region)
         required_worker_keys = ["TAILSCALE_AUTHKEY"] if args.region == "home" and not _local_tailscale_connected() else []
         ensure_interactive_config("worker", required_keys=required_worker_keys)
         log("[start] Configure system DNS")
@@ -1187,9 +1205,11 @@ def cmd_node(args: argparse.Namespace) -> int:
         if server_host and _is_tailscale_manager_addr(nomad_rpc_addr) and not _local_tailscale_connected():
             ensure_interactive_config("worker", keys=["TAILSCALE_AUTHKEY"], required_keys=["TAILSCALE_AUTHKEY"])
         try:
-            # CN-side and home nodes may need the manager egress proxy for
-            # HashiCorp/GitHub downloads; global nodes download directly.
-            egress_proxy = f"http://{server_host}:7890" if args.region in {"cn", "home"} else None
+            # Regions with egress=proxy use the manager gateway for HashiCorp/GitHub
+            # downloads; direct regions download without that proxy.
+            egress_proxy = str(result.get("egressProxy") or "").strip() or None
+            if egress_proxy is None and str(result.get("egress") or "") == "proxy" and server_host:
+                egress_proxy = f"http://{server_host}:7890"
             install_nomad_node(
                 node,
                 role="client",
@@ -2600,7 +2620,7 @@ def cmd_service_new(args: argparse.Namespace) -> int:
     name = prompt("app", "name")
     image_default = f"{config.defaults.get('registry', 'ghcr.io/your-org')}/{slugify(name)}:latest"
     image = prompt(image_default, "image")
-    region = prompt("cn", f"region ({', '.join(sorted(VALID_REGIONS))})")
+    region = parse_region_name(prompt("cn", "region (cn, global, home, or a created region)"))
     exposure = prompt(str(config.defaults.get("exposure", "cn-edge")), f"exposure ({', '.join(sorted(VALID_EXPOSURES))})")
     domain = ""
     port = None
@@ -3425,6 +3445,60 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_region(args: argparse.Namespace) -> int:
+    if args.region_command == "list":
+        return cmd_region_list(args)
+    if args.region_command == "create":
+        return cmd_region_create(args)
+    if args.region_command == "remove":
+        return cmd_region_remove(args)
+    raise LumaError(f"unknown region command: {args.region_command}")
+
+
+def cmd_region_list(args: argparse.Namespace) -> int:
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).list_regions()
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    rows = result.get("regions") if isinstance(result.get("regions"), list) else []
+    if not rows:
+        print("No regions")
+        return 0
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        kind = "builtin" if item.get("builtin") else "custom"
+        exposures = ",".join(str(value) for value in item.get("exposures") or [])
+        print(f"{item.get('name')}	{kind}	egress={item.get('egress') or '-'}	exposures={exposures or '-'}")
+    return 0
+
+
+def cmd_region_create(args: argparse.Namespace) -> int:
+    name = parse_region_name(args.name)
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).create_region(
+        name=name,
+        egress=str(args.egress or "proxy"),
+    )
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    print(f"Region created: {result.get('name') or name} (egress={result.get('egress') or args.egress})")
+    return 0
+
+
+def cmd_region_remove(args: argparse.Namespace) -> int:
+    name = parse_region_name(args.name)
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    result = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip).remove_region(name=name)
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    print(f"Region removed: {result.get('name') or name}")
+    return 0
+
+
 def cmd_storage(args: argparse.Namespace) -> int:
     if args.storage_command == "list":
         return cmd_storage_list(args)
@@ -3991,6 +4065,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_compose(args)
         if args.command == "storage":
             return cmd_storage(args)
+        if args.command == "region":
+            return cmd_region(args)
     except LumaError as exc:
         if _print_structured_error(args, exc):
             return 1

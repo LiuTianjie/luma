@@ -1,6 +1,6 @@
 import type { DashboardNode, DashboardStorageClass, Lang } from "../types";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, KeyValueRow, Region } from "./types";
-import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, REGIONS, requiredRegionForExposure, regionOptionLabel } from "./options";
+import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { updateComposeServiceExposure } from "./yaml";
 
 export function ComposeDeployForm({
@@ -8,6 +8,7 @@ export function ComposeDeployForm({
   draft,
   nodes,
   storageClasses,
+  regions,
   onChange,
   onEditYaml,
 }: {
@@ -15,10 +16,12 @@ export function ComposeDeployForm({
   draft: ComposeDeploymentDraft;
   nodes: DashboardNode[];
   storageClasses: DashboardStorageClass[];
+  regions?: Region[];
   onChange: (draft: ComposeDeploymentDraft) => void;
   onEditYaml: () => void;
 }) {
   const zh = lang === "zh";
+  const regionOptions = regions && regions.length ? regions : regionChoices([], nodes);
   const localReadyNodes = nodes.filter((node) => node.agentStatus === "ready" && node.state !== "down");
   const patch = (next: Partial<ComposeDeploymentDraft>) => onChange({ ...draft, ...next });
   const updateService = (name: string, next: Partial<ComposeServiceDraft>) => {
@@ -74,7 +77,7 @@ export function ComposeDeployForm({
             </div>
             <button type="button" className="ghost" onClick={onEditYaml}>{zh ? "编辑 docker-compose.yml" : "Edit docker-compose.yml"}</button>
           </div>
-          <label><span>{zh ? "默认区域" : "Default region"}</span><select value={draft.region} onChange={(event) => updateDefaultRegion(event.target.value as Region)}>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
+          <label><span>{zh ? "默认区域" : "Default region"}</span><select value={draft.region} onChange={(event) => updateDefaultRegion(event.target.value as Region)}>{regionOptions.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
         </div>
       </section>
       <section className="deploy-config-section" id="compose-services">
@@ -92,7 +95,7 @@ export function ComposeDeployForm({
                   const requiredRegion = requiredRegionForExposure(exposure);
                   return <option key={exposure} value={exposure} disabled={Boolean(requiredRegion && nodes.length > 0 && !hasReadyNodeInRegion(nodes, requiredRegion))}>{exposureOptionLabel(nodes, exposure, lang)}</option>;
                 })}</select></label>
-                <label><span>{zh ? "区域" : "Region"}</span><select value={service.region} onChange={(event) => updateServiceRegion(service, event.target.value as Region | "")}><option value="">{zh ? `默认 (${draft.region})` : `Default (${draft.region})`}</option>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
+                <label><span>{zh ? "区域" : "Region"}</span><select value={service.region} onChange={(event) => updateServiceRegion(service, event.target.value as Region | "")}><option value="">{zh ? `默认 (${draft.region})` : `Default (${draft.region})`}</option>{regionOptions.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
                 <label>
                   <span>{zh ? "节点" : "Node"}</span>
                   <select value={service.node} onChange={(event) => updateService(service.name, { node: event.target.value })}>

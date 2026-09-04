@@ -114,7 +114,20 @@ from ..registry_management import (
 )
 from ..render import named_volume_sources, render_tailscale_route, render_tcp_route, route_path, stack_path
 from ..repo_paths import normalize_repo_relative_path
-from ..service import TCP_RELAY_RESERVED_PORTS, VALID_REGIONS, ServiceSpec, load_service, slugify, tcp_entrypoint_name
+from ..regions import (
+    custom_region_record,
+    ensure_regions_state,
+    is_builtin_region,
+    listed_regions,
+    parse_egress_mode,
+    parse_region_name,
+    public_region_record,
+    region_names_in_use,
+    region_uses_egress_proxy,
+    require_region_exposure,
+    require_registered_region,
+)
+from ..service import TCP_RELAY_RESERVED_PORTS, ServiceSpec, load_service, slugify, tcp_entrypoint_name
 from ..lae_runtime import (
     MAX_RUNTIME_REQUEST_BYTES,
     RUNTIME_AUDIENCE,
@@ -3218,6 +3231,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
         },
         "readiness": readiness,
         "nodes": nodes,
+        "regions": listed_regions(state),
         "services": public_services,
         "trafficPaths": traffic_paths,
         "storage": storage,
@@ -7620,25 +7634,83 @@ def _dns_missing_reasons(dns_provider: str, *, zone_id: object, token_configured
     return missing
 
 
+def handle_region_list(token: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    return {"regions": listed_regions(state)}
+
+
+def handle_region_create(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    name = parse_region_name(body.get("name"))
+    if is_builtin_region(name):
+        raise LumaError(f"region {name} already exists")
+    egress = parse_egress_mode(body.get("egress"))
+
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
+        require_token(state, token, token_type="deploy")
+        custom = ensure_regions_state(state)
+        if is_builtin_region(name) or name in custom:
+            raise LumaError(f"region {name} already exists")
+        record = custom_region_record(name, egress=egress, created_at=int(time.time()))
+        custom[name] = record
+        return public_region_record(record)
+
+    return mutate_state(mutate)
+
+
+def handle_region_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    name = parse_region_name(body.get("name"))
+    if is_builtin_region(name):
+        raise LumaError(f"cannot remove built-in region {name}")
+
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
+        require_token(state, token, token_type="deploy")
+        custom = ensure_regions_state(state)
+        if name not in custom:
+            raise LumaError(f"unknown region {name!r}")
+        nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+        storage_classes = state.get("storageClasses") if isinstance(state.get("storageClasses"), dict) else {}
+        if name in region_names_in_use(nodes, storage_classes):
+            raise LumaError(f"cannot remove region {name}: nodes or storage classes still use it")
+        custom.pop(name, None)
+        return {"name": name, "removed": True}
+
+    return mutate_state(mutate)
+
+
+def _require_compose_regions(state: Dict[str, Any], deployment: ComposeDeploymentSpec) -> None:
+    require_registered_region(state, deployment.region)
+    for service_name, override in deployment.services.items():
+        region = override.region or deployment.region
+        try:
+            require_region_exposure(state, region, override.exposure)
+        except LumaError as exc:
+            raise LumaError(f"compose service {service_name} {exc}") from exc
+
+
 def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     node_name = str(body.get("nodeName") or "").strip()
     region = str(body.get("region") or "").strip()
     if not node_name or not region:
         raise LumaError("nodeName and region are required")
-    if region not in VALID_REGIONS:
-        raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
-    def mutate(state: Dict[str, Any]) -> None:
+    region = parse_region_name(region)
+    def mutate(state: Dict[str, Any]) -> Dict[str, Any]:
         require_control_node_token(state, token)
-        _remember_node(state, node_name, region=region, status="registered")
+        record = require_registered_region(state, region)
+        _remember_node(state, node_name, region=record["name"], status="registered")
+        return record
 
-    mutate_state(mutate)
+    record = mutate_state(mutate)
     state = load_state()
     config = load_config(_control_config_path())
     nomad_rpc_addr = _nomad_rpc_addr_for_join(config, state)
+    egress_proxy = _nomad_join_egress_proxy(record["name"], nomad_rpc_addr, state)
     return {
         "clusterId": state["clusterId"],
         "nodeName": node_name,
-        "region": region,
+        "region": record["name"],
+        "egress": record.get("egress") or "",
+        "egressProxy": egress_proxy,
         "nomadRpcAddr": nomad_rpc_addr,
         "nomadServerAddr": nomad_rpc_addr,
     }
@@ -7703,25 +7775,25 @@ def _host_from_hostport(value: str) -> str:
     return text
 
 
-def _nomad_join_egress_proxy(region: str, server_addr: str) -> str:
-    if region not in {"cn", "home"}:
+def _nomad_join_egress_proxy(region: str, server_addr: str, state: Dict[str, Any] | None = None) -> str:
+    if not region_uses_egress_proxy(state, region):
         return ""
     host = _host_from_hostport(server_addr)
     return f"http://{host}:7890" if host else ""
 
 
 def _egress_proxy_for_region(config: Any, state: Dict[str, Any], region: str) -> str:
-    # Runtime egress proxy for a deployed service's container. cn/home services
-    # reach the internet through the manager's egress gateway (same address as
-    # image pulls and node join); global services have direct internet -> no
-    # proxy. Returns "" when no gateway is resolvable so render injects nothing.
-    if str(region or "").strip() not in {"cn", "home"}:
+    # Runtime egress proxy for a deployed service's container. Regions with
+    # egress=proxy reach the internet through the manager's egress gateway;
+    # direct regions have no injected proxy. Returns "" when no gateway is
+    # resolvable so render injects nothing.
+    if not region_uses_egress_proxy(state, region):
         return ""
     try:
         server_addr = _nomad_rpc_addr_for_join(config, state)
     except LumaError:
         return ""
-    return _nomad_join_egress_proxy(region, server_addr)
+    return _nomad_join_egress_proxy(region, server_addr, state)
 
 
 def _egress_proxy_for_node(config: Any, state: Dict[str, Any], node_name: str) -> str:
@@ -7748,13 +7820,13 @@ def _egress_proxy_for_node(config: Any, state: Dict[str, Any], node_name: str) -
     }:
         return ""
     region = str(record.get("region") or labels.get("region") or "").strip()
-    if region not in {"cn", "home"}:
+    if not region_uses_egress_proxy(state, region):
         return ""
     try:
         server_addr = _nomad_rpc_addr_for_join(config, state)
     except LumaError:
         return ""
-    return _nomad_join_egress_proxy(region, server_addr)
+    return _nomad_join_egress_proxy(region, server_addr, state)
 
 
 def _docker_daemon_proxy_for_node(config: Any, state: Dict[str, Any], node_name: str, node_record: Dict[str, Any]) -> str:
@@ -7779,8 +7851,7 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise LumaError("nodeName and region are required")
     if not node_id:
         raise LumaError("nodeId is required; update the Luma CLI on this node and rerun luma node join")
-    if region not in VALID_REGIONS:
-        raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
+    region = parse_region_name(region)
     luma_name = registered_name or node_name
     labels = labels_for_node(region, luma_name=luma_name, node_id=node_id)
     values: Dict[str, Any] = {
@@ -7799,6 +7870,7 @@ def handle_node_label(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         values["tailscaleName"] = tailscale_name
     def mutate(state: Dict[str, Any]) -> Dict[str, str]:
         require_control_node_token(state, token)
+        require_registered_region(state, region)
         previous = _node_record_for_name(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, luma_name)
         previous_labels = previous.get("labels") if isinstance(previous, dict) and isinstance(previous.get("labels"), dict) else {}
         previous_node_id = str((previous or {}).get("nodeId") or (previous or {}).get("nomadNodeId") or previous_labels.get("luma.node.id") or "").strip() if isinstance(previous, dict) else ""
@@ -7841,12 +7913,11 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     if record is None:
         raise LumaError(f"Luma node is not registered: {node_name}")
     region = str(body.get("region") or record.get("region") or "").strip()
-    if region not in VALID_REGIONS:
-        raise LumaError(f"node region must be one of {sorted(VALID_REGIONS)}")
+    region = require_registered_region(state, region)["name"]
     timeout = int(body.get("timeout") or 1200)
     timeout = min(max(timeout, 60), 3600)
     server_addr = str(body.get("serverAddr") or _nomad_rpc_addr_for_join(config, state)).strip()
-    egress_proxy = str(body.get("egressProxy") if body.get("egressProxy") is not None else _nomad_join_egress_proxy(region, server_addr)).strip()
+    egress_proxy = str(body.get("egressProxy") if body.get("egressProxy") is not None else _nomad_join_egress_proxy(region, server_addr, state)).strip()
     payload: Dict[str, Any] = {
         "nodeName": node_name,
         "region": region,
@@ -10881,6 +10952,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     config = load_config(config_path)
     runtime_config = _config_with_state_nodes(config, state)
     service = _load_service_manifest(manifest)
+    require_region_exposure(state, service.region, service.exposure)
     effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
     _require_nomad_engine(effective_engine)
     _ensure_deployment_slug_available(state, "service", service.slug, service.name)
@@ -11060,6 +11132,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
         service = load_service(service_path)
     finally:
         service_path.unlink(missing_ok=True)
+    require_region_exposure(state, service.region, service.exposure)
     effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
     _require_nomad_engine(effective_engine)
     service = resolve_service_node_pin(service, state, engine=effective_engine)
@@ -12761,6 +12834,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     config = load_config(config_path)
     runtime_config = _config_with_state_nodes(config, state)
     deployment = _load_compose_request(body, source_name)
+    _require_compose_regions(state, deployment)
     previous_record = dict(_compose_deployment_record(state, deployment.slug) or {})
     _ensure_deployment_slug_available(state, "compose", deployment.slug, deployment.name)
     _ensure_tcp_relay_ports_available(state, kind="compose", slug=deployment.slug, ports=_compose_tcp_relay_ports(deployment))
@@ -12963,6 +13037,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     config = load_config(config_path)
     runtime_config = _config_with_state_nodes(config, state)
     deployment = _load_compose_request(body, source_name)
+    _require_compose_regions(state, deployment)
     target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     _ensure_compose_exposure_supported_on_nodes(state, deployment)
@@ -14177,9 +14252,11 @@ def _validate_storage_class_record(name: str, item: Dict[str, Any], state: Dict[
         if not str(record.get("region") or labels.get("region") or "").strip():
             raise LumaError(f"managed storage node {node_name} has no region; rerun luma node join")
     regions = item.get("regions") if isinstance(item.get("regions"), list) else []
+    parsed_regions = []
     for region in regions:
-        if region not in VALID_REGIONS:
-            raise LumaError(f"storage class {name} region must be one of {sorted(VALID_REGIONS)}")
+        parsed_regions.append(require_registered_region(state, region)["name"])
+    item["regions"] = parsed_regions
+
 
 def handle_secret_list(token: str) -> Dict[str, Any]:
     state = load_state()
@@ -18026,6 +18103,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if parsed_path == "/v1/secrets":
                 self._json(200, handle_secret_list(token))
                 return
+            if parsed_path == "/v1/regions":
+                self._json(200, handle_region_list(token))
+                return
             if parsed_path == "/v1/storage":
                 self._json(200, handle_storage_list(token))
                 return
@@ -18543,6 +18623,12 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/secrets/remove":
                 self._json(200, handle_secret_remove(token, body))
                 return
+            if self.path == "/v1/regions":
+                self._json(200, handle_region_create(token, body))
+                return
+            if self.path == "/v1/regions/remove":
+                self._json(200, handle_region_remove(token, body))
+                return
             if self.path == "/v1/git-providers":
                 self._json(200, handle_git_provider_set(token, body))
                 return
@@ -19025,6 +19111,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_registry_policy_get, token))
         if parsed_path == "/v1/secrets":
             return _json_response(200, await run_in_threadpool(handle_secret_list, token))
+        if parsed_path == "/v1/regions":
+            return _json_response(200, await run_in_threadpool(handle_region_list, token))
         if parsed_path == "/v1/storage":
             return _json_response(200, await run_in_threadpool(handle_storage_list, token))
         if parsed_path == "/v1/status":
@@ -19426,6 +19514,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/fleet/update": handle_fleet_update,
             "/v1/secrets": handle_secret_set,
             "/v1/secrets/remove": handle_secret_remove,
+            "/v1/regions": handle_region_create,
+            "/v1/regions/remove": handle_region_remove,
             "/v1/git-providers": handle_git_provider_set,
             "/v1/git-providers/remove": handle_git_provider_remove,
             "/v1/registries": handle_registry_set,

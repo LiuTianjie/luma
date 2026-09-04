@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.292"
+python -m pip install "luma-infra==0.1.293"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.292 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.293 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.292"
+python -m pip install "luma-infra==0.1.293"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.292"
+python -m pip install "luma-infra==0.1.293"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -266,10 +266,15 @@ luma context use <cluster-id>
 Join additional servers by running this on each server:
 
 ```bash
+luma region create batch-a --egress proxy
+luma region list
 luma node join https://luma.example.com --token <node-join-token> --region cn --name cn-worker-1
 luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 luma node join https://luma.example.com --token <node-join-token> --region home --name home-mac-mini
+luma node join https://luma.example.com --token <node-join-token> --region batch-a --name batch-a-01
 ```
+
+`--region` is the scheduling pool. Built-in values are `cn`, `global`, and `home`. Create more with `luma region create <name> --egress proxy|direct` (also available on the Nodes page), then join machines into that name. Custom regions default to internal workloads (`exposure: none`). `--egress proxy` uses the manager gateway for join/image pulls, same as `cn`/`home`.
 
 `--name` is the Luma node name used by `luma status` and by service manifests. Luma writes it to the Nomad client `meta.luma_node_name` and uses it for pinned scheduling; the Nomad node identity is a stable UUID, so a rejoin under the same name keeps pinned services valid. Add `--engine nomad` to force the Nomad client agent path explicitly; it is the default.
 
@@ -283,7 +288,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.292 --timeout 900
+luma update fleet --install-ref v0.1.293 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -426,7 +431,7 @@ Required fields:
 
 - `name`
 - `image`
-- `region`: `cn`, `global`, or `home`
+- `region`: `cn`, `global`, `home`, or a custom region created with `luma region create`
 - `exposure`: `cn-edge`, `tailscale-relay`, `tcp-relay`, `cloudflare-tunnel`, `external-edge`, or `none`
 
 Public services also require:

@@ -6701,3 +6701,22 @@ dd {
     animation: none;
   }
 }
+
+
+.region-panel-copy {
+  margin: 0 0 16px;
+  color: var(--muted);
+  max-width: 72ch;
+}
+.region-create-form {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+@media (max-width: 800px) {
+  .region-create-form {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,6 +1,6 @@
 import type { DashboardNode, DashboardStorageClass, Lang } from "../types";
 import type { Exposure, KeyValueRow, Region, ServiceManifestDraft, ServiceVolumeDraft } from "./types";
-import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, REGIONS, requiredRegionForExposure, regionOptionLabel } from "./options";
+import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
 import { serviceExposureRegion } from "./yaml";
 
 export function SingleServiceDeployForm({
@@ -8,17 +8,20 @@ export function SingleServiceDeployForm({
   draft,
   nodes,
   storageClasses,
+  regions,
   onChange,
 }: {
   lang: Lang;
   draft: ServiceManifestDraft;
   nodes: DashboardNode[];
   storageClasses: DashboardStorageClass[];
+  regions?: Region[];
   onChange: (draft: ServiceManifestDraft) => void;
 }) {
   const zh = lang === "zh";
   const patch = (next: Partial<ServiceManifestDraft>) => onChange({ ...draft, ...next });
   const volumeMounts = draft.volumeMounts || [];
+  const regionOptions = regions && regions.length ? regions : regionChoices([], nodes);
   const nodeOptions = nodesForRegion(nodes, draft.region);
   const selectedNodeMissing = draft.node && !nodeOptions.some((node) => node.name === draft.node);
   const patchRegion = (region: Region) => {
@@ -56,7 +59,7 @@ export function SingleServiceDeployForm({
         <div className="deploy-field-grid">
           <label><span>{zh ? "服务名" : "Service name"}</span><input value={draft.name} onChange={(event) => patch({ name: event.target.value })} /></label>
           <label><span>{zh ? "镜像" : "Image"}</span><input value={draft.image} onChange={(event) => patch({ image: event.target.value })} /></label>
-          <label><span>{zh ? "区域" : "Region"}</span><select value={draft.region} onChange={(event) => patchRegion(event.target.value as Region)}>{REGIONS.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
+          <label><span>{zh ? "区域" : "Region"}</span><select value={draft.region} onChange={(event) => patchRegion(event.target.value as Region)}>{regionOptions.map((region) => <option key={region} value={region} disabled={nodes.length > 0 && !hasReadyNodeInRegion(nodes, region)}>{regionOptionLabel(nodes, region, lang)}</option>)}</select></label>
           <label>
             <span>{zh ? "节点" : "Node"}</span>
             <select value={draft.node} onChange={(event) => patch({ node: event.target.value })}>
