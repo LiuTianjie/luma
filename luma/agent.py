@@ -132,6 +132,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "nomad-join",
             "nomad-cni-repair",
             "terminal",
+            "container-terminal",
         ]
     elif os_value == "darwin":
         capabilities = [
@@ -144,6 +145,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "luma-update-egress-fallback-v1",
             "nomad-join",
             "terminal",
+            "container-terminal",
         ]
     else:
         return []
@@ -1877,6 +1879,12 @@ async def _terminal_sender(websocket: Any, outbound: "asyncio.Queue[Dict[str, An
         await websocket.send(json.dumps(message, separators=(",", ":")))
 
 
+_TERMINAL_IDENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_TERMINAL_CONTAINER_ID_RE = re.compile(r"^[0-9a-fA-F]{12,64}$")
+_TERMINAL_UNIX_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
+_CONTAINER_SHELL_CANDIDATES = ("/bin/bash", "/bin/ash", "/bin/sh", "/usr/bin/bash", "/usr/bin/sh")
+
+
 def _handle_terminal_control_message(
     message: Dict[str, Any],
     *,
@@ -1894,7 +1902,8 @@ def _handle_terminal_control_message(
         try:
             rows = int(message.get("rows") or 32)
             cols = int(message.get("cols") or 120)
-            sessions[session_id] = _PtySession(session_id, outbound=outbound, loop=loop, rows=rows, cols=cols)
+            argv = _terminal_open_argv(message)
+            sessions[session_id] = _PtySession(session_id, outbound=outbound, loop=loop, rows=rows, cols=cols, argv=argv)
         except Exception as exc:
             outbound.put_nowait({"type": "error", "sessionId": session_id, "message": str(exc)})
         return
@@ -1911,28 +1920,37 @@ def _handle_terminal_control_message(
 
 
 class _PtySession:
-    def __init__(self, session_id: str, *, outbound: "asyncio.Queue[Dict[str, Any]]", loop: asyncio.AbstractEventLoop, rows: int, cols: int):
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        outbound: "asyncio.Queue[Dict[str, Any]]",
+        loop: asyncio.AbstractEventLoop,
+        rows: int,
+        cols: int,
+        argv: list[str] | None = None,
+    ):
         self.session_id = session_id
         self.outbound = outbound
         self.loop = loop
         self.closed = threading.Event()
         self.master_fd, slave_fd = pty.openpty()
         _set_pty_size(self.master_fd, rows=rows, cols=cols)
-        shell = _terminal_shell()
+        command = list(argv) if argv else [_terminal_shell()]
         env = os.environ.copy()
         env.setdefault("TERM", "xterm-256color")
-        cwd = str(Path.home()) if Path.home().exists() else "/"
         kwargs: Dict[str, Any] = {
             "stdin": slave_fd,
             "stdout": slave_fd,
             "stderr": slave_fd,
             "env": env,
-            "cwd": cwd,
             "close_fds": True,
         }
+        if command[:1] == [_terminal_shell()]:
+            kwargs["cwd"] = str(Path.home()) if Path.home().exists() else "/"
         if hasattr(os, "setsid"):
             kwargs["preexec_fn"] = os.setsid
-        self.process = subprocess.Popen([shell], **kwargs)
+        self.process = subprocess.Popen(command, **kwargs)
         os.close(slave_fd)
         self.reader = threading.Thread(target=self._read_loop, name=f"luma-terminal-{session_id}", daemon=True)
         self.reader.start()
@@ -2016,6 +2034,84 @@ class _PtySession:
             self.loop.call_soon_threadsafe(self.outbound.put_nowait, event)
         except RuntimeError:
             pass
+
+
+def _terminal_open_argv(message: Dict[str, Any]) -> list[str]:
+    target = str(message.get("target") or "host").strip() or "host"
+    if target == "host":
+        return [_terminal_shell()]
+    if target != "container":
+        raise ValueError(f"unsupported terminal target: {target}")
+    alloc_id = str(message.get("allocId") or "").strip()
+    task = str(message.get("task") or "").strip()
+    if not _TERMINAL_IDENT_RE.fullmatch(alloc_id):
+        raise ValueError("container terminal allocId is invalid")
+    if not _TERMINAL_IDENT_RE.fullmatch(task):
+        raise ValueError("container terminal task is invalid")
+    docker = _docker_binary()
+    if not docker:
+        raise RuntimeError("docker command not found")
+    container_id = _resolve_nomad_container_id(docker, alloc_id, task)
+    shell = _container_shell(docker, container_id)
+    return [docker, "exec", "-i", "-t", "-e", "TERM=xterm-256color", container_id, shell]
+
+
+def _resolve_nomad_container_id(docker: str, alloc_id: str, task: str) -> str:
+    result = subprocess.run(
+        [
+            docker,
+            "ps",
+            "--filter",
+            f"label=com.hashicorp.nomad.alloc_id={alloc_id}",
+            "--filter",
+            f"label=com.hashicorp.nomad.task_name={task}",
+            "--format",
+            "{{.ID}}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=8,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "docker ps failed").strip()
+        raise RuntimeError(f"could not look up application container: {detail}")
+    ids = []
+    for raw in result.stdout.splitlines():
+        container_id = raw.strip()
+        if _TERMINAL_CONTAINER_ID_RE.fullmatch(container_id):
+            ids.append(container_id)
+    unique = list(dict.fromkeys(ids))
+    if not unique:
+        raise RuntimeError(f"application container not found for alloc {alloc_id} task {task}")
+    if len(unique) > 1:
+        raise RuntimeError(f"multiple application containers matched alloc {alloc_id} task {task}")
+    return unique[0]
+
+
+def _container_shell(docker: str, container_id: str) -> str:
+    for interpreter in ("/bin/sh", "/bin/bash", "/bin/ash"):
+        probe = subprocess.run(
+            [docker, "exec", container_id, interpreter, "-c", "command -v bash || command -v ash || command -v sh"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        path = (probe.stdout or "").strip().splitlines()[-1].strip() if probe.returncode == 0 and probe.stdout.strip() else ""
+        if probe.returncode == 0 and _TERMINAL_UNIX_PATH_RE.fullmatch(path):
+            return path
+    for path in _CONTAINER_SHELL_CANDIDATES:
+        probe = subprocess.run(
+            [docker, "exec", container_id, "test", "-x", path],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        if probe.returncode == 0:
+            return path
+    raise RuntimeError("container has no usable shell (tried bash/ash/sh)")
 
 
 def _terminal_shell() -> str:

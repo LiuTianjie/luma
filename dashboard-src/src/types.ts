@@ -63,6 +63,7 @@ export type DashboardIssue = {
 export type DashboardNode = {
   name?: string;
   displayName?: string;
+  hostname?: string;
   region?: string;
   role?: string;
   state?: string;

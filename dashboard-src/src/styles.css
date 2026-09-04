@@ -4659,6 +4659,7 @@ dd {
 
 .terminal-modal-backdrop {
   justify-content: center;
+  z-index: 90;
 }
 
 .terminal-modal {

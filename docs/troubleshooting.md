@@ -195,6 +195,17 @@ sudo launchctl kickstart -k system/io.luma.node-agent
 
 Current Luma keeps the node agent alive across transient lease failures and uses a per-node lock so only one terminal supervisor runs.
 
+## Application container shell is unavailable
+
+Dashboard application details can open a shell inside a running service container. Control resolves the Nomad allocation, then the node agent runs `docker exec` against the container labeled with that alloc/task. Common failures:
+
+- the service is not running, so there is no allocation to enter;
+- the node agent is old and does not advertise `container-terminal` — update the node agent, then retry;
+- the terminal supervisor is disconnected, same as a node terminal failure;
+- the image is distroless / scratch and has no `bash`/`ash`/`sh`.
+
+This path never execs into system stacks (`traefik`, `egress`, `luma-control`, `luma-storage*`).
+
 ## Nomad client is disconnected but containers still run
 
 This is expected behavior, not a failure. Each Luma job renders `max_client_disconnect = 1h`, so when a home node such as a Mac mini loses its tailnet path to the Nomad server, the client is marked `disconnected` but its local allocations keep running and reconnect cleanly when the link recovers. This is the whole point of running on Nomad: a transient WAN/DERP blip no longer kills and reschedules tasks.

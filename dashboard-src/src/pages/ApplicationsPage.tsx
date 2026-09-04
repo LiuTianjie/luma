@@ -2,7 +2,7 @@ import { Plus } from "lucide-react";
 import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "../components/ApplicationManagementPanel";
 import { groupApplications } from "../components/applicationModel";
 import { t } from "../i18n";
-import type { DashboardPayload, Lang } from "../types";
+import type { DashboardPayload, DashboardService, Lang } from "../types";
 import { PageHeader } from "./PageHeader";
 import type { NavPage } from "../dashboardViewModel";
 import { useSearchParams } from "../router";
@@ -15,6 +15,7 @@ export function ApplicationsPage({
   onCreateApplication,
   onUpdateApplication,
   onNavigateToDeployments,
+  onServiceTerminal,
 }: {
   lang: Lang;
   token: string;
@@ -23,6 +24,7 @@ export function ApplicationsPage({
   onCreateApplication: () => void;
   onUpdateApplication: (request: ApplicationUpdateRequest) => void;
   onNavigateToDeployments?: () => void;
+  onServiceTerminal?: (service: DashboardService, stack: string) => void;
 }) {
   const searchParams = useSearchParams();
   const selectApp = searchParams.get("select");
@@ -38,8 +40,8 @@ export function ApplicationsPage({
           eyebrow: zh ? "应用管理" : "Applications",
           title: zh ? "应用生命周期与运行态" : "Application lifecycle and runtime",
           description: zh
-            ? "搜索、筛选、查看日志、读取部署配置、查看版本并执行受保护的运行态操作。"
-            : "Search, filter, read logs, inspect deployment config, review versions, and run guarded runtime actions.",
+            ? "搜索、筛选、查看日志、进入容器终端、读取部署配置、查看版本并执行受保护的运行态操作。"
+            : "Search, filter, read logs, open a container shell, inspect deployment config, review versions, and run guarded runtime actions.",
           metrics: [
             { label: t(lang, "applications"), value: applications.length },
             { label: zh ? "健康" : "Healthy", value: healthy },
@@ -61,6 +63,7 @@ export function ApplicationsPage({
         onRefresh={onRefresh}
         onUpdateApplication={onUpdateApplication}
         onNavigateToDeployments={onNavigateToDeployments}
+        onServiceTerminal={onServiceTerminal}
         initialSelect={selectApp}
       />
     </>

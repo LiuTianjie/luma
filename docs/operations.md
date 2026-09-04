@@ -152,6 +152,9 @@ There are two restart modes:
 
 Omitting `--mode` uses `recreate` for the whole stack and `task` when `--service` is set; pass `--mode` explicitly to override. For a Compose application, `luma service restart <app> --service <svc>` restarts one service's task in place, while `luma service restart <app>` recreates every allocation in the stack. Use `--timeout <seconds>` (default `120`) to bound the control-plane response wait.
 
+
+From the Dashboard application detail page, each running service also has a **Shell** action. That opens an interactive terminal in the service container through the node agent (`docker exec`), using the same terminal supervisor as node shells. It is for live diagnosis, not a substitute for logs or a restart. System stacks are blocked. Node agents need the `container-terminal` capability; update them if the action reports that the agent does not support container terminal.
+
 The response includes `replacementAllocations` and a structured `delivery` result (`routes`, `dns`, and `probes`). A platform-managed deployment with no saved record reports delivery reconciliation as skipped; a managed public deployment does not report `delivery.status=ready` until its public probe succeeds. Reconciled file-provider HTTP routes use explicit priority so they safely override stale legacy Nomad-provider routes that advertise an unreachable provider-private node address.
 
 Restart refuses the system stacks `traefik`, `egress`, and `luma-control` (Control runs inside the `luma-control` allocation, so cycling it from application management would kill Control itself).

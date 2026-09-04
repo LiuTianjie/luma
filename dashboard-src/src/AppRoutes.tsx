@@ -35,6 +35,7 @@ export type AppRoutesProps = {
   onSelectNode: (node: DashboardNode) => void;
   onSelectService: (service: DashboardService) => void;
   onTerminal: (node: DashboardNode) => void;
+  onServiceTerminal: (service: DashboardService, stack: string) => void;
   onRefresh: () => Promise<void> | void;
   onCreateApplication: () => void;
   onUpdateApplication: (request: ApplicationUpdateRequest) => void;
@@ -78,6 +79,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
           onCreateApplication={props.onCreateApplication}
           onUpdateApplication={props.onUpdateApplication}
           onNavigateToDeployments={props.onNavigateToDeployments}
+          onServiceTerminal={props.onServiceTerminal}
         />
       );
       break;

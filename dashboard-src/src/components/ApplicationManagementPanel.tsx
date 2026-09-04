@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { FileText, History, Loader2, MoreHorizontal, Pencil, RotateCw, Search, Settings2 } from "lucide-react";
+import { FileText, History, Loader2, MoreHorizontal, Pencil, RotateCw, Search, Settings2, SquareTerminal } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
 import { fetchServiceHistory, restartApplication, rollbackService, updateApplicationStream } from "../lifecycleApi";
@@ -74,6 +74,7 @@ export function ApplicationManagementPanel({
   onRefresh,
   onUpdateApplication,
   onNavigateToDeployments,
+  onServiceTerminal,
   initialSelect,
 }: {
   lang: Lang;
@@ -82,6 +83,7 @@ export function ApplicationManagementPanel({
   onRefresh: () => Promise<void> | void;
   onUpdateApplication?: (request: ApplicationUpdateRequest) => void;
   onNavigateToDeployments?: () => void;
+  onServiceTerminal?: (service: DashboardService, stack: string) => void;
   initialSelect?: string | null;
 }) {
   const { confirm, element: confirmDialog } = useConfirm(lang);
@@ -342,6 +344,11 @@ export function ApplicationManagementPanel({
   const serviceCountLabel = (count: number) => lang === "zh" ? `${count} 个服务` : `${count} service${count === 1 ? "" : "s"}`;
   const replicaLabel = (running: number, desired: number) => lang === "zh" ? `${running}/${desired} 副本` : `${running}/${desired} replicas`;
   const logLabel = lang === "zh" ? "日志" : "Logs";
+  const shellLabel = t(lang, "shell");
+  const serviceIsRunning = (service: DashboardService) => {
+    const status = serviceRuntimeStatus(service);
+    return (service.running || 0) > 0 || ["running", "healthy"].includes(status);
+  };
   const detailOverlay = selected && DEPLOY_ROOT ? createPortal(
     <OverlayShell className="application-detail-backdrop" onClose={() => setSelected(null)}>
       {(overlayRef) => (
@@ -470,6 +477,22 @@ export function ApplicationManagementPanel({
                       >
                         <FileText size={15} aria-hidden="true" />
                         {logLabel}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost service-log-button"
+                        disabled={!service.fullName || !serviceIsRunning(service) || !onServiceTerminal}
+                        title={
+                          !service.fullName
+                            ? (lang === "zh" ? "该服务还没有可进入的运行实例" : "This service has no runnable instance")
+                            : !serviceIsRunning(service)
+                              ? (lang === "zh" ? "服务未运行，无法进入容器" : "Service is not running")
+                              : (lang === "zh" ? "进入该服务的容器终端" : "Open a shell in this service container")
+                        }
+                        onClick={() => onServiceTerminal?.(service, selected.stack)}
+                      >
+                        <SquareTerminal size={15} aria-hidden="true" />
+                        {shellLabel}
                       </button>
                     </div>
                   </div>

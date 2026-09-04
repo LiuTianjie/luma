@@ -945,6 +945,8 @@ class ProductConfigTests(unittest.TestCase):
         self.assertNotIn("nomad-cni-repair", node_agent_capabilities("darwin"))
         self.assertIn("terminal", node_agent_capabilities("linux"))
         self.assertIn("terminal", node_agent_capabilities("darwin"))
+        self.assertIn("container-terminal", node_agent_capabilities("linux"))
+        self.assertIn("container-terminal", node_agent_capabilities("darwin"))
         with patch("luma.agent._crane_binary", return_value="/usr/local/bin/crane"):
             self.assertIn("control-image-mirror-v1", node_agent_capabilities("linux"))
             self.assertIn("system-image-mirror-v1", node_agent_capabilities("linux"))
@@ -9836,6 +9838,192 @@ class ControlApiTests(unittest.TestCase):
             finally:
                 control_server.TERMINAL_BROKER = original_broker
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_application_terminal_target_resolves_running_compose_service(self):
+        from luma.control.server import _resolve_application_terminal_target
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "cn-edge": {
+                        "nodeId": "nomad-node-1",
+                        "hostname": "iZ0jlep4ral3r2v0ajypnmZ",
+                        "agent": {"status": "ready", "capabilities": ["terminal", "container-terminal"]},
+                    }
+                }
+                state["deployments"] = {
+                    "compose": {
+                        "vibecheck": {
+                            "name": "vibecheck",
+                            "manifest": yaml.safe_dump({
+                                "name": "vibecheck",
+                                "services": {"api": {}, "web": {}, "postgres": {}},
+                            }),
+                        }
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}), encoding="utf-8")
+
+                def request(_self, method, path, body=None):
+                    if path == "/v1/job/vibecheck":
+                        return {
+                            "ID": "vibecheck",
+                            "Meta": {"luma.compose": "true"},
+                            "TaskGroups": [{"Name": "vibecheck", "Tasks": [{"Name": "api", "Config": {"image": "registry.example/api:1"}}]}],
+                        }
+                    if path == "/v1/job/vibecheck/allocations":
+                        return [
+                            {
+                                "ID": "alloc-running",
+                                "DesiredStatus": "run",
+                                "ClientStatus": "running",
+                                "CreateTime": 20,
+                                "NodeID": "nomad-node-1",
+                                "NodeName": "iZ0jlep4ral3r2v0ajypnmZ",
+                                "TaskStates": {"api": {"State": "running"}},
+                            }
+                        ]
+                    raise AssertionError(path)
+
+                with patch("luma.control.server.NomadApi.request", request):
+                    result = _resolve_application_terminal_target(state, "vibecheck_api")
+                self.assertEqual(result["job"], "vibecheck")
+                self.assertEqual(result["task"], "api")
+                self.assertEqual(result["allocId"], "alloc-running")
+                self.assertEqual(result["node"], "cn-edge")
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_application_terminal_target_rejects_system_stack(self):
+        from luma.control.server import _resolve_application_terminal_target
+        from luma.errors import LumaError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                with self.assertRaises(LumaError) as raised:
+                    _resolve_application_terminal_target(state, "traefik")
+                self.assertIn("system stack", str(raised.exception))
+            finally:
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+
+    def test_terminal_websocket_opens_container_session_for_service(self):
+        from starlette.testclient import TestClient
+        from luma.control import server as control_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(root / "state"))
+            old_config = _set_env("LUMA_CONTROL_CONFIG", str(root / "luma.yaml"))
+            original_broker = control_server.TERMINAL_BROKER
+            try:
+                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
+                state["nodes"] = {
+                    "worker-storage": {
+                        "region": "cn",
+                        "swarmHostname": "worker-storage",
+                        "swarmNodeId": "worker-node-id",
+                        "labels": {"luma.node.name": "worker-storage", "luma.node.id": "worker-node-id", "region": "cn"},
+                        "agent": {"status": "ready", "capabilities": ["terminal", "container-terminal"]},
+                    }
+                }
+                state["deployments"] = {
+                    "compose": {
+                        "vibecheck": {
+                            "name": "vibecheck",
+                            "manifest": yaml.safe_dump({"name": "vibecheck", "services": {"api": {}}}),
+                        }
+                    }
+                }
+                save_state(state)
+                (root / "luma.yaml").write_text(yaml.safe_dump({"defaults": {"engine": "nomad", "nomadAddr": "http://nomad.example"}}), encoding="utf-8")
+                issued = handle_node_agent_token(state["deployToken"], {"nodeName": "worker-storage", "nodeId": "worker-node-id"})
+                agent_token = issued["agentToken"]
+                control_server.TERMINAL_BROKER = control_server.TerminalBroker(per_node_limit=2, idle_timeout_seconds=60)
+
+                def request(_self, method, path, body=None):
+                    if path == "/v1/job/vibecheck":
+                        return {
+                            "ID": "vibecheck",
+                            "TaskGroups": [{"Name": "vibecheck", "Tasks": [{"Name": "api", "Config": {"image": "registry.example/api:1"}}]}],
+                        }
+                    if path == "/v1/job/vibecheck/allocations":
+                        return [
+                            {
+                                "ID": "alloc-running",
+                                "DesiredStatus": "run",
+                                "ClientStatus": "running",
+                                "CreateTime": 20,
+                                "NodeID": "worker-node-id",
+                                "NodeName": "worker-storage",
+                                "TaskStates": {"api": {"State": "running"}},
+                            }
+                        ]
+                    raise AssertionError(path)
+
+                with patch("luma.control.server.NomadApi.request", request), TestClient(control_server.create_app()) as client:
+                    with client.websocket_connect("/v1/terminal/agent?node=worker-storage&nodeId=worker-node-id") as agent:
+                        agent.send_json({"type": "auth", "token": agent_token})
+                        self.assertEqual(agent.receive_json()["type"], "ready")
+                        with client.websocket_connect("/v1/terminal/browser?service=vibecheck_api") as browser:
+                            browser.send_json({"type": "auth", "token": state["deployToken"]})
+                            opened = browser.receive_json()
+                            self.assertEqual(opened["type"], "open")
+                            self.assertEqual(opened["target"], "container")
+                            self.assertEqual(opened["task"], "api")
+                            self.assertEqual(opened["allocId"], "alloc-running")
+                            self.assertEqual(opened["node"], "worker-storage")
+                            agent_open = agent.receive_json()
+                            self.assertEqual(agent_open["type"], "open")
+                            self.assertEqual(agent_open["target"], "container")
+                            self.assertEqual(agent_open["allocId"], "alloc-running")
+                            self.assertEqual(agent_open["task"], "api")
+            finally:
+                control_server.TERMINAL_BROKER = original_broker
+                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+                _restore_env("LUMA_CONTROL_CONFIG", old_config)
+
+    def test_terminal_open_argv_uses_docker_exec_for_container_target(self):
+        from luma.agent import _terminal_open_argv
+
+        with patch("luma.agent._docker_binary", return_value="/usr/bin/docker"), patch(
+            "luma.agent._resolve_nomad_container_id", return_value="0123456789ab"
+        ), patch("luma.agent._container_shell", return_value="/bin/sh"):
+            argv = _terminal_open_argv({
+                "target": "container",
+                "allocId": "alloc-running",
+                "task": "api",
+            })
+        self.assertEqual(argv, ["/usr/bin/docker", "exec", "-i", "-t", "-e", "TERM=xterm-256color", "0123456789ab", "/bin/sh"])
+
+    def test_terminal_open_argv_rejects_invalid_container_identity(self):
+        from luma.agent import _terminal_open_argv
+
+        with self.assertRaises(ValueError):
+            _terminal_open_argv({"target": "container", "allocId": "alloc; rm -rf /", "task": "api"})
+        with self.assertRaises(ValueError):
+            _terminal_open_argv({"target": "container", "allocId": "alloc-running", "task": "api && reboot"})
+        with self.assertRaises(ValueError):
+            _terminal_open_argv({"target": "host-escape", "allocId": "alloc-running", "task": "api"})
+
+    def test_resolve_nomad_container_id_filters_by_alloc_and_task_labels(self):
+        from luma.agent import _resolve_nomad_container_id
+
+        result = Mock(returncode=0, stdout="0123456789abcdef\n", stderr="")
+        with patch("luma.agent.subprocess.run", return_value=result) as run:
+            container_id = _resolve_nomad_container_id("/usr/bin/docker", "alloc-running", "api")
+        self.assertEqual(container_id, "0123456789abcdef")
+        args = run.call_args.args[0]
+        self.assertEqual(args[0], "/usr/bin/docker")
+        self.assertIn("label=com.hashicorp.nomad.alloc_id=alloc-running", args)
+        self.assertIn("label=com.hashicorp.nomad.task_name=api", args)
 
     def test_terminal_broker_closes_browser_and_only_cleans_old_agent_sessions(self):
         import asyncio

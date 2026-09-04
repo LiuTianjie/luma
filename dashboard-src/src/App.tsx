@@ -14,6 +14,7 @@ import type { DeployUpdateContext } from "./pages/DeployPage";
 import { PageLoading } from "./pages/PageLoading";
 import { createDashboardViewModel, type NavPage } from "./dashboardViewModel";
 import { t } from "./i18n";
+import type { TerminalSessionTarget } from "./components/TerminalDrawer";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
 import { useDashboardData } from "./useDashboardData";
 import { useTheme } from "./useTheme";
@@ -30,7 +31,7 @@ export function App() {
   const [deployTemplateLanding, setDeployTemplateLanding] = useState(true);
   const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
   const [detail, setDetail] = useState<DetailState>(null);
-  const [terminalNode, setTerminalNode] = useState<DashboardNode | null>(null);
+  const [terminalTarget, setTerminalTarget] = useState<TerminalSessionTarget | null>(null);
   const { token, payload, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData();
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
@@ -175,7 +176,8 @@ export function App() {
                   onNavigateToDeployments={() => navigate("deployments")}
                   onSelectNode={openNodeDetail}
                   onSelectService={openServiceDetail}
-                  onTerminal={setTerminalNode}
+                  onTerminal={(node) => setTerminalTarget({ kind: "node", node })}
+                  onServiceTerminal={(service, stack) => setTerminalTarget({ kind: "container", service, stack })}
                   onRefresh={loadDashboard}
                   onCreateApplication={() => navigate("deploy")}
                   onUpdateApplication={openUpdatePage}
@@ -191,9 +193,9 @@ export function App() {
       </main>
 
       <DetailDrawer lang={lang} detail={detail} onClose={() => setDetail(null)} />
-      {terminalNode ? (
+      {terminalTarget ? (
         <Suspense fallback={null}>
-          <TerminalDrawer lang={lang} node={terminalNode} token={token} onClose={() => setTerminalNode(null)} />
+          <TerminalDrawer lang={lang} target={terminalTarget} token={token} onClose={() => setTerminalTarget(null)} />
         </Suspense>
       ) : null}
     </div>

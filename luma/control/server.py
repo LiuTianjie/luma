@@ -17702,6 +17702,62 @@ def _error_payload(code: str, message: str, *, request_id: str, include_error: b
     return payload
 
 
+def _resolve_application_terminal_target(state: Dict[str, Any], service: str) -> Dict[str, str]:
+    service = str(service or "").strip()
+    if not service:
+        raise LumaError("service is required")
+    job_id, task_filter = _nomad_log_target_from_state(state, service)
+    if not job_id:
+        raise LumaError("service is required")
+    if _is_system_stack(job_id):
+        raise LumaError(f"system stack cannot be opened from application terminal: {job_id}")
+    config = load_config(_control_config_path())
+    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    job, allocations, job_id, task_filter = _runtime_job_and_allocations(client, job_id, task_filter, service)
+    _image, task_name = _nomad_job_task_image(job, task_filter or job_id)
+    if not task_name and not task_filter:
+        _image, task_name = _nomad_job_task_image(job, "")
+    if not task_name:
+        raise LumaError(f"application terminal unavailable for {service}: task not found")
+    allocation = _latest_nomad_allocation_for_task(allocations, task_name)
+    if not allocation:
+        raise LumaError(f"application terminal unavailable for {service}: no allocation found")
+    client_status = str(allocation.get("ClientStatus") or "")
+    if allocation.get("DesiredStatus") != "run" or client_status != "running":
+        raise LumaError(
+            f"application terminal unavailable for {service}: allocation is {client_status or 'not running'}"
+        )
+    task_state = _allocation_task_state(allocation, task_name)
+    task_status = str(task_state.get("State") or "")
+    if task_status and task_status != "running":
+        raise LumaError(f"application terminal unavailable for {service}: task is {task_status}")
+    alloc_id = str(allocation.get("ID") or "").strip()
+    if not alloc_id:
+        raise LumaError(f"application terminal unavailable for {service}: allocation id missing")
+    node_name = _luma_node_name_for_allocation(state, allocation)
+    if not node_name:
+        node_id = str(allocation.get("NodeID") or allocation.get("NodeName") or "")
+        raise LumaError(
+            f"application terminal unavailable for {service}: allocation node is not a ready Luma node ({node_id or 'unknown'})"
+        )
+    nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+    record = nodes.get(node_name) if isinstance(nodes.get(node_name), dict) else {}
+    agent = record.get("agent") if isinstance(record.get("agent"), dict) else {}
+    capabilities = {str(value) for value in (agent.get("capabilities") or [])}
+    if "container-terminal" not in capabilities:
+        raise LumaError(
+            f"application terminal unavailable for {service}: node agent on {node_name} does not support container terminal; update the node agent"
+        )
+    return {
+        "service": service,
+        "job": job_id,
+        "task": task_name,
+        "allocId": alloc_id,
+        "node": node_name,
+    }
+
+
 class _TerminalSession:
     def __init__(self, session_id: str, node_name: str, browser: WebSocket, agent: "_TerminalAgentConnection"):
         self.id = session_id
@@ -17751,8 +17807,9 @@ class TerminalBroker:
         return set(self._agents)
 
     async def connect_browser(self, websocket: WebSocket) -> None:
-        node_name = str(websocket.query_params.get("node") or "").strip()
-        if not node_name:
+        requested_node = str(websocket.query_params.get("node") or "").strip()
+        requested_service = str(websocket.query_params.get("service") or "").strip()
+        if not requested_node and not requested_service:
             await websocket.close(code=1008)
             return
         if not await self._acquire_pending_auth(websocket):
@@ -17771,15 +17828,24 @@ class TerminalBroker:
                 return
         finally:
             self._pending_auth_for_loop().release()
+        container_target: Dict[str, str] | None = None
         try:
             state = load_state()
             require_token(state, token, token_type="deploy")
-            nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
-            entry = _node_record_entry_for_name_or_id(nodes, node_name)
-            if entry is None:
-                raise LumaError(f"node is not registered: {node_name}")
-            node_name = entry[0]
-        except LumaError:
+            if requested_service:
+                container_target = _resolve_application_terminal_target(state, requested_service)
+                node_name = container_target["node"]
+            else:
+                nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
+                entry = _node_record_entry_for_name_or_id(nodes, requested_node)
+                if entry is None:
+                    raise LumaError(f"node is not registered: {requested_node}")
+                node_name = entry[0]
+        except LumaError as exc:
+            try:
+                await websocket.send_json({"type": "error", "message": str(exc)})
+            except Exception:
+                pass
             await websocket.close(code=1008)
             return
         session: _TerminalSession | None = None
@@ -17799,8 +17865,20 @@ class TerminalBroker:
                 session_id = f"term-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
                 session = _TerminalSession(session_id, node_name, websocket, agent)
                 self._sessions[session_id] = session
-            await websocket.send_json({"type": "open", "sessionId": session.id, "node": node_name})
-            await self._send_agent(agent, {"type": "open", "sessionId": session.id, "node": node_name, "cols": 120, "rows": 32})
+            open_payload: Dict[str, Any] = {"type": "open", "sessionId": session.id, "node": node_name, "cols": 120, "rows": 32}
+            browser_open: Dict[str, Any] = {"type": "open", "sessionId": session.id, "node": node_name}
+            if container_target:
+                extra = {
+                    "target": "container",
+                    "service": container_target["service"],
+                    "job": container_target["job"],
+                    "task": container_target["task"],
+                    "allocId": container_target["allocId"],
+                }
+                open_payload.update(extra)
+                browser_open.update(extra)
+            await websocket.send_json(browser_open)
+            await self._send_agent(agent, open_payload)
             idle_task = asyncio.create_task(self._watch_idle(session))
             while True:
                 message = await websocket.receive_json()

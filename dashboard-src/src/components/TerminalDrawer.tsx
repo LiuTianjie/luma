@@ -2,20 +2,27 @@ import { useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import type { DashboardNode, Lang } from "../types";
+import type { DashboardNode, DashboardService, Lang } from "../types";
 import { t } from "../i18n";
 import { useOverlay } from "../useOverlay";
 
 type TerminalStatus = "connecting" | "connected" | "ended" | "error";
 
+export type TerminalSessionTarget = {
+  kind: "node" | "container";
+  node?: DashboardNode;
+  service?: DashboardService;
+  stack?: string;
+};
+
 export function TerminalDrawer({
   lang,
-  node,
+  target,
   token,
   onClose,
 }: {
   lang: Lang;
-  node: DashboardNode;
+  target: TerminalSessionTarget;
   token: string;
   onClose: () => void;
 }) {
@@ -32,6 +39,13 @@ export function TerminalDrawer({
   // terminal user expects. The xterm effect below runs after this one and takes
   // focus back off the close button, so the caret lands in the terminal on open.
   const overlayRef = useOverlay<HTMLElement>(onClose);
+  const isContainer = target.kind === "container";
+  const title = isContainer
+    ? `${target.stack || target.service?.stack || "-"} / ${target.service?.name || target.service?.fullName || "-"}`
+    : (target.node?.name || "-");
+  const meta = isContainer
+    ? [target.node?.name, target.node?.region, "container"].filter(Boolean).join(" · ")
+    : `${target.node?.region || "-"} · ${target.node?.agentOs || "agent"}`;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -59,7 +73,12 @@ export function TerminalDrawer({
     fitRef.current = fit;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const params = new URLSearchParams({ node: node.name || "" });
+    const params = new URLSearchParams();
+    if (isContainer) {
+      params.set("service", target.service?.fullName || target.service?.name || "");
+    } else {
+      params.set("node", target.node?.name || "");
+    }
     const socket = new WebSocket(`${protocol}//${window.location.host}/v1/terminal/browser?${params.toString()}`);
     socketRef.current = socket;
 
@@ -73,7 +92,9 @@ export function TerminalDrawer({
     resizeObserver.observe(container);
 
     socket.addEventListener("open", () => {
-      term.writeln(lang === "zh" ? "正在连接节点终端..." : "Connecting to node terminal...");
+      term.writeln(lang === "zh"
+        ? (isContainer ? "正在连接容器终端..." : "正在连接节点终端...")
+        : (isContainer ? "Connecting to container shell..." : "Connecting to node terminal..."));
       socket.send(JSON.stringify({ type: "auth", token }));
     });
     socket.addEventListener("message", (event) => {
@@ -113,7 +134,7 @@ export function TerminalDrawer({
         );
         return;
       }
-      setStatus((current) => current === "ended" ? current : "ended");
+      setStatus((current) => (current === "ended" || current === "error") ? current : "ended");
     });
     socket.addEventListener("error", () => {
       reportedCloseRef.current = true;
@@ -127,20 +148,24 @@ export function TerminalDrawer({
       socket.send(JSON.stringify({ type: "input", sessionId: sessionRef.current, data }));
     });
 
+    window.addEventListener("resize", sendResize);
     return () => {
-      disposable.dispose();
+      window.removeEventListener("resize", sendResize);
       resizeObserver.disconnect();
-      if (socket.readyState === WebSocket.OPEN && sessionRef.current) {
-        socket.send(JSON.stringify({ type: "close", sessionId: sessionRef.current }));
+      disposable.dispose();
+      if (socket.readyState === WebSocket.OPEN) {
+        if (sessionRef.current) {
+          socket.send(JSON.stringify({ type: "close", sessionId: sessionRef.current }));
+        }
+        socket.close();
       }
-      socket.close();
       term.dispose();
       socketRef.current = null;
       terminalRef.current = null;
       fitRef.current = null;
       sessionRef.current = "";
     };
-  }, [lang, node.name, token]);
+  }, [lang, isContainer, target.node?.name, target.service?.fullName, target.service?.name, token]);
 
   const statusLabel = {
     connecting: lang === "zh" ? "连接中" : "Connecting",
@@ -161,9 +186,9 @@ export function TerminalDrawer({
       >
         <header className="terminal-modal-header">
           <div className="terminal-modal-heading">
-            <p className="eyebrow">Terminal</p>
-            <h2 id="terminal-modal-title">{node.name || "-"}</h2>
-            <span className="terminal-node-meta">{node.region || "-"} · {node.agentOs || "agent"}</span>
+            <p className="eyebrow">{isContainer ? (lang === "zh" ? "容器终端" : "Container shell") : "Terminal"}</p>
+            <h2 id="terminal-modal-title">{title}</h2>
+            <span className="terminal-node-meta">{meta}</span>
           </div>
           <span className="terminal-status-pill">{statusLabel}</span>
           <button type="button" className="icon-button" onClick={onClose}>
