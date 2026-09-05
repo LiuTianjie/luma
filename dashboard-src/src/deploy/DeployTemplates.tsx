@@ -140,7 +140,7 @@ export function DeployTemplates({
               </div>
             </div>
           </div>
-          <span>{lang === "zh" ? "卡片只展示会写入部署配置的字段摘要；完整内容以右侧表单和 YAML 为准。" : "Cards show fields that affect the generated deployment config. The form and YAML are the source of truth."}</span>
+          <span>{lang === "zh" ? "选择模板后，可在配置页面调整表单和 YAML。" : "Choose a template, then edit its form and YAML on the configuration page."}</span>
         </div>
       </div>
 
@@ -157,7 +157,7 @@ export function DeployTemplates({
               <span>{featuredTemplate.mode === "compose" ? "Compose" : lang === "zh" ? "单服务" : "Service"}</span>
             </div>
             <div className="template-feature-copy">
-              <p className="eyebrow">{lang === "zh" ? "当前蓝图" : "Selected blueprint"}</p>
+              <p className="eyebrow">{lang === "zh" ? "当前模板" : "Selected template"}</p>
               <h3>{deployTemplateName(featuredTemplate, lang)}</h3>
               <p>{deployTemplateDescription(featuredTemplate, lang)}</p>
             </div>

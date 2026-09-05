@@ -36,7 +36,7 @@ export function DeploySummary({
   const summaryState = errors.length
     ? (zh ? "待修正" : "Blocked")
     : preview
-      ? (zh ? "已预览" : "Previewed")
+      ? (zh ? "已校验" : "Validated")
       : (zh ? "草稿" : "Draft");
   return (
     <aside className="deploy-summary">
@@ -44,24 +44,24 @@ export function DeploySummary({
         <div className="deploy-summary-hero">
           <span className="deploy-summary-indicator" aria-hidden="true" />
           <div>
-            <p className="eyebrow">{lang === "zh" ? "影响预览" : "Impact"}</p>
+            <p className="eyebrow">{lang === "zh" ? "部署摘要" : "Deployment summary"}</p>
             <h3>{submission?.name || (mode === "service" ? serviceDraft.name : composeDraft.name)}</h3>
           </div>
           <b>{summaryState}</b>
         </div>
         <dl className="deploy-summary-list">
           <div><dt>{zh ? "类型" : "Type"}</dt><dd>{mode === "service" ? (zh ? "单服务" : "Single service") : (zh ? "Compose 应用" : "Compose app")}</dd></div>
-          <div><dt>{zh ? "调度" : "Placement"}</dt><dd>{submission ? compact([submission.region, `${submission.services.length} services`]) : mode === "service" ? compact([serviceDraft.region, serviceDraft.node]) : compact([composeDraft.region, `${composeDraft.services.length} services`])}</dd></div>
+          <div><dt>{zh ? "调度" : "Placement"}</dt><dd>{submission ? compact([submission.region, `${submission.services.length} ${zh ? "个服务" : "services"}`]) : mode === "service" ? compact([serviceDraft.region, serviceDraft.node]) : compact([composeDraft.region, `${composeDraft.services.length} ${zh ? "个服务" : "services"}`])}</dd></div>
           <div><dt>{zh ? "入口" : "Ingress"}</dt><dd>{(submission?.ingress || publicTargets).length ? (submission?.ingress || publicTargets).join(", ") : (zh ? "内部服务" : "Internal only")}</dd></div>
           <div><dt>{zh ? "存储" : "Storage"}</dt><dd>{(submission?.volumes || storage).length ? (submission?.volumes || storage).join(", ") : (zh ? "无托管卷" : "No managed volumes")}</dd></div>
         </dl>
       </div>
       {preview ? (
         <div className="deploy-summary-card">
-          <h3>{zh ? "预览结果" : "Preview result"}</h3>
+          <h3>{zh ? "校验结果" : "Validation result"}</h3>
           <dl>
-            <div><dt>Artifacts</dt><dd>{preview.artifacts?.length || 0}</dd></div>
-            <div><dt>Warnings</dt><dd>{previewWarnings.length}</dd></div>
+            <div><dt>{zh ? "生成产物" : "Artifacts"}</dt><dd>{preview.artifacts?.length || 0}</dd></div>
+            <div><dt>{zh ? "提示" : "Warnings"}</dt><dd>{previewWarnings.length}</dd></div>
           </dl>
           {preview.artifacts?.length ? preview.artifacts.map((artifact) => (
             <p key={`${artifact.kind}-${artifact.path}`}>{artifact.kind}: {artifact.path}</p>

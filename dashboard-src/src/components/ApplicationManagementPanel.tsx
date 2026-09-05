@@ -662,7 +662,7 @@ export function ApplicationManagementPanel({
   };
 
   return (
-    <article className="panel app-management-panel" id="section-1">
+    <article className={`panel app-management-panel${selected ? " has-application-workspace" : ""}`} id="section-1">
       {selectedStack && !selected ? <div className="alert alert-warning"><span>{lang === "zh" ? `未找到应用 ${selectedStack}，可能已删除或当前账号无法访问。` : `Application ${selectedStack} was not found. It may have been removed or is unavailable to this account.`}</span><button className="ghost" type="button" onClick={() => setSelected(null)}>{lang === "zh" ? "返回列表" : "Back to list"}</button></div> : null}
       {actionError ? <div className="alert alert-error"><span>{actionError}</span></div> : null}
       {actionNotice ? <div className="alert alert-success"><span>{actionNotice}</span></div> : null}

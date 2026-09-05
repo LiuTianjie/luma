@@ -122,7 +122,7 @@ export function AlertingPanel({ lang, token, tab, nodeNames = [], applicationNam
   function saveRule(event: FormEvent) { event.preventDefault(); if (!rule) return; void act(async (signal) => { await postAlerting("rules", token, ruleRequest(rule), signal); if (signal.aborted) return; setRule(null); setRefresh((n) => n + 1); navigate(basePath); }, zh ? "规则已保存" : "Rule saved"); }
   function saveChannel(event: FormEvent) { event.preventDefault(); if (!channel) return; void act(async (signal) => { await postAlerting("channels", token, channelRequest(channel.id, channel.name, channel.enabled, channel.appId, secret, channel.chatId), signal); if (signal.aborted) return; setChannel(null); setSecret(""); setRefresh((n) => n + 1); navigate(basePath); }, zh ? "渠道已保存，尚未发送测试消息" : "Channel saved; no test message has been sent"); }
 
-  return <div className="alerting-panel">
+  return <div className={`alerting-panel${editor ? " is-editor" : ""}`}>
     {editor && <button className="ghost" onClick={() => navigate(basePath)}>{zh ? "返回列表" : "Back to list"}</button>}
     <div className="alert-toolbar"><small>{zh ? "后台每轮检查规则；关闭页面后继续运行。页面每 15 秒刷新。" : "Rules run in the background, even when this page is closed. Refreshes every 15 seconds."}</small><button className="ghost" onClick={refreshNow} disabled={busy}>{zh ? "刷新" : "Refresh"}</button></div>
     {error && <div role="alert" className="alert-error">{loaded ? (zh ? "刷新失败，以下为上次成功读取的数据：" : "Refresh failed; showing previously loaded data: ") : (zh ? "告警服务读取失败：" : "Unable to load alerting: ")}{error}<button className="ghost" onClick={refreshNow}>{zh ? "重试" : "Retry"}</button></div>}

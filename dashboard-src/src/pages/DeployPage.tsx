@@ -25,6 +25,7 @@ export function DeployPage({
   vm,
   updateContext,
   updateContextNode,
+  deployTemplateLanding,
   onRefresh,
   onCloseUpdate,
   onTemplateLandingChange,
@@ -61,7 +62,7 @@ export function DeployPage({
 
   return (
     <>
-      {!updating ? (
+      {!updating && source === "templates" && deployTemplateLanding ? (
         <PageHeader
           meta={{
             eyebrow: zh ? "部署工作台" : "Deploy workspace",
@@ -92,7 +93,7 @@ export function DeployPage({
         initialEditorMode={updateContext?.deploymentConfig?.manifest || source === "yaml" ? "yaml" : "form"}
         initialYamlDirty={Boolean(updateContext?.deploymentConfig?.manifest)}
         contextLabel={updating && updateContext ? `${t(lang, "updateApp")} ${updateContext.app.stack}` : undefined}
-        modalTitle={updating ? title : undefined}
+        modalTitle={title}
         modalSubtitle={updating
           ? (zh ? "提交后按同名应用更新，部署前仍会先预览生成结果。" : "Deploying updates the same application. Preview is still available before submit.")
           : undefined}

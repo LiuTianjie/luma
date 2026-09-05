@@ -348,7 +348,7 @@ button.ghost.danger:hover:not(:disabled),
   color: var(--red);
 }
 
-input,
+input:not([type="checkbox"]):not([type="radio"]),
 select,
 textarea {
   width: 100%;
@@ -364,7 +364,7 @@ textarea {
     background-color var(--motion-fast) var(--ease-standard);
 }
 
-input,
+input:not([type="checkbox"]):not([type="radio"]),
 select {
   padding: 0 var(--space-lg);
 }
@@ -6842,11 +6842,25 @@ button:focus-visible, a:focus-visible, summary:focus-visible {
   outline-offset: 2px;
 }
 button.primary, .primary { font-weight: 400; }
-input, select, textarea, .luma-select-trigger {
+input:not([type="checkbox"]):not([type="radio"]), select, textarea, .luma-select-trigger {
   border: 0;
   border-bottom: 1px solid var(--line-strong);
   min-height: 40px;
   background: var(--surface-quiet);
+}
+input[type="checkbox"], input[type="radio"] {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 3px;
 }
 input:focus-visible, select:focus-visible, textarea:focus-visible, .luma-select-trigger:focus-visible {
   outline-offset: -2px;
@@ -6925,6 +6939,69 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, .luma-select-
 .panel-heading, .node-fleet-header, .deploy-heading { margin-bottom: 20px; }
 .panel-heading h2, .node-fleet-header h2, .deploy-heading h2 { font-size: 16px; font-weight: 600; margin: 0; }
 .panel-heading .eyebrow { margin-bottom: 4px; font-weight: 400; letter-spacing: 0; }
+.application-detail-page.application-workspace {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.app-management-panel.has-application-workspace { padding: 0; background: transparent; }
+.breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
+.breadcrumbs a { color: var(--accent-text); text-decoration: none; }
+.breadcrumbs a:hover { text-decoration: underline; }
+.application-workspace .data-table td > small { display: block; margin-top: 4px; max-width: 60ch; overflow-wrap: anywhere; color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
+.application-workspace .data-table td > a { color: var(--accent-text); text-decoration: none; }
+.application-workspace .data-table td > a:hover { text-decoration: underline; }
+.application-workspace .application-detail-header {
+  margin: 16px 0 24px;
+  align-items: start;
+}
+.application-workspace .application-detail-header h1 {
+  margin: 4px 0 8px;
+  font-size: 28px;
+  line-height: 1.3;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.application-workspace .application-detail-header > div > span { color: var(--text-muted); }
+.application-workspace .application-detail-body { align-content: start; }
+.application-workspace .application-detail-section { padding: 24px; background: var(--surface); align-content: start; }
+.application-workspace .application-overview-grid article { background: var(--surface); border: 0; border-right: 1px solid var(--line); padding: 20px; }
+.application-workspace .application-overview-grid article:last-child { border-right: 0; }
+.source-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  width: 100%;
+  max-width: 1120px;
+}
+button.source-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 16px;
+  min-height: 200px;
+  padding: 28px;
+  text-align: left;
+  color: var(--text);
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+button.source-card:hover:not(:disabled) { background: var(--surface-quiet); border-color: var(--accent-text); }
+.source-card h2 { margin: 0; font-size: 20px; font-weight: 400; }
+.source-card p { margin: 0; max-width: 50ch; color: var(--text-muted); line-height: 1.6; }
+.source-card > span { margin-top: auto; color: var(--accent-text); }
+@media (max-width: 760px) {
+  .source-grid { grid-template-columns: minmax(0, 1fr); }
+  button.source-card { padding: 20px; min-height: 180px; }
+  .application-workspace .application-detail-header { grid-template-columns: minmax(0, 1fr); }
+  .application-workspace .application-detail-actions { justify-content: flex-start; }
+  .application-workspace .application-detail-section { padding: 16px; }
+}
 .table-wrap { border: 0; }
 th, td { padding: 12px 16px; height: 48px; }
 th { background: var(--well); color: var(--text); font-size: 13px; font-weight: 600; }

@@ -1,7 +1,12 @@
-.observability-tabs { display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:14px; margin-bottom:24px; }
-.observability-tabs button { padding:10px 16px; }
-.observability-tabs button[aria-current="page"] { background:var(--text); color:var(--surface, #fff); }
+.observability-tabs { display:flex; gap:0; flex-wrap:wrap; border-bottom:1px solid var(--line); padding:0; margin:0; }
+.observability-tabs button { padding:12px 16px; border:0; border-bottom:3px solid transparent; background:transparent; color:var(--text-muted); }
+.observability-tabs button[aria-current="page"] { background:transparent; color:var(--text); border-bottom-color:var(--accent); }
 .alerting-panel { display:grid; gap:20px; min-width:0; }
+.alerting-panel > button { justify-self:start; }
+.alerting-panel.is-editor { width:100%; max-width:848px; }
+.alerting-panel.is-editor .alert-form { margin:0; padding:0; border:0; }
+.alert-actions button[type="submit"] { background:var(--accent); border-color:var(--accent); color:#fff; }
+.alert-actions button[type="submit"]:hover:not(:disabled) { background:var(--accent-hover, #0353e9); color:#fff; }
 .alerting-panel .panel { min-width:0; padding:24px; }
 .alert-toolbar, .alert-actions, .alert-summary { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
 .alert-toolbar { justify-content:space-between; }
@@ -23,7 +28,7 @@
 .alert-badge.firing, .alert-badge.failed, .alert-badge.critical { color:var(--danger, #ba4444); }
 .alert-badge.pending, .alert-badge.warning { color:var(--warning, #a36b11); }
 .alert-badge.resolved, .alert-badge.sent { color:var(--success, #3a805e); }
-.alert-form { border-top:1px solid var(--line); margin-top:20px; padding-top:20px; display:grid; gap:18px; }
+.alert-form { border-top:1px solid var(--line); margin-top:20px; padding-top:20px; display:grid; gap:18px; max-width:800px; }
 .alert-form-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; }
 .alert-form label { display:grid; gap:7px; font-size:var(--text-label, 13px); }
 .alert-form .alert-checkbox, .alert-checkbox { display:flex; align-items:center; gap:8px; }
