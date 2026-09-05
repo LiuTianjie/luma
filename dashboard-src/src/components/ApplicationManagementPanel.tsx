@@ -681,13 +681,15 @@ export function ApplicationManagementPanel({
       {!selectedStack ? <>
       <div className="application-filter-bar" aria-label={lang === "zh" ? "应用筛选" : "Application filters"}>
         <label className="application-search-field">
-          <Search size={16} aria-hidden="true" />
-          <span className="sr-only">{lang === "zh" ? "搜索应用" : "Search applications"}</span>
-          <input
-            value={filters.query}
-            onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
-            placeholder={lang === "zh" ? "搜索应用、域名、镜像" : "Search app, domain, image"}
-          />
+          <span>{lang === "zh" ? "搜索应用" : "Search applications"}</span>
+          <span className="application-search-control">
+            <Search size={16} aria-hidden="true" />
+            <input
+              value={filters.query}
+              onChange={(event) => setFilters((current) => ({ ...current, query: event.target.value }))}
+              placeholder={lang === "zh" ? "搜索应用、域名、镜像" : "Search app, domain, image"}
+            />
+          </span>
         </label>
         <label>
           <span>{t(lang, "status")}</span>

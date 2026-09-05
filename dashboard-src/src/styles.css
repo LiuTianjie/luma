@@ -2159,15 +2159,9 @@ tbody tr.is-selected {
   position: relative;
 }
 
-.application-search-field svg {
-  position: absolute;
-  left: 12px;
-  bottom: 10px;
+.application-search-control svg {
+  flex: 0 0 16px;
   color: var(--text-subtle);
-}
-
-.application-search-field input {
-  padding-left: 38px;
 }
 
 .application-filter-count {

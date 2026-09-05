@@ -62,3 +62,87 @@
 }
 .application-workspace.application-detail-page .application-detail-section > h3,
 .application-workspace.application-detail-page .application-diagnostics-list > p { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+
+/* Keep the list controls and dense operational data on a consistent rhythm. */
+.app-management-panel .application-filter-bar {
+  grid-template-columns: minmax(240px, 1fr) 180px 180px auto;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding-bottom: 20px;
+}
+.app-management-panel .application-filter-bar label { gap: 8px; }
+.app-management-panel .application-search-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  transition: border-color 160ms ease;
+}
+.app-management-panel .application-search-control:focus-within {
+  border-color: var(--accent-text);
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.app-management-panel .application-search-control input {
+  min-width: 0;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+  box-shadow: none;
+}
+.app-management-panel .application-filter-bar .luma-select-trigger {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.app-management-panel .application-filter-count {
+  min-height: 42px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.app-management-panel .app-table th {
+  height: 42px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.app-management-panel .app-table td { padding-top: 16px; padding-bottom: 16px; }
+.app-management-panel .app-table .primary-cell strong { font-size: 14px; font-weight: 600; }
+.app-management-panel .app-table .primary-cell { gap: 5px; }
+.app-management-panel .app-table .badge { border-color: transparent; border-radius: 4px; }
+.app-management-panel .app-action-row { gap: 6px; }
+.app-management-panel .app-action-row button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 4px;
+}
+.app-management-panel .app-table tr:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }
+@media (max-width: 1100px) {
+  .app-management-panel .application-filter-bar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+@media (max-width: 600px) {
+  .app-management-panel .application-filter-bar { gap: 12px; }
+  .app-management-panel .application-search-field,
+  .app-management-panel .application-filter-count { grid-column: 1 / -1; }
+}
+.app-management-panel .app-table { min-width: 900px; }
+.app-management-panel .app-table th:first-child,
+.app-management-panel .app-table td:first-child { width: 18%; min-width: 0; }
+.app-management-panel .app-table th:nth-child(2),
+.app-management-panel .app-table td:nth-child(2) { width: 76px; }
+.app-management-panel .app-table th:nth-child(4),
+.app-management-panel .app-table td:nth-child(4),
+.app-management-panel .app-table th:nth-child(6),
+.app-management-panel .app-table td:nth-child(6) { width: 68px; }
+.app-management-panel .app-table th:nth-child(5),
+.app-management-panel .app-table td:nth-child(5) { width: 15%; }
+.app-management-panel .app-table th:last-child,
+.app-management-panel .app-table td:last-child { width: 190px; text-align: right; }
+.app-management-panel .app-table :is(th, td) { padding-left: 12px; padding-right: 12px; }
