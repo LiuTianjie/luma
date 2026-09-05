@@ -135,7 +135,7 @@ export function TrendChart({
       preserveAspectRatio="none"
       role="img"
       aria-hidden
-      style={{ height }}
+      style={{ display: "block", width: "100%", maxWidth: "100%", height }}
     >
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
