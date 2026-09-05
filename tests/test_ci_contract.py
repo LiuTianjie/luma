@@ -31,11 +31,11 @@ class SourceGateTests(unittest.TestCase):
         self.assertIn("pull_request", workflow["on"])
         self.assertEqual(workflow["permissions"], {"contents": "read"})
 
-    def test_failing_python_tests_stop_gate_before_dashboard_build(self):
+    def test_gate_builds_assets_before_python_tests_and_stops_on_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             trace = directory / "trace"
-            for command in ("python", "npm", "git"):
+            for command in ("python", "npm", "node", "git"):
                 stub = directory / command
                 stub.write_text(
                     '#!/bin/bash\n'
@@ -52,7 +52,9 @@ class SourceGateTests(unittest.TestCase):
             invoked = trace.read_text()
             self.assertIn("generate-cli-reference.py --check", invoked)
             self.assertIn("-m unittest discover -s tests -p test_*.py", invoked)
-            self.assertNotIn("npm ", invoked)
+            self.assertLess(invoked.index("npm run build:dashboard"), invoked.index("python -m unittest"))
+            self.assertNotIn("node ", invoked)
+            self.assertNotIn("git ", invoked)
 
 
 class CliReferenceTests(unittest.TestCase):
