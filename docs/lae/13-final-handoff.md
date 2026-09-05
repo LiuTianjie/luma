@@ -2,7 +2,7 @@
 
 > 基线日期：2026-07-15  
 > 产品环境：validation；不是 production GA 声明。  
-> 仓库 Luma 包版本现为 `0.1.289`。下文拓扑与镜像 tag 是 2026-07-15 冻结点；线上 Control/节点以 `luma status` 与 Nomad job image 为准。
+> 仓库包版本以 [pyproject.toml](../../pyproject.toml) 为准。下文拓扑与镜像 tag 是 2026-07-15 冻结点；线上 Control/节点以 `luma status` 与 Nomad job image 为准。
 
 ## 1. 当前可用入口
 

@@ -203,7 +203,7 @@ class BuilderTaskSecurityTests(unittest.TestCase):
         return self._task(control_server.handle_builder_task_get(self.service_token, task_id))
 
     def _state_text(self):
-        return (self.state_dir / "control.json").read_text(encoding="utf-8")
+        return json.dumps(load_state(), sort_keys=True)
 
     def test_scoped_service_token_is_required_and_management_token_is_rejected(self):
         body = self._analyze_body()

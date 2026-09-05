@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from luma.control import server as control_server
-from luma.control.state import init_state
+from luma.control.state import init_state, load_state
 from luma.errors import LumaError
 from luma.lae_runtime import RUNTIME_AUDIENCE, RuntimeBinding
 
@@ -133,9 +133,7 @@ class LaePrincipalFileTests(unittest.TestCase):
                 binding=self._binding(),
             )
 
-        state_text = self.state_dir.joinpath("control.json").read_text(
-            encoding="utf-8"
-        )
+        state_text = json.dumps(load_state())
         self.assertNotIn(self.builder_token, state_text)
         self.assertNotIn(self.runtime_token, state_text)
         self.assertNotIn(self.builder_token, self.builder_config_path.read_text())
@@ -166,7 +164,7 @@ class LaePrincipalFileTests(unittest.TestCase):
         )
         self.assertNotIn(
             base64.b64encode(self.plan_signing_secret).decode("ascii"),
-            self.state_dir.joinpath("control.json").read_text(encoding="utf-8"),
+            json.dumps(load_state()),
         )
         self.plan_signing_path.chmod(0o644)
         with self.assertRaisesRegex(LumaError, "configuration is invalid"):

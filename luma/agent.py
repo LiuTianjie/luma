@@ -38,6 +38,7 @@ from .builder_executor import (
     open_builder_analysis_artifact,
 )
 from .errors import LumaError
+from .builder_storage import execution_guard as builder_storage_execution_guard
 from .installer import luma_installer_command
 from .local import LocalExecutor, LocalResult
 from .registry_management import RegistryHttpClient, validate_digest, validate_repository
@@ -157,6 +158,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
         # capability when that code genuinely exists.
         capabilities.append("builder-analyze-v1")
         capabilities.append("builder-artifact-export-v1")
+        capabilities.append("builder-storage-v1")
     if builder_build_available(os_value):
         # build-plan has a separate, stricter rootless BuildKit + supply-chain
         # gate.  Never advertise the aggregate builder-task-v1 capability.
@@ -186,7 +188,36 @@ def node_agent_metrics() -> Dict[str, Any]:
         metrics.update(_linux_host_metrics())
     elif os_value == "darwin":
         metrics.update(_darwin_host_metrics(metrics.get("loadPercent")))
+    metrics.update(_filesystem_metrics())
     return {key: value for key, value in metrics.items() if value not in ("", None)}
+
+
+def _filesystem_metrics() -> Dict[str, Any]:
+    """Report one explicitly identified host filesystem, not container disk use."""
+    configured = os.environ.get("LUMA_METRICS_DISK_PATH", "").strip()
+    path = Path(configured) if configured else (Path("/opt/luma") if Path("/opt/luma").exists() else Path("/"))
+    if not path.is_absolute():
+        return {}
+    try:
+        usage = os.statvfs(path)
+    except (OSError, AttributeError):
+        return {}
+    block_size = usage.f_frsize or usage.f_bsize
+    total = max(0, usage.f_blocks * block_size)
+    available = max(0, usage.f_bavail * block_size)
+    used = max(0, (usage.f_blocks - usage.f_bfree) * block_size)
+    if not total or not used + available:
+        return {}
+    result: Dict[str, Any] = {
+        "metricsPath": str(path),
+        "diskTotalBytes": total,
+        "diskAvailableBytes": available,
+        # Like df, exclude filesystem-reserved blocks from usable capacity.
+        "diskUsedPercent": round(min(100, used / (used + available) * 100), 1),
+    }
+    if usage.f_files > 0:
+        result["inodesUsedPercent"] = round(min(100, max(0, usage.f_files - usage.f_ffree) / usage.f_files * 100), 1)
+    return result
 
 
 def _agent_node_diagnostics(*, executor: LocalExecutor | None = None) -> Dict[str, Any]:
@@ -1528,35 +1559,36 @@ def _complete_agent_task(client: Any, *, node_name: str, node_id: str, task: Dic
             if str(task.get("action") or "") == "export-builder-artifact":
                 if cancel_event.is_set():
                     raise BuilderTaskCanceled("builder artifact export canceled")
-                export = open_builder_analysis_artifact(
-                    task.get("payload") if isinstance(task.get("payload"), dict) else {},
-                    cancel_event=cancel_event,
-                )
-                try:
-                    payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
-                    response = client.upload_builder_artifact(
-                        lease_id=str(payload.get("leaseId") or ""),
-                        node_name=node_name,
-                        node_id=node_id,
-                        stream=export.stream,
-                        media_type=export.media_type,
-                        digest=export.digest,
-                        size_bytes=export.size_bytes,
-                        timeout=60,
+                with builder_storage_execution_guard():
+                    export = open_builder_analysis_artifact(
+                        task.get("payload") if isinstance(task.get("payload"), dict) else {},
+                        cancel_event=cancel_event,
                     )
-                    if response != {
-                        "leaseId": str(payload.get("leaseId") or ""),
-                        "accepted": True,
-                    }:
-                        raise LumaError("builder artifact upload was not accepted")
-                    result = {
-                        "leaseId": str(payload.get("leaseId") or ""),
-                        "digest": export.digest,
-                        "sizeBytes": export.size_bytes,
-                        "message": "builder artifact exported",
-                    }
-                finally:
-                    export.close()
+                    try:
+                        payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+                        response = client.upload_builder_artifact(
+                            lease_id=str(payload.get("leaseId") or ""),
+                            node_name=node_name,
+                            node_id=node_id,
+                            stream=export.stream,
+                            media_type=export.media_type,
+                            digest=export.digest,
+                            size_bytes=export.size_bytes,
+                            timeout=60,
+                        )
+                        if response != {
+                            "leaseId": str(payload.get("leaseId") or ""),
+                            "accepted": True,
+                        }:
+                            raise LumaError("builder artifact upload was not accepted")
+                        result = {
+                            "leaseId": str(payload.get("leaseId") or ""),
+                            "digest": export.digest,
+                            "sizeBytes": export.size_bytes,
+                            "message": "builder artifact exported",
+                        }
+                    finally:
+                        export.close()
             else:
                 result = execute_agent_task(
                     task,
@@ -2189,6 +2221,21 @@ def execute_agent_task(
     task: Dict[str, Any],
     *,
     config_path: Path = DEFAULT_AGENT_CONFIG,
+    progress: Callable[[Dict[str, Any]], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> Dict[str, Any]:
+    action = str(task.get("action") or "")
+    if action == "builder-storage":
+        from .builder_storage import execute_builder_storage
+        return execute_builder_storage(task.get("payload") if isinstance(task.get("payload"), dict) else {})
+    if action in {"analyze-source", "build-plan"}:
+        with builder_storage_execution_guard():
+            return _execute_agent_task_impl(task, config_path=config_path, progress=progress, cancel_event=cancel_event)
+    return _execute_agent_task_impl(task, config_path=config_path, progress=progress, cancel_event=cancel_event)
+
+
+def _execute_agent_task_impl(
+    task: Dict[str, Any], *, config_path: Path = DEFAULT_AGENT_CONFIG,
     progress: Callable[[Dict[str, Any]], None] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> Dict[str, Any]:

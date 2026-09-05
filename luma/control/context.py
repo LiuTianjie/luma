@@ -87,12 +87,16 @@ def current_context_name(*, required: bool = True) -> str | None:
 def load_current_context() -> Dict[str, Any]:
     name = current_context_name(required=True)
     assert name is not None
+    return load_context(name)
+
+
+def load_context(name: str) -> Dict[str, Any]:
     path = _context_path(name)
     if not path.exists():
-        raise LumaError(f"current context not found: {name}")
+        raise LumaError(f"context not found: {name}")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         raise LumaError(
             f"invalid context: {name} (file is corrupt — run luma login again)"
         ) from exc

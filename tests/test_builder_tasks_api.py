@@ -159,7 +159,7 @@ class BuilderTaskApiTests(unittest.TestCase):
         parent = load_state()["builderTasks"][created["id"]]
         self.assertEqual(parent["status"], "failed")
         self.assertEqual(parent["result"], {})
-        self.assertNotIn(sentinel, (self.state_dir / "control.json").read_text(encoding="utf-8"))
+        self.assertNotIn(sentinel, json.dumps(load_state()))
 
     def test_terminal_agent_completion_replay_is_idempotent(self):
         with TestClient(create_app()) as client:

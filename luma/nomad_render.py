@@ -788,6 +788,7 @@ def render_control_job(
     image: str,
     node_name: str,
     control_environment: Mapping[str, str] | None = None,
+    allow_auto_revert: bool = True,
     as_json: bool = True,
 ) -> str | Dict[str, Any]:
     """Render the luma-control infrastructure job (bridge mode, port 8080).
@@ -795,7 +796,9 @@ def render_control_job(
     It mounts the manager's /opt/luma state + docker.sock as host binds (mount
     blocks, NOT the docker `volumes` shorthand; see _apply_volume_mounts for
     why). Pinned to the manager node. Routing is handled separately by the
-    Traefik file route.
+    Traefik file route. Callers performing an incompatible state migration
+    must disable auto-revert so Nomad cannot restart the previous image
+    against the migrated state.
     """
     environment = {
         "DOCKER_API_VERSION": "1.44",
@@ -810,7 +813,7 @@ def render_control_job(
         "Datacenters": ["dc1"],
         "Constraints": [{"LTarget": "${meta.luma_node_name}", "RTarget": node_name, "Operand": "="}],
         "Update": {
-            "AutoRevert": True,
+            "AutoRevert": allow_auto_revert,
             "MinHealthyTime": 6_000_000_000,
             "HealthyDeadline": 120_000_000_000,
             "HealthCheck": "checks",

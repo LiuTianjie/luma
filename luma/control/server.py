@@ -30,6 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import replace
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -88,6 +89,7 @@ from ..compose import (
 )
 from ..config import LumaConfig, load_config
 from ..errors import LumaError
+from .logs import LogReader, LogUnavailable, CAPABILITIES as LOG_CAPABILITIES, LIMITS as LOG_LIMITS, POLL_INTERVAL as LOG_POLL_INTERVAL, encode_event as _log_event
 from ..io import load_yaml
 from ..local import LocalExecutor
 from ..nomad_api import NomadApi, NomadRolloutError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary
@@ -170,11 +172,16 @@ from ..lae_admin_proxy import (
     load_lae_admin_proxy_config,
 )
 from .. import __version__
-from .metrics import load_history, record_samples, sustained_breach
+from .metrics import history_metadata, load_history, record_samples, retention_seconds, sustained_breach
+from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, render_metrics, require_metrics_token
+from . import operations as operations_api
 from .workflows import handle_workflow_check, handle_workflow_get, handle_workflow_list, handle_workflow_record
+from . import history as control_history
 
 from .state import (
     init_state,
+    load_auth_state,
+    load_runtime_state,
     load_state,
     mutate_state,
     mutate_state_if_changed,
@@ -239,7 +246,6 @@ AGENT_TASK_PROGRESS_LIMIT = int(os.environ.get("LUMA_NODE_AGENT_TASK_PROGRESS_LI
 BUILDER_TASK_RETENTION_SECONDS = int(os.environ.get("LUMA_BUILDER_TASK_RETENTION_SECONDS", str(7 * 24 * 3600)))
 BUILDER_TASK_IDEMPOTENCY_SECONDS = int(os.environ.get("LUMA_BUILDER_TASK_IDEMPOTENCY_SECONDS", str(24 * 3600)))
 BUILDER_TASK_EVENT_LIMIT = int(os.environ.get("LUMA_BUILDER_TASK_EVENT_LIMIT", "1000"))
-BUILD_RUN_EVENT_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_EVENT_LIMIT", "300"))
 BUILD_RUN_MESSAGE_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_MESSAGE_LIMIT", "4000"))
 BUILD_RUN_SUMMARY_MESSAGE_LIMIT = int(os.environ.get("LUMA_BUILD_RUN_SUMMARY_MESSAGE_LIMIT", "500"))
 LOCAL_BUILD_LEASE_SECONDS = int(os.environ.get("LUMA_LOCAL_BUILD_LEASE_SECONDS", "7200"))
@@ -473,9 +479,11 @@ def _update_agent_heartbeat(
     )
     if isinstance(metrics, dict):
         agent["metrics"] = _agent_metrics(metrics)
+        agent["metricsCollectedAt"] = int(time.time())
     if isinstance(container_stats, list):
         normalized_container_stats = _container_stats(container_stats)
         agent["containerStats"] = normalized_container_stats
+        agent["containerStatsCollectedAt"] = int(time.time())
     if isinstance(diagnostics, dict):
         agent["diagnostics"] = diagnostics
     return normalized_container_stats
@@ -495,9 +503,10 @@ def _record_metrics_history(
     try:
         metrics = body.get("metrics") if isinstance(body.get("metrics"), dict) else {}
         if container_stats is None:
-            raw_container_stats = body.get("containerStats") if isinstance(body.get("containerStats"), list) else []
-            container_stats = _normalize_container_stats_for_engine(raw_container_stats, config=config, state=state)
-        if not metrics and not container_stats:
+            raw_container_stats = body.get("containerStats")
+            if isinstance(raw_container_stats, list):
+                container_stats = _normalize_container_stats_for_engine(raw_container_stats, config=config, state=state)
+        if not metrics and container_stats is None:
             return
         record_samples(node_name, metrics, container_stats)
     except Exception as exc:  # pragma: no cover - defensive
@@ -514,19 +523,30 @@ def _agent_metrics(raw: Dict[str, Any]) -> Dict[str, Any]:
         "memoryTotalBytes",
         "memoryAvailableBytes",
         "memoryUsedPercent",
+        "diskTotalBytes",
+        "diskAvailableBytes",
+        "diskUsedPercent",
+        "inodesUsedPercent",
     }
     for key in numeric_keys:
         value = raw.get(key)
         if isinstance(value, bool):
             continue
         if isinstance(value, (int, float)):
+            if not math.isfinite(value) or value < 0:
+                continue
             metrics[key] = round(float(value), 1) if "Percent" in key or key == "load1" else int(value)
         elif isinstance(value, str):
             try:
                 parsed = float(value)
             except ValueError:
                 continue
+            if not math.isfinite(parsed) or parsed < 0:
+                continue
             metrics[key] = round(parsed, 1) if "Percent" in key or key == "load1" else int(parsed)
+    metrics_path = raw.get("metricsPath")
+    if isinstance(metrics_path, str) and metrics_path.startswith("/") and len(metrics_path) <= 4096 and not any(c in metrics_path for c in ("\0", "\r", "\n")):
+        metrics["metricsPath"] = metrics_path
     return metrics
 
 
@@ -1754,7 +1774,9 @@ def _sanitize_git_source(source: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _expire_stale_local_build_runs(runs: Dict[str, Any], now: int) -> None:
-    for run in runs.values():
+    active_values = getattr(runs, "active_values", None)
+    candidates = active_values({"running", "canceling"}) if callable(active_values) else runs.values()
+    for run in candidates:
         if not isinstance(run, dict) or str(run.get("mode") or "builder") != "local":
             continue
         if str(run.get("status") or "") not in {"running", "canceling"}:
@@ -1772,7 +1794,12 @@ def _require_build_project_available(
 ) -> None:
     if not project_key:
         return
-    for run_id, run in runs.items():
+    active_values = getattr(runs, "active_values", None)
+    candidates = (
+        ((str(run.get("id") or ""), run) for run in active_values({"running", "canceling", "finalizing"}))
+        if callable(active_values) else runs.items()
+    )
+    for run_id, run in candidates:
         if str(run_id) == current_run_id or not isinstance(run, dict):
             continue
         if str(run.get("projectKey") or "") != project_key:
@@ -1792,6 +1819,7 @@ def _create_build_run(
     project_key: str = "",
     mode: str = "builder",
     expires_at: int = 0,
+    retry_of: str = "",
 ) -> str:
     run_id = f"build-{secrets.token_hex(8)}"
     now = int(time.time())
@@ -1799,6 +1827,12 @@ def _create_build_run(
     def mutate(state: Dict[str, Any]) -> None:
         runs = _build_runs(state)
         _expire_stale_local_build_runs(runs, now)
+        parent = runs.get(retry_of) if retry_of else None
+        if retry_of:
+            if not isinstance(parent, dict):
+                raise LumaError(f"build run not found: {retry_of}")
+            if str(parent.get("status") or "") in {"running", "canceling", "finalizing"}:
+                raise LumaError("an active build cannot be retried; wait for it to finish or cancel it first")
         _require_build_project_available(runs, project_key)
         runs[run_id] = {
             "id": run_id,
@@ -1815,6 +1849,9 @@ def _create_build_run(
         }
         if expires_at:
             runs[run_id]["expiresAt"] = int(expires_at)
+        if isinstance(parent, dict):
+            runs[run_id]["retryOf"] = retry_of
+            runs[run_id]["retryRootId"] = str(parent.get("retryRootId") or retry_of)
         _prune_build_runs(state)
 
     _mutate_control_state(mutate)
@@ -1837,9 +1874,6 @@ def _append_build_run_event(run_id: str, event: Dict[str, Any]) -> None:
             events = []
             run["events"] = events
         events.append({**safe_event, "ts": int(time.time())})
-        limit = max(int(BUILD_RUN_EVENT_LIMIT), 100)
-        if len(events) > limit:
-            del events[: len(events) - limit]
         run["updatedAt"] = int(time.time())
         status = str(safe_event.get("status") or "")
         if status == "fail" and str(run.get("status") or "") not in {"canceling", "canceled"}:
@@ -1873,42 +1907,6 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
     _mutate_control_state(mutate)
 
 
-def _restart_build_run(
-    run_id: str,
-    body: Dict[str, Any],
-    *,
-    source: str,
-    build_node: str,
-    project_key: str = "",
-) -> None:
-    now = int(time.time())
-
-    def mutate(state: Dict[str, Any]) -> None:
-        run = _build_runs(state).get(run_id)
-        if not isinstance(run, dict):
-            raise LumaError(f"build run not found: {run_id}")
-        _expire_stale_local_build_runs(_build_runs(state), now)
-        _require_build_project_available(_build_runs(state), project_key, current_run_id=run_id)
-        run["status"] = "running"
-        run["controlProcessInstanceId"] = _CONTROL_PROCESS_INSTANCE_ID
-        run["source"] = source
-        run["buildNode"] = build_node
-        run["projectKey"] = project_key
-        run["mode"] = "builder"
-        run["request"] = _redact_build_request(body)
-        run["events"] = []
-        run["message"] = ""
-        run.pop("result", None)
-        run.pop("completedAt", None)
-        run.pop("canceledAt", None)
-        run.pop("cancelRequestedAt", None)
-        run.pop("agentTaskId", None)
-        run.pop("expiresAt", None)
-        run["updatedAt"] = now
-
-    _mutate_control_state(mutate)
-
-
 def _build_run_result_summary(result: Dict[str, Any]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {}
     for key in ("service", "deployment", "image", "images", "dns", "orchestrator"):
@@ -1918,28 +1916,14 @@ def _build_run_result_summary(result: Dict[str, Any]) -> Dict[str, Any]:
     return summary
 
 
-def _prune_build_runs(state: Dict[str, Any], *, limit: int = 100) -> None:
-    runs = _build_runs(state)
-    event_limit = max(int(BUILD_RUN_EVENT_LIMIT), 100)
-    for run in runs.values():
-        if not isinstance(run, dict):
-            continue
-        events = run.get("events") if isinstance(run.get("events"), list) else []
-        if len(events) > event_limit:
-            run["events"] = events[-event_limit:]
-        if run.get("message"):
-            run["message"] = str(run.get("message"))[:BUILD_RUN_MESSAGE_LIMIT]
-    if len(runs) <= limit:
-        return
-    ordered = sorted(
-        ((str(run_id), run) for run_id, run in runs.items() if isinstance(run, dict)),
-        key=lambda item: int(item[1].get("updatedAt") or item[1].get("createdAt") or 0),
-        reverse=True,
-    )
-    keep = {run_id for run_id, _run in ordered[:limit]}
-    for run_id in list(runs):
-        if run_id not in keep:
-            runs.pop(run_id, None)
+def _prune_build_runs(state: Dict[str, Any], *, limit: int | None = None) -> None:
+    """Compatibility no-op; durable history is never globally scanned or pruned.
+
+    The legacy name and optional limit remain for internal callers; retention
+    is no longer a global record-count cap. SQLite stores event child rows and
+    management readers page through them independently of running workflows.
+    """
+    return None
 
 
 def _reconcile_orphaned_build_runs_after_control_restart() -> int:
@@ -1957,7 +1941,8 @@ def _reconcile_orphaned_build_runs_after_control_restart() -> int:
     # `create_app()` is also used by contract-only clients/tests before a
     # Control state exists.  Startup reconciliation must be a no-op there and
     # must not attempt to create the production default directory.
-    if not state_path().is_file():
+    from .state import is_initialized
+    if not is_initialized():
         return 0
 
     now = int(time.time())
@@ -1965,7 +1950,10 @@ def _reconcile_orphaned_build_runs_after_control_restart() -> int:
     def mutate(state: Dict[str, Any]) -> int:
         reconciled = 0
         tasks = _agent_tasks(state)
-        for run in _build_runs(state).values():
+        runs = _build_runs(state)
+        active_values = getattr(runs, "active_values", None)
+        candidates = active_values({"running", "canceling"}) if callable(active_values) else runs.values()
+        for run in candidates:
             if not isinstance(run, dict):
                 continue
             status = str(run.get("status") or "")
@@ -2000,7 +1988,7 @@ def _reconcile_orphaned_build_runs_after_control_restart() -> int:
                     "ts": now,
                 }
             )
-            run["events"] = events[-max(int(BUILD_RUN_EVENT_LIMIT), 100) :]
+            run["events"] = events
 
             task_id = str(run.get("agentTaskId") or "")
             task = tasks.get(task_id)
@@ -2049,7 +2037,7 @@ def _record_deployment_event(
     """Append an immutable deployment-history entry (CLI or dashboard `luma deploy` /
     `compose deploy`). This is a separate append-only log from the single latest-state
     record in state["deployments"], so the Deployments timeline can show every attempt
-    with its origin. Pruned to the most recent 200. Mirrors the buildRuns pattern."""
+    with its origin. Durable history is retained and read with cursor pagination."""
     now = int(time.time())
     safe_steps = [
         {str(k): str(v) for k, v in step.items() if v is not None}
@@ -2076,8 +2064,6 @@ def _record_deployment_event(
     def mutate(state: Dict[str, Any]) -> None:
         events = _deployment_events(state)
         events.append(entry)
-        if len(events) > 200:
-            del events[: len(events) - 200]
 
     mutate_state(mutate)
 
@@ -2132,7 +2118,9 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
         for task_id, task in tasks.items()
         if isinstance(task, dict)
         and str(task.get("status") or "") in terminal
-        and int(task.get("completedAt") or task.get("updatedAt") or 0) < cutoff
+        and int(task.get("completedAt") or task.get("updatedAt") or 0) < (
+            now - 30 * 24 * 3600 if task.get("action") == "builder-storage" else cutoff
+        )
     ]
     for task_id in stale:
         tasks.pop(task_id, None)
@@ -2240,7 +2228,7 @@ def _reconcile_interrupted_agent_tasks(
                     "ts": now,
                 }
             )
-            build_run["events"] = events[-max(int(BUILD_RUN_EVENT_LIMIT), 100) :]
+            build_run["events"] = events
 
 
 def _mutate_control_state(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
@@ -2640,7 +2628,7 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if time.time() >= deadline:
             break
         time.sleep(1)
-    state = load_state()
+    state = load_runtime_state()
     entry = _node_record_entry_for_name_or_id(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name, node_id)
     _record_metrics_history(entry[0] if entry else node_name, body, config=config, state=state)
     return {"task": leased}
@@ -2671,10 +2659,10 @@ def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, A
         )
 
     _mutate_control_state(mutate)
-    state = load_state()
+    state = load_runtime_state()
     nodes = state.get("nodes") if isinstance(state.get("nodes"), dict) else {}
     record = _node_record_for_name(nodes, canonical_node_name) or {}
-    _record_metrics_history(canonical_node_name, body, container_stats=normalized_container_stats, config=config, state=state)
+    _record_metrics_history(canonical_node_name, body, container_stats=normalized_container_stats if isinstance(body.get("containerStats"), list) else None, config=config, state=state)
     active_task_id = str(body.get("activeTaskId") or "").strip()
     cancel_requested = False
     if active_task_id:
@@ -2695,6 +2683,9 @@ def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, A
 
 def _agent_task_lease_payload(state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(task.get("payload") if isinstance(task.get("payload"), dict) else {})
+    if task.get("action") == "builder-storage":
+        from .storage_governance import builder_reference_manifest
+        payload["references"] = builder_reference_manifest({**state, "_storageReferenceCoverage": True}, str(task.get("nodeName") or ""), exclude_task_id=str(task.get("id") or ""))
     if task.get("action") == "analyze-source":
         payload = _strip_builder_object_source_ephemeral(payload)
         # The analyzer discovers image refs only after the network-disabled
@@ -2901,7 +2892,7 @@ def handle_node_agent_complete(token: str, body: Dict[str, Any]) -> Dict[str, An
                     "ts": now,
                 }
             )
-            build_run["events"] = events[-max(int(BUILD_RUN_EVENT_LIMIT), 100) :]
+            build_run["events"] = events
 
     _mutate_control_state(mutate)
     state = load_state()
@@ -3476,22 +3467,37 @@ def _lae_admin_proxy_http_status(exc: LaeAdminProxyError) -> int:
     return 400 if str(exc) == _LAE_ADMIN_QUERY_ERROR else 503
 
 
-def handle_dashboard_logs(token: str, service_name: str, *, tail: int = 120, since: str = "") -> Dict[str, Any]:
+def _dashboard_log_reader(token: str, service_name: str, *, tail: int = 120, since: str = "",
+                          allocation: str = "", previous: bool = False, cursor: str = "") -> LogReader:
     state = load_state()
     require_token(state, token, token_type="deploy")
     service = service_name.strip()
     if not service:
         raise LumaError("service is required")
-    tail = min(max(int(tail or 120), 1), 500)
-    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
-    config = load_config(config_path)
+    if since:
+        raise LumaError("since filtering is unsupported: Nomad log frames do not include event timestamps; use tail or cursor")
+    config = load_config(Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml"))
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+    job, task = _nomad_log_target_from_state(state, service)
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    return LogReader(client, job, task, service, tail=tail, allocation=allocation,
+                     previous=previous, cursor=cursor)
+
+
+def handle_dashboard_logs(token: str, service_name: str, *, tail: int = 120, since: str = "",
+                          allocation: str = "", previous: bool = False, cursor: str = "") -> Dict[str, Any]:
+    reader = _dashboard_log_reader(token, service_name, tail=tail, since=since,
+                                   allocation=allocation, previous=previous, cursor=cursor)
+    events = reader.poll()
+    entries = [event for event in events if "line" in event]
+    label_sources = len({(s["allocationId"], s["task"]) for s in reader.sources}) > 1
+    lines = [(f"[{e['allocationId'][:8]}/{e['task']}/{e['stream']}] " if label_sources else "") + e["line"] for e in entries]
     return {
-        "service": service,
-        "logs": _nomad_log_lines(config, state, service, tail=tail),
-        "tail": tail,
-        "since": since,
-        "updatedAt": int(time.time()),
+        "service": reader.service, "logs": lines, "entries": entries,
+        "tail": reader.tail, "since": "", "mode": "snapshot",
+        "sources": reader.sources, "capabilities": LOG_CAPABILITIES, "limits": LOG_LIMITS,
+        "warnings": [event["message"] for event in events if event.get("status") == "warning"],
+        "cursor": reader.cursor(), "updatedAt": int(time.time()),
     }
 
 
@@ -7233,22 +7239,35 @@ def handle_builder_task_cancel(token: str, task_id: str, _body: Dict[str, Any] |
     return {"task": task, "replayed": replayed}
 
 
-def handle_build_run_list(token: str) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    runs = state.get("buildRuns") if isinstance(state.get("buildRuns"), dict) else {}
-    items = [_build_run_public_summary(run) for run in runs.values() if isinstance(run, dict)]
-    items.sort(key=lambda item: int(item.get("updatedAt") or item.get("createdAt") or 0), reverse=True)
-    return {"runs": items}
+def _history_query(raw_query: str) -> Dict[str, str]:
+    """Use the same last-value query semantics in both HTTP implementations."""
+    return {key: values[-1] for key, values in urllib.parse.parse_qs(raw_query, keep_blank_values=True).items()}
 
 
-def handle_build_run_get(token: str, build_id: str) -> Dict[str, Any]:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    run = (state.get("buildRuns") if isinstance(state.get("buildRuns"), dict) else {}).get(build_id)
-    if not isinstance(run, dict):
-        raise LumaError(f"build run not found: {build_id}")
-    return {"run": _build_run_public(run)}
+def _require_history_token(token: str) -> None:
+    # Authentication reads only root configuration; it must not hydrate the
+    # complete build/deployment history merely to validate a management token.
+    require_token(load_auth_state(), token, token_type="deploy")
+
+
+def handle_history_list(token: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    _require_history_token(token)
+    return control_history.list_history(query)
+
+
+def handle_history_get(token: str, kind: str, record_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    _require_history_token(token)
+    return control_history.get_history(kind, record_id, query)
+
+
+def handle_build_run_list(token: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    _require_history_token(token)
+    return control_history.list_builds(query)
+
+
+def handle_build_run_get(token: str, build_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    _require_history_token(token)
+    return control_history.get_build(build_id, query)
 
 
 def _build_run_agent_task(
@@ -7353,36 +7372,22 @@ def handle_build_run_cancel(
                 "ts": now,
             }
         )
-        run["events"] = events[-max(int(BUILD_RUN_EVENT_LIMIT), 100) :]
+        run["events"] = events
         return _build_run_public(run), False
 
     run, replayed = _mutate_control_state(mutate)
     return {"run": run, "replayed": replayed}
 
 
-def handle_deployment_history(token: str) -> Dict[str, Any]:
-    """Return the append-only deployment-event log (native + compose deploys, CLI and
-    dashboard), most recent first, for the Deployments timeline. Steps are omitted from
-    the list to keep it lean; fetch a single entry for full step detail."""
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    events = state.get("deploymentEvents") if isinstance(state.get("deploymentEvents"), list) else []
-    # Stored in append (chronological) order. Reverse first so that same-second events
-    # tie-break to insertion order (last appended = newest), then stable-sort by ts desc.
-    items = [{k: v for k, v in event.items() if k != "steps"} for event in reversed(events) if isinstance(event, dict)]
-    items.sort(key=lambda item: int(item.get("createdAt") or 0), reverse=True)
-    return {"events": items}
+def handle_deployment_history(token: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """Return a cursor page of deployments; step detail is separately paginated."""
+    _require_history_token(token)
+    return control_history.list_deployments(query)
 
 
-def handle_deployment_history_get(token: str, event_id: str) -> Dict[str, Any]:
-    """Return one deployment-event entry with its full step log."""
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    events = state.get("deploymentEvents") if isinstance(state.get("deploymentEvents"), list) else []
-    for event in events:
-        if isinstance(event, dict) and str(event.get("id")) == event_id:
-            return {"event": dict(event)}
-    raise LumaError(f"deployment event not found: {event_id}")
+def handle_deployment_history_get(token: str, event_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    _require_history_token(token)
+    return control_history.get_deployment(event_id, query)
 
 
 def _build_run_retry_overrides(body: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -7505,6 +7510,8 @@ def _build_run_public_summary(run: Dict[str, Any]) -> Dict[str, Any]:
         "buildNode": str(run.get("buildNode") or request.get("buildNode") or ""),
         "mode": str(run.get("mode") or "builder"),
         "projectKey": str(run.get("projectKey") or ""),
+        "retryOf": str(run.get("retryOf") or ""),
+        "retryRootId": str(run.get("retryRootId") or ""),
         "providerId": str(request.get("providerId") or ""),
         "repository": str(request.get("repository") or ""),
         "ref": str(request.get("ref") or ""),
@@ -7606,19 +7613,59 @@ def _agent_task_progress_snapshot(task_id: str, cursor: int) -> tuple[list[Dict[
     return events, len(progress), str(task.get("status") or ""), result, str(task.get("message") or "")
 
 
+def _builder_storage_public_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: task.get(key) for key in ("id", "nodeName", "status", "message", "result", "createdAt", "updatedAt") if key in task}
+
+
+def handle_builder_storage_request(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    if set(body) - {"node", "operation", "planId", "confirmed"}:
+        raise LumaError("unsupported builder storage request fields")
+    node = str(body.get("node") or "").strip()
+    operation = body.get("operation")
+    if not node or operation not in {"inventory", "preview", "quarantine", "restore", "purge"}:
+        raise LumaError("node and a valid builder storage operation are required")
+    payload = {"operation": operation}
+    if operation in {"quarantine", "restore", "purge"}:
+        if body.get("confirmed") is not True or not re.fullmatch(r"[a-f0-9]{32}", str(body.get("planId") or "")):
+            raise LumaError("a reviewed planId and confirmed=true are required")
+        payload.update(planId=body["planId"], confirmed=True)
+    task_id = _queue_node_agent_task(state, node, "builder-storage", payload, required_capability="builder-storage-v1")
+    return handle_builder_storage_status(token, task_id)
+
+
+def handle_builder_storage_status(token: str, task_id: str) -> Dict[str, Any]:
+    state = load_state()
+    require_token(state, token, token_type="deploy")
+    task = _agent_tasks(state).get(task_id)
+    if not isinstance(task, dict) or task.get("action") != "builder-storage":
+        raise LumaError("builder storage task not found")
+    return {"task": _builder_storage_public_task(task)}
+
+
+def handle_prometheus_metrics(token: str) -> str:
+    state = load_state()
+    require_metrics_token(state, token)
+    _deployment_index, compose_jobs = _dashboard_deployment_service_index(state)
+    return render_metrics(state, compose_jobs=compose_jobs)
+
+
 def handle_metrics_history(token: str, kind: str, name: str, *, window: int = 3600) -> Dict[str, Any]:
     require_token(load_state(), token, token_type="deploy")
     if kind not in {"node", "service"}:
         raise LumaError("kind must be node or service")
     if not str(name or "").strip():
         raise LumaError("name is required")
-    window = min(max(int(window or 3600), 60), 7 * 24 * 3600)
+    requested_window = int(window or 3600)
+    window = min(max(requested_window, 60), retention_seconds())
     series = load_history(kind, name, window=window)
     return {
         "kind": kind,
         "name": name,
         "window": window,
         "series": series,
+        **history_metadata(series, requested_window),
         "updatedAt": int(time.time()),
     }
 
@@ -8618,21 +8665,16 @@ def handle_build_deploy(
     run_body["buildNode"] = build_node
     if provider_id:
         run_body["providerId"] = provider_id
-    if build_run_id:
-        _restart_build_run(
-            build_run_id,
-            run_body,
-            source=repo_url,
-            build_node=build_node,
-            project_key=repo,
-        )
-    else:
-        build_run_id = _create_build_run(
-            run_body,
-            source=repo_url,
-            build_node=build_node,
-            project_key=repo,
-        )
+    # A retry is a new attempt. Never reset the parent's request, result or
+    # event stream: those explain the failure the operator is retrying.
+    retry_of = build_run_id
+    build_run_id = _create_build_run(
+        run_body,
+        source=repo_url,
+        build_node=build_node,
+        project_key=repo,
+        retry_of=retry_of,
+    )
     git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
 
     def run_progress(event: dict[str, str]) -> None:
@@ -8640,6 +8682,12 @@ def handle_build_deploy(
         _emit_progress(progress, event)
 
     try:
+        # Publish the new identity before work starts, so streaming clients can
+        # open the failed child even when no final success result is produced.
+        _emit_progress(progress, {
+            "name": "Build attempt", "status": "start", "message": "Build attempt created",
+            "buildRunId": build_run_id, "retryOf": retry_of,
+        })
         build_result = _deploy_step(
             steps,
             "Build image",
@@ -15929,6 +15977,7 @@ def _dashboard_service_from_nomad_job(
         "routeId": route_id,
         "upstreams": route.get("upstreams") if isinstance(route.get("upstreams"), list) else [],
         "targetPort": str(config.get("targetPort") or _route_file_target_port(route) or ""),
+        "publishPort": str(config.get("publishPort") or ""),
         "running": running,
         "desired": desired,
         "failed": failed,
@@ -16050,6 +16099,7 @@ def _dashboard_deployment_service_index(state: Dict[str, Any]) -> tuple[dict[str
             "exposure": str(data.get("exposure") or "none"),
             "domain": str(data.get("domain") or ""),
             "targetPort": _string_port(data.get("port")),
+            "publishPort": _string_port(data.get("publishPort")),
             "node": str(data.get("node") or ""),
             "routeId": name,
             "deploymentStatus": str(record.get("status") or ""),
@@ -18054,6 +18104,16 @@ TERMINAL_BROKER = TerminalBroker(
 class ControlHandler(BaseHTTPRequestHandler):
     server_version = "LumaControl/0.1"
 
+    def do_DELETE(self) -> None:
+        try:
+            path = urllib.parse.urlparse(self.path).path
+            if not operations_api.handles(path):
+                self._json(404, {"error": "not found"})
+                return
+            self._json(200, operations_api.dispatch(bearer_token(self.headers), "DELETE", path))
+        except LumaError as exc:
+            self._json(401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400, {"error": str(exc)})
+
     def do_GET(self) -> None:
         parsed_path = urllib.parse.urlparse(self.path).path
         if parsed_path == "/dashboard":
@@ -18108,6 +18168,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         try:
             token = bearer_token(self.headers)
+            if operations_api.handles(parsed_path):
+                query = {key: values[-1] for key, values in urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).items()}
+                self._json(200, operations_api.dispatch(token, "GET", parsed_path, query=query))
+                return
             lae_runtime_observability_match = re.fullmatch(
                 r"/v1/lae/runtime/deployments/([^/]+)/services/([^/]+)/(logs|metrics)",
                 parsed_path,
@@ -18200,8 +18264,15 @@ class ControlHandler(BaseHTTPRequestHandler):
             if workflow_match:
                 self._json(200, handle_workflow_get(token, urllib.parse.unquote(workflow_match.group(1))))
                 return
+            if parsed_path == "/v1/history":
+                self._json(200, handle_history_list(token, _history_query(urllib.parse.urlparse(self.path).query)))
+                return
+            history_match = re.fullmatch(r"/v1/history/([^/]+)/([^/]+)", parsed_path)
+            if history_match:
+                self._json(200, handle_history_get(token, urllib.parse.unquote(history_match.group(1)), urllib.parse.unquote(history_match.group(2)), _history_query(urllib.parse.urlparse(self.path).query)))
+                return
             if parsed_path == "/v1/builds":
-                self._json(200, handle_build_run_list(token))
+                self._json(200, handle_build_run_list(token, _history_query(urllib.parse.urlparse(self.path).query)))
                 return
             builder_artifact_match = re.fullmatch(
                 r"/v1/builder/artifact-downloads/([^/]+)", parsed_path
@@ -18250,15 +18321,15 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self._json(200, handle_builder_task_get(token, urllib.parse.unquote(builder_task_match.group(1))))
                 return
             if parsed_path == "/v1/deployments/history":
-                self._json(200, handle_deployment_history(token))
+                self._json(200, handle_deployment_history(token, _history_query(urllib.parse.urlparse(self.path).query)))
                 return
             deploy_event_match = re.fullmatch(r"/v1/deployments/history/([^/]+)", parsed_path)
             if deploy_event_match:
-                self._json(200, handle_deployment_history_get(token, urllib.parse.unquote(deploy_event_match.group(1))))
+                self._json(200, handle_deployment_history_get(token, urllib.parse.unquote(deploy_event_match.group(1)), _history_query(urllib.parse.urlparse(self.path).query)))
                 return
             build_match = re.fullmatch(r"/v1/builds/([^/]+)", parsed_path)
             if build_match:
-                self._json(200, handle_build_run_get(token, urllib.parse.unquote(build_match.group(1))))
+                self._json(200, handle_build_run_get(token, urllib.parse.unquote(build_match.group(1)), _history_query(urllib.parse.urlparse(self.path).query)))
                 return
             lae_admin_match = re.fullmatch(
                 r"/v1/dashboard/lae/([^/]+)", parsed_path
@@ -18292,6 +18363,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                 update_id = str((query.get("updateId") or [""])[0])
                 self._json(200, handle_manager_update_status(token, update_id))
                 return
+            if parsed_path == "/v1/metrics":
+                self._bytes(200, handle_prometheus_metrics(token).encode("utf-8"), METRICS_CONTENT_TYPE, headers={"Cache-Control": "no-store"})
+                return
             if parsed_path == "/v1/dashboard":
                 self._json(200, handle_dashboard(token))
                 return
@@ -18304,7 +18378,10 @@ class ControlHandler(BaseHTTPRequestHandler):
                     tail = int(str((query.get("tail") or ["120"])[0]) or "120")
                 except ValueError as exc:
                     raise LumaError("tail must be a number") from exc
-                logs = handle_dashboard_logs(token, service, tail=tail, since=since)
+                logs = handle_dashboard_logs(token, service, tail=tail, since=since,
+                                             allocation=str((query.get("allocation") or [""])[0]),
+                                             previous=str((query.get("previous") or [""])[0]).lower() in {"1", "true", "yes"},
+                                             cursor=str((query.get("cursor") or [""])[0]))
                 if download:
                     filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", service).strip("-") or "service"
                     self._download_text(f"{filename}.log", "\n".join(str(line) for line in logs.get("logs") or []) + "\n")
@@ -18334,7 +18411,10 @@ class ControlHandler(BaseHTTPRequestHandler):
                     tail = int(str((query.get("tail") or ["120"])[0]) or "120")
                 except ValueError as exc:
                     raise LumaError("tail must be a number") from exc
-                self._stream_service_logs(token, service, since, tail)
+                self._stream_service_logs(token, service, since, tail,
+                                          allocation=str((query.get("allocation") or [""])[0]),
+                                          previous=str((query.get("previous") or [""])[0]).lower() in {"1", "true", "yes"},
+                                          cursor=str((query.get("cursor") or [""])[0]))
                 return
             config_match = re.fullmatch(r"/v1/deployments/([^/]+)/config", parsed_path)
             if config_match:
@@ -18352,6 +18432,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                     else "luma_error"
                 ),
             )
+            return
+        except LogUnavailable as exc:
+            self._error(503, exc, code="logs_unavailable")
             return
         except LumaRuntimeError as exc:
             self._error(exc.status, exc, code=exc.code)
@@ -18411,6 +18494,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                 )
             )
             token = bearer_token(self.headers)
+            if operations_api.handles(parsed_path):
+                self._json(200, operations_api.dispatch(token, "POST", parsed_path, body=body))
+                return
             if parsed_path == "/v1/lae/runtime/volumes:prepare":
                 self._json(
                     200,
@@ -18922,29 +19008,37 @@ class ControlHandler(BaseHTTPRequestHandler):
             print(f"requestId={request_id} stream pull diagnostics internal error: {exc}", file=sys.stderr, flush=True)
             emit({"status": "fail", "message": str(exc), **_error_payload("internal_error", str(exc), request_id=request_id, include_error=False)})
 
-    def _stream_service_logs(self, token: str, service: str, since: str, tail: int) -> None:
-        state = load_state()
-        require_token(state, token, token_type="deploy")
-        service = service.strip()
-        if not service:
-            raise LumaError("service is required")
-        tail = min(max(int(tail or 120), 1), 1000)
-        config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
-        config = load_config(config_path)
-        _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
-        lines = _nomad_log_lines(config, state, service, tail=tail)
+    def _stream_service_logs(self, token: str, service: str, since: str, tail: int, *,
+                             allocation: str = "", previous: bool = False, cursor: str = "") -> None:
+        reader = _dashboard_log_reader(token, service, tail=tail, since=since,
+                                       allocation=allocation, previous=previous, cursor=cursor)
+        reader.discover()  # Validate selectors before sending streaming headers.
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
         self.end_headers()
+        self.close_connection = True
+        self.connection.settimeout(15)
         try:
-            self.wfile.write(json.dumps({"status": "start", "service": service}, separators=(",", ":")).encode("utf-8") + b"\n")
-            for line in lines:
-                self.wfile.write(json.dumps({"line": line, "ts": int(time.time())}, separators=(",", ":")).encode("utf-8") + b"\n")
+            self.wfile.write(_log_event({"status": "start", "service": reader.service,
+                                        "sources": reader.sources, "capabilities": LOG_CAPABILITIES,
+                                        "limits": LOG_LIMITS, "warnings": []}))
             self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+            while True:
+                for event in reader.poll():
+                    self.wfile.write(_log_event(event))
+                self.wfile.flush()
+                time.sleep(min(LOG_POLL_INTERVAL, 0.25) if reader.backlog else LOG_POLL_INTERVAL)
+        except OSError:
+            return
+        except LumaError as exc:
+            try:
+                self.wfile.write(_log_event({"status": "error", "message": str(exc)}))
+                self.wfile.flush()
+            except OSError:
+                pass
 
     def _read_json(self, *, max_bytes: int | None = None) -> Dict[str, Any]:
         try:
@@ -19083,6 +19177,9 @@ async def _asgi_authenticated_get(request: Request) -> Response:
     parsed_path = request.url.path
     try:
         token = bearer_token(request.headers)
+        if operations_api.handles(parsed_path):
+            result = await run_in_threadpool(functools.partial(operations_api.dispatch, token, "GET", parsed_path, query=dict(request.query_params)))
+            return _json_response(200, result)
         lae_runtime_observability_match = re.fullmatch(
             r"/v1/lae/runtime/deployments/([^/]+)/services/([^/]+)/(logs|metrics)",
             parsed_path,
@@ -19218,8 +19315,13 @@ async def _asgi_authenticated_get(request: Request) -> Response:
         if workflow_match:
             return _json_response(200, await run_in_threadpool(handle_workflow_get, token, urllib.parse.unquote(workflow_match.group(1))))
 
+        if parsed_path == "/v1/history":
+            return _json_response(200, await run_in_threadpool(handle_history_list, token, _history_query(request.url.query)))
+        history_match = re.fullmatch(r"/v1/history/([^/]+)/([^/]+)", parsed_path)
+        if history_match:
+            return _json_response(200, await run_in_threadpool(handle_history_get, token, urllib.parse.unquote(history_match.group(1)), urllib.parse.unquote(history_match.group(2)), _history_query(request.url.query)))
         if parsed_path == "/v1/builds":
-            return _json_response(200, await run_in_threadpool(handle_build_run_list, token))
+            return _json_response(200, await run_in_threadpool(handle_build_run_list, token, _history_query(request.url.query)))
         builder_events_match = re.fullmatch(r"/v1/builder/tasks/([^/]+)/events", parsed_path)
         if builder_events_match:
             try:
@@ -19246,13 +19348,13 @@ async def _asgi_authenticated_get(request: Request) -> Response:
                 await run_in_threadpool(handle_builder_task_get, token, urllib.parse.unquote(builder_task_match.group(1))),
             )
         if parsed_path == "/v1/deployments/history":
-            return _json_response(200, await run_in_threadpool(handle_deployment_history, token))
+            return _json_response(200, await run_in_threadpool(handle_deployment_history, token, _history_query(request.url.query)))
         deploy_event_match = re.fullmatch(r"/v1/deployments/history/([^/]+)", parsed_path)
         if deploy_event_match:
-            return _json_response(200, await run_in_threadpool(handle_deployment_history_get, token, urllib.parse.unquote(deploy_event_match.group(1))))
+            return _json_response(200, await run_in_threadpool(handle_deployment_history_get, token, urllib.parse.unquote(deploy_event_match.group(1)), _history_query(request.url.query)))
         build_match = re.fullmatch(r"/v1/builds/([^/]+)", parsed_path)
         if build_match:
-            return _json_response(200, await run_in_threadpool(handle_build_run_get, token, urllib.parse.unquote(build_match.group(1))))
+            return _json_response(200, await run_in_threadpool(handle_build_run_get, token, urllib.parse.unquote(build_match.group(1)), _history_query(request.url.query)))
         lae_admin_match = re.fullmatch(
             r"/v1/dashboard/lae/([^/]+)", parsed_path
         )
@@ -19301,6 +19403,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
                     str(request.query_params.get("updateId") or ""),
                 ),
             )
+        if parsed_path == "/v1/metrics":
+            return Response(await run_in_threadpool(handle_prometheus_metrics, token), headers={"Content-Type": METRICS_CONTENT_TYPE, "Cache-Control": "no-store"})
         if parsed_path == "/v1/dashboard":
             return _json_response(200, await run_in_threadpool(handle_dashboard, token))
         if parsed_path == "/v1/dashboard/logs":
@@ -19311,7 +19415,10 @@ async def _asgi_authenticated_get(request: Request) -> Response:
                 tail = int(str(request.query_params.get("tail") or "120") or "120")
             except ValueError as exc:
                 raise LumaError("tail must be a number") from exc
-            logs = await run_in_threadpool(handle_dashboard_logs, token, service, tail=tail, since=since)
+            logs = await run_in_threadpool(handle_dashboard_logs, token, service, tail=tail, since=since,
+                                           allocation=str(request.query_params.get("allocation") or ""),
+                                           previous=str(request.query_params.get("previous") or "").lower() in {"1", "true", "yes"},
+                                           cursor=str(request.query_params.get("cursor") or ""))
             if download:
                 filename = re.sub(r"[^A-Za-z0-9_.-]+", "-", service).strip("-") or "service"
                 return PlainTextResponse(
@@ -19337,7 +19444,10 @@ async def _asgi_authenticated_get(request: Request) -> Response:
                 tail = int(str(request.query_params.get("tail") or "120") or "120")
             except ValueError as exc:
                 raise LumaError("tail must be a number") from exc
-            return await _asgi_stream_service_logs(token, service, since, tail)
+            return await _asgi_stream_service_logs(token, service, since, tail,
+                                                   allocation=str(request.query_params.get("allocation") or ""),
+                                                   previous=str(request.query_params.get("previous") or "").lower() in {"1", "true", "yes"},
+                                                   cursor=str(request.query_params.get("cursor") or ""))
         config_match = re.fullmatch(r"/v1/deployments/([^/]+)/config", parsed_path)
         if config_match:
             name = urllib.parse.unquote(config_match.group(1))
@@ -19355,6 +19465,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
         )
         response.headers["Cache-Control"] = "no-store"
         return response
+    except LogUnavailable as exc:
+        return _asgi_error(503, exc, code="logs_unavailable")
     except LumaRuntimeError as exc:
         return _asgi_error(exc.status, exc, code=exc.code)
     except LumaError as exc:
@@ -19437,6 +19549,9 @@ async def _asgi_authenticated_post(request: Request) -> Response:
         if not isinstance(body, dict):
             raise LumaError("request body must be a JSON object")
         token = bearer_token(request.headers)
+        if operations_api.handles(path):
+            result = await run_in_threadpool(functools.partial(operations_api.dispatch, token, "POST", path, body=body, query=dict(request.query_params)))
+            return _json_response(200, result)
         if path == "/v1/lae/runtime/volumes:prepare":
             result = await run_in_threadpool(
                 functools.partial(
@@ -19880,25 +19995,30 @@ def _asgi_stream_pull_diagnostics(token: str, body: Dict[str, Any]) -> Streaming
     return StreamingResponse(generate(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-async def _asgi_stream_service_logs(token: str, service: str, since: str, tail: int) -> StreamingResponse:
-    state = load_state()
-    require_token(state, token, token_type="deploy")
-    service = service.strip()
-    if not service:
-        raise LumaError("service is required")
-    tail = min(max(int(tail or 120), 1), 1000)
-    config_path = Path(os.environ.get("LUMA_CONTROL_CONFIG") or "luma.yaml")
-    config = load_config(config_path)
-    _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
+async def _asgi_stream_service_logs(token: str, service: str, since: str, tail: int, *,
+                                    allocation: str = "", previous: bool = False, cursor: str = "") -> StreamingResponse:
+    reader = await run_in_threadpool(_dashboard_log_reader, token, service, tail=tail, since=since,
+                                      allocation=allocation, previous=previous, cursor=cursor)
+    await run_in_threadpool(reader.discover)
 
     async def generate_nomad() -> AsyncIterator[bytes]:
-        yield json.dumps({"status": "start", "service": service}, separators=(",", ":")).encode("utf-8") + b"\n"
-        lines = await run_in_threadpool(_nomad_log_lines, config, state, service, tail=tail)
-        now = int(time.time())
-        for line in lines:
-            yield json.dumps({"line": line, "ts": now}, separators=(",", ":")).encode("utf-8") + b"\n"
+        yield _log_event({"status": "start", "service": reader.service,
+                          "sources": reader.sources, "capabilities": LOG_CAPABILITIES,
+                          "limits": LOG_LIMITS, "warnings": []})
+        try:
+            while True:
+                events = await run_in_threadpool(reader.poll)
+                for event in events:
+                    yield _log_event(event)
+                # StreamingResponse cancels the iterator on disconnect. There
+                # are no detached tasks or open upstream follow connections;
+                # individual reads close their response and have short timeouts.
+                await asyncio.sleep(min(LOG_POLL_INTERVAL, 0.25) if reader.backlog else LOG_POLL_INTERVAL)
+        except LumaError as exc:
+            yield _log_event({"status": "error", "message": str(exc)})
 
-    return StreamingResponse(generate_nomad(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(generate_nomad(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 async def _browser_terminal_ws(websocket: WebSocket) -> None:
@@ -19909,15 +20029,38 @@ async def _agent_terminal_ws(websocket: WebSocket) -> None:
     await TERMINAL_BROKER.connect_agent(websocket)
 
 
+async def _asgi_operations_delete(request: Request) -> Response:
+    try:
+        if not operations_api.handles(request.url.path):
+            return _json_response(404, {"error": "not found"})
+        result = await run_in_threadpool(operations_api.dispatch, bearer_token(request.headers), "DELETE", request.url.path)
+        return _json_response(200, result)
+    except LumaError as exc:
+        return _asgi_error(401 if str(exc) == "unauthorized" or "bearer token" in str(exc) else 400, exc, code="luma_error")
+
+
+@asynccontextmanager
+async def _operations_lifespan(app: Starlette):
+    worker = operations_api.OperationsWorker()
+    app.state.operations_worker = worker
+    worker.start()
+    try:
+        yield
+    finally:
+        await run_in_threadpool(worker.close)
+
+
 def create_app() -> Starlette:
     _reconcile_orphaned_build_runs_after_control_restart()
     return Starlette(
+        lifespan=_operations_lifespan,
         routes=[
             Route("/dashboard", _asgi_dashboard_asset, methods=["GET"]),
             Route("/dashboard/{path:path}", _asgi_dashboard_asset, methods=["GET"]),
             Route("/v1/health", _asgi_health, methods=["GET"]),
             Route("/v1/{path:path}", _asgi_authenticated_get, methods=["GET"]),
             Route("/v1/{path:path}", _asgi_authenticated_post, methods=["POST"]),
+            Route("/v1/{path:path}", _asgi_operations_delete, methods=["DELETE"]),
             WebSocketRoute("/v1/terminal/browser", _browser_terminal_ws),
             WebSocketRoute("/v1/terminal/agent", _agent_terminal_ws),
         ]

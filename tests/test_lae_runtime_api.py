@@ -832,7 +832,7 @@ class LaeRuntimeApiTests(unittest.TestCase):
             placement=placement,
         )
         self.assertNotIn(canary, job_json)
-        self.assertNotIn(canary, self.state_dir.joinpath("control.json").read_text())
+        self.assertNotIn(canary, json.dumps(load_state()))
         self.assertEqual([items["POSTGRES_PASSWORD"] for items in variable_items.values()], [canary])
         self.assertEqual(len(paths), 1)
         parsed = json.loads(job_json)["Job"]

@@ -14,7 +14,9 @@
 
 禁止用以下证据单独标记 `Done`：页面截图、静态 mock、只测 happy path、只验证 manifest 能解析、只看到 Nomad allocation running、只看到 HTTP 200、未覆盖租户隔离的单元测试。
 
-### 当前结论（2026-07-14 live 证据；仓库包版本现为 `0.1.289`）
+### 验收结论（2026-07-14 live 证据）
+
+仓库包版本以 [pyproject.toml](../../pyproject.toml) 为准；下列带日期的版本和部署证据保留其历史值，不代表当前线上状态。
 
 - **真实 Luma validation：** 10 个平台 service 全部健康，Web、API live/ready、Agent ready 和 artifact ready 探针均返回 200。Agent ready 显示 `mode=ai`、`configured=true`、无 configuration error。平台与平台本地卷当前在 `manager`；构建和内部 registry 在 `builder`，租户 runtime 候选池为 `manager + tecent`。Traefik 通过 Cloudflare DNS-01 持有 `itool.tech`/`*.itool.tech` 证书，Cloudflare token 只以 manager 上的只读 token file 注入。
 - **P0 可用性：** `0.1.229-0.1.249` 已关闭随机域名逐主机 HTTP-01 超时、manager 更新误读示例配置、生命周期/初次部署 DNS 凭据缺失、runtime deploy 假异步、首次冷拉永久误失败、installer egress/升级路由基线误判，以及 Agent 重启遗留 task、队列等待挤占执行预算、lease/alias 竞态和注销节点 task 不回收问题。Runtime deploy 先精确注册 Nomad Job、持久化提交关联并由 observer 收敛；Builder task 的 queue timeout 与 execution timeout 独立，执行 deadline 从 `leasedAt` 计算，超时会下发 cancel。Agent lease 会回收同节点 orphan task，并在 handoff grace 内保护刚兑换凭据的任务；已注销/退休节点任务走相同中断路径。最终 manager 更新期间 LAE Web/API/Agent/Artifact 与 Gateway 五入口连续 5 轮均为 200，更新后 60 秒稳定期各 14/14、零失败。PITR/备份还原和 Docker/CNI/route reconciliation 故障注入仍未关闭。

@@ -1,5 +1,7 @@
 # Operations
 
+Resource history, resumable logs, disk samples, alerts and authenticated Prometheus scraping are described in [Observability](./observability.md). For the single Manager SQLite store, history retention, backups and Manager recovery, see [Control storage and recovery](./control-storage.md).
+
 Luma Control is the self-hosted API on the manager node that handles login tokens, node registration, DNS sync, job rendering, and Nomad deployment calls. `luma deploy` talks to Luma Control; it does not SSH into a node to deploy. The orchestrator underneath is HashiCorp Nomad, so the unit of deployment is a Nomad job.
 
 The default path is:
@@ -256,7 +258,7 @@ For Linux nodes, Luma configures UFW during bootstrap/join. Mirror the same acce
 | `4647/tcp` | Nomad clients -> Nomad server | Nomad RPC. |
 | `4648/tcp`, `4648/udp` | all Nomad agents | Nomad Serf gossip (server membership). |
 
-Nomad agents bind to `0.0.0.0` but advertise their Tailscale address, and UFW only opens `4646/4647/4648` on the `tailscale0` interface, so the control plane is not exposed on public IPs.
+Nomad agents bind to `0.0.0.0` and advertise their Tailscale address. Luma-managed UFW rules only open `4646/4647/4648` on `tailscale0`; public isolation depends on those firewall rules, not on the advertise address. On hosts without UFW, configure equivalent host firewall rules and cloud security groups, and verify the ports are unreachable through the public interface.
 
 ## Tailscale Relay
 

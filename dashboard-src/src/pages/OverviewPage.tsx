@@ -1,16 +1,14 @@
-import { ArrowRight, GitBranch, HardDrive, Plus, Server, TerminalSquare, X } from "lucide-react";
+import { ArrowRight, Plus, X } from "lucide-react";
 import { useMemo, type CSSProperties } from "react";
 import { Badge, CodeCell, PrimaryCell, StatePill } from "../components/ui";
+import { formatImageIdentity } from "../format";
 import { localizeState, t } from "../i18n";
+import { applicationEndpoints } from "../components/applicationEndpoints";
 import type { Application } from "../components/applicationModel";
 import type { DashboardIssue, DashboardNode, DashboardPayload, Lang } from "../types";
 import type { DashboardViewModel, NavPage } from "../dashboardViewModel";
 import { issueKey, useDismissedIssues } from "../useDismissedIssues";
 import { PageHeader } from "./PageHeader";
-
-function accessHref(domain: string) {
-  return domain.startsWith("http://") || domain.startsWith("https://") ? domain : `https://${domain}`;
-}
 
 function topApplications(applications: Application[]) {
   return applications.slice().sort((a, b) => {
@@ -50,16 +48,6 @@ function pressureClass(value?: number) {
   return "";
 }
 
-function healthLabel(score: number, lang: Lang) {
-  if (score >= 85) return lang === "zh" ? "健康" : "Healthy";
-  if (score >= 65) return lang === "zh" ? "有风险" : "At risk";
-  return lang === "zh" ? "需处理" : "Needs work";
-}
-
-function readinessLabel(lang: Lang, ready?: boolean) {
-  return ready ? (lang === "zh" ? "健康" : "Healthy") : (lang === "zh" ? "缺失" : "Missing");
-}
-
 export function OverviewPage({
   lang,
   payload,
@@ -79,7 +67,7 @@ export function OverviewPage({
   const readiness = payload.readiness || {};
   const nodeCards = vm.nodes.slice().sort((a, b) => nodePressure(b) - nodePressure(a)).slice(0, 4);
 
-  const { dismiss, clear, isDismissed } = useDismissedIssues();
+  const { dismiss, clear, isDismissed } = useDismissedIssues(payload.cluster?.id || "", vm.issues);
   const visibleIssues = useMemo(() => vm.issues.filter((issue) => !isDismissed(issueKey(issue))), [vm.issues, isDismissed]);
   const hiddenCount = vm.issues.length - visibleIssues.length;
 
@@ -87,19 +75,13 @@ export function OverviewPage({
     <>
       <PageHeader
         meta={{
-          variant: "ops",
           eyebrow: t(lang, "controlPlane"),
-          title: zh ? "集群运行中枢" : "Cluster operations hub",
-          description: zh ? "实时状态与风险总览" : "Real-time status and risk overview",
-          score: {
-            value: vm.healthScore,
-            label: zh ? "健康分" : "Health score",
-            status: healthLabel(vm.healthScore, lang),
-          },
+          title: zh ? "集群概览" : "Cluster overview",
+          description: zh ? "应用运行状态、当前风险与节点容量" : "Application runtime, current risks, and node capacity",
           metrics: [
             { label: zh ? "待处理" : "Open issues", value: issueTotal },
             { label: t(lang, "nodes"), value: `${vm.activeNodes}/${vm.nodes.length}` },
-            { label: t(lang, "applications"), value: vm.applications.length },
+            { label: zh ? "异常应用" : "Affected apps", value: vm.applications.filter((app) => !["healthy", "running"].includes(app.status)).length },
           ],
           action: (
             <button type="button" className="primary page-toolbar-cta" onClick={() => onNavigate("deploy")}>
@@ -112,43 +94,16 @@ export function OverviewPage({
 
       <section className="platform-strip" aria-label={zh ? "平台组件状态" : "Platform components"}>
         <span className="platform-strip-title">{zh ? "平台组件" : "Platform"}</span>
-        <span className={`platform-item ${readiness.dns?.ready ? "" : "bad"}`} title={zh ? "域名解析（Cloudflare DNS）" : "DNS records (Cloudflare)"}>
+        <span className={`platform-item ${readiness.dns?.ready === undefined ? "unknown" : readiness.dns.ready ? "" : "bad"}`} title={zh ? "仅检查 Cloudflare 凭据和区域配置，尚未验证 DNS 解析或公网可达性" : "Checks Cloudflare credentials and zone configuration only; DNS resolution and public reachability are unverified"}>
           <i aria-hidden="true" />
           <b>DNS</b>
-          <small>{readinessLabel(lang, readiness.dns?.ready)}{readiness.dns?.zone ? ` · ${readiness.dns.zone}` : ""}</small>
+          <small>{readiness.dns?.ready === undefined ? (zh ? "未检查" : "Not checked") : readiness.dns.ready ? (zh ? "配置就绪 · 解析未验证" : "Configured · resolution unverified") : (zh ? "配置不完整" : "Configuration incomplete")}{readiness.dns?.zone ? ` · ${readiness.dns.zone}` : ""}</small>
         </span>
-        <span className={`platform-item ${readiness.nomad?.available ? "" : "bad"}`} title={zh ? "调度器（Nomad 集群）" : "Scheduler (Nomad cluster)"}>
+        <span className={`platform-item ${readiness.nomad?.available === undefined ? "unknown" : readiness.nomad.available ? "" : "bad"}`} title={zh ? "调度器（Nomad 集群）" : "Scheduler (Nomad cluster)"}>
           <i aria-hidden="true" />
           <b>{zh ? "调度器" : "Scheduler"}</b>
-          <small>{readinessLabel(lang, readiness.nomad?.available)}{readiness.nomad?.leader ? ` · ${readiness.nomad.leader}` : ""}</small>
+          <small>{readiness.nomad?.available === undefined ? (zh ? "未检查" : "Not checked") : readiness.nomad.available ? (zh ? "可连接" : "Reachable") : (zh ? "无法连接" : "Unreachable")}{readiness.nomad?.leader ? ` · ${readiness.nomad.leader}` : ""}</small>
         </span>
-      </section>
-
-      <section className="overview-action-dock" aria-label={zh ? "快捷入口" : "Shortcuts"}>
-        <button type="button" onClick={() => onNavigate("nodes")}>
-          <GitBranch size={20} aria-hidden="true" />
-          <span>{t(lang, "trafficPaths")}</span>
-          <small>{zh ? "节点、拓扑与流量路径" : "Nodes, topology, and traffic paths"}</small>
-          <ArrowRight size={16} aria-hidden="true" />
-        </button>
-        <button type="button" onClick={() => onNavigate("observability")}>
-          <TerminalSquare size={20} aria-hidden="true" />
-          <span>{zh ? "日志" : "Logs"}</span>
-          <small>{zh ? "搜索并 tail 日志" : "Search and tail logs"}</small>
-          <ArrowRight size={16} aria-hidden="true" />
-        </button>
-        <button type="button" onClick={() => onNavigate("storage")}>
-          <HardDrive size={20} aria-hidden="true" />
-          <span>{t(lang, "storage")}</span>
-          <small>{zh ? "卷和分配关系" : "Volumes and allocations"}</small>
-          <ArrowRight size={16} aria-hidden="true" />
-        </button>
-        <button type="button" onClick={() => onNavigate("applications")}>
-          <Server size={20} aria-hidden="true" />
-          <span>{t(lang, "applications")}</span>
-          <small>{zh ? "浏览全部应用" : "Browse all applications"}</small>
-          <ArrowRight size={16} aria-hidden="true" />
-        </button>
       </section>
 
       <section className="overview-workbench" aria-label={zh ? "运维工作台" : "Operations workbench"}>
@@ -167,17 +122,18 @@ export function OverviewPage({
             <table className="overview-app-table">
               <thead>
                 <tr>
-                  <th>{t(lang, "application")}</th>
-                  <th>{t(lang, "services")}</th>
-                  <th>{t(lang, "status")}</th>
-                  <th>{t(lang, "region")}</th>
-                  <th>{t(lang, "replicas")}</th>
-                  <th>{t(lang, "accessAddress")}</th>
+                  <th className="overview-app-name">{t(lang, "application")}</th>
+                  <th className="overview-app-secondary overview-app-count">{t(lang, "services")}</th>
+                  <th className="overview-app-status">{t(lang, "status")}</th>
+                  <th className="overview-app-region">{t(lang, "region")}</th>
+                  <th className="overview-app-replicas">{t(lang, "replicas")}</th>
+                  <th className="overview-app-secondary overview-app-address">{t(lang, "accessAddress")}</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleApps.length ? visibleApps.map((app) => {
                   const openApp = () => onNavigate("applications", { selectApp: app.stack });
+                  const endpoint = applicationEndpoints(app.services)[0];
                   return (
                   <tr
                     aria-label={`${t(lang, "details")}: ${app.stack}`}
@@ -192,16 +148,16 @@ export function OverviewPage({
                     role="button"
                     tabIndex={0}
                   >
-                    <td><PrimaryCell title={app.stack} meta={app.services[0]?.image?.split(":").pop()} /></td>
-                    <td>{app.services.length}</td>
+                    <td title={[app.stack, app.services[0]?.image].filter(Boolean).join(" · ")}><PrimaryCell title={app.stack} meta={formatImageIdentity(app.services[0]?.image)} /></td>
+                    <td className="overview-app-secondary">{app.services.length}</td>
                     <td><StatePill label={localizeState(lang, app.status)} value={app.status} /></td>
-                    <td>{app.regions.join(", ") || "-"}</td>
+                    <td className="overview-app-region" title={app.regions.join(", ")}>{app.regions.join(", ") || "-"}</td>
                     <td>{app.running}/{app.desired}</td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      {app.domains.length ? (
-                        <a href={accessHref(app.domains[0])} target="_blank" rel="noreferrer">
-                          <CodeCell value={app.domains[0]} />
-                        </a>
+                    <td className="overview-app-secondary" onClick={(e) => e.stopPropagation()}>
+                      {endpoint ? (
+                        endpoint.href ? <a href={endpoint.href} target="_blank" rel="noreferrer" onKeyDown={(event) => event.stopPropagation()}>
+                          <CodeCell value={endpoint.address} />
+                        </a> : <span className="application-tcp-address"><Badge value="TCP" /><CodeCell value={endpoint.address} /></span>
                       ) : (
                         <Badge value={t(lang, "internalOnly")} />
                       )}
@@ -225,25 +181,33 @@ export function OverviewPage({
                 <h2>{zh ? "需要关注" : "Needs attention"}</h2>
               </div>
               <div className="risk-badges">
-                <Badge value={`${vm.issueCounts.critical} critical`} />
-                <Badge value={`${vm.issueCounts.warning} warning`} />
+                <Badge value={zh ? `${vm.issueCounts.critical} 严重` : `${vm.issueCounts.critical} critical`} />
+                <Badge value={zh ? `${vm.issueCounts.warning} 警告` : `${vm.issueCounts.warning} warning`} />
               </div>
             </div>
             <div className="risk-queue-list">
               {visibleIssues.length ? visibleIssues.slice(0, 5).map((issue) => {
                 const key = issueKey(issue);
+                const node = issue.kind === "agent" || issue.kind?.startsWith("node-") ? vm.nodes.find((item) => item.name === issue.target) : undefined;
+                const app = issue.kind === "deployment" || issue.kind?.startsWith("service-")
+                  ? vm.applications.find((item) => item.services.some((service) => (service.fullName || service.name) === issue.target))
+                  : undefined;
                 return (
                   <div className={`risk-queue-row ${issue.severity || "info"}`} key={key}>
                     <i aria-hidden="true" />
                     <div>
                       <strong>{issue.message || "-"}</strong>
-                      <small>{severityLabel(issue, lang)} · {[issue.kind, issue.target].filter(Boolean).join(" / ") || "-"}</small>
+                      <small>{severityLabel(issue, lang)} · {issue.target || "-"}</small>
+                      {node || app ? <button type="button" className="risk-queue-details" onClick={() => {
+                        if (node) onSelectNode(node);
+                        else if (app) onNavigate("applications", { selectApp: app.stack });
+                      }}>{zh ? "查看详情" : "View details"}<ArrowRight size={12} aria-hidden="true" /></button> : null}
                     </div>
                     <button
                       type="button"
                       className="risk-queue-dismiss"
-                      title={zh ? "标记为已处理" : "Mark as handled"}
-                      aria-label={zh ? "标记为已处理" : "Mark as handled"}
+                      title={zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"}
+                      aria-label={zh ? "仅在此浏览器隐藏 1 小时" : "Hide in this browser for 1 hour"}
                       onClick={() => dismiss(key)}
                     >
                       <X size={14} aria-hidden="true" />
@@ -251,12 +215,12 @@ export function OverviewPage({
                   </div>
                 );
               }) : (
-                <div className="empty-inline">{zh ? "暂无风险" : "No open risk"}</div>
+                <div className="empty-inline">{hiddenCount ? (zh ? "当前风险已在此浏览器临时隐藏" : "Current risks are temporarily hidden in this browser") : (zh ? "暂无风险" : "No open risk")}</div>
               )}
             </div>
             {hiddenCount ? (
               <button type="button" className="ghost text-link-button risk-queue-restore" onClick={clear}>
-                {zh ? `已隐藏 ${hiddenCount} 条 · 全部恢复` : `${hiddenCount} hidden · restore all`}
+                {zh ? `本机临时隐藏 ${hiddenCount} 条 · 全部恢复` : `${hiddenCount} hidden locally · restore all`}
               </button>
             ) : null}
           </article>
@@ -264,7 +228,7 @@ export function OverviewPage({
           <article className="panel overview-node-panel">
             <div className="panel-heading">
               <div>
-                <p className="eyebrow">{zh ? "节点舰队" : "Node fleet"}</p>
+                <p className="eyebrow">{zh ? "节点容量" : "Node capacity"}</p>
                 <h2>{vm.nodes.length} {t(lang, "nodes")}</h2>
               </div>
               <button type="button" className="ghost text-link-button" onClick={() => onNavigate("nodes")}>

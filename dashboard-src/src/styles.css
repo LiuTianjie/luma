@@ -6721,3 +6721,95 @@ dd {
     grid-template-columns: 1fr;
   }
 }
+
+/* Keep the overview focused on current faults and workloads above the fold. */
+.page-overview .page-route {
+  flex: 0 0 auto;
+  overflow: visible;
+  gap: var(--space-lg);
+}
+
+.page-overview .page-toolbar h1 {
+  font-size: var(--text-title);
+}
+
+.page-overview .page-toolbar-copy > p:last-child {
+  font-size: var(--text-body);
+}
+
+.page-overview .overview-workbench {
+  flex: 0 0 auto;
+  align-items: start;
+}
+
+.page-overview .overview-side-stack {
+  grid-template-rows: auto auto;
+}
+
+.page-overview .risk-queue-list,
+.page-overview .overview-node-grid {
+  overflow: visible;
+}
+
+.page-overview .overview-app-table th,
+.page-overview .overview-app-table td {
+  padding: var(--space-md);
+}
+
+.application-tcp-address {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.risk-queue-details {
+  justify-self: start;
+  min-height: 26px;
+  padding: 0;
+  gap: var(--space-xs);
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font-size: var(--text-label);
+}
+
+.platform-item.unknown i {
+  background: var(--text-subtle);
+}
+
+/* Bound metadata to its column so immutable image digests cannot hide runtime status. */
+.page-overview .overview-app-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.page-overview .overview-app-table th,
+.page-overview .overview-app-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overview-app-name { width: 29%; }
+.overview-app-count { width: 10%; }
+.overview-app-status { width: 16%; }
+.overview-app-region { width: 12%; }
+.overview-app-replicas { width: 12%; }
+.overview-app-address { width: 21%; }
+
+@media (max-width: 1400px) {
+  .page-overview .overview-app-secondary { display: none; }
+  .page-overview .overview-app-name { width: 43%; }
+  .page-overview .overview-app-status { width: 22%; }
+  .page-overview .overview-app-region { width: 18%; }
+  .page-overview .overview-app-replicas { width: 17%; }
+  .page-overview .overview-app-table th,
+  .page-overview .overview-app-table td { padding: var(--space-md) var(--space-sm); }
+}
+
+@media (max-width: 480px) {
+  .page-overview .overview-app-region { display: none; }
+  .page-overview .overview-app-name { width: 50%; }
+  .page-overview .overview-app-status { width: 29%; }
+  .page-overview .overview-app-replicas { width: 21%; }
+}

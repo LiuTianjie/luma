@@ -8,6 +8,8 @@ import os
 import re
 import secrets
 import shlex
+import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Union
@@ -333,6 +335,7 @@ def deploy_control_stack(
     require_pull_egress: bool = True,
     node_name: str | None = None,
     control_image_prepared: bool = False,
+    allow_auto_revert: bool = True,
 ) -> list[str]:
     results: list[str] = []
     engine = str(config.defaults.get("engine") or "nomad")
@@ -375,10 +378,15 @@ def deploy_control_stack(
         image=deploy_image,
         node_name=node,
         control_environment=control_environment,
+        allow_auto_revert=allow_auto_revert,
     )
     _step(results, emit, "Check Nomad tmpfs compatibility", lambda: _nomad_tmpfs_compat_status(remote))
     _step(results, emit, "Deploy Luma control job", lambda: _deploy_nomad_job(remote, job_json, "luma-control"))
     _step(results, emit, "Wait Luma control job", lambda: _wait_nomad_job(remote, "luma-control"))
+    if not allow_auto_revert:
+        directory = str(os.environ.get("LUMA_CONTROL_STATE_DIR") or f"{ROOT}/control")
+        script = "from pathlib import Path; import sys; Path(sys.argv[1]).unlink(missing_ok=True)"
+        remote.sudo(shlex.join([sys.executable, "-c", script, str(Path(directory) / "control-sqlite-cutover-pending.json")]))
     return results
 
 
@@ -792,9 +800,169 @@ def _bootstrap_config(config: LumaConfig, node: NodeConfig | None = None) -> dic
     return raw
 
 
-def install_control_state(remote: Executor, state: dict[str, object]) -> str:
-    content = json.dumps(state, indent=2, sort_keys=True) + "\n"
-    return remote.write_secret(content, f"{ROOT}/control/control.json", mode="600")
+def _merge_manager_state(current: dict[str, object], incoming: dict[str, object], *, secret_names: list[str]) -> None:
+    """Apply manager installation fields, never a stale copy of task/history state."""
+    if current.get("clusterId") != incoming.get("clusterId"):
+        raise LumaError("existing cluster differs; explicit overwrite is required")
+    for key in ("domain", "nomadAddr", "nomadRpcAddr"):
+        if key in incoming:
+            current[key] = incoming[key]
+    incoming_secrets = incoming.get("secrets") if isinstance(incoming.get("secrets"), dict) else {}
+    if incoming_secrets:
+        saved = current.setdefault("secrets", {})
+        if not isinstance(saved, dict):
+            raise LumaError("existing Control secrets are invalid")
+        for key in secret_names:
+            if key in incoming_secrets:
+                saved[key] = incoming_secrets[key]
+    nodes = current.setdefault("nodes", {})
+    if not isinstance(nodes, dict):
+        raise LumaError("existing Control nodes are invalid")
+    fields = ("region", "status", "displayName", "hostname", "labels", "nomadRole", "nomadServer", "aliases", "nodeId", "nomadNodeId", "tailscaleIP")
+    for name, record in (incoming.get("nodes") or {}).items():
+        if not isinstance(record, dict) or record.get("nomadRole") != "server":
+            continue
+        saved = nodes.get(name)
+        if not isinstance(saved, dict):
+            saved = dict(record)
+            nodes[name] = saved
+        else:
+            for key in fields:
+                if key in record:
+                    saved[key] = record[key]
+
+
+def _stop_legacy_control_writer(legacy: dict[str, Any], *, timeout: float = 120) -> dict[str, Any] | None:
+    """Stop only Control and fail closed until Nomad confirms task termination."""
+    from .nomad_api import NomadApi
+    client = NomadApi(str(legacy.get("nomadAddr") or "http://127.0.0.1:4646"), token=str(legacy.get("nomadToken") or ""))
+    jobs = client.request("GET", "/v1/jobs?prefix=luma-control", timeout=10)
+    if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
+        raise LumaError("cannot verify legacy Control job; SQLite import refused")
+    present = any(job.get("ID") == "luma-control" for job in jobs)
+    previous = None
+    if present:
+        previous = client.request("GET", "/v1/job/luma-control", timeout=10)
+        if not isinstance(previous, dict) or previous.get("ID") != "luma-control":
+            raise LumaError("cannot inspect legacy Control job; SQLite import refused")
+        client.request("DELETE", "/v1/job/luma-control?purge=false", timeout=10)
+    deadline = time.monotonic() + timeout
+    while True:
+        jobs = client.request("GET", "/v1/jobs?prefix=luma-control", timeout=10)
+        if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
+            raise LumaError("cannot confirm stopped Control job; SQLite import refused")
+        matching = [job for job in jobs if job.get("ID") == "luma-control"]
+        stopped = not matching
+        if matching:
+            current = client.request("GET", "/v1/job/luma-control", timeout=10)
+            stopped = isinstance(current, dict) and current.get("Stop") is True
+        allocations = client.request("GET", "/v1/allocations", timeout=10)
+        if not isinstance(allocations, list) or any(not isinstance(item, dict) for item in allocations):
+            raise LumaError("cannot confirm legacy Control allocations; SQLite import refused")
+        terminated = True
+        for allocation in allocations:
+            if allocation.get("JobID") != "luma-control":
+                continue
+            if allocation.get("ClientStatus") not in {"complete", "failed"}:
+                terminated = False
+                break
+            states = allocation.get("TaskStates")
+            if not isinstance(states, dict) or any(not isinstance(task, dict) or task.get("State") != "dead" for task in states.values()):
+                terminated = False
+                break
+        if stopped and terminated:
+            return previous
+        if time.monotonic() >= deadline:
+            raise LumaError("legacy Control did not stop within the maintenance deadline; SQLite import refused; inspect luma-control allocations before retrying")
+        time.sleep(1)
+
+
+def _checkpoint_legacy_control(root: Path, previous_job: dict[str, Any] | None) -> Path:
+    """Private frozen JSON checkpoint, before any database/config cutover."""
+    checkpoint = root.parent / f"{root.name}-pre-sqlite-{int(time.time())}-{secrets.token_hex(4)}"
+    checkpoint.mkdir(mode=0o700)
+    try:
+        for path in root.rglob("*"):
+            if path.is_symlink():
+                raise LumaError("legacy state contains symlinks; preserve them separately before cutover")
+        shutil.copytree(root, checkpoint / "control", ignore=shutil.ignore_patterns("*.lock", "*.tmp", "control.sqlite3*"))
+        config = Path(ROOT) / "luma.yaml"
+        if config.is_file():
+            shutil.copyfile(config, checkpoint / "luma.yaml")
+        job_file = checkpoint / "luma-control.nomad.json"
+        job_file.write_text(json.dumps({"Job": previous_job}) + "\n", encoding="utf-8")
+        for path in checkpoint.rglob("*"):
+            path.chmod(0o700 if path.is_dir() else 0o600)
+            if path.is_file():
+                with path.open("rb") as handle:
+                    os.fsync(handle.fileno())
+        return checkpoint
+    except BaseException:
+        shutil.rmtree(checkpoint)
+        raise
+
+
+def _install_control_state_file(payload: Path, *, overwrite: bool) -> bool:
+    """Privileged local installer entry point; payload and errors never echo keys."""
+    from .control import database
+    request = json.loads(payload.read_text(encoding="utf-8"))
+    incoming = request["state"]
+    if not isinstance(incoming, dict):
+        raise LumaError("invalid Control installation state")
+    root = database.database_path().parent
+    pending = root / "control-sqlite-cutover-pending.json"
+    legacy_path = root / "control.json"
+    # Configuration reads above are non-mutating. This is the first place an
+    # update may switch storage, after the image has already been prefetched.
+    legacy_import = legacy_path.is_file() and not any((root / name).exists() for name in (
+        "control-sqlite-authority.json", "control-sqlite-migration.json",
+    ))
+    if legacy_import and database.database_path().exists():
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(database.database_path().resolve().as_uri() + "?mode=ro", uri=True)) as reader:
+            exists = reader.execute("SELECT 1 FROM sqlite_master WHERE name='database_meta'").fetchone()
+            legacy_import = not (exists and reader.execute("SELECT 1 FROM database_meta WHERE key='state_initialized'").fetchone())
+    if legacy_import:
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+        if not isinstance(legacy, dict):
+            raise LumaError("invalid legacy Control state")
+        previous_job = _stop_legacy_control_writer(legacy)
+        checkpoint = _checkpoint_legacy_control(root, previous_job)
+        database._atomic_json(pending, {"checkpoint": str(checkpoint), "createdAt": int(time.time())})
+    with database.transaction() as conn:
+        if not database.initialized(conn):
+            database.ensure_initialized(conn, initial_state=incoming)
+        if overwrite:
+            database.write_state(conn, incoming)
+        else:
+            current = database.read_state(conn, lazy=True)
+            _merge_manager_state(current, incoming, secret_names=request["secretNames"])
+            database.write_state(conn, current)
+    return pending.is_file()
+
+
+def install_control_state(remote: Executor, state: dict[str, object], *, overwrite: bool = False, secret_names: list[str] | None = None) -> str:
+    # Both manager bootstrap/update callers run locally from the installed CLI.
+    # Use its interpreter so sudo cannot select a system Python with old Luma.
+    directory = str(os.environ.get("LUMA_CONTROL_STATE_DIR") or f"{ROOT}/control")
+    payload = str(Path(directory) / f".control-install-{secrets.token_hex(8)}.tmp")
+    content = json.dumps({"state": state, "secretNames": secret_names or ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID"]}) + "\n"
+    remote.write_secret(content, payload, mode="600")
+    script = (
+        "from pathlib import Path; import sys; "
+        "from luma.bootstrap import _install_control_state_file; "
+        "print('legacy-cutover-pending' if _install_control_state_file(Path(sys.argv[1]), overwrite=sys.argv[2] == '1') else 'sqlite-ready')"
+    )
+    try:
+        output = remote.sudo(f"LUMA_CONTROL_STATE_DIR={shlex.quote(directory)} {shlex.quote(sys.executable)} -c {shlex.quote(script)} {shlex.quote(payload)} {'1' if overwrite else '0'}")
+    finally:
+        remote.sudo(f"rm -f -- {shlex.quote(payload)}", check=False)
+    return "Control SQLite state installed" + (" (legacy cutover pending)" if "legacy-cutover-pending" in str(output).splitlines() else "")
+
+
+def _manager_secret_names(config: LumaConfig) -> list[str]:
+    return sorted({"CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ZONE_ID", str(config.dns.get("apiTokenEnv") or "CLOUDFLARE_API_TOKEN"), str(config.dns.get("zoneIdEnv") or "CLOUDFLARE_ZONE_ID")})
 
 
 def configure_dns(remote: Executor) -> str:
@@ -1103,6 +1271,7 @@ def configure_tailscale_watchdog(
         "port=${LUMA_TAILSCALE_WATCHDOG_PORT:-0}\n"
         "peers=${LUMA_TAILSCALE_WATCHDOG_PEERS:-}\n"
         f"control_state={ROOT}/control/control.json\n"
+        'if [ -n "${LUMA_CONTROL_STATE_DIR:-}" ]; then control_state="$LUMA_CONTROL_STATE_DIR/control.json"; fi\n'
         "state_dir=/run/luma\n"
         "state_file=$state_dir/tailscale-watchdog.failures\n"
         "mkdir -p \"$state_dir\"\n"
@@ -1131,13 +1300,37 @@ def configure_tailscale_watchdog(
         "  echo 0 > \"$state_file\"\n"
         "  exit 0\n"
         "fi\n"
-        "if [ -z \"$peers\" ] && command -v python3 >/dev/null 2>&1 && [ -r \"$control_state\" ]; then\n"
+        "if [ -z \"$peers\" ] && command -v python3 >/dev/null 2>&1; then\n"
         "  peers=$(python3 - \"$control_state\" <<'PY'\n"
-        "import ipaddress, json, sys, time\n"
+        "import ipaddress, json, pathlib, sqlite3, sys, time\n"
         "try:\n"
-        "    with open(sys.argv[1], encoding='utf-8') as handle:\n"
-        "        state = json.load(handle)\n"
-        "except (OSError, ValueError):\n"
+        "    source = pathlib.Path(sys.argv[1])\n"
+        "    database = source.with_name('control.sqlite3')\n"
+        "    marker = source.with_name('control-sqlite-migration.json')\n"
+        "    authority = source.with_name('control-sqlite-authority.json')\n"
+        "    if database.exists() or database.is_symlink():\n"
+        "        if database.is_symlink():\n"
+        "            raise ValueError('invalid database path')\n"
+        "        connection = sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=5)\n"
+        "        try:\n"
+        "            connection.execute('BEGIN')\n"
+        "            if connection.execute(\"SELECT 1 FROM database_meta WHERE key='state_initialized'\").fetchone() is None:\n"
+        "                raise ValueError('database is not initialized')\n"
+        "            if authority.exists():\n"
+        "                identity = connection.execute(\"SELECT value FROM database_meta WHERE key='database_id'\").fetchone()\n"
+        "                saved = json.loads(authority.read_text(encoding='utf-8'))\n"
+        "                if not isinstance(saved, dict) or not identity or saved.get('databaseId') != identity[0]:\n"
+        "                    raise ValueError('database identity does not match authority')\n"
+        "            records = connection.execute(\"SELECT id,payload FROM control_entities WHERE kind='nodes'\").fetchall()\n"
+        "            state = {'nodes': {key: json.loads(payload) for key, payload in records}}\n"
+        "        finally:\n"
+        "            connection.close()\n"
+        "    elif marker.exists() or authority.exists():\n"
+        "        raise ValueError('migrated database is unavailable')\n"
+        "    else:\n"
+        "        with source.open(encoding='utf-8') as handle:\n"
+        "            state = json.load(handle)\n"
+        "except (OSError, ValueError, sqlite3.Error):\n"
         "    raise SystemExit(0)\n"
         "now = int(time.time())\n"
         "values = set()\n"
@@ -1384,7 +1577,7 @@ def bootstrap_node(
     )
 
 
-def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profile, domain: str, state: dict[str, object], *, run_egress: bool = True, emit: Progress | None = None) -> list[str]:
+def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profile, domain: str, state: dict[str, object], *, run_egress: bool = True, emit: Progress | None = None, overwrite_control_state: bool = False) -> list[str]:
     remote = LocalExecutor()
     tcp_ports = _state_tcp_relay_ports(state)
     results = bootstrap_node(
@@ -1401,15 +1594,21 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
         raise LumaError("Nomad is the only supported deployment engine")
     manager_node_name = _remember_local_manager_node(state, node, profile, remote)
     state["nomadAddr"] = str(state.get("nomadAddr") or "http://127.0.0.1:4646")
+    _step(results, emit, "Prefetch Luma control image", lambda: _prefetch_control_image_for_manager_refresh(remote, config, state=state))
     _step(results, emit, "Sync control DNS", lambda: sync_control_dns(config, domain))
+    cutover = {"pending": False}
+    def install_state() -> str:
+        result = install_control_state(remote, state, overwrite=overwrite_control_state, secret_names=_manager_secret_names(config))
+        cutover["pending"] = result.endswith("(legacy cutover pending)")
+        return result
+    _step(results, emit, "Install control state", install_state)
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
-    _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
     _step(results, emit, "Write control route", lambda: _write_control_route(remote, config, domain, node))
     _step(
         results,
         emit,
         "Deploy Luma control API",
-        lambda: deploy_control_stack(remote, config, domain, emit=emit, require_pull_egress=run_egress, node_name=manager_node_name),
+        lambda: deploy_control_stack(remote, config, domain, emit=emit, require_pull_egress=run_egress, node_name=manager_node_name, control_image_prepared=True, **({"allow_auto_revert": False} if cutover["pending"] else {})),
         fix=(
             "Build and publish the Luma control image, then rerun bootstrap manager. "
             "For mainland managers using the default GHCR image, configure EGRESS_SUBSCRIPTION_URL "
@@ -1585,8 +1784,13 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
             return _wait_nomad_job(remote, "traefik")
 
         _step(results, emit, "Refresh Traefik ingress", _deploy_traefik_nomad)
+    cutover = {"pending": False}
+    def install_state() -> str:
+        result = install_control_state(remote, state, secret_names=_manager_secret_names(config))
+        cutover["pending"] = result.endswith("(legacy cutover pending)")
+        return result
+    _step(results, emit, "Install control state", install_state)
     _step(results, emit, "Install control config", lambda: install_control_config(remote, config, node))
-    _step(results, emit, "Install control state", lambda: install_control_state(remote, state))
     _step(
         results,
         emit,
@@ -1598,6 +1802,7 @@ def refresh_manager_control_local(config: LumaConfig, node: NodeConfig, domain: 
             emit=emit,
             node_name=manager_node_name,
             control_image_prepared=True,
+            **({"allow_auto_revert": False} if cutover["pending"] else {}),
         ),
         fix="Check luma-control service logs and rerun luma update manager",
     )

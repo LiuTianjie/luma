@@ -83,12 +83,11 @@ export function Sidebar({
         ))}
       </nav>
       <div className="sidebar-status" aria-label={lang === "zh" ? "当前运行状态" : "Current runtime status"}>
-        <span>{lang === "zh" ? "健康分" : "Health score"}</span>
-        <strong>{vm.healthScore}%</strong>
-        <span className="sidebar-health-track" aria-hidden="true">
-          <span className="sidebar-health-fill" style={{ width: `${Math.min(100, Math.max(0, vm.healthScore))}%` }} />
-        </span>
-        <small>{vm.activeNodes}/{vm.nodes.length || 0} {lang === "zh" ? "节点在线" : "nodes online"}</small>
+        <span>{lang === "zh" ? "就绪节点" : "Ready nodes"}</span>
+        <strong>{vm.activeNodes}<small> / {vm.nodes.length}</small></strong>
+        <small>{lang === "zh"
+          ? `${Math.max(0, vm.services.length - vm.healthyServices)} 个服务异常`
+          : `${Math.max(0, vm.services.length - vm.healthyServices)} services need attention`}</small>
       </div>
     </aside>
   );

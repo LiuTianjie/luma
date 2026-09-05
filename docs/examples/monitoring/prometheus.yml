@@ -1,0 +1,18 @@
+# Opt-in Prometheus template. Replace target and credentials_file on the collector.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+rule_files:
+  - luma-alerts.yml
+scrape_configs:
+  - job_name: luma-control
+    scheme: https
+    metrics_path: /v1/metrics
+    scrape_timeout: 10s
+    follow_redirects: false
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/luma-metrics-token
+    static_configs:
+      - targets: [luma.example.com]
+# Configure alerting.alertmanagers separately; this file alone sends no messages.

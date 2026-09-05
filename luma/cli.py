@@ -28,8 +28,8 @@ from .compose import (
 )
 from .config import LumaConfig, load_config, save_config
 from .control.client import ControlClient
-from .control.context import list_contexts, load_current_context, save_context, use_context
-from .control.state import load_state, new_state, state_path
+from .control.context import list_contexts, load_context, load_current_context, save_context, use_context
+from .control.state import is_initialized as control_state_is_initialized, load_state, new_state, state_path
 from .agent import DEFAULT_AGENT_CONFIG, _current_install_layout, install_node_agent, run_node_agent, run_terminal_supervisor
 from .envfile import load_env_file, parse_env_file
 from .errors import LumaError
@@ -71,10 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     version.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
     version.add_argument("--local", action="store_true", help="Only print the local CLI version")
     status = sub.add_parser("status")
-    status.add_argument("--control-url", help="Control API URL to check instead of the current login context")
-    status.add_argument("--token", help="Management token to use with --control-url")
-    status.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API check")
-    status.add_argument("--resolve-ip", help="Connect to this IP while keeping the control hostname as Host")
+    _add_control_arguments(status)
     _add_output_arguments(status)
     sub.add_parser("preflight")
     configure = sub.add_parser("configure")
@@ -82,14 +79,19 @@ def build_parser() -> argparse.ArgumentParser:
     configure.add_argument("--show", action="store_true", help="Show configured key names without printing secret values")
     login = sub.add_parser("login")
     login.add_argument("endpoint")
-    login.add_argument("--token", required=True)
+    login_token = login.add_mutually_exclusive_group()
+    login_token.add_argument("--token", help="Management token (prefer --token-stdin or LUMA_DEPLOY_TOKEN)")
+    login_token.add_argument("--token-stdin", action="store_true", help="Read management token from stdin")
+    _add_output_arguments(login)
     login.add_argument("--insecure", action="store_true", help="Skip TLS verification for self-signed control endpoints")
     login.add_argument("--resolve-ip", help="Connect to this IP while keeping the endpoint hostname as Host")
     context = sub.add_parser("context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
-    context_sub.add_parser("list")
+    context_list = context_sub.add_parser("list")
+    _add_output_arguments(context_list)
     context_use = context_sub.add_parser("use")
     context_use.add_argument("cluster")
+    _add_output_arguments(context_use)
     secret = sub.add_parser("secret")
     secret_sub = secret.add_subparsers(dest="secret_command", required=True)
     secret_list = secret_sub.add_parser("list")
@@ -207,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.297 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.298 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -222,7 +224,9 @@ def build_parser() -> argparse.ArgumentParser:
     update_fleet.add_argument("--timeout", type=int, default=900, help="Per-node update timeout in seconds")
     _add_control_arguments(update_fleet)
     _add_output_arguments(update_fleet)
-    doctor = sub.add_parser("doctor")
+    doctor = sub.add_parser("doctor", help="Check authentication and remote Control/node readiness")
+    _add_control_arguments(doctor)
+    _add_output_arguments(doctor)
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks")
 
     manager_ops = sub.add_parser("manager", help="Manager recovery and maintenance operations")
@@ -326,7 +330,30 @@ def build_parser() -> argparse.ArgumentParser:
     service_sub = service.add_subparsers(dest="service_command", required=True)
     service_new = service_sub.add_parser("new")
     service_new.add_argument("--output", type=Path)
+    service_list = service_sub.add_parser("list", help="List deployed services and replica health")
+    service_list.add_argument("--region", help="Filter by scheduling region")
+    service_list.add_argument("--stack", help="Filter by application/stack")
+    service_inspect = service_sub.add_parser("inspect", help="Inspect an application or exact deployed service")
+    service_inspect.add_argument("name", help="Application/stack or full service name")
+    service_events = service_sub.add_parser("events", help="Show recent runtime events for the latest task allocation")
+    service_events.add_argument("name", help="Deployed service full name")
+    service_history = service_sub.add_parser("history", help="Page build and deployment attempts (Nomad versions remain under luma history)")
+    service_history.add_argument("name", nargs="?", default="", help="Filter by application name")
+    service_history.add_argument("--id", dest="record_id", help="Read a history record and its step log; requires --kind")
+    service_history.add_argument("--kind", choices=("build", "deployment"), default="", help="Filter record type, or identify --id type")
+    _add_history_arguments(service_history)
+    service_logs = service_sub.add_parser("logs", help="Read application logs")
+    service_logs.add_argument("name", help="Deployed service full name")
+    service_logs.add_argument("--tail", type=int, default=120, help="Recent line budget shared across all selected sources (1-500)")
+    service_logs.add_argument("--previous", action="store_true", help="Read stopped allocations instead of running allocations")
+    service_logs.add_argument("--allocation", default="", help="Only this allocation ID")
+    service_logs.add_argument("--follow", "-f", action="store_true", help="Follow logs until interrupted; use text or ndjson")
+    for operation in (service_list, service_inspect, service_events, service_logs, service_history):
+        _add_control_arguments(operation)
+        _add_output_arguments(operation)
     service_remove = service_sub.add_parser("remove")
+    _add_control_arguments(service_remove)
+    _add_output_arguments(service_remove)
     service_remove.add_argument("service", help="Deployed service or Compose application name")
     service_remove.add_argument("--skip-dns", action="store_true", help="Keep Cloudflare DNS records")
     service_remove.add_argument("--skip-orchestrator", action="store_true", help="Keep the Nomad job running")
@@ -334,6 +361,8 @@ def build_parser() -> argparse.ArgumentParser:
     service_remove.add_argument("--dry-run", action="store_true", help="Show what would be removed without changing the manager")
     service_remove.add_argument("--timeout", type=int, default=300, help="Seconds to wait for the control-plane remove response")
     service_restart = service_sub.add_parser("restart")
+    _add_control_arguments(service_restart)
+    _add_output_arguments(service_restart)
     service_restart.add_argument("stack", help="Deployed service or Compose application name")
     service_restart.add_argument("--service", default="", help="Task/service name inside a Compose application")
     service_restart.add_argument("--mode", choices=("recreate", "task"), default="", help="recreate stops the allocation; task restarts in place")
@@ -416,8 +445,10 @@ def build_parser() -> argparse.ArgumentParser:
     build_list = build_sub.add_parser("list", help="List recent repository import build runs")
     _add_control_arguments(build_list)
     _add_output_arguments(build_list)
+    _add_history_arguments(build_list, include_app=True)
     build_logs = build_sub.add_parser("logs", help="Show a build run's recorded step log")
     build_logs.add_argument("id")
+    _add_pagination_arguments(build_logs)
     _add_control_arguments(build_logs)
     _add_output_arguments(build_logs)
     build_retry = build_sub.add_parser("retry", help="Retry a recorded build run")
@@ -572,6 +603,51 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_pagination_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--limit", type=int, default=50, help="Records per page (1-100, default: 50)")
+    parser.add_argument("--cursor", default="", help="Opaque nextCursor from the preceding page with the same filters")
+
+
+def _add_history_arguments(parser: argparse.ArgumentParser, *, include_app: bool = False) -> None:
+    _add_pagination_arguments(parser)
+    if include_app:
+        parser.add_argument("--app", default="", help="Filter by application name")
+    parser.add_argument("--status", default="", help="Filter by exact recorded status")
+    parser.add_argument("--source", choices=("build", "cli", "dashboard"), default="", help="Filter by history source")
+    parser.add_argument("--since", default="", help="Created at or after Unix seconds or RFC3339 timestamp")
+    parser.add_argument("--until", default="", help="Created at or before Unix seconds or RFC3339 timestamp")
+
+
+def _history_query(args: argparse.Namespace, *, detail: bool = False) -> Dict[str, Any]:
+    limit = int(getattr(args, "limit", 50))
+    if not 1 <= limit <= 100:
+        raise LumaError("--limit must be between 1 and 100")
+    query: Dict[str, Any] = {"limit": limit}
+    cursor = str(getattr(args, "cursor", "") or "")
+    if cursor:
+        query["cursor"] = cursor
+    if not detail:
+        for key in ("app", "status", "source", "kind", "since", "until"):
+            value = str(getattr(args, key, "") or "")
+            if value:
+                query[key] = value
+    return query
+
+
+def _print_history_expiry(record: Any) -> None:
+    if not isinstance(record, dict) or not record.get("detailsExpiredAt"):
+        return
+    when = _format_epoch(int(record["detailsExpiredAt"]))
+    days = int(record.get("detailsRetentionDays") or 0)
+    policy = f" ({days}-day retention)" if days else ""
+    print(f"Step log expired at {when}{policy}; the summary remains available.")
+
+
+def _print_history_page(page: Any) -> None:
+    if isinstance(page, dict) and page.get("hasMore") and page.get("nextCursor"):
+        print(f"More records available. Continue with --cursor {page['nextCursor']}", file=sys.stderr)
+
+
 def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workflow-app", default="", help="Application workflow to check (required when a repository matches several applications)")
     parser.add_argument("--accept-workflow-change", action="store_true", help="Continue after the user has explicitly approved the displayed workflow differences")
@@ -579,6 +655,7 @@ def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_control_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--control-context", help="Use a saved cluster context without switching the current context")
     parser.add_argument("--control-url", help="Control API URL to use instead of the current login context")
     parser.add_argument("--token", help="Management token to use with --control-url")
     parser.add_argument("--insecure", action="store_true", help="Skip TLS verification for the control API")
@@ -591,7 +668,7 @@ def _add_output_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_update_manager_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--domain", help="Control domain. Defaults to the domain stored in /opt/luma/control/control.json.")
+    parser.add_argument("--domain", help="Control domain. Defaults to the domain stored in Manager Control state (/opt/luma/control/control.sqlite3 by default).")
     parser.add_argument("--node")
     parser.add_argument("--profile", choices=sorted(PROFILES), default="single-node")
     parser.add_argument("--http-port", type=int, help="Public Traefik HTTP port")
@@ -868,6 +945,8 @@ def _validation_context(args: argparse.Namespace) -> Dict[str, Any]:
 
 def _command_name(args: argparse.Namespace) -> str:
     command = str(getattr(args, "command", ""))
+    if command in {"service", "context"}:
+        return f"{command} {getattr(args, command + '_command', '')}".strip()
     if command == "secret":
         return f"secret {getattr(args, 'secret_command', '')}".strip()
     if command == "registry":
@@ -1019,6 +1098,10 @@ def _version_health_context(args: argparse.Namespace) -> tuple[str, str, bool, s
 
 
 def _control_context(args: argparse.Namespace, *, require_token: bool) -> tuple[str, str, bool, str | None]:
+    context_name = _arg_text(args, "control_context") or _env_text("LUMA_CONTROL_CONTEXT")
+    def selected_context() -> Dict[str, Any]:
+        return load_context(context_name) if context_name else load_current_context()
+
     control_url = _arg_text(args, "control_url") or _env_text("LUMA_CONTROL_URL")
     token = _arg_text(args, "token") or _env_text("LUMA_DEPLOY_TOKEN")
     resolve_ip = _arg_text(args, "resolve_ip") or _env_text("LUMA_RESOLVE_IP")
@@ -1032,7 +1115,7 @@ def _control_context(args: argparse.Namespace, *, require_token: bool) -> tuple[
     ) or cli_insecure
 
     if not has_stateless_context:
-        context = load_current_context()
+        context = selected_context()
         return (
             str(context["endpoint"]),
             str(context["token"]),
@@ -1041,11 +1124,18 @@ def _control_context(args: argparse.Namespace, *, require_token: bool) -> tuple[
         )
 
     context: Dict[str, Any] = {}
-    if not control_url or (require_token and not token) or insecure is None:
+    if context_name or not control_url or (require_token and not token) or insecure is None:
         try:
-            context = load_current_context()
+            context = selected_context()
         except LumaError:
+            if context_name:
+                raise
             context = {}
+
+    # A URL override must not silently send saved credentials or reuse a TLS/IP
+    # override belonging to another cluster. Explicit CLI/environment values win.
+    if control_url and str(context.get("endpoint") or "").rstrip("/") != control_url.rstrip("/"):
+        context = {}
 
     if not control_url:
         control_url = str(context["endpoint"]) if context.get("endpoint") else None
@@ -1393,7 +1483,16 @@ def _node_status_names(item: Dict[str, Any]) -> set[str]:
 
 
 def cmd_login(args: argparse.Namespace) -> int:
-    client = ControlClient(args.endpoint, args.token, insecure=args.insecure, resolve_ip=args.resolve_ip)
+    token = _arg_text(args, "token")
+    if getattr(args, "token_stdin", False):
+        token = sys.stdin.read().strip()
+    elif not token:
+        token = _env_text("LUMA_DEPLOY_TOKEN")
+        if not token and sys.stdin.isatty():
+            token = getpass.getpass("Management token: ").strip()
+    if not token:
+        raise LumaError("management token is required; use --token-stdin, LUMA_DEPLOY_TOKEN, or an interactive terminal")
+    client = ControlClient(args.endpoint, token, insecure=args.insecure, resolve_ip=args.resolve_ip)
     result = client.verify_login()
     cluster_id = str(result.get("clusterId") or "")
     if not cluster_id:
@@ -1401,11 +1500,14 @@ def cmd_login(args: argparse.Namespace) -> int:
     save_context(
         endpoint=args.endpoint,
         cluster_id=cluster_id,
-        token=args.token,
+        token=token,
         insecure=args.insecure,
         resolve_ip=args.resolve_ip,
     )
-    print(f"Logged in to {cluster_id} at {args.endpoint.rstrip('/')}")
+    if _output_format(args) != "text":
+        _print_success(args, {"clusterId": cluster_id, "endpoint": args.endpoint.rstrip("/")})
+    else:
+        print(f"Logged in to {cluster_id} at {args.endpoint.rstrip('/')}")
     return 0
 
 
@@ -1437,6 +1539,9 @@ def _format_epoch(value: int) -> str:
 def cmd_context(args: argparse.Namespace) -> int:
     if args.context_command == "list":
         contexts = list_contexts()
+        if _output_format(args) != "text":
+            _print_success(args, {"contexts": contexts})
+            return 0
         if not contexts:
             print("No contexts. Run: luma login <control-url> --token <management-token>")
             return 0
@@ -1446,7 +1551,10 @@ def cmd_context(args: argparse.Namespace) -> int:
         return 0
     if args.context_command == "use":
         use_context(args.cluster)
-        print(f"Current context: {args.cluster}")
+        if _output_format(args) != "text":
+            _print_success(args, {"clusterId": args.cluster})
+        else:
+            print(f"Current context: {args.cluster}")
         return 0
     raise LumaError(f"unknown context command: {args.context_command}")
 
@@ -1771,7 +1879,7 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         _ensure_cloudflare_dns_from_local_config(config, args.domain, node)
         state = _control_state_for_bootstrap(args.domain, overwrite=args.overwrite_control_state)
         _attach_control_secrets(state, config)
-        bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log)
+        bootstrap_manager_local(config, node, profile, args.domain, state, run_egress=not args.skip_egress, emit=log, overwrite_control_state=args.overwrite_control_state)
         control_url = _control_url(args.domain, args.https_port or _config_https_port(config))
         print("Bootstrap complete")
         print(f"Control domain: {args.domain}")
@@ -2254,11 +2362,44 @@ def _manager_update_domain(explicit_domain: str | None) -> str:
 def _existing_control_state() -> Dict[str, object] | None:
     path = state_path()
     try:
-        if path.exists():
-            return load_state(path)
+        if control_state_is_initialized():
+            # Role detection/prefetch must not cut over a still-running JSON
+            # Control. Only the installer imports after stopping its writer.
+            legacy_only = path.is_file() and not any((path.parent / name).exists() for name in (
+                "control-sqlite-authority.json", "control-sqlite-migration.json",
+            ))
+            sqlite_path = path.parent / "control.sqlite3"
+            if legacy_only and sqlite_path.exists():
+                import sqlite3
+                from contextlib import closing
+                try:
+                    with closing(sqlite3.connect(sqlite_path.resolve().as_uri() + "?mode=ro", uri=True)) as reader:
+                        metadata = reader.execute("SELECT 1 FROM sqlite_master WHERE name='database_meta'").fetchone()
+                        legacy_only = not (metadata and reader.execute("SELECT 1 FROM database_meta WHERE key='state_initialized'").fetchone())
+                except sqlite3.Error as exc:
+                    raise LumaError("cannot inspect existing Control database; refusing legacy fallback") from exc
+            if legacy_only:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise LumaError("invalid legacy Control state")
+                return data
+            return load_state()
     except PermissionError:
         pass
-    result = LocalExecutor().sudo_result(f"test -f {shlex.quote(str(path))} && cat {shlex.quote(str(path))}")
+    # Use the same read-only legacy decision under sudo. Once SQLite exists,
+    # legacy JSON must never be used as an authority fallback.
+    # The state directory is an argv value, and credentials stay in captured
+    # subprocess output; they are never interpolated into commands or errors.
+    code = (
+        "import json,os,sys; "
+        "os.environ['LUMA_CONTROL_STATE_DIR']=sys.argv[1]; "
+        "from luma.cli import _existing_control_state; "
+        "from luma.control.state import is_initialized,load_state; "
+        "sys.exit(3) if not is_initialized() else None; "
+        "print(json.dumps(_existing_control_state()))"
+    )
+    command = shlex.join([sys.executable, "-c", code, str(path.parent)])
+    result = LocalExecutor().sudo_result(command)
     if result.code != 0 or not result.output.strip():
         return None
     raw = result.output.strip()
@@ -2268,8 +2409,8 @@ def _existing_control_state() -> Dict[str, object] | None:
         data = json.loads(raw[start : end + 1] if start >= 0 and end >= start else raw)
     except ValueError as exc:
         raise LumaError(
-            f"control state {path} is corrupt (invalid JSON): {exc}. "
-            "Pass --domain <control-domain> to proceed."
+            "could not read authoritative Control state through the installed Python runtime; "
+            "run this command as the manager owner"
         ) from exc
     return data if isinstance(data, dict) else None
 
@@ -2634,6 +2775,10 @@ def prompt(default: str, label: str) -> str:
 
 
 def cmd_service(args: argparse.Namespace) -> int:
+    if args.service_command == "history":
+        return cmd_service_history(args)
+    if args.service_command in {"list", "inspect", "events", "logs"}:
+        return cmd_service_read(args)
     if args.service_command == "new":
         return cmd_service_new(args)
     if args.service_command == "remove":
@@ -2641,6 +2786,138 @@ def cmd_service(args: argparse.Namespace) -> int:
     if args.service_command == "restart":
         return cmd_service_restart(args)
     raise LumaError(f"unknown service command: {args.service_command}")
+
+
+def _service_log_text(event: Dict[str, Any]) -> str:
+    """Render each observed fragment separately so interleaved sources stay clear.
+
+    Text output is a labelled diagnostic view, not a byte-exact log export.
+    Continuation markers avoid joining fragments across sources or reconnects.
+    """
+    source = "/".join(str(event.get(key) or "?") for key in ("allocationId", "task", "stream"))
+    if source == "?/?/?":
+        source = "source unavailable"
+    markers = "[continued] " if event.get("continued") else ""
+    if event.get("partial"):
+        markers += "[partial] "
+    return f"[{source}] {markers}{event.get('line') or ''}"
+
+
+def cmd_service_history(args: argparse.Namespace) -> int:
+    record_id = str(args.record_id or "")
+    if record_id and not args.kind:
+        raise LumaError("--id requires --kind build or deployment")
+    if record_id and any(getattr(args, key, "") for key in ("name", "status", "source", "since", "until")):
+        raise LumaError("history detail accepts --id, --kind, --limit and --cursor; omit list filters")
+    query = _history_query(args, detail=bool(record_id))
+    if args.name:
+        query["app"] = args.name
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    result = client.history_detail(args.kind, record_id, query=query) if record_id else client.history(query=query)
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
+    if record_id:
+        item = result.get("item") or {}
+        print(f"{item.get('title') or record_id}: {item.get('status') or 'unknown'}")
+        _print_history_expiry(item)
+        for event in result.get("events") or []:
+            if isinstance(event, dict):
+                _print_deploy_step(event)
+    else:
+        items = result.get("items") or []
+        if items:
+            _print_table(["ID", "KIND", "APPLICATION", "SOURCE", "STATUS", "CREATED"], [
+                [str(item.get(key) or "-") for key in ("id", "kind", "application", "source", "status")]
+                + [_format_epoch(int(item.get("createdAt") or 0))] for item in items
+            ])
+        else:
+            print("No matching history records.")
+    _print_history_page(result.get("page"))
+    return 0
+
+
+def cmd_service_read(args: argparse.Namespace) -> int:
+    operation = args.service_command
+    if operation == "logs":
+        if not 1 <= args.tail <= 500:
+            raise LumaError("--tail must be between 1 and 500")
+        if args.follow and _output_format(args) == "json":
+            raise LumaError("--follow requires --format text or ndjson; omit --follow for a JSON snapshot")
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    if operation in {"list", "inspect"}:
+        snapshot = client.dashboard()
+        services = [item for item in snapshot.get("services", []) if isinstance(item, dict)]
+        if operation == "list":
+            if args.region:
+                services = [item for item in services if item.get("region") == args.region]
+            if args.stack:
+                services = [item for item in services if item.get("stack") == args.stack]
+        else:
+            services = [item for item in services if args.name in {
+                item.get("fullName"), item.get("stack"), item.get("name")
+            }]
+            if not services:
+                raise LumaError(f"service or application not found: {args.name}")
+        result = {"services": services, "updatedAt": snapshot.get("updatedAt")}
+        if _output_format(args) != "text":
+            _print_success(args, result)
+        elif operation == "inspect":
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        elif not services:
+            print("No matching services.")
+        else:
+            _print_table(["SERVICE", "STACK", "REGION", "STATUS", "REPLICAS"], [
+                [str(item.get("fullName") or item.get("name") or "-"),
+                 str(item.get("stack") or "-"), str(item.get("region") or "-"),
+                 str(item.get("status") or "unknown"), f"{item.get('running', 0)}/{item.get('desired', 0)}"]
+                for item in services
+            ])
+        return 0
+    if operation == "events":
+        result = client.service_events(args.name)
+        if _output_format(args) != "text":
+            _print_success(args, result)
+        else:
+            print(f"{result.get('service') or args.name}: {result.get('status') or 'unknown'}"
+                  f" (allocation {result.get('allocId') or 'none'})")
+            for event in result.get("events") or []:
+                print(f"[{event.get('type') or event.get('source') or 'event'}] {event.get('message') or ''}")
+            if not result.get("events"):
+                print("No recent runtime events.")
+        return 0
+    if args.follow:
+        try:
+            for event in client.service_log_events(args.name, tail=args.tail, allocation=args.allocation, previous=args.previous):
+                if _output_format(args) == "ndjson":
+                    _print_json(event)
+                    sys.stdout.flush()
+                elif "line" in event:
+                    print(_service_log_text(event), flush=True)
+                elif event.get("status") in {"warning", "error", "reconnecting"}:
+                    print(str(event.get("message") or event.get("error") or "Log stream warning"), file=sys.stderr)
+                if event.get("status") == "error" or event.get("type") == "error":
+                    return 1
+        except KeyboardInterrupt:
+            return 0
+        return 0
+    result = client.service_logs(args.name, tail=args.tail, allocation=args.allocation, previous=args.previous)
+    if _output_format(args) != "text":
+        _print_success(args, result)
+    else:
+        entries = result.get("entries")
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, dict) and "line" in entry:
+                    print(_service_log_text(entry))
+        else:
+            for line in result.get("logs") or []:
+                print(_service_log_text({"line": line}))
+        for warning in result.get("warnings") or []:
+            print(f"Warning: {warning}", file=sys.stderr)
+    return 0
 
 
 def cmd_service_new(args: argparse.Namespace) -> int:
@@ -2681,16 +2958,11 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
         raise LumaError("service name is required")
     if service_name.endswith((".yaml", ".yml")) or any(part in service_name for part in ("/", "\\")):
         raise LumaError("service remove expects a deployed service name, not a manifest path")
-    print(f"[start] Load remove context: {service_name}", flush=True)
-    context = load_current_context()
-    print(f"[ok] Logged in: {context['clusterId']} ({context['endpoint']})", flush=True)
-    client = ControlClient(
-        str(context["endpoint"]),
-        str(context["token"]),
-        insecure=bool(context.get("insecure")),
-        resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
-    )
-    print(f"[start] Submit remove: {service_name}", flush=True)
+    emit = _output_format(args) == "text" and not _quiet(args)
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    if emit:
+        print(f"[start] Submit remove: {service_name}", flush=True)
     result = _run_with_wait_heartbeat(
         lambda: client.remove_service(
             name=service_name,
@@ -2701,9 +2973,13 @@ def cmd_service_remove(args: argparse.Namespace) -> int:
             timeout=args.timeout,
         ),
         timeout=args.timeout,
+        emit=_output_format(args) == "text" and not _quiet(args),
     )
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
     for step in result.get("steps") or []:
-        if isinstance(step, dict):
+        if emit and isinstance(step, dict):
             _print_deploy_step(step)
     action = "Remove dry run finished" if result.get("dryRun") else "Remove finished"
     print(f"[ok] {action}: {result.get('service') or result.get('deployment') or service_name}")
@@ -2732,7 +3008,11 @@ def cmd_service_restart(args: argparse.Namespace) -> int:
     result = _run_with_wait_heartbeat(
         lambda: client.restart_application(stack=stack, service=service_name, mode=mode, timeout=args.timeout),
         timeout=args.timeout,
+        emit=_output_format(args) == "text" and not _quiet(args),
     )
+    if _output_format(args) != "text":
+        _print_success(args, result)
+        return 0
     actual_mode = str(result.get("mode") or mode or ("task" if service_name else "recreate"))
     suffix = f"/{service_name}" if service_name else ""
     print(f"[ok] Restart finished: {stack}{suffix} ({actual_mode})")
@@ -3335,7 +3615,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"Build run: {build_id}")
         return 0
     if args.build_command == "list":
-        result = client.list_builds()
+        result = client.list_builds(query=_history_query(args))
         if output_format != "text":
             _print_success(args, result)
             return 0
@@ -3358,9 +3638,10 @@ def cmd_build(args: argparse.Namespace) -> int:
             _print_table(["ID", "STATUS", "NODE", "PROVIDER", "REPOSITORY/SOURCE", "REF", "MESSAGE"], rows)
         else:
             print("No build runs recorded")
+        _print_history_page(result.get("page"))
         return 0
     if args.build_command == "logs":
-        result = client.get_build(args.id)
+        result = client.get_build(args.id, query=_history_query(args, detail=True))
         if output_format != "text":
             _print_success(args, result)
             return 0
@@ -3368,9 +3649,11 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"Build run: {run.get('id') or args.id}")
         print(f"Status: {run.get('status') or '-'}")
         print(f"Source: {run.get('source') or '-'}")
+        _print_history_expiry(run)
         for event in run.get("events") or []:
             if isinstance(event, dict):
                 _print_deploy_step(event)
+        _print_history_page(result.get("eventsPage"))
         return 0
     if args.build_command == "retry":
         args._workflow_retry_run = client.get_build(args.id).get("run")
@@ -3922,16 +4205,11 @@ def _control_node_records_for_local(args: argparse.Namespace, *, required: bool 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     checks: list[tuple[str, bool, str]] = []
-    checks.append(("Login context", False, "Run: luma login <control-url> --token <management-token>"))
+    checks.append(("Control credentials", False, "Use --control-url and LUMA_DEPLOY_TOKEN, or run luma login"))
     try:
-        context = load_current_context()
-        checks[-1] = ("Login context", True, str(context.get("endpoint") or "current context loaded"))
-        client = ControlClient(
-            str(context["endpoint"]),
-            str(context["token"]),
-            insecure=bool(context.get("insecure")),
-            resolve_ip=str(context["resolveIp"]) if context.get("resolveIp") else None,
-        )
+        endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+        checks[-1] = ("Control credentials", True, endpoint)
+        client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
         verified = client.verify_login()
         control_ok = bool(verified.get("clusterId"))
         checks.append(("Control API", control_ok, "Check the control URL, token, DNS, and HTTPS route"))
@@ -3940,6 +4218,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except LumaError as exc:
         checks.append(("Control API", False, str(exc)))
 
+    healthy = all(ok for _, ok, _ in checks)
+    if _output_format(args) != "text":
+        _print_success(args, {"healthy": healthy, "checks": [
+            {"name": name, "ok": ok, "fix": fix if not ok else ""} for name, ok, fix in checks
+        ]})
+        return 0 if healthy else 1
     for name, ok, fix in checks:
         print(f"{name}: {'ok' if ok else 'fail'}")
         if not ok:

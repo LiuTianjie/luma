@@ -91,6 +91,8 @@ export type DeployTemplate = {
 };
 
 export type DeployStep = {
+  buildRunId?: string;
+  retryOf?: string;
   name?: string;
   status?: "start" | "ok" | "fail" | "done" | string;
   message?: string;

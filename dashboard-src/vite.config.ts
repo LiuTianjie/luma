@@ -252,6 +252,13 @@ const devRegistryPayload = {
 export default defineConfig({
   base: "/dashboard/",
   root: __dirname,
+  // Opt-in local integration: existing infrastructure fixtures remain mocked,
+  // while durable history/alerts/governance run against an isolated Control.
+  server: process.env.LUMA_DEV_CONTROL_URL ? {
+    proxy: {
+      "^/v1/(history|alerting|governance)(/|\\?|$)": { target: process.env.LUMA_DEV_CONTROL_URL, changeOrigin: true },
+    },
+  } : undefined,
   publicDir: false,
   plugins: [
     react(),
@@ -283,62 +290,90 @@ export default defineConfig({
             }
           });
         });
+        // Dev-only log fixture: bounded streams intentionally close so the
+        // dashboard exercises clean-EOF reconnect and cursor recovery.
+        const logEpoch = Date.now();
+        const logSources = [
+          { allocationId: "mock-instance-a", task: "app", stream: "stdout" },
+          { allocationId: "mock-instance-b", task: "app", stream: "stderr" },
+        ];
+        const sampleLogs = (service: string, after: number, allocation: string) => {
+          const latest = Math.floor((Date.now() - logEpoch) / 1200) + 3;
+          return Array.from({ length: Math.max(0, latest - after) }, (_, index) => {
+            const sequence = after + index + 1;
+            const source = logSources[sequence % logSources.length];
+            return {
+              ...source, cursor: String(sequence), observedAt: Math.floor(Date.now() / 1000),
+              line: `${service} sample event ${sequence}`,
+            };
+          }).filter((entry) => !allocation || entry.allocationId === allocation);
+        };
         server.middlewares.use("/v1/dashboard/logs/stream", (request, response) => {
-          if (request.method !== "GET") {
-            response.statusCode = 405;
-            response.end(JSON.stringify({ error: "method not allowed" }));
-            return;
-          }
-          const auth = request.headers.authorization || "";
-          if (!auth.startsWith("Bearer ")) {
-            response.statusCode = 401;
-            response.setHeader("Content-Type", "application/json; charset=utf-8");
-            response.end(JSON.stringify({ error: "unauthorized" }));
+          if (request.method !== "GET" || !request.headers.authorization?.startsWith("Bearer ")) {
+            response.statusCode = request.method !== "GET" ? 405 : 401;
+            response.end(JSON.stringify({ error: "unauthorized or unsupported method" }));
             return;
           }
           const parsed = new URL(request.url || "/v1/dashboard/logs/stream", "http://localhost");
+          if (parsed.searchParams.has("since")) {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "since is unsupported; use tail and cursor" }));
+            return;
+          }
           const service = parsed.searchParams.get("service") || "luma-control_luma-control";
+          const allocation = parsed.searchParams.get("allocation") || "";
+          const tail = Math.min(500, Math.max(1, Number(parsed.searchParams.get("tail") || "200")));
+          let cursor = parsed.searchParams.has("cursor") ? Number(parsed.searchParams.get("cursor"))
+            : Math.max(0, Math.floor((Date.now() - logEpoch) / 1200) + 3 - tail);
           response.statusCode = 200;
           response.setHeader("Content-Type", "application/x-ndjson");
           response.setHeader("Cache-Control", "no-cache");
-          response.write(JSON.stringify({ status: "start", service }) + "\n");
-          const samples = ["received health probe", "task heartbeat ok", "route check passed", "GET /healthz 200 1ms", "reconciler tick"];
-          let i = 0;
-          response.write(JSON.stringify({ line: `${new Date().toISOString()} ${service} stream attached`, ts: Math.floor(Date.now() / 1000) }) + "\n");
+          response.write(JSON.stringify({ status: "start", service, sources: logSources, capabilities: { since: false, resume: true }, warnings: [], limits: { maxSources: 32, maxBytesPerSource: 65536, pollIntervalSeconds: 2, tailScope: "total" } }) + "\n");
+          let ticks = 0;
+          const send = () => {
+            for (const entry of sampleLogs(service, cursor, allocation)) {
+              cursor = Number(entry.cursor);
+              response.write(JSON.stringify(entry) + "\n");
+            }
+            response.write(JSON.stringify({ status: "heartbeat", cursor: String(cursor) }) + "\n");
+          };
+          send();
           const timer = setInterval(() => {
-            const line = `${new Date().toISOString()} ${service} ${samples[i % samples.length]}`;
-            i += 1;
-            response.write(JSON.stringify({ line, ts: Math.floor(Date.now() / 1000) }) + "\n");
+            send();
+            if (++ticks >= 6) { clearInterval(timer); response.end(); }
           }, 1200);
-          request.on("close", () => clearInterval(timer));
+          response.on("close", () => clearInterval(timer));
         });
         server.middlewares.use("/v1/dashboard/logs", (request, response) => {
-          if (request.method !== "GET") {
-            response.statusCode = 405;
-            response.end(JSON.stringify({ error: "method not allowed" }));
-            return;
-          }
-          const auth = request.headers.authorization || "";
-          if (!auth.startsWith("Bearer ")) {
-            response.statusCode = 401;
-            response.setHeader("Content-Type", "application/json; charset=utf-8");
-            response.end(JSON.stringify({ error: "unauthorized" }));
+          if (request.method !== "GET" || !request.headers.authorization?.startsWith("Bearer ")) {
+            response.statusCode = request.method !== "GET" ? 405 : 401;
+            response.end(JSON.stringify({ error: "unauthorized or unsupported method" }));
             return;
           }
           const parsed = new URL(request.url || "/v1/dashboard/logs", "http://localhost");
+          if (parsed.searchParams.has("since")) {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "since is unsupported; use tail and cursor" }));
+            return;
+          }
           const service = parsed.searchParams.get("service") || "luma-control_luma-control";
+          const allocation = parsed.searchParams.get("allocation") || "";
+          const tail = Math.min(500, Math.max(1, Number(parsed.searchParams.get("tail") || "200")));
+          const after = Math.max(0, Math.floor((Date.now() - logEpoch) / 1200) + 3 - tail);
+          const entries = sampleLogs(service, after, allocation).slice(-tail);
           response.statusCode = 200;
-          response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.setHeader("Cache-Control", "no-store");
+          if (parsed.searchParams.get("download") === "1") {
+            response.setHeader("Content-Type", "text/plain; charset=utf-8");
+            response.end(entries.map((entry) => `[${entry.allocationId} / ${entry.task} / ${entry.stream}] ${entry.line}`).join("\n") + "\n");
+            return;
+          }
+          response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.end(JSON.stringify({
-            service,
-            tail: 160,
-            updatedAt: Math.floor(Date.now() / 1000),
-            logs: [
-              `${new Date().toISOString()} ${service} received health probe`,
-              `${new Date().toISOString()} ${service} task heartbeat ok`,
-              `${new Date().toISOString()} ${service} route check passed`,
-            ],
+            service, tail, updatedAt: Math.floor(Date.now() / 1000), entries,
+            logs: entries.map((entry) => `[${entry.allocationId} / ${entry.task} / ${entry.stream}] ${entry.line}`), sources: logSources,
+            cursor: entries.at(-1)?.cursor || "0", warnings: [],
+            capabilities: { since: false, resume: true },
           }));
         });
         server.middlewares.use("/v1/dashboard/metrics/history", (request, response) => {
@@ -357,7 +392,8 @@ export default defineConfig({
           const parsed = new URL(request.url || "/v1/dashboard/metrics/history", "http://localhost");
           const kind = parsed.searchParams.get("kind") === "service" ? "service" : "node";
           const name = parsed.searchParams.get("name") || "";
-          const windowSeconds = Math.max(60, Number(parsed.searchParams.get("window")) || 3600);
+          const requestedWindow = Number(parsed.searchParams.get("window")) || 3600;
+          const windowSeconds = Math.min(21600, Math.max(60, requestedWindow));
           const step = 30;
           const count = Math.min(720, Math.floor(windowSeconds / step));
           const nowSec = Math.floor(Date.now() / 1000);
@@ -383,7 +419,11 @@ export default defineConfig({
           response.statusCode = 200;
           response.setHeader("Content-Type", "application/json; charset=utf-8");
           response.setHeader("Cache-Control", "no-store");
-          response.end(JSON.stringify({ kind, name, window: windowSeconds, series, updatedAt: nowSec }));
+          response.end(JSON.stringify({
+            kind, name, requestedWindow, window: windowSeconds, series, updatedAt: nowSec,
+            retentionSeconds: 21600, sampleIntervalSeconds: step,
+            availableFrom: nowSec - (count - 1) * step, latestSampleAt: nowSec,
+          }));
         });
         server.middlewares.use("/v1/secrets", (request, response, next) => {
           if (request.method !== "GET") {

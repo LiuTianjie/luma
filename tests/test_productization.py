@@ -5536,7 +5536,7 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(len(recent_task["message"]), 4000)
 
     def test_agent_idle_long_poll_persists_only_initial_heartbeat(self):
-        from luma.control import state as control_state
+        from luma.control import database as control_database
 
         with tempfile.TemporaryDirectory() as tmp:
             old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
@@ -5553,8 +5553,8 @@ class ControlApiTests(unittest.TestCase):
                     state["deployToken"],
                     {"nodeName": "worker", "nodeId": "worker-node-id"},
                 )
-                original_save = control_state.save_state
-                with patch("luma.control.state.save_state", wraps=original_save) as save:
+                original_save = control_database.write_state
+                with patch("luma.control.database.write_state", wraps=original_save) as save:
                     lease = handle_node_agent_lease(
                         issued["agentToken"],
                         {
@@ -9339,18 +9339,16 @@ class ControlApiTests(unittest.TestCase):
                                 "TaskStates": {"mysql": {"State": "running"}, "granary": {"State": "running"}},
                             }
                         ]
+                    if path.startswith("/v1/client/fs/ls/alloc-1?"):
+                        return [{"Name": "mysql.stdout.0", "Size": len(log_text.encode()), "IsDir": False}]
                     raise AssertionError(path)
 
-                def request_text(_self, method, path, body=None):
-                    calls.append(path)
-                    self.assertIn("task=mysql", path)
-                    if "type=stdout" in path:
-                        return json.dumps({"Data": base64.b64encode(log_text.encode()).decode(), "Offset": 10})
-                    if "type=stderr" in path:
-                        return json.dumps({"Data": "", "Offset": 0})
-                    raise AssertionError(path)
+                def read_bytes(_reader, source, file, offset, limit):
+                    self.assertEqual(source["task"], "mysql")
+                    self.assertEqual(file, "alloc/logs/mysql.stdout.0")
+                    return log_text.encode()[offset:offset + limit]
 
-                with patch("luma.control.server.NomadApi.request", request), patch("luma.control.server.NomadApi.request_text", request_text):
+                with patch("luma.control.server.NomadApi.request", request), patch("luma.control.logs.LogReader._read_bytes", read_bytes):
                     result = handle_dashboard_logs(state["deployToken"], "granary_mysql", tail=20)
 
                 self.assertIn("/v1/job/granary/allocations", calls)
@@ -9383,22 +9381,20 @@ class ControlApiTests(unittest.TestCase):
                             "TaskGroup": "codex-gitea",
                             "TaskStates": {"codex-gitea": {"State": "running"}},
                         }]
+                    if path.startswith("/v1/client/fs/ls/alloc-1?"):
+                        return [{"Name": "codex-gitea.stdout.0", "Size": len(log_text.encode()), "IsDir": False}]
                     raise AssertionError(path)
 
-                def request_text(_self, method, path, body=None):
-                    calls.append(path)
-                    if path.startswith("/v1/client/fs/logs/alloc-1?") and "type=stdout" in path:
-                        payload = {"Data": base64.b64encode(log_text.encode()).decode(), "Offset": 10}
-                        return json.dumps(payload) + json.dumps({"Data": "ignored"})
-                    if path.startswith("/v1/client/fs/logs/alloc-1?") and "type=stderr" in path:
-                        return json.dumps({"Data": "", "Offset": 0})
-                    raise AssertionError(path)
+                def read_bytes(_reader, source, file, offset, limit):
+                    self.assertEqual(source["task"], "codex-gitea")
+                    self.assertEqual(file, "alloc/logs/codex-gitea.stdout.0")
+                    return log_text.encode()[offset:offset + limit]
 
-                with patch("luma.control.server.NomadApi.request", request), patch("luma.control.server.NomadApi.request_text", request_text):
+                with patch("luma.control.server.NomadApi.request", request), patch("luma.control.logs.LogReader._read_bytes", read_bytes):
                     result = handle_dashboard_logs(state["deployToken"], "codex-gitea", tail=20)
 
                 self.assertIn("/v1/job/codex-gitea/allocations", calls)
-                self.assertTrue(any("/v1/client/fs/logs/alloc-1?" in call for call in calls))
+                self.assertTrue(any("/v1/client/fs/ls/alloc-1?" in call for call in calls))
                 self.assertEqual(result["service"], "codex-gitea")
                 self.assertEqual(result["logs"], [line for line in log_text.splitlines()])
             finally:
@@ -10164,18 +10160,34 @@ class ControlApiTests(unittest.TestCase):
 
     def test_asgi_log_stream_defers_docker_socket_to_background_reader(self):
         import asyncio
+        import threading
+        from unittest.mock import Mock
         from luma.control.server import _asgi_stream_service_logs
 
-        with tempfile.TemporaryDirectory() as tmp:
-            old_state = _set_env("LUMA_CONTROL_STATE_DIR", str(Path(tmp) / "state"))
-            try:
-                state = init_state(domain="luma.example.com", cluster_id="luma-test", overwrite=True)
-                with patch("luma.control.server.DockerSocketConnection") as docker_socket:
-                    response = asyncio.run(_asgi_stream_service_logs(state["deployToken"], "api_api", "", 20))
-                self.assertEqual(response.media_type, "application/x-ndjson")
-                docker_socket.assert_not_called()
-            finally:
-                _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
+        event_loop_thread = threading.get_ident()
+        io_threads = []
+        reader = Mock(service="api_api", sources=[])
+        reader.discover.side_effect = lambda: io_threads.append(threading.get_ident())
+        reader.poll.side_effect = lambda: (
+            io_threads.append(threading.get_ident()) or [{"line": "ready", "allocationId": "a1"}]
+        )
+
+        async def check():
+            response = await _asgi_stream_service_logs("management-token", "api_api", "", 20)
+            self.assertEqual(response.media_type, "application/x-ndjson")
+            reader.poll.assert_not_called()
+            self.assertEqual(json.loads(await anext(response.body_iterator))["status"], "start")
+            reader.poll.assert_not_called()
+            self.assertEqual(json.loads(await anext(response.body_iterator))["line"], "ready")
+            await response.body_iterator.aclose()
+
+        with patch("luma.control.server._dashboard_log_reader", return_value=reader), patch("luma.control.server.DockerSocketConnection") as docker_socket:
+            asyncio.run(check())
+        docker_socket.assert_not_called()
+        reader.discover.assert_called_once()
+        reader.poll.assert_called_once()
+        self.assertEqual(len(io_threads), 2)
+        self.assertTrue(all(ident != event_loop_thread for ident in io_threads))
 
     def test_docker_socket_connect_closes_socket_when_connect_fails(self):
         from luma.control.server import DockerSocketConnection
@@ -14354,7 +14366,7 @@ class GithubImportTests(unittest.TestCase):
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
 
-    def test_build_run_event_history_is_bounded(self):
+    def test_build_run_event_history_is_retained_and_paginated(self):
         from luma.control.server import (
             _append_build_run_event,
             _create_build_run,
@@ -14374,27 +14386,29 @@ class GithubImportTests(unittest.TestCase):
                     source="https://github.com/acme/app",
                     build_node="builder",
                 )
-                with patch("luma.control.server.BUILD_RUN_EVENT_LIMIT", 100):
-                    for index in range(125):
-                        _append_build_run_event(
-                            run_id,
-                            {
-                                "name": "Build image",
-                                "status": "progress",
-                                "message": f"line-{index}",
-                            },
-                        )
+                for index in range(125):
+                    _append_build_run_event(
+                        run_id,
+                        {
+                            "name": "Build image",
+                            "status": "progress",
+                            "message": f"line-{index}",
+                        },
+                    )
 
-                events = handle_build_run_get(state["deployToken"], run_id)["run"][
-                    "events"
-                ]
-                self.assertEqual(len(events), 100)
-                self.assertEqual(events[0]["message"], "line-25")
+                first = handle_build_run_get(state["deployToken"], run_id, {"limit": 100})
+                self.assertEqual(len(first["run"]["events"]), 100)
+                self.assertTrue(first["eventsPage"]["hasMore"])
+                second = handle_build_run_get(state["deployToken"], run_id, {"limit": 100, "cursor": first["eventsPage"]["nextCursor"]})
+                self.assertFalse(second["eventsPage"]["hasMore"])
+                events = first["run"]["events"] + second["run"]["events"]
+                self.assertEqual(len(events), 125)
+                self.assertEqual(events[0]["message"], "line-0")
                 self.assertEqual(events[-1]["message"], "line-124")
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_build_run_history_compacts_large_legacy_output(self):
+    def test_build_run_history_preserves_legacy_events_with_bounded_messages(self):
         from luma.control.server import (
             _prune_build_runs,
             handle_build_run_get,
@@ -14422,14 +14436,20 @@ class GithubImportTests(unittest.TestCase):
                         "updatedAt": 2,
                     }
                 }
-                with patch("luma.control.server.BUILD_RUN_EVENT_LIMIT", 100):
-                    _prune_build_runs(state)
+                _prune_build_runs(state)
                 save_state(state)
 
-                detail = handle_build_run_get(state["deployToken"], "build-legacy")["run"]
+                page = handle_build_run_get(state["deployToken"], "build-legacy", {"limit": 100})
+                detail = page["run"]
+                events = list(detail["events"])
+                while page["eventsPage"]["hasMore"]:
+                    page = handle_build_run_get(state["deployToken"], "build-legacy", {"limit": 100, "cursor": page["eventsPage"]["nextCursor"]})
+                    events.extend(page["run"]["events"])
                 summary = handle_build_run_list(state["deployToken"])["runs"][0]
                 self.assertEqual(len(detail["events"]), 100)
-                self.assertEqual(detail["events"][0]["message"], "line-400")
+                self.assertEqual(len(events), 500)
+                self.assertEqual(events[0]["message"], "line-0")
+                self.assertEqual(events[-1]["message"], "line-499")
                 self.assertEqual(len(detail["message"]), 4000)
                 self.assertEqual(len(summary["message"]), 500)
             finally:
@@ -14473,7 +14493,7 @@ class GithubImportTests(unittest.TestCase):
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
 
-    def test_build_run_retry_reuses_existing_record(self):
+    def test_build_run_retry_creates_linked_attempt_and_preserves_failure(self):
         from luma.control.server import handle_build_deploy, handle_build_run_get, handle_build_run_list, handle_build_run_retry
         from luma.errors import LumaError
 
@@ -14504,6 +14524,7 @@ class GithubImportTests(unittest.TestCase):
                         handle_build_deploy(state["deployToken"], {"repoUrl": "https://github.com/acme/app"})
 
                 failed = handle_build_run_list(state["deployToken"])["runs"][0]
+                original_detail = handle_build_run_get(state["deployToken"], failed["id"])["run"]
 
                 with patch(
                     "luma.control.server._run_node_agent_task",
@@ -14515,12 +14536,24 @@ class GithubImportTests(unittest.TestCase):
                     result = handle_build_run_retry(state["deployToken"], failed["id"])
 
                 listed = handle_build_run_list(state["deployToken"])["runs"]
-                self.assertEqual(len(listed), 1)
-                self.assertEqual(listed[0]["id"], failed["id"])
-                self.assertEqual(listed[0]["status"], "succeeded")
-                self.assertEqual(result["buildRunId"], failed["id"])
-                detail = handle_build_run_get(state["deployToken"], failed["id"])["run"]
+                self.assertEqual(len(listed), 2)
+                self.assertNotEqual(result["buildRunId"], failed["id"])
+                self.assertEqual(handle_build_run_get(state["deployToken"], failed["id"])["run"], original_detail)
+                detail = handle_build_run_get(state["deployToken"], result["buildRunId"])["run"]
+                self.assertEqual(detail["status"], "succeeded")
+                self.assertEqual(detail["retryOf"], failed["id"])
+                self.assertEqual(detail["retryRootId"], failed["id"])
                 self.assertEqual(detail["events"][0]["name"], "Build image")
+
+                retry_progress = []
+                with patch("luma.control.server._run_node_agent_task", side_effect=fail_task):
+                    with self.assertRaisesRegex(LumaError, "docker buildx build failed"):
+                        handle_build_run_retry(state["deployToken"], failed["id"], progress=retry_progress.append)
+                failed_retry_id = retry_progress[0]["buildRunId"]
+                self.assertNotEqual(failed_retry_id, failed["id"])
+                self.assertNotEqual(failed_retry_id, result["buildRunId"])
+                self.assertEqual(handle_build_run_get(state["deployToken"], failed_retry_id)["run"]["status"], "failed")
+                self.assertEqual(handle_build_run_get(state["deployToken"], failed["id"])["run"], original_detail)
             finally:
                 _restore_env("LUMA_CONTROL_STATE_DIR", old_state)
                 _restore_env("LUMA_CONTROL_CONFIG", old_config)
@@ -14734,8 +14767,8 @@ class GithubImportTests(unittest.TestCase):
 
                 deploy_body = deploy.call_args.args[1]
                 self.assertEqual(deploy_body["envSecrets"], {"DATABASE_URL": "postgres://secret"})
-                self.assertEqual(result["buildRunId"], failed["id"])
-                detail = handle_build_run_get(state["deployToken"], failed["id"])["run"]
+                self.assertNotEqual(result["buildRunId"], failed["id"])
+                detail = handle_build_run_get(state["deployToken"], result["buildRunId"])["run"]
                 self.assertEqual(detail["request"]["envSecretNames"], ["DATABASE_URL"])
                 self.assertNotIn("postgres://secret", json.dumps(detail))
             finally:

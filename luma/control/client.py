@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import gzip
+import http.client
 import json
 import socket
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -78,7 +80,7 @@ class ControlClient:
                     break
                 except (TimeoutError, socket.timeout) as exc:
                     raise LumaError(_timeout_message(path, timeout)) from exc
-                except (urllib.error.URLError, OSError) as exc:
+                except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
                     # A mid-stream connection drop / read timeout must surface as
                     # a clean LumaError, not a raw traceback the CLI can't format.
                     raise LumaError(f"control API stream interrupted: {exc}") from exc
@@ -139,7 +141,7 @@ class ControlClient:
             raise LumaError(f"control API error {exc.code}: {detail}") from exc
         except (TimeoutError, socket.timeout) as exc:
             raise LumaError(_timeout_message(path, timeout)) from exc
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             raise LumaError(f"control API unavailable: {exc}") from exc
 
     def _request_url(self, path: str) -> str:
@@ -265,6 +267,79 @@ class ControlClient:
         if not isinstance(value, dict):
             raise LumaError("builder artifact upload returned an invalid response")
         return value
+
+    def dashboard(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/dashboard")
+
+    def service_events(self, name: str) -> Dict[str, Any]:
+        query = urllib.parse.urlencode({"service": name})
+        return self.request("GET", f"/v1/dashboard/runtime-events?{query}")
+
+    @staticmethod
+    def _service_logs_query(name: str, *, tail: int, allocation: str, previous: bool, cursor: str = "") -> str:
+        values = {"service": name, "tail": str(tail)}
+        if allocation:
+            values["allocation"] = allocation
+        if previous:
+            values["previous"] = "true"
+        if cursor:
+            values["cursor"] = cursor
+        return urllib.parse.urlencode(values)
+
+    def service_logs(self, name: str, *, tail: int = 120, allocation: str = "", previous: bool = False) -> Dict[str, Any]:
+        query = self._service_logs_query(name, tail=tail, allocation=allocation, previous=previous)
+        return self.request("GET", f"/v1/dashboard/logs?{query}", timeout=60)
+
+    def service_log_events(self, name: str, *, tail: int = 120, allocation: str = "", previous: bool = False) -> Iterator[Dict[str, Any]]:
+        """Follow with byte cursors; stop after eight reconnects without progress.
+
+        Resume state is opaque and scoped by the server to this service. Never
+        deduplicate log text: identical lines can be legitimate separate events.
+        """
+        cursor = ""
+        failures = 0
+        emitted_lines = False
+        while True:
+            query = self._service_logs_query(name, tail=tail, allocation=allocation, previous=previous, cursor=cursor)
+            connected_at = time.monotonic()
+            try:
+                for event in self.stream("GET", f"/v1/dashboard/logs/stream?{query}", timeout=60):
+                    next_cursor = event.get("cursor")
+                    if isinstance(next_cursor, str) and next_cursor:
+                        if next_cursor != cursor:
+                            failures = 0
+                        cursor = next_cursor
+                    if "line" in event:
+                        emitted_lines = True
+                    yield event
+                    if event.get("status") == "error" or event.get("type") == "error":
+                        return
+                reason = "Log stream closed"
+            except LumaError as exc:
+                if not self._retryable_log_stream_error(exc):
+                    raise
+                reason = "Log stream connection interrupted"
+            if emitted_lines and not cursor:
+                raise LumaError("Control did not provide log resume cursors; update the manager before reconnecting --follow")
+            if time.monotonic() - connected_at >= 30:
+                failures = 0
+            if failures >= 8:
+                raise LumaError("log stream could not reconnect after 8 attempts; check Control connectivity and run logs --follow again")
+            delay = min(0.5 * (2 ** failures), 15.0)
+            failures += 1
+            yield {"status": "reconnecting", "message": f"{reason}; reconnecting in {delay:g}s ({failures}/8)",
+                   "retryInSeconds": delay, "cursor": cursor}
+            # time.sleep is interrupted by Ctrl-C, including during backoff.
+            time.sleep(delay)
+
+    @staticmethod
+    def _retryable_log_stream_error(exc: LumaError) -> bool:
+        cause = exc.__cause__
+        if isinstance(cause, urllib.error.HTTPError):
+            return cause.code in {408, 429, 500, 502, 503, 504}
+        if isinstance(cause, urllib.error.URLError):
+            return not isinstance(cause.reason, ssl.SSLCertVerificationError)
+        return isinstance(cause, (TimeoutError, ConnectionError, OSError, http.client.HTTPException)) and not isinstance(cause, ssl.SSLCertVerificationError)
 
     def restart_application(self, *, stack: str, service: str = "", mode: str = "", timeout: int = 120) -> Dict[str, Any]:
         body: Dict[str, Any] = {"stack": stack, "service": service, "mode": mode}
@@ -688,8 +763,19 @@ class ControlClient:
             body["envSecrets"] = values["env_secrets"]
         return body
 
-    def list_builds(self) -> Dict[str, Any]:
-        return self.request("GET", "/v1/builds")
+    @staticmethod
+    def _query_path(path: str, query: Dict[str, Any] | None = None) -> str:
+        return path + ("?" + urllib.parse.urlencode(query) if query else "")
+
+    def list_builds(self, *, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        return self.request("GET", self._query_path("/v1/builds", query))
+
+    def history(self, *, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        return self.request("GET", self._query_path("/v1/history", query))
+
+    def history_detail(self, kind: str, record_id: str, *, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        path = "/v1/history/" + urllib.parse.quote(kind, safe="") + "/" + urllib.parse.quote(record_id, safe="")
+        return self.request("GET", self._query_path(path, query))
 
     def list_workflows(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/workflows")
@@ -736,8 +822,8 @@ class ControlClient:
             {"message": str(message)},
         )
 
-    def get_build(self, build_id: str) -> Dict[str, Any]:
-        return self.request("GET", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}")
+    def get_build(self, build_id: str, *, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        return self.request("GET", self._query_path(f"/v1/builds/{urllib.parse.quote(build_id, safe='')}", query))
 
     def retry_build(self, build_id: str, *, timeout: int = 2400, env_secrets: Dict[str, str] | None = None) -> Dict[str, Any]:
         body: Dict[str, Any] = {}

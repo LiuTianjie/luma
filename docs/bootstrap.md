@@ -2,6 +2,17 @@
 
 Bootstrap is automated by the Luma CLI. The first supported target is Ubuntu 22.04+.
 
+The first `luma bootstrap manager` creates the local SQLite Control database at
+`/opt/luma/control/control.sqlite3` automatically. New installations initialize
+SQLite directly, without creating legacy JSON state first. No separate database
+service, connection string or migration command is required. SQLite access uses
+Python's standard-library `sqlite3` module; the installer uses the local Python
+virtual environment, and the Control image uses its Python runtime.
+
+Legacy JSON import is only an upgrade compatibility path for an existing
+installation. See [Control storage and recovery](control-storage.md) for the
+single Manager storage layout and backup commands.
+
 ## 1. Prepare Local CLI
 
 ```bash
@@ -192,7 +203,7 @@ Use `luma update` after upgrading Luma itself:
 luma update
 ```
 
-The update command always refreshes the local CLI first. On a manager, default `luma update` detects `/opt/luma/control/control.json` and preserves existing tokens, nodes, and user jobs while reconciling the manager control plane: firewall TCP relay ports, Traefik when the manager has the `edge` role, the Tailscale watchdog, control config/state metadata, inferred DNS provider config when local Cloudflare credentials are available, and the `luma-control` Nomad job. It pulls the configured Control image, submits the job with Nomad auto-revert, and refreshes the manager's local node agent when possible. It does not restart Docker or the Nomad agent, run egress setup, or redeploy user services.
+The update command always refreshes the local CLI first. On a manager, default `luma update` detects the Manager Control state (SQLite, or legacy JSON before migration) and preserves existing tokens, nodes, and user jobs while reconciling the manager control plane: firewall TCP relay ports, Traefik when the manager has the `edge` role, the Tailscale watchdog, control config/state metadata, inferred DNS provider config when local Cloudflare credentials are available, and the `luma-control` Nomad job. It pulls the configured Control image, submits the job with Nomad auto-revert, and refreshes the manager's local node agent when possible. It does not restart Docker or the Nomad agent, run egress setup, or redeploy user services.
 
 On a joined worker/home node, `luma update` updates the CLI and refreshes the local node agent. If an older node has no saved agent metadata, pass the Control URL and node join token once:
 
@@ -236,7 +247,7 @@ luma cloudflare connect --zone example.com
 
 Nomad is initialized automatically during bootstrap. Luma deploys through the Nomad HTTP API.
 
-Bootstrap stores the relevant Cloudflare values in `/opt/luma/control/control.json` on the manager. Client machines do not need these values.
+Bootstrap stores the relevant Cloudflare values in Manager Control state. The authoritative store is `/opt/luma/control/control.sqlite3`, created directly for a new Manager; legacy JSON is imported once only for an existing installation. See [Control storage](control-storage.md). Client machines do not need these values.
 
 ## 7. Verify
 

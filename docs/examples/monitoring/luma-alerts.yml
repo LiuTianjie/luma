@@ -1,0 +1,43 @@
+# Opt-in Prometheus alert rules; not a Luma deployment manifest.
+groups:
+  - name: luma-infrastructure
+    rules:
+      - alert: LumaControlScrapeUnavailable
+        expr: up{job="luma-control"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Luma Control metrics are unavailable
+          description: Check Control connectivity, TLS and metrics credentials; this does not prove application downtime.
+      - alert: LumaNodeHeartbeatMissing
+        expr: luma_node_agent_up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Node {{ $labels.node }} stopped reporting'
+          description: Check the agent and node connectivity before judging application availability.
+      - alert: LumaFilesystemAlmostFull
+        expr: luma_node_filesystem_used_ratio >= 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Node {{ $labels.node }} filesystem is over 90% full'
+          description: 'Inspect the filesystem containing {{ $labels.path }}; remote mounts and Docker VM disks are separate.'
+      - alert: LumaFilesystemInodesAlmostFull
+        expr: luma_node_filesystem_inodes_used_ratio >= 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Node {{ $labels.node }} inode capacity is over 90% used'
+      - alert: LumaTaskQueueDelayed
+        expr: luma_task_queue_oldest_age_seconds >= 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Luma {{ $labels.kind }} queue has a task waiting over ten minutes'
+          description: Compare queue demand with builder/agent availability; task kinds can refer to the same workflow.

@@ -49,9 +49,9 @@ export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
   const observe: NavItem = {
     id: "observability",
     icon: Activity,
-    label: zh ? "观察" : "Observe",
+    label: zh ? "可观测性" : "Observability",
     value: vm.metricNodes || null,
-    detail: zh ? "节点资源 · 日志" : "Resources · logs",
+    detail: zh ? "指标 · 日志 · 告警" : "Metrics · logs · alerts",
   };
   const storage: NavItem = {
     id: "storage",

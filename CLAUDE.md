@@ -27,6 +27,12 @@ LAE 核心边界：用户与用户级 token 永远不能直接调 Luma managemen
 # 跑全部测试（根 tests/ 用 unittest，没有 pytest）
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py'
 
+# PR、镜像和包发布共用门禁（需先 npm ci）
+bash scripts/check-luma.sh
+
+# 修改 CLI 参数后更新生成参考；CI 使用 --check 防止文档漂移
+python scripts/generate-cli-reference.py
+
 # 跑单个测试
 .venv/bin/python -m unittest tests.test_nomad_render.NomadRenderTests.test_public_cn_service_gets_traefik_labels
 
@@ -51,7 +57,7 @@ LAE（`lae/` 是独立 workspace：uv + Python 3.12 + pnpm + Node 22，有自己
 ```bash
 cd lae
 make contracts   # 校验 JSON Schema 契约
-make test        # LAE 自己的测试（pytest 风格；根仓库"不引入 pytest"的约定不适用于 lae/）
+make test        # LAE 自己的测试（python -m unittest discover -s tests -p 'test_*.py'）
 make check
 ```
 
@@ -92,7 +98,7 @@ LAE 另有三类**服务端 principal**（不是用户 token，全部从 0600 �
 
 - `luma/cli.py`（~3700 行）：argparse 命令分发入口。所有子命令在这里注册（`bootstrap`、`node`、`deploy`、`compose`、`secret`、`registry`、`storage`、`update`、`import`、`build`、`doctor` 等），命令实现是 `cmd_*` 函数。改 CLI 行为从这里入手。
 - `luma/control/server.py`（~17700 行）：Control API 服务端。**实际是 Starlette ASGI + uvicorn**（入口 `create_app()`/`serve()`），同时保留旧的 `ThreadingHTTPServer` + `ControlHandler` 同步栈（测试仍在用）。**每个端点在两套栈里各注册一次（`do_GET`/`do_POST` 与 `_asgi_authenticated_get`/`_asgi_authenticated_post`），改端点必须两处同步改**。运行在 manager 上、容器内（见 `Dockerfile.control`）。处理部署、DNS 同步、节点 agent 任务派发、状态查询、builder task API、LAE runtime API，并以 NDJSON 流式返回部署事件。所有部署路径被全局 `_DEPLOY_LOCK` 串行化。
-- `luma/control/client.py` / `state.py` / `context.py` / `secrets.py` / `metrics.py` / `resources.py`：客户端 HTTP 封装（`ControlClient`，强制 https）、服务端状态持久化（`control.json`，每次心跳全量重写，metrics 因此拆独立文件）、登录上下文、secret 渲染、指标历史、镜像/registry 解析。
+- `luma/control/client.py` / `state.py` / `database.py` / `history.py` / `context.py` / `secrets.py` / `metrics.py` / `resources.py`：客户端 HTTP 封装（`ControlClient`，强制 https）、单 Manager 本地 SQLite/WAL 状态与索引历史、登录上下文、secret 渲染、指标历史、镜像/registry 解析。`control.json` 只作为旧版首次迁移输入；迁移后 SQLite 是唯一权威状态，不要改旧 JSON 或全量导出来排障。备份、恢复和迁移说明见 `docs/control-storage.md`。
 - `luma/bootstrap.py`（~2000 行）：manager 引导与 `luma update`，分层安装 Docker/Nomad/Traefik/Control/egress，每层可单独重跑修复。
 - `luma/agent.py`（~4400 行）：节点 agent，跑在每个加入的节点上。**反向长轮询模型**：agent 轮询 Control 的 `/v1/node-agent/lease` 领任务，Control 不主动连节点；凭据只在 lease 时注入内存 payload、绝不持久化；终态上报无限重试直到 Control 确认。能力随 OS 不同（见 `node_agent_capabilities`），含 NFS、volume、镜像 mirror/cache、buildx 构建、终端、自更新等动作。
 - `luma/render.py` / `service.py` / `compose.py` / `nomad_render.py`：渲染核心。`service.py`/`compose.py` 负责 manifest schema 加载校验；`nomad_render.py`（~1500 行）是唯一的 jobspec 渲染器，CLI 与 Control 共用（保证 dry-run 与实际部署产物一致），也渲染 traefik/egress/control 三个核心基础设施 job；`render.py` 只剩路径计算 + relay/tcp 的 Traefik file-provider 路由 YAML。
@@ -119,7 +125,7 @@ LAE 另有三类**服务端 principal**（不是用户 token，全部从 0600 �
 
 ## 测试约定
 
-- 根 `tests/` 用标准库 `unittest`，**不要引入 pytest**（`lae/` 子 workspace 例外，它有自己的测试与 CI）。
+- 根 `tests/` 用标准库 `unittest`，**不要引入 pytest**。`lae/` 是独立 workspace，也通过 Makefile 运行 `unittest discover`，并有独立 CI。
 - `tests/test_nomad_render.py` / `test_render.py` / `test_nomad_compose.py`：渲染逻辑（manifest/compose → Nomad jobspec、Traefik route、storage、tailscale route）。
 - `tests/test_productization.py`（~16000 行）：bootstrap、agent、cloudflare、control server 等宽集成行为，常用 `unittest.mock` 与临时 `ThreadingHTTPServer`。
 - `tests/test_builder_*.py`（7 个）与 `tests/test_lae_*.py`（5 个）：builder 任务协议/执行器/凭据 broker 的安全边界，LAE runtime API/placement。注意 `test_lae_runtime_api.py` 用 `starlette.testclient` 走 ASGI 栈，`test_builder_tasks_security.py` 故意直接测 handler 不走 HTTP。

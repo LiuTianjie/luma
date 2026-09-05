@@ -38,6 +38,19 @@ function toAreaPath(coords: ReadonlyArray<readonly [number, number]>, width: num
   return `${line} L${lastX.toFixed(2)} ${height} L${firstX.toFixed(2)} ${height} Z`;
 }
 
+function splitAtGaps(
+  points: MetricPoint[],
+  coords: ReadonlyArray<readonly [number, number]>,
+  maxGapSeconds: number,
+) {
+  const segments: Array<Array<readonly [number, number]>> = [];
+  coords.forEach((coord, index) => {
+    if (!index || points[index][0] - points[index - 1][0] > maxGapSeconds) segments.push([]);
+    segments[segments.length - 1].push(coord);
+  });
+  return segments;
+}
+
 /** Inline mini trend, no axes. Fixed pixel size so points stay crisp. */
 export function Sparkline({
   points,
@@ -45,12 +58,14 @@ export function Sparkline({
   width = 104,
   height = 30,
   range,
+  maxGapSeconds = Infinity,
 }: {
   points: MetricPoint[];
   color?: string;
   width?: number;
   height?: number;
   range?: Range;
+  maxGapSeconds?: number;
 }) {
   const gradientId = useId();
   if (!points || points.length < 2) {
@@ -60,6 +75,7 @@ export function Sparkline({
   const r = valueRange(points, range);
   const coords = project(points, width, height, pad, r);
   const [lastX, lastY] = coords[coords.length - 1];
+  const segments = splitAtGaps(points, coords, maxGapSeconds);
   return (
     <svg className="sparkline" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="img" aria-hidden>
       <defs>
@@ -68,8 +84,10 @@ export function Sparkline({
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path d={toAreaPath(coords, width, height)} fill={`url(#${gradientId})`} stroke="none" />
-      <path d={toLinePath(coords)} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
+      {segments.map((segment, index) => <g key={index}>
+        <path d={toAreaPath(segment, width, height)} fill={`url(#${gradientId})`} stroke="none" />
+        <path d={toLinePath(segment)} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
+      </g>)}
       <circle cx={lastX} cy={lastY} r={2.4} fill={color} />
     </svg>
   );
@@ -84,6 +102,7 @@ export function TrendChart({
   format = (v) => v.toFixed(1),
   height = 150,
   emptyLabel = "no data",
+  maxGapSeconds = Infinity,
 }: {
   points: MetricPoint[];
   color?: string;
@@ -91,6 +110,7 @@ export function TrendChart({
   format?: (value: number) => string;
   height?: number;
   emptyLabel?: string;
+  maxGapSeconds?: number;
 }) {
   const gradientId = useId();
   if (!points || points.length < 2) {
@@ -102,6 +122,7 @@ export function TrendChart({
   const padY = 12;
   const r = valueRange(points, range);
   const coords = project(points, W - padX * 2, H, padY, r).map(([x, y]) => [x + padX, y] as const);
+  const segments = splitAtGaps(points, coords, maxGapSeconds);
   const gridlines = [0, 0.25, 0.5, 0.75, 1].map((frac) => {
     const value = r.min + (r.max - r.min) * (1 - frac);
     const y = padY + frac * (H - padY * 2);
@@ -138,9 +159,10 @@ export function TrendChart({
           </text>
         </g>
       ))}
-      <path d={toAreaPath(coords, W, H - padY)} fill={`url(#${gradientId})`} stroke="none" />
+      {segments.map((segment, index) => <g key={index}>
+      <path d={toAreaPath(segment, W, H - padY)} fill={`url(#${gradientId})`} stroke="none" />
       <path
-        d={toLinePath(coords)}
+        d={toLinePath(segment)}
         fill="none"
         stroke={color}
         strokeWidth={2}
@@ -148,6 +170,8 @@ export function TrendChart({
         strokeLinecap="round"
         vectorEffect="non-scaling-stroke"
       />
+      {segment.length === 1 ? <circle cx={segment[0][0]} cy={segment[0][1]} r={2} fill={color} /> : null}
+      </g>)}
     </svg>
   );
 }

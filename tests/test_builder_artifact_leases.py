@@ -292,7 +292,7 @@ class BuilderArtifactFileTests(unittest.TestCase):
 
     def test_node_agent_exports_then_reports_only_safe_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             config = root / "agent.json"
             config.write_text("{}", encoding="utf-8")
             body = b'{"safe":true}'

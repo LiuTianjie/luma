@@ -8,6 +8,7 @@ import { formatTimestamp } from "../format";
 import type { DeployStep } from "../deploy/types";
 import type { DashboardPayload, DashboardService, Lang, ServiceVersion } from "../types";
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
+import { applicationEndpoints } from "./applicationEndpoints";
 import { ServiceLogsModal } from "./ServiceLogsModal";
 import { OverlayShell } from "../useOverlay";
 import { useConfirm } from "./ConfirmDialog";
@@ -43,10 +44,6 @@ type LogsTarget = {
 
 const DEPLOY_ROOT = typeof document === "undefined" ? null : document.body;
 
-function accessHref(domain: string) {
-  return domain.startsWith("http://") || domain.startsWith("https://") ? domain : `https://${domain}`;
-}
-
 function versionNumber(version: ServiceVersion["version"]) {
   const value = Number(version);
   return Number.isInteger(value) ? value : null;
@@ -75,7 +72,8 @@ export function ApplicationManagementPanel({
   onUpdateApplication,
   onNavigateToDeployments,
   onServiceTerminal,
-  initialSelect,
+  selectedStack,
+  onSelectApplication,
 }: {
   lang: Lang;
   token: string;
@@ -84,16 +82,14 @@ export function ApplicationManagementPanel({
   onUpdateApplication?: (request: ApplicationUpdateRequest) => void;
   onNavigateToDeployments?: () => void;
   onServiceTerminal?: (service: DashboardService, stack: string) => void;
-  initialSelect?: string | null;
+  selectedStack?: string | null;
+  onSelectApplication: (stack: string | null) => void;
 }) {
   const { confirm, element: confirmDialog } = useConfirm(lang);
   const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
-  const [selected, setSelected] = useState<Application | null>(() => {
-    if (initialSelect) {
-      return applications.find((app) => app.stack === initialSelect) || null;
-    }
-    return null;
-  });
+  // Resolve against each fresh snapshot; URL state drives selection and browser back.
+  const selected = applications.find((app) => app.stack === selectedStack) || null;
+  const setSelected = (app: Application | null) => onSelectApplication(app?.stack || null);
   const [deploymentConfig, setDeploymentConfig] = useState<DeploymentConfig | null>(null);
   const [deploymentConfigFor, setDeploymentConfigFor] = useState("");
   const [configTab, setConfigTab] = useState<ConfigTab>("manifest");
@@ -387,8 +383,10 @@ export function ApplicationManagementPanel({
           <section className="application-detail-section">
             <h3>{t(lang, "accessAddress")}</h3>
             <div className="application-access-list">
-              {selected.domains.length ? selected.domains.map((domain) => (
-                <a key={domain} href={accessHref(domain)} target="_blank" rel="noreferrer">{domain}</a>
+              {applicationEndpoints(selected.services).length ? applicationEndpoints(selected.services).map((endpoint) => (
+                endpoint.href
+                  ? <a key={endpoint.address} href={endpoint.href} target="_blank" rel="noreferrer">{endpoint.address}</a>
+                  : <span className="application-tcp-address" key={endpoint.address}><Badge value="TCP" /><CodeCell value={endpoint.address} /></span>
               )) : <p>{t(lang, "internalOnly")}</p>}
             </div>
           </section>
@@ -628,6 +626,7 @@ export function ApplicationManagementPanel({
 
   return (
     <article className="panel app-management-panel" id="section-1">
+      {selectedStack && !selected ? <div className="alert alert-warning"><span>{lang === "zh" ? `未找到应用 ${selectedStack}，可能已删除或当前账号无法访问。` : `Application ${selectedStack} was not found. It may have been removed or is unavailable to this account.`}</span><button className="ghost" type="button" onClick={() => setSelected(null)}>{lang === "zh" ? "返回列表" : "Back to list"}</button></div> : null}
       {actionError ? <div className="alert alert-error"><span>{actionError}</span></div> : null}
       {actionNotice ? <div className="alert alert-success"><span>{actionNotice}</span></div> : null}
       <div className="application-filter-bar" aria-label={lang === "zh" ? "应用筛选" : "Application filters"}>

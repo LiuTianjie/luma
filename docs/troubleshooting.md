@@ -241,7 +241,7 @@ luma context list
 
 ## Nomad deploy fails
 
-Rerun manager bootstrap so the Nomad server and `/opt/luma/control/control.json` are refreshed:
+Rerun manager bootstrap so the Nomad server and Manager Control state are refreshed:
 
 ```bash
 luma bootstrap manager --domain luma.example.com
@@ -327,7 +327,7 @@ luma cloudflare connect --zone example.com
 ## Manager public IP changed
 
 Do not bootstrap a healthy cluster from scratch and do not replace the old IP
-globally in `/opt/luma/control/control.json`. First confirm that Nomad
+globally in Manager Control state. The legacy `control.json` is not authoritative after SQLite migration. First confirm that Nomad
 allocations and Traefik survived, then preview the bounded recovery on the
 manager:
 

@@ -1,19 +1,14 @@
-"""Time-series retention for node and service metrics.
+"""Bounded resource history kept separately from the Manager SQLite state.
 
-Kept deliberately separate from control.json: the main control state is
-rewritten in full under a global lock on every node heartbeat (see
-control/state.py). Appending an ever-growing history into that file would
-make every heartbeat rewrite the whole history and serialize the control
-plane. So history lives in its own file with its own lock, written with the
-same atomic tmp+fsync+os.replace pattern as save_state.
-
-Reads do not take the lock: os.replace is atomic, so a reader always sees a
-complete old or new file, never a torn write.
+Metrics use time-bucketed JSON and their own lock, with atomic replacement.
+Readers therefore observe a complete old or new history file. A Control-state
+archive includes this file; a database-only snapshot does not.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 import sys
@@ -27,7 +22,8 @@ from .state import state_dir
 
 HISTORY_FILE = "metrics-history.json"
 LOCK_FILE = "metrics-history.lock"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SAMPLE_INTERVAL_SECONDS = 30
 
 # Default ~6h at a 30s sample cadence; override via env for longer windows.
 DEFAULT_MAX_POINTS = 720
@@ -39,7 +35,7 @@ MAX_MAX_POINTS = 10000
 # the 30s cadence and the 120s agent-stale threshold.
 SERVICE_SCRATCH_TTL_SECONDS = 180
 
-NODE_SERIES = ("cpuPercent", "memoryUsedPercent")
+NODE_SERIES = ("cpuPercent", "memoryUsedPercent", "diskUsedPercent", "inodesUsedPercent")
 SERVICE_SERIES = ("cpuPercent", "memoryUsageBytes")
 
 _SCRATCH_KEY = "_serviceScratch"
@@ -64,21 +60,23 @@ def max_points() -> int:
     return max(MIN_MAX_POINTS, min(MAX_MAX_POINTS, value))
 
 
+def retention_seconds() -> int:
+    """The point cap represents a fixed duration, independent of node count."""
+    return max_points() * SAMPLE_INTERVAL_SECONDS
+
+
 def _now(now: Optional[int]) -> int:
     return int(now if now is not None else time.time())
 
 
 def _coerce_number(value: Any) -> Optional[float]:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _empty() -> Dict[str, Any]:
@@ -128,15 +126,47 @@ def _save_raw(data: Dict[str, Any]) -> None:
                 pass
 
 
+def _valid_points(series: Any) -> List[List[float]]:
+    points = []
+    for point in series if isinstance(series, list) else []:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            continue
+        ts, value = _coerce_number(point[0]), _coerce_number(point[1])
+        if ts is not None and value is not None:
+            points.append([int(ts), value])
+    return points
+
+
+def _compact_points(series: Any, floor: int, ceiling: int, limit: int) -> List[List[float]]:
+    # Upgrade v1 histories in place: one last-observation point per wall-clock
+    # bucket. Keep the observation timestamp, so freshness is not overstated.
+    buckets = {}
+    for ts, value in sorted(_valid_points(series), key=lambda point: point[0]):
+        if floor <= ts <= ceiling:
+            buckets[int(ts) // SAMPLE_INTERVAL_SECONDS] = [ts, value]
+    return [buckets[key] for key in sorted(buckets)][-limit:]
+
+
 def _append_point(bucket: Dict[str, Any], series_key: str, ts: int, value: float, limit: int) -> None:
-    series = bucket.get(series_key)
-    if not isinstance(series, list):
-        series = []
-    rounded = round(value, 2)
-    series.append([ts, rounded])
-    if len(series) > limit:
-        del series[: len(series) - limit]
-    bucket[series_key] = series
+    series = _valid_points(bucket.get(series_key))
+    series.append([ts, round(value, 2)])
+    bucket[series_key] = _compact_points(series, ts - retention_seconds(), ts, limit)
+
+
+def _prune_history(entities: Dict[str, Any], ts: int, limit: int) -> None:
+    for name in list(entities):
+        bucket = entities[name]
+        if not isinstance(bucket, dict):
+            del entities[name]
+            continue
+        for key in list(bucket):
+            points = _compact_points(bucket[key], ts - retention_seconds(), ts, limit)
+            if points:
+                bucket[key] = points
+            else:
+                del bucket[key]
+        if not bucket:
+            del entities[name]
 
 
 def _node_point_values(node_metrics: Dict[str, Any]) -> Dict[str, float]:
@@ -151,6 +181,10 @@ def _node_point_values(node_metrics: Dict[str, Any]) -> Dict[str, float]:
     mem = _coerce_number(node_metrics.get("memoryUsedPercent"))
     if mem is not None:
         values["memoryUsedPercent"] = mem
+    for key in ("diskUsedPercent", "inodesUsedPercent"):
+        value = _coerce_number(node_metrics.get(key))
+        if value is not None:
+            values[key] = value
     return values
 
 
@@ -159,19 +193,18 @@ def _service_totals_from_scratch(scratch: Dict[str, Any], cutoff: int) -> Dict[s
     for full_name, by_node in scratch.items():
         if not isinstance(by_node, dict):
             continue
-        cpu_sum = 0.0
-        mem_sum = 0.0
-        live = False
+        total: Dict[str, float] = {}
         for contribution in by_node.values():
             if not isinstance(contribution, dict):
                 continue
-            if int(contribution.get("ts") or 0) < cutoff:
+            if (_coerce_number(contribution.get("ts")) or 0) < cutoff:
                 continue
-            live = True
-            cpu_sum += float(contribution.get("cpuPercent") or 0.0)
-            mem_sum += float(contribution.get("memoryUsageBytes") or 0.0)
-        if live:
-            totals[full_name] = {"cpuPercent": cpu_sum, "memoryUsageBytes": mem_sum}
+            for key in SERVICE_SERIES:
+                value = _coerce_number(contribution.get(key))
+                if value is not None:
+                    total[key] = total.get(key, 0.0) + value
+        if total:
+            totals[full_name] = total
     return totals
 
 
@@ -183,7 +216,7 @@ def _prune_scratch(scratch: Dict[str, Any], cutoff: int) -> None:
             continue
         for node_name in list(by_node.keys()):
             contribution = by_node.get(node_name)
-            if not isinstance(contribution, dict) or int(contribution.get("ts") or 0) < cutoff:
+            if not isinstance(contribution, dict) or (_coerce_number(contribution.get("ts")) or 0) < cutoff:
                 del by_node[node_name]
         if not by_node:
             del scratch[full_name]
@@ -201,13 +234,11 @@ def record_samples(
     Node series are keyed by node name (clean, one writer per node). Service
     series are the cross-node SUM of each service's live container
     contributions: we stash this node's contribution in scratch, sum across
-    all non-stale nodes, and append the total. That avoids a multi-node
-    service's chart sawtoothing between per-node partial values.
+    all non-stale nodes, and replace the current 30-second bucket. That avoids
+    a multi-node service's chart sawtoothing between per-node partial values.
     """
     node_name = str(node_name or "").strip()
-    ts = _now(now)
     limit = max_points()
-    cutoff = ts - SERVICE_SCRATCH_TTL_SECONDS
 
     # Group this heartbeat's containers into per-service contributions.
     this_node_services: Dict[str, Dict[str, float]] = {}
@@ -217,24 +248,38 @@ def record_samples(
         full_name = str(raw.get("service") or "").strip()
         if not full_name:
             continue
-        entry = this_node_services.setdefault(full_name, {"cpuPercent": 0.0, "memoryUsageBytes": 0.0})
+        entry = this_node_services.setdefault(full_name, {})
         cpu = _coerce_number(raw.get("cpuPercent"))
         mem = _coerce_number(raw.get("memoryUsageBytes"))
         if cpu is not None:
-            entry["cpuPercent"] += cpu
+            entry["cpuPercent"] = entry.get("cpuPercent", 0.0) + cpu
         if mem is not None:
-            entry["memoryUsageBytes"] += mem
+            entry["memoryUsageBytes"] = entry.get("memoryUsageBytes", 0.0) + mem
 
     lock_path = _lock_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("w", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        # Timestamp under the lock, so concurrent heartbeats cannot write an
+        # earlier timestamp after a newer one and prune the newer sample.
+        ts = _now(now)
+        cutoff = ts - SERVICE_SCRATCH_TTL_SECONDS
         data = _load_raw()
         nodes = data["nodes"]
         services = data["services"]
         scratch = data[_SCRATCH_KEY]
 
+        _prune_history(nodes, ts, limit)
+        _prune_history(services, ts, limit)
+        affected_services = set(this_node_services)
         if node_name:
+            # A provided list is a full snapshot. A disappeared container must
+            # stop contributing immediately; omitted stats retain their TTL.
+            if container_stats is not None:
+                for full_name, by_node in scratch.items():
+                    if isinstance(by_node, dict) and node_name in by_node:
+                        del by_node[node_name]
+                        affected_services.add(full_name)
             node_values = _node_point_values(node_metrics or {})
             if node_values:
                 bucket = nodes.get(node_name)
@@ -251,8 +296,7 @@ def record_samples(
                     by_node = {}
                 by_node[node_name] = {
                     "ts": ts,
-                    "cpuPercent": round(contribution["cpuPercent"], 2),
-                    "memoryUsageBytes": int(contribution["memoryUsageBytes"]),
+                    **{key: round(value, 2) for key, value in contribution.items()},
                 }
                 scratch[full_name] = by_node
 
@@ -261,15 +305,15 @@ def record_samples(
         # Append a summed point only for services touched this heartbeat, so a
         # node reporting nothing for a service does not stamp duplicate points.
         totals = _service_totals_from_scratch(scratch, cutoff)
-        for full_name in this_node_services:
+        for full_name in affected_services:
             total = totals.get(full_name)
             if total is None:
                 continue
             bucket = services.get(full_name)
             if not isinstance(bucket, dict):
                 bucket = {}
-            _append_point(bucket, "cpuPercent", ts, total["cpuPercent"], limit)
-            _append_point(bucket, "memoryUsageBytes", ts, total["memoryUsageBytes"], limit)
+            for series_key, value in total.items():
+                _append_point(bucket, series_key, ts, value, limit)
             services[full_name] = bucket
 
         _save_raw(data)
@@ -298,23 +342,30 @@ def load_history(
     obj = bucket.get(name)
     if not isinstance(obj, dict):
         return {}
-    floor = None
-    if window:
-        floor = _now(now) - int(window)
+    floor = _now(now) - min(int(window), retention_seconds()) if window else None
     result: Dict[str, List[List[float]]] = {}
     for series_key, series in obj.items():
         if not isinstance(series, list):
             continue
-        points: List[List[float]] = []
-        for point in series:
-            if not isinstance(point, (list, tuple)) or len(point) != 2:
-                continue
-            ts = int(point[0])
-            if floor is not None and ts < floor:
-                continue
-            points.append([ts, point[1]])
-        result[series_key] = points
+        points = _valid_points(series)
+        ceiling = _now(now) if window else max((int(p[0]) for p in points), default=0)
+        result[series_key] = _compact_points(
+            points, floor if floor is not None else ceiling - retention_seconds(), ceiling, max_points()
+        )
     return result
+
+
+def history_metadata(series: Dict[str, Any], requested_window: int, *, now: Optional[int] = None) -> Dict[str, Any]:
+    timestamps = [point[0] for points in series.values() for point in _valid_points(points)]
+    return {
+        "requestedWindow": requested_window,
+        "window": min(max(requested_window, 60), retention_seconds()),
+        "retentionSeconds": retention_seconds(),
+        "sampleIntervalSeconds": SAMPLE_INTERVAL_SECONDS,
+        "availableFrom": min(timestamps) if timestamps else None,
+        "latestSampleAt": max(timestamps) if timestamps else None,
+        "updatedAt": _now(now),
+    }
 
 
 def sustained_breach(
@@ -341,6 +392,8 @@ def sustained_breach(
     if last_ts - first_ts < duration_seconds * 0.6:
         return None
     # The problem must still be happening, not already recovered.
+    if _now(now) - last_ts > SERVICE_SCRATCH_TTL_SECONDS:
+        return None
     if float(points[-1][1]) < threshold:
         return None
     breaching = sum(1 for _, value in points if float(value) >= threshold)

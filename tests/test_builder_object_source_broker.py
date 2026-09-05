@@ -173,7 +173,7 @@ class BuilderObjectSourceBrokerTests(unittest.TestCase):
         )
 
     def _state_text(self):
-        return (self.state_dir / "control.json").read_text(encoding="utf-8")
+        return json.dumps(load_state())
 
     def test_protocol_is_exact_bound_short_lived_and_reuses_shared_token_file(self):
         binding = self._binding()

@@ -238,9 +238,7 @@ class LaeAdminControlProxyTests(unittest.TestCase):
                 "Bearer " + self.admin_token,
             )
             self.assertEqual(options["timeout"], 8.0)
-        state_text = self.state_dir.joinpath("control.json").read_text(
-            encoding="utf-8"
-        )
+        state_text = json.dumps(load_state())
         self.assertNotIn(self.admin_token, state_text)
 
     def test_sync_http_route_accepts_only_management_token_and_never_caches(self):

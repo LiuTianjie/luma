@@ -37,10 +37,10 @@ $EDITOR .env
 Control-plane state is written on the manager:
 
 ```text
-/opt/luma/control/control.json
+/opt/luma/control/control.sqlite3
 ```
 
-It contains the cluster id, management token, node join token, the Nomad gossip key, and copied Cloudflare environment values needed by the control API. This file must not be committed or copied to client machines.
+It contains the cluster id, management token, node join token, the Nomad gossip key, and copied Cloudflare environment values needed by the control API. The database, its runtime WAL/SHM files and backups must not be committed or copied to client machines. Legacy `control.json` is only an initial migration input; do not edit it after migration. See [Control storage and recovery](control-storage.md) for consistent backups and external secret files.
 
 Luma Control also mounts `/var/run/docker.sock` and reaches the Nomad HTTP API so it can record node meta after clients join. Treat management and node join tokens as cluster-admin sensitive.
 

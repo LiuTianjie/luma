@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Copy, Download, RefreshCw, X } from "lucide-react";
 import { t } from "../i18n";
+import { appendLogFrame, formatLogLine, logRetryDelay, readLogFrames, waitForLogRetry, type DisplayLogLine } from "../logStream";
 import type { DashboardService, Lang } from "../types";
 import { useOverlay } from "../useOverlay";
 import { SelectControl, type SelectOption } from "./ui";
 
 type LogsState = {
   service: string;
-  logs: string[];
-  since?: string;
+  logs: DisplayLogLine[];
+  droppedLines?: number;
   updatedAt?: number;
 };
 
@@ -44,13 +45,13 @@ type RuntimeEventsState = {
   updatedAt?: number;
 };
 
-const SINCE_OPTIONS: { label: string; seconds: number; zh: string; en: string }[] = [
-  { label: "tail", seconds: 0, zh: "最新", en: "Latest" },
-  { label: "5m", seconds: 5 * 60, zh: "近 5 分钟", en: "Last 5m" },
-  { label: "15m", seconds: 15 * 60, zh: "近 15 分钟", en: "Last 15m" },
-  { label: "1h", seconds: 60 * 60, zh: "近 1 小时", en: "Last 1h" },
-  { label: "24h", seconds: 24 * 60 * 60, zh: "近 24 小时", en: "Last 24h" },
-];
+type LogSource = { allocationId: string; task?: string; stream?: string };
+
+type LogSession = { key: string; cursor: string; refresh: number };
+
+type ConnectionState = "connecting" | "live" | "reconnecting" | "paused" | "stopped";
+
+const MAX_LINES = 2000;
 
 const LOGS_MODAL_ROOT = typeof document === "undefined" ? null : document.body;
 
@@ -62,16 +63,9 @@ function appKey(service: DashboardService) {
   return service.stack || service.fullName || service.name || "-";
 }
 
-function sinceValue(label: string) {
-  const option = SINCE_OPTIONS.find((item) => item.label === label);
-  if (!option?.seconds) return "";
-  return String(Math.floor(Date.now() / 1000) - option.seconds);
-}
-
-function logParams(service: string, sinceLabel: string, tail: string) {
+function logParams(service: string, tail: string, allocation: string) {
   const params = new URLSearchParams({ service, tail });
-  const since = sinceValue(sinceLabel);
-  if (since) params.set("since", since);
+  if (allocation) params.set("allocation", allocation);
   return params;
 }
 
@@ -127,7 +121,12 @@ export function ServiceLogsModal({
   );
   const overlayRef = useOverlay<HTMLElement>(onClose);
   const [selectedService, setSelectedService] = useState(() => initialService?.fullName || firstService);
-  const [sinceLabel, setSinceLabel] = useState("tail");
+  const [allocation, setAllocation] = useState("");
+  const [logSources, setLogSources] = useState<LogSource[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [retryDelay, setRetryDelay] = useState(0);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [keyword, setKeyword] = useState("");
   const [paused, setPaused] = useState(false);
   const [copyState, setCopyState] = useState("");
@@ -135,6 +134,8 @@ export function ServiceLogsModal({
   const [logsState, setLogsState] = useState<LogsState | null>(null);
   const [logsError, setLogsError] = useState("");
   const [logsLoading, setLogsLoading] = useState(false);
+  const logTailRef = useRef<HTMLPreElement | null>(null);
+  const followBottomRef = useRef(true);
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEventsState | null>(null);
   const [runtimeError, setRuntimeError] = useState("");
   const [runtimeLoading, setRuntimeLoading] = useState(false);
@@ -176,38 +177,50 @@ export function ServiceLogsModal({
 
   useEffect(() => {
     setPullDiagnostic(null);
+    setPullLoading(false);
     setRuntimeEvents(null);
     setRuntimeError("");
   }, [selectedService]);
 
+  const sessionRef = useRef<LogSession>({ key: "", cursor: "", refresh: -1 });
+  const currentServiceRef = useRef(selectedService);
+  currentServiceRef.current = selectedService;
+  const currentSelectionRef = useRef("");
+  currentSelectionRef.current = `${selectedService}\0${allocation}`;
+  const pullControllerRef = useRef<AbortController | null>(null);
+  const downloadControllerRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setDownloadState("");
+    return () => downloadControllerRef.current?.abort();
+  }, [selectedService, allocation]);
+  useEffect(() => {
+    setAllocation("");
+    setLogSources([]);
+    setWarnings([]);
+    return () => pullControllerRef.current?.abort();
+  }, [selectedService]);
+
+  const allocationOptions = useMemo<SelectOption[]>(() => {
+    const ids = [...new Set(logSources.map((item) => item.allocationId).filter(Boolean))];
+    if (allocation && !ids.includes(allocation)) ids.push(allocation);
+    return [
+      { value: "", label: lang === "zh" ? "全部当前实例" : "All current instances" },
+      ...ids.map((id) => ({ value: id, label: id.length > 20 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id })),
+    ];
+  }, [allocation, lang, logSources]);
+
   const selected = services.find((service) => service.fullName === selectedService);
   const filteredLogs = useMemo(() => {
-    const logs = logsState?.logs || [];
+    const logs = logsState?.service === selectedService ? logsState.logs.map(formatLogLine) : [];
     const query = keyword.trim().toLowerCase();
     if (!query) return logs;
     return logs.filter((line) => line.toLowerCase().includes(query));
-  }, [keyword, logsState]);
+  }, [keyword, logsState, selectedService]);
 
-  const loadLogs = useCallback(async (signal?: AbortSignal) => {
-    if (!selectedService) return;
-    setLogsLoading(true);
-    try {
-      const params = logParams(selectedService, sinceLabel, "200");
-      const response = await fetch(`/v1/dashboard/logs?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal,
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-      setLogsState(payload as LogsState);
-      setLogsError("");
-    } catch (error) {
-      if ((error as Error)?.name === "AbortError") return;
-      setLogsError(String(error instanceof Error ? error.message : error));
-    } finally {
-      setLogsLoading(false);
-    }
-  }, [selectedService, sinceLabel, token]);
+  useEffect(() => {
+    const tail = logTailRef.current;
+    if (tail && followBottomRef.current) tail.scrollTop = tail.scrollHeight;
+  }, [filteredLogs]);
 
   const loadRuntimeEvents = useCallback(async (signal?: AbortSignal) => {
     if (!selectedService) return;
@@ -220,88 +233,139 @@ export function ServiceLogsModal({
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+      if (signal?.aborted || currentServiceRef.current !== selectedService) return;
       setRuntimeEvents(payload as RuntimeEventsState);
       setRuntimeError("");
     } catch (error) {
       if ((error as Error)?.name === "AbortError") return;
-      setRuntimeError(String(error instanceof Error ? error.message : error));
+      if (!signal?.aborted && currentServiceRef.current === selectedService) setRuntimeError(String(error instanceof Error ? error.message : error));
     } finally {
-      setRuntimeLoading(false);
+      if (!signal?.aborted && currentServiceRef.current === selectedService) setRuntimeLoading(false);
     }
   }, [selectedService, token]);
 
   useEffect(() => {
     if (!selectedService) return;
     const controller = new AbortController();
-    void loadRuntimeEvents(controller.signal);
-    const timer = window.setInterval(() => void loadRuntimeEvents(controller.signal), 5000);
+    let timer: number | undefined;
+    const poll = async () => {
+      await loadRuntimeEvents(controller.signal);
+      if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 5000);
+    };
+    void poll();
     return () => {
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
       controller.abort();
     };
-  }, [selectedService, loadRuntimeEvents]);
+  }, [selectedService, loadRuntimeEvents, refreshVersion]);
 
-  // Live tail: one long-lived NDJSON stream per selected service.
+  // A cursor belongs to exactly one service/instance selection. Keep it across
+  // pause and transient disconnects; a manual refresh explicitly reloads tail.
   useEffect(() => {
-    if (!selectedService || paused) return;
+    const key = `${selectedService}\0${allocation}`;
+    const reset = sessionRef.current.key !== key || sessionRef.current.refresh !== refreshVersion;
+    if (reset) {
+      sessionRef.current = { key, cursor: "", refresh: refreshVersion };
+      followBottomRef.current = true;
+      setLogsState({ service: selectedService, logs: [], droppedLines: 0 });
+      setWarnings([]);
+      setLogsError("");
+    }
+    if (!selectedService || paused) {
+      setConnection(paused ? "paused" : "stopped");
+      setLogsLoading(false);
+      return;
+    }
     const controller = new AbortController();
-    let cancelled = false;
-    const MAX_LINES = 2000;
-
+    const { signal } = controller;
+    const session = sessionRef.current;
+    const active = () => !signal.aborted && sessionRef.current === session && currentSelectionRef.current === key;
+    let attempt = 0;
+    const addWarning = (message: string) => {
+      if (!active() || !message) return;
+      setWarnings((previous) => [...new Set([...previous, message])].slice(-8));
+    };
     const run = async () => {
-      setLogsLoading(true);
-      setLogsState({ service: selectedService, logs: [], updatedAt: Math.floor(Date.now() / 1000) });
-      try {
-        const params = logParams(selectedService, sinceLabel, "200");
-        const response = await fetch(`/v1/dashboard/logs/stream?${params.toString()}`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        });
-        if (!response.ok || !response.body) {
-          throw new Error(response.ok ? "stream unavailable" : `HTTP ${response.status}`);
-        }
-        setLogsError("");
-        setLogsLoading(false);
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        const append = (lines: string[]) => {
-          if (!lines.length) return;
-          setLogsState((prev) => {
-            const merged = [...(prev?.logs || []), ...lines];
-            const trimmed = merged.length > MAX_LINES ? merged.slice(merged.length - MAX_LINES) : merged;
-            return { service: selectedService, logs: trimmed, updatedAt: Math.floor(Date.now() / 1000) };
-          });
+      while (active()) {
+        setConnection(attempt ? "reconnecting" : "connecting");
+        setLogsLoading(true);
+        let fatal = false;
+        let timedOut = false;
+        const requestController = new AbortController();
+        const abortRequest = () => requestController.abort();
+        signal.addEventListener("abort", abortRequest, { once: true });
+        let watchdog: ReturnType<typeof setTimeout> | undefined;
+        const keepAlive = () => {
+          clearTimeout(watchdog);
+          watchdog = setTimeout(() => { timedOut = true; requestController.abort(); }, 30000);
         };
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done || cancelled) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parts = buffer.split("\n");
-          buffer = parts.pop() || "";
-          const newLines: string[] = [];
-          for (const part of parts) {
-            if (!part.trim()) continue;
-            try {
-              const event = JSON.parse(part);
-              if (typeof event.line === "string") newLines.push(event.line);
-            } catch {
-              // Ignore malformed NDJSON chunks from partial stream frames.
-            }
+        keepAlive();
+        try {
+          const params = logParams(selectedService, "200", allocation);
+          if (session.cursor) params.set("cursor", session.cursor);
+          const response = await fetch(`/v1/dashboard/logs/stream?${params.toString()}`, {
+            headers: { Authorization: `Bearer ${token}` }, signal: requestController.signal,
+          });
+          if (!active()) return;
+          if (!response.ok || !response.body) {
+            fatal = [400, 401, 403, 404].includes(response.status);
+            let message = `HTTP ${response.status}`;
+            try { const payload = await response.json(); message = payload.error || message; } catch { /* non-JSON proxy error */ }
+            throw new Error(message);
           }
-          append(newLines);
+          setConnection("live");
+          setLogsLoading(false);
+          setLogsError("");
+          const connectedAt = Date.now();
+          await readLogFrames(response.body, (event) => {
+            if (!active()) return;
+            keepAlive();
+            if (typeof event.cursor === "string") session.cursor = event.cursor;
+            const sources = Array.isArray(event.sources) ? event.sources as LogSource[]
+              : typeof event.allocationId === "string" ? [{ allocationId: event.allocationId }] : [];
+            if (sources.length) setLogSources((previous) => {
+              const byId = new Map(previous.map((item) => [item.allocationId, item]));
+              for (const item of sources) if (item.allocationId) byId.set(item.allocationId, item);
+              return [...byId.values()];
+            });
+            if (Array.isArray(event.warnings)) event.warnings.forEach((item) => addWarning(String(item)));
+            if (event.status === "warning") addWarning(String(event.message || ""));
+            if (event.status === "error") throw new Error(String(event.message || "Log stream failed"));
+            if (typeof event.line === "string") {
+              setLogsState((previous) => {
+                const { lines, dropped } = appendLogFrame(previous?.service === selectedService ? previous.logs : [], event, MAX_LINES);
+                return {
+                  service: selectedService, logs: lines,
+                  droppedLines: (previous?.droppedLines || 0) + dropped,
+                  updatedAt: typeof event.observedAt === "number" ? event.observedAt : Date.now() / 1000,
+                };
+              });
+            }
+          }, requestController.signal);
+          if (timedOut) throw new Error("Log stream timed out");
+          if (Date.now() - connectedAt > 10000) attempt = 0;
+          // A clean EOF is also a disconnection. Never leave a frozen view
+          // marked live just because the server closed without an HTTP error.
+        } catch (error) {
+          if (!active()) return;
+          setLogsError(timedOut ? "Log stream timed out" : error instanceof Error ? error.message : String(error));
+        } finally {
+          clearTimeout(watchdog);
+          signal.removeEventListener("abort", abortRequest);
+          requestController.abort();
         }
-      } catch (error) {
-        if ((error as Error)?.name === "AbortError" || cancelled) return;
-        void loadLogs(controller.signal);
+        if (!active()) return;
+        setLogsLoading(false);
+        if (fatal) { setConnection("stopped"); return; }
+        const delay = logRetryDelay(attempt++);
+        setRetryDelay(delay / 1000);
+        setConnection("reconnecting");
+        await waitForLogRetry(delay, signal);
       }
     };
     void run();
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [selectedService, sinceLabel, paused, token, loadLogs]);
+    return () => controller.abort();
+  }, [selectedService, allocation, paused, token, refreshVersion]);
 
   const copyLogs = async () => {
     try {
@@ -318,18 +382,24 @@ export function ServiceLogsModal({
 
   const downloadLogs = async () => {
     if (!selectedService) return;
+    downloadControllerRef.current?.abort();
+    const controller = new AbortController();
+    downloadControllerRef.current = controller;
+    const key = `${selectedService}\0${allocation}`;
+    const active = () => !controller.signal.aborted && currentSelectionRef.current === key;
     setDownloadState(lang === "zh" ? "下载中" : "Downloading");
     try {
-      const params = logParams(selectedService, sinceLabel, "500");
+      const params = logParams(selectedService, "500", allocation);
       params.set("download", "1");
       const response = await fetch(`/v1/dashboard/logs?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}` }, signal: controller.signal,
       });
       if (!response.ok) {
         const message = await response.text();
         throw new Error(message || `HTTP ${response.status}`);
       }
       const blob = await response.blob();
+      if (!active()) return;
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -339,15 +409,20 @@ export function ServiceLogsModal({
       setDownloadState(lang === "zh" ? "已下载" : "Downloaded");
       setLogsError("");
     } catch (error) {
+      if (!active()) return;
       setDownloadState(lang === "zh" ? "下载失败" : "Download failed");
       setLogsError(String(error instanceof Error ? error.message : error));
     } finally {
-      window.setTimeout(() => setDownloadState(""), 1600);
+      window.setTimeout(() => { if (active()) setDownloadState(""); }, 1600);
     }
   };
 
   const diagnosePull = async () => {
     if (!selectedService) return;
+    pullControllerRef.current?.abort();
+    const controller = new AbortController();
+    pullControllerRef.current = controller;
+    const active = () => !controller.signal.aborted && currentServiceRef.current === selectedService;
     setPullLoading(true);
     setLogsError("");
     setPullDiagnostic({ status: "running", lines: [] });
@@ -356,6 +431,7 @@ export function ServiceLogsModal({
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ service: selectedService, timeout: 600 }),
+        signal: controller.signal,
       });
       if (!response.ok || !response.body) {
         const text = await response.text();
@@ -365,6 +441,7 @@ export function ServiceLogsModal({
       const decoder = new TextDecoder();
       let buffer = "";
       const applyEvent = (event: Record<string, unknown>) => {
+        if (!active()) return;
         const status = String(event.status || "");
         if (status === "start") {
           setPullDiagnostic((prev) => ({
@@ -428,11 +505,12 @@ export function ServiceLogsModal({
       }
       if (buffer.trim()) applyEvent(JSON.parse(buffer));
     } catch (error) {
+      if (!active()) return;
       const message = String(error instanceof Error ? error.message : error);
       setLogsError(message);
       setPullDiagnostic((prev) => ({ ...(prev || { lines: [] }), status: "fail", ok: false, lines: [...(prev?.lines || []), message].slice(-300) }));
     } finally {
-      setPullLoading(false);
+      if (active()) setPullLoading(false);
     }
   };
 
@@ -467,10 +545,10 @@ export function ServiceLogsModal({
               options={serviceOptions}
             />
             <SelectControl
-              value={sinceLabel}
-              onChange={setSinceLabel}
-              ariaLabel={lang === "zh" ? "时间范围" : "Time range"}
-              options={SINCE_OPTIONS.map((option) => ({ value: option.label, label: lang === "zh" ? option.zh : option.en }))}
+              value={allocation}
+              onChange={setAllocation}
+              ariaLabel={lang === "zh" ? "日志实例" : "Log instance"}
+              options={allocationOptions}
             />
             <input
               value={keyword}
@@ -483,7 +561,7 @@ export function ServiceLogsModal({
               <span className={paused ? "logs-live-icon play" : "logs-live-icon pause"} aria-hidden="true" />
               {paused ? (lang === "zh" ? "继续" : "Resume") : (lang === "zh" ? "暂停" : "Pause")}
             </button>
-            <button type="button" className="logs-tool-button" onClick={() => { void loadLogs(); void loadRuntimeEvents(); }}>
+            <button type="button" className="logs-tool-button" onClick={() => { setPaused(false); setRefreshVersion((value) => value + 1); }}>
               <RefreshCw size={14} aria-hidden="true" />
               {logsLoading || runtimeLoading ? t(lang, "refreshing") : t(lang, "refresh")}
             </button>
@@ -497,14 +575,27 @@ export function ServiceLogsModal({
             </button>
             <button type="button" className="logs-tool-button" onClick={() => void downloadLogs()}>
               <Download size={14} aria-hidden="true" />
-              {downloadState || (lang === "zh" ? "下载" : "Download")}
+              {downloadState || (lang === "zh" ? "下载近期日志" : "Download recent logs")}
             </button>
           </div>
         </div>
         <div className="logs-context">
-          <span>{selected ? serviceTitle(selected) : "-"}</span>
+          <span role="status" aria-live="polite">{({
+            connecting: lang === "zh" ? "连接中" : "Connecting",
+            live: lang === "zh" ? "实时跟随" : "Live",
+            reconnecting: lang === "zh" ? `正在重连 · 重试间隔 ${retryDelay} 秒` : `Reconnecting · retry interval ${retryDelay}s`,
+            paused: lang === "zh" ? "已暂停 · 继续时补取可用日志" : "Paused · available logs resume on reconnect",
+            stopped: lang === "zh" ? "已停止 · 点击刷新重试" : "Stopped · refresh to retry",
+          })[connection]}</span>
           <span>{logsState?.updatedAt ? new Date(logsState.updatedAt * 1000).toLocaleTimeString() : "-"}</span>
         </div>
+        <div className="logs-context">
+          <span>{lang === "zh"
+            ? `初次读取最近约 200 行，按日志源分配；页面最多保留 ${MAX_LINES} 行，已移除 ${logsState?.droppedLines || 0} 行。下载最近约 500 行，按日志源分配。`
+            : `Starts with about 200 recent lines shared across sources. View retains ${MAX_LINES} lines; ${logsState?.droppedLines || 0} older lines removed. Download targets 500 recent lines shared across sources.`}</span>
+          <span>{lang === "zh" ? "历史取决于节点日志轮转，无法保证覆盖指定时间。运行事件显示最近实例。" : "History depends on node log rotation; no guaranteed time window. Runtime events show the latest instance."}</span>
+        </div>
+        {warnings.length ? <div className="logs-error">{warnings.join(" · ")}</div> : null}
         {runtimeEvents ? (
           <div className={runtimeEvents.status === "running" ? "logs-runtime-events running" : "logs-runtime-events"}>
             <div className="logs-pull-summary">
@@ -527,7 +618,10 @@ export function ServiceLogsModal({
         ) : null}
         {runtimeError ? <div className="logs-error">{runtimeError}</div> : null}
         {logsError ? <div className="logs-error">{logsError}</div> : null}
-        <pre className="logs-tail logs-modal-tail">{filteredLogs.join("\n") || (runtimeEvents?.status && runtimeEvents.status !== "running" ? (lang === "zh" ? "容器尚未启动或尚未输出日志，见上方运行事件。" : "Container has not started or has not emitted logs yet. See runtime events above.") : "-")}</pre>
+        <pre ref={logTailRef} className="logs-tail logs-modal-tail" onScroll={(event) => {
+          const tail = event.currentTarget;
+          followBottomRef.current = tail.scrollHeight - tail.scrollTop - tail.clientHeight < 48;
+        }}>{filteredLogs.join("\n") || (runtimeEvents?.status && runtimeEvents.status !== "running" ? (lang === "zh" ? "容器尚未启动或尚未输出日志，见上方运行事件。" : "Container has not started or has not emitted logs yet. See runtime events above.") : "-")}</pre>
       </section>
     </div>,
     LOGS_MODAL_ROOT,

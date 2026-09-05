@@ -82,4 +82,6 @@ flowchart LR
 
 Tailscale 不承载默认业务数据面。只有 `exposure: tailscale-relay` 的服务会让用户请求经过 Tailscale。
 
-Luma Control 是默认控制面，部署直连 Nomad HTTP API（`/v1/jobs`）。Nomad server 跑在 manager 上，HTTP API（`4646`）/ RPC（`4647`）/ Serf（`4648`）只通过 Tailscale 私网监听；client 失联时本地 allocation 凭 `max_client_disconnect` 继续运行，恢复后自动重连。
+Luma Control 是默认控制面，部署直连 Nomad HTTP API（`/v1/jobs`）。Nomad server 跑在 manager 上，Nomad agent 的 `bind_addr` 是 `0.0.0.0`，HTTP API（`4646`）/ RPC（`4647`）/ Serf（`4648`）的 advertise 地址使用 Tailscale IP。访问边界依赖主机防火墙：Luma 管理的 UFW 规则仅在 `tailscale0` 接口放行这些端口；不能把 advertise 地址当作监听限制。非 UFW 主机和云安全组需配置等效规则，详见 [操作手册的网络端口说明](operations.md#required-network-ports)。
+
+client 失联时本地 allocation 凭 `max_client_disconnect` 继续运行，恢复后自动重连。

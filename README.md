@@ -74,7 +74,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.297"
+python -m pip install "luma-infra==0.1.298"
 ```
 
 Install without cloning the repository:
@@ -89,7 +89,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.297 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.298 sh
 ```
 
 Develop from source:
@@ -134,6 +134,12 @@ $EDITOR .env
 luma bootstrap manager --domain luma.example.com
 ```
 
+Bootstrap automatically creates the Manager's local SQLite database at
+`/opt/luma/control/control.sqlite3`. A new installation uses SQLite directly;
+no separate database service, connection string or migration command is needed.
+Existing installations with legacy JSON state are imported automatically on
+upgrade. See [Control storage](docs/control-storage.md).
+
 Common values for `.env` or the interactive CLI prompts:
 
 ```bash
@@ -159,7 +165,7 @@ private files on the manager. The Nomad job mounts `/opt/luma/control`; every
 principal, broker, and admin file passed to the job must therefore live below
 that directory. Files must be regular, non-symlink files readable only by the
 owner (`0600` is recommended). Token contents are read by Luma Control at
-runtime and are never rendered into the Nomad Job or `control.json`.
+runtime and are never rendered into the Nomad Job or Control state database.
 
 Create one token file per identity, then create the two principal files. A
 `tokenFile` is a file in the same directory as its principal file:
@@ -272,7 +278,7 @@ The default control API image is `ghcr.io/liutianjie/luma-control:latest`. For p
 | any logged-in client | Manage deploy secrets | `luma secret set DATABASE_URL` |
 | any logged-in client | Manage private image registry credentials | `printf '%s' "$GHCR_TOKEN" \| luma registry login ghcr.io --username <user> --password-stdin` |
 | any machine | Show local version | `luma version` |
-| any machine | Diagnose local environment | `luma doctor` |
+| any machine | Check authentication, remote Control and node health | `luma doctor` |
 
 The installer is the same on every machine. The next command defines the role:
 
@@ -338,7 +344,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.297"
+python -m pip install "luma-infra==0.1.298"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -465,6 +471,9 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | [docs/bootstrap.md](docs/bootstrap.md) | manager bootstrap details and profiles. |
 | [docs/node-labels.md](docs/node-labels.md) | node labels, regions, and ingress labels. |
 | [docs/operations.md](docs/operations.md) | daily operations and troubleshooting commands. |
+| [docs/observability.md](docs/observability.md) | metrics, logs, alert rules, Feishu delivery and independent monitoring. |
+| [docs/control-storage.md](docs/control-storage.md) | single Manager SQLite, history queries, capacity governance, backup and recovery. |
+| [docs/luma-cli-reference.md](docs/luma-cli-reference.md) | command/options reference generated from the current CLI parser. |
 | [docs/secrets.md](docs/secrets.md) | secret and environment variable handling. |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | common failures and fixes. |
 | [docs/release.md](docs/release.md) | publishing tags, installer, and control image releases. |

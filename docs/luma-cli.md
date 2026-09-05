@@ -1,5 +1,7 @@
 # Luma CLI
 
+For the full current command and option inventory, see the [generated CLI reference](luma-cli-reference.md). This guide explains workflows and operational semantics.
+
 Luma is the command line interface for installing nodes, wiring providers, rendering Nomad jobs, and deploying services. The orchestrator underneath is HashiCorp Nomad, so the unit of deployment is a Nomad job.
 
 The default path is control-plane first and Nomad-backed:
@@ -15,7 +17,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.297"
+python -m pip install "luma-infra==0.1.298"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +34,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.297 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.298 sh
 ```
 
 Development checkout:
@@ -63,7 +65,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.297"
+python -m pip install "luma-infra==0.1.298"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.297"
+python -m pip install "luma-infra==0.1.298"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -90,8 +92,35 @@ The control context priority is CLI flags, then environment variables, then the 
 - `LUMA_DEPLOY_TOKEN`
 - `LUMA_INSECURE=true|false`
 - `LUMA_RESOLVE_IP`
+- `LUMA_CONTROL_CONTEXT` (select a saved cluster without changing the current context)
 
 `LUMA_RESOLVE_IP` keeps the control hostname in the `Host` header and requires insecure TLS mode.
+
+For commands with shared Control options, `--control-context CLUSTER` selects a
+saved context for that invocation. Explicit flags override environment values,
+which override the selected saved context. If an explicit Control URL differs
+from the saved endpoint, Luma does not inherit its token, TLS override or IP
+override; supply credentials for the target endpoint. This also applies to `doctor`,
+`service restart` and `service remove`; they can run in CI without a prior login.
+
+Interactive login can prompt for a hidden token, or read it from standard input:
+
+```bash
+luma login https://luma.example.com
+printf '%s' "$LUMA_DEPLOY_TOKEN" | luma login https://luma.example.com --token-stdin
+luma context list --format json
+luma doctor --control-context staging --format json
+```
+
+`login` accepts `--token` or `--token-stdin`, then falls back to
+`LUMA_DEPLOY_TOKEN` and finally an interactive hidden prompt. Non-interactive
+login without a token fails with a setup hint. Prefer the environment or stdin
+to keep tokens out of process arguments.
+
+Commands advertising `--format` support `text`, `json` and `ndjson`; check their
+exit status as well as the response. Doctor returns a `healthy` boolean and
+individual checks; an unhealthy result has a nonzero exit status. Streaming
+service logs support text and NDJSON, while JSON is available for snapshots.
 
 ## Git Provider Credentials
 
@@ -170,7 +199,7 @@ If required local values are missing, Luma prompts for them before continuing an
 luma node join https://luma.example.com --token <node-join-token> --region global --name global-sg-1
 ```
 
-`luma configure --role manager|worker` remains available if you want to edit local secrets ahead of time, and `luma configure --show` lists configured keys without printing values. Luma loads `.env` and `~/.luma.config.json` automatically. Use `--env-file <path>` to load another project-local env file or `--no-env` to disable local secret loading. Values already exported in your shell take priority. On the manager node, bootstrap and update copy the required Cloudflare values into `/opt/luma/control/control.json` so client machines do not need those secrets. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, bootstrap and `luma update manager` infer the Cloudflare zone from the control domain and write the provider config before installing `/opt/luma/luma.yaml`. If no edge DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET`; non-interactive update uses the configured edge node public IP or an existing `LUMA_DNS_EDGE_TARGET`.
+`luma configure --role manager|worker` remains available if you want to edit local secrets ahead of time, and `luma configure --show` lists configured keys without printing values. Luma loads `.env` and `~/.luma.config.json` automatically. Use `--env-file <path>` to load another project-local env file or `--no-env` to disable local secret loading. Values already exported in your shell take priority. On the manager node, bootstrap and update save the required Cloudflare values in Manager Control state (`control.sqlite3` after legacy import) so client machines do not need those secrets. If `CLOUDFLARE_API_TOKEN` is configured but `providers.dns` is missing, bootstrap and `luma update manager` infer the Cloudflare zone from the control domain and write the provider config before installing `/opt/luma/luma.yaml`. If no edge DNS target is configured, interactive bootstrap asks for `LUMA_DNS_EDGE_TARGET`; non-interactive update uses the configured edge node public IP or an existing `LUMA_DNS_EDGE_TARGET`.
 
 ## Commands
 
@@ -288,7 +317,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.297 --timeout 900
+luma update fleet --install-ref v0.1.298 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -320,7 +349,7 @@ manager node `publicIp`, `providers.dns.edgeTarget`, and Cloudflare A records
 whose content exactly equals the old address. It backs up `luma.yaml`, reuses
 the image from the running `luma-control` Nomad job, and reconciles the manager
 control plane without reinstalling the CLI or redeploying user applications.
-It never performs a global replacement in `control.json`; historical incident
+It never performs a global replacement across Control state; historical incident
 messages remain untouched. The operation is idempotent, so rerunning it safely
 finishes any records left behind by a partial Cloudflare failure.
 
@@ -393,6 +422,60 @@ luma rollback public-cn-service --to-version 3
 
 Rollback changes the running Nomad job only. It does not rewrite Git, update the stored manifest in Luma Control, roll back databases, or restore volumes. For predictable production rollback, deploy immutable image tags or digests rather than `latest`.
 
+Search retained Control build and deployment attempts:
+
+```bash
+luma service history public-cn-service --kind deployment --status failed --limit 50 --format json
+luma service history --source dashboard --since 2026-09-01T00:00:00+08:00 --format json
+luma service history --id RECORD_ID --kind deployment --limit 50 --format json
+luma build list --app public-cn-service --status failed --limit 50 --format json
+luma build logs BUILD_ID --limit 50 --format json
+```
+
+`service history [NAME]` searches Control records across builds and deployment
+attempts. Filters include kind (`build` or `deployment`), source (`build`, `cli`
+or `dashboard`), status, application, `--since` and `--until`. Time filters accept
+Unix seconds or RFC3339 timestamps with a timezone. The default page size is
+50, with a maximum of 100; pass the returned `nextCursor` as `--cursor` while
+keeping the other filters unchanged. JSON responses include page metadata
+(`limit`, `nextCursor`, `hasMore`); text mode prints continuation information to
+stderr. Pagination reads more retained records rather than increasing retention.
+
+`service history --id ID --kind KIND` reads one record's paged steps and cannot
+be combined with list filters. `build logs ID` also pages steps oldest first.
+These are build/deployment execution events; application stdout/stderr belongs
+to `service logs`. Existing `luma history NAME` remains the Nomad job-version
+list used with rollback, and is separate from Control attempt history. Importing
+legacy state cannot recover records that were already trimmed before migration.
+See [Control storage](control-storage.md) for the retention and backup boundary.
+
+Inspect a service before taking action:
+
+```bash
+luma service list --region cn --format json
+luma service inspect public-cn-service --format json
+luma service events public-cn-service --format json
+luma service logs public-cn-service --tail 100
+luma service logs public-cn-service --allocation ALLOCATION_ID --previous
+luma service logs public-cn-service --follow --format ndjson
+```
+
+`list --stack NAME` narrows the inventory to one stack. Logs are scoped to the
+selected deployment; use `--allocation` when comparing individual replicas.
+`--tail` accepts a 1–500 line budget shared across selected sources. Text output
+labels each entry with `[allocation/task/stream]`; `[partial]` marks an unfinished
+fragment and `[continued]` marks its continuation, including when other sources
+are interleaved. This is a diagnostic view, not a byte-exact log export. Use
+JSON/NDJSON to retain the source, cursor and fragment metadata. `--previous` reads a previous instance where the
+runtime has retained it. Follow mode resumes from the latest line or heartbeat byte cursor after a
+clean EOF, transport failure or temporary HTTP failure. Reconnects use
+exponential backoff from 0.5 to 15 seconds, with at most eight consecutive
+reconnects without progress. Press Ctrl-C to stop. Authentication, invalid cursor
+and protocol errors fail immediately. An older Control that provides no resume
+cursor fails rather than replaying log snapshots. There is no `--since` flag: application log
+timestamps are not guaranteed to be parseable, so this CLI does not claim a
+server-side time filter.
+
 Restart a running service without redeploying:
 
 ```bash
@@ -409,11 +492,14 @@ luma service remove public-cn-service
 luma service remove public-cn-service --dry-run
 ```
 
-Run diagnostics:
+Check authentication, remote Control status, DNS configuration readiness, node agents and Nomad health (this does not audit the local Docker/OS environment):
 
 ```bash
 luma doctor
+luma doctor --deep
 ```
+
+`--deep` also evaluates the remote node diagnostics reported in Control status (Docker mirrors/proxy and Nomad configuration). DNS readiness means configuration is present; it does not prove public DNS resolution or application availability.
 
 ## Service Manifest
 

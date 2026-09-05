@@ -57,9 +57,9 @@ class MetricsHistoryTests(unittest.TestCase):
             now=2000,
         )
         svc = metrics.load_history("service", "web_web")
-        # node-a heartbeat sees only itself (10); node-b heartbeat sums both (30).
-        self.assertEqual(svc["cpuPercent"], [[2000, 10.0], [2000, 30.0]])
-        self.assertEqual(svc["memoryUsageBytes"], [[2000, 1000], [2000, 4000]])
+        # The second heartbeat replaces the bucket with the cross-node sum.
+        self.assertEqual(svc["cpuPercent"], [[2000, 30.0]])
+        self.assertEqual(svc["memoryUsageBytes"], [[2000, 4000]])
 
     def test_stale_node_contribution_drops_from_service_sum(self):
         metrics.record_samples(
@@ -178,6 +178,30 @@ class MetricsEndpointTests(unittest.TestCase):
         self.assertIn("cpuPercent", result["series"])
         self.assertEqual(result["series"]["cpuPercent"][-1][1], 12.0)
         self.assertIn("updatedAt", result)
+        self.assertEqual(result["sampleIntervalSeconds"], 30)
+        self.assertEqual(result["retentionSeconds"], metrics.retention_seconds())
+        self.assertEqual(result["latestSampleAt"], result["series"]["cpuPercent"][-1][0])
+
+    def test_requested_window_is_capped_to_actual_retention(self):
+        from luma.control.server import handle_metrics_history
+
+        with patch.dict(os.environ, {"LUMA_METRICS_HISTORY_POINTS": "60"}):
+            result = handle_metrics_history(self.token, "node", "missing", window=86400)
+        self.assertEqual(result["requestedWindow"], 86400)
+        self.assertEqual(result["window"], 1800)
+        self.assertEqual(result["series"], {})
+        self.assertIsNone(result["latestSampleAt"])
+
+    def test_negative_window_queries_and_reports_minimum_window(self):
+        from luma.control import server
+
+        metrics.record_samples("cn-edge", {"cpuPercent": 10}, [], now=3000)
+        metrics.record_samples("cn-edge", {"cpuPercent": 20}, [], now=3090)
+        with patch.object(server.time, "time", return_value=3120):
+            result = server.handle_metrics_history(self.token, "node", "cn-edge", window=-30)
+        self.assertEqual(result["requestedWindow"], -30)
+        self.assertEqual(result["window"], 60)
+        self.assertEqual(result["series"]["cpuPercent"], [[3090, 20]])
 
     def test_handle_metrics_history_rejects_bad_kind_and_token(self):
         from luma.control.server import handle_metrics_history

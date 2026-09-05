@@ -12,3 +12,13 @@ export function formatTimestamp(seconds?: number, lang?: Lang): string {
     return String(seconds);
   }
 }
+
+// Show the immutable image identity compactly; keep the full reference in a tooltip.
+export function formatImageIdentity(image?: string): string {
+  if (!image) return "";
+  const digest = image.match(/(?:@|^)sha256:([a-fA-F0-9]+)$/);
+  if (digest) return `sha256:${digest[1].slice(0, 12)}`;
+  const repository = image.slice(image.lastIndexOf("/") + 1);
+  const colon = repository.lastIndexOf(":");
+  return colon >= 0 ? repository.slice(colon + 1) : repository;
+}

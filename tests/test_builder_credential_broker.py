@@ -113,7 +113,7 @@ class BuilderCredentialBrokerTests(unittest.TestCase):
         )["task"]
 
     def _state_text(self):
-        return (self.state_dir / "control.json").read_text(encoding="utf-8")
+        return json.dumps(load_state())
 
     @staticmethod
     def _binding():

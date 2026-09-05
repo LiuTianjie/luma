@@ -14,6 +14,9 @@ on:
       - package-lock.json
       - dashboard-src/**
       - luma/**
+      - tests/**
+      - scripts/**
+      - docs/luma-cli-reference.md
       - .github/workflows/control-image.yml
   workflow_dispatch:
 
@@ -38,7 +41,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -61,15 +64,7 @@ jobs:
               exit 1
             }
           fi
-          npm run typecheck:dashboard
-          npm run build:dashboard
-          python -m unittest discover -s tests -p 'test_regions.py'
-          python -m unittest discover -s tests -p 'test_render.py'
-          python -m unittest discover -s tests -p 'test_productization.py'
-          python -m unittest discover -s tests -p 'test_deploy_workflow.py'
-          python -m unittest discover -s tests -p 'test_control_image_workflow.py'
-          python -m unittest discover -s tests -p 'test_import_compose_sidecar.py'
-          git diff --check
+          bash scripts/check-luma.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

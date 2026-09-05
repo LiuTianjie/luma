@@ -22,6 +22,11 @@ export type NodeMetrics = {
   memoryTotalBytes?: number;
   memoryAvailableBytes?: number;
   memoryUsedPercent?: number;
+  diskTotalBytes?: number;
+  diskAvailableBytes?: number;
+  diskUsedPercent?: number;
+  inodesUsedPercent?: number;
+  metricsPath?: string;
 };
 
 export type ResourceValues = {
@@ -99,6 +104,7 @@ export type DashboardService = {
   exposure?: string;
   domain?: string;
   targetPort?: string;
+  publishPort?: string;
   routeId?: string;
   network?: string;
   image?: string;
@@ -226,6 +232,11 @@ export type MetricPoint = [number, number];
 export type MetricSeries = Record<string, MetricPoint[]>;
 
 export type MetricsHistoryPayload = {
+  requestedWindow?: number;
+  retentionSeconds?: number;
+  sampleIntervalSeconds?: number;
+  availableFrom?: number | null;
+  latestSampleAt?: number | null;
   kind?: "node" | "service";
   name?: string;
   window?: number;

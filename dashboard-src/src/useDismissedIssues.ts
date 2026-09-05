@@ -1,50 +1,40 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { DashboardIssue } from "./types";
+import { activeDismissals, dismissalStorageKey, DISMISS_DURATION_MS, issueKey, type IssueDismissals } from "./issueDismissals";
+export { issueKey } from "./issueDismissals";
 
-const STORAGE_KEY = "luma.dashboard.dismissedIssues";
-
-// A stable identity for an issue so a dismissal survives refreshes and only re-appears
-// if the underlying condition changes (severity/kind/target/message all factor in).
-export function issueKey(issue: DashboardIssue): string {
-  return [issue.severity || "info", issue.kind || "", issue.target || "", issue.message || ""].join("|");
+function readStored(key: string): unknown {
+  try { return JSON.parse(localStorage.getItem(key) || "{}"); }
+  catch { return {}; }
 }
 
-function readStored(): Set<string> {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    return new Set(Array.isArray(parsed) ? parsed.map(String) : []);
-  } catch {
-    return new Set();
-  }
-}
-
-// Track which issues the user has dismissed. Dismissals persist to localStorage; a
-// "clear" resets them so a user can bring hidden items back.
-export function useDismissedIssues() {
-  const [dismissed, setDismissed] = useState<Set<string>>(() => readStored());
+export function useDismissedIssues(clusterId: string, issues: DashboardIssue[]) {
+  const storageKey = dismissalStorageKey(clusterId, window.location.origin);
+  const keysJson = JSON.stringify(issues.map(issueKey));
+  const activeKeys = useMemo(() => new Set<string>(JSON.parse(keysJson)), [keysJson]);
+  const [now, setNow] = useState(Date.now);
+  const [state, setState] = useState(() => ({ storageKey, items: activeDismissals(readStored(storageKey), activeKeys, Date.now()) }));
+  const items = useMemo(() => activeDismissals(state.storageKey === storageKey ? state.items : readStored(storageKey), activeKeys, now), [state, storageKey, activeKeys, now]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify([...dismissed]));
-    } catch {
-      /* storage unavailable; keep in-memory only */
-    }
-  }, [dismissed]);
+    // Persist recovery/expiry too, otherwise a recurring identical fault stays hidden.
+    setState((current) => current.storageKey === storageKey && JSON.stringify(current.items) === JSON.stringify(items)
+      ? current : { storageKey, items });
+    try { localStorage.setItem(storageKey, JSON.stringify(items)); }
+    catch { /* Browser-local state still works when storage is unavailable. */ }
+  }, [storageKey, items]);
 
-  const dismiss = useCallback((key: string) => {
-    setDismissed((prev) => {
-      if (prev.has(key)) return prev;
-      const next = new Set(prev);
-      next.add(key);
-      return next;
-    });
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
   }, []);
 
-  const clear = useCallback(() => setDismissed(new Set()), []);
-
-  const isDismissed = useCallback((key: string) => dismissed.has(key), [dismissed]);
-
-  return { dismiss, clear, isDismissed, dismissedCount: dismissed.size };
+  const dismiss = useCallback((key: string) => {
+    const time = Date.now();
+    setNow(time);
+    setState({ storageKey, items: { ...activeDismissals(items, activeKeys, time), [key]: time + DISMISS_DURATION_MS } });
+  }, [storageKey, items, activeKeys]);
+  const clear = useCallback(() => setState({ storageKey, items: {} as IssueDismissals }), [storageKey]);
+  const isDismissed = useCallback((key: string) => Boolean(items[key]), [items]);
+  return { dismiss, clear, isDismissed, dismissedCount: Object.keys(items).length };
 }

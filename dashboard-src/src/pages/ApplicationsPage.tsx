@@ -4,8 +4,7 @@ import { groupApplications } from "../components/applicationModel";
 import { t } from "../i18n";
 import type { DashboardPayload, DashboardService, Lang } from "../types";
 import { PageHeader } from "./PageHeader";
-import type { NavPage } from "../dashboardViewModel";
-import { useSearchParams } from "../router";
+import { useRouter, useSearchParams } from "../router";
 
 export function ApplicationsPage({
   lang,
@@ -27,6 +26,7 @@ export function ApplicationsPage({
   onServiceTerminal?: (service: DashboardService, stack: string) => void;
 }) {
   const searchParams = useSearchParams();
+  const { path, navigate } = useRouter();
   const selectApp = searchParams.get("select");
   const zh = lang === "zh";
   const applications = groupApplications(payload.services || []);
@@ -64,7 +64,15 @@ export function ApplicationsPage({
         onUpdateApplication={onUpdateApplication}
         onNavigateToDeployments={onNavigateToDeployments}
         onServiceTerminal={onServiceTerminal}
-        initialSelect={selectApp}
+        selectedStack={selectApp}
+        onSelectApplication={(stack) => {
+          const params = new URLSearchParams(searchParams);
+          if (stack) params.set("select", stack);
+          else params.delete("select");
+          const query = params.toString();
+          const destination = `${path}${query ? `?${query}` : ""}`;
+          if (stack !== selectApp) navigate(destination);
+        }}
       />
     </>
   );

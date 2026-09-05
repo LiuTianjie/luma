@@ -15,9 +15,9 @@ symptom -> checks -> safe action -> verify -> escalate
 必须遵守：
 
 1. 先记录时间、region、`applicationId`、`analysisId`、`deploymentId`、`operationId`、cursor、公开 error code 和 request ID。
-2. 不在终端回显、日志、工单或聊天中粘贴 deploy token、Luma management token、principal token、Git secret、环境变量值、验证码、签名 URL、对象 key、数据库 URL 或完整 `control.json`。
+2. 不在终端回显、日志、工单或聊天中粘贴 deploy token、Luma management token、principal token、Git secret、环境变量值、验证码、签名 URL、对象 key、数据库 URL 或完整 Control 状态。
 3. 租户只看到 region、应用/service/route 状态和安全错误。实际节点名、node ID、IP、候选集、failure domain、registry 地址和 storage endpoint **仅限内部管理员审计**，不得回传租户。
-4. 不直接编辑 `/opt/luma/control/control.json`，不手改 Nomad job，不用 Luma management token 冒充 LAE principal，不把失败任务改成 succeeded。
+4. 不直接编辑 SQLite 或旧 `/opt/luma/control/control.json`，不手改 Nomad job，不用 Luma management token 冒充 LAE principal，不把失败任务改成 succeeded。
 5. 网络重试必须复用原 Operation/cursor；写请求只有 body 完全相同时才复用 idempotency key。
 6. 暂停、重启或取消都不能替代根因判断。PostgreSQL、MinIO、registry 和 volume 的重启/删除尤其需要变更批准和恢复点。
 7. 普通删除保留 storage。任何 `--delete-storage`、对象批量删除、registry GC、volume 迁移或 restore cutover 都不属于一线默认动作。
@@ -515,15 +515,21 @@ Builder、Runtime、DNS/TLS 或报告链路平台事故处理。`template-smoke`
 4. 检查 broker token file 和闭合 HTTPS URL，使用第 4 节测试。
 5. `luma status --format json` 中确认 Builder node ready 且具备所需 capability；检查 builder queue/capacity、临时磁盘和 rootless executor。
 6. 核对 Analyzer 沙箱镜像：Worker 的 `LAE_ANALYZER_IMAGE_DIGEST` 与 Luma Control/Builder 的 `LUMA_BUILDER_ANALYZE_IMAGE_DIGEST` 必须是完全相同的 immutable `repository@sha256:...`；目标 Builder 已预拉该 digest，rootless Docker 使用 `--pull never` 并能 inspect 本地镜像。不要用 tag、短 SHA 或“registry 中看起来相同”代替逐字比较。
-7. 授权管理员可在 manager 上按 Operation 做**最小投影**；禁止 `cat control.json`：
+7. 授权管理员可在 manager 上按 Operation 做**最小投影**；通过当前版本的 `load_state()` 读取 SQLite；禁止输出完整 Control 状态：
 
    ```bash
-   sudo jq --arg op '<operation-id>' '
-     [(.builderTasks // {}) | to_entries[].value
-      | select(.externalOperationId == $op)
-      | {id,kind,status,builderNode,principalRef,tenantRef,applicationRef,externalOperationId,createdAt,startedAt,updatedAt,completedAt}]' \
-     /opt/luma/control/control.json
+   sudo /path/to/luma/venv/bin/python - '<operation-id>' <<'PYTHON'
+   import json, sys
+   from luma.control.state import load_state
+   fields = ("id", "kind", "status", "builderNode", "principalRef", "tenantRef", "applicationRef", "externalOperationId", "createdAt", "startedAt", "updatedAt", "completedAt")
+   tasks = load_state().get("builderTasks", {})
+   print(json.dumps([{key: task.get(key) for key in fields}
+                     for task in tasks.values()
+                     if task.get("externalOperationId") == sys.argv[1]], ensure_ascii=False))
+   PYTHON
    ```
+
+   示例 Python 路径应替换为 Manager 实际安装的 Luma Python；自定义状态目录时显式设置 `LUMA_CONTROL_STATE_DIR`。旧 `control.json` 不是当前状态。
 
    `builderNode`、principal、tenant 和 application 是内部数据，只能留在受控 incident evidence 中。
 8. 区分 analyze 和 build：analysis 成功不代表镜像构建成功；build 必须返回逐 service OCI digest、SBOM/scan/provenance 并与固定 source snapshot 匹配。
@@ -570,11 +576,15 @@ Builder、Runtime、DNS/TLS 或报告链路平台事故处理。`template-smoke`
 7. Dashboard/API 不可用且事故需要时，才在 manager 安全终端读取 placement 最小内部投影：
 
    ```bash
-   sudo jq --arg app '<application-id>' '
-     [(.laeRuntime.deployments // {}) | to_entries[].value
-      | select(.applicationRef == $app)
-      | {runtimeDeploymentRef,status,operationRef,revisionRef,deploymentRef,jobSlug,placement,updatedAt}]' \
-     /opt/luma/control/control.json
+   sudo /path/to/luma/venv/bin/python - '<application-id>' <<'PYTHON'
+   import json, sys
+   from luma.control.state import load_state
+   fields = ("runtimeDeploymentRef", "status", "operationRef", "revisionRef", "deploymentRef", "jobSlug", "placement", "updatedAt")
+   deployments = load_state().get("laeRuntime", {}).get("deployments", {})
+   print(json.dumps([{key: deployment.get(key) for key in fields}
+                     for deployment in deployments.values()
+                     if deployment.get("applicationRef") == sys.argv[1]], ensure_ascii=False))
+   PYTHON
    ```
 
    该输出可能包含 node ID，只能在内部安全终端/审计库使用。对外仅允许使用 `.placement.summary` 中的 region、candidate count、资源汇总、stateful、continuity 和 decision digest。

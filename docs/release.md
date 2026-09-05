@@ -2,6 +2,25 @@
 
 Luma can be distributed without asking users to clone the repository.
 
+## Shared source validation
+
+Pull requests, Python package releases and Control image releases run the same
+source gate. After installing the Python test extras and dashboard dependencies:
+
+```bash
+python -m pip install -e ".[test]"
+npm ci
+bash scripts/check-luma.sh
+```
+
+The gate checks synchronized versions, the generated CLI reference, all root
+`unittest` tests, Dashboard behavior tests, types/build and whitespace. After changing CLI
+arguments, run `python scripts/generate-cli-reference.py` and commit the updated
+reference. LAE keeps its separate workspace/CI (`cd lae && make check`). These
+checks validate source and build artifacts; they do not validate a live cluster.
+Both publishing workflows additionally reject release tags that do not match
+the package version, before any image or package publication.
+
 ## Recommended Release
 
 1. Bump the package version before committing code that should be distinguishable by `luma version`:
@@ -63,6 +82,49 @@ available to GitHub Actions from the repository's default branch.
 
 ## Candidate Manager Upgrade And Rollback
 
+### First JSON-to-SQLite upgrade
+
+The first release using SQLite requires a short Control maintenance window.
+Pause new deploy/build requests and wait for active builds before starting the
+update. Capture the current Control job spec/image, CLI install ref, ingress
+baseline and a private backup of `/opt/luma/control`, `/opt/luma/luma.yaml` and
+the external configuration described in [Control storage](control-storage.md).
+
+The updated CLI reads legacy configuration without importing it during role
+detection or image preparation. After prefetching the Control image, the
+installer stops only the `luma-control` Nomad job and waits until its allocations
+are confirmed terminated. Unknown, lost or still-running allocations, a Nomad
+query failure or a timeout abort the import. Nomad, Traefik and application jobs
+are not stopped by this storage cutover.
+
+After the old writer exits, the installer saves a private checkpoint in a
+`control-pre-sqlite-*` sibling directory, including the final legacy state,
+Control job spec and Luma configuration. It imports the latest JSON, merges only
+the installation fields and starts the new Control with `AutoRevert=false`.
+The pending cutover marker preserves this safeguard across a failed update
+retry. Fresh installs and later SQLite-to-SQLite updates do not stop Control for
+migration; normal compatible updates retain automatic rollback.
+
+Do not run new maintenance commands or manually call `load_state()` against a
+live legacy Manager before this fenced update: those entry points may initialize
+SQLite. If import or startup fails, the updater does not automatically restart
+the JSON-writing image. Retry the compatible release after fixing the reported
+problem.
+
+**The job-only rollback commands below are valid only between versions using
+the same state format. Never revert directly to a JSON-writing Control after
+SQLite cutover.** It would read frozen JSON and lose subsequent state changes.
+To return to the pre-SQLite release, stop the new Control, preserve its SQLite
+directory separately, and restore the checkpoint's legacy `control` directory
+and matching configuration into a fresh directory. With no new writer running,
+point the old job at that restored state (or swap the stopped Manager's state
+directory), install the recorded old CLI and run the saved old job spec. This
+restores the checkpoint time and discards later Control changes; reconcile any
+application operations since that checkpoint before resuming clients. Prefer a
+fixed SQLite-compatible release when those later changes must be retained.
+
+### Compatible release upgrades
+
 Use the same full commit for the CLI source archive and the commit-scoped
 Control image. `install-luma.sh` accepts a full 40-character Git commit as
 `LUMA_INSTALL_REF`, so manager and fleet updates do not need a mutable branch
@@ -101,7 +163,7 @@ job. It does not restart Docker or Nomad, run egress setup, or redeploy user
 applications. Treat it as a control-plane maintenance change and keep the
 pre-change values above until post-update checks pass.
 
-The Control job has Nomad `AutoRevert`, but operators must still verify the
+Compatible upgrades use Nomad `AutoRevert`, but operators must still verify the
 public health endpoint and the running image. If the new Control allocation is
 unhealthy, restore the prior Nomad job immediately:
 
@@ -144,7 +206,7 @@ The package distribution name is `luma-infra`; the installed console command rem
 5. Create a tag to publish a versioned image, GitHub archive, and PyPI package:
 
 ```bash
-git tag v0.1.297
+git tag v0.1.298
 git push origin main --tags
 ```
 
@@ -153,13 +215,13 @@ The `Publish Python Package` workflow builds wheel and sdist, runs `twine check`
 6. CI users install with:
 
 ```bash
-python -m pip install "luma-infra==0.1.297"
+python -m pip install "luma-infra==0.1.298"
 ```
 
 Interactive users can still install with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.297 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.298 sh
 ```
 
 The installer downloads the GitHub archive for that tag, creates `~/.local/share/luma/venv`, installs the Python package, writes `~/.local/bin/luma`, and adds `~/.local/bin` to the user's shell profile when needed.
@@ -196,7 +258,7 @@ The default control image is `ghcr.io/liutianjie/luma-control:latest`. If you wa
 ```yaml
 defaults:
   images:
-    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.297
+    lumaControl: ghcr.io/liutianjie/luma-control:v0.1.298
 ```
 
 ## Latest Channel
@@ -212,7 +274,7 @@ This is convenient but less reproducible than a tag. For real users, prefer a ve
 For CI, prefer the pinned PyPI package:
 
 ```bash
-python -m pip install "luma-infra==0.1.297"
+python -m pip install "luma-infra==0.1.298"
 ```
 
 ## Custom Host Or Fork
@@ -222,7 +284,7 @@ Use these environment variables when the code is hosted somewhere else:
 ```bash
 curl -fsSL https://example.com/install-luma.sh | \
   LUMA_REPO_URL=https://github.com/acme/luma \
-  LUMA_INSTALL_REF=v0.1.297 \
+  LUMA_INSTALL_REF=v0.1.298 \
   sh
 ```
 

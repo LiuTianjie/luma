@@ -84,7 +84,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.297 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.298 sh
 ```
 
 从源码开发：
@@ -129,6 +129,10 @@ $EDITOR .env
 luma bootstrap manager --domain luma.example.com
 ```
 
+Bootstrap 会自动在 Manager 本地创建 `/opt/luma/control/control.sqlite3`。
+全新安装直接使用 SQLite，无需单独安装数据库服务、配置连接串或执行迁移命令。
+只有已有安装的旧 JSON 状态才会在升级时自动导入。详见[控制面存储说明](docs/control-storage.md)。
+
 常见需要放进 `.env` 或通过交互式 CLI 填写的值：
 
 ```bash
@@ -149,7 +153,7 @@ EGRESS_SUBSCRIPTION_URL=...
 
 ### Manager 端 LAE Control 文件
 
-Luma Control 为 LAE 提供服务时，Builder 与 Runtime 身份必须使用两套独立配置。Nomad job 已挂载 `/opt/luma/control`，所以传给 Control 的 principal、broker 和 admin 文件都必须放在这个目录下，并使用非软链接的私有常规文件（推荐 `0600`）。Token 内容只由 Control 在运行时读取，不会写进 Nomad Job 或 `control.json`。
+Luma Control 为 LAE 提供服务时，Builder 与 Runtime 身份必须使用两套独立配置。Nomad job 已挂载 `/opt/luma/control`，所以传给 Control 的 principal、broker 和 admin 文件都必须放在这个目录下，并使用非软链接的私有常规文件（推荐 `0600`）。Token 内容只由 Control 在运行时读取，不会写进 Nomad Job 或 Control 状态数据库。
 
 Builder principal 文件 `/opt/luma/control/lae-builder-principals.json`：
 
@@ -253,7 +257,7 @@ luma tailscale connect
 | 任意已登录 client | 管理部署 secret | `luma secret set DATABASE_URL` |
 | 任意已登录 client | 管理私有镜像仓库凭证 | `printf '%s' "$GHCR_TOKEN" \| luma registry login ghcr.io --username <user> --password-stdin` |
 | 任意机器 | 看本地版本 | `luma version` |
-| 任意机器 | 诊断本地环境 | `luma doctor` |
+| 任意机器 | 检查认证、远端 Control 与节点健康 | `luma doctor` |
 
 每台机器都可以用同一个安装器。区别在于后续命令：
 
@@ -401,7 +405,7 @@ luma secret set DATABASE_URL --scope app
 | 命令行升级兜底 | 只有 Dashboard 不可用或首次接入不支持 `luma-update` 的历史 agent 时，才在 manager 使用 `luma update manager`、在 client 使用 `luma update fleet`。正常日常升级无需 SSH 到节点。 |
 | 查看整个集群状态 | 任意已登录 client 运行 `luma status`，会输出控制面、DNS、编排器（Nomad）及其 leader、注册节点（role=client）。 |
 | 在 client 或 worker 上运行 `luma update` 会怎样 | 只更新本地 CLI，不刷新 manager 控制面。 |
-| `luma update` 什么时候需要 `--domain` | 只有 `/opt/luma/control/control.json` 缺失，或你确实要切换控制面域名时。 |
+| `luma update` 什么时候需要 `--domain` | 只有 Manager Control 状态缺失（SQLite 与可导入的旧 JSON 均不存在），或你确实要切换控制面域名时。 |
 | manager 公网 IP 变化 | 在 manager 先运行 `luma manager ip-change --old <旧IP> --new <新IP> --domain <控制面域名> --dry-run`，确认计划后去掉 `--dry-run`。命令只更新明确的 manager/DNS 字段和精确匹配旧 IP 的 Cloudflare A 记录，并复用当前 control 镜像完成恢复。 |
 | 服务 A 从一个 region 迁到另一个 region | 改 manifest 的 `region`，必要时同步修改 `exposure`，然后重新 `luma deploy app.yaml`。 |
 | 服务 A 固定到某个节点 | 把 manifest 的 `node` 设为 `luma node join --name` 使用的 Luma 节点名，保留匹配的 `region`，然后重新 deploy。控制面会渲染成 Nomad 的节点身份约束。 |
@@ -430,6 +434,9 @@ luma secret set DATABASE_URL --scope app
 | [docs/bootstrap.md](docs/bootstrap.md) | manager bootstrap 细节和 profile。 |
 | [docs/node-labels.md](docs/node-labels.md) | 节点标签、region、ingress 标签。 |
 | [docs/operations.md](docs/operations.md) | 日常运维和排障命令。 |
+| [docs/observability.md](docs/observability.md) | 指标、日志、告警规则、飞书通知和独立探测边界。 |
+| [docs/control-storage.md](docs/control-storage.md) | 单 Manager SQLite、历史查询、容量治理、备份和恢复。 |
+| [docs/luma-cli-reference.md](docs/luma-cli-reference.md) | 从当前 argparse 自动生成的命令与参数参考。 |
 | [docs/secrets.md](docs/secrets.md) | secret 和环境变量处理。 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 常见失败和修复。 |
 | [docs/release.md](docs/release.md) | 发布 tag、安装器和 control image 的流程。 |
