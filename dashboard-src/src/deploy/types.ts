@@ -15,7 +15,7 @@ export type ServiceVolumeDraft = {
   id: string;
   name: string;
   target: string;
-  storageMode: "unmanaged" | "storageClass";
+  storageMode: "local" | "unmanaged" | "storageClass";
   storageClass: string;
   path: string;
 };

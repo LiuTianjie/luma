@@ -510,6 +510,8 @@ def render_compose_job(
             "a Nomad group runs on one node — use separate deployments"
         )
     pinned_node = next(iter(nodes), "")
+    if any(volume.kind == "local" for volume in deployment.volumes.values()) and not pinned_node:
+        raise LumaError("local volume paths require a deployment node; deploy through Luma Control or set services.<name>.node")
     service_address = _node_service_address(config, pinned_node) if pinned_node else ""
     constraints = [{"LTarget": "${meta.region}", "RTarget": region, "Operand": "="}]
     if nodes:
@@ -624,8 +626,9 @@ def render_compose_job(
                 if volume is None:
                     continue
                 if volume.kind == "local":
-                    mount["type"] = "bind"
-                    mount["source"] = str(volume.local_path or "")
+                    if render_storage:
+                        mount["type"] = "bind"
+                        mount["source"] = str(volume.local_path or "")
                     continue
                 if not volume.storage_class:
                     continue
@@ -992,6 +995,10 @@ def _compose_update_stanza(
 
 
 def _canary_before_promote(service: ServiceSpec) -> bool:
+    # Two allocations must never open the same persistent database during a
+    # canary rollout. A stateful update stops the old allocation first.
+    if service.volumes:
+        return False
     if service.replicas != 1:
         return False
     if service.exposure not in EDGE_EXPOSURES:

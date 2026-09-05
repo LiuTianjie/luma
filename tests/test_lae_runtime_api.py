@@ -210,6 +210,47 @@ class RuntimeWireCompatibilityTests(unittest.TestCase):
 
 
 class LaeRuntimeApiTests(unittest.TestCase):
+    def test_local_runtime_needs_no_nfs_and_records_owner_before_creating_data(self) -> None:
+        with patch.dict(os.environ, {"LUMA_LAE_RUNTIME_STORAGE_CLASS": ""}):
+            state = load_state()
+            state["storageClasses"] = {}
+            state["nodes"]["runtime-node"] = {"region": "cn", "nodeId": "runtime-id"}
+            save_state(state)
+            volume_ref = self.prepare_volume()
+            body = self.deployment_body(volume_ref=volume_ref)
+            manifest = control_server._validate_lae_runtime_deploy_body(body, self.binding)
+            state = load_state()
+            images = control_server._lae_runtime_resolve_images(state, {"lae-builder"}, self.binding, manifest)
+            volumes = control_server._lae_runtime_validate_volumes(state, "lae-runtime", self.binding, manifest)
+            self.assertEqual(volumes["pg-data"]["storageClass"], "local")
+            placement = PlacementDecision(
+                region="cn", requested_cpu_mhz=1250, requested_memory_mib=1792, stateful=True,
+                candidate_node_ids=("runtime-id",), candidate_node_names=("runtime-node",),
+            )
+            def prepare(spec, current):
+                stored = load_state()["laeRuntime"]["volumes"][volume_ref]
+                self.assertEqual((stored["node"], stored["nodeId"]), ("runtime-node", "runtime-id"))
+                self.assertTrue(all(volume.kind == "local" for volume in spec.volumes.values()))
+                return []
+            with patch.object(control_server, "_lae_runtime_plan_placement", return_value=(placement, MagicMock())), patch.object(
+                control_server, "_lae_runtime_nomad_job_version", return_value=None
+            ), patch.object(control_server, "_lae_runtime_validate_placement_plan"), patch.object(
+                control_server, "_install_lae_runtime_variables"
+            ), patch.object(control_server, "_prepare_compose_managed_storage", side_effect=prepare), patch.object(
+                control_server, "sync_dns"
+            ), patch.object(control_server, "_lae_runtime_submit_nomad_job", return_value={}) as submit:
+                control_server._execute_lae_runtime_deployment(
+                    token=self.runtime_token, audience=RUNTIME_AUDIENCE, principal_ref="lae-runtime", binding=self.binding,
+                    runtime_deployment_ref="local-test", manifest=manifest, images=images, volume_records=volumes,
+                )
+            job_text = submit.call_args.args[2]
+            job = json.loads(job_text)["Job"]
+            mounts = [mount for group in job["TaskGroups"] for task in group["Tasks"] for mount in task["Config"].get("mount", [])]
+            self.assertTrue(mounts)
+            self.assertTrue(all(mount["type"] == "bind" and mount["source"].startswith("/srv/luma/data/lae/tenants/") for mount in mounts))
+            self.assertNotIn("volume_options", job_text)
+            self.assertNotIn('"Canary"', job_text)
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

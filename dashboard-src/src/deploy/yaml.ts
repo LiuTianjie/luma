@@ -44,6 +44,14 @@ function rawStorageMap(text: string): YamlMap {
   return loadYamlMap(text);
 }
 
+function deploymentSlug(name: string): string {
+  return name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+export function defaultLocalVolumePath(deployment: string, volume: string): string {
+  return `/srv/luma/data/${deploymentSlug(deployment)}/${encodeURIComponent(volume)}`;
+}
+
 export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
   const manifest: YamlMap = {
     name: draft.name,
@@ -68,7 +76,7 @@ export function serviceDraftToYaml(draft: ServiceManifestDraft): string {
   if (networks.length) manifest.networks = networks;
   const structuredVolumes = (draft.volumeMounts || [])
     .filter((volume) => volume.name.trim() && volume.target.trim())
-    .map((volume) => `${volume.name.trim()}:${volume.target.trim()}`);
+    .map((volume) => `${volume.storageMode === "local" ? `luma_${deploymentSlug(draft.name)}_${volume.name.trim()}` : volume.name.trim()}:${volume.target.trim()}`);
   const volumes = [...structuredVolumes, ...linesFromList(draft.volumes)];
   if (volumes.length) manifest.volumes = volumes;
   const storageVolumes = (draft.volumeMounts || [])
@@ -128,7 +136,7 @@ export function composeDraftToSidecarYaml(draft: ComposeDeploymentDraft): string
     compose: draft.composeFileName || "docker-compose.yml",
     region: draft.region,
   };
-  const configuredVolumes = draft.volumes.filter((volume) => volume.storageClass || volume.localNode || volume.localPath);
+  const configuredVolumes = draft.volumes.filter((volume) => volume.storageMode === "local" || volume.storageClass || volume.localNode || volume.localPath);
   if (configuredVolumes.length) {
     const volumes: YamlMap = {};
     for (const volume of configuredVolumes) {
@@ -140,8 +148,8 @@ export function composeDraftToSidecarYaml(draft: ComposeDeploymentDraft): string
       } else if (volume.storageMode === "local") {
         volumes[volume.name] = {
           local: {
-            node: volume.localNode,
-            path: volume.localPath,
+            ...(volume.localNode ? { node: volume.localNode } : {}),
+            path: volume.localPath || defaultLocalVolumePath(draft.name, volume.name),
           },
         };
       }

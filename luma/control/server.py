@@ -92,6 +92,14 @@ from ..errors import LumaError
 from .logs import LogReader, LogUnavailable, CAPABILITIES as LOG_CAPABILITIES, LIMITS as LOG_LIMITS, POLL_INTERVAL as LOG_POLL_INTERVAL, encode_event as _log_event
 from ..io import load_yaml
 from ..local import LocalExecutor
+from ..local_storage import (
+    choose_storage_node,
+    compose_persistent_mounts,
+    guard_storage_sources,
+    persistent_mounts,
+    service_persistent_mounts,
+    storage_owner_from_job,
+)
 from ..nomad_api import NomadApi, NomadRolloutError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary
 from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job
 from ..registry import (
@@ -3642,13 +3650,11 @@ def _lae_runtime_idempotency_scope(
 
 
 def _lae_runtime_storage_class(
-    state: Dict[str, Any], *, region: str | None = None
+    state: Dict[str, Any], *, region: str | None = None, name: str | None = None,
 ) -> tuple[str, StorageClassSpec]:
-    name = str(os.environ.get("LUMA_LAE_RUNTIME_STORAGE_CLASS") or "").strip()
-    if not name:
-        raise _lae_runtime_unavailable(
-            "LAE managed storage is not configured"
-        )
+    name = str(name if name is not None else os.environ.get("LUMA_LAE_RUNTIME_STORAGE_CLASS") or "local").strip() or "local"
+    if name == "local":
+        return name, StorageClassSpec(name=name, provider="local", path="/srv/luma/data")
     raw = _state_storage_classes(state).get(name)
     if not isinstance(raw, dict):
         raise _lae_runtime_unavailable(
@@ -3749,7 +3755,14 @@ def handle_lae_runtime_volume_prepare(
 
         storage_class_name = ""
         if volumes:
-            storage_class_name, _ = _lae_runtime_storage_class(current)
+            existing_classes = {
+                str(record.get("storageClass") or "")
+                for record in runtime["volumes"].values()
+                if isinstance(record, dict) and _lae_runtime_volume_owner_matches(record, binding, principal_ref=principal_ref)
+            }
+            if len(existing_classes) > 1:
+                raise _lae_runtime_conflict("managed volume backends require migration")
+            storage_class_name, _ = _lae_runtime_storage_class(current, name=next(iter(existing_classes), None))
         bindings: list[Dict[str, str]] = []
         refs: list[str] = []
         for volume in volumes:
@@ -3983,17 +3996,12 @@ def _lae_runtime_compose_spec(
 ) -> ComposeDeploymentSpec:
     runtime_storage_class = ""
     if manifest["volumes"]:
-        runtime_storage_class, _ = _lae_runtime_storage_class(
-            state, region=str(manifest["region"])
-        )
-        if any(
-            str(record.get("storageClass") or "")
-            != runtime_storage_class
-            for record in volume_records.values()
-        ):
+        classes = {str(record.get("storageClass") or "") for record in volume_records.values()}
+        if len(classes) != 1:
             raise _lae_runtime_conflict(
                 "managed storage class binding changed"
             )
+        runtime_storage_class, _ = _lae_runtime_storage_class(state, region=str(manifest["region"]), name=next(iter(classes)))
     routes = {str(item["serviceKey"]): item for item in manifest["routes"]}
     compose_services: Dict[str, Any] = {}
     sidecar_services: Dict[str, ComposeServiceSpec] = {}
@@ -4064,6 +4072,24 @@ def _lae_runtime_compose_spec(
         key = str(volume["key"])
         stored = volume_records[key]
         class_name = str(stored["storageClass"])
+        if class_name == "local":
+            node = str(stored.get("node") or "")
+            if placement:
+                if len(placement.candidate_node_names) != 1:
+                    raise _lae_runtime_unavailable("local volume placement is unavailable")
+                placed_node = placement.candidate_node_names[0]
+                if node and node != placed_node:
+                    raise _lae_runtime_conflict("local volume ownership cannot change without migration")
+                node = placed_node
+            if not node:
+                raise _lae_runtime_unavailable("local volume placement is unavailable")
+            compose_volumes[key] = {}
+            sidecar_volumes[key] = ComposeVolumeSpec(
+                name=key, local_node=node,
+                local_path=str(Path("/srv/luma/data") / _lae_runtime_volume_path(binding, key)),
+                access_mode=str(volume["accessMode"]),
+            )
+            continue
         raw_class = _state_storage_classes(state).get(class_name)
         if not isinstance(raw_class, dict):
             raise _lae_runtime_unavailable(
@@ -4095,8 +4121,8 @@ def _lae_runtime_compose_spec(
         services=sidecar_services,
         warnings=[],
     )
-    # This validates region/storage reachability and rejects any accidental
-    # local/host backend before a job is rendered.
+    # Local paths are derived only from authenticated tenant/application
+    # identities above. Caller-provided host paths remain forbidden.
     resolve_storage_mounts(
         spec,
         node_records=_state_nodes(state),
@@ -4117,8 +4143,8 @@ def _lae_runtime_safe_compose_payload(
         "region": spec.region,
         "volumes": {
             key: {
-                "storageClass": volume.storage_class,
-                "path": volume.path,
+                **({"local": {"node": volume.local_node, "path": volume.local_path}}
+                   if volume.kind == "local" else {"storageClass": volume.storage_class, "path": volume.path}),
                 "accessMode": volume.access_mode,
             }
             for key, volume in spec.volumes.items()
@@ -4322,18 +4348,32 @@ def _lae_runtime_plan_placement(
     prior_node_id = _lae_runtime_prior_nomad_node(client, job_slug)
     storage_class: Dict[str, Any] | None = None
     if manifest["volumes"]:
+        records = [
+            _lae_runtime_state(state)["volumes"].get(str(volume.get("existingRef") or "")) or {}
+            for volume in manifest["volumes"]
+        ]
+        classes = {str(record.get("storageClass") or "") for record in records if record}
+        if len(classes) > 1:
+            raise _lae_runtime_conflict("managed volume backends require migration")
         try:
             class_name, _ = _lae_runtime_storage_class(
-                state, region=str(manifest["region"])
+                state, region=str(manifest["region"]), name=next(iter(classes), None),
             )
         except LumaRuntimeError as exc:
             _raise_lae_runtime_placement_failure(
                 PlacementFailure(LAE_PLACEMENT_VOLUME_INCOMPATIBLE)
             )
             raise AssertionError("unreachable") from exc
-        raw_class = _state_storage_classes(state).get(class_name)
+        raw_class = {"provider": "local"} if class_name == "local" else _state_storage_classes(state).get(class_name)
         if isinstance(raw_class, dict):
             storage_class = {"name": class_name, **raw_class}
+        if class_name == "local":
+            owners = {str(record.get("nodeId")) for record in records if record.get("nodeId")}
+            if prior_node_id:
+                owners.add(prior_node_id)
+            if len(owners) > 1:
+                raise _lae_runtime_conflict("local volume ownership differs from runtime placement")
+            prior_node_id = next(iter(owners), "")
     try:
         allowed_runtime_nodes = _lae_runtime_node_allowlist()
         decision = plan_lae_placement(
@@ -4469,6 +4509,12 @@ def _lae_runtime_render_job(
                 raise _lae_runtime_invalid("LAE runtime rejected a non-managed mount")
             volume_key = str(mount.get("source") or "")
             volume = spec.volumes.get(volume_key)
+            if volume is not None and volume.kind == "local":
+                expected = str(Path("/srv/luma/data") / _lae_runtime_volume_path(binding, volume_key))
+                if volume.local_path != expected or not volume.local_node:
+                    raise _lae_runtime_invalid("LAE local volume binding is invalid")
+                mount.update({"type": "bind", "source": expected})
+                continue
             storage_class = (
                 spec.storage_classes.get(str(volume.storage_class))
                 if volume is not None
@@ -4756,9 +4802,6 @@ def _execute_lae_runtime_deployment(
         job_slug=job_slug,
         placement=placement,
     )
-    _lae_runtime_storage_class(
-        state, region=str(manifest["region"])
-    ) if manifest["volumes"] else None
     previous_version = _lae_runtime_nomad_job_version(config, state, job_slug)
     stack_text, variable_items, variable_paths = _lae_runtime_render_job(
         state,
@@ -4778,6 +4821,21 @@ def _execute_lae_runtime_deployment(
         job_slug=job_slug,
         stack_text=stack_text,
     )
+    if any(volume.kind == "local" for volume in spec.volumes.values()):
+        def bind_local_volumes(current: Dict[str, Any]) -> None:
+            records = _lae_runtime_state(current)["volumes"]
+            for key, volume in spec.volumes.items():
+                if volume.kind != "local":
+                    continue
+                reference = str(volume_records[key]["volumeRef"])
+                stored = records.get(reference)
+                if not isinstance(stored, dict) or not _lae_runtime_volume_owner_matches(stored, binding, principal_ref=principal_ref):
+                    raise _lae_runtime_not_found()
+                node_id = placement.candidate_node_ids[0]
+                if stored.get("nodeId") and stored["nodeId"] != node_id:
+                    raise _lae_runtime_conflict("local volume ownership cannot change without migration")
+                stored.update({"node": volume.local_node, "nodeId": node_id})
+        mutate_state(bind_local_volumes)
     # The plaintext exists only in ``secret_values``/``variable_items`` and the
     # encrypted Nomad Variables request. Neither mapping is returned or saved.
     _install_lae_runtime_variables(config, state, variable_items)
@@ -10827,6 +10885,7 @@ def _record_tcp_relay_ports(record: Dict[str, Any]) -> list[int]:
 
 def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, manifest: str, source_name: str, *, git_source: Dict[str, Any] | None = None) -> None:
     deployments = _deployments_state(state)
+    previous = deployments["services"].get(service.slug) or {}
     record: Dict[str, Any] = {
         "kind": "service",
         "name": service.name,
@@ -10838,6 +10897,11 @@ def _register_service_deployment(state: Dict[str, Any], service: ServiceSpec, ma
     }
     if git_source:
         record["gitSource"] = _sanitize_git_source(git_source)
+    mounts = service_persistent_mounts(service)
+    if mounts and service.node:
+        record["localStorage"] = {"node": service.node, "region": service.region, "mounts": mounts}
+    elif previous.get("localStorage"):
+        record["localStorage"] = previous["localStorage"]
     deployments["services"][service.slug] = record
 
 
@@ -10864,6 +10928,7 @@ def _mark_service_deployment(
 
 def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeploymentSpec, body: Dict[str, Any], source_name: str) -> None:
     deployments = _deployments_state(state)
+    previous = deployments["compose"].get(deployment.slug) or {}
     record: Dict[str, Any] = {
         "kind": "compose",
         "name": deployment.name,
@@ -10880,6 +10945,12 @@ def _register_compose_deployment(state: Dict[str, Any], deployment: ComposeDeplo
     git_source = _deployment_git_source_from_body(body)
     if git_source:
         record["gitSource"] = git_source
+    mounts = compose_persistent_mounts(deployment)
+    node = next((service.node for service in deployment.services.values() if service.node), "")
+    if mounts and node:
+        record["localStorage"] = {"node": node, "region": deployment.region, "mounts": mounts}
+    elif previous.get("localStorage"):
+        record["localStorage"] = previous["localStorage"]
     deployments["compose"][deployment.slug] = record
 
 
@@ -10931,6 +11002,136 @@ def _compose_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, An
     return record if isinstance(record, dict) else None
 
 
+def _local_storage_previous_node(
+    config: LumaConfig, state: Dict[str, Any], slug: str, previous: Dict[str, Any], *, inspect_runtime: bool,
+    expected_mounts: list[dict[str, str]] | None = None,
+) -> str:
+    binding = previous.get("localStorage") or {}
+    saved = str(binding.get("node") or "")
+    old_manifest = _safe_yaml_mapping(str(previous.get("manifest") or ""))
+    old_nodes = {str(old_manifest.get("node") or "")}
+    for service in (old_manifest.get("services") or {}).values():
+        if isinstance(service, dict) and service.get("node"):
+            old_nodes.add(str(service["node"]))
+    for volume in (old_manifest.get("volumes") or {}).values() if isinstance(old_manifest.get("volumes"), dict) else []:
+        if isinstance(volume, dict) and isinstance(volume.get("local"), dict) and volume["local"].get("node"):
+            old_nodes.add(str(volume["local"]["node"]))
+    old_nodes.discard("")
+    if not saved and len(old_nodes) == 1:
+        saved = next(iter(old_nodes))
+    if not inspect_runtime:
+        return saved
+    client = NomadApi(nomad_addr(config, state), token=str(state.get("nomadToken") or ""))
+    path = f"/v1/job/{urllib.parse.quote(slug, safe='')}"
+    try:
+        job = client.request("GET", path)
+    except LumaError as exc:
+        if "Nomad API error 404" in str(exc):
+            if previous and not saved:
+                raise LumaError(f"cannot locate existing storage for {slug}; select its original data node before redeploying") from exc
+            return saved
+        raise
+    if not isinstance(job, dict):
+        raise LumaError(f"cannot inspect existing storage placement for {slug}")
+    if expected_mounts is not None:
+        for group in job.get("TaskGroups") or []:
+            for task in group.get("Tasks") or []:
+                guard_storage_sources(persistent_mounts((task.get("Config") or {}).get("mount") or []), expected_mounts)
+    allocations = client.request("GET", path + "/allocations")
+    if not isinstance(allocations, list):
+        raise LumaError(f"cannot inspect existing storage allocations for {slug}")
+    has_data = any(
+        persistent_mounts((task.get("Config") or {}).get("mount") or [])
+        for group in job.get("TaskGroups") or [] for task in group.get("Tasks") or []
+    )
+    if not has_data and not allocations:
+        return saved
+    observed = storage_owner_from_job(
+        job, allocations,
+        lambda node_id: _luma_node_name_for_nomad_allocation(state, {"NodeID": node_id}),
+    )
+    if saved and saved != observed:
+        raise LumaError(f"storage owner for {slug} differs between deployment record ({saved}) and runtime ({observed}); verify the data before redeploying")
+    return observed
+
+
+def _local_storage_node_candidates(state: Dict[str, Any], region: str) -> list[str]:
+    candidates = []
+    builders = _declared_build_node_names(state)
+    for name, record in _state_nodes(state).items():
+        if not isinstance(record, dict) or record.get("region") != region or name in builders:
+            continue
+        if _node_agent_status(record) != "ready":
+            continue
+        try:
+            _ensure_nomad_node_record_schedulable(str(name), record)
+        except LumaError:
+            continue
+        candidates.append(str(name))
+    return candidates
+
+
+def _bind_service_local_storage(
+    config: LumaConfig, state: Dict[str, Any], service: ServiceSpec, manifest: str, *, inspect_runtime: bool,
+) -> tuple[ServiceSpec, str]:
+    if not service_persistent_mounts(service):
+        return service, manifest
+    if service.replicas != 1:
+        raise LumaError("a service with local persistent data requires replicas: 1; use separate volumes for database replicas")
+    previous = _service_deployment_record(state, service.slug) or {}
+    mounts = service_persistent_mounts(service)
+    binding = previous.get("localStorage") or {}
+    previous_mounts = binding.get("mounts") or persistent_mounts(_safe_yaml_mapping(str(previous.get("manifest") or "")).get("volumes") or [])
+    guard_storage_sources(previous_mounts, mounts)
+    node = choose_storage_node(
+        slug=service.slug, requested=[service.node or ""],
+        previous=_local_storage_previous_node(config, state, service.slug, previous, inspect_runtime=inspect_runtime, expected_mounts=mounts),
+        candidates=_local_storage_node_candidates(state, service.region),
+    )
+    raw = _safe_yaml_mapping(manifest)
+    raw["node"] = node
+    return replace(service, node=node), yaml.safe_dump(raw, sort_keys=False, allow_unicode=True)
+
+
+def _bind_compose_local_storage(
+    config: LumaConfig, state: Dict[str, Any], deployment: ComposeDeploymentSpec, body: Dict[str, Any], *, inspect_runtime: bool,
+) -> tuple[ComposeDeploymentSpec, Dict[str, Any]]:
+    if not compose_persistent_mounts(deployment):
+        return deployment, body
+    regions = {service.region for service in deployment.services.values() if service.region}
+    if len(regions) > 1:
+        raise LumaError("a Compose deployment with local storage must run in one region")
+    region = next(iter(regions), deployment.region)
+    requested = [service.node for service in deployment.services.values() if service.node]
+    requested.extend(volume.local_node for volume in deployment.volumes.values() if volume.local_node)
+    previous = _compose_deployment_record(state, deployment.slug) or {}
+    node = choose_storage_node(
+        slug=deployment.slug, requested=requested,
+        previous=_local_storage_previous_node(config, state, deployment.slug, previous, inspect_runtime=inspect_runtime),
+        candidates=_local_storage_node_candidates(state, region),
+    )
+    services = {
+        name: replace(deployment.services.get(name) or ComposeServiceSpec(name=name), node=node)
+        for name in deployment.compose.get("services") or {}
+    }
+    for service in services.values():
+        resolve_service_node_pin(_compose_service_as_service_spec(deployment, service), state)
+    volumes = {
+        name: replace(volume, local_node=node) if volume.kind == "local" else volume
+        for name, volume in deployment.volumes.items()
+    }
+    raw = _safe_yaml_mapping(str(body.get("manifest") or ""))
+    raw_services = raw.setdefault("services", {})
+    for name in services:
+        raw_services[name] = {**(raw_services.get(name) or {}), "node": node}
+    for name, volume in volumes.items():
+        if volume.kind == "local":
+            raw["volumes"][name]["local"]["node"] = node
+    return replace(deployment, services=services, volumes=volumes), {
+        **body, "manifest": yaml.safe_dump(raw, sort_keys=False, allow_unicode=True),
+    }
+
+
 def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -10949,6 +11150,7 @@ def handle_deployment_config(token: str, name: str) -> Dict[str, Any]:
         "manifest": str(record.get("manifest") or ""),
         "composeContent": str(record.get("composeContent") or ""),
         "gitSource": record.get("gitSource") if isinstance(record.get("gitSource"), dict) else None,
+        "localStorage": record.get("localStorage") if isinstance(record.get("localStorage"), dict) else None,
     }
 
 
@@ -11006,6 +11208,9 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
     effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
     _require_nomad_engine(effective_engine)
     _ensure_deployment_slug_available(state, "service", service.slug, service.name)
+    service, manifest = _bind_service_local_storage(
+        config, state, service, manifest, inspect_runtime=not _skip_orchestrator(body),
+    )
     parse_step = {"name": "Parse manifest", "status": "ok", "message": f"{service.name} -> {service.region}/{service.exposure}"}
     steps.append(parse_step)
     _emit_progress(progress, parse_step)
@@ -11185,6 +11390,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
     require_region_exposure(state, service.region, service.exposure)
     effective_engine = _require_nomad_engine(service.engine or str(body.get("engine") or config.defaults.get("engine") or "nomad"))
     _require_nomad_engine(effective_engine)
+    service, manifest = _bind_service_local_storage(config, state, service, manifest, inspect_runtime=False)
     service = resolve_service_node_pin(service, state, engine=effective_engine)
     stack_text = render_nomad_job(
         runtime_config,
@@ -12887,6 +13093,9 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
     _require_compose_regions(state, deployment)
     previous_record = dict(_compose_deployment_record(state, deployment.slug) or {})
     _ensure_deployment_slug_available(state, "compose", deployment.slug, deployment.name)
+    deployment, body = _bind_compose_local_storage(
+        config, state, deployment, body, inspect_runtime=not _skip_orchestrator(body),
+    )
     _ensure_tcp_relay_ports_available(state, kind="compose", slug=deployment.slug, ports=_compose_tcp_relay_ports(deployment))
     _ensure_compose_exposure_supported_on_nodes(state, deployment)
     parse_step = {"name": "Parse compose deployment", "status": "ok", "message": f"{deployment.name} ({len(deployment.compose.get('services', {}))} services)"}
@@ -13088,6 +13297,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
     runtime_config = _config_with_state_nodes(config, state)
     deployment = _load_compose_request(body, source_name)
     _require_compose_regions(state, deployment)
+    deployment, body = _bind_compose_local_storage(config, state, deployment, body, inspect_runtime=False)
     target = _resolve_control_path(compose_stack_path(config, deployment), config_path)
     _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
     _ensure_compose_exposure_supported_on_nodes(state, deployment)
@@ -13661,7 +13871,7 @@ def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any])
             state,
             node_name,
             "prepare-managed-volume-path",
-            {"root": root, "relative": relative},
+            {"root": root, "relative": relative, "preserveExisting": True},
         )
         return {
             "volume": volume.name,
@@ -13673,7 +13883,7 @@ def _prepare_local_volume_path(volume: ComposeVolumeSpec, state: Dict[str, Any])
 
     try:
         _run_host_prep_command(
-            f"install -d -m 0777 {shlex.quote(str(path))}; chmod 0777 {shlex.quote(str(path))}"
+            f"test -d {shlex.quote(str(path))} || install -d -m 0777 {shlex.quote(str(path))}"
         )
     except LumaError as exc:
         raise LumaError(f"failed to create local volume path {path} on {node_name}: {exc}") from exc

@@ -112,13 +112,13 @@ luma build local . --platform linux/amd64
 - Prefer a dedicated Luma node named `builder` when available. Confirm it is `ready`, Linux, and advertises `docker-build` in `luma status` before using it.
 - Dashboard Repository Import should expose the dedicated `builder` node as the build/registry target. Other historical `docker-build` nodes such as `blg` should not appear in the main build-node dropdown unless the product explicitly adds an advanced override path.
 - Prefer a builder-hosted registry for internal image distribution. Both `registryHost` and `pushHost` must use the Builder Tailscale endpoint that is reachable from target nodes and from the BuildKit container, for example `100.66.177.70:5000`. Do not use `localhost:5000`: inside BuildKit that is the BuildKit container itself, and the old host-loopback endpoint is not part of the supported architecture. Re-check the live Builder IP before hardcoding it.
-- Start or refresh the registry with an explicit storage class. Do not rely on default `storageClass: local` unless the control plane actually has a `local` storage class:
+- Start or refresh the registry on its deployment node with local storage; no storage class registration is required:
 
 ```bash
-luma registry serve --node builder --storage-class builder-registry-nfs --port 5000
+luma registry serve --node builder --port 5000
 ```
 
-- If `builder-registry-nfs` is unavailable, inspect `luma status` / `luma storage list` and use an existing working class such as `cn-nfs`, or register/fix storage first.
+- Preserve the existing registry volume name when updating; verify the actual mount before removing a legacy storage-class reference.
 - Verify registry health before importing:
 
 ```bash
@@ -155,7 +155,8 @@ luma service restart luma-registry --mode recreate
 - Keep `docker-compose.yml` standard. Put Luma semantics in `luma.compose.yml`.
 - Create a sidecar with `luma compose init --compose docker-compose.yml --output luma.compose.yml`.
 - Do not put deployment-side `storageClasses` in production sidecars. Luma Control owns storage classes; sidecars only reference them by name.
-- Register managed NFS storage with:
+- New persistent deployments use local data on the deployment node. Control records and pins the first owner; an offline owner must not trigger empty-database failover. Use `local.path` for Compose; `local.node` can inherit deployment placement. Existing named-volume identities are preserved. See [compose-storage.md](../../docs/compose-storage.md).
+- Only for legacy NFS compatibility, register managed storage with:
 
 ```bash
 luma storage set home-nfs \
@@ -175,8 +176,8 @@ luma storage set company-nfs \
 ```
 
 - A sidecar volume can reference registered storage with `storageClass: <name>` and optional `path`, `accessMode`, `adopted`, or `initialize: empty`.
-- `local.node` is the explicit local bind storage escape hatch. Luma pins every service using that volume to the specified Luma node.
-- Bare Compose named volumes are allowed but unmanaged; pin stateful services to the node that owns the local data.
+- Local bind storage is the default. The whole Compose stack follows the persisted deployment node.
+- Bare Compose named volumes retain their existing names and Control persists their deployment node. Never rename a volume as part of an ordinary update.
 - When production data already lives in a node-local Docker volume, declare the Compose volume `external: true` with its exact `name:` and pin every consumer to that Luma node. This prevents Compose from silently creating a project-prefixed empty replacement.
 - Before updating a stateful stack, compare the live Nomad task mounts and job history with the next rendered job. Do not infer the previous runtime backend only from the current repository manifest or deployment record.
 - Switching an already deployed volume to another backend or changing the actual Nomad mount `type`, `source`, or `target` is blocked unless `adopted: true` follows verified migration, or `initialize: empty` explicitly accepts a fresh path.
@@ -301,7 +302,7 @@ The dashboard exposes the same Nomad job-version rollback from Applications -> V
 For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.1.304"
+python -m pip install "luma-infra==0.1.305"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

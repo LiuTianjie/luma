@@ -1,7 +1,7 @@
 import type { DashboardNode, DashboardStorageClass, Lang } from "../types";
 import type { ComposeDeploymentDraft, ComposeServiceDraft, ComposeVolumeDraft, Exposure, KeyValueRow, Region } from "./types";
 import { clearNodeIfIncompatible, EXPOSURES, exposureOptionLabel, hasReadyNodeInRegion, nodesForRegion, regionChoices, requiredRegionForExposure, regionOptionLabel } from "./options";
-import { updateComposeServiceExposure } from "./yaml";
+import { defaultLocalVolumePath, updateComposeServiceExposure } from "./yaml";
 
 export function ComposeDeployForm({
   lang,
@@ -22,7 +22,6 @@ export function ComposeDeployForm({
 }) {
   const zh = lang === "zh";
   const regionOptions = regions && regions.length ? regions : regionChoices([], nodes);
-  const localReadyNodes = nodes.filter((node) => node.agentStatus === "ready" && node.state !== "down");
   const patch = (next: Partial<ComposeDeploymentDraft>) => onChange({ ...draft, ...next });
   const updateService = (name: string, next: Partial<ComposeServiceDraft>) => {
     patch({ services: draft.services.map((service) => service.name === name ? { ...service, ...next } : service) });
@@ -154,16 +153,16 @@ export function ComposeDeployForm({
             <article className="compose-service-card" key={volume.name}>
               <strong>{volume.name}<small>{volume.target}</small></strong>
               <div className="deploy-field-grid compact">
-                <label><span>{zh ? "存储模式" : "Storage mode"}</span><select value={volume.storageMode} onChange={(event) => updateVolume(volume.name, { storageMode: event.target.value as ComposeVolumeDraft["storageMode"] })}><option value="unmanaged">unmanaged volume</option><option value="storageClass">storageClass</option><option value="local">local node path</option></select></label>
+                <label><span>{zh ? "存储方式" : "Storage"}</span><select value={volume.storageMode} onChange={(event) => updateVolume(volume.name, { storageMode: event.target.value as ComposeVolumeDraft["storageMode"] })}><option value="local">{zh ? "部署节点本地目录" : "Deployment-node directory"}</option><option value="unmanaged">{zh ? "使用已有命名卷" : "Existing named volume"}</option>{volume.storageMode === "storageClass" ? <option value="storageClass">{zh ? "原有共享存储" : "Existing shared storage"}</option> : null}</select></label>
                 {volume.storageMode === "storageClass" ? (
                   <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolume(volume.name, { storageClass: event.target.value })}><option value="">{zh ? "选择已注册存储" : "Select registered storage"}</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
                 ) : volume.storageMode === "local" ? (
                   <>
-                    <label><span>{zh ? "节点" : "Node"}</span><select value={volume.localNode} onChange={(event) => updateVolume(volume.name, { localNode: event.target.value })}><option value="">{zh ? "选择 agent ready 节点" : "Select a ready agent node"}</option>{localReadyNodes.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}</select></label>
-                    <label><span>{zh ? "本地路径" : "Local path"}</span><input value={volume.localPath} onChange={(event) => updateVolume(volume.name, { localPath: event.target.value })} placeholder="/opt/luma/state/app" /></label>
+                    <label><span>{zh ? "数据位置" : "Data location"}</span><input value={volume.localNode || (zh ? "跟随部署节点并固定" : "Pinned to the deployment node")} disabled /></label>
+                    <label><span>{zh ? "本地路径（可选）" : "Local path (optional)"}</span><input value={volume.localPath} onChange={(event) => updateVolume(volume.name, { localPath: event.target.value })} placeholder={defaultLocalVolumePath(draft.name, volume.name)} /></label>
                   </>
                 ) : (
-                  <label><span>{zh ? "说明" : "Note"}</span><input value={zh ? "保留为 Compose 命名卷，Luma 不接管存储后端" : "Kept as a Compose named volume; Luma does not manage the storage backend"} disabled /></label>
+                  <label><span>{zh ? "说明" : "Note"}</span><input value={zh ? "保留原卷名，固定到部署节点" : "Preserve the volume name and pin its deployment node"} disabled /></label>
                 )}
               </div>
             </article>

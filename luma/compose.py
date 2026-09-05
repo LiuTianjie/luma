@@ -304,11 +304,8 @@ def validate_compose_deployment_data(
     for volume_name in volumes:
         if declared_volume_names and volume_name not in declared_volume_names:
             warnings.append(f"volume {volume_name} is declared in Luma sidecar but not in compose top-level volumes")
-    for volume_name in sorted(declared_volume_names):
-        if volume_name not in volumes:
-            warnings.append(
-                f"volume {volume_name} is unmanaged by Luma; if the service is rescheduled, Docker may use a different node-local volume"
-            )
+    # Named volumes without a storageClass use the deployment node's Docker
+    # storage. Control persists that node before submitting the first job.
     usage = _compose_service_volume_usage(compose)
     local_nodes = _local_volume_nodes(volumes)
     for service_name, used_volumes in usage.items():
@@ -435,8 +432,8 @@ def _load_compose_volumes(raw: Any, storage_classes: Dict[str, StorageClassSpec]
             adopted=adopted,
             raw=dict(value),
         )
-        if result[str(name)].kind == "local" and (not result[str(name)].local_node or not result[str(name)].local_path):
-            raise LumaError(f"volumes.{name}.local requires node and path")
+        if result[str(name)].kind == "local" and not result[str(name)].local_path:
+            raise LumaError(f"volumes.{name}.local requires path; node defaults to the deployment node")
         if result[str(name)].kind == "local":
             local_path = Path(str(result[str(name)].local_path))
             if not local_path.is_absolute() or ".." in local_path.parts or local_path == Path("/"):

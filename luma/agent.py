@@ -2249,7 +2249,7 @@ def _execute_agent_task_impl(
         root = _safe_absolute_path(_required(payload, "root"))
         relative = _safe_relative_path(_required(payload, "relative"))
         full_path = str(Path(root) / relative)
-        _run_fixed_host_task(_volume_path_command(full_path))
+        _run_fixed_host_task(_volume_path_command(full_path, preserve_existing=bool(payload.get("preserveExisting"))))
         return {"path": full_path, "message": "volume path ready"}
     if action == "remove-managed-volume-path":
         root = _safe_absolute_path(_required(payload, "root"))
@@ -4867,8 +4867,12 @@ def _macos_remove_nfs_command(name: str) -> str:
     )
 
 
-def _volume_path_command(path: str) -> str:
+def _volume_path_command(path: str, *, preserve_existing: bool = False) -> str:
     safe_path = _safe_absolute_path(path)
+    if preserve_existing:
+        # Database directories set their own restrictive mode (e.g. 0700).
+        # Adopting an existing local directory must not chmod its data root.
+        return f"set -euo pipefail; test -d {shlex.quote(safe_path)} || install -d -m 0777 {shlex.quote(safe_path)}"
     # A managed volume can be mounted by arbitrary non-root image UIDs. The
     # per-application path is the isolation boundary, so its root must be
     # writable without assuming an image-specific uid/gid. Reconcile existing

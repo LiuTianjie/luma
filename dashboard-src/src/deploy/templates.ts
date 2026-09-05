@@ -7,7 +7,7 @@ const serviceVolume = (name: string, target: string, overrides: Partial<ServiceV
   id: `service-volume-${rowCounter++}`,
   name,
   target,
-  storageMode: "unmanaged",
+  storageMode: "local",
   storageClass: "",
   path: "",
   ...overrides,
@@ -84,7 +84,7 @@ function composeVolume(name: string, target: string, overrides: Partial<ComposeV
   return {
     name,
     target,
-    storageMode: "unmanaged",
+    storageMode: "local",
     storageClass: "",
     localNode: "",
     localPath: "",
@@ -260,8 +260,8 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       ],
       volumeMounts: [
         serviceVolume("code-server-config", "/config", {
-          storageMode: "storageClass",
-          storageClass: "cn-nfs",
+          storageMode: "local",
+          storageClass: "",
           path: "code-server/config",
         }),
       ],
@@ -279,7 +279,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       name: "uptime-kuma",
       region: "home",
       services: [{ name: "uptime-kuma", region: "home", node: "", exposure: "tailscale-relay", domain: "kuma.example.com", port: "3001", publishPort: "", replicas: 1, proxy: false, env: [] }],
-      volumes: [{ name: "kuma-data", target: "/app/data", storageMode: "unmanaged", storageClass: "", localNode: "", localPath: "" }],
+      volumes: [{ name: "kuma-data", target: "/app/data", storageMode: "local", storageClass: "", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
         "  uptime-kuma:",
@@ -306,7 +306,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       name: "vaultwarden",
       region: "home",
       services: [{ name: "vaultwarden", region: "home", node: "", exposure: "tailscale-relay", domain: "vault.example.com", port: "80", publishPort: "", replicas: 1, proxy: false, env: [row("WEBSOCKET_ENABLED", "true")] }],
-      volumes: [{ name: "vaultwarden-data", target: "/data", storageMode: "storageClass", storageClass: "", localNode: "", localPath: "" }],
+      volumes: [{ name: "vaultwarden-data", target: "/data", storageMode: "local", storageClass: "", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
         "  vaultwarden:",
@@ -332,7 +332,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       name: "gitea",
       region: "home",
       services: [{ name: "gitea", region: "home", node: "", exposure: "tailscale-relay", domain: "git.example.com", port: "3000", publishPort: "", replicas: 1, proxy: false, env: [row("USER_UID", "1000"), row("USER_GID", "1000")] }],
-      volumes: [{ name: "gitea-data", target: "/data", storageMode: "storageClass", storageClass: "", localNode: "", localPath: "" }],
+      volumes: [{ name: "gitea-data", target: "/data", storageMode: "local", storageClass: "", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
         "  gitea:",
@@ -359,7 +359,7 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
       name: "n8n",
       region: "home",
       services: [{ name: "n8n", region: "home", node: "", exposure: "tailscale-relay", domain: "n8n.example.com", port: "5678", publishPort: "", replicas: 1, proxy: true, env: [row("N8N_HOST", "n8n.example.com"), row("N8N_PORT", "5678"), row("N8N_PROTOCOL", "https"), row("WEBHOOK_URL", "https://n8n.example.com/")] }],
-      volumes: [{ name: "n8n-data", target: "/home/node/.n8n", storageMode: "storageClass", storageClass: "", localNode: "", localPath: "" }],
+      volumes: [{ name: "n8n-data", target: "/home/node/.n8n", storageMode: "local", storageClass: "", localNode: "", localPath: "" }],
       dockerComposeYaml: [
         "services:",
         "  n8n:",
@@ -414,8 +414,8 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
         composeService({ name: "redis" }),
       ],
       volumes: [
-        composeVolume("nextcloud-data", "/var/www/html", { storageMode: "storageClass" }),
-        composeVolume("nextcloud-db", "/var/lib/postgresql/data", { storageMode: "storageClass" }),
+        composeVolume("nextcloud-data", "/var/www/html", { storageMode: "local" }),
+        composeVolume("nextcloud-db", "/var/lib/postgresql/data", { storageMode: "local" }),
       ],
       dockerComposeYaml: [
         "services:",
@@ -487,8 +487,8 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
         }),
       ],
       volumes: [
-        composeVolume("ghost-content", "/var/lib/ghost/content", { storageMode: "storageClass" }),
-        composeVolume("ghost-mysql", "/var/lib/mysql", { storageMode: "storageClass" }),
+        composeVolume("ghost-content", "/var/lib/ghost/content", { storageMode: "local" }),
+        composeVolume("ghost-mysql", "/var/lib/mysql", { storageMode: "local" }),
       ],
       dockerComposeYaml: [
         "services:",
@@ -558,9 +558,9 @@ export const DEPLOY_TEMPLATES: DeployTemplate[] = [
         }),
       ],
       volumes: [
-        composeVolume("paperless-data", "/usr/src/paperless/data", { storageMode: "storageClass" }),
-        composeVolume("paperless-media", "/usr/src/paperless/media", { storageMode: "storageClass" }),
-        composeVolume("paperless-db", "/var/lib/postgresql/data", { storageMode: "storageClass" }),
+        composeVolume("paperless-data", "/usr/src/paperless/data", { storageMode: "local" }),
+        composeVolume("paperless-media", "/usr/src/paperless/media", { storageMode: "local" }),
+        composeVolume("paperless-db", "/var/lib/postgresql/data", { storageMode: "local" }),
       ],
       dockerComposeYaml: [
         "services:",

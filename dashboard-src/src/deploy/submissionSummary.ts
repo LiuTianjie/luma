@@ -26,5 +26,13 @@ export function submissionSummary(mode: DeployMode, manifest: string, composeCon
   const images = Object.entries(services).map(([key, value]) => `${key}: ${text(map(value).image) || "—"}`);
   const ingress = Object.entries(configs).filter(([, value]) => text(map(value).exposure) && map(value).exposure !== "none")
     .map(([key, value]) => { const service = map(value); return `${key}: ${text(service.exposure)} · ${text(service.domain) || "—"}:${text(service.port) || "—"}`; });
-  return { name, region: text(body.region), services: Object.keys(services), images, ingress, volumes: Object.keys(map(mode === "compose" ? body.volumes : body.storage)) };
+  const volumeNames = Object.keys(map(mode === "compose" ? body.volumes : body.storage));
+  for (const service of Object.values(services)) {
+    const mounts = map(service).volumes;
+    for (const mount of Array.isArray(mounts) ? mounts : []) {
+      const source = typeof mount === "string" ? (mount.includes(":") ? mount.split(":")[0] : "") : text(map(mount).source);
+      if (source) volumeNames.push(source);
+    }
+  }
+  return { name, region: text(body.region), services: Object.keys(services), images, ingress, volumes: [...new Set(volumeNames)] };
 }

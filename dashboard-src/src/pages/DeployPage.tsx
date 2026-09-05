@@ -73,7 +73,6 @@ export function DeployPage({
             metrics: [
               { label: zh ? "单服务" : "Service", value: vm.deployServiceTemplates },
               { label: "Compose", value: vm.deployComposeTemplates },
-              { label: "storageClass", value: vm.storageClasses.length },
             ],
           }}
         />

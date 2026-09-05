@@ -45,7 +45,7 @@ export function SingleServiceDeployForm({
           id: `service-volume-${Date.now()}`,
           name: "",
           target: "",
-          storageMode: "unmanaged",
+          storageMode: "local",
           storageClass: "",
           path: "",
         },
@@ -67,7 +67,7 @@ export function SingleServiceDeployForm({
               {selectedNodeMissing ? <option value={draft.node} disabled>{draft.node} ({zh ? "当前不可用" : "currently unavailable"})</option> : null}
               {nodeOptions.map((node) => <option value={node.name || ""} key={node.name}>{node.name}</option>)}
             </select>
-            <small>{zh ? "仅在必须固定机器时选择节点。" : "Choose a node only when placement must be pinned."}</small>
+            <small>{zh ? "有持久化卷时，首次部署后自动固定节点，更新与重启继续使用原数据。" : "Persistent volumes pin the first deployment node. Updates and restarts reuse its data."}</small>
           </label>
           <label><span>{zh ? "副本" : "Replicas"}</span><input type="number" min={1} value={draft.replicas} onChange={(event) => patch({ replicas: Number(event.target.value || 1) })} /></label>
           <label className="deploy-toggle"><input type="checkbox" checked={draft.proxy} onChange={(event) => patch({ proxy: event.target.checked })} /><span>{zh ? "启用 egress proxy" : "Enable egress proxy"}</span></label>
@@ -95,7 +95,7 @@ export function SingleServiceDeployForm({
           <label><span>Memory limit</span><input value={draft.memoryLimit} onChange={(event) => patch({ memoryLimit: event.target.value })} placeholder="512M" /></label>
           <label><span>{zh ? "健康检查 URL" : "Healthcheck URL"}</span><input value={draft.healthcheckUrl} onChange={(event) => patch({ healthcheckUrl: event.target.value })} placeholder="http://127.0.0.1:80/healthz" /></label>
           <label><span>{zh ? "额外挂载" : "Extra mounts"}</span><textarea value={draft.volumes} onChange={(event) => patch({ volumes: event.target.value })} placeholder="/srv/media:/media:ro" /></label>
-          <label><span>{zh ? "额外 storage YAML" : "Extra storage YAML"}</span><textarea value={draft.storage} onChange={(event) => patch({ storage: event.target.value })} placeholder={"data:\n  storageClass: cn-nfs\n  path: app/data"} /></label>
+          {draft.storage.trim() ? <label><span>{zh ? "原有存储配置" : "Existing storage configuration"}</span><textarea value={draft.storage} onChange={(event) => patch({ storage: event.target.value })} /></label> : null}
         </div>
         <div className="service-volume-editor">
           <div className="compose-env-header">
@@ -108,14 +108,14 @@ export function SingleServiceDeployForm({
                 <div className="deploy-field-grid compact service-volume-grid">
                   <label><span>volume</span><input value={volume.name} onChange={(event) => updateVolumeMount(volume.id, { name: event.target.value })} placeholder="code-server-config" /></label>
                   <label><span>{zh ? "挂载到" : "Mount target"}</span><input value={volume.target} onChange={(event) => updateVolumeMount(volume.id, { target: event.target.value })} placeholder="/config" /></label>
-                  <label><span>{zh ? "存储模式" : "Storage mode"}</span><select value={volume.storageMode} onChange={(event) => updateVolumeMount(volume.id, { storageMode: event.target.value as ServiceVolumeDraft["storageMode"] })}><option value="unmanaged">unmanaged volume</option><option value="storageClass">storageClass</option></select></label>
+                  <label><span>{zh ? "存储方式" : "Storage"}</span><select value={volume.storageMode} onChange={(event) => updateVolumeMount(volume.id, { storageMode: event.target.value as ServiceVolumeDraft["storageMode"] })}><option value="local">{zh ? "部署节点本地卷" : "Deployment-node volume"}</option><option value="unmanaged">{zh ? "使用已有命名卷" : "Existing named volume"}</option>{volume.storageMode === "storageClass" ? <option value="storageClass">{zh ? "原有共享存储" : "Existing shared storage"}</option> : null}</select></label>
                   {volume.storageMode === "storageClass" ? (
                     <>
                       <label><span>storageClass</span><select value={volume.storageClass} onChange={(event) => updateVolumeMount(volume.id, { storageClass: event.target.value })}><option value="">{zh ? "选择已注册存储" : "Select registered storage"}</option>{storageClasses.map((item) => <option value={item.name || ""} key={item.name}>{item.name}</option>)}</select></label>
                       <label><span>path</span><input value={volume.path} onChange={(event) => updateVolumeMount(volume.id, { path: event.target.value })} placeholder={`${draft.name || "app"}/${volume.name || "data"}`} /></label>
                     </>
                   ) : (
-                    <label><span>{zh ? "说明" : "Note"}</span><input value={zh ? "普通 Docker 命名卷，Luma 不接管存储后端" : "Plain Docker named volume; Luma does not manage the storage backend"} disabled /></label>
+                    <label><span>{zh ? "数据位置" : "Data location"}</span><input value={zh ? "跟随部署节点，重启与更新保留数据" : "On the deployment node; retained across restarts and updates"} disabled /></label>
                   )}
                 </div>
                 <button

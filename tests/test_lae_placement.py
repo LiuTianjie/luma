@@ -100,6 +100,17 @@ def _storage(*, nodes: list[str] | None = None) -> dict:
 
 
 class LaePlacementTests(unittest.TestCase):
+    def test_local_volume_has_one_owner_and_cannot_fail_over_to_an_empty_disk(self) -> None:
+        registered = dict([_registered("runtime-a", "node-a"), _registered("runtime-b", "node-b")])
+        kwargs = dict(
+            manifest=_manifest(stateful=True), registered_nodes=registered,
+            storage_class={"provider": "local"}, allowed_runtime_nodes=["runtime-a", "runtime-b"],
+        )
+        initial = plan_lae_placement(**kwargs, nomad_nodes=[_nomad("runtime-a", "node-a"), _nomad("runtime-b", "node-b")])
+        self.assertEqual(initial.candidate_node_ids, ("node-a",))
+        with self.assertRaises(PlacementFailure):
+            plan_lae_placement(**kwargs, prior_node_id="node-a", nomad_nodes=[_nomad("runtime-a", "node-a", status="down"), _nomad("runtime-b", "node-b")])
+
     def test_public_runtime_wire_accepts_only_region_and_rejects_node_fields(self) -> None:
         binding = RuntimeBinding(
             "tenant-wire", "app-wire", "op-wire", "rev-wire", "dep-wire"

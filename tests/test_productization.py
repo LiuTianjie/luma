@@ -8682,7 +8682,7 @@ class ControlApiTests(unittest.TestCase):
                         "path": "/srv/luma",
                     }
                 }
-                state["nodes"] = {"home-node": {"region": "home", "swarmHostname": "home-node"}}
+                state["nodes"] = {"home-node": {"region": "home", "swarmHostname": "home-node", "agent": {"status": "ready"}}}
                 save_state(state)
                 (root / "luma.yaml").write_text(
                     yaml.safe_dump({"defaults": {"stackRoot": str(root / "stacks")}}),
@@ -11779,7 +11779,7 @@ class ControlApiTests(unittest.TestCase):
                         },
                     }
                 )
-                with patch("luma.control.server.deploy_to_nomad", return_value="Nomad job registered for granary") as deploy, patch(
+                with patch("luma.control.server._local_storage_previous_node", return_value=""), patch("luma.control.server.deploy_to_nomad", return_value="Nomad job registered for granary") as deploy, patch(
                     "luma.control.server.docker_request"
                 ) as docker_request, patch(
                     "luma.control.server.sync_dns", return_value="DNS skipped"
@@ -12073,7 +12073,7 @@ class ControlApiTests(unittest.TestCase):
                     unittest.mock.ANY,
                     "manager",
                     "prepare-managed-volume-path",
-                    {"root": "/srv/luma/lae/staging/postgres", "relative": "v1"},
+                    {"root": "/srv/luma/lae/staging/postgres", "relative": "v1", "preserveExisting": True},
                 )
                 self.assertEqual(result["applied"][0]["path"], "/srv/luma/lae/staging/postgres/v1")
                 self.assertEqual(result["applied"][0]["node"], "manager")

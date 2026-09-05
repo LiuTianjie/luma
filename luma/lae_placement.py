@@ -269,6 +269,13 @@ def plan_lae_placement(
         region=region,
         stateful=stateful,
     )
+    if stateful and (storage_class or {}).get("provider") == "local":
+        # A local database cannot be rescheduled onto another node's empty
+        # disk. The selected owner is persisted before any volume is created.
+        if prior_node_id:
+            candidates = [candidate for candidate in candidates if candidate.node_id == prior_node_id]
+        else:
+            candidates = sorted(candidates, key=lambda candidate: candidate.registered_name)[:1]
     if not candidates:
         raise PlacementFailure(REASON_VOLUME_INCOMPATIBLE)
 
@@ -597,6 +604,8 @@ def _volume_compatible_candidates(
         return candidates
     if not isinstance(storage_class, Mapping):
         raise PlacementFailure(REASON_VOLUME_INCOMPATIBLE)
+    if storage_class.get("provider") == "local":
+        return candidates
     if (
         str(storage_class.get("provider") or "nfs") != "nfs"
         or str(storage_class.get("mode") or "managed") != "managed"
