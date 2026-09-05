@@ -2005,6 +2005,8 @@ class CliTests(unittest.TestCase):
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
+                client.check_workflow.return_value = {"status": "unrecorded", "differences": []}
+                client.record_workflow.return_value = {"workflow": {"name": "api"}}
                 client.deploy_events.side_effect = LumaError("control API error 404: not found")
                 client.deploy.return_value = {
                     "service": "api",
@@ -2048,6 +2050,8 @@ class CliTests(unittest.TestCase):
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
+                client.check_workflow.return_value = {"status": "unrecorded", "differences": []}
+                client.record_workflow.return_value = {"workflow": {"name": "api"}}
                 client.deploy_events.return_value = iter(
                     [
                         {"name": "Resolve image", "status": "start", "message": "started"},
@@ -2086,6 +2090,8 @@ class CliTests(unittest.TestCase):
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
+                client.check_workflow.return_value = {"status": "unrecorded", "differences": []}
+                client.record_workflow.return_value = {"workflow": {"name": "api"}}
                 client.deploy_compose_events.side_effect = LumaError("control API error 404: not found")
                 client.deploy_compose.return_value = {"deployment": "app-stack", "steps": []}
                 with patch("luma.cli.ControlClient", return_value=client):
@@ -2121,6 +2127,8 @@ class CliTests(unittest.TestCase):
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
+                client.check_workflow.return_value = {"status": "unrecorded", "differences": []}
+                client.record_workflow.return_value = {"workflow": {"name": "api"}}
                 # stream yields progress but no {"status": "done", ...} result
                 client.deploy_compose_events.return_value = iter(
                     [
@@ -2158,6 +2166,8 @@ class CliTests(unittest.TestCase):
             old_resolve = _set_env("LUMA_RESOLVE_IP", "")
             try:
                 client = Mock()
+                client.check_workflow.return_value = {"status": "unrecorded", "differences": []}
+                client.record_workflow.return_value = {"workflow": {"name": "api"}}
                 client.deploy_events.return_value = iter(
                     [
                         {"name": "Resolve image", "status": "start", "message": "started"},
@@ -2200,6 +2210,8 @@ class CliTests(unittest.TestCase):
             try:
                 save_context(endpoint="https://luma.example.com", cluster_id="luma-test", token="deploy-token")
                 client = Mock()
+                client.check_workflow.return_value = {"status": "unrecorded", "differences": []}
+                client.record_workflow.return_value = {"workflow": {"name": "api"}}
                 client.build_deploy_events.side_effect = LumaError("control API error 404: not found")
                 client.build_deploy.return_value = {"service": "api", "image": "100.66.177.70:5000/acme/app:abc123", "steps": []}
                 with patch("luma.cli.ControlClient", return_value=client), patch("builtins.print"):

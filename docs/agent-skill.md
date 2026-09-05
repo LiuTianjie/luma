@@ -2,10 +2,12 @@
 
 Luma 和 LAE 各提供一个给 AI 编码助手（Codex、Cursor、Claude Code 等）用的 Skill。
 
-- **`luma-deployment-yaml`**：超管/运维侧。生成、校验单服务 `luma deploy` YAML 和 `luma.compose.yml`。
+- **`luma-deployment-yaml`**：超管/运维侧。生成、校验部署 YAML，沿用服务端记录的构建部署方式，并处理部署差异确认。
 - **`lae-deploy`**：租户/产品侧。只通过 `lae` CLI 诊断和部署；不要用它去调 Luma management API。
 
 本仓库 checkout 里的副本是权威来源。把 Skill 拷到助手的用户级 skills 目录后，新对话才会稳定加载。
+
+Luma 与 LAE 技能独立维护。下面的默认安装只更新 Luma 技能，不安装、删除或更新 LAE 技能。
 
 ## 目录结构
 
@@ -13,6 +15,7 @@ Luma 和 LAE 各提供一个给 AI 编码助手（Codex、Cursor、Claude Code �
 
 - **SKILL.md**：工作流、region/exposure、Builder Registry、local build、Compose/storage、CI。
 - **references/manifest-reference.md**：完整字段表、import/build 规则、rollback checklist。
+- **references/deployment-workflow.md**：自动检查、无记录放行、差异确认、成功记录与版本兼容边界。
 
 [`lae/skills/lae-deploy`](../lae/skills/lae-deploy)：
 
@@ -34,10 +37,8 @@ Luma 和 LAE 各提供一个给 AI 编码助手（Codex、Cursor、Claude Code �
 ```bash
 repo="/path/to/infra-stacks"
 for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest"
-  rm -rf "$dest/luma-deployment-yaml" "$dest/lae-deploy"
-  cp -R "$repo/skills/luma-deployment-yaml" "$dest/"
-  cp -R "$repo/lae/skills/lae-deploy" "$dest/"
+  mkdir -p "$dest/luma-deployment-yaml"
+  cp -R "$repo/skills/luma-deployment-yaml/." "$dest/luma-deployment-yaml/"
 done
 ```
 
@@ -47,10 +48,8 @@ done
 tmp="$(mktemp -d)"
 git clone --depth 1 https://github.com/LiuTianjie/luma.git "$tmp/luma"
 for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest"
-  rm -rf "$dest/luma-deployment-yaml" "$dest/lae-deploy"
-  cp -R "$tmp/luma/skills/luma-deployment-yaml" "$dest/"
-  cp -R "$tmp/luma/lae/skills/lae-deploy" "$dest/"
+  mkdir -p "$dest/luma-deployment-yaml"
+  cp -R "$tmp/luma/skills/luma-deployment-yaml/." "$dest/luma-deployment-yaml/"
 done
 rm -rf "$tmp"
 ```
@@ -75,12 +74,18 @@ Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-
    「已有 `docker-compose.yml`，帮我写 `luma.compose.yml`，把 `pg-data` 绑到 `cn-nfs`。」
 4. 回滚准备度  
    「review 这个部署文件，确认镜像 tag、存储和 Compose sidecar 是否适合生产回滚。」
+5. 沿用构建部署方式
+   「按上次的方式部署这个应用；没有记录就正常部署，出现差异先告诉我，确认后再继续。」
 
 ### lae-deploy
 
 「使用 lae-deploy skill 部署这个应用。先做 capability/doctor/whoami，再 inspect；只在结果为 `deployable` 时部署。token、Git secret、环境变量和支付确认都由我在本机输入。」
 
 ## luma-deployment-yaml 核心规则
+
+部署时优先沿用服务端记录。更新后的 CLI 会在 `import`、`build local/retry`、`deploy`、`compose deploy` 前自动检查：无记录正常继续，成功后自动建立；一致直接继续；不同才显示差异并要求用户确认。非交互调用会先停止，只有用户明确同意该变化后才能使用 `--accept-workflow-change`。不能通过覆盖记录、更换应用名或绕到其他部署入口来跳过确认。失败与 dry-run 不覆盖成功记录。
+
+技能更新不代表运行中的 CLI/Control 已升级。部署前若兼容性不明，检查 CLI 帮助和 Control 的 `deployment-workflow-v1` 能力；检查不可用不等于没有记录。具体命令与边界见 [Deployment Workflow Records](../skills/luma-deployment-yaml/references/deployment-workflow.md)。
 
 1. **域与端口**：公开 `exposure` 必须有 `domain` 和 `port`。
 2. **节点固定**：`node` 使用 `luma node join --name` 的 Luma 节点名，不要用 Docker hostname。

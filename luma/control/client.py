@@ -691,6 +691,23 @@ class ControlClient:
     def list_builds(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/builds")
 
+    def list_workflows(self) -> Dict[str, Any]:
+        return self.request("GET", "/v1/workflows")
+
+    def get_workflow(self, name: str) -> Dict[str, Any]:
+        return self.request("GET", f"/v1/workflows/{urllib.parse.quote(name, safe='')}")
+
+    def check_workflow(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self.request("POST", "/v1/workflows/check", body)
+        except LumaError as exc:
+            if "control API error 404" in str(exc):
+                raise LumaError("Luma Control does not support automatic workflow checks; update the manager before deploying with this CLI") from exc
+            raise
+
+    def record_workflow(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        return self.request("POST", "/v1/workflows", body)
+
     def prepare_local_build(self, body: Dict[str, Any]) -> Dict[str, Any]:
         return self.request("POST", "/v1/builds/local/prepare", body)
 

@@ -171,6 +171,8 @@ from ..lae_admin_proxy import (
 )
 from .. import __version__
 from .metrics import load_history, record_samples, sustained_breach
+from .workflows import handle_workflow_check, handle_workflow_get, handle_workflow_list, handle_workflow_record
+
 from .state import (
     init_state,
     load_state,
@@ -18090,6 +18092,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "builder-task-api-v1",
                         "builder-artifact-download-v1",
                         "repository-compose-sidecar-v1",
+                        "deployment-workflow-v1",
                         "build-proxy-mode-v1",
                         "lae-runtime-api-v1",
                         "lae-runtime-lifecycle-v1",
@@ -18189,6 +18192,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if parsed_path == "/v1/status":
                 self._json(200, handle_control_status(token))
+                return
+            if parsed_path == "/v1/workflows":
+                self._json(200, handle_workflow_list(token))
+                return
+            workflow_match = re.fullmatch(r"/v1/workflows/([^/]+)", parsed_path)
+            if workflow_match:
+                self._json(200, handle_workflow_get(token, urllib.parse.unquote(workflow_match.group(1))))
                 return
             if parsed_path == "/v1/builds":
                 self._json(200, handle_build_run_list(token))
@@ -18552,6 +18562,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/v1/nodes/unregister":
                 self._json(200, handle_node_unregister(token, body))
+                return
+            if parsed_path == "/v1/workflows/check":
+                self._json(200, handle_workflow_check(token, body))
+                return
+            if parsed_path == "/v1/workflows":
+                self._json(200, handle_workflow_record(token, body))
                 return
             if self.path == "/v1/deployments":
                 self._json(200, handle_deployment(token, body))
@@ -19048,6 +19064,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "builder-task-api-v1",
                 "builder-artifact-download-v1",
                 "repository-compose-sidecar-v1",
+                "deployment-workflow-v1",
                 "build-proxy-mode-v1",
                 "lae-runtime-api-v1",
                 "lae-runtime-lifecycle-v1",
@@ -19195,6 +19212,12 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             return _json_response(200, await run_in_threadpool(handle_storage_list, token))
         if parsed_path == "/v1/status":
             return _json_response(200, await run_in_threadpool(handle_control_status, token))
+        if parsed_path == "/v1/workflows":
+            return _json_response(200, await run_in_threadpool(handle_workflow_list, token))
+        workflow_match = re.fullmatch(r"/v1/workflows/([^/]+)", parsed_path)
+        if workflow_match:
+            return _json_response(200, await run_in_threadpool(handle_workflow_get, token, urllib.parse.unquote(workflow_match.group(1))))
+
         if parsed_path == "/v1/builds":
             return _json_response(200, await run_in_threadpool(handle_build_run_list, token))
         builder_events_match = re.fullmatch(r"/v1/builder/tasks/([^/]+)/events", parsed_path)
@@ -19574,6 +19597,8 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/node-agent/tasks/complete": handle_node_agent_complete,
             "/v1/node-agent/tasks/progress": handle_node_agent_progress,
             "/v1/nodes/unregister": handle_node_unregister,
+            "/v1/workflows": handle_workflow_record,
+            "/v1/workflows/check": handle_workflow_check,
             "/v1/deployments": handle_deployment,
             "/v1/deployments/preview": handle_deployment_preview,
             "/v1/compose-deployments": handle_compose_deployment,

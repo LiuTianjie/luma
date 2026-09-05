@@ -188,7 +188,7 @@ Run the same check from at least one target node when debugging pull failures.
 
 ### Local Build, Upload, And Deploy
 
-Use Local Build when the checked-out source on the caller's computer is the build source of truth:
+Preserve the application's recorded build lane; see [Deployment Workflow Records](deployment-workflow.md) for automatic checks and confirmation. If there is no record, proceed from the user's request and repository setup; no historical backfill is needed. Use Local Build when the checked-out source on the caller's computer is the intended build source:
 
 ```bash
 luma build local . --platform linux/amd64
@@ -262,7 +262,7 @@ luma git-provider refs github:personal owner/repo
 
 If refs return GitHub/Gitea `404`, treat it as a provider credential or repository-ownership problem, not a Luma manifest problem. Fine-grained GitHub tokens must include that private repository.
 
-CLI import should be equivalent to Dashboard import:
+CLI and Dashboard imports use the same remote build lane, but only the updated CLI participates in the automatic workflow checks described in [Deployment Workflow Records](deployment-workflow.md). Do not switch to Dashboard to bypass a CLI mismatch:
 
 ```bash
 luma import --provider-id gitea:lin --repository acme/app --ref main --build-node builder --env .env
@@ -560,7 +560,7 @@ luma compose deploy luma.compose.yml --dry-run
 CI:
 
 ```bash
-python -m pip install "luma-infra==0.1.296"
+python -m pip install "luma-infra==0.1.297"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json

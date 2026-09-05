@@ -74,7 +74,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.296"
+python -m pip install "luma-infra==0.1.297"
 ```
 
 Install without cloning the repository:
@@ -89,7 +89,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.296 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.297 sh
 ```
 
 Develop from source:
@@ -338,7 +338,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.296"
+python -m pip install "luma-infra==0.1.297"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -476,14 +476,12 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 
 Agents can use [skills/luma-deployment-yaml](skills/luma-deployment-yaml) for Luma deploy YAML, and [lae/skills/lae-deploy](lae/skills/lae-deploy) for tenant `lae` CLI workflows. See [docs/agent-skill.md](docs/agent-skill.md) for Claude/Cursor (`~/.claude/skills`) and Codex (`~/.codex/skills`) install steps.
 
-From this checkout:
+Install or update the Luma skill from this checkout (LAE is separate):
 
 ```bash
 for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest"
-  rm -rf "$dest/luma-deployment-yaml" "$dest/lae-deploy"
-  cp -R skills/luma-deployment-yaml "$dest/"
-  cp -R lae/skills/lae-deploy "$dest/"
+  mkdir -p "$dest/luma-deployment-yaml"
+  cp -R skills/luma-deployment-yaml/. "$dest/luma-deployment-yaml/"
 done
 ```
 

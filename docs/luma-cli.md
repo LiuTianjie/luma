@@ -15,7 +15,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.296"
+python -m pip install "luma-infra==0.1.297"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -32,7 +32,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.296 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.297 sh
 ```
 
 Development checkout:
@@ -63,7 +63,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.296"
+python -m pip install "luma-infra==0.1.297"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -75,7 +75,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.296"
+python -m pip install "luma-infra==0.1.297"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -288,7 +288,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.296 --timeout 900
+luma update fleet --install-ref v0.1.297 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -596,3 +596,74 @@ capability.
 Luma records deployment state before running external operations. A successful deploy is marked `active`; if DNS, the Nomad submission, route rendering, or probing fails after earlier steps have changed the manager, the recorded deployment is kept with `status: failed_partial` so the dashboard and `luma service remove <name>` can still find the partially applied job.
 
 For `luma service remove <name>`, Luma looks up the manifest recorded by the control plane during the last successful deploy and removes the matching single-service or Compose deployment slug. This recorded manifest is the source of truth, so remove and storage cleanup also work for deployments created from the web UI when the client running the command has no YAML file. By default Luma deletes Luma-managed Cloudflare DNS, deregisters and purges the Nomad job, and deletes generated jobspec files such as `stacks/<region>/<service>/<service>.nomad.json` or `stacks/compose/<name>/<name>.nomad.json`. `tailscale-relay` and `tcp-relay` route files are removed too. Use `--dry-run` to preview, `--skip-dns` to keep the DNS record, and `--skip-orchestrator` only when you intentionally want to remove generated Luma files without stopping the Nomad job. Storage data is preserved by default; add `--delete-storage` to delete removable storage declared by the recorded deployment. For single-service deployments this removes managed storage paths referenced by `storage.<volume>.path` and removes named Docker volume objects such as `data:/data`; bind mounts are skipped. For Compose deployments this removes managed storage paths referenced by the sidecar. `--delete-storage` cannot be combined with `--skip-orchestrator`. `cloudflare-tunnel` public hostnames are still managed in Cloudflare Zero Trust, so Luma reports that cleanup as skipped.
+
+## Automatic build/deploy workflow checks
+
+Luma records each application's successful CLI build/deploy workflow on Control.
+The record is shared across machines and agents, independently of the checkout and
+of the bounded build/deployment history. No backfill of existing applications is
+required.
+
+Before `luma import`, `luma build local`, `luma build retry`, `luma deploy`, or `luma compose deploy`
+starts a build, reserves a local upload, or submits a deployment:
+
+- No record: continue normally, then create the record after success.
+- Matching record: continue normally and refresh the success record.
+- Different workflow: show the differences and require confirmation before doing
+  build/deploy work. This includes switching remote/local/image/Compose methods,
+  explicit Git repository/ref, builder, platform, context/Dockerfile, sidecar, region,
+  exposure/domain/port, explicit deployment env-file path, and network options.
+  Output format, timeout, credentials and explanatory notes do not trigger a change.
+
+An interactive text terminal asks `Confirm this workflow change and deploy? [y/N]`.
+JSON/NDJSON, quiet and non-interactive callers stop with a nonzero exit status.
+An agent must show the differences to the user and obtain approval before retrying
+with `--accept-workflow-change`; it must not add that flag on its own to fix an
+error. CI can use the flag only where a workflow change has been approved.
+
+```bash
+# Normal deployment: automatic check and recording; no extra flag needed.
+luma import --provider-id github:me --repository acme/app --ref main --build-node builder
+
+# Read the shared record, including the command and last recorded success.
+luma workflow show app
+luma workflow list --format json
+
+# Add context to the record on the next successful deployment.
+luma import acme/app --ref main --workflow-note 'Build on Builder; this project requires remote network access'
+
+# Only after the user has approved the displayed differences:
+luma build local . --platform linux/amd64 --accept-workflow-change
+
+# Explicitly record/edit a workflow without executing it.
+luma workflow record app --note 'Release from the main branch on Builder' -- \
+  import acme/app --ref main --build-node builder
+
+# Execute the recorded command from a checkout, using current login credentials.
+luma workflow run app --path /path/to/app
+```
+
+The record retains the argument array, method, optional note and last successful
+recipe/evidence. Manual edits are labeled `manual`; an earlier success is kept
+with its original recipe and is not proof that the edited command has run.
+Failures, interrupted streams, dry runs and `--skip-orchestrator` do not overwrite
+success records. If deployment succeeds but saving the workflow fails, the CLI
+reports deployment success with `workflow.saved: false` and a warning; do not
+blindly redeploy to repair a recording error. Concurrent edits are preserved.
+
+Application manifests identify service/Compose targets. Imports discover the
+record from the repository, or the selected Compose sidecar in a monorepo. When
+several applications match, select one with `--workflow-app APP`. A different
+application name has its own record. Repository-relative file paths can move with
+a checkout; external absolute config/env paths must exist on the next machine.
+Env-file contents, management tokens and URL credentials are never stored in the
+recipe. Free-text notes are user-authored: do not put secrets in them.
+A retry records the original build parameters and `build retry ID`; replaying that
+command requires the original build record to remain available. The guard compares
+CLI workflow parameters, not source-code changes, image tags or manifest contents.
+
+CLI and Control must both support `deployment-workflow-v1`. Upgrade Control before
+using the new CLI for deployments. An unreachable or older Control is an
+unavailable check, not proof that no record exists, so deployment stops with an
+explanation. The workflow is a CLI coordination mechanism; older clients and direct
+API/dashboard deployments do not participate in these CLI checks.

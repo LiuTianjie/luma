@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     visible_commands = (
         "init,version,status,preflight,configure,login,context,secret,registry,git-provider,"
         "bootstrap,update,doctor,manager,node,cloudflare,egress,tailscale,"
-        "service,validate,render,dns-sync,deploy,import,build,rollback,history,compose,storage,region"
+        "service,validate,render,dns-sync,deploy,import,build,workflow,rollback,history,compose,storage,region"
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="{" + visible_commands + "}")
 
@@ -207,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.296 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.297 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -351,6 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
     dns.add_argument("service", type=Path)
 
     deploy = sub.add_parser("deploy")
+    _add_workflow_arguments(deploy)
     deploy.add_argument("service", type=Path)
     _add_control_arguments(deploy)
     _add_output_arguments(deploy)
@@ -379,6 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Git repository URL or owner/name (owner/name expands to https://github.com/owner/name.git); omit when using --provider-id + --repository",
     )
+    _add_workflow_arguments(import_cmd)
     import_cmd.add_argument("--provider-id", default="", help="Saved Git provider credential id to use for clone/list-backed imports")
     import_cmd.add_argument("--repository", default="", help="Repository full name for --provider-id, for example owner/name")
     import_cmd.add_argument("--build-node", dest="build_node", default="", help="Override the declared builder node used to clone and build the image")
@@ -419,6 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_control_arguments(build_logs)
     _add_output_arguments(build_logs)
     build_retry = build_sub.add_parser("retry", help="Retry a recorded build run")
+    _add_workflow_arguments(build_retry)
     build_retry.add_argument("id")
     _add_control_arguments(build_retry)
     _add_output_arguments(build_retry)
@@ -433,6 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build a local checkout, push it to the project's Luma registry path, and deploy it",
     )
     build_local.add_argument("path", nargs="?", type=Path, default=Path("."))
+    _add_workflow_arguments(build_local)
     build_local.add_argument("--repo-url", default="", help="Project Git URL (default: local origin remote)")
     build_local.add_argument("--compose-sidecar", default="", help="Select one repository-relative Luma Compose sidecar")
     build_local.add_argument("--region", default="", help="Override deployment region")
@@ -457,6 +461,23 @@ def build_parser() -> argparse.ArgumentParser:
     build_config.add_argument("--clear-direct-egress", action="store_true", help="Clear the direct-egress builder node list")
     _add_control_arguments(build_config)
     _add_output_arguments(build_config)
+
+    workflow = sub.add_parser("workflow", help="Inspect and record server-side build/deploy workflows; deployment commands check them automatically")
+    workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)
+    workflow_list = workflow_sub.add_parser("list", help="List recorded application workflows")
+    workflow_show = workflow_sub.add_parser("show", help="Show an application's build/deploy command and notes")
+    workflow_show.add_argument("name")
+    workflow_record = workflow_sub.add_parser("record", help="Explicitly set a workflow without deploying; put the Luma command after --")
+    workflow_record.add_argument("name")
+    workflow_record.add_argument("--note", dest="workflow_note", default=None)
+    workflow_record.add_argument("recipe_command", nargs="+")
+    workflow_run = workflow_sub.add_parser("run", help="Run the recorded command from a local checkout using current credentials")
+    workflow_run.add_argument("name")
+    workflow_run.add_argument("--path", type=Path, default=Path("."), help="Local project checkout (default: current directory)")
+    _add_workflow_arguments(workflow_run)
+    for workflow_parser in (workflow_list, workflow_show, workflow_record, workflow_run):
+        _add_control_arguments(workflow_parser)
+        _add_output_arguments(workflow_parser)
 
     rollback = sub.add_parser("rollback", help="Roll a Nomad-engine service back to a previous version")
     rollback.add_argument("name")
@@ -485,6 +506,7 @@ def build_parser() -> argparse.ArgumentParser:
     compose_render.add_argument("--engine", choices=("nomad",), metavar="{nomad}", help="Orchestrator to render for; Nomad is the only supported engine")
     _add_control_arguments(compose_render)
     compose_deploy = compose_sub.add_parser("deploy")
+    _add_workflow_arguments(compose_deploy)
     compose_deploy.add_argument("sidecar", type=Path)
     compose_deploy.add_argument("--engine", choices=("nomad",), metavar="{nomad}", help="Orchestrator for local dry-run preview; live deploy follows the control-plane config")
     _add_control_arguments(compose_deploy)
@@ -548,6 +570,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_arguments(storage_migrate)
 
     return parser
+
+
+def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--workflow-app", default="", help="Application workflow to check (required when a repository matches several applications)")
+    parser.add_argument("--accept-workflow-change", action="store_true", help="Continue after the user has explicitly approved the displayed workflow differences")
+    parser.add_argument("--workflow-note", default=None, help="Record why this build/deploy workflow is used; do not include secrets")
 
 
 def _add_control_arguments(parser: argparse.ArgumentParser) -> None:
@@ -2852,6 +2880,144 @@ def _import_env_secrets(path: Path | None) -> Dict[str, str] | None:
     return parse_env_file(path)
 
 
+def _workflow_prepare(args: argparse.Namespace, client: ControlClient, *, name: str = "", repo_url: str = "") -> None:
+    from .deploy_workflow import make_recipe, project_root
+    from .local_build import _git_output
+
+    if getattr(args, "skip_orchestrator", False):
+        return
+    if name and getattr(args, "workflow_app", "") and slugify(args.workflow_app) != slugify(name):
+        raise LumaError(f"--workflow-app must match the manifest application name: {name}")
+    recipe = make_recipe(args)
+    if not repo_url and args.command != "import":
+        start = getattr(args, "path", None) or getattr(args, "service", None) or getattr(args, "sidecar", None) or Path.cwd()
+        repo_url = _git_output(project_root(start), "remote", "get-url", "origin")
+    body: Dict[str, Any] = {
+        "recipe": recipe,
+        "selector": {"name": getattr(args, "workflow_app", "") or name, "repoUrl": repo_url},
+    }
+    checked = client.check_workflow(body)
+    if not isinstance(checked, dict) or checked.get("status") not in {"unrecorded", "match", "confirmation-required"}:
+        raise LumaError("Control returned an invalid workflow check; deployment was not started")
+    previous = checked.get("workflow") or {}
+    body["expectedRevision"] = previous.get("revision", 0)
+    if previous and not body["selector"]["name"]:
+        body["selector"]["name"] = previous["name"]
+    if checked["status"] == "confirmation-required":
+        differences = checked.get("differences") or []
+        detail = "\n".join(
+            f"  {row['field']}: {row.get('previous')!r} -> {row.get('requested')!r}"
+            for row in differences
+        )
+        message = f"Deployment workflow differs from the recorded workflow for {previous.get('name', name)}:\n{detail}"
+        approved = bool(getattr(args, "accept_workflow_change", False))
+        if not approved and sys.stdin.isatty() and _output_format(args) == "text" and not _quiet(args):
+            print(message, file=sys.stderr, flush=True)
+            try:
+                approved = input("Confirm this workflow change and deploy? [y/N] ").strip().lower() in {"y", "yes"}
+            except EOFError:
+                approved = False
+        if not approved:
+            raise LumaError(message + "\nDeployment was not started. Ask the user to confirm these changes, then rerun with --accept-workflow-change.")
+        if _output_format(args) == "ndjson":
+            _print_json({"type": "event", "status": "ok", "name": "Confirm workflow change", "differences": differences})
+        elif _output_format(args) == "text":
+            print(f"[ok] Workflow change confirmed: {previous.get('name', name)}", flush=True)
+    elif _output_format(args) == "text" and not _quiet(args):
+        print("[ok] Workflow matches the saved deployment" if previous else "[ok] No workflow recorded; a successful deployment will create it", flush=True)
+    args._deployment_workflow = body
+
+
+def _workflow_finish(args: argparse.Namespace, client: ControlClient, result: Dict[str, Any], *, name: str = "") -> None:
+    body = getattr(args, "_deployment_workflow", None)
+    if not body:
+        return
+    name = result.get("service") or result.get("deployment") or name
+    try:
+        if not isinstance(name, str) or not name:
+            raise LumaError("deploy response did not identify an application")
+        image = result.get("image")
+        if isinstance(image, dict):
+            image = image.get("selected") or image.get("requested")
+        evidence = {"image": image, "buildId": result.get("buildRunId") or result.get("buildId"), "revision": result.get("revision")}
+        saved = client.record_workflow({
+            **body, "name": name, "source": "cli-success", "evidence": evidence,
+            "note": getattr(args, "workflow_note", None),
+        })
+        if not isinstance(saved, dict) or not isinstance(saved.get("workflow"), dict):
+            raise LumaError("Control did not confirm saving the deployment workflow")
+        result["workflow"] = {"saved": True, "name": name}
+        if _output_format(args) == "text" and not _quiet(args):
+            print(f"[ok] Workflow saved on Control: {name}", flush=True)
+    except LumaError as exc:
+        # The deployment has already succeeded: never report it as failed or
+        # invite a blind redeploy just because recording failed afterwards.
+        result["workflow"] = {"saved": False, "warning": str(exc)}
+        if _output_format(args) == "text":
+            print(f"[warn] Deployment succeeded, but workflow was not saved: {exc}", file=sys.stderr)
+
+
+def cmd_workflow(args: argparse.Namespace) -> int:
+    from .deploy_workflow import describe_workflow, make_recipe, parse_recipe, project_root, validate_recipe
+
+    endpoint, token, insecure, resolve_ip = _control_context(args, require_token=True)
+    client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    if args.workflow_command == "list":
+        result = client.list_workflows()
+        if _output_format(args) == "text":
+            for row in result.get("workflows") or []:
+                print(f"{row['name']}\t{row['recipe']['method']}")
+        else:
+            _print_success(args, result)
+        return 0
+    if args.workflow_command == "record":
+        argv = list(args.recipe_command)
+        if argv and argv[0] == "--":
+            argv.pop(0)
+        if argv and argv[0] == "luma":
+            argv.pop(0)
+        deployment_args = parse_recipe(argv)
+        if deployment_args.command == "build" and deployment_args.build_command == "retry":
+            deployment_args._workflow_retry_run = client.get_build(deployment_args.id).get("run")
+        recipe = make_recipe(deployment_args)
+        from .local_build import _git_output
+
+        result = client.record_workflow({
+            "name": args.name, "recipe": recipe, "source": "manual", "note": args.workflow_note,
+            "selector": {"repoUrl": _git_output(project_root(Path.cwd()), "remote", "get-url", "origin")},
+        })
+    else:
+        result = client.get_workflow(args.name)
+    if args.workflow_command != "run":
+        if _output_format(args) == "text":
+            print(describe_workflow(result["workflow"]))
+        else:
+            _print_success(args, result)
+        return 0
+    recipe = validate_recipe(result["workflow"]["recipe"])
+    argv = list(recipe["argv"])
+    argv += ["--control-url", endpoint, "--token", token, "--workflow-app", args.name, "--format", _output_format(args)]
+    if insecure:
+        argv.append("--insecure")
+    if resolve_ip:
+        argv += ["--resolve-ip", resolve_ip]
+    if args.accept_workflow_change:
+        argv.append("--accept-workflow-change")
+    if args.workflow_note is not None:
+        argv += ["--workflow-note", args.workflow_note]
+    if _quiet(args):
+        argv.append("--quiet")
+    root = project_root(args.path)
+    if not root.is_dir():
+        raise LumaError(f"project checkout does not exist: {root}")
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(root)
+        return main(argv)
+    finally:
+        os.chdir(previous_cwd)
+
+
 def cmd_deploy(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     service = load_service(args.service)
@@ -2901,6 +3067,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if not quiet:
         print(f"[ok] Control endpoint: {endpoint}", flush=True)
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    _workflow_prepare(args, client, name=service.name)
     if not quiet:
         print(f"[start] Submit deploy: {service.name} -> {service.region}/{service.exposure}", flush=True)
     manifest_text = args.service.read_text(encoding="utf-8")
@@ -2957,6 +3124,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                     _print_json({"type": "event", **step})
                 elif not quiet:
                     _print_deploy_step(step)
+    _workflow_finish(args, client, result, name=service.name)
     if output_format != "text":
         _print_success(args, result)
         return 0
@@ -2994,6 +3162,7 @@ def cmd_import(args: argparse.Namespace) -> int:
         print(f"[ok] Control endpoint: {endpoint}", flush=True)
         print(f"[start] Import: {source_label} (build on {build_node_label})", flush=True)
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    _workflow_prepare(args, client)
     manifest_text = args.manifest.read_text(encoding="utf-8") if args.manifest else ""
     env_secrets = _import_env_secrets(args.deploy_env_file)
 
@@ -3062,6 +3231,7 @@ def cmd_import(args: argparse.Namespace) -> int:
             "Control did not confirm the selected Compose sidecar; refusing to report import success"
         )
 
+    _workflow_finish(args, client, result)
     if output_format != "text":
         _print_success(args, result)
         return 0
@@ -3092,6 +3262,12 @@ def cmd_build(args: argparse.Namespace) -> int:
         if args.timeout < 1:
             raise LumaError("--timeout must be at least 1 second")
         metadata = local_source_metadata(args.path, repo_url=args.repo_url)
+        from .agent import _find_luma_deployment_manifest, _select_luma_compose_manifest
+        from .io import load_yaml
+
+        selected = ("compose", _select_luma_compose_manifest(Path(metadata["path"]), args.compose_sidecar)) if args.compose_sidecar else _find_luma_deployment_manifest(Path(metadata["path"]))
+        workflow_name = str(load_yaml(selected[1]).get("name") or "") if selected else ""
+        _workflow_prepare(args, client, name=workflow_name, repo_url=metadata["repoUrl"])
         target = local_deployment_target(
             args.path,
             compose_sidecar=args.compose_sidecar,
@@ -3150,6 +3326,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             except Exception:
                 pass
             raise
+        _workflow_finish(args, client, result, name=workflow_name)
         if output_format != "text":
             _print_success(args, result)
             return 0
@@ -3196,8 +3373,12 @@ def cmd_build(args: argparse.Namespace) -> int:
                 _print_deploy_step(event)
         return 0
     if args.build_command == "retry":
+        args._workflow_retry_run = client.get_build(args.id).get("run")
+        prior_result = (args._workflow_retry_run or {}).get("result") or {}
+        _workflow_prepare(args, client, name=str(prior_result.get("service") or prior_result.get("deployment") or ""))
         env_secrets = _import_env_secrets(args.deploy_env_file)
         result = client.retry_build(args.id, timeout=args.timeout, env_secrets=env_secrets)
+        _workflow_finish(args, client, result)
         if output_format != "text":
             _print_success(args, result)
             return 0
@@ -3381,6 +3562,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
     if not quiet:
         print(f"[ok] Control endpoint: {endpoint}", flush=True)
     client = ControlClient(endpoint, token, insecure=insecure, resolve_ip=resolve_ip)
+    _workflow_prepare(args, client, name=deployment.name)
     manifest_text, compose_text = _compose_request_text(args.sidecar, deployment)
     env_secrets = _deploy_env_secrets(args.deploy_env_file, [manifest_text, compose_text])
     streamed = False
@@ -3436,6 +3618,7 @@ def cmd_compose_deploy(args: argparse.Namespace) -> int:
         for step in result.get("steps") or []:
             if isinstance(step, dict) and not quiet:
                 _print_deploy_step(step)
+    _workflow_finish(args, client, result, name=deployment.name)
     if output_format != "text":
         _print_success(args, result)
         return 0
@@ -4057,6 +4240,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_import(args)
         if args.command == "build":
             return cmd_build(args)
+        if args.command == "workflow":
+            return cmd_workflow(args)
         if args.command == "rollback":
             return cmd_rollback(args)
         if args.command == "history":

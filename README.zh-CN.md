@@ -84,7 +84,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.296 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.297 sh
 ```
 
 从源码开发：
@@ -441,14 +441,12 @@ luma secret set DATABASE_URL --scope app
 
 Luma 部署 YAML 用 [skills/luma-deployment-yaml](skills/luma-deployment-yaml)；租户侧 `lae` CLI 用 [lae/skills/lae-deploy](lae/skills/lae-deploy)。Claude/Cursor（`~/.claude/skills`）和 Codex（`~/.codex/skills`）的安装步骤见 [docs/agent-skill.md](docs/agent-skill.md)。
 
-从本仓库 checkout 安装：
+从本仓库 checkout 安装或更新 Luma 技能（LAE 独立维护）：
 
 ```bash
 for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest"
-  rm -rf "$dest/luma-deployment-yaml" "$dest/lae-deploy"
-  cp -R skills/luma-deployment-yaml "$dest/"
-  cp -R lae/skills/lae-deploy "$dest/"
+  mkdir -p "$dest/luma-deployment-yaml"
+  cp -R skills/luma-deployment-yaml/. "$dest/luma-deployment-yaml/"
 done
 ```
 
@@ -460,3 +458,22 @@ done
 - 节点加入 Token 只给要加入集群或刷新已加入节点 agent 的服务器使用。
 - 不要暴露节点 agent 凭据；它是 Luma 自动管理的内部本机凭据。
 - 如果 token 或订阅 URL 已经贴进聊天、日志或 issue，发布前先轮换。
+
+### 自动记住构建部署方式
+
+Luma CLI 会在 `import`、`build local/retry`、`deploy` 和 `compose deploy` 执行构建、上传或部署之前，自动查询服务端保存的应用部署方式：
+
+- **没有记录**：正常部署，成功后自动写入，不需要处理存量应用。
+- **与记录一致**：直接继续。
+- **与记录不同**：显示构建方式、分支、Builder、平台等差异，二次确认后才继续。交互式终端询问用户；AI/CI 等非交互调用先停止，用户同意后才可加 `--accept-workflow-change` 重试。
+
+成功后才更新记录；失败和 dry-run 保留原来的成功记录。记录保存在 Luma Control，换 AI、电脑或仓库 checkout 后仍可查询。
+
+```bash
+luma workflow show 应用名
+luma workflow list --format json
+luma workflow run 应用名 --path /path/to/repo
+luma workflow record 应用名 --note '固定使用 Builder 远程构建' -- import owner/repo --ref main --build-node builder
+```
+
+首次使用需升级 Control 和 CLI。完整行为与 CI/Agent 使用约定见 [CLI 文档](docs/luma-cli.md#automatic-builddeploy-workflow-checks)。

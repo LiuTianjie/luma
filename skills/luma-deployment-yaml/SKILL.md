@@ -1,6 +1,6 @@
 ---
 name: luma-deployment-yaml
-description: Generate, review, validate, or fix Luma single-service deployment manifests and Compose sidecars for the infra-stacks/Luma project. Use when asked about luma deploy YAML, luma.compose.yml, local build/upload/deploy, repository import/build from GitHub or Gitea, builder nodes, in-cluster registry setup with luma registry serve, Docker/buildx/NO_PROXY issues, region/exposure choices, storageClass volumes, private registry credentials, service removal, CI deploys, cn-edge, external-edge, tailscale-relay, cloudflare-tunnel, home services, global workers, or Nomad job / deploy errors.
+description: Generate, review, validate, or fix Luma deployment manifests and Compose sidecars; preserve recorded build/deploy workflows and handle workflow-change confirmation. Use for Luma YAML, local build/upload/deploy, GitHub or Gitea imports, Builder Registry, Docker/buildx/proxy issues, region/exposure choices, storage, private images, CI deployment, and Nomad deployment errors.
 ---
 
 # Luma Deployment YAML
@@ -18,6 +18,8 @@ For complete field tables and examples, read `references/manifest-reference.md`.
 
 For local build/upload/deploy, repository import, builder registry setup, or registry pull/proxy failures, read the "Builder Registry And Repository Import" section in `references/manifest-reference.md`.
 
+For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). This skill covers Luma management/CLI workflows; LAE tenant features are a separate scope.
+
 ## Token Vocabulary
 
 - Say "management token" for the trusted control-plane token used by CLI clients and the dashboard. The historical env var is still `LUMA_DEPLOY_TOKEN`.
@@ -26,7 +28,7 @@ For local build/upload/deploy, repository import, builder registry setup, or reg
 
 ## Workflow
 
-1. Choose the deployment path:
+1. Reuse the application's recorded deployment path when available. If there is no record, choose from the user's request and repository deployment setup; no backfill or confirmation is required solely because a record is absent:
    - Use single-service YAML for one container or a simple service.
    - Use Compose when the app has multiple services, existing Compose config, dependencies, shared networks, or named volumes across services.
    - Use `luma build local` when source must be built on the caller's machine, uploaded to Builder Registry, and deployed in one CLI transaction. Do not substitute Repository Import, SSH, or an ad hoc `docker push` sequence.
@@ -39,10 +41,19 @@ For local build/upload/deploy, repository import, builder registry setup, or reg
    - Worker/internal: `exposure: none`
    - Runtime outbound proxy: add `proxy: true` and keep the chosen scheduling region.
 3. Ask only for missing required facts: service or stack name, image or compose path, domain, container port, region/exposure, storage class, and Luma node name when pinning is required.
-4. Emit only YAML unless the user asks for explanation.
+4. For a YAML-only request, emit only YAML unless the user asks for explanation. For deployment work, report relevant checks, workflow differences and the actual outcome.
 5. Use `${ENV_NAME}` for secrets; never put secret values in YAML. If the project has a `.env`, recommend `luma deploy service.yaml --env .env`, `luma compose deploy luma.compose.yml --env .env`, or `luma import ... --env .env` so Luma stores referenced variables under the application/stack scope.
 6. For private images, do not put registry tokens in YAML or container env. Use `luma registry login <host> --username <user> --password-stdin`.
 7. Recommend targeted validation and dry runs, not live deploys, unless the user explicitly asks to deploy.
+
+## Automatic Deployment Workflow Checks
+
+- Updated CLI commands `import`, `build local`, `build retry`, `deploy`, and `compose deploy` automatically check the application's record on Luma Control before building, uploading, or deploying. A separate `workflow show` call is useful for orientation, not a prerequisite for first deployment.
+- No record: proceed normally and let a successful deployment create it. Matching record: continue. Different workflow: show the differences and obtain the user's explicit approval before continuing.
+- Non-interactive, JSON/NDJSON and quiet calls stop on differences. Use `--accept-workflow-change` only for the specific change the user has approved; an existing specific approval remains valid. A generic request to deploy does not authorize silently switching between remote build, local build and prebuilt-image deployment.
+- Do not bypass confirmation by overwriting the record with `workflow record`, changing application identity, downgrading the CLI, calling raw APIs, or switching to Dashboard/SSH. Do not commit/push code solely to force a different build lane.
+- Successful deployment updates the server record; failures, dry runs and skipped orchestration preserve it. If deployment succeeds but `workflow.saved` is false, report the recording warning separately and do not blindly redeploy.
+- Verify installed CLI support and Control capability `deployment-workflow-v1`; source files or a version example do not prove the feature is released or running. An unavailable/unsupported check is not an absent record. See the reference for commands and upgrade boundaries.
 
 ## Local Build Upload And Deploy
 
@@ -290,7 +301,7 @@ The dashboard exposes the same Nomad job-version rollback from Applications -> V
 For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.1.296"
+python -m pip install "luma-infra==0.1.297"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:
