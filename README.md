@@ -479,7 +479,7 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | [docs/release.md](docs/release.md) | publishing tags, installer, and control image releases. |
 | [docs/agent-skill.md](docs/agent-skill.md) | Installation and usage guide for the Luma and LAE agent skills. |
 | [docs/lae/README.md](docs/lae/README.md) | LAE product design, CLI/Skill contract, and validation status. |
-| [docs/compose-storage.md](docs/compose-storage.md) | Multi-service Docker Compose deployment and NFS/local storage class setup and migration. |
+| [docs/compose-storage.md](docs/compose-storage.md) | Multi-service Compose deployment, deployment-node local storage, and legacy NFS migration. |
 
 ## Agent Skill
 

@@ -12,13 +12,13 @@ Use this skill for Luma deployment artifacts:
 
 Single-service manifests are not Docker Compose. They describe one service: image, region, optional node pin, exposure, domain, port, replicas, storage, and runtime options. Luma Control renders a Nomad job, syncs DNS, writes Traefik routes, and deploys via the Nomad API.
 
-Compose files stay standard for local development. Put Luma-specific deployment semantics in `luma.compose.yml`: region, exposure, routing, service node pins, local storage pins, and references to manager-managed storage classes.
+Compose files stay standard for local development. Put Luma-specific deployment semantics in `luma.compose.yml`: region, exposure, routing, service node pins, local data paths and deployment node placement. Storage classes are legacy compatibility, not a prerequisite for new deployments.
 
 For complete field tables and examples, read `references/manifest-reference.md`.
 
 For local build/upload/deploy, repository import, builder registry setup, or registry pull/proxy failures, read the "Builder Registry And Repository Import" section in `references/manifest-reference.md`.
 
-For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). This skill covers Luma management/CLI workflows; LAE tenant features are a separate scope.
+For actual deployments, recorded commands, or workflow-change prompts, read [Deployment Workflow Records](references/deployment-workflow.md). For persistent placement, NFS migration, or storage retirement, read [Local Storage and Migration](references/local-storage.md). This includes the LAE runtime storage boundary; unrelated LAE tenant features are a separate scope.
 
 ## Token Vocabulary
 
@@ -40,7 +40,7 @@ For actual deployments, recorded commands, or workflow-change prompts, read [Dep
    - Home/private Cloudflare Tunnel: usually `region: home`, `exposure: cloudflare-tunnel`
    - Worker/internal: `exposure: none`
    - Runtime outbound proxy: add `proxy: true` and keep the chosen scheduling region.
-3. Ask only for missing required facts: service or stack name, image or compose path, domain, container port, region/exposure, storage class, and Luma node name when pinning is required.
+3. Ask only for missing required facts: service or stack name, image or compose path, domain, container port, region/exposure, and a data path or existing volume identity when persistence is needed. Do not ask for a storage class for local storage; the first node may be chosen by Control.
 4. For a YAML-only request, emit only YAML unless the user asks for explanation. For deployment work, report relevant checks, workflow differences and the actual outcome.
 5. Use `${ENV_NAME}` for secrets; never put secret values in YAML. If the project has a `.env`, recommend `luma deploy service.yaml --env .env`, `luma compose deploy luma.compose.yml --env .env`, or `luma import ... --env .env` so Luma stores referenced variables under the application/stack scope.
 6. For private images, do not put registry tokens in YAML or container env. Use `luma registry login <host> --username <user> --password-stdin`.
@@ -98,7 +98,7 @@ luma build local . --platform linux/amd64
 - `resources.limits.cpus` and `resources.reservations.cpus` are fractional cores, for example `"0.50"`. Quote them as strings in YAML; Luma converts cores to Nomad CPU MHz.
 - `healthcheck` is passed to the running container's health check. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
 - `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
-- Single-service `storage` can map named volumes from `volumes` to manager storage classes.
+- New native services use named volumes or bind mounts in `volumes`; persistent writable mounts require `replicas: 1`. Preserve existing sources. Legacy `storage` metadata does not prove that the actual Nomad mount uses NFS; inspect the rendered/running mount before changing it.
 - `build` is for source-to-image builds via `luma import` / Dashboard Repository Import, not plain `luma deploy`. Subfields: `context` (default `.`), `dockerfile` (default `Dockerfile`), `platform` (default `linux/amd64`), and optional `repo` to override the internal image repository path.
 
 ## Builder Registry Workflow
@@ -152,38 +152,13 @@ luma service restart luma-registry --mode recreate
 
 ## Compose And Storage Rules
 
-- Keep `docker-compose.yml` standard. Put Luma semantics in `luma.compose.yml`.
-- Create a sidecar with `luma compose init --compose docker-compose.yml --output luma.compose.yml`.
-- Do not put deployment-side `storageClasses` in production sidecars. Luma Control owns storage classes; sidecars only reference them by name.
-- New persistent deployments use local data on the deployment node. Control records and pins the first owner; an offline owner must not trigger empty-database failover. Use `local.path` for Compose; `local.node` can inherit deployment placement. Existing named-volume identities are preserved. See [compose-storage.md](../../docs/compose-storage.md).
-- Only for legacy NFS compatibility, register managed storage with:
-
-```bash
-luma storage set home-nfs \
-  --node home-nas \
-  --path /srv/luma \
-  --region cn \
-  --region home
-```
-
-- Register an external NFS server with:
-
-```bash
-luma storage set company-nfs \
-  --external \
-  --endpoint nfs.example.com:/srv/luma \
-  --region cn
-```
-
-- A sidecar volume can reference registered storage with `storageClass: <name>` and optional `path`, `accessMode`, `adopted`, or `initialize: empty`.
-- Local bind storage is the default. The whole Compose stack follows the persisted deployment node.
-- Bare Compose named volumes retain their existing names and Control persists their deployment node. Never rename a volume as part of an ordinary update.
-- When production data already lives in a node-local Docker volume, declare the Compose volume `external: true` with its exact `name:` and pin every consumer to that Luma node. This prevents Compose from silently creating a project-prefixed empty replacement.
-- Before updating a stateful stack, compare the live Nomad task mounts and job history with the next rendered job. Do not infer the previous runtime backend only from the current repository manifest or deployment record.
-- Switching an already deployed volume to another backend or changing the actual Nomad mount `type`, `source`, or `target` is blocked unless `adopted: true` follows verified migration, or `initialize: empty` explicitly accepts a fresh path.
-- Never substitute a developer-machine database for an existing online volume unless the user explicitly requests and verifies a migration. Recover the prior online mount first when data appears empty after an update.
-- Managed cross-region NFS requires the storage node to have a `tailscaleIP`; otherwise validation/render/deploy should block.
-- If one top-level Compose volume is used by services in different regions and managed storage would resolve to different endpoints, split it into separate region-specific volume names.
+- New persistent deployments use local storage on the deployment node. Control saves the first owner before submission; updates and restarts keep that owner. An offline owner must not cause an empty database to start elsewhere.
+- Keep `docker-compose.yml` standard. Put local paths in `luma.compose.yml` using `volumes.<name>.local.path`. `local.node` inherits deployment placement when omitted; do not introduce a separate storage-node picker. The Compose stack stays in one region on one node.
+- New dashboard Compose paths are scoped by deployment; native volume names are scoped too. Preserve the exact actual source on existing applications. A new volume name is a data migration, even on the same machine.
+- Inspect live mounts before changing saved metadata: historical manifests can claim NFS while the running container uses a local Docker volume, or a migration may already have happened.
+- Use `adopted: true` only after verified migration, and remove old `initialize: empty` acknowledgements. Neither flag transfers an established local owner to another node.
+- Do not register NFS or restart an old NFS service to satisfy a new deployment. Retain legacy parsing only for inspection/recovery of old configurations. No allocations does not imply no data.
+- For migration, permission preservation, LAE bindings, offline nodes, and shutdown verification, follow [Local Storage and Migration](references/local-storage.md).
 
 ## Runtime Resources And OOM
 
@@ -245,9 +220,8 @@ region: cn
 
 volumes:
   pg-data:
-    storageClass: home-nfs
-    path: postgres/pg-data
-    accessMode: ReadWriteOnce
+    local:
+      path: /srv/luma/data/app-stack/pg-data
 
 services:
   app:
@@ -256,7 +230,7 @@ services:
     port: 3000
 
   postgres:
-    region: home
+    exposure: none
 ```
 
 ## Validation Commands
@@ -272,9 +246,6 @@ Compose:
 
 ```bash
 luma compose validate luma.compose.yml
-luma compose render luma.compose.yml
-luma storage check luma.compose.yml
-luma storage apply luma.compose.yml --dry-run
 luma compose deploy luma.compose.yml --dry-run
 ```
 
@@ -297,9 +268,11 @@ luma rollback <app> --to-version <N>
 
 The dashboard exposes the same Nomad job-version rollback from Applications -> Versions. Treat rollback as a running Nomad job revert; it does not rewrite Git, update the stored manifest, reverse migrations, or restore volume data. Compose rollback reverts the whole stack.
 
+Direct `compose render` with local paths requires an explicit node. Control dry-run resolves saved ownership or initial candidates; actual deployment also inspects legacy runtime placement.
+
 ## CI Usage
 
-For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
+For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
 python -m pip install "luma-infra==0.1.305"

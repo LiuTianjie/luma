@@ -22,7 +22,7 @@
 | `networks` | no | string[] | Extra network names for advanced renderers; Nomad services normally use bridge or host mode. |
 | `volumes` | no | string[] | Compose-style service mounts. Named sources such as `data:/data` are mounted as named volumes (Nomad mount blocks). |
 | `storage` | no | map | Maps named volumes from `volumes` to manager storage classes. Keys must reference named volume sources. |
-| `storage.<name>.storageClass` | storage only | string | Registered Luma storage class name. |
+| `storage.<name>.storageClass` | storage only | string | Legacy storage metadata; inspect actual mounts and omit for new local deployments. |
 | `storage.<name>.path` | no | string | Subdirectory under the storage class export. |
 | `storage.<name>.accessMode` | no | `ReadWriteOnce` / `ReadWriteMany` | Informational and used for dashboard diagnosis. |
 | `storage.<name>.initialize` | no | `empty` | Explicit fresh-path acknowledgement. |
@@ -160,13 +160,13 @@ docker buildx version
 
 If needed, install Docker/buildx and refresh the Luma node agent with `luma update` on that node.
 
-3. Start or refresh the in-cluster registry on the builder. Prefer an explicit storage class; do not rely on the default `local` storage class unless `luma storage list` confirms it exists:
+3. Start or refresh the in-cluster registry on the builder. Use deployment-node local storage; no registered storage class is required:
 
 ```bash
-luma registry serve --node builder --storage-class builder-registry-nfs --port 5000
+luma registry serve --node builder --port 5000
 ```
 
-If `builder-registry-nfs` is missing or unhealthy, use a known existing class such as `cn-nfs`, or repair/register storage before continuing.
+Preserve the existing registry volume identity. Remove stale class metadata only after verifying its actual local mount.
 
 `luma registry serve` deploys `registry:2` as `luma-registry`, pins it to `builder`, and uses `<builder-tailscale-ip>:5000` for both BuildKit pushes and target-node pulls. `localhost:5000` is not valid inside the BuildKit container and is not a supported push endpoint. Luma should configure the reachable endpoint as an insecure registry on ready Linux nodes without mutating unrelated daemon proxy policy.
 
@@ -218,7 +218,7 @@ For a stateful Compose stack before completion:
 
 ### Common Failures
 
-- `registry serve` fails immediately on `storageClass: local`: the control plane probably has no `local` storage class. Re-run with an existing class such as `builder-registry-nfs` or `cn-nfs`.
+- An older `registry serve` requiring a registered `local` class needs a compatible CLI/Control update. Do not create an NFS class as a workaround.
 - A newly registered storage class times out or is missing afterwards: do not assume storage registration completed. Re-check with `luma storage list` before using it for registry data.
 - Registry allocation is `running`, port `5000` is listening, but `/v2/` returns `No route to host`: suspect stale Nomad CNI hostport rules. Recreate the registry allocation:
 
@@ -429,21 +429,19 @@ resources:
     memory: 128M
 ```
 
-### storageClass Volume
+### Local Persistent Volume
 
 ```yaml
 name: home-db
-image: postgres:16
+image: postgres:17
 region: home
 exposure: none
+replicas: 1
 volumes:
-  - pg-data:/var/lib/postgresql/data
-storage:
-  pg-data:
-    storageClass: db-storage
-    path: home-db/pg-data
-    accessMode: ReadWriteOnce
+  - home-db-data:/var/lib/postgresql/data
 ```
+
+Control records the first deployment node and preserves it on updates. Keep the exact existing volume source when updating an existing database. Legacy native `storage` fields are not evidence of an NFS runtime mount.
 
 ## Compose Sidecar Fields
 
@@ -454,13 +452,13 @@ storage:
 | `name` | yes | Stack/deployment name. Reusing it updates the same Nomad job. |
 | `compose` | yes | Relative path to the standard Compose file. Control-plane deploy rejects absolute paths and `..`. |
 | `region` | yes | Default service region: `cn`, `global`, or `home`. |
-| `volumes.<name>.storageClass` | no | Registered manager storage class. |
+| `volumes.<name>.storageClass` | no | Legacy registered shared-storage class; omit for local storage. |
 | `volumes.<name>.path` | no | Subdirectory under the storage class export. Defaults to volume name when omitted. |
 | `volumes.<name>.accessMode` | no | `ReadWriteOnce` or `ReadWriteMany`; informational and dashboard-facing. |
 | `volumes.<name>.initialize` | no | `empty` for a deliberately fresh storage path. |
 | `volumes.<name>.adopted` | no | `true` after verified manual migration/adoption. |
-| `volumes.<name>.local.node` | no | Luma node name for explicit local bind storage. |
-| `volumes.<name>.local.path` | no | Host path for `local.node` bind storage. |
+| `volumes.<name>.local.node` | no | Optional owner; inherits the deployment node through Control. |
+| `volumes.<name>.local.path` | no | Local host path; use a distinct path per application/volume. |
 | `services.<name>.region` | no | Per-service region override. |
 | `services.<name>.node` | no | Explicit Luma node pin for that service. |
 | `services.<name>.exposure` | no | `none`, `cn-edge`, `external-edge`, `tailscale-relay`, `tcp-relay`, or `cloudflare-tunnel`. |
@@ -483,14 +481,12 @@ region: cn
 
 volumes:
   pg-data:
-    storageClass: cn-nfs
-    path: postgres/pg-data
-    accessMode: ReadWriteOnce
+    local:
+      path: /srv/luma/data/app-stack/pg-data
 
   cache-data:
     local:
-      node: home-mac-mini
-      path: /opt/luma/state/cache-data
+      path: /srv/luma/data/app-stack/cache-data
 
 services:
   app:
@@ -499,45 +495,14 @@ services:
     port: 3000
 
   postgres:
-    region: home
+    exposure: none
 ```
 
 ## Storage Operations
 
-Managed NFS:
+New local volumes need no `storage set` or NFS preparation. See [Local Storage and Migration](local-storage.md) for ownership, permissions, explicit migration and retirement checks.
 
-```bash
-luma storage set cn-nfs \
-  --node <manager-or-storage-node> \
-  --path /srv/luma \
-  --region cn
-```
-
-External NFS:
-
-```bash
-luma storage set company-nfs \
-  --external \
-  --endpoint nfs.example.com:/srv/luma \
-  --region cn
-```
-
-Checks and preparation:
-
-```bash
-luma storage list
-luma storage check luma.compose.yml
-luma storage apply luma.compose.yml --dry-run
-luma storage apply luma.compose.yml
-```
-
-Storage rules:
-
-- A named volume referenced in `luma.compose.yml` must exist in `docker-compose.yml` and be mounted by at least one service.
-- Managed cross-region storage needs the storage node's Tailscale address from node registration.
-- If the same Compose volume is used by services in different regions and resolves to different storage endpoints, split it into multiple volume names.
-- Luma does not auto-copy data when switching storage backends. Use `adopted: true` only after verifying migration; use `initialize: empty` only for intentionally fresh paths.
-- Removing a deployment preserves data by default.
+`luma storage migrate` prints a manual plan; it does not stop writers or copy data. Local targets require an explicit destination node. Existing storage classes may be listed/checked during legacy recovery, but do not introduce them into new manifests.
 
 ## Validation Commands
 
@@ -552,14 +517,13 @@ Compose:
 
 ```bash
 luma compose validate luma.compose.yml
-luma compose render luma.compose.yml
-luma storage check luma.compose.yml
 luma compose deploy luma.compose.yml --dry-run
 ```
 
 CI:
 
 ```bash
+# Verify this version is published before installing.
 python -m pip install "luma-infra==0.1.305"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -609,7 +573,7 @@ luma service remove <name> --delete-storage
 - If the service needs runtime outbound network access, is `proxy: true` used instead of manual proxy boilerplate?
 - Are CPU `cpus` values quoted strings?
 - On small manager nodes, are `resources` limits/reservations reasonable?
-- For stateful services, is storage declared through `storageClass` or an explicit `local.node` pin?
+- For persistent services, are the local path/volume identity and original deployment node preserved? Do not require a storage class or silently move an offline owner.
 - For `tailscale-relay` or `tcp-relay`, is `publishPort` free on the target node?
 - For Compose, are storage backend changes guarded with `adopted: true` or `initialize: empty`?
 - Should the service be public, or is `exposure: none` safer?

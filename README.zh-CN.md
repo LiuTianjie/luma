@@ -442,7 +442,7 @@ luma secret set DATABASE_URL --scope app
 | [docs/release.md](docs/release.md) | 发布 tag、安装器和 control image 的流程。 |
 | [docs/agent-skill.md](docs/agent-skill.md) | Luma / LAE Agent Skill 的安装与使用。 |
 | [docs/lae/README.md](docs/lae/README.md) | LAE 产品设计、CLI/Skill 契约与 validation 状态。 |
-| [docs/compose-storage.zh-CN.md](docs/compose-storage.zh-CN.md) | Docker Compose 部署与 NFS/本地共享存储的管理和迁移说明。 |
+| [docs/compose-storage.md](docs/compose-storage.md) | Docker Compose 部署、部署节点本地存储和旧 NFS 迁移说明。 |
 
 ## Agent Skill
 
