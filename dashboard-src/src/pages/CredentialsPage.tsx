@@ -1,3 +1,4 @@
+import "./resourceWorkspaces.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, GitBranch, KeyRound, LockKeyhole, PackageCheck, ShieldCheck } from "lucide-react";
 import {
@@ -364,7 +365,7 @@ export function CredentialsPage({
   };
 
   return (
-    <>
+    <div className="settings-workspace">
       <PageHeader
         meta={{
           metrics: [],
@@ -460,7 +461,7 @@ export function CredentialsPage({
                         <ChevronDown className="secret-group-chevron" size={16} aria-hidden="true" />
                       </button>
                       {expanded ? (
-                        <div className="table-wrap secret-group-table" id={contentId}>
+                        <div className="table-wrap secret-group-table" id={contentId} tabIndex={0} role="region" aria-label={zh ? "密钥列表，可横向滚动" : "Secrets, horizontally scrollable"}>
                           <table className="credentials-table">
                             <thead>
                               <tr>
@@ -507,7 +508,7 @@ export function CredentialsPage({
           ) : null}
 
           {activeTab === "registries" ? (
-            <div className="table-wrap">
+            <div className="table-wrap" tabIndex={0} role="region" aria-label={zh ? "配置列表，可横向滚动" : "Configuration list, horizontally scrollable"}>
               <table className="credentials-table">
                 <thead>
                   <tr>
@@ -543,7 +544,7 @@ export function CredentialsPage({
           ) : null}
 
           {activeTab === "git" ? (
-            <div className="table-wrap">
+            <div className="table-wrap" tabIndex={0} role="region" aria-label={zh ? "配置列表，可横向滚动" : "Configuration list, horizontally scrollable"}>
               <table className="credentials-table">
                 <thead>
                   <tr>
@@ -581,7 +582,7 @@ export function CredentialsPage({
           ) : null}
 
           {activeTab === "storage" ? (
-            <div className="table-wrap">
+            <div className="table-wrap" tabIndex={0} role="region" aria-label={zh ? "配置列表，可横向滚动" : "Configuration list, horizontally scrollable"}>
               <table className="credentials-table">
                 <thead>
                   <tr>
@@ -734,6 +735,6 @@ export function CredentialsPage({
         </article> : null}
       </section>
       {confirmDialog}
-    </>
+    </div>
   );
 }

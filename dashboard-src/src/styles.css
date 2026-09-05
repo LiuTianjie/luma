@@ -483,9 +483,10 @@ textarea:focus-visible {
 
 .luma-select-option span {
   min-width: 0;
-  /* Menu sizes to content (max-content), so option labels show in full rather than
-     clipping to "sinc…". Keep single-line; the menu's max-width caps extreme cases. */
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  padding: 6px 0;
 }
 
 .luma-select-option:hover:not(:disabled),
@@ -1294,8 +1295,9 @@ tbody tr,
   color: var(--text);
   font-size: var(--text-lead);
   font-weight: 700;
-  line-height: 1.2;
-  white-space: nowrap;
+  line-height: 1.3;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .panel-heading > span,
@@ -1371,23 +1373,13 @@ tbody tr,
 }
 
 code {
-  display: inline-flex;
-  max-width: 100%;
-  min-height: 24px;
-  align-items: center;
-  padding: var(--space-3xs) var(--space-sm);
-  overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--text-meta);
-  font-weight: 500;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--text-muted);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
+pre code { display: block; white-space: inherit; overflow-wrap: inherit; color: inherit; }
 
 .badge-group {
   display: flex;
@@ -2400,7 +2392,7 @@ tbody tr.is-selected {
 
 .node-tile-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
   gap: var(--space-sm);
 }
 
@@ -4387,7 +4379,7 @@ tbody tr.is-selected {
 .deploy-yaml-editor-grid,
 .deploy-yaml-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
   gap: var(--space-lg);
 }
 
@@ -4646,7 +4638,7 @@ dd {
 }
 
 .application-service-grid {
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
 }
 
 .deployment-config-heading {
@@ -6832,6 +6824,7 @@ dd {
   --line-soft: #e8e8e8;
   --line-strong: #8d8d8d;
   --btn-bg: #393939;
+  --btn-text: #ffffff;
   --btn-bg-hover: #474747;
   --btn-border: #393939;
 }
@@ -7143,3 +7136,26 @@ tbody tr:hover { background: var(--surface-quiet); }
   .detail-properties { grid-template-columns: minmax(0, 1fr); }
   .overview-summary-item > small { line-height: 1.5; }
 }
+
+/* Shrink page regions to their available track; wide data scrolls locally. */
+.page-route, .page-route > *, .panel, .panel > *, .application-detail-body,
+.application-detail-section, .detail-section, .page-toolbar-side,
+.page-toolbar-copy, .panel-heading > *, .node-fleet-header > * {
+  min-width: 0;
+}
+.application-detail-body, .application-detail-section { grid-template-columns: minmax(0, 1fr); }
+.panel-heading, .deployment-config-heading, .logs-heading { flex-wrap: wrap; }
+.table-wrap, .registry-table-wrap, .alert-table-scroll { min-width: 0; max-width: 100%; width: 100%; }
+.page-route pre { min-width: 0; max-width: 100%; overflow: auto; }
+.primary-cell strong, .primary-cell small { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 1180px) {
+  .page-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .page-toolbar-side { justify-content: flex-start; flex-wrap: wrap; max-width: 100%; }
+  .page-toolbar-metrics { display: grid; grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: repeat(auto-fit, minmax(min(100%, 100px), 1fr)); width: 100%; }
+  .page-toolbar-metrics span { min-width: 0; padding: 0 12px; }
+}
+.application-workspace .data-table { table-layout: fixed; min-width: 720px; }
+.application-workspace .data-table th:first-child { width: 40%; }
+.application-workspace .data-table th:last-child { width: 180px; }
+.application-workspace .data-table td { white-space: normal; overflow-wrap: anywhere; }
+.application-workspace .data-table td > small { white-space: normal; max-width: 100%; }

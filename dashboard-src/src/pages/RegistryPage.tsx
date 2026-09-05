@@ -1,3 +1,4 @@
+import "./resourceWorkspaces.css";
 import {
   AlertTriangle,
   Boxes,
@@ -307,7 +308,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   };
 
   return (
-    <>
+    <div className="registry-workspace">
       <InfrastructureNavigation lang={lang} />
       <PageHeader
         meta={{
@@ -409,14 +410,14 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
             </div>
             <button type="button" className="danger" disabled={!selected.size || !!busy} onClick={() => void openDeletePreview()}><Trash2 size={15} /> {zh ? `删除并回收 ${selected.size} 项` : `Delete and reclaim ${selected.size}`}</button>
           </div>
-          <div className="table-wrap registry-table-wrap">
+          <div className="table-wrap registry-table-wrap" tabIndex={0} role="region" aria-label={zh ? "镜像列表，可横向滚动" : "Image inventory, horizontally scrollable"}>
             <table className="registry-table">
               <thead><tr><th><input type="checkbox" checked={allVisibleSelected} aria-label={zh ? "选择所有可操作项" : "Select all actionable items"} onChange={() => setSelected((current) => { const next = new Set(current); selectable.forEach((item) => allVisibleSelected ? next.delete(keyFor(item)) : next.add(keyFor(item))); return next; })} /></th><th>{zh ? "仓库 / Digest" : "Repository / Digest"}</th><th>Tags</th><th>{zh ? "平台" : "Platforms"}</th><th>{zh ? "体积" : "Size"}</th><th>{zh ? "创建时间" : "Created"}</th><th>{zh ? "保护状态" : "Protection"}</th></tr></thead>
               <tbody>
                 {entries.map((item) => {
                   return <tr key={keyFor(item)} className={selected.has(keyFor(item)) ? "selected" : ""}>
                     <td><input type="checkbox" checked={selected.has(keyFor(item))} onChange={() => toggle(item)} aria-label={`${item.repository} ${item.digest}`} /></td>
-                    <td><span className="registry-repository"><a href={toHref(`/registry/image?image=${encodeURIComponent(keyFor(item))}`)} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(`/registry/image?image=${encodeURIComponent(keyFor(item))}`); }}>{item.repository}</a><CodeCell value={item.digest.replace("sha256:", "sha256:​")} /></span></td>
+                    <td><span className="registry-repository"><a href={toHref(`/registry/image?image=${encodeURIComponent(keyFor(item))}`)} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(`/registry/image?image=${encodeURIComponent(keyFor(item))}`); }}>{item.repository}</a><CodeCell value={item.digest} /></span></td>
                     <td><span className="registry-tags">{(item.tags || []).slice(0, 4).map((tag) => <code key={tag}>{tag}</code>)}{(item.tags || []).length > 4 ? <small>+{item.tags.length - 4}</small> : null}</span></td>
                     <td><span className="registry-platforms">{(item.platforms || []).length ? item.platforms?.map((platform) => <small key={platform}>{platform}</small>) : <small>-</small>}</span></td>
                     <td>{formatBytes(item.logicalBytes)}</td>
@@ -466,7 +467,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         </section> : null}
       </main>
 
-      {section === "image" ? <section className="panel">
+      {section === "image" ? <section className="panel registry-image-detail">
         <button type="button" className="ghost" onClick={() => navigate("/registry")}>{zh ? "返回镜像" : "Back to images"}</button>
         {detail ? <><h2>{detail.repository}</h2><CodeCell value={detail.digest} /><dl className="detail-grid">
           <div><dt>Tags</dt><dd>{detail.tags?.join(", ") || "—"}</dd></div>
@@ -481,7 +482,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           {detailStatus === "error" || detailStatus === "missing" ? <button type="button" className="ghost" onClick={() => setDetailRevision((value) => value + 1)}>{zh ? "重新查询" : "Retry lookup"}</button> : null}
         </div>}
       </section> : null}
-      {section === "delete" && !preview ? <section className="panel"><h2>{zh ? "重新选择清理范围" : "Select cleanup scope"}</h2><p>{zh ? "为确保清理范围准确，刷新页面后需要重新选择镜像并分析。" : "After refreshing, select images and preview again to confirm the exact cleanup scope."}</p><button type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像列表" : "Back to images"}</button></section> : null}
+      {section === "delete" && !preview ? <section className="panel registry-image-detail"><h2>{zh ? "重新选择清理范围" : "Select cleanup scope"}</h2><p>{zh ? "为确保清理范围准确，刷新页面后需要重新选择镜像并分析。" : "After refreshing, select images and preview again to confirm the exact cleanup scope."}</p><button type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像列表" : "Back to images"}</button></section> : null}
       {section === "delete" && preview ? (
           <section className="panel registry-delete-page" aria-labelledby="registry-delete-title">
             <div className="registry-dialog-icon"><Trash2 size={22} /></div>
@@ -491,7 +492,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                 ? `将删除 ${preview.selected?.length || 0} 个顶层 manifest 与 ${preview.dependentManifests?.length || 0} 个仅由它们引用的平台 manifest，然后立即回收其 blob。指向同一 digest 的 tag 会一起删除。`
                 : `Deletes ${preview.selected?.length || 0} root manifests plus ${preview.dependentManifests?.length || 0} platform manifests referenced only by them, then reclaims their blobs immediately. Every tag pointing to the same digest is deleted together.`}
             </p>
-            <div className="table-wrap"><table><thead><tr><th>{zh ? "选中镜像" : "Selected image"}</th><th>Digest</th><th>Tags</th></tr></thead><tbody>{preview.selected?.map((item) => <tr key={keyFor(item)}><td>{item.repository}</td><td><CodeCell value={item.digest} /></td><td>{item.tags?.join(", ") || "—"}</td></tr>)}</tbody></table></div>
+            <div className="table-wrap" tabIndex={0} role="region" aria-label={zh ? "待删除镜像，可横向滚动" : "Selected images, horizontally scrollable"}><table><thead><tr><th>{zh ? "选中镜像" : "Selected image"}</th><th>Digest</th><th>Tags</th></tr></thead><tbody>{preview.selected?.map((item) => <tr key={keyFor(item)}><td>{item.repository}</td><td><CodeCell value={item.digest} /></td><td>{item.tags?.join(", ") || "—"}</td></tr>)}</tbody></table></div>
             <div className="registry-dialog-summary">
               <span>
                 <strong>{preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0}</strong>
@@ -542,6 +543,6 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
 
       ) : null}
       {confirmDialog}
-    </>
+    </div>
   );
 }

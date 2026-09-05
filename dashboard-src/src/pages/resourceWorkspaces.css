@@ -1,0 +1,99 @@
+/* Resource pages own their containment: long identifiers remain readable/copyable. */
+.registry-workspace,
+.settings-workspace {
+  display: grid;
+  min-width: 0;
+  max-width: 100%;
+  gap: var(--space-lg);
+  container-type: inline-size;
+}
+.registry-workspace *,
+.settings-workspace * { box-sizing: border-box; }
+.registry-workspace :is(.panel, .registry-page, .registry-alert > span, .registry-search, .registry-policy-grid label, .detail-grid > div),
+.settings-workspace :is(.panel, .credentials-layout, .secret-groups, .secret-group, .secret-group-copy, .credential-form, .field) {
+  min-width: 0;
+  max-width: 100%;
+}
+.registry-workspace :is(p, h2, h3, small, strong, code, a, dd, li),
+.settings-workspace :is(p, h2, h3, small, strong, code, .badge) {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.registry-workspace .table-wrap,
+.settings-workspace .table-wrap {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.registry-workspace .table-wrap:focus-visible,
+.settings-workspace .table-wrap:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.registry-workspace table {
+  width: 100%;
+  min-width: 760px;
+  table-layout: fixed;
+}
+.registry-workspace .registry-table th:first-child { width: 40px; }
+.registry-workspace .registry-table th:nth-child(2) { width: 25%; }
+.registry-workspace .registry-table th:nth-child(3) { width: 18%; }
+.registry-workspace .registry-table th:nth-child(5) { width: 85px; }
+.registry-workspace :is(td, th),
+.settings-workspace :is(td, th) { white-space: normal; overflow-wrap: anywhere; }
+.registry-workspace .registry-repository code,
+.registry-workspace .registry-tags code,
+.registry-workspace .registry-queue-row > span :is(strong, small),
+.registry-workspace .registry-usage-card > small,
+.settings-workspace .primary-cell :is(strong, small),
+.settings-workspace .secret-group-copy :is(strong, small),
+.settings-workspace td .badge {
+  max-width: 100%;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+.registry-workspace .registry-tags code { min-width: 0; }
+.registry-workspace .registry-inventory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.registry-workspace .registry-search { flex: 1 1 220px; }
+.registry-workspace .registry-filters { flex-wrap: wrap; }
+.registry-workspace .registry-alert > svg { flex-shrink: 0; }
+.registry-workspace :is(input:not([type="checkbox"]), select),
+.settings-workspace :is(input, .luma-select) { min-width: 0; width: 100%; max-width: 100%; }
+.registry-workspace .registry-image-detail > code { display: block; white-space: pre-wrap; }
+.registry-workspace .registry-image-detail dd { margin-inline-start: 0; }
+.registry-workspace .registry-delete-page table { min-width: 540px; }
+.registry-workspace .registry-delete-page :is(.registry-dialog-actions, .registry-dialog-summary) { flex-wrap: wrap; }
+.settings-workspace .credentials-table { width: 100%; min-width: 520px; table-layout: fixed; }
+.settings-workspace .credentials-table :is(td:last-child, th:last-child) { width: 124px; }
+.settings-workspace .credentials-table td button { margin-block: 2px; }
+.settings-workspace .credentials-tabs { width: 100%; flex-wrap: wrap; overflow: visible; }
+.settings-workspace .secret-groups-toolbar { flex-wrap: wrap; }
+.settings-workspace .credentials-aside { width: 100%; }
+.settings-workspace .credential-form > button { white-space: normal; }
+@container (max-width: 800px) {
+  .registry-workspace .registry-usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .registry-workspace .registry-lifecycle-grid,
+  .registry-workspace .registry-growth-panel { grid-template-columns: minmax(0, 1fr); }
+  .registry-workspace .registry-policy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .registry-workspace .registry-queue-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .registry-workspace .registry-queue-row > div { grid-column: 1 / -1; flex-wrap: wrap; padding-bottom: 12px; }
+  .registry-workspace .registry-growth-bars { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+@container (max-width: 480px) {
+  .registry-workspace .registry-policy-grid { grid-template-columns: minmax(0, 1fr); }
+  .registry-workspace .registry-usage-card { padding: var(--space-md); }
+}
+.registry-workspace td code,
+.settings-workspace td code { white-space: normal; overflow-wrap: anywhere; }
+.registry-workspace .registry-image-detail .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@container (max-width: 600px) {
+  .registry-workspace .registry-image-detail .detail-grid { grid-template-columns: minmax(0, 1fr); }
+}

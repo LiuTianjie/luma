@@ -10,6 +10,7 @@ import { toHref, useRouter } from "../router";
 import type { DashboardNode, Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
+import "./InfrastructureWorkspace.css";
 
 function readyNode(node: DashboardNode) {
   return (node.state || "").toLowerCase() === "ready" && (node.availability || "").toLowerCase() !== "drain";
@@ -73,25 +74,27 @@ export function NodesPage({
   };
 
   return (
-    <>
+    <div className="infrastructure-workspace">
       <InfrastructureNavigation lang={lang} />
       <PageHeader
         meta={{
           eyebrow: zh ? "节点舰队" : "Fleet",
           title: section === "join" ? (zh ? "加入节点" : "Join a node") : section === "regions" ? (zh ? "区域管理" : "Regions") : section === "maintenance" ? (zh ? "系统维护" : "System maintenance") : section === "network" ? (zh ? "网络与拓扑" : "Network and topology") : (zh ? "节点" : "Nodes"),
-          description: zh
-            ? "这里聚合已注册节点、Nomad 调度状态、节点 agent 心跳和终端可用性。"
-            : "Inspect registered nodes, Nomad state, node-agent heartbeat, and terminal readiness.",
-          metrics: [
+          description: section === "join" ? (zh ? "在目标机器上安装并接入当前集群。" : "Connect a host to this cluster.")
+            : section === "regions" ? (zh ? "管理调度区域及其出口策略。" : "Manage scheduling regions and egress policies.")
+            : section === "maintenance" ? (zh ? "检查路由，升级控制面和节点，并追踪任务结果。" : "Check routes, upgrade the control plane and agents, and track results.")
+            : section === "network" ? (zh ? "查看入口流量路径、证书和节点拓扑。" : "Inspect ingress paths, certificates, and node topology.")
+            : (zh ? "查看节点资源、调度状态与终端可用性。" : "Inspect node resources, scheduling state, and terminal availability."),
+          metrics: section === "nodes" ? [
             { label: zh ? "Ready 节点" : "Ready nodes", value: `${ready}/${vm.nodes.length}` },
             { label: zh ? "Ready Agent" : "Ready agents", value: `${agents}/${vm.nodes.length}` },
             { label: zh ? "Manager" : "Managers", value: managers },
             { label: "Terminal", value: terminalNodes },
-          ],
+          ] : [],
         }}
       />
 
-      <nav className="workspace-tabs" aria-label={zh ? "节点管理" : "Node management"}>
+      {section !== "network" && <nav className="workspace-tabs" aria-label={zh ? "节点管理" : "Node management"}>
         {[
           ["nodes", "/fleet", zh ? "节点列表" : "All nodes"],
           ["join", "/fleet/join", zh ? "加入节点" : "Join node"],
@@ -101,7 +104,7 @@ export function NodesPage({
           if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
           event.preventDefault(); navigate(href);
         }}>{label}</a>)}
-      </nav>
+      </nav>}
 
       {section === "unknown" && <div className="empty-inline"><p>{zh ? "此基础设施页面不存在。" : "This infrastructure page does not exist."}</p><button type="button" onClick={() => navigate("/fleet")}>{zh ? "返回节点列表" : "Back to nodes"}</button></div>}
       {section === "nodes" && <NodeFleetMap lang={lang} nodes={vm.nodes} services={vm.services} onSelect={onSelectNode} onTerminal={onTerminal} />}
@@ -110,7 +113,6 @@ export function NodesPage({
       {section === "join" && <article className="panel fleet-command-panel">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">{zh ? "加入节点" : "Join node"}</p>
             <h2>{zh ? "在目标机器上执行" : "Run on the target host"}</h2>
           </div>
           <button type="button" className="ghost" onClick={() => void copyCommand()}>
@@ -122,7 +124,7 @@ export function NodesPage({
         <pre className="command-snippet"><code>{command}</code></pre>
         <p>
           {zh
-            ? "控制域名已按当前访问地址填好。把 <node-join-token> 换成 luma node join token，--region 换成上面创建的 Region 名，<node-name> 换成节点名后在目标机器执行。"
+            ? "控制域名已按当前访问地址填好。把 <node-join-token> 换成 luma node join token，--region 换成区域管理中创建的 Region 名，<node-name> 换成节点名后在目标机器执行。"
             : "The control domain is filled from the current address. Replace <node-join-token> with a node join token, --region with a created region name, and <node-name> with the node name, then run it on the target host."}
         </p>
       </article>}
@@ -139,6 +141,6 @@ export function NodesPage({
         <TrafficPaths lang={lang} paths={vm.trafficPaths} theme={theme} token={token} onRefresh={onRefresh} />
         <NodeTopology lang={lang} nodes={vm.nodes} services={vm.services} theme={theme} />
       </div>}
-    </>
+    </div>
   );
 }

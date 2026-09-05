@@ -1,3 +1,4 @@
+import "./builder.css";
 import { ArrowLeft, ChevronDown, GitBranch, Rocket, Server, Settings2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -298,26 +299,14 @@ export function GithubImportPanel({
   };
 
   return (
-    <>
-      <div className="panel-heading deploy-heading">
-        <div>
-          <p className="eyebrow">{zh ? "仓库导入" : "Repository import"}</p>
-          <h2>{zh ? "从 Git provider 构建并部署" : "Build and deploy from a Git provider"}</h2>
-          <small className="deploy-context-label">
-            {zh
-              ? "选择 GitHub 或 Gitea 账户、仓库和分支，在声明的构建节点构建镜像并推送到内部 registry。"
-              : "Choose a GitHub or Gitea account, repository, and ref; build on a declared builder node and push to the internal registry."}
-          </small>
-        </div>
-        <div className="deploy-heading-actions">
-          {onBack ? (
-            <button type="button" className="ghost" onClick={onBack}>
-              <ArrowLeft size={16} aria-hidden="true" />
-              {zh ? "返回模板" : "Back to templates"}
-            </button>
-          ) : null}
-        </div>
-      </div>
+    <section className="git-build-workspace">
+      <header className="git-build-header">
+        <button type="button" className="ghost git-build-back" onClick={() => onBack ? onBack() : router.navigate("/deployments")}><ArrowLeft size={16} aria-hidden="true" />{onBack ? (zh ? "返回模板" : "Back to templates") : (zh ? "返回交付记录" : "Back to delivery")}</button>
+        <p className="eyebrow">{zh ? "交付 / 新建构建" : "Delivery / New build"}</p>
+        <h1>{zh ? "从 Git 构建并部署" : "Build and deploy from Git"}</h1>
+        <p>{zh ? "选择代码来源和构建节点。部署配置默认沿用仓库，也可以在下方覆盖。" : "Choose a source and build node. Use the repository’s deployment configuration or override it below."}</p>
+        <div className="git-build-context"><span>{zh ? "可用构建节点" : "Available build nodes"} <strong>{candidates.length}</strong></span><span>Registry <code>{clusterRegistryHost || (zh ? "尚未配置" : "Not configured")}</code></span></div>
+      </header>
 
       <div className="deploy-form-stack">
         <section className="deploy-config-section">
@@ -577,7 +566,7 @@ export function GithubImportPanel({
           {status === "running" ? (zh ? "构建并部署中..." : "Building and deploying...") : (zh ? "构建并部署" : "Build and deploy")}
         </button>
       </div>
-    </>
+    </section>
   );
 }
 

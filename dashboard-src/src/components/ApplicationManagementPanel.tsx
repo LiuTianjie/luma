@@ -1,3 +1,5 @@
+import { ApplicationProperties, ApplicationVersionEntry } from "./ApplicationProperties";
+import "./ApplicationManagementPanel.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileText, History, Loader2, MoreHorizontal, Pencil, RotateCw, Search, Settings2, SquareTerminal } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
@@ -99,6 +101,7 @@ export function ApplicationManagementPanel({
   }, []);
   const [deploymentConfig, setDeploymentConfig] = useState<DeploymentConfig | null>(null);
   const [deploymentConfigFor, setDeploymentConfigFor] = useState("");
+  const [configCopyNotice, setConfigCopyNotice] = useState("");
   const [configTab, setConfigTab] = useState<ConfigTab>("manifest");
   const [actionError, setActionError] = useState("");
   const [actionNotice, setActionNotice] = useState("");
@@ -375,6 +378,7 @@ export function ApplicationManagementPanel({
   };
   useEffect(() => {
     setConfigBusy("");
+    setConfigCopyNotice("");
     if (!selected) return;
     setActionError("");
     if (tab === "config") void openConfig(selected);
@@ -408,12 +412,15 @@ export function ApplicationManagementPanel({
         </nav>
         <div className="application-detail-body">
           {tab === "overview" ? <>
-          <section className="application-overview-grid">
-            <article><span>{t(lang, "status")}</span><strong>{localizeState(lang, selected.status)}</strong></article>
-            <article><span>{t(lang, "replicas")}</span><strong>{selected.running}/{selected.desired}</strong></article>
-            <article><span>{t(lang, "region")}</span><strong>{selected.regions.join(", ")}</strong></article>
-            <article><span>{t(lang, "nodes")}</span><strong>{selected.nodes.join(", ") || "-"}</strong></article>
-            <article><span>{t(lang, "exposure")}</span><strong>{selected.exposure}</strong></article>
+          <section className="application-detail-section application-runtime-summary">
+            <h3>{lang === "zh" ? "运行状态" : "Runtime"}</h3>
+            <ApplicationProperties items={[
+              { label: t(lang, "status"), value: <StatePill value={selected.status} label={localizeState(lang, selected.status)} /> },
+              { label: t(lang, "replicas"), value: `${selected.running}/${selected.desired}` },
+              { label: t(lang, "region"), value: selected.regions.join(", ") || "-" },
+              { label: t(lang, "nodes"), value: selected.nodes.join(", ") || "-" },
+              { label: t(lang, "exposure"), value: selected.exposure },
+            ]} />
           </section>
           <section className="application-detail-section">
             <h3>{t(lang, "accessAddress")}</h3>
@@ -443,16 +450,12 @@ export function ApplicationManagementPanel({
                     const isCurrent = index === 0;
                     const isBusy = targetVersion !== null && selectedRollback.busyVersion === targetVersion;
                     return (
-                      <div className={isCurrent ? "version-history-row current" : "version-history-row"} key={`${version.version ?? "unknown"}-${index}`}>
-                        <div className="version-history-main">
-                          <strong>v{version.version ?? "-"}</strong>
-                          <CodeCell value={version.image || "-"} />
-                        </div>
-                        <div className="version-history-meta">
-                          <Badge value={version.stable ? t(lang, "stableVersion") : "-"} />
-                          <span>{t(lang, "submitted")}: {versionSubmittedLabel(version.submitTime)}</span>
-                        </div>
-                        <div className="version-history-action">
+                      <ApplicationVersionEntry key={`${version.version ?? "unknown"}-${index}`}
+                        version={`v${version.version ?? "-"}`} current={isCurrent}
+                        image={version.image || "-"} imageLabel={t(lang, "image")}
+                        submitted={versionSubmittedLabel(version.submitTime)} submittedLabel={t(lang, "submitted")}
+                        stable={version.stable ? <Badge value={t(lang, "stableVersion")} /> : undefined}
+                        action={<>
                           {isCurrent ? (
                             <Badge value={t(lang, "currentVersion")} />
                           ) : targetVersion === null ? (
@@ -462,8 +465,8 @@ export function ApplicationManagementPanel({
                               {isBusy ? t(lang, "rollingBack") : t(lang, "rollbackToVersion")}
                             </button>
                           )}
-                        </div>
-                      </div>
+                        </>}
+                      />
                     );
                   })}
                 </div>
@@ -481,15 +484,20 @@ export function ApplicationManagementPanel({
                   <span>{t(lang, "source")}: {selectedConfig.sourceName || "-"} · {t(lang, "lastUpdated")}: {formatTimestamp(selectedConfig.updatedAt)}</span>
                 </div>
                 <div className="deployment-config-tabs">
+                  <button type="button" disabled={!selectedConfigContent} onClick={() => {
+                    setConfigCopyNotice("");
+                    void Promise.resolve().then(() => navigator.clipboard.writeText(selectedConfigContent || "")).then(() => setConfigCopyNotice(lang === "zh" ? "已复制完整配置" : "Full configuration copied")).catch(() => setConfigCopyNotice(lang === "zh" ? "复制失败，请在配置区域选择并复制" : "Copy failed; select and copy the configuration below"));
+                  }}>{lang === "zh" ? "复制配置" : "Copy configuration"}</button>
                   {selectedConfigTabs.map((tab) => (
-                    <button type="button" className={configTab === tab ? "active" : ""} key={tab} onClick={() => setConfigTab(tab)}>
+                    <button type="button" className={configTab === tab ? "active" : ""} key={tab} onClick={() => { setConfigTab(tab); setConfigCopyNotice(""); }}>
                       {tab === "compose" ? t(lang, "composeFile") : t(lang, "lumaManifest")}
                     </button>
                   ))}
                 </div>
               </div>
+              {configCopyNotice ? <p role="status">{configCopyNotice}</p> : null}
               {selectedConfigContent ? (
-                <pre className="deployment-config-code"><code>{selectedConfigContent}</code></pre>
+                <pre tabIndex={0} aria-label={t(lang, "deploymentConfig")} className="deployment-config-code"><code>{selectedConfigContent}</code></pre>
               ) : (
                 <p className="deployment-config-empty">{t(lang, "noDeploymentConfig")}</p>
               )}
@@ -557,11 +565,14 @@ export function ApplicationManagementPanel({
           {tab === "overview" ? <section className="application-detail-section">
             <h3>{lang === "zh" ? "存储与诊断" : "Storage and diagnostics"}</h3>
             <div className="application-diagnostics-list">
-              {selectedVolumes.length ? selectedVolumes.map((volume) => (
-                <div key={`${volume.name}-${volume.storageClass}-${volume.node}`}>
-                  <strong>{volume.name}</strong>
-                  <span>{volume.kind || "unmanaged"} / {volume.storageClass || volume.node || "-"}</span>
-                </div>
+              {selectedVolumes.length ? selectedVolumes.map((volume, index) => (
+                <article className="application-volume-entry" key={`${volume.name}-${volume.storageClass}-${volume.node}-${index}`}>
+                  <ApplicationProperties items={[
+                    { label: lang === "zh" ? "卷 / 路径" : "Volume / path", value: <code className="application-full-value">{volume.name}</code> },
+                    { label: lang === "zh" ? "类型" : "Type", value: volume.kind || "unmanaged" },
+                    { label: lang === "zh" ? "存储类 / 节点" : "Storage class / node", value: volume.storageClass || volume.node || "-" },
+                  ]} />
+                </article>
               )) : <p>{lang === "zh" ? "未发现应用卷" : "No application volumes found"}</p>}
               {selectedDiagnostics.length ? selectedDiagnostics.map((item) => <p key={item}>{item}</p>) : <p>{lang === "zh" ? "暂无诊断告警" : "No diagnostic warnings"}</p>}
             </div>

@@ -35,3 +35,19 @@
 .history-retention-note { padding: var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--well); color: var(--text-muted); }
 .history-retention-note p { margin: 0 0 var(--space-xs); }
 .history-retention-note small { color: var(--text-subtle); }
+
+/* Record details are full pages. Long repository names, IDs and log lines must
+   wrap within their own column instead of widening the application shell. */
+.history-detail-page { min-width: 0; width: 100%; max-width: 1280px; }
+.history-detail-page > dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; margin: 0; }
+.history-detail-page > dl > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; min-width: 0; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.history-detail-page dt { color: var(--text-muted); font-size: 12px; }
+.history-detail-page dd { margin: 0; min-width: 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.history-detail-page dd code, .history-detail-page dd .code-cell { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.history-detail-page section, .history-detail-page .alert, .history-detail-page .deploy-step-log { min-width: 0; max-width: 100%; }
+.history-detail-page .alert { flex-wrap: wrap; overflow-wrap: anywhere; }
+.history-detail-page .deploy-step-log { overflow: auto; }
+.history-detail-page .deploy-step-log li, .history-detail-page .deploy-step-log pre, .history-detail-page .deploy-step-log code { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.history-detail-page .page-header h1 { overflow-wrap: anywhere; }
+@media (max-width: 860px) { .history-detail-page > dl { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 480px) { .history-detail-page > dl > div { grid-template-columns: 72px minmax(0, 1fr); gap: 8px; } }

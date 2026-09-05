@@ -1,0 +1,54 @@
+/* Git imports share deploy field controls, not the deployment editor's sizing. */
+.git-build-workspace {
+  display: block; width: 100%; max-width: 1200px; margin: 0 auto;
+  min-width: 0; height: auto; overflow: visible;
+}
+.git-build-workspace .git-build-header { display: block; margin: 0 0 24px; }
+.git-build-workspace .git-build-back { min-height: 32px; padding: 0; color: var(--accent); font-size: 13px; margin-bottom: 16px; }
+.git-build-workspace .git-build-header h1 { margin: 6px 0 12px; font-size: 28px; line-height: 1.25; font-weight: 400; letter-spacing: -.4px; }
+.git-build-workspace .git-build-header > p:not(.eyebrow) { margin: 0; max-width: 720px; font-size: 14px; line-height: 1.6; color: var(--text-muted); }
+.git-build-workspace .git-build-context { display: flex; flex-wrap: wrap; gap: 12px 28px; margin-top: 20px; font-size: 12px; color: var(--text-muted); }
+.git-build-workspace .git-build-context > span { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.git-build-workspace .git-build-context code { font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.git-build-workspace .git-build-context strong { color: var(--text); font-weight: 500; }
+.git-build-workspace > .deploy-form-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-content: start; width: 100%; padding: 0 28px 24px; border: 1px solid var(--line); background: var(--surface); }
+.git-build-workspace .deploy-config-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-content: start; min-width: 0; padding: 28px 0; }
+.git-build-workspace .deploy-config-section > header { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 12px; }
+.git-build-workspace .deploy-config-section > header > span { width: 26px; height: 26px; background: var(--well); color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.git-build-workspace .deploy-config-section h3 { font-size: 16px; font-weight: 500; }
+.git-build-workspace .deploy-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px 24px; width: 100%; max-width: 960px; align-items: start; }
+.git-build-workspace .deploy-field-grid-single { grid-template-columns: minmax(0, 468px); }
+.git-build-workspace .deploy-field-grid label,
+.git-build-workspace .deploy-manifest-field { min-width: 0; display: grid; gap: 8px; color: var(--text); font-size: 13px; }
+.git-build-workspace input, .git-build-workspace textarea, .git-build-workspace select { min-width: 0; width: 100%; max-width: 100%; }
+.git-build-workspace .deploy-field-wide { grid-column: 1 / -1; }
+.git-build-workspace .deploy-manifest-field { margin-top: 0; max-width: 960px; }
+.git-build-workspace .deploy-manifest-field textarea { min-height: 144px; resize: vertical; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; }
+.git-build-workspace .deploy-muted { margin: 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.git-build-workspace .repository-source-tabs { display: flex; flex-wrap: wrap; gap: 0; padding: 0; background: none; border-bottom: 1px solid var(--line); max-width: 960px; }
+.git-build-workspace .repository-source-tabs > button { flex: 0 0 auto; min-height: 42px; padding: 10px 20px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); }
+.git-build-workspace .repository-source-tabs > button.active { border-bottom-color: var(--accent); color: var(--text); }
+.git-build-workspace .registry-setup { min-width: 0; max-width: 960px; }
+.git-build-workspace .registry-status-strip { min-width: 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; background: var(--well); }
+.git-build-workspace .registry-status-strip > span { flex: 1; min-width: 0; }
+.git-build-workspace .registry-status-strip small { display: block; white-space: normal; overflow-wrap: anywhere; }
+.git-build-workspace .registry-setup-row { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 16px; }
+.git-build-workspace .registry-setup-row > label { flex: 1 1 280px; min-width: 0; }
+.git-build-workspace .registry-setup-row > button { flex: 0 0 auto; max-width: 100%; }
+.git-build-workspace .form-disclosure-toggle { justify-content: flex-start; justify-self: start; max-width: 100%; white-space: normal; font-size: 13px; }
+.git-build-workspace .form-disclosure-body { min-width: 0; max-width: 960px; }
+.git-build-workspace .alert { min-width: 0; max-width: 100%; overflow-wrap: anywhere; margin: 12px 0 0; }
+.git-build-workspace .deploy-step-log { max-width: 100%; min-width: 0; max-height: 420px; overflow: auto; }
+.git-build-workspace .deploy-step-log li { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.git-build-workspace > .deploy-action-bar { display: flex; position: static; align-items: center; flex-wrap: wrap; gap: 16px; margin: 0; padding: 20px 0 28px; width: 100%; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.git-build-workspace > .deploy-action-bar > div { flex: 1 1 280px; min-width: 0; display: grid; gap: 4px; }
+.git-build-workspace > .deploy-action-bar strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.git-build-workspace > .deploy-action-bar span { font-size: 12px; color: var(--text-muted); white-space: normal; overflow-wrap: anywhere; }
+.git-build-workspace > .deploy-action-bar > button { flex: 0 0 auto; min-width: 176px; min-height: 44px; max-width: 100%; }
+@media (max-width: 760px) {
+  .git-build-workspace .git-build-header h1 { font-size: 24px; }
+  .git-build-workspace > .deploy-form-stack { padding: 0 16px 20px; }
+  .git-build-workspace .deploy-field-grid { grid-template-columns: minmax(0, 1fr); }
+  .git-build-workspace > .deploy-action-bar > div { flex-basis: 100%; }
+  .git-build-workspace > .deploy-action-bar > button { width: 100%; }
+}

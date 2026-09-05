@@ -1,0 +1,82 @@
+/* Local containment: wide tables scroll within their section, identifiers wrap,
+   and forms respond to the workspace width rather than the browser width. */
+.infrastructure-workspace {
+  container-type: inline-size;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+  min-width: 0;
+  max-width: 100%;
+}
+.infrastructure-workspace :is(article, section, aside, nav, header, form, label, dl, dd, .panel-heading > div) {
+  min-width: 0;
+  max-width: 100%;
+}
+.infrastructure-workspace :is(h1, h2, h3, p, dd, .primary-cell, .code-cell, .node-tile-head, .node-tile-meta, .node-region-band > header, .route-index, .system-update-node-list, .route-sentinel-summary) {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.infrastructure-workspace .table-wrap {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.infrastructure-workspace .table-wrap table { min-width: 600px; }
+.infrastructure-workspace .table-wrap :is(td, th) { white-space: normal; overflow-wrap: anywhere; }
+.infrastructure-workspace .table-wrap :is(.primary-cell, .code-cell) { max-width: 32rem; white-space: normal; }
+.infrastructure-workspace .table-wrap td:first-child { max-width: 22rem; }
+.infrastructure-workspace .workspace-tabs { max-width: 100%; min-width: 0; overflow-x: auto; }
+.infrastructure-workspace .workspace-tabs a { flex-shrink: 0; }
+.infrastructure-workspace :is(.node-region-grid, .node-tile-grid) { grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); }
+.infrastructure-workspace :is(.node-tile, .node-tile-head strong, .node-tile-meta, .node-tile-foot, .node-region-band > header > div) { min-width: 0; }
+.infrastructure-workspace :is(.node-tile-head strong, .node-tile-meta) { white-space: normal; overflow-wrap: anywhere; }
+.infrastructure-workspace :is(.node-fleet-header, .panel-heading, .system-update-heading, .node-tile-foot) { flex-wrap: wrap; gap: 12px; }
+.infrastructure-workspace .fleet-command-panel { max-width: 880px; }
+.infrastructure-workspace .command-snippet { max-width: 100%; overflow-x: auto; white-space: pre; }
+.infrastructure-workspace .region-create-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  max-width: 880px;
+  align-items: end;
+  gap: 16px;
+}
+.infrastructure-workspace :is(input, select, textarea) { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.infrastructure-workspace :is(.system-update-form, .system-update-progress-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.infrastructure-workspace .system-update-form { max-width: 960px; }
+.infrastructure-workspace .system-update-actions { flex-wrap: wrap; }
+.infrastructure-workspace :is(.system-update-version, .system-update-confirm, .system-update-error, .system-update-progress-grid article, .system-update-image-progress) { min-width: 0; overflow-wrap: anywhere; }
+.infrastructure-workspace .system-update-progress-grid pre { min-width: 0; max-width: 100%; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.infrastructure-workspace :is(.system-update-node-list > span, .route-sentinel-summary > div > span) { min-width: 0; grid-template-columns: auto minmax(0, 1fr); }
+.infrastructure-workspace :is(.system-update-node-list small, .route-sentinel-summary small) { grid-column: 2; white-space: normal; }
+.infrastructure-workspace .node-topology-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.infrastructure-workspace .topology-layout { grid-template-columns: minmax(0, 1fr) minmax(220px, 0.5fr); }
+.infrastructure-workspace :is(.topology-canvas, .cy-topology) { min-width: 0; max-width: 100%; }
+.infrastructure-workspace .route-index { min-width: 0; overflow-x: auto; }
+.infrastructure-workspace .route-index-actions { flex-wrap: wrap; }
+.resource-workspace .detail-properties { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+.resource-workspace .detail-properties :is(dt, dd) { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.resource-workspace .detail-page { min-width: 0; max-width: 100%; }
+@container (max-width: 760px) {
+  .infrastructure-workspace :is(.region-create-form, .system-update-form, .system-update-progress-grid, .topology-layout) { grid-template-columns: minmax(0, 1fr); }
+  .infrastructure-workspace .region-create-form button { justify-self: start; }
+  .infrastructure-workspace .route-index { max-height: 420px; overflow-y: auto; }
+  .infrastructure-workspace .system-update-version { text-align: start; }
+}
+.infrastructure-workspace :is(.governance-summary > div, .governance-policy, .governance-actions > label) { min-width: 0; }
+.infrastructure-workspace .governance-policy { max-width: 1000px; }
+@container (max-width: 760px) {
+  .infrastructure-workspace .governance-policy { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .infrastructure-workspace .governance-summary { grid-template-columns: minmax(0, 1fr); }
+}
+@container (max-width: 420px) {
+  .infrastructure-workspace .governance-policy { grid-template-columns: minmax(0, 1fr); }
+}
+.infrastructure-workspace .node-region-band > header > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 12px;
+  row-gap: 4px;
+}

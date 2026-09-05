@@ -1,0 +1,64 @@
+/* Object pages show complete operational identifiers, never KPI-sized metadata. */
+.application-workspace.application-detail-page .application-properties {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0;
+  gap: 0;
+  min-width: 0;
+}
+.application-workspace.application-detail-page .application-properties > div {
+  display: grid;
+  grid-template-columns: minmax(110px, 160px) minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  padding: 10px 0;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  border-radius: 0;
+}
+.application-workspace.application-detail-page .application-properties > div:last-child { border-bottom: 0; }
+.application-workspace.application-detail-page .application-properties dt { font-size: 13px; font-weight: 400; color: var(--text-muted); }
+.application-workspace.application-detail-page .application-properties dd { margin: 0; min-width: 0; font-size: 14px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
+.application-workspace.application-detail-page .application-full-value {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  overflow: visible;
+  text-overflow: clip;
+  font-size: 12px;
+  line-height: 1.7;
+  color: inherit;
+  background: transparent;
+  padding: 0;
+}
+.application-workspace.application-detail-page .application-version-entry { min-width: 0; padding: 16px 20px; border: 1px solid var(--line); background: var(--surface); }
+.application-workspace.application-detail-page .application-version-entry.is-current { border-left: 3px solid var(--accent); }
+.application-workspace.application-detail-page .application-version-entry > header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; padding-bottom: 8px; }
+.application-workspace.application-detail-page .application-version-action { margin-left: auto; min-width: 0; }
+.application-workspace.application-detail-page .application-volume-entry { min-width: 0; padding: 0 0 12px; border-bottom: 1px solid var(--line); }
+.application-workspace.application-detail-page .application-access-list { display: flex; flex-wrap: wrap; align-items: start; gap: 12px 24px; min-width: 0; }
+.application-workspace.application-detail-page .application-access-list > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
+.application-workspace.application-detail-page .application-tcp-address .code-cell { white-space: normal; overflow: visible; overflow-wrap: anywhere; text-overflow: clip; }
+.application-workspace.application-detail-page .application-service-grid { grid-template-columns: minmax(0, 1fr); }
+.application-workspace.application-detail-page .application-service-detail { min-width: 0; }
+.application-workspace.application-detail-page .application-service-detail dl > div { grid-template-columns: minmax(110px, 160px) minmax(0, 1fr); }
+.application-workspace.application-detail-page .application-service-detail dd { white-space: normal; overflow-wrap: anywhere; line-height: 1.6; }
+.application-workspace.application-detail-page .application-service-title { flex-wrap: wrap; }
+.application-workspace.application-detail-page .application-service-title > a { min-width: 0; overflow-wrap: anywhere; }
+.application-workspace.application-detail-page .deployment-config-heading { flex-wrap: wrap; align-items: start; gap: 16px; }
+.application-workspace.application-detail-page .deployment-config-heading > div { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.application-workspace.application-detail-page .deployment-config-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.application-workspace.application-detail-page .deployment-config-code { min-width: 0; max-width: 100%; max-height: 65vh; overflow: auto; white-space: pre; color: #f4f4f4; background: #161616; tab-size: 2; }
+.application-workspace.application-detail-page .deployment-config-code > code { display: block; white-space: inherit; color: inherit; background: transparent; font-size: 12px; line-height: 1.6; overflow-wrap: normal; word-break: normal; }
+@media (max-width: 600px) {
+  .application-workspace.application-detail-page .application-properties > div,
+  .application-workspace.application-detail-page .application-service-detail dl > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .application-workspace.application-detail-page .application-version-entry { padding: 12px; }
+}
+.application-workspace.application-detail-page .application-detail-section > h3,
+.application-workspace.application-detail-page .application-diagnostics-list > p { min-width: 0; overflow-wrap: anywhere; white-space: normal; }

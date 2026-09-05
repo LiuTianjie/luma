@@ -50,7 +50,9 @@ test("fleet opens at inventory and preserves independent region, network, and ma
     const rendered = [...html.matchAll(/data-capability="([^"]+)"/g)].map((match) => match[1]);
     assert.deepEqual(rendered, expected, url);
     if (url === "/fleet/join") assert.match(html, /luma node join/);
-    assert.match(html, /href="\/dashboard\/fleet\/maintenance"/);
+    if (url !== "/fleet/network") assert.match(html, /href="\/dashboard\/fleet\/maintenance"/);
+    else assert.doesNotMatch(html, /aria-label="Node management"/);
+    if (url !== "/fleet") assert.doesNotMatch(html, /aria-label="Page metrics"/);
   }
 });
 
@@ -65,7 +67,7 @@ test("storage governance has a dedicated destination without hiding volume inven
 
 test("inline object details retain zero and false values and do not declare a modal", () => {
   const html = renderToStaticMarkup(React.createElement(DetailDrawer, { lang: "en", inline: true, detail: { kind: "node", title: "manager", items: { cpu: 0, leader: false } }, onClose() {} }));
-  assert.match(html, /<dd>0<\/dd>/);
+  assert.match(html, /<dd>0%<\/dd>/);
   assert.match(html, /<dd>false<\/dd>/);
   assert.doesNotMatch(html, /role="dialog"|aria-modal/);
 });
@@ -76,4 +78,33 @@ test("inline shell renders its target and surface without requiring a modal port
   assert.match(html, /terminal-surface/);
   assert.match(html, /End session and return/);
   assert.doesNotMatch(html, /role="dialog"|aria-modal/);
+});
+
+
+test("storage governance names the actual task and omits unrelated inventory counters", () => {
+  route = "/storage/governance";
+  const html = renderToStaticMarkup(React.createElement(StoragePage, props));
+  assert.match(html, /<h1[^>]*>Capacity and cleanup<\/h1>/);
+  assert.doesNotMatch(html, /aria-label="Page metrics"/);
+});
+
+test("inline properties retain full long identifiers rather than truncating data", () => {
+  const name = "node-" + "abcdef".repeat(80);
+  const value = "/var/lib/luma/" + "long-path/".repeat(60);
+  const html = renderToStaticMarkup(React.createElement(DetailDrawer, { lang: "en", inline: true, showBack: false, detail: { kind: "node", title: name, items: { path: value } }, onClose() {} }));
+  assert.ok(html.includes(name));
+  assert.ok(html.includes(value));
+  assert.doesNotMatch(html, /Back to list/);
+});
+
+
+test("node units follow known metrics without interpreting load or changing source values", () => {
+  const detail = { kind: "node", title: "manager", items: { cpu: 15, memory: 23.6, memoryTotal: 15797473280, memoryCapacity: 0, load1: 1.2, cpuCapacity: 8 } };
+  const before = JSON.stringify(detail);
+  const html = renderToStaticMarkup(React.createElement(DetailDrawer, { lang: "en", inline: true, detail, onClose() {} }));
+  for (const value of ["15%", "23.6%", "14.71 GiB", "0 B", "1.2", "8"]) assert.ok(html.includes(`<dd>${value}</dd>`), value);
+  assert.equal(JSON.stringify(detail), before);
+  const service = renderToStaticMarkup(React.createElement(DetailDrawer, { lang: "en", inline: true, detail: { kind: "service", title: "service", items: { memory: 12, pending: 0 } }, onClose() {} }));
+  assert.match(service, /<dd>12<\/dd>/);
+  assert.match(service, /<dd>0<\/dd>/);
 });

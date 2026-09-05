@@ -2,10 +2,12 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
+import { ArrowLeft, TerminalSquare, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { t } from "../i18n";
 import { OverlayShell } from "../useOverlay";
+import "./terminalSession.css";
 
 type TerminalStatus = "connecting" | "connected" | "ended" | "error";
 
@@ -194,7 +196,7 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
 
   return (
       <section
-        className={`${inline ? "terminal-page" : "terminal-modal"} terminal-modal-${status}`}
+        className={`terminal-session ${inline ? "terminal-page" : "terminal-modal"} terminal-modal-${status}`}
         style={inline ? { minHeight: "65vh", display: "flex", flexDirection: "column" } : undefined}
         ref={panelRef}
         role={inline ? "region" : "dialog"}
@@ -202,16 +204,19 @@ function TerminalContent({ lang, target, token, onClose, inline = false, panelRe
         aria-labelledby="terminal-modal-title"
         onClick={(event) => event.stopPropagation()}
       >
-        <header className="terminal-modal-header">
-          <div className="terminal-modal-heading">
-            <p className="eyebrow">{isContainer ? (lang === "zh" ? "容器终端" : "Container shell") : "Terminal"}</p>
-            <h2 id="terminal-modal-title">{title}</h2>
-            <span className="terminal-node-meta">{meta}</span>
+        <header className="terminal-session__header">
+          <div className="terminal-session__identity">
+            <TerminalSquare size={18} aria-hidden="true" />
+            <h2 id="terminal-modal-title" title={title}>{title}</h2>
+            <span className="terminal-session__meta" title={meta}>{isContainer ? (lang === "zh" ? "容器" : "Container") : (lang === "zh" ? "节点" : "Node")} · {meta}</span>
           </div>
-          <span className="terminal-status-pill">{statusLabel}</span>
-          <button type="button" className="icon-button" onClick={onClose}>
-            {inline ? (lang === "zh" ? "结束并返回" : "End session and return") : t(lang, "close")}
-          </button>
+          <div className="terminal-session__actions">
+            <span className={`terminal-session__status is-${status}`} role="status" aria-live="polite">{statusLabel}</span>
+            <button type="button" className="terminal-session__close" onClick={onClose}>
+              {inline ? <ArrowLeft size={15} aria-hidden="true" /> : <X size={15} aria-hidden="true" />}
+              {inline ? (lang === "zh" ? "结束并返回" : "End session and return") : t(lang, "close")}
+            </button>
+          </div>
         </header>
         <div className="terminal-surface" style={inline ? { flex: 1, minHeight: "55vh" } : undefined} ref={containerRef} />
       </section>

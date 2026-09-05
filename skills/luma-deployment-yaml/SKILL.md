@@ -301,7 +301,7 @@ The dashboard exposes the same Nomad job-version rollback from Applications -> V
 For generic CI, install the PyPI package. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.1.302"
+python -m pip install "luma-infra==0.1.303"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:

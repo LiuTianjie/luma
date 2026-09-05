@@ -1,0 +1,104 @@
+/* Node and container terminals share a compact header. Keep xterm's sizing
+   surface unchanged; only the surrounding header/containment is controlled here. */
+.terminal-session {
+  box-sizing: border-box;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.terminal-session .terminal-session__header {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  min-inline-size: 0;
+  min-block-size: 56px;
+  gap: 8px 20px;
+  padding: 10px 16px;
+  border-block-end: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.terminal-session__identity {
+  display: flex;
+  flex: 1 1 200px;
+  align-items: center;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  gap: 10px;
+}
+
+.terminal-session__identity > svg { flex: 0 0 auto; color: var(--text-muted); }
+.terminal-session .terminal-session__identity h2 {
+  flex: 0 1 auto;
+  min-inline-size: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.terminal-session__meta {
+  flex: 0 2 auto;
+  min-inline-size: 0;
+  max-inline-size: 48ch;
+  overflow: hidden;
+  color: var(--text-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.terminal-session__actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.terminal-session__status { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.terminal-session__status::before { content: ""; inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--text-subtle); }
+.terminal-session__status.is-connected::before { background: var(--green); }
+.terminal-session__status.is-connecting::before { background: var(--amber); }
+.terminal-session__status.is-error::before { background: var(--red); }
+
+.terminal-session .terminal-session__close {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: center;
+  inline-size: auto;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  min-block-size: 32px;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.terminal-session__close > svg { flex: 0 0 auto; }
+.terminal-session .terminal-session__close:hover { background: var(--well); color: var(--text); }
+.terminal-session .terminal-session__close:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }
+.terminal-session > .terminal-surface { min-inline-size: 0; max-inline-size: 100%; }
+
+@media (max-width: 600px) {
+  .terminal-session .terminal-session__header { gap: 8px 12px; padding: 10px 12px; }
+  .terminal-session__identity { flex-basis: 100%; }
+}
