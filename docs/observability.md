@@ -4,7 +4,9 @@ Luma exposes node/container samples, current task queues, resource history, runt
 
 ## Dashboard and logs
 
-The observability page shows the actual sampled time span and retention, separates missing/stale/failed queries, and breaks resource lines across sampling gaps. Select a service for its resource history, or open its logs from the application detail.
+Dashboard → Observability opens incidents. Metrics and Logs have dedicated pages; rules and notification channels have separate list and edit URLs. Storage governance is under Infrastructure → Storage → Data governance.
+
+The metrics page shows the actual sampled time span and retention, separates missing/stale/failed queries, and breaks resource lines across sampling gaps. Select a service for its resource history, or open its logs from the application detail.
 
 Logs follow Nomad allocation files using byte-position cursors. Select an allocation to distinguish replicas; reconnecting resumes from the last received cursor. Rotation or missing retained files is reported as a gap. The initial tail and snapshot download are bounded recent excerpts, not complete archives. Arbitrary time filtering is not offered because application stdout/stderr need not carry reliable timestamps. Log text is not deduplicated by content: identical repeated lines are distinct records.
 

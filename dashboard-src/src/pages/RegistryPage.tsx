@@ -12,7 +12,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { CodeCell, StatePill } from "../components/ui";
 import { formatTimestamp } from "../format";
 import {
@@ -28,8 +28,10 @@ import {
   type RegistryPolicy,
 } from "../registryManagementApi";
 import type { Lang } from "../types";
-import { OverlayShell } from "../useOverlay";
+import { useRouter, toHref } from "../router";
+import { InfrastructureNavigation } from "../components/InfrastructureNavigation";
 import { useConfirm } from "../components/ConfirmDialog";
+import { findRegistryImage } from "../registryDetail";
 import { PageHeader } from "./PageHeader";
 
 const DEFAULT_POLICY: RegistryPolicy = {
@@ -85,6 +87,15 @@ function deletionStatusLabel(status: string, zh: boolean) {
 
 export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const zh = lang === "zh";
+  const { path, search, navigate } = useRouter();
+  const section = path.split("/")[2] || "inventory";
+  const showPolicy = section === "policy";
+  const setShowPolicy = (value: boolean) => navigate(value ? "/registry/policy" : "/registry");
+  const detailKey = new URLSearchParams(search).get("image") || "";
+  const [detailState, setDetailState] = useState<{ key: string; status: "loading" | "ready" | "pending" | "missing" | "error"; image: RegistryManifest | null; error?: string }>({ key: "", status: "loading", image: null });
+  const [detailRevision, setDetailRevision] = useState(0);
+  const detail = detailState.key === detailKey ? detailState.image : null;
+  const detailStatus = !detailKey ? "missing" : detailState.key === detailKey ? detailState.status : "loading";
   const [inventory, setInventory] = useState<RegistryInventory | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
@@ -95,7 +106,6 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof previewRegistryDeletion>> | null>(null);
-  const [showPolicy, setShowPolicy] = useState(false);
   const [policy, setPolicy] = useState<RegistryPolicy>(DEFAULT_POLICY);
 
   const load = useCallback(async (refresh = false, offset = 0, append = false) => {
@@ -137,6 +147,32 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     return () => window.clearTimeout(timer);
   }, [inventory?.scanPending, load]);
 
+  useEffect(() => {
+    const onRefresh = () => { void load(false); setDetailRevision((value) => value + 1); };
+    window.addEventListener("luma:refresh", onRefresh);
+    return () => window.removeEventListener("luma:refresh", onRefresh);
+  }, [load]);
+
+  useEffect(() => {
+    if (section !== "image" || !detailKey) return;
+    const controller = new AbortController();
+    setDetailState({ key: detailKey, status: "loading", image: null });
+    void findRegistryImage(detailKey, (offset) => fetchRegistryInventory(token, false, controller.signal, {
+      query: detailKey.split("@").pop(), limit: 100, offset,
+    }), controller.signal).then((result) => {
+      if (!controller.signal.aborted) setDetailState({ key: detailKey, ...result });
+    }).catch((err) => {
+      if (!controller.signal.aborted) setDetailState({ key: detailKey, status: "error", image: null, error: String(err instanceof Error ? err.message : err) });
+    });
+    return () => controller.abort();
+  }, [detailKey, section, token, detailRevision]);
+
+  useEffect(() => {
+    if (section !== "image" || detailStatus !== "pending") return;
+    const timer = window.setTimeout(() => setDetailRevision((value) => value + 1), 3000);
+    return () => window.clearTimeout(timer);
+  }, [section, detailStatus]);
+
   const entries = inventory?.entries || [];
 
   const selectable = entries;
@@ -167,6 +203,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
     try {
       const result = await previewRegistryDeletion(token, selectionItems.map(({ repository, digest }) => ({ repository, digest })));
       setPreview(result);
+      navigate("/registry/delete");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -177,15 +214,16 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
   // One request does the whole job: stop Registry, delete the manifests,
   // garbage-collect their blobs, restart. Not recoverable by design.
   const purgeSelection = async () => {
-    if (!selectionItems.length) return;
+    if (!preview?.allowed || !preview.selected?.length) return;
     setBusy("purge");
     setError("");
     try {
       const result = await purgeRegistryManifests(
         token,
-        selectionItems.map(({ repository, digest }) => ({ repository, digest })),
+        preview.selected.map(({ repository, digest }) => ({ repository, digest })),
       );
       setPreview(null);
+      navigate("/registry/cleanup");
       setSelected(new Set());
       setNotice(
         result.sharedLayersOnly
@@ -270,6 +308,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
 
   return (
     <>
+      <InfrastructureNavigation lang={lang} />
       <PageHeader
         meta={{
           eyebrow: zh ? "镜像生命周期" : "Image lifecycle",
@@ -284,10 +323,10 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           ],
           action: (
             <div className="registry-header-actions">
-              <button type="button" className="ghost" disabled={loading || !!busy} onClick={() => void load(true)}>
+              <button type="button" className="ghost" disabled={loading || !!busy} onClick={() => { void load(true).then(() => setDetailRevision((value) => value + 1)); }}>
                 <RefreshCw size={15} className={loading ? "spin" : ""} /> {zh ? "重新扫描" : "Rescan"}
               </button>
-              <button type="button" className="ghost" onClick={() => setShowPolicy((value) => !value)}>
+              <button type="button" className="ghost" onClick={() => setShowPolicy(!showPolicy)}>
                 <Settings2 size={15} /> {zh ? "保留策略" : "Retention"}
               </button>
             </div>
@@ -295,6 +334,9 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         }}
       />
 
+      <nav className="workspace-tabs" aria-label={zh ? "镜像管理" : "Registry management"}>
+        {[["/registry", zh ? "镜像" : "Images"], ["/registry/cleanup", zh ? "容量与清理" : "Capacity and cleanup"], ["/registry/policy", zh ? "保留策略" : "Retention policy"]].map(([href, label]) => <a key={href} href={toHref(href)} className={path === href ? "active" : ""} aria-current={path === href ? "page" : undefined} onClick={(event) => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href); }}>{label}</a>)}
+      </nav>
       <main className="registry-page">
         {inventory?.scanPending ? (
           <div className="registry-alert warning" role="status">
@@ -311,6 +353,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
         {usage.error ? <div className="registry-alert warning" role="alert"><AlertTriangle size={18} /><span><strong>{zh ? "容量数据暂不可用" : "Storage data unavailable"}</strong><small>{usage.error}</small></span></div> : null}
         {notice ? <div className="registry-alert success"><ShieldCheck size={18} /><span><strong>{notice}</strong></span><button type="button" onClick={() => setNotice("")}>×</button></div> : null}
 
+        {section === "cleanup" ? <>
         <section className="registry-usage-grid">
           <article className={`registry-usage-card disk-${diskTone}`}>
             <div><HardDrive size={20} /><span>{zh ? "宿主磁盘" : "Host filesystem"}</span></div>
@@ -337,6 +380,8 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
 
         {monthly.length ? <section className="panel registry-growth-panel"><div><p className="eyebrow">Blob growth</p><h2>{zh ? "近月写入分布" : "Recent blob writes"}</h2><small>{zh ? "按 blob 文件最后修改月份统计，用于观察增长趋势。" : "Grouped by blob file modification month to expose growth trends."}</small></div><div className="registry-growth-bars">{monthly.map((item) => <span key={item.month}><i style={{ height: `${Math.max((Number(item.bytes || 0) / monthlyMax) * 100, 4)}%` }} /><strong>{formatBytes(item.bytes)}</strong><small>{item.month}</small></span>)}</div></section> : null}
 
+        </> : null}
+
         {showPolicy ? (
           <section className="panel registry-policy-panel">
             <div className="panel-heading"><div><p className="eyebrow">Retention</p><h2>{zh ? "保留与安全窗口" : "Retention and safety windows"}</h2></div><Settings2 size={18} /></div>
@@ -356,7 +401,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
           </section>
         ) : null}
 
-        <section className="panel registry-inventory-panel">
+        {section === "inventory" ? <section className="panel registry-inventory-panel">
           <div className="registry-inventory-toolbar">
             <div className="registry-search"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={zh ? "搜索仓库、tag 或 digest" : "Search repository, tag, or digest"} /></div>
             <div className="registry-filters">
@@ -371,7 +416,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                 {entries.map((item) => {
                   return <tr key={keyFor(item)} className={selected.has(keyFor(item)) ? "selected" : ""}>
                     <td><input type="checkbox" checked={selected.has(keyFor(item))} onChange={() => toggle(item)} aria-label={`${item.repository} ${item.digest}`} /></td>
-                    <td><span className="registry-repository"><strong>{item.repository}</strong><CodeCell value={item.digest.replace("sha256:", "sha256:​")} /></span></td>
+                    <td><span className="registry-repository"><a href={toHref(`/registry/image?image=${encodeURIComponent(keyFor(item))}`)} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(`/registry/image?image=${encodeURIComponent(keyFor(item))}`); }}>{item.repository}</a><CodeCell value={item.digest.replace("sha256:", "sha256:​")} /></span></td>
                     <td><span className="registry-tags">{(item.tags || []).slice(0, 4).map((tag) => <code key={tag}>{tag}</code>)}{(item.tags || []).length > 4 ? <small>+{item.tags.length - 4}</small> : null}</span></td>
                     <td><span className="registry-platforms">{(item.platforms || []).length ? item.platforms?.map((platform) => <small key={platform}>{platform}</small>) : <small>-</small>}</span></td>
                     <td>{formatBytes(item.logicalBytes)}</td>
@@ -384,13 +429,13 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
             </table>
           </div>
           {inventory?.page?.hasMore ? <div className="registry-load-more"><button type="button" className="ghost" disabled={loading || !!busy} onClick={() => void load(false, (inventory.page?.offset || 0) + (inventory.page?.limit || REGISTRY_PAGE_SIZE), true)}>{loading ? (zh ? "加载中…" : "Loading…") : (zh ? `加载更多（已显示 ${entries.length} / ${inventory.page.total || 0}）` : `Load more (${entries.length} / ${inventory.page.total || 0})`)}</button></div> : null}
-        </section>
+        </section> : null}
 
-        <section className="registry-lifecycle-grid">
+        {section === "cleanup" ? <section className="registry-lifecycle-grid">
           <article className="panel registry-queue-panel">
             <div className="panel-heading"><div><p className="eyebrow">Cleanup queue</p><h2>{zh ? "清理队列" : "Cleanup queue"}</h2></div><Clock3 size={18} /></div>
             <div className="registry-queue-list">
-              {(inventory?.deletions || []).slice(0, 12).map((deletion) => <div className="registry-queue-row" key={deletion.id}>
+              {(inventory?.deletions || []).map((deletion) => <div className="registry-queue-row" key={deletion.id}>
                 <span><strong>{deletion.manifests?.[0]?.repository || deletion.id}</strong><small>{deletion.manifests?.length || 0} manifests · {formatBytes(deletion.logicalBytes)}</small><small>{deletion.message}</small></span>
                 <span><StatePill label={deletionStatusLabel(deletion.status, zh)} value={deletion.status.startsWith("failed") ? "failed" : deletion.status === "deleted_pending_gc" ? "warning" : deletion.status === "gc_completed" || deletion.status === "restored" ? "ready" : "pending"} /><small>{formatTimestamp(deletion.updatedAt || deletion.createdAt, lang)}</small></span>
                 <div>
@@ -418,25 +463,27 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               </button>
             </div>
           </article>
-        </section>
+        </section> : null}
       </main>
 
-      {preview ? (
-        <OverlayShell<HTMLElement>
-          className="registry-dialog-backdrop"
-          // Dismissal stays blocked while the purge is running: the dialog is the
-          // only place that reports its progress, and Escape must not orphan it.
-          onClose={() => { if (!busy) setPreview(null); }}
-        >
-          {(overlayRef) => (
-          <section
-            className="registry-dialog"
-            ref={overlayRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="registry-delete-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+      {section === "image" ? <section className="panel">
+        <button type="button" className="ghost" onClick={() => navigate("/registry")}>{zh ? "返回镜像" : "Back to images"}</button>
+        {detail ? <><h2>{detail.repository}</h2><CodeCell value={detail.digest} /><dl className="detail-grid">
+          <div><dt>Tags</dt><dd>{detail.tags?.join(", ") || "—"}</dd></div>
+          <div><dt>{zh ? "平台" : "Platforms"}</dt><dd>{detail.platforms?.join(", ") || "—"}</dd></div>
+          <div><dt>{zh ? "逻辑大小" : "Logical size"}</dt><dd>{formatBytes(detail.logicalBytes)}</dd></div>
+          <div><dt>{zh ? "创建时间" : "Created"}</dt><dd>{formatTimestamp(detail.createdAt || detail.lastModified, lang)}</dd></div>
+          <div><dt>{zh ? "保护状态" : "Protection"}</dt><dd>{statusLabel(detail.protectionStatus, zh)}</dd></div>
+          <div><dt>{zh ? "媒体类型" : "Media type"}</dt><dd>{detail.mediaType || "—"}</dd></div>
+        </dl><h3>{zh ? "引用关系" : "References"}</h3>{detail.protectionReasons?.length ? <ul>{detail.protectionReasons.map((reason, index) => <li key={index}>{reason.kind} · {reason.source} · {reason.reference}</li>)}</ul> : <p>{zh ? "没有已知引用" : "No known references"}</p>} <h3>{zh ? "平台 manifests" : "Platform manifests"}</h3>{detail.childManifestDigests?.map((digest) => <CodeCell key={digest} value={digest} />)}</> : <div role={detailStatus === "error" ? "alert" : "status"} aria-busy={detailStatus === "loading" || detailStatus === "pending"}>
+          <p>{detailStatus === "loading" ? (zh ? "正在查询镜像…" : "Loading image…") : detailStatus === "pending" ? (zh ? "镜像索引正在建立，完成后将自动刷新。" : "Building image index; this page will refresh when ready.") : detailStatus === "error" ? (zh ? "镜像查询失败。" : "Image lookup failed.") : (zh ? "未找到此镜像，它可能已经删除或不在当前索引中。" : "Image not found. It may have been deleted or is absent from the current index.")}</p>
+          {detailStatus === "error" ? <p>{detailState.error}</p> : null}
+          {detailStatus === "error" || detailStatus === "missing" ? <button type="button" className="ghost" onClick={() => setDetailRevision((value) => value + 1)}>{zh ? "重新查询" : "Retry lookup"}</button> : null}
+        </div>}
+      </section> : null}
+      {section === "delete" && !preview ? <section className="panel"><h2>{zh ? "重新选择清理范围" : "Select cleanup scope"}</h2><p>{zh ? "为确保清理范围准确，刷新页面后需要重新选择镜像并分析。" : "After refreshing, select images and preview again to confirm the exact cleanup scope."}</p><button type="button" onClick={() => navigate("/registry")}>{zh ? "返回镜像列表" : "Back to images"}</button></section> : null}
+      {section === "delete" && preview ? (
+          <section className="panel registry-delete-page" aria-labelledby="registry-delete-title">
             <div className="registry-dialog-icon"><Trash2 size={22} /></div>
             <h2 id="registry-delete-title">{zh ? "删除并回收空间" : "Delete and reclaim space"}</h2>
             <p>
@@ -444,6 +491,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
                 ? `将删除 ${preview.selected?.length || 0} 个顶层 manifest 与 ${preview.dependentManifests?.length || 0} 个仅由它们引用的平台 manifest，然后立即回收其 blob。指向同一 digest 的 tag 会一起删除。`
                 : `Deletes ${preview.selected?.length || 0} root manifests plus ${preview.dependentManifests?.length || 0} platform manifests referenced only by them, then reclaims their blobs immediately. Every tag pointing to the same digest is deleted together.`}
             </p>
+            <div className="table-wrap"><table><thead><tr><th>{zh ? "选中镜像" : "Selected image"}</th><th>Digest</th><th>Tags</th></tr></thead><tbody>{preview.selected?.map((item) => <tr key={keyFor(item)}><td>{item.repository}</td><td><CodeCell value={item.digest} /></td><td>{item.tags?.join(", ") || "—"}</td></tr>)}</tbody></table></div>
             <div className="registry-dialog-summary">
               <span>
                 <strong>{preview.selected?.reduce((count, item) => count + (item.tags?.length || 0), 0) || 0}</strong>
@@ -481,7 +529,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               </div>
             ) : null}
             <div className="registry-dialog-actions">
-              <button type="button" className="ghost" disabled={!!busy} onClick={() => setPreview(null)}>
+              <button type="button" className="ghost" disabled={!!busy} onClick={() => { setPreview(null); navigate("/registry"); }}>
                 {zh ? "返回" : "Back"}
               </button>
               <button type="button" className="danger" disabled={!preview.allowed || !!busy} onClick={() => void purgeSelection()}>
@@ -491,8 +539,7 @@ export function RegistryPage({ lang, token }: { lang: Lang; token: string }) {
               </button>
             </div>
           </section>
-          )}
-        </OverlayShell>
+
       ) : null}
       {confirmDialog}
     </>

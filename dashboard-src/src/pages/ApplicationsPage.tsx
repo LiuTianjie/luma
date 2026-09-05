@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { applicationPath, parseApplicationPath } from "../components/applicationRoutes";
 import { Plus } from "lucide-react";
 import { ApplicationManagementPanel, type ApplicationUpdateRequest } from "../components/ApplicationManagementPanel";
 import { groupApplications } from "../components/applicationModel";
@@ -27,7 +29,11 @@ export function ApplicationsPage({
 }) {
   const searchParams = useSearchParams();
   const { path, navigate } = useRouter();
-  const selectApp = searchParams.get("select");
+  const legacySelect = searchParams.get("select");
+  const selectApp = parseApplicationPath(path).stack || legacySelect;
+  useEffect(() => {
+    if (legacySelect && !parseApplicationPath(path).stack) navigate(applicationPath(legacySelect), { replace: true });
+  }, [legacySelect, path, navigate]);
   const zh = lang === "zh";
   const applications = groupApplications(payload.services || []);
   const healthy = applications.filter((app) => app.status === "healthy" || app.status === "running").length;
@@ -35,13 +41,13 @@ export function ApplicationsPage({
   const failed = applications.filter((app) => app.status === "failed").length;
   return (
     <>
-      <PageHeader
+      {!selectApp ? <PageHeader
         meta={{
           eyebrow: zh ? "应用管理" : "Applications",
-          title: zh ? "应用生命周期与运行态" : "Application lifecycle and runtime",
+          title: zh ? "应用" : "Applications",
           description: zh
-            ? "搜索、筛选、查看日志、进入容器终端、读取部署配置、查看版本并执行受保护的运行态操作。"
-            : "Search, filter, read logs, open a container shell, inspect deployment config, review versions, and run guarded runtime actions.",
+            ? "管理应用、服务实例与发布版本。"
+            : "Manage applications, service instances, and releases.",
           metrics: [
             { label: t(lang, "applications"), value: applications.length },
             { label: zh ? "健康" : "Healthy", value: healthy },
@@ -55,7 +61,7 @@ export function ApplicationsPage({
             </button>
           ),
         }}
-      />
+      /> : null}
       <ApplicationManagementPanel
         lang={lang}
         token={token}
@@ -66,12 +72,7 @@ export function ApplicationsPage({
         onServiceTerminal={onServiceTerminal}
         selectedStack={selectApp}
         onSelectApplication={(stack) => {
-          const params = new URLSearchParams(searchParams);
-          if (stack) params.set("select", stack);
-          else params.delete("select");
-          const query = params.toString();
-          const destination = `${path}${query ? `?${query}` : ""}`;
-          if (stack !== selectApp) navigate(destination);
+          navigate(stack ? applicationPath(stack) : "/apps");
         }}
       />
     </>

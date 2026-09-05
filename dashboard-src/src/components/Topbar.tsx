@@ -1,4 +1,4 @@
-import { LogOut, Monitor, Moon, RefreshCw, Sun } from "lucide-react";
+import { LogOut, Monitor, Moon, RefreshCw, Settings2, Sun } from "lucide-react";
 import { t } from "../i18n";
 import type { Lang, SyncStatus } from "../types";
 import type { ThemeMode } from "../useTheme";
@@ -47,7 +47,14 @@ export function Topbar({
         <strong translate="no">{clusterId}</strong>
       </div>
       <div className="top-actions">
-        <span className={`sync-state ${syncStatus}`}>{statusText}</span>
+        <span className={`sync-state ${syncStatus}`} title={statusText} role="status">{statusText}</span>
+        <details className="topbar-preferences" onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}>
+          <summary aria-label={lang === "zh" ? "界面偏好设置" : "Display preferences"} title={lang === "zh" ? "界面偏好设置" : "Display preferences"}>
+            <Settings2 size={16} aria-hidden="true" />
+            <span>{lang === "zh" ? "偏好" : "Display"}</span>
+          </summary>
+          <div className="topbar-preferences-panel">
+          <span className="preference-label">{lang === "zh" ? "外观" : "Appearance"}</span>
         <div className="lang-switch theme-switch" role="group" aria-label={lang === "zh" ? "主题" : "Theme"}>
           {themeOptions.map(({ mode, icon: Icon, label }) => (
             <button
@@ -63,6 +70,7 @@ export function Topbar({
             </button>
           ))}
         </div>
+          <span className="preference-label">{lang === "zh" ? "语言" : "Language"}</span>
         <div className="lang-switch" role="group" aria-label={lang === "zh" ? "语言切换" : "Language switch"}>
           <button
             className={lang === "zh" ? "active" : ""}
@@ -83,13 +91,15 @@ export function Topbar({
             EN
           </button>
         </div>
-        <button type="button" onClick={onRefresh}>
+          </div>
+        </details>
+        <button type="button" onClick={onRefresh} aria-label={t(lang, "refresh")} title={t(lang, "refresh")}>
           <RefreshCw size={16} aria-hidden="true" />
-          {t(lang, "refresh")}
+          <span className="topbar-action-label">{t(lang, "refresh")}</span>
         </button>
-        <button className="ghost" type="button" onClick={onSignOut}>
+        <button className="ghost" type="button" onClick={onSignOut} aria-label={t(lang, "signOut")} title={t(lang, "signOut")}>
           <LogOut size={16} aria-hidden="true" />
-          {t(lang, "signOut")}
+          <span className="topbar-action-label">{t(lang, "signOut")}</span>
         </button>
       </div>
     </header>

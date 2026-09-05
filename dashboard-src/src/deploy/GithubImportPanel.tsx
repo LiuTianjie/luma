@@ -564,7 +564,7 @@ export function GithubImportPanel({
         ) : null}
         {error ? <div className="alert alert-error" role="alert"><span>{error}</span></div> : null}
 
-        {steps.length ? <StepLog steps={steps} lang={lang} /> : null}
+        {steps.length ? <><StepLog steps={steps} lang={lang} /><button type="button" className="ghost" onClick={() => { const id = steps.find((step) => step.buildRunId)?.buildRunId; router.navigate(id ? `/deployments/build/${encodeURIComponent(id)}` : "/deployments?kind=build"); }}>{zh ? "查看持久构建记录" : "View build record"}</button></> : null}
       </div>
 
       <div className="deploy-action-bar">

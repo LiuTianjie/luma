@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Copy, Download, RefreshCw, X } from "lucide-react";
 import { t } from "../i18n";
@@ -79,18 +79,25 @@ function runtimeEventLabel(event: RuntimeEvent) {
   return parts.length ? `[${parts.join(" · ")}] ${event.message || ""}` : event.message || "";
 }
 
+function LogsOverlay({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  const ref = useOverlay<HTMLDivElement>(onClose);
+  return <div className="logs-modal-backdrop" onClick={onClose}><div ref={ref} role="dialog" aria-modal="true" aria-labelledby="logs-modal-title" onClick={(event) => event.stopPropagation()}>{children}</div></div>;
+}
+
 export function ServiceLogsModal({
   lang,
   token,
   services,
   initialServiceName,
-  onClose,
+  onClose = () => {},
+  inline = false,
 }: {
   lang: Lang;
   token: string;
   services: DashboardService[];
   initialServiceName: string;
-  onClose: () => void;
+  onClose?: () => void;
+  inline?: boolean;
 }) {
   const applications = useMemo(() => {
     const groups = new Map<string, DashboardService[]>();
@@ -119,7 +126,6 @@ export function ServiceLogsModal({
       : []),
     [appServices],
   );
-  const overlayRef = useOverlay<HTMLElement>(onClose);
   const [selectedService, setSelectedService] = useState(() => initialService?.fullName || firstService);
   const [allocation, setAllocation] = useState("");
   const [logSources, setLogSources] = useState<LogSource[]>([]);
@@ -127,6 +133,7 @@ export function ServiceLogsModal({
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [retryDelay, setRetryDelay] = useState(0);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  useEffect(() => { const refresh = () => setRefreshVersion((value) => value + 1); window.addEventListener("luma:refresh", refresh); return () => window.removeEventListener("luma:refresh", refresh); }, []);
   const [keyword, setKeyword] = useState("");
   const [paused, setPaused] = useState(false);
   const [copyState, setCopyState] = useState("");
@@ -514,21 +521,18 @@ export function ServiceLogsModal({
     }
   };
 
-  if (!LOGS_MODAL_ROOT) return null;
-
-  return createPortal(
-    <div className="logs-modal-backdrop" onClick={onClose}>
-      <section className="logs-modal" ref={overlayRef} aria-modal="true" role="dialog" aria-labelledby="logs-modal-title" onClick={(event) => event.stopPropagation()}>
+  const content = (
+      <section className={inline ? "logs-workspace panel" : "logs-modal"} aria-labelledby="logs-modal-title">
         <header className="logs-modal-header">
           <div>
             <p className="eyebrow">Logs</p>
             <h2 id="logs-modal-title">{selected ? serviceTitle(selected) : (lang === "zh" ? "服务日志" : "Service logs")}</h2>
             <span>{filteredLogs.length}/{logsState?.logs?.length || 0} lines</span>
           </div>
-          <button type="button" className="logs-close-button" onClick={onClose} aria-label={t(lang, "close")}>
+          {!inline && <button type="button" className="logs-close-button" onClick={onClose} aria-label={t(lang, "close")}>
             <X size={16} aria-hidden="true" />
             {t(lang, "close")}
-          </button>
+          </button>}
         </header>
         <div className="logs-modal-toolbar">
           <div className="logs-filter-grid">
@@ -623,7 +627,6 @@ export function ServiceLogsModal({
           followBottomRef.current = tail.scrollHeight - tail.scrollTop - tail.clientHeight < 48;
         }}>{filteredLogs.join("\n") || (runtimeEvents?.status && runtimeEvents.status !== "running" ? (lang === "zh" ? "容器尚未启动或尚未输出日志，见上方运行事件。" : "Container has not started or has not emitted logs yet. See runtime events above.") : "-")}</pre>
       </section>
-    </div>,
-    LOGS_MODAL_ROOT,
   );
+  return inline ? content : LOGS_MODAL_ROOT ? createPortal(<LogsOverlay onClose={onClose}>{content}</LogsOverlay>, LOGS_MODAL_ROOT) : null;
 }

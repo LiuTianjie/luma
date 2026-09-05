@@ -23,6 +23,8 @@ export function Sidebar({
   onToggle: () => void;
 }) {
   const groups: NavGroup[] = buildNavGroups(lang, vm);
+  const activeWorkspace = ["builder", "deploy"].includes(activeNavPage) ? "deployments"
+    : ["storage", "registry"].includes(activeNavPage) ? "nodes" : activeNavPage;
   const sidebarToggleLabel = sidebarCollapsed
     ? (lang === "zh" ? "展开侧栏" : "Expand sidebar")
     : (lang === "zh" ? "收起侧栏" : "Collapse sidebar");
@@ -55,7 +57,7 @@ export function Sidebar({
             {group.items.map((item) => {
               const Icon = item.icon;
               const showValue = typeof item.value === "number";
-              const active = activeNavPage === item.id;
+              const active = activeWorkspace === item.id;
               const tip = sidebarCollapsed ? `${item.label} - ${item.detail}` : item.detail;
               return (
                 <a

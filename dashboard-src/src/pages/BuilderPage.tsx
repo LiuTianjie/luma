@@ -5,14 +5,13 @@ import type { DashboardPayload, Lang } from "../types";
 
 // Builder is the source-to-image entry: import a Git repository (clone → build →
 // push → deploy). Build history lives in the Deployments timeline, so this page is
-// import-only; a successful import jumps to that timeline.
+// import-only; results stay visible and link to durable task details.
 export function BuilderPage({
   lang,
   token,
   payload,
   vm,
   onRefresh,
-  onNavigate,
 }: {
   lang: Lang;
   token: string;
@@ -46,7 +45,6 @@ export function BuilderPage({
           nodes={nodes}
           build={payload.build}
           onRefresh={onRefresh}
-          onImported={() => onNavigate("deployments")}
         />
       </section>
     </>

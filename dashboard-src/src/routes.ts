@@ -22,6 +22,8 @@ export type ResolvedPage = NavPage | "notfound";
 // routes (e.g. /apps/:stack, /settings/registries) still resolve to their section.
 export function pageForPath(path: string): ResolvedPage {
   if (path === "/") return "overview";
+  if (path.startsWith("/terminal/node/")) return "nodes";
+  if (path.startsWith("/terminal/service/") || path.startsWith("/services/")) return "applications";
   if (path === "/apps" || path.startsWith("/apps/")) return "applications";
   if (path === "/create" || path.startsWith("/create/")) return "deploy";
   if (path === "/builds" || path.startsWith("/builds/")) return "builder";

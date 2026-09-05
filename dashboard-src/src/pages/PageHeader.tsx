@@ -21,19 +21,18 @@ export type PageHeaderMeta = {
 };
 
 export function PageHeader({ meta }: { meta: PageHeaderMeta }) {
-  const isOps = meta.variant === "ops";
   return (
     <section
-      className={isOps ? "page-toolbar ops" : "page-toolbar"}
+      className="page-toolbar"
       aria-labelledby="page-title"
     >
       <div className="page-toolbar-copy">
         <p className="eyebrow">{meta.eyebrow}</p>
         <h1 id="page-title">{meta.title}</h1>
         {meta.description ? <p>{meta.description}</p> : null}
-        {isOps && meta.action ? <div className="page-toolbar-action">{meta.action}</div> : null}
+
       </div>
-      <div className={isOps ? "page-toolbar-side ops-side" : "page-toolbar-side"}>
+      <div className="page-toolbar-side">
         {meta.score ? (
           <div className="ops-hero-score" aria-label={meta.score.label}>
             <div className="score-ring" style={{ "--score": `${meta.score.value}%` } as CSSProperties}>
@@ -46,7 +45,7 @@ export function PageHeader({ meta }: { meta: PageHeaderMeta }) {
           </div>
         ) : null}
         {meta.metrics.length ? (
-          <div className="page-toolbar-metrics" aria-label="Page metrics">
+          <div className="page-toolbar-metrics" aria-label={meta.title}>
             {meta.metrics.map((metric) => (
               <span key={metric.label}>
                 <strong>{metric.value}</strong>
@@ -55,7 +54,7 @@ export function PageHeader({ meta }: { meta: PageHeaderMeta }) {
             ))}
           </div>
         ) : null}
-        {!isOps && meta.action ? <div className="page-toolbar-action">{meta.action}</div> : null}
+        {meta.action ? <div className="page-toolbar-action">{meta.action}</div> : null}
       </div>
     </section>
   );

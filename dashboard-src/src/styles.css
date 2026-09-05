@@ -1,4 +1,4 @@
-/* Tokens — OpenCode warm-dark terminal design system */
+/* Luma product tokens — IBM Carbon gray layers and blue interaction palette. */
 :root {
   color-scheme: dark;
   --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -10,13 +10,13 @@
   -moz-osx-font-smoothing: grayscale;
 
   /* Surface ladder: canvas < surface < raised < well */
-  --bg: #161414;
-  --surface: #1f1c1c;
-  --surface-raised: #292626;
-  --surface-soft: #1f1c1c;
-  --surface-quiet: #292626;
-  --well: #2e2a2a;
-  --recess: #121010;
+  --bg: #161616;
+  --surface: #262626;
+  --surface-raised: #393939;
+  --surface-soft: #262626;
+  --surface-quiet: #393939;
+  --well: #393939;
+  --recess: #161616;
   --line: rgba(253, 252, 252, 0.11);
   --line-soft: rgba(253, 252, 252, 0.06);
   --line-strong: #6a6767;
@@ -25,28 +25,28 @@
      including --well, the worst case, where the old --text-subtle (#737176) sat
      at 2.94:1. The whole ramp shifts up rather than just lifting subtle, which
      would have collapsed it onto muted and lost the tier. */
-  --text: #f6f4f3;
-  --text-muted: #c2bfbf;
-  --text-subtle: #9c9999;
+  --text: #f4f4f4;
+  --text-muted: #c6c6c6;
+  --text-subtle: #a8a8a8;
   --muted: var(--text-subtle);
-  --inverse: #1f1c1c;
-  --accent: #007aff;
-  --accent-hover: #0066d6;
-  --accent-active: #004085;
-  --accent-strong: #2b8cff;
+  --inverse: #262626;
+  --accent: #0f62fe;
+  --accent-hover: #0353e9;
+  --accent-active: #002d9c;
+  --accent-strong: #4589ff;
   --accent-soft: rgba(0, 122, 255, 0.14);
   /* Accent as *text* on --accent-soft (active nav item, selected tab, language
      toggle): --accent-strong only reaches 3.72:1 there over --well. Same split
      as the status hues — fills keep the base, text uses this. */
-  --accent-text: #63adff;
+  --accent-text: #78a9ff;
   /* Accent as a *filled surface carrying white text* — primary buttons above
-     all. #007aff under white is 3.92:1, so those get a darker ramp. --accent
+     all. #0f62fe under white is 3.92:1, so those get a darker ramp. --accent
      itself stays for bars, borders and indicators, which only need 3:1 as
      graphical objects and clear it on every surface. Shared by both themes:
      white text pins the required lightness regardless of the page behind it. */
-  --accent-fill: #0068dd;
-  --accent-fill-hover: #005ec6;
-  --accent-fill-active: #0052ad;
+  --accent-fill: #0f62fe;
+  --accent-fill-hover: #0353e9;
+  --accent-fill-active: #002d9c;
   --green: #30d158;
   --green-soft: rgba(48, 209, 88, 0.12);
   --green-line: rgba(48, 209, 88, 0.32);
@@ -64,16 +64,16 @@
   --red-text: #ff6b61;
   --green-text: var(--green);
   --amber-text: var(--amber);
-  --blue: #007aff;
+  --blue: #0f62fe;
   /* Overlays only. In-flow cards/panels stay flat (border, no drop shadow). */
   --shadow: 0 1px 3px rgba(21, 12, 12, 0.06);
   --shadow-heavy: 0 2px 8px rgba(21, 12, 12, 0.08);
   --shadow-soft: none;
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 10px;
-  --radius-input: 6px;
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-input: 0;
 
   /* Spacing scale. Derived from the values already in use here rather than an
      abstract ramp, so migrating to it is a no-op visually: 2/4/6/8/10/12/16 cover
@@ -102,8 +102,8 @@
   --text-title: 1.35rem;   /* 21.6px — big numbers, card titles */
   --text-display: 1.85rem; /* 29.6px — page titles */
 
-  --sidebar-width: 252px;
-  --topbar-height: 56px;
+  --sidebar-width: 224px;
+  --topbar-height: 48px;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-emphasized: cubic-bezier(0.34, 1.56, 0.64, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -113,36 +113,36 @@
   --motion-slow: 250ms;
 
   /* fixed dark surfaces for code/logs/terminal — terminals stay dark in both themes */
-  --code-bg: #1a1818;
-  --code-fg: #fdfcfc;
+  --code-bg: #161616;
+  --code-fg: #ffffff;
   /* secondary button (default) — dark fill in both themes */
-  --btn-bg: #201d1d;
-  --btn-bg-hover: #302c2c;
-  --btn-bg-active: #3a3636;
-  --btn-text: #fdfcfc;
-  --btn-border: #646262;
+  --btn-bg: #161616;
+  --btn-bg-hover: #393939;
+  --btn-bg-active: #525252;
+  --btn-text: #ffffff;
+  --btn-border: #525252;
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f5f3f3;
-  --surface: #fdfcfc;
+  --bg: #f4f4f4;
+  --surface: #ffffff;
   --surface-raised: #ffffff;
-  --surface-soft: #fdfcfc;
-  --surface-quiet: #f1eeee;
-  --well: #f1eeee;
-  --recess: #ebe8e8;
+  --surface-soft: #ffffff;
+  --surface-quiet: #e8e8e8;
+  --well: #e8e8e8;
+  --recess: #e0e0e0;
   --line: rgba(15, 0, 0, 0.12);
   --line-soft: rgba(15, 0, 0, 0.07);
   --line-strong: #9a9898;
-  --text: #201d1d;
-  --text-muted: #424245;
+  --text: #161616;
+  --text-muted: #525252;
   /* Darkened from #6e6e73, which cleared 4.5:1 on --surface but not on the
      tinted surfaces below it (4.4 on --well, 4.16 on --recess). */
-  --text-subtle: #636367;
-  --inverse: #fdfcfc;
+  --text-subtle: #525252;
+  --inverse: #ffffff;
   --accent-soft: rgba(0, 122, 255, 0.1);
-  --accent-text: #0059bb;
+  --accent-text: #0043ce;
   --green: #1e7e3e;
   --green-soft: rgba(48, 209, 88, 0.14);
   --green-line: rgba(30, 126, 62, 0.35);
@@ -158,10 +158,10 @@
   --green-text: #1a7038;
   --amber-text: #8a5605;
   --red-text: #c50013;
-  --btn-bg: #fdfcfc;
-  --btn-bg-hover: #f1eeee;
+  --btn-bg: #ffffff;
+  --btn-bg-hover: #e8e8e8;
   --btn-bg-active: #e8e4e4;
-  --btn-text: #201d1d;
+  --btn-text: #161616;
   --btn-border: #9a9898;
 }
 
@@ -3668,13 +3668,13 @@ tbody tr.is-selected {
 }
 
 .template-card-action {
-  border-color: color-mix(in srgb, var(--template-accent, #007aff) 40%, transparent);
-  background: color-mix(in srgb, var(--template-accent, #007aff) 14%, transparent);
+  border-color: color-mix(in srgb, var(--template-accent, #0f62fe) 40%, transparent);
+  background: color-mix(in srgb, var(--template-accent, #0f62fe) 14%, transparent);
   /* Keep enough --text in the mix that pale brand hues stay legible: Ghost and
      Coder are #ffffff, which at the previous 55% accent fell to 2.77:1 on light.
      35% is the point where every accent in TEMPLATE_LOGOS clears 4.5:1 in both
      themes while the chip still reads as brand-tinted. */
-  color: color-mix(in srgb, var(--template-accent, #007aff) 35%, var(--text));
+  color: color-mix(in srgb, var(--template-accent, #0f62fe) 35%, var(--text));
 }
 
 .template-feature-copy h3 {
@@ -3746,7 +3746,7 @@ tbody tr.is-selected {
   border-color: var(--accent-fill);
   border-radius: var(--radius-xs);
   background: var(--accent-fill);
-  color: #fdfcfc;
+  color: #ffffff;
   font-weight: 500;
 }
 
@@ -3778,7 +3778,7 @@ tbody tr.is-selected {
      to the dark primary-button hover style. Only the border reacts. */
   background: var(--surface);
   color: var(--text);
-  border-color: color-mix(in srgb, var(--template-accent, #007aff) 45%, var(--line));
+  border-color: color-mix(in srgb, var(--template-accent, #0f62fe) 45%, var(--line));
   box-shadow: none;
 }
 
@@ -6812,4 +6812,257 @@ dd {
   .page-overview .overview-app-name { width: 50%; }
   .page-overview .overview-app-status { width: 29%; }
   .page-overview .overview-app-replicas { width: 21%; }
+}
+
+/* Product shell and page patterns. Shared by all operational workspaces. */
+:root {
+  --line: #525252;
+  --line-soft: #393939;
+  --shadow-heavy: 0 4px 16px #0004;
+  --code-bg: #161616;
+  --code-fg: #f4f4f4;
+  --text-display: 1.75rem;
+  --text-title: 1.5rem;
+}
+:root[data-theme="light"] {
+  --surface-quiet: #f4f4f4;
+  --well: #f4f4f4;
+  --recess: #f4f4f4;
+  --line: #e0e0e0;
+  --line-soft: #e8e8e8;
+  --line-strong: #8d8d8d;
+  --btn-bg: #393939;
+  --btn-bg-hover: #474747;
+  --btn-border: #393939;
+}
+button { font-weight: 400; }
+button:active:where(:not(:disabled)) { transform: none; }
+button:focus-visible, a:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+button.primary, .primary { font-weight: 400; }
+input, select, textarea, .luma-select-trigger {
+  border: 0;
+  border-bottom: 1px solid var(--line-strong);
+  min-height: 40px;
+  background: var(--surface-quiet);
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible, .luma-select-trigger:focus-visible {
+  outline-offset: -2px;
+  box-shadow: none;
+}
+.sidebar, .sidebar-collapsed .sidebar { padding: 0 0 16px; }
+.sidebar-brand, .sidebar-collapsed .sidebar-brand {
+  height: 48px;
+  min-height: 48px;
+  flex-direction: row;
+  padding: 0 12px;
+  margin: 0 0 16px;
+  gap: 8px;
+  background: #161616;
+  border-bottom: 1px solid #393939;
+  color: #f4f4f4;
+}
+.brand-mark { background: transparent; border: 0; width: 24px; height: 24px; }
+.brand-mark img { width: 22px; height: 22px; }
+.sidebar-title { display: flex; align-items: baseline; gap: 6px; }
+.sidebar-title span { color: #f4f4f4; font-size: 15px; text-transform: none; font-weight: 400; letter-spacing: 0; }
+.sidebar-title strong { color: #f4f4f4; font-size: 13px; font-weight: 600; }
+.sidebar-toggle { color: #c6c6c6; min-width: 28px; }
+.sidebar-toggle:hover:not(:disabled) { color: white; background: #393939; }
+.sidebar nav { gap: 0; }
+.nav-group { gap: 0; }
+.nav-group + .nav-group { margin-top: 24px; }
+.nav-section { padding: 8px 16px; font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.nav-item { min-height: 40px; padding: 0 16px; gap: 12px; border: 0; }
+.nav-item::before { inset: 0 auto 0 0; }
+.nav-item.active { background: var(--well); }
+.nav-item.active b { color: var(--text); font-weight: 600; }
+.nav-item b { font-weight: 400; }
+.nav-item strong, .nav-item.active strong { border: 0; background: var(--line-soft); color: var(--text-muted); border-radius: 12px; }
+.sidebar-status { margin: 24px 16px 0; padding: 16px 0 0; border: 0; border-top: 1px solid var(--line); background: transparent; gap: 4px; }
+.sidebar-status strong { font-size: 20px; font-weight: 400; }
+.sidebar-collapsed .brand-mark { display: none; }
+.sidebar-collapsed .sidebar-brand { justify-content: center; }
+.sidebar-collapsed .nav-item { padding: 0; min-height: 44px; }
+.topbar-wrapper { padding: 0 24px; background: #161616; border-bottom: 1px solid #393939; }
+.topbar { min-height: 48px; gap: 16px; color: #f4f4f4; }
+.cluster-chip { min-height: 32px; padding: 0; border: 0; background: transparent; }
+.cluster-chip span { color: #a8a8a8; }
+.cluster-chip strong { font-family: var(--font-sans); font-size: 13px; font-weight: 400; color: #f4f4f4; }
+.top-actions { gap: 0; }
+.top-actions > button { min-height: 48px; background: transparent; border: 0; color: #c6c6c6; padding: 0 16px; }
+.top-actions > button:hover:not(:disabled) { background: #393939; color: white; }
+.topbar .sync-state { border: 0; background: transparent; color: #a8a8a8; font-weight: 400; padding: 0 16px; }
+.topbar .sync-state.updated::before { background: #42be65; }
+.topbar .sync-state.unavailable, .topbar .sync-state.tokenRejected { color: #ff8389; }
+.topbar .sync-state.notConnected { color: #f1c21b; }
+.topbar :focus-visible { outline-color: #fff; outline-offset: -3px; }
+.topbar-preferences { position: relative; }
+.topbar-preferences summary { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 16px; color: #c6c6c6; cursor: pointer; list-style: none; }
+.topbar-preferences summary::-webkit-details-marker { display: none; }
+.topbar-preferences[open] summary, .topbar-preferences summary:hover { background: #393939; color: #fff; }
+.topbar-preferences-panel { position: absolute; z-index: 90; right: 0; top: 48px; display: grid; gap: 12px; width: 248px; padding: 20px; color: var(--text); border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow-heavy); }
+.preference-label { font-size: 12px; color: var(--text-muted); }
+.topbar-preferences-panel .lang-switch { display: flex; border: 0; padding: 0; gap: 0; background: var(--well); }
+.topbar-preferences-panel .lang-switch button { flex: 1; min-height: 36px; border: 1px solid transparent; }
+.topbar-preferences-panel .lang-switch button.active { border-color: var(--accent-text); background: var(--accent-soft); }
+.topbar-preferences-panel :focus-visible { outline-color: var(--accent-text); }
+.workspace-body { gap: 24px; padding: 24px 32px 40px; }
+.page-toolbar { min-height: 80px; padding: 0; gap: 24px; align-items: start; }
+.page-toolbar h1 { font-size: 28px; line-height: 1.3; font-weight: 400; letter-spacing: 0; margin: 4px 0 8px; }
+.page-toolbar-copy > p:last-child { font-size: 14px; line-height: 1.6; max-width: 70ch; }
+.page-toolbar .eyebrow { font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.page-toolbar-side { padding-top: 4px; gap: 24px; }
+.page-toolbar-metrics { gap: 0; }
+.page-toolbar-metrics span { background: transparent; border: 0; border-left: 1px solid var(--line); padding: 0 20px; min-width: 96px; }
+.page-toolbar-metrics span:first-child { border-left: 0; }
+.page-toolbar-metrics strong { font-size: 24px; font-weight: 400; }
+.page-toolbar-metrics small { font-size: 12px; font-weight: 400; }
+.page-toolbar-cta { min-height: 40px; }
+.panel, .deploy-workspace-panel, .node-fleet-map { padding: 20px; border: 0; background: var(--surface); }
+.panel-heading, .node-fleet-header, .deploy-heading { margin-bottom: 20px; }
+.panel-heading h2, .node-fleet-header h2, .deploy-heading h2 { font-size: 16px; font-weight: 600; margin: 0; }
+.panel-heading .eyebrow { margin-bottom: 4px; font-weight: 400; letter-spacing: 0; }
+.table-wrap { border: 0; }
+th, td { padding: 12px 16px; height: 48px; }
+th { background: var(--well); color: var(--text); font-size: 13px; font-weight: 600; }
+td { font-size: 14px; }
+tbody tr:hover { background: var(--surface-quiet); }
+.app-action-row button, .table-action-button { min-height: 28px; }
+.application-filter-bar, .data-toolbar { padding: 0 0 16px; gap: 16px; }
+.application-overview-grid article, .application-update-context-grid article { background: var(--surface-quiet); padding: 16px; border: 0; }
+.metric-pair, .metric-tile { background: var(--surface); border: 0; box-shadow: none; }
+.metric-pair:hover { transform: none; box-shadow: none; }
+.platform-strip { border: 0; border-bottom: 1px solid var(--line); background: transparent; padding: 0 0 16px; }
+:is(.section-tabs, .workspace-tabs) { display: flex; gap: 0; min-width: 0; flex: 0 0 auto; overflow-x: auto; border-bottom: 1px solid var(--line); padding: 0; margin: 0; }
+:is(.section-tabs, .workspace-tabs) > a, :is(.section-tabs, .workspace-tabs) > button { display: inline-flex; align-items: center; justify-content: flex-start; gap: 8px; min-height: 48px; padding: 0 20px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); white-space: nowrap; text-decoration: none; font-size: 14px; font-weight: 400; }
+:is(.section-tabs, .workspace-tabs) > a:hover, :is(.section-tabs, .workspace-tabs) > button:hover { background: var(--surface-quiet); color: var(--text); }
+:is(.section-tabs, .workspace-tabs) > .active, :is(.section-tabs, .workspace-tabs) > [aria-selected="true"], :is(.section-tabs, .workspace-tabs) > [aria-current="page"] { border-bottom-color: var(--accent-text); color: var(--text); font-weight: 600; background: var(--surface); }
+.detail-page, .task-page { min-width: 0; display: flex; flex-direction: column; gap: 24px; }
+.page-breadcrumb { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: var(--text-muted); }
+.page-breadcrumb a, .page-back { color: var(--accent-text); }
+.page-back { display: inline-flex; align-items: center; gap: 8px; border: 0; padding: 0; min-height: 28px; background: transparent; text-decoration: none; width: fit-content; }
+.page-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.object-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
+.object-header h1, .task-page h1 { font-size: 28px; font-weight: 400; margin: 4px 0 8px; overflow-wrap: anywhere; }
+.object-header p { color: var(--text-muted); margin: 0; }
+.detail-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: 24px; align-items: start; }
+.detail-section { padding: 24px; background: var(--surface); min-width: 0; }
+.detail-section h2 { margin: 0 0 20px; font-size: 16px; font-weight: 600; }
+.data-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.data-toolbar input { max-width: 360px; }
+@media (min-width: 901px) and (max-width: 1180px) {
+  html, body, #root { height: 100%; overflow: hidden; }
+  .dashboard-shell { grid-template-columns: 224px minmax(0, 1fr); height: 100dvh; max-height: 100dvh; overflow: hidden; }
+  .dashboard-shell.sidebar-collapsed { grid-template-columns: 64px minmax(0, 1fr); }
+  .workspace { height: 100%; overflow: hidden; }
+  .workspace-body { height: auto; overflow: auto; }
+  .sidebar { position: relative; display: flex; height: 100%; border-right: 1px solid var(--line); overflow: hidden; }
+  .sidebar nav { display: grid; overflow-y: auto; overflow-x: hidden; }
+  .nav-group { display: grid; }
+  .nav-section, .nav-item::before, .sidebar-status { display: block; }
+  .sidebar-status { display: grid; }
+  .sidebar-toggle { display: inline-flex; }
+  .nav-item { min-width: 0; }
+  .sidebar-collapsed .sidebar-title, .sidebar-collapsed .nav-item span, .sidebar-collapsed .nav-item strong, .sidebar-collapsed .sidebar-status, .sidebar-collapsed .nav-section { display: none; }
+  .sidebar-collapsed .nav-item { grid-template-columns: 1fr; }
+  .topbar-wrapper { position: relative; top: 0; }
+  .page-toolbar-side { flex-wrap: wrap; justify-content: flex-start; }
+}
+@media (max-width: 900px) {
+  .sidebar, .sidebar-collapsed .sidebar { padding: 0; }
+  .sidebar-brand, .sidebar-collapsed .sidebar-brand { margin: 0; padding: 0 16px; }
+  .sidebar nav { padding: 0; gap: 0; background: var(--surface); }
+  .nav-item, .sidebar-collapsed .nav-item { min-width: max-content; min-height: 44px; padding: 0 16px; border: 0; border-bottom: 2px solid transparent; }
+  .nav-item.active { border-bottom-color: var(--accent-text); }
+  .nav-group + .nav-group { margin: 0; }
+  .topbar-wrapper { position: relative; top: 0; padding: 0 16px; }
+  .topbar { display: flex; flex-wrap: wrap; gap: 0; min-height: 48px; }
+  .top-actions { display: flex; width: auto; margin-left: auto; align-items: center; }
+  .cluster-chip { width: auto; max-width: 200px; }
+  .topbar .sync-state { max-width: 120px; width: auto; padding: 0 8px; font-size: 11px; }
+  .workspace-body { padding: 24px 16px 32px; }
+  .detail-grid { grid-template-columns: minmax(0, 1fr); }
+  .object-header { flex-wrap: wrap; gap: 16px; }
+  .page-toolbar-side { justify-content: flex-start; }
+}
+@media (max-width: 520px) {
+  .topbar-action-label, .topbar-preferences summary > span { display: none; }
+  .top-actions > button, .topbar-preferences summary { padding: 0 12px; }
+  .cluster-chip { max-width: 170px; }
+  .topbar { flex-wrap: wrap; }
+  .top-actions { flex-wrap: wrap; }
+  .topbar .sync-state { max-width: none; }
+  .topbar-preferences-panel { right: -72px; }
+  .page-toolbar-metrics { flex-wrap: wrap; row-gap: 12px; }
+  .page-toolbar-metrics span { min-width: 80px; padding: 0 12px; }
+  :is(.section-tabs, .workspace-tabs) > a, :is(.section-tabs, .workspace-tabs) > button { padding: 0 16px; }
+  .detail-section, .panel { padding: 16px; }
+}
+
+/* Full-page object views deliberately scroll with the workspace, never inside a former modal. */
+.workspace-body .page-route { flex: 0 0 auto; overflow: visible; gap: 24px; }
+.detail-properties { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 32px; margin: 0; }
+.detail-properties > div { min-width: 0; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.detail-properties dt { margin-bottom: 8px; font-size: 12px; color: var(--text-muted); }
+.detail-properties dd { margin: 0; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.detail-page .panel-heading h1 { font-size: 28px; font-weight: 400; margin: 0; overflow-wrap: anywhere; }
+.terminal-page { min-width: 0; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); }
+.terminal-page .terminal-modal-header { background: var(--surface); gap: 16px; }
+.terminal-page .terminal-modal-heading { flex: 1; min-width: 0; }
+.terminal-page .terminal-modal-heading h2 { font-size: 22px; font-weight: 400; overflow-wrap: anywhere; }
+.terminal-page .terminal-surface { padding: 16px; }
+.overview-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); background: var(--surface); }
+.overview-summary-item { display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 12px; min-height: 140px; padding: 24px; background: transparent; color: var(--text); border: 0; border-right: 1px solid var(--line); text-align: left; }
+.overview-summary-item:last-child { border-right: 0; }
+.overview-summary-item:hover:not(:disabled) { background: var(--surface-quiet); }
+.overview-summary-item > span { font-size: 14px; color: var(--text-muted); }
+.overview-summary-item > strong { font-size: 36px; line-height: 1; font-weight: 400; font-variant-numeric: tabular-nums; }
+.overview-summary-item > strong small { font-size: 16px; color: var(--text-muted); }
+.overview-summary-item > small { color: var(--text-muted); font-size: 12px; }
+.overview-priority-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(340px, 1fr); gap: 24px; align-items: start; }
+.overview-priority-layout .overview-side-stack { display: grid; grid-template-rows: none; gap: 24px; }
+.overview-priority-layout .panel-heading p { font-size: 12px; color: var(--text-muted); margin: 8px 0 0; line-height: 1.6; }
+.overview-issue-groups { display: grid; }
+.overview-issue-group { padding: 16px 0; border-top: 1px solid var(--line); }
+.overview-issue-heading, .overview-issue-heading > div { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.overview-issue-heading { justify-content: space-between; }
+.overview-issue-heading strong { font-weight: 600; overflow-wrap: anywhere; }
+.overview-issue-heading small { color: var(--text-muted); white-space: nowrap; }
+.overview-issue-evidence { margin-top: 12px; }
+.overview-issue-evidence summary { color: var(--text-muted); font-size: 12px; cursor: pointer; padding: 4px 0; }
+.overview-issue-evidence[open] summary { margin-bottom: 12px; }
+.overview-evidence-row { display: flex; gap: 16px; align-items: flex-start; padding: 12px; background: var(--surface-quiet); border-bottom: 1px solid var(--line); }
+.overview-evidence-row > div { flex: 1; min-width: 0; }
+.overview-evidence-row small { color: var(--text-muted); overflow-wrap: anywhere; }
+.overview-evidence-row p { font-size: 13px; line-height: 1.6; margin: 6px 0 0; overflow-wrap: anywhere; }
+.overview-evidence-row button { min-height: 28px; padding: 0 6px; }
+.overview-control-status { display: grid; gap: 16px; margin: 0; }
+.overview-control-status > div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 16px; }
+.overview-control-status dt { color: var(--text-muted); }
+.overview-control-status dd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.overview-control-status dd small { color: var(--text-muted); overflow-wrap: anywhere; }
+.overview-capacity-table { min-width: 0; table-layout: auto; }
+.overview-capacity-table th, .overview-capacity-table td { padding: 10px 8px; height: 44px; font-size: 12px; }
+.overview-capacity-table td:first-child { min-width: 0; max-width: 160px; white-space: normal; }
+.overview-capacity-table td:first-child > button { display: block; font-size: 12px; margin-bottom: 4px; overflow-wrap: anywhere; text-align: left; }
+.overview-node-panel > .text-link-button { margin-top: 16px; }
+.overview-delivery-panel > p { color: var(--text-muted); font-size: 13px; line-height: 1.6; }
+@media (max-width: 1200px) {
+  .overview-priority-layout { grid-template-columns: minmax(0, 1fr); }
+  .overview-priority-layout .overview-side-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .overview-summary-item { padding: 16px; min-height: 132px; }
+  .overview-summary-item > strong { font-size: 28px; }
+  .overview-priority-layout .overview-side-stack { grid-template-columns: minmax(0, 1fr); }
+  .detail-properties { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+  .overview-issue-heading { align-items: flex-start; }
+  .overview-issue-heading > div { flex-wrap: wrap; gap: 8px; }
+}
+@media (max-width: 480px) {
+  .detail-properties { grid-template-columns: minmax(0, 1fr); }
+  .overview-summary-item > small { line-height: 1.5; }
 }

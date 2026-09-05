@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { FileText, History, Loader2, MoreHorizontal, Pencil, RotateCw, Search, Settings2, SquareTerminal } from "lucide-react";
 import { fetchDeploymentConfig, type DeploymentConfig } from "../deploymentConfigApi";
 import { localizeState, t } from "../i18n";
@@ -10,7 +9,10 @@ import type { DashboardPayload, DashboardService, Lang, ServiceVersion } from ".
 import { groupApplications, serviceRuntimeStatus, type Application } from "./applicationModel";
 import { applicationEndpoints } from "./applicationEndpoints";
 import { ServiceLogsModal } from "./ServiceLogsModal";
-import { OverlayShell } from "../useOverlay";
+import { useRouter, toHref } from "../router";
+import { StepLog } from "../deploy/StepLog";
+import { ObservabilityPanel } from "./ObservabilityPanel";
+import { applicationPath, parseApplicationPath, APPLICATION_TABS } from "./applicationRoutes";
 import { useConfirm } from "./ConfirmDialog";
 import { Badge, BadgeGroup, CodeCell, PrimaryCell, SelectControl, StatePill } from "./ui";
 
@@ -37,12 +39,6 @@ type RollbackState = {
   busyVersion: number | null;
 };
 
-type LogsTarget = {
-  services: DashboardService[];
-  initialServiceName: string;
-};
-
-const DEPLOY_ROOT = typeof document === "undefined" ? null : document.body;
 
 function versionNumber(version: ServiceVersion["version"]) {
   const value = Number(version);
@@ -85,11 +81,22 @@ export function ApplicationManagementPanel({
   selectedStack?: string | null;
   onSelectApplication: (stack: string | null) => void;
 }) {
+  const { path, search, navigate } = useRouter();
+  const route = parseApplicationPath(path);
+  const tab = route.tab;
   const { confirm, element: confirmDialog } = useConfirm(lang);
   const applications = useMemo(() => groupApplications(payload?.services || []), [payload?.services]);
   // Resolve against each fresh snapshot; URL state drives selection and browser back.
   const selected = applications.find((app) => app.stack === selectedStack) || null;
   const setSelected = (app: Application | null) => onSelectApplication(app?.stack || null);
+  const configRequest = useRef(0);
+  const versionsRequest = useRef(0);
+  const [detailRefresh, setDetailRefresh] = useState(0);
+  useEffect(() => {
+    const refresh = () => setDetailRefresh((current) => current + 1);
+    window.addEventListener("luma:refresh", refresh);
+    return () => window.removeEventListener("luma:refresh", refresh);
+  }, []);
   const [deploymentConfig, setDeploymentConfig] = useState<DeploymentConfig | null>(null);
   const [deploymentConfigFor, setDeploymentConfigFor] = useState("");
   const [configTab, setConfigTab] = useState<ConfigTab>("manifest");
@@ -100,8 +107,19 @@ export function ApplicationManagementPanel({
   const [actionSteps, setActionSteps] = useState<DeployStep[]>([]);
   const [configBusy, setConfigBusy] = useState("");
   const [rollbackState, setRollbackState] = useState<RollbackState | null>(null);
-  const [logsTarget, setLogsTarget] = useState<LogsTarget | null>(null);
-  const [filters, setFilters] = useState<ApplicationFilterState>({ query: "", status: "all", region: "all" });
+  const filters = useMemo<ApplicationFilterState>(() => {
+    const params = new URLSearchParams(search);
+    return { query: params.get("q") || "", status: params.get("status") || "all", region: params.get("region") || "all" };
+  }, [search]);
+  const setFilters = (update: (current: ApplicationFilterState) => ApplicationFilterState) => {
+    const next = update(filters);
+    const params = new URLSearchParams(search);
+    for (const [key, value] of [["q", next.query], ["status", next.status], ["region", next.region]]) {
+      if (value && value !== "all") params.set(key, value);
+      else params.delete(key);
+    }
+    navigate(`${path}${params.size ? `?${params}` : ""}`, { replace: true });
+  };
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const statusOptions = useMemo(() => [...new Set(applications.map((app) => app.status).filter(Boolean))].sort(), [applications]);
@@ -177,7 +195,7 @@ export function ApplicationManagementPanel({
     setActionError("");
     setActionSteps([]);
     setConfigBusy(app.stack);
-    setSelected(null);
+    setSelected(app);
     let gitUpdateStarted = false;
     try {
       const config = await fetchDeploymentConfig({ token, name: app.stack });
@@ -190,8 +208,8 @@ export function ApplicationManagementPanel({
           body: (
             <>
               <p>{lang === "zh"
-                ? "会重新拉取仓库、构建镜像并部署，构建进度在“部署记录”查看。"
-                : "Re-clones the repository, builds a new image and deploys it. Progress appears under Deployments."}</p>
+                ? "会重新拉取仓库、构建镜像并部署，构建进度在当前应用页面显示，并可在交付记录追溯。"
+                : "Re-clones the repository, builds a new image and deploys it. Progress remains visible on this application page and in delivery history."}</p>
               <p><code>{source}{ref ? ` @ ${ref}` : ""}</code></p>
             </>
           ),
@@ -200,10 +218,15 @@ export function ApplicationManagementPanel({
         if (!ok) return;
         setConfigBusy("");
         gitUpdateStarted = true;
-        // Navigate to deployments page before starting the update
-        onNavigateToDeployments?.();
-        // Run the update stream in the background without local UI
-        await updateApplicationStream({ token, name: app.stack }, () => {});
+        setUpdatingApp(app.stack);
+        navigate(applicationPath(app.stack, "overview"));
+        let failed = "";
+        await updateApplicationStream({ token, name: app.stack }, (step) => {
+          setActionSteps((current) => [...current, step]);
+          if (step.status === "fail") failed = step.message || step.name || "Update failed";
+        });
+        if (failed) throw new Error(failed);
+        setActionNotice(lang === "zh" ? `${app.stack} 更新流程已完成` : `${app.stack} update completed`);
         await onRefresh();
         return;
       }
@@ -230,17 +253,20 @@ export function ApplicationManagementPanel({
     }
   };
   const openConfig = async (app: Application) => {
+    const request = ++configRequest.current;
     setActionError("");
     setConfigBusy(app.stack);
     try {
       const config = await fetchDeploymentConfig({ token, name: app.stack });
+      if (request !== configRequest.current) return;
       setDeploymentConfig(config);
       setDeploymentConfigFor(app.stack);
       setConfigTab(config.manifest ? "manifest" : "compose");
     } catch (error) {
+      if (request !== configRequest.current) return;
       setActionError(String(error instanceof Error ? error.message : error));
     } finally {
-      setConfigBusy("");
+      if (request === configRequest.current) setConfigBusy("");
     }
   };
 
@@ -253,7 +279,7 @@ export function ApplicationManagementPanel({
       return;
     }
     setActionError("");
-    setLogsTarget({ services: app.services, initialServiceName: service.fullName });
+    navigate(applicationPath(app.stack, "logs") + `?service=${encodeURIComponent(service.fullName)}`);
   };
 
   const openServiceLogs = (service: DashboardService, appServices: DashboardService[]) => {
@@ -262,14 +288,17 @@ export function ApplicationManagementPanel({
       return;
     }
     setActionError("");
-    setLogsTarget({ services: appServices, initialServiceName: service.fullName });
+    const stack = service.stack || appServices[0]?.stack || selectedStack;
+    if (stack) navigate(applicationPath(stack, "logs") + `?service=${encodeURIComponent(service.fullName)}`);
   };
 
   const loadVersions = async (app: Application, message = "") => {
+    const request = ++versionsRequest.current;
     setActionError("");
     setRollbackState({ app: app.stack, versions: [], loading: true, error: "", message, busyVersion: null });
     try {
       const result = await fetchServiceHistory({ token, name: app.stack });
+      if (request !== versionsRequest.current) return;
       setRollbackState({
         app: app.stack,
         versions: result.versions || [],
@@ -279,6 +308,7 @@ export function ApplicationManagementPanel({
         busyVersion: null,
       });
     } catch (error) {
+      if (request !== versionsRequest.current) return;
       setRollbackState({
         app: app.stack,
         versions: [],
@@ -293,8 +323,7 @@ export function ApplicationManagementPanel({
   const openVersions = async (app: Application) => {
     setDeploymentConfig(null);
     setDeploymentConfigFor("");
-    setSelected(app);
-    await loadVersions(app);
+    navigate(applicationPath(app.stack, "versions"));
   };
 
   const rollbackToVersion = async (app: Application, version: number) => {
@@ -331,7 +360,6 @@ export function ApplicationManagementPanel({
   const selectedVolumes = selected?.services.flatMap((service) => service.storage || []) || [];
   const selectedConfig = selected && deploymentConfigFor === selected.stack ? deploymentConfig : null;
   const selectedRollback = selected && rollbackState?.app === selected.stack ? rollbackState : null;
-  const selectedRollbackBusy = selectedRollback?.busyVersion !== null && selectedRollback?.busyVersion !== undefined;
   const selectedConfigTabs: ConfigTab[] = [
     ...(selectedConfig?.manifest ? ["manifest" as const] : []),
     ...(selectedConfig?.composeContent ? ["compose" as const] : []),
@@ -345,34 +373,41 @@ export function ApplicationManagementPanel({
     const status = serviceRuntimeStatus(service);
     return (service.running || 0) > 0 || ["running", "healthy"].includes(status);
   };
-  const detailOverlay = selected && DEPLOY_ROOT ? createPortal(
-    <OverlayShell className="application-detail-backdrop" onClose={() => setSelected(null)}>
-      {(overlayRef) => (
-      <section
-        className="application-detail-page"
-        ref={overlayRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="application-detail-title"
-        onClick={(event) => event.stopPropagation()}
-      >
+  useEffect(() => {
+    setConfigBusy("");
+    if (!selected) return;
+    setActionError("");
+    if (tab === "config") void openConfig(selected);
+    if (tab === "versions") void loadVersions(selected);
+    return () => { configRequest.current += 1; versionsRequest.current += 1; };
+    // Route changes and manual refresh, not polling snapshots, trigger requests.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected?.stack, tab, token, detailRefresh]);
+  const activeServices = route.service ? selected?.services.filter((service) => (service.fullName || service.name) === route.service) || [] : selected?.services || [];
+  const detailPage = selected ? (
+      <section className="application-detail-page application-workspace" aria-labelledby="application-detail-title">
+        <nav className="breadcrumbs" aria-label={lang === "zh" ? "当前位置" : "Breadcrumb"}>
+          <a href={toHref("/apps")} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); setSelected(null); }}>{lang === "zh" ? "应用" : "Applications"}</a>
+          <span>/</span><span>{selected.stack}</span>{route.service ? <><span>/</span><span>{route.service}</span></> : null}
+        </nav>
         <header className="application-detail-header">
           <div>
             <p className="eyebrow">{lang === "zh" ? "应用详情" : "Application"}</p>
-            <h2 id="application-detail-title">{selected.stack}</h2>
+            <h1 id="application-detail-title">{selected.stack}</h1>
             <span>{serviceCountLabel(selected.services.length)} · {replicaLabel(selected.running, selected.desired)}</span>
           </div>
           <div className="application-detail-actions">
-            <button type="button" className="ghost" disabled={Boolean(selectedRollback?.loading || selectedRollbackBusy)} onClick={() => void openVersions(selected)}>{selectedRollback?.loading ? t(lang, "loadingHistory") : t(lang, "versions")}</button>
-            <button type="button" className="ghost" disabled={Boolean(configBusy)} onClick={() => void openConfig(selected)}>{configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "viewConfig")}</button>
             <button type="button" className="ghost danger" disabled={Boolean(actionBusy)} onClick={() => void restart(selected)}>{actionBusy === selected.stack ? t(lang, "restarting") : t(lang, "restart")}</button>
             <button type="button" className="primary" disabled={Boolean(configBusy || updatingApp)} onClick={() => void openUpdate(selected)}>
               {updatingApp === selected.stack ? (lang === "zh" ? "更新中..." : "Updating...") : configBusy === selected.stack ? t(lang, "loadingConfig") : t(lang, "updateApp")}
             </button>
-            <button type="button" className="icon-button" onClick={() => setSelected(null)}>{t(lang, "close")}</button>
           </div>
         </header>
+        <nav className="workspace-tabs" aria-label={lang === "zh" ? "应用工作区" : "Application workspace"}>
+          {APPLICATION_TABS.map((item) => <a key={item.id} href={toHref(applicationPath(selected.stack, item.id))} className={tab === item.id ? "active" : ""} aria-current={tab === item.id ? "page" : undefined} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(applicationPath(selected.stack, item.id)); }}>{lang === "zh" ? item.zh : item.en}</a>)}
+        </nav>
         <div className="application-detail-body">
+          {tab === "overview" ? <>
           <section className="application-overview-grid">
             <article><span>{t(lang, "status")}</span><strong>{localizeState(lang, selected.status)}</strong></article>
             <article><span>{t(lang, "replicas")}</span><strong>{selected.running}/{selected.desired}</strong></article>
@@ -390,7 +425,8 @@ export function ApplicationManagementPanel({
               )) : <p>{t(lang, "internalOnly")}</p>}
             </div>
           </section>
-          {selectedRollback ? (
+          </> : null}
+          {tab === "versions" && selectedRollback ? (
             <section className="application-detail-section version-history-section">
               <div className="version-history-heading">
                 <h3>{t(lang, "versions")}</h3>
@@ -436,7 +472,8 @@ export function ApplicationManagementPanel({
               )}
             </section>
           ) : null}
-          {selectedConfig ? (
+          {tab === "config" && !selectedConfig ? <div className="empty-inline">{configBusy ? t(lang, "loadingConfig") : t(lang, "noDeploymentConfig")}<button type="button" className="ghost" onClick={() => void openConfig(selected)}>{t(lang, "refresh")}</button></div> : null}
+          {tab === "config" && selectedConfig ? (
             <section className="application-detail-section deployment-config-section">
               <div className="deployment-config-heading">
                 <div>
@@ -458,13 +495,24 @@ export function ApplicationManagementPanel({
               )}
             </section>
           ) : null}
-          <section className="application-detail-section">
-            <h3>{t(lang, "services")}</h3>
+          {tab === "services" ? <section className="application-detail-section">
+            <h3>{route.service || t(lang, "services")}</h3>
+            {route.service && !activeServices.length ? <p>{lang === "zh" ? "服务不存在或已移除" : "Service not found or removed"}</p> : null}
+            {!route.service ? <div className="table-wrap"><table className="data-table">
+              <thead><tr><th>{t(lang, "services")}</th><th>{t(lang, "status")}</th><th>{t(lang, "replicas")}</th><th>{t(lang, "nodes")}</th><th>{t(lang, "actions")}</th></tr></thead>
+              <tbody>{selected.services.map((service) => <tr key={service.fullName || service.name}>
+                <td><a href={toHref(applicationPath(selected.stack, "services", service.fullName || service.name))} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(applicationPath(selected.stack, "services", service.fullName || service.name)); }}>{service.name}</a><small className="muted">{service.image}</small></td>
+                <td><StatePill label={localizeState(lang, serviceRuntimeStatus(service))} value={serviceRuntimeStatus(service)} /></td>
+                <td>{service.running ?? 0}/{service.desired ?? 0}</td>
+                <td>{(service.nodes || []).join(", ") || service.node || "-"}</td>
+                <td><div className="app-action-row"><button type="button" className="ghost" disabled={!service.fullName} onClick={() => openServiceLogs(service, selected.services)}><FileText size={15} />{logLabel}</button><button type="button" className="ghost" disabled={!service.fullName || !serviceIsRunning(service) || !onServiceTerminal} title={!serviceIsRunning(service) ? (lang === "zh" ? "服务未运行，无法进入容器" : "Service is not running") : shellLabel} onClick={() => onServiceTerminal?.(service, selected.stack)}><SquareTerminal size={15} />{shellLabel}</button></div></td>
+              </tr>)}</tbody>
+            </table></div> : null}
             <div className="application-service-grid">
-              {selected.services.map((service) => (
+              {(route.service ? activeServices : []).map((service) => (
                 <article className="application-service-detail" key={service.fullName || service.name}>
                   <div className="application-service-title">
-                    <strong>{service.name}</strong>
+                    <a href={toHref(applicationPath(selected.stack, "services", service.fullName || service.name))} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(applicationPath(selected.stack, "services", service.fullName || service.name)); }}>{service.name}</a>
                     <div className="application-service-title-actions">
                       <StatePill label={localizeState(lang, serviceRuntimeStatus(service))} value={serviceRuntimeStatus(service)} />
                       <button
@@ -505,8 +553,8 @@ export function ApplicationManagementPanel({
                 </article>
               ))}
             </div>
-          </section>
-          <section className="application-detail-section">
+          </section> : null}
+          {tab === "overview" ? <section className="application-detail-section">
             <h3>{lang === "zh" ? "存储与诊断" : "Storage and diagnostics"}</h3>
             <div className="application-diagnostics-list">
               {selectedVolumes.length ? selectedVolumes.map((volume) => (
@@ -517,23 +565,12 @@ export function ApplicationManagementPanel({
               )) : <p>{lang === "zh" ? "未发现应用卷" : "No application volumes found"}</p>}
               {selectedDiagnostics.length ? selectedDiagnostics.map((item) => <p key={item}>{item}</p>) : <p>{lang === "zh" ? "暂无诊断告警" : "No diagnostic warnings"}</p>}
             </div>
-          </section>
+          </section> : null}
+          {tab === "logs" ? <ServiceLogsModal key={selected.stack} inline lang={lang} token={token} services={selected.services} initialServiceName={new URLSearchParams(search).get("service") || selected.services.find((service) => service.fullName)?.fullName || ""} onClose={() => navigate(applicationPath(selected.stack, "overview"))} /> : null}
+          {tab === "metrics" ? <ObservabilityPanel key={selected.stack} lang={lang} token={token} services={selected.services} nodes={[]} /> : null}
         </div>
       </section>
-      )}
-    </OverlayShell>,
-    DEPLOY_ROOT,
   ) : null;
-  const logsOverlay = logsTarget ? (
-    <ServiceLogsModal
-      lang={lang}
-      token={token}
-      services={logsTarget.services}
-      initialServiceName={logsTarget.initialServiceName}
-      onClose={() => setLogsTarget(null)}
-    />
-  ) : null;
-
   const moreLabel = lang === "zh" ? "更多操作" : "More actions";
 
   const renderActions = (app: Application, compact: boolean) => {
@@ -557,7 +594,7 @@ export function ApplicationManagementPanel({
         </button>
         <button
           type="button"
-          className="primary"
+          className="ghost"
           disabled={Boolean(configBusy || updatingApp)}
           onClick={() => void openUpdate(app)}
         >
@@ -629,6 +666,8 @@ export function ApplicationManagementPanel({
       {selectedStack && !selected ? <div className="alert alert-warning"><span>{lang === "zh" ? `未找到应用 ${selectedStack}，可能已删除或当前账号无法访问。` : `Application ${selectedStack} was not found. It may have been removed or is unavailable to this account.`}</span><button className="ghost" type="button" onClick={() => setSelected(null)}>{lang === "zh" ? "返回列表" : "Back to list"}</button></div> : null}
       {actionError ? <div className="alert alert-error"><span>{actionError}</span></div> : null}
       {actionNotice ? <div className="alert alert-success"><span>{actionNotice}</span></div> : null}
+      {actionSteps.length || updatingApp ? <section className="application-detail-section" aria-live="polite"><h3>{lang === "zh" ? "应用更新进度" : "Application update progress"}</h3><StepLog steps={actionSteps} lang={lang} waitingLabel={updatingApp ? (lang === "zh" ? "正在开始更新…" : "Starting update…") : undefined} /><button type="button" className="ghost" onClick={onNavigateToDeployments}>{lang === "zh" ? "查看交付记录" : "View delivery history"}</button></section> : null}
+      {!selectedStack ? <>
       <div className="application-filter-bar" aria-label={lang === "zh" ? "应用筛选" : "Application filters"}>
         <label className="application-search-field">
           <Search size={16} aria-hidden="true" />
@@ -739,8 +778,8 @@ export function ApplicationManagementPanel({
         )) : <div className="empty-inline">{t(lang, "noApplications")}</div>}
       </div>
 
-      {detailOverlay}
-      {logsOverlay}
+      </> : null}
+      {detailPage}
       {confirmDialog}
     </article>
   );

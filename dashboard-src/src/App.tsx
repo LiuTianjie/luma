@@ -6,14 +6,14 @@ import { LoginPanel } from "./components/LoginPanel";
 import { Topbar } from "./components/Topbar";
 import { AppRoutes } from "./AppRoutes";
 import { Sidebar } from "./Sidebar";
-import { DetailDrawer } from "./DetailDrawer";
-import { nodeDetail, serviceDetail, type DetailState } from "./detailRecords";
+import { nodePath, servicePath, terminalPath, updatePath, parseObjectRoute } from "./objectRoutes";
+import { ResourceDetailPage } from "./pages/ResourceDetailPage";
+import { fetchDeploymentConfig } from "./deploymentConfigApi";
 import { useRouter } from "./router";
 import { pageForPath, ROUTE_BY_PAGE } from "./routes";
 import type { DeployUpdateContext } from "./pages/DeployPage";
 import { PageLoading } from "./pages/PageLoading";
 import { createDashboardViewModel, type NavPage } from "./dashboardViewModel";
-import { t } from "./i18n";
 import type { TerminalSessionTarget } from "./components/TerminalDrawer";
 import type { DashboardNode, DashboardService, Lang, SyncStatus } from "./types";
 import { useDashboardData } from "./useDashboardData";
@@ -30,11 +30,34 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem(SIDEBAR_KEY) === "collapsed");
   const [deployTemplateLanding, setDeployTemplateLanding] = useState(true);
   const [updateRequest, setUpdateRequest] = useState<ApplicationUpdateRequest | null>(null);
-  const [detail, setDetail] = useState<DetailState>(null);
-  const [terminalTarget, setTerminalTarget] = useState<TerminalSessionTarget | null>(null);
+  const [updateError, setUpdateError] = useState("");
+  const [updateAttempt, setUpdateAttempt] = useState(0);
   const { token, payload, errors, syncStatus, lastUpdated, setToken, signOut, loadDashboard } = useDashboardData();
   const { mode: themeMode, theme, setMode: setThemeMode } = useTheme();
   const vm = useMemo(() => createDashboardViewModel(payload), [payload]);
+
+  const objectRoute = parseObjectRoute(router.path);
+  const editName = objectRoute?.kind === "update" ? objectRoute.name : "";
+  const currentUpdateRequest = editName && updateRequest?.app.stack === editName ? updateRequest : null;
+  const routeNode = objectRoute?.kind === "node" || objectRoute?.kind === "node-terminal" ? vm.nodes.find(node => node.name === objectRoute.name) : undefined;
+  const routeService = objectRoute?.kind === "service" || objectRoute?.kind === "service-terminal" ? vm.services.find(service => (service.fullName || service.name) === objectRoute.name) : undefined;
+  const terminalTarget: TerminalSessionTarget | null = objectRoute?.kind === "node-terminal" && routeNode ? { kind: "node", node: routeNode }
+    : objectRoute?.kind === "service-terminal" && routeService ? { kind: "container", service: routeService, stack: new URLSearchParams(router.search).get("stack") || routeService.stack } : null;
+  const refreshPage = useCallback(async () => {
+    window.dispatchEvent(new CustomEvent("luma:refresh"));
+    await loadDashboard();
+  }, [loadDashboard]);
+  useEffect(() => {
+    if (!editName || !token || currentUpdateRequest || !payload) return;
+    const app = vm.applications.find(item => item.stack === editName);
+    if (!app) return;
+    let active = true;
+    setUpdateError("");
+    void fetchDeploymentConfig({ token, name: editName }).then(deploymentConfig => {
+      if (active) setUpdateRequest({ app, deploymentConfig });
+    }).catch(error => { if (active) setUpdateError(error instanceof Error ? error.message : String(error)); });
+    return () => { active = false; };
+  }, [editName, token, currentUpdateRequest, payload, vm.applications, updateAttempt]);
 
   const resolvedPage = pageForPath(router.path);
   const activeNavPage: NavPage = resolvedPage === "notfound" ? "overview" : resolvedPage;
@@ -54,7 +77,7 @@ export function App() {
       if (page === "deploy") setDeployTemplateLanding(true);
       let route = ROUTE_BY_PAGE[page];
       if (opts?.selectApp) {
-        route += `?select=${encodeURIComponent(opts.selectApp)}`;
+        route = `/apps/${encodeURIComponent(opts.selectApp)}/overview`;
       }
       router.navigate(route);
     },
@@ -64,18 +87,19 @@ export function App() {
   const openUpdatePage = (request: ApplicationUpdateRequest) => {
     setUpdateRequest(request);
     setDeployTemplateLanding(false);
-    router.navigate(ROUTE_BY_PAGE.deploy);
+    router.navigate(updatePath(request.app.stack));
   };
 
   const closeUpdatePage = () => {
     setUpdateRequest(null);
-    router.navigate(ROUTE_BY_PAGE.applications);
+    router.navigate(editName ? `/apps/${encodeURIComponent(editName)}/config` : ROUTE_BY_PAGE.applications);
   };
 
   const updateContext = useMemo<DeployUpdateContext | null>(() => {
-    if (!updateRequest) return null;
+    if (!currentUpdateRequest) return null;
+    const updateRequest = currentUpdateRequest;
     const { app, deploymentConfig } = updateRequest;
-    if (deploymentConfig?.manifest) {
+    if (deploymentConfig?.manifest || deploymentConfig?.composeContent) {
       const isCompose = deploymentConfig.kind === "compose" || Boolean(deploymentConfig.composeContent);
       return {
         ...updateRequest,
@@ -88,30 +112,17 @@ export function App() {
       return { ...updateRequest, deployMode: "service", serviceDraft: serviceToDraft(app), composeDraft: undefined };
     }
     return { ...updateRequest, deployMode: "compose", serviceDraft: undefined, composeDraft: appToComposeDraft(app) };
-  }, [updateRequest]);
+  }, [currentUpdateRequest]);
 
-  const updateContextNode = updateContext ? (
-    <section className="application-update-context">
-      <div className="application-update-context-title">
-        <strong>{lang === "zh" ? "当前应用" : "Current application"}</strong>
-        <span>
-          {updateContext.deploymentConfig?.manifest
-            ? (lang === "zh" ? "已读取 Luma Control 登记的部署配置，提交后会按同名应用更新。" : "Loaded the deployment config registered in Luma Control. Submitting updates the application with the same name.")
-            : (lang === "zh" ? "下面的配置从现有 stack 带入，提交后会按同名应用更新。" : "The config below is inferred from the current stack. Submitting updates the application with the same name.")}
-        </span>
-        {updateRequest?.configWarning ? <span>{updateRequest.configWarning}</span> : null}
-      </div>
-      <div className="application-update-context-grid">
-        <article><span>Stack</span><strong>{updateRequest?.app.stack}</strong></article>
-        <article><span>{lang === "zh" ? "服务" : "Services"}</span><strong>{updateRequest?.app.services.length}</strong></article>
-        <article><span>{t(lang, "accessAddress")}</span><strong>{updateRequest?.app.domains.join(", ") || t(lang, "internalOnly")}</strong></article>
-        <article><span>{t(lang, "replicas")}</span><strong>{updateRequest?.app.running}/{updateRequest?.app.desired}</strong></article>
-      </div>
-    </section>
-  ) : null;
-
-  const openNodeDetail = (node: DashboardNode) => setDetail(nodeDetail(node));
-  const openServiceDetail = (service: DashboardService) => setDetail(serviceDetail(service));
+  const updateContextNode = updateContext ? <div className="inline-banner">
+    {lang === "zh" ? "正在更新应用：" : "Updating application: "}<strong>{editName}</strong>
+    {currentUpdateRequest?.configWarning ? <span>{currentUpdateRequest.configWarning}</span> : null}
+  </div> : null;
+  const openNodeDetail = (node: DashboardNode) => router.navigate(nodePath(node.name || ""));
+  const openServiceDetail = (service: DashboardService) => router.navigate(servicePath(service.fullName || service.name || ""));
+  const openNodeTerminal = (node: DashboardNode) => router.navigate(terminalPath("node", node.name || ""));
+  const openServiceTerminal = (service: DashboardService, stack: string) => router.navigate(terminalPath("service", service.fullName || service.name || "", stack));
+  const closeTerminal = () => router.navigate(routeNode ? nodePath(routeNode.name || "") : routeService?.stack && vm.applications.some(app => app.stack === routeService.stack) ? `/apps/${encodeURIComponent(routeService.stack)}/services` : routeService ? servicePath(routeService.fullName || routeService.name || "") : "/fleet");
 
   const visibleStatus: SyncStatus = token ? syncStatus : "notConnected";
 
@@ -147,7 +158,7 @@ export function App() {
             themeMode={themeMode}
             onLangChange={setLang}
             onThemeModeChange={setThemeMode}
-            onRefresh={() => void loadDashboard()}
+            onRefresh={() => void refreshPage()}
             onSignOut={signOut}
             syncStatus={visibleStatus}
           />
@@ -162,7 +173,11 @@ export function App() {
             <>
               <ErrorBanner errors={errors} />
               {payload ? (
-                <AppRoutes
+                terminalTarget ? <Suspense fallback={<PageLoading lang={lang} />}><TerminalDrawer key={router.path} lang={lang} target={terminalTarget} token={token} onClose={closeTerminal} inline /></Suspense>
+                : objectRoute && objectRoute.kind !== "update" ? (routeNode || routeService ? <ResourceDetailPage lang={lang} node={routeNode} service={routeService} services={vm.services} applicationNames={vm.applications.map(app => app.stack)} onTerminal={() => { if (routeNode) openNodeTerminal(routeNode); else if (routeService) openServiceTerminal(routeService, routeService.stack || ""); }} />
+                  : <section className="detail-page"><h1>{lang === "zh" ? "对象不存在或已移除" : "Object not found or removed"}</h1><button onClick={() => navigate("overview")}>{lang === "zh" ? "返回总览" : "Back to overview"}</button></section>)
+                : editName && !updateContext ? <section className="detail-page"><button className="page-back" onClick={closeUpdatePage}>{lang === "zh" ? "← 返回应用" : "← Back to application"}</button><h1>{lang === "zh" ? "更新应用" : "Update application"} · {editName}</h1>{updateError ? <><p role="alert">{updateError}</p><button onClick={() => setUpdateAttempt(value => value + 1)}>{lang === "zh" ? "重试读取配置" : "Retry loading config"}</button></> : !vm.applications.some(app => app.stack === editName) ? <p>{lang === "zh" ? "应用不存在或已移除" : "Application not found or removed"}</p> : <PageLoading lang={lang} />}</section>
+                : <AppRoutes
                   page={resolvedPage}
                   lang={lang}
                   token={token}
@@ -176,9 +191,9 @@ export function App() {
                   onNavigateToDeployments={() => navigate("deployments")}
                   onSelectNode={openNodeDetail}
                   onSelectService={openServiceDetail}
-                  onTerminal={(node) => setTerminalTarget({ kind: "node", node })}
-                  onServiceTerminal={(service, stack) => setTerminalTarget({ kind: "container", service, stack })}
-                  onRefresh={loadDashboard}
+                  onTerminal={openNodeTerminal}
+                  onServiceTerminal={openServiceTerminal}
+                  onRefresh={refreshPage}
                   onCreateApplication={() => navigate("deploy")}
                   onUpdateApplication={openUpdatePage}
                   onCloseUpdate={closeUpdatePage}
@@ -192,12 +207,6 @@ export function App() {
         </div>
       </main>
 
-      <DetailDrawer lang={lang} detail={detail} onClose={() => setDetail(null)} />
-      {terminalTarget ? (
-        <Suspense fallback={null}>
-          <TerminalDrawer lang={lang} target={terminalTarget} token={token} onClose={() => setTerminalTarget(null)} />
-        </Suspense>
-      ) : null}
     </div>
   );
 }

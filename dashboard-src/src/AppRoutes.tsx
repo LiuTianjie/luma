@@ -26,7 +26,7 @@ export type AppRoutesProps = {
   theme: "light" | "dark";
   payload: DashboardPayload;
   vm: DashboardViewModel;
-  // Update pseudo-page state (Batch 6 will move this onto /apps/:stack/config).
+  // Loaded by App from the refresh-safe /apps/:stack/edit route.
   updateContext: DeployUpdateContext | null;
   updateContextNode: ReactNode;
   deployTemplateLanding: boolean;
@@ -115,7 +115,7 @@ export function AppRoutes(props: AppRoutesProps): ReactNode {
       content = <ObservabilityPage lang={lang} token={token} vm={vm} />;
       break;
     case "storage":
-      content = <StoragePage lang={lang} vm={vm} />;
+      content = <StoragePage lang={lang} vm={vm} token={token} />;
       break;
     case "registry":
       content = <RegistryPage lang={lang} token={token} />;

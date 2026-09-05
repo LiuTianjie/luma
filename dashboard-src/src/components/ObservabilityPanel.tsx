@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { FileText } from "lucide-react";
-import { localizeState, t } from "../i18n";
+import { localizeState } from "../i18n";
 import { fetchMetricsHistory } from "../metricsApi";
 import type { ActualResourceValues, DashboardNode, DashboardService, Lang, MetricsHistoryPayload, ResourceValues } from "../types";
-import { Badge, BadgeGroup, CodeCell, StatePill } from "./ui";
-import { Sparkline, TrendChart } from "./charts";
+import { Badge, StatePill } from "./ui";
+import { TrendChart } from "./charts";
 import { ServiceLogsModal } from "./ServiceLogsModal";
 import "./ObservabilityPanel.css";
+import { useRouter, useSearchParams } from "../router";
 
 const HISTORY_WINDOWS = [900, 3600, 21600];
 const HISTORY_REFRESH_MS = 30000;
@@ -21,6 +21,8 @@ type HistoryState = { payload?: MetricsHistoryPayload; error?: string };
 
 /** Schedule the next batch only after completion; abort on navigation or timeout. */
 function useMetricsHistories(token: string, targets: HistoryTarget[], historyWindow: number) {
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => { const reload = () => setRefresh((n) => n + 1); window.addEventListener("luma:refresh", reload); return () => window.removeEventListener("luma:refresh", reload); }, []);
   const [histories, setHistories] = useState<Record<string, HistoryState>>({});
   const signature = JSON.stringify(targets.map((item) => [item.kind, item.name]).sort());
 
@@ -57,7 +59,7 @@ function useMetricsHistories(token: string, targets: HistoryTarget[], historyWin
     };
     // The signature includes every target; do not restart on dashboard object refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, signature, historyWindow]);
+  }, [token, signature, historyWindow, refresh]);
   return histories;
 }
 
@@ -122,252 +124,49 @@ function serviceTitle(service: DashboardService) {
   return service.stack ? `${service.stack}/${service.name || "-"}` : service.name || service.fullName || "-";
 }
 
-function appKey(service: DashboardService) {
-  return service.stack || service.fullName || service.name || "-";
-}
-
-export function ObservabilityPanel({
-  lang,
-  token,
-  nodes,
-  services,
-}: {
-  lang: Lang;
-  token: string;
-  nodes: DashboardNode[];
-  services: DashboardService[];
+export function ObservabilityPanel({ lang, token, nodes, services, mode = "metrics" }: {
+  lang: Lang; token: string; nodes: DashboardNode[]; services: DashboardService[]; mode?: "metrics" | "logs";
 }) {
-  const applications = useMemo(() => {
-    const groups = new Map<string, DashboardService[]>();
-    for (const service of services.filter((item) => item.fullName)) {
-      const key = appKey(service);
-      groups.set(key, [...(groups.get(key) || []), service]);
-    }
-    return Array.from(groups.entries()).map(([key, group]) => ({ key, services: group.sort((a, b) => serviceTitle(a).localeCompare(serviceTitle(b))) }));
-  }, [services]);
-
-  const [selectedApp, setSelectedApp] = useState(() => applications[0]?.key || "");
-  const appServices = applications.find((item) => item.key === selectedApp)?.services || [];
-  const [selectedService, setSelectedService] = useState(() => appServices[0]?.fullName || "");
-  const [logsModalService, setLogsModalService] = useState("");
-  const [historyWindow, setHistoryWindow] = useState(900);
-
+  const zh = lang === "zh";
+  const { path, navigate } = useRouter();
+  const query = useSearchParams();
+  const kind = query.get("kind") === "service" || !nodes.length ? "service" : "node";
+  const available = kind === "node" ? nodes.flatMap((node) => node.name ? [{ name: node.name, label: nodeTitle(node) }] : []) : services.flatMap((service) => service.fullName ? [{ name: service.fullName, label: serviceTitle(service) }] : []);
+  const requested = query.get("target") || "";
+  const selected = requested || available[0]?.name || "";
+  const valid = available.some((item) => item.name === selected);
+  const rawWindow = Number(query.get("window") || 900);
+  const historyWindow = HISTORY_WINDOWS.includes(rawWindow) ? rawWindow : 900;
+  const targets = useMemo<HistoryTarget[]>(() => mode === "metrics" && selected && valid ? [{ kind, name: selected }] : [], [mode, kind, selected, valid]);
+  const histories = useMetricsHistories(token, targets, historyWindow);
+  const history = histories[historyKey(kind, selected)];
+  const retention = history?.payload?.retentionSeconds;
+  const series = history?.payload?.series || {};
+  const node = nodes.find((item) => item.name === selected);
+  const service = services.find((item) => item.fullName === selected);
+  const update = (values: Record<string, string>) => { const next = new URLSearchParams(query); Object.entries(values).forEach(([key, value]) => { if (value) next.set(key, value); else next.delete(key); }); navigate(`${path}?${next}`); };
   useEffect(() => {
-    if (!applications.length) {
-      setSelectedApp("");
-      return;
-    }
-    if (!selectedApp || !applications.some((item) => item.key === selectedApp)) {
-      setSelectedApp(applications[0].key);
-    }
-  }, [applications, selectedApp]);
-
-  useEffect(() => {
-    if (!appServices.length) {
-      setSelectedService("");
-      return;
-    }
-    if (!selectedService || !appServices.some((service) => service.fullName === selectedService)) {
-      setSelectedService(appServices[0].fullName || "");
-    }
-  }, [appServices, selectedService]);
-
-  const historyTargets = useMemo<HistoryTarget[]>(() => {
-    const targets: HistoryTarget[] = nodes
-      .map((node) => node.name)
-      .filter((name): name is string => Boolean(name))
-      .map((name) => ({ kind: "node" as const, name }));
-    if (selectedService) targets.push({ kind: "service", name: selectedService });
-    return targets;
-  }, [nodes, selectedService]);
-  const histories = useMetricsHistories(token, historyTargets, historyWindow);
-  const retention = Math.min(...Object.values(histories).map((item) => item.payload?.retentionSeconds).filter((value): value is number => typeof value === "number"));
-  const supportedWindows = HISTORY_WINDOWS.filter((value) => value <= (Number.isFinite(retention) ? retention : 900));
-  const serviceHistory = histories[historyKey("service", selectedService)];
-  const windowLabel = (seconds: number) => seconds < 3600 ? `${seconds / 60} ${lang === "zh" ? "分钟" : "min"}` : `${seconds / 3600} ${lang === "zh" ? "小时" : "h"}`;
-
-  useEffect(() => {
-    if (Number.isFinite(retention) && historyWindow > retention) {
-      setHistoryWindow([...HISTORY_WINDOWS].reverse().find((value) => value <= retention) || 900);
-    }
-  }, [retention, historyWindow]);
-
-  const openServiceLogs = (service: DashboardService) => {
-    const fullName = service.fullName || "";
-    if (!fullName) return;
-    setSelectedApp(appKey(service));
-    setSelectedService(fullName);
-    setLogsModalService(fullName);
-  };
-
-  return (
-    <>
-      <div className="history-toolbar">
-        <label>{lang === "zh" ? "资源趋势窗口" : "Resource history window"}
-          <select value={historyWindow} onChange={(event) => setHistoryWindow(Number(event.target.value))}>
-            {Array.from(new Set([...supportedWindows, historyWindow])).sort((a, b) => a - b).map((value) => <option value={value} key={value}>{windowLabel(value)}</option>)}
-          </select>
-        </label>
-        <small>{Number.isFinite(retention) ? `${lang === "zh" ? "最多保留" : "Retention"} ${windowLabel(retention)} · ` : ""}{lang === "zh" ? "自动刷新 · 每项展示实际采样范围" : "Auto refresh · actual sample range shown per target"}</small>
-      </div>
-      <section className="observability-grid">
-        <article className="panel node-metrics-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">{t(lang, "nodesEyebrow")}</p>
-            <h2>{lang === "zh" ? "节点资源" : "Node Resources"}</h2>
-          </div>
-          <span>{nodes.length}</span>
-        </div>
-        <div className="node-metrics-list">
-          {nodes.map((node, index) => {
-            const metrics = node.metrics || {};
-            const capacity = node.capacity || {};
-            const nodeHistory = node.name ? histories[historyKey("node", node.name)] : undefined;
-            const nodeSeries = nodeHistory?.payload?.series || {};
-            const nodeCpuHistory = nodeSeries.cpuPercent || [];
-            const title = nodeTitle(node);
-            const meta = nodeMeta(node);
-            return (
-              <article className="node-metric-row" key={`${node.name || "node"}-${index}`}>
-                <div className="node-identity">
-                  <div className="node-title-line">
-                    <strong title={title}>{title}</strong>
-                    <StatePill label={localizeState(lang, node.state)} value={node.state} />
-                  </div>
-                  <div className="node-meta" aria-label={lang === "zh" ? "节点元数据" : "Node metadata"}>
-                    {meta.length ? meta.map((item) => <span key={item}>{item}</span>) : <span>-</span>}
-                  </div>
-                </div>
-                <div className="node-resource-grid">
-                  <div className="metric-pair">
-                    <span className="metric-head">
-                      <b>CPU</b>
-                      <strong>{formatPercent(metrics.cpuPercent ?? metrics.loadPercent)}</strong>
-                    </span>
-                    <Sparkline maxGapSeconds={90} points={nodeCpuHistory} range={{ min: 0, max: 100 }} />
-                  </div>
-                  <div className="metric-pair">
-                    <span className="metric-head">
-                      <b>{lang === "zh" ? "内存" : "Memory"}</b>
-                      <strong>{formatPercent(metrics.memoryUsedPercent)}</strong>
-                    </span>
-                    <Sparkline maxGapSeconds={90} points={nodeSeries.memoryUsedPercent || []} range={{ min: 0, max: 100 }} />
-                    <small>{formatBytes(metrics.memoryTotalBytes || capacity.memoryBytes)}</small>
-                  </div>
-                </div>
-                <div className="node-storage-metrics" title={metrics.metricsPath || ""}>
-                  <span>{lang === "zh" ? "磁盘" : "Disk"} <strong>{formatPercent(metrics.diskUsedPercent)}</strong></span>
-                  <span>Inodes <strong>{formatPercent(metrics.inodesUsedPercent)}</strong></span>
-                  <small>{typeof metrics.diskAvailableBytes === "number" ? `${lang === "zh" ? "可用" : "Available"} ${formatBytes(metrics.diskAvailableBytes)}` : (lang === "zh" ? "磁盘容量未上报" : "Disk capacity not reported")}{metrics.metricsPath ? ` · ${metrics.metricsPath}` : ""}</small>
-                </div>
-                <HistoryStatus lang={lang} state={nodeHistory} />
-              </article>
-            );
-          })}
-        </div>
-        </article>
-
-        <article className="panel service-runtime-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">{t(lang, "servicesEyebrow")}</p>
-              <h2>{lang === "zh" ? "服务运行态" : "Service Runtime"}</h2>
-            </div>
-            <span>{services.length}</span>
-          </div>
-          <div className="table-wrap">
-            <table className="runtime-table">
-              <thead>
-                <tr>
-                  <th>{t(lang, "service")}</th>
-                  <th>{lang === "zh" ? "实际用量" : "Actual"}</th>
-                  <th>{lang === "zh" ? "声明资源" : "Declared"}</th>
-                  <th>{lang === "zh" ? "实例" : "Tasks"}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {services.map((service, index) => {
-                  const selectRuntime = () => {
-                    setSelectedApp(appKey(service));
-                    setSelectedService(service.fullName || "");
-                  };
-                  return (
-                  <tr
-                    aria-label={`${lang === "zh" ? "查看运行态" : "View runtime"}: ${serviceTitle(service)}`}
-                    className={service.fullName && service.fullName === selectedService ? "is-selected" : undefined}
-                    key={`${service.fullName || "service"}-${index}`}
-                    onClick={selectRuntime}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        selectRuntime();
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <td>
-                      <div className="runtime-service-cell">
-                        <CodeCell value={serviceTitle(service)} />
-                        <button
-                          type="button"
-                          className="ghost runtime-log-button"
-                          disabled={!service.fullName}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            openServiceLogs(service);
-                          }}
-                        >
-                          <FileText size={15} aria-hidden="true" />
-                          {lang === "zh" ? "查看日志" : "View logs"}
-                        </button>
-                      </div>
-                    </td>
-                    <td><Badge value={actualText(service.resources?.actual)} /></td>
-                    <td>
-                      <BadgeGroup>
-                        <Badge value={`limit ${resourceText(service.resources?.limits)}`} />
-                        <Badge value={`reserve ${resourceText(service.resources?.reservations)}`} />
-                      </BadgeGroup>
-                    </td>
-                    <td>
-                      <BadgeGroup>
-                        {(service.tasks || []).slice(0, 4).map((task) => (
-                          <StatePill
-                            key={task.id || `${task.node}-${task.state}`}
-                            label={`${task.node || "-"} ${localizeState(lang, task.state)} ${formatPercent(task.cpuPercent)}`}
-                            value={task.state}
-                          />
-                        ))}
-                        {(service.tasks || []).length > 4 ? <Badge value={`+${(service.tasks || []).length - 4}`} /> : null}
-                      </BadgeGroup>
-                    </td>
-                  </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {selectedService ? <div className="service-history-detail">
-            <div><strong>{selectedService}</strong><HistoryStatus lang={lang} state={serviceHistory} /></div>
-            <div className="service-history-charts">
-              <div><span>CPU</span><TrendChart maxGapSeconds={90} points={serviceHistory?.payload?.series?.cpuPercent || []} format={formatPercent} height={120} emptyLabel={lang === "zh" ? "等待至少两个 CPU 样本" : "Waiting for two CPU samples"} /></div>
-              <div><span>{lang === "zh" ? "内存" : "Memory"}</span><TrendChart maxGapSeconds={90} points={serviceHistory?.payload?.series?.memoryUsageBytes || []} format={formatBytes} height={120} emptyLabel={lang === "zh" ? "等待至少两个内存样本" : "Waiting for two memory samples"} /></div>
-            </div>
-            <small>{lang === "zh" ? "服务曲线汇总有上报节点；180 秒未更新的节点不计入，90 秒以上采样间隔显示为断点。" : "Sums reporting nodes; contributions expire after 180s. Sample gaps over 90s break the line."}</small>
-          </div> : null}
-        </article>
-      </section>
-      {logsModalService ? (
-        <ServiceLogsModal
-          lang={lang}
-          token={token}
-          services={services}
-          initialServiceName={logsModalService}
-          onClose={() => setLogsModalService("")}
-        />
-      ) : null}
-    </>
-  );
+    if (mode !== "metrics" || !retention || historyWindow <= retention) return;
+    const next = new URLSearchParams(query);
+    next.set("window", String([...HISTORY_WINDOWS].reverse().find((value) => value <= retention) || 900));
+    if (next.get("window") !== String(historyWindow)) navigate(`${path}?${next}`, { replace: true });
+  }, [mode, retention, historyWindow, query, path, navigate]);
+  if (mode === "logs") return <ServiceLogsModal inline lang={lang} token={token} services={services} initialServiceName={query.get("target") || query.get("service") || ""} />;
+  return <>
+    <div className="history-toolbar">
+      <label>{zh ? "对象类型" : "Object type"}<select value={kind} onChange={(event) => update({ kind: event.target.value, target: "" })}>{nodes.length > 0 && <option value="node">{zh ? "节点" : "Node"}</option>}<option value="service">{zh ? "服务" : "Service"}</option></select></label>
+      <label>{zh ? "监测对象" : "Target"}<select value={selected} onChange={(event) => update({ target: event.target.value })}>{!valid && <option value={selected}>{selected || (zh ? "暂无对象" : "No targets")}</option>}{available.map((item) => <option key={item.name} value={item.name}>{item.label}</option>)}</select></label>
+      <label>{zh ? "时间范围" : "Time range"}<select value={historyWindow} onChange={(event) => update({ window: event.target.value })}>{HISTORY_WINDOWS.map((value) => <option value={value} key={value} disabled={typeof retention === "number" && value > retention}>{value < 3600 ? `${value / 60} min` : `${value / 3600} h`}</option>)}</select></label>
+      <small>{zh ? "每 30 秒刷新 · 采样断点不会插值" : "Refreshes every 30s · sample gaps remain visible"}</small>
+    </div>
+    {!valid ? <div className="panel">{zh ? "该对象不存在或当前没有可用对象，请重新选择。" : "This target is unavailable. Select another target."}</div> : <section className="panel">
+      <div className="panel-heading"><h2>{kind === "node" && node ? nodeTitle(node) : service ? serviceTitle(service) : selected}</h2><StatePill label={localizeState(lang, node?.state || service?.status)} value={node?.state || service?.status} /></div>
+      {kind === "node" && node ? <><p>{nodeMeta(node).join(" · ")}</p><div className="alert-summary"><span>CPU <strong>{formatPercent(node.metrics?.cpuPercent ?? node.metrics?.loadPercent)}</strong></span><span>{zh ? "内存" : "Memory"}<strong>{formatPercent(node.metrics?.memoryUsedPercent)}</strong><small>{formatBytes(node.metrics?.memoryTotalBytes || node.capacity?.memoryBytes)}</small></span><span>{zh ? "磁盘可用" : "Disk available"}<strong>{formatBytes(node.metrics?.diskAvailableBytes)}</strong><small>{node.metrics?.metricsPath}</small></span></div></> : service && <><p>{zh ? "实际用量" : "Actual usage"} <Badge value={actualText(service.resources?.actual)} /> · {zh ? "限制" : "Limit"} {resourceText(service.resources?.limits)} · {zh ? "预留" : "Reservation"} {resourceText(service.resources?.reservations)}</p><div className="badge-group">{(service.tasks || []).map((task, index) => <StatePill key={task.id || index} label={`${task.node || "—"} ${localizeState(lang, task.state)} ${formatPercent(task.cpuPercent)}`} value={task.state} />)}</div></>}
+      <HistoryStatus lang={lang} state={history} />
+      {retention && <small>{zh ? "历史保留" : "History retention"} · {Math.round(retention / 60)} min</small>}
+      <div className="service-history-charts">{(kind === "node" ? [["cpuPercent", "CPU", formatPercent], ["memoryUsedPercent", zh ? "内存" : "Memory", formatPercent], ["diskUsedPercent", zh ? "磁盘" : "Disk", formatPercent], ["inodesUsedPercent", "Inodes", formatPercent]] : [["cpuPercent", "CPU", formatPercent], ["memoryUsageBytes", zh ? "内存" : "Memory", formatBytes]]).map(([key, label, format]) => <div key={key as string}><h3>{label as string}</h3><TrendChart maxGapSeconds={90} points={series[key as string] || []} format={format as (value: number) => string} height={180} emptyLabel={zh ? "等待至少两个采样点" : "Waiting for two samples"} /></div>)}</div>
+      <small>{zh ? "180 秒未更新的节点不计入服务汇总；超过 90 秒的采样间隔显示为断点。" : "Service totals exclude nodes stale for 180s. Gaps over 90s break the line."}</small>
+      {kind === "service" && <p><button className="ghost" onClick={() => navigate(`/observe/logs?target=${encodeURIComponent(selected)}`)}>{zh ? "查看此服务日志" : "View service logs"}</button></p>}
+    </section>}
+  </>;
 }

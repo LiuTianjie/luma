@@ -1,4 +1,4 @@
-import { Activity, Boxes, CloudCog, Container, Hammer, HardDrive, KeyRound, LayoutDashboard, Plus, ScrollText, ServerCog, type LucideIcon } from "lucide-react";
+import { Activity, Boxes, CloudCog, LayoutDashboard, ScrollText, ServerCog, Settings, type LucideIcon } from "lucide-react";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 import type { Lang } from "./types";
 
@@ -6,108 +6,26 @@ export type NavItem = {
   id: NavPage;
   icon: LucideIcon;
   label: string;
-  /** Omit or null to hide the count badge (unreliable / always-zero values). */
   value?: number | null;
   detail: string;
 };
+export type NavGroup = { key: string; label: string | null; items: NavItem[] };
 
-export type NavGroup = {
-  key: string;
-  // Uppercase section label shown above the group; null renders no divider (the
-  // ungrouped home anchor).
-  label: string | null;
-  items: NavItem[];
-};
-
-// Build the grouped sidebar navigation. Three sections collapse the previously flat
-// eight items: RUN (inspect what's running), DELIVER (ship), SETTINGS (rarely-changed
-// config). Overview stays ungrouped at the top as the home anchor.
+/** Object workspaces own their secondary pages; badges are reserved for actionable issues. */
 export function buildNavGroups(lang: Lang, vm: DashboardViewModel): NavGroup[] {
   const zh = lang === "zh";
-  const openIssues = vm.issueCounts.critical + vm.issueCounts.warning;
-  const overview: NavItem = {
-    id: "overview",
-    icon: LayoutDashboard,
-    label: zh ? "总览" : "Overview",
-    value: openIssues > 0 ? openIssues : null,
-    detail: zh ? `${vm.healthyServices}/${vm.services.length} 服务正常` : `${vm.healthyServices}/${vm.services.length} services ok`,
-  };
-  const apps: NavItem = {
-    id: "applications",
-    icon: Boxes,
-    label: zh ? "应用" : "Apps",
-    value: vm.applications.length,
-    detail: zh ? "生命周期 · 回滚" : "Lifecycle · rollback",
-  };
-  const fleet: NavItem = {
-    id: "nodes",
-    icon: ServerCog,
-    label: zh ? "节点" : "Fleet",
-    value: vm.nodes.length,
-    detail: zh ? `${vm.activeNodes}/${vm.nodes.length} ready · 拓扑` : `${vm.activeNodes}/${vm.nodes.length} ready · topology`,
-  };
-  const observe: NavItem = {
-    id: "observability",
-    icon: Activity,
-    label: zh ? "可观测性" : "Observability",
-    value: vm.metricNodes || null,
-    detail: zh ? "指标 · 日志 · 告警" : "Metrics · logs · alerts",
-  };
-  const storage: NavItem = {
-    id: "storage",
-    icon: HardDrive,
-    label: zh ? "存储" : "Storage",
-    value: vm.storageVolumes.length + vm.storageClasses.length || null,
-    detail: zh ? `${vm.storageClasses.length} 类 · ${vm.storageVolumes.length} 卷` : `${vm.storageClasses.length} classes · ${vm.storageVolumes.length} volumes`,
-  };
-  const builder: NavItem = {
-    id: "builder",
-    icon: Hammer,
-    label: zh ? "构建" : "Builder",
-    value: vm.builderNodes || null,
-    detail: zh ? "仓库导入 · 构建历史" : "Repo import · history",
-  };
-  const registry: NavItem = {
-    id: "registry",
-    icon: Container,
-    label: "Registry",
-    value: null,
-    detail: zh ? "镜像 · 保留 · GC" : "Images · retention · GC",
-  };
-  const deployments: NavItem = {
-    id: "deployments",
-    icon: ScrollText,
-    label: zh ? "部署记录" : "Deployments",
-    value: null,
-    detail: zh ? "构建 · CLI · 面板" : "Build · CLI · UI",
-  };
-  const lae: NavItem = {
-    id: "lae",
-    icon: CloudCog,
-    label: "LAE",
-    value: null,
-    detail: zh ? "用户 · 租户 · 应用" : "Users · tenants · apps",
-  };
-  const create: NavItem = {
-    id: "deploy",
-    icon: Plus,
-    label: zh ? "创建" : "Create",
-    value: vm.templateCount || null,
-    detail: zh ? "模板、表单、YAML" : "Templates, form, YAML",
-  };
-  const credentials: NavItem = {
-    id: "credentials",
-    icon: KeyRound,
-    label: zh ? "凭据" : "Credentials",
-    value: null,
-    detail: zh ? "Secret · Registry" : "Secrets · registry",
-  };
-
+  const issues = vm.issueCounts.critical + vm.issueCounts.warning;
   return [
-    { key: "home", label: null, items: [overview] },
-    { key: "run", label: zh ? "运行" : "Run", items: [apps, fleet, observe, storage, registry, builder, deployments] },
-    { key: "platform", label: zh ? "平台" : "Platform", items: [lae] },
-    { key: "deliver", label: zh ? "交付" : "Deliver", items: [create] },
-    { key: "settings", label: zh ? "设置" : "Settings", items: [credentials] },
+    { key: "workspace", label: zh ? "工作空间" : "Workspace", items: [
+      { id: "overview", icon: LayoutDashboard, label: zh ? "总览" : "Overview", value: issues || null, detail: zh ? "运行概况与待处理事项" : "Operations and attention queue" },
+      { id: "applications", icon: Boxes, label: zh ? "应用" : "Applications", detail: zh ? "服务、实例、终端与生命周期" : "Services, instances, terminal and lifecycle" },
+      { id: "deployments", icon: ScrollText, label: zh ? "交付" : "Delivery", detail: zh ? "构建、部署与任务记录" : "Builds, deployments and tasks" },
+      { id: "observability", icon: Activity, label: zh ? "可观测性" : "Observability", detail: zh ? "指标、日志与告警" : "Metrics, logs and alerts" },
+      { id: "nodes", icon: ServerCog, label: zh ? "基础设施" : "Infrastructure", detail: zh ? "节点、存储、镜像与网络" : "Nodes, storage, images and networking" },
+    ] },
+    { key: "platform", label: zh ? "平台管理" : "Platform", items: [
+      { id: "lae", icon: CloudCog, label: "LAE", detail: zh ? "用户、租户与应用平台" : "Users, tenants and application platform" },
+      { id: "credentials", icon: Settings, label: zh ? "设置" : "Settings", detail: zh ? "凭据与集群管理" : "Credentials and cluster administration" },
+    ] },
   ];
 }

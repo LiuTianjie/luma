@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import type { DashboardNode, DashboardService, Lang } from "../types";
 import { t } from "../i18n";
-import { useOverlay } from "../useOverlay";
+import { OverlayShell } from "../useOverlay";
 
 type TerminalStatus = "connecting" | "connected" | "ended" | "error";
 
@@ -21,17 +21,26 @@ export type TerminalSessionTarget = {
   stack?: string;
 };
 
-export function TerminalDrawer({
-  lang,
-  target,
-  token,
-  onClose,
-}: {
+type TerminalDrawerProps = {
   lang: Lang;
   target: TerminalSessionTarget;
   token: string;
   onClose: () => void;
-}) {
+  inline?: boolean;
+};
+
+export function TerminalDrawer(props: TerminalDrawerProps) {
+  if (props.inline) return <TerminalContent {...props} />;
+  if (!TERMINAL_ROOT) return null;
+  return createPortal(
+    <OverlayShell<HTMLElement> className="terminal-modal-backdrop" onClose={props.onClose}>
+      {(panelRef) => <TerminalContent {...props} panelRef={panelRef} />}
+    </OverlayShell>,
+    TERMINAL_ROOT,
+  );
+}
+
+function TerminalContent({ lang, target, token, onClose, inline = false, panelRef }: TerminalDrawerProps & { panelRef?: RefObject<HTMLElement | null> }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -39,12 +48,6 @@ export function TerminalDrawer({
   const sessionRef = useRef("");
   const reportedCloseRef = useRef(false);
   const [status, setStatus] = useState<TerminalStatus>("connecting");
-  // Escape-to-close, focus trap and focus restore, shared with the other overlays.
-  // xterm calls stopPropagation on the keys it consumes, so Escape and Tab typed
-  // into the terminal reach the shell rather than this handler — which is what a
-  // terminal user expects. The xterm effect below runs after this one and takes
-  // focus back off the close button, so the caret lands in the terminal on open.
-  const overlayRef = useOverlay<HTMLElement>(onClose);
   const isContainer = target.kind === "container";
   const title = isContainer
     ? `${target.stack || target.service?.stack || "-"} / ${target.service?.name || target.service?.fullName || "-"}`
@@ -54,8 +57,11 @@ export function TerminalDrawer({
     : `${target.node?.region || "-"} · ${target.node?.agentOs || "agent"}`;
 
   useEffect(() => {
+    let active = true;
     const container = containerRef.current;
     if (!container) return;
+    setStatus("connecting");
+    reportedCloseRef.current = false;
     const term = new Terminal({
       cursorBlink: true,
       convertEol: true,
@@ -98,12 +104,14 @@ export function TerminalDrawer({
     resizeObserver.observe(container);
 
     socket.addEventListener("open", () => {
+      if (!active) return;
       term.writeln(lang === "zh"
         ? (isContainer ? "正在连接容器终端..." : "正在连接节点终端...")
         : (isContainer ? "Connecting to container shell..." : "Connecting to node terminal..."));
       socket.send(JSON.stringify({ type: "auth", token }));
     });
     socket.addEventListener("message", (event) => {
+      if (!active) return;
       let message: Record<string, unknown>;
       try {
         message = JSON.parse(String(event.data));
@@ -130,6 +138,7 @@ export function TerminalDrawer({
       }
     });
     socket.addEventListener("close", (event) => {
+      if (!active) return;
       if (!sessionRef.current && !reportedCloseRef.current) {
         setStatus("error");
         term.writeln("");
@@ -143,6 +152,7 @@ export function TerminalDrawer({
       setStatus((current) => (current === "ended" || current === "error") ? current : "ended");
     });
     socket.addEventListener("error", () => {
+      if (!active) return;
       reportedCloseRef.current = true;
       setStatus("error");
       term.writeln("");
@@ -156,6 +166,7 @@ export function TerminalDrawer({
 
     window.addEventListener("resize", sendResize);
     return () => {
+      active = false;
       window.removeEventListener("resize", sendResize);
       resizeObserver.disconnect();
       disposable.dispose();
@@ -163,8 +174,9 @@ export function TerminalDrawer({
         if (sessionRef.current) {
           socket.send(JSON.stringify({ type: "close", sessionId: sessionRef.current }));
         }
-        socket.close();
       }
+      // Also cancel sockets still connecting when navigating away.
+      socket.close();
       term.dispose();
       socketRef.current = null;
       terminalRef.current = null;
@@ -180,15 +192,13 @@ export function TerminalDrawer({
     error: lang === "zh" ? "错误" : "Error",
   }[status];
 
-  if (!TERMINAL_ROOT) return null;
-
-  return createPortal(
-    <div className="terminal-modal-backdrop" onClick={onClose}>
+  return (
       <section
-        className={`terminal-modal terminal-modal-${status}`}
-        ref={overlayRef}
-        role="dialog"
-        aria-modal="true"
+        className={`${inline ? "terminal-page" : "terminal-modal"} terminal-modal-${status}`}
+        style={inline ? { minHeight: "65vh", display: "flex", flexDirection: "column" } : undefined}
+        ref={panelRef}
+        role={inline ? "region" : "dialog"}
+        aria-modal={inline ? undefined : true}
         aria-labelledby="terminal-modal-title"
         onClick={(event) => event.stopPropagation()}
       >
@@ -200,12 +210,10 @@ export function TerminalDrawer({
           </div>
           <span className="terminal-status-pill">{statusLabel}</span>
           <button type="button" className="icon-button" onClick={onClose}>
-            {t(lang, "close")}
+            {inline ? (lang === "zh" ? "结束并返回" : "End session and return") : t(lang, "close")}
           </button>
         </header>
-        <div className="terminal-surface" ref={containerRef} />
+        <div className="terminal-surface" style={inline ? { flex: 1, minHeight: "55vh" } : undefined} ref={containerRef} />
       </section>
-    </div>,
-    TERMINAL_ROOT,
   );
 }

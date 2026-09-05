@@ -19,6 +19,7 @@ import { useConfirm } from "../components/ConfirmDialog";
 import type { DashboardStorageClass, Lang } from "../types";
 import type { DashboardViewModel } from "../dashboardViewModel";
 import { PageHeader } from "./PageHeader";
+import { useRouter, toHref } from "../router";
 
 type CredentialsState = {
   secrets: string[];
@@ -137,7 +138,11 @@ export function CredentialsPage({
   vm: DashboardViewModel;
 }) {
   const zh = lang === "zh";
-  const [activeTab, setActiveTab] = useState<"secrets" | "registries" | "git" | "storage">("secrets");
+  const { path, search, navigate } = useRouter();
+  const section = path.split("/")[2] || "secrets";
+  const activeTab = ["registries", "git", "storage", "maintenance"].includes(section) ? section : "secrets";
+  const editing = path.endsWith("/new") && ["secrets", "registries", "git"].includes(activeTab);
+  const setActiveTab = (tab: string) => navigate(`/settings/${tab}`);
   const [state, setState] = useState<CredentialsState>({
     secrets: [],
     registries: [],
@@ -189,11 +194,23 @@ export function CredentialsPage({
     return () => controller.abort();
   }, [refresh]);
 
+  useEffect(() => {
+    const onRefresh = () => void refresh();
+    window.addEventListener("luma:refresh", onRefresh);
+    return () => window.removeEventListener("luma:refresh", onRefresh);
+  }, [refresh]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    setSecretForm({ name: params.get("name") || "", scope: params.get("scope") || "", value: "" });
+    setRegistryForm({ host: "", username: "", password: "" });
+    setGitProviderForm({ type: "github", account: "", baseUrl: "", cloneBaseUrl: "", username: "", token: "" });
+    setWriteError("");
+  }, [path, search]);
+
   const parsedSecrets = useMemo(() => state.secrets.map(parseSecretName), [state.secrets]);
   const secretGroups = useMemo(() => buildSecretGroups(parsedSecrets, lang), [lang, parsedSecrets]);
-  const scopedSecrets = parsedSecrets.filter((item) => item.scope).length;
-  const configuredRegistries = state.registries.filter((item) => item.configured).length;
-  const configuredGitProviders = state.gitProviders.filter((item) => item.configured).length;
+
 
   useEffect(() => {
     if (state.loading || initializedSecretGroups.current || !secretGroups.length) return;
@@ -220,6 +237,7 @@ export function CredentialsPage({
       setSecretForm({ name: "", scope: "", value: "" });
       setNotice(zh ? `Secret 已保存：${secretForm.name.trim()}` : `Secret saved: ${secretForm.name.trim()}`);
       await refresh();
+      navigate("/settings/secrets");
     } catch (error) {
       setWriteError(String(error instanceof Error ? error.message : error));
     } finally {
@@ -237,6 +255,7 @@ export function CredentialsPage({
       setRegistryForm({ host: "", username: "", password: "" });
       setNotice(zh ? `Registry 凭据已保存：${registryForm.host.trim()}` : `Registry credential saved: ${registryForm.host.trim()}`);
       await refresh();
+      navigate("/settings/registries");
     } catch (error) {
       setWriteError(String(error instanceof Error ? error.message : error));
     } finally {
@@ -312,6 +331,7 @@ export function CredentialsPage({
       setGitProviderForm({ type: gitProviderForm.type, account: "", baseUrl: gitProviderForm.type === "gitea" ? gitProviderForm.baseUrl : "", cloneBaseUrl: "", username: "", token: "" });
       setNotice(zh ? `Git 凭据已保存：${savedId}` : `Git credential saved: ${savedId}`);
       await refresh();
+      navigate("/settings/git");
     } catch (error) {
       setWriteError(String(error instanceof Error ? error.message : error));
     } finally {
@@ -347,18 +367,11 @@ export function CredentialsPage({
     <>
       <PageHeader
         meta={{
-          eyebrow: zh ? "凭据" : "Credentials",
-          title: zh ? "Secret、Registry 与存储凭据" : "Secrets, registries, and storage credentials",
-          description: zh
-            ? "管理控制面的敏感配置。值只写不回显：保存后不会再返回浏览器。"
-            : "Manage control-plane sensitive config. Values are write-only and never returned to the browser after saving.",
-          metrics: [
-            { label: zh ? "Secrets" : "Secrets", value: state.secrets.length },
-            { label: zh ? "Scoped" : "Scoped", value: scopedSecrets },
-            { label: zh ? "Registries" : "Registries", value: configuredRegistries },
-            { label: zh ? "Git accounts" : "Git accounts", value: configuredGitProviders },
-            { label: "storageClass", value: state.storageClasses.length },
-          ],
+          metrics: [],
+          eyebrow: zh ? "设置" : "Settings",
+          title: editing ? (zh ? "新增或轮换凭据" : "Add or rotate credential") : (zh ? "凭据与维护" : "Credentials and maintenance"),
+          description: zh ? "管理访问凭据。敏感值只写不回显，保存后不会返回浏览器。" : "Manage access credentials. Sensitive values are write-only and never returned after saving.",
+          action: editing ? <button type="button" className="ghost" disabled={!!busy} onClick={() => navigate(`/settings/${activeTab}`)}>{zh ? "返回列表" : "Back to list"}</button> : ["secrets", "registries", "git"].includes(activeTab) ? <button type="button" className="primary" onClick={() => navigate(`/settings/${activeTab}/new`)}>{zh ? "新增 / 轮换凭据" : "Add / rotate credential"}</button> : undefined,
         }}
       />
 
@@ -388,9 +401,9 @@ export function CredentialsPage({
         </div>
       ) : null}
 
-      <section className="credentials-layout" hidden={state.loading && !state.secrets.length && !state.registries.length}>
-        <article className="panel credentials-index-panel">
-          <div className="credentials-tabs" role="tablist" aria-label={zh ? "凭据视图" : "Credential views"}>
+      <section className="credentials-layout" style={{ display: "block" }} hidden={state.loading && !state.secrets.length && !state.registries.length}>
+        <article className="panel credentials-index-panel" hidden={editing}>
+          <div className="credentials-tabs" role="navigation" aria-label={zh ? "凭据视图" : "Credential views"}>
             <button type="button" className={activeTab === "secrets" ? "active" : ""} onClick={() => setActiveTab("secrets")}>
               <LockKeyhole size={15} aria-hidden="true" />
               Secrets
@@ -404,10 +417,14 @@ export function CredentialsPage({
               Git Providers
             </button>
             <button type="button" className={activeTab === "storage" ? "active" : ""} onClick={() => setActiveTab("storage")}>
-              storageClass
+              {zh ? "存储配置" : "Storage configuration"}
+            </button>
+            <button type="button" className={activeTab === "maintenance" ? "active" : ""} onClick={() => setActiveTab("maintenance")}>
+              {zh ? "系统维护" : "Maintenance"}
             </button>
           </div>
 
+          {activeTab === "maintenance" ? <div className="empty-state"><h2>{zh ? "集群维护" : "Cluster maintenance"}</h2><p>{zh ? "查看系统版本、升级 CLI 与 Agent，并跟踪升级任务。" : "Inspect system versions, upgrade CLI and agents, and track maintenance tasks."}</p><a className="primary" href={toHref("/fleet/maintenance")} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate("/fleet/maintenance"); }}>{zh ? "进入系统维护" : "Open maintenance"}</a></div> : null}
           {activeTab === "secrets" ? (
             parsedSecrets.length ? (
               <div className="secret-groups">
@@ -462,6 +479,7 @@ export function CredentialsPage({
                                   <td><CodeCell value="write-only" /></td>
                                   <td><StatePill label={zh ? "已保存" : "saved"} value="ready" /></td>
                                   <td>
+                                    <button type="button" className="ghost" disabled={!!busy} onClick={() => navigate(`/settings/secrets/new?${new URLSearchParams({ name: secret.name, scope: secret.scope })}`)}>{zh ? "轮换" : "Rotate"}</button>
                                     <button
                                       className="ghost danger"
                                       type="button"
@@ -592,7 +610,7 @@ export function CredentialsPage({
           ) : null}
         </article>
 
-        <aside className="panel credentials-aside">
+        {editing ? <article className="panel credentials-aside" style={{ maxWidth: 760 }}>
           {activeTab === "registries" ? (
             <>
               <div className="panel-heading">
@@ -713,7 +731,7 @@ export function CredentialsPage({
               </div>
             </>
           )}
-        </aside>
+        </article> : null}
       </section>
       {confirmDialog}
     </>

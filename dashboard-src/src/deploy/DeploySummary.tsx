@@ -1,3 +1,4 @@
+import type { SubmissionSummary } from "./submissionSummary";
 import type { Lang } from "../types";
 import type { ComposeDeploymentDraft, DeployMode, DeployPreviewResult, DeployStep, ServiceManifestDraft } from "./types";
 
@@ -13,6 +14,7 @@ export function DeploySummary({
   preview,
   steps,
   errors,
+  submission,
 }: {
   lang: Lang;
   mode: DeployMode;
@@ -21,6 +23,7 @@ export function DeploySummary({
   preview: DeployPreviewResult | null;
   steps: DeployStep[];
   errors: string[];
+  submission?: SubmissionSummary | null;
 }) {
   const zh = lang === "zh";
   const publicTargets = mode === "service"
@@ -42,15 +45,15 @@ export function DeploySummary({
           <span className="deploy-summary-indicator" aria-hidden="true" />
           <div>
             <p className="eyebrow">{lang === "zh" ? "影响预览" : "Impact"}</p>
-            <h3>{mode === "service" ? serviceDraft.name : composeDraft.name}</h3>
+            <h3>{submission?.name || (mode === "service" ? serviceDraft.name : composeDraft.name)}</h3>
           </div>
           <b>{summaryState}</b>
         </div>
         <dl className="deploy-summary-list">
           <div><dt>{zh ? "类型" : "Type"}</dt><dd>{mode === "service" ? (zh ? "单服务" : "Single service") : (zh ? "Compose 应用" : "Compose app")}</dd></div>
-          <div><dt>{zh ? "调度" : "Placement"}</dt><dd>{mode === "service" ? compact([serviceDraft.region, serviceDraft.node]) : compact([composeDraft.region, `${composeDraft.services.length} services`])}</dd></div>
-          <div><dt>{zh ? "入口" : "Ingress"}</dt><dd>{publicTargets.length ? publicTargets.join(", ") : (zh ? "内部服务" : "Internal only")}</dd></div>
-          <div><dt>{zh ? "存储" : "Storage"}</dt><dd>{storage.length ? storage.join(", ") : (zh ? "无托管卷" : "No managed volumes")}</dd></div>
+          <div><dt>{zh ? "调度" : "Placement"}</dt><dd>{submission ? compact([submission.region, `${submission.services.length} services`]) : mode === "service" ? compact([serviceDraft.region, serviceDraft.node]) : compact([composeDraft.region, `${composeDraft.services.length} services`])}</dd></div>
+          <div><dt>{zh ? "入口" : "Ingress"}</dt><dd>{(submission?.ingress || publicTargets).length ? (submission?.ingress || publicTargets).join(", ") : (zh ? "内部服务" : "Internal only")}</dd></div>
+          <div><dt>{zh ? "存储" : "Storage"}</dt><dd>{(submission?.volumes || storage).length ? (submission?.volumes || storage).join(", ") : (zh ? "无托管卷" : "No managed volumes")}</dd></div>
         </dl>
       </div>
       {preview ? (

@@ -12,6 +12,8 @@ import { findNode, hasReadyNodeInRegion, isReadyNode, nodesForRegion, regionChoi
 import { composeDraftToSidecarYaml, serviceDraftToYaml, syncComposeYamlWithDraft } from "./yaml";
 import { SingleServiceDeployForm } from "./SingleServiceDeployForm";
 import { YamlPreviewEditor } from "./YamlPreviewEditor";
+import { submissionSummary } from "./submissionSummary";
+import { useRouter } from "../router";
 import { useConfirm } from "../components/ConfirmDialog";
 
 function clone<T>(value: T): T {
@@ -338,9 +340,15 @@ export function DeployWorkspace({
       : composeErrors(composeDraft, yamlDirty, composeYaml, sidecarYaml, nodes, lang),
     [composeDraft, composeYaml, lang, mode, nodes, serviceDraft, serviceYaml, sidecarYaml, yamlDirty],
   );
-  const allErrors = [...validationErrors, ...runtimeErrors];
-  const configTitle = currentConfigTitle(mode, serviceDraft, composeDraft);
-  const configFacts = currentConfigFacts(mode, serviceDraft, composeDraft, lang);
+  const router = useRouter();
+  const submitted = useMemo(() => {
+    try { return { summary: submissionSummary(mode, mode === "service" ? serviceYaml : sidecarYaml, composeYaml), error: "" }; }
+    catch (error) { return { summary: null, error: error instanceof Error ? error.message : String(error) }; }
+  }, [mode, serviceYaml, sidecarYaml, composeYaml]);
+  useEffect(() => { setPreview(null); }, [serviceYaml, sidecarYaml, composeYaml, serviceDraft.skipDns, serviceDraft.skipOrchestrator, composeDraft.skipDns, composeDraft.skipOrchestrator]);
+  const allErrors = [...validationErrors, ...(submitted.error ? [submitted.error] : []), ...runtimeErrors];
+  const configTitle = submitted.summary?.name || currentConfigTitle(mode, serviceDraft, composeDraft);
+  const configFacts = submitted.summary ? [submitted.summary.region, ...submitted.summary.images, ...submitted.summary.ingress] : currentConfigFacts(mode, serviceDraft, composeDraft, lang);
   const flowSteps = deployFlowSteps(mode, lang);
 
   const selectTemplate = (template: DeployTemplate) => {
@@ -399,7 +407,7 @@ export function DeployWorkspace({
   const runPreview = async () => {
     setRuntimeErrors([]);
     setPreview(null);
-    if (validationErrors.length) return;
+    if (validationErrors.length || submitted.error) return;
     setStatus("previewing");
     try {
       const result = mode === "service"
@@ -416,9 +424,17 @@ export function DeployWorkspace({
   const runDeploy = async () => {
     setRuntimeErrors([]);
     setSteps([]);
-    if (validationErrors.length) return;
-    const target = mode === "service" ? serviceDraft.name : composeDraft.name;
-    const region = mode === "service" ? serviceDraft.region : composeDraft.region;
+    if (validationErrors.length || submitted.error) return;
+    // Capture both confirmation and request from the same render. Server preview
+    // validates these exact documents before allowing any deployment.
+    const request = mode === "service"
+      ? { token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipOrchestrator: serviceDraft.skipOrchestrator }
+      : { token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipOrchestrator: composeDraft.skipOrchestrator };
+    setStatus("previewing");
+    try { setPreview(await (mode === "service" ? previewService(request) : previewCompose(request))); }
+    catch (error) { setRuntimeErrors([error instanceof Error ? error.message : String(error)]); setStatus("idle"); return; }
+    const target = submitted.summary!.name;
+    const region = submitted.summary!.region;
     const ok = await confirm({
       title: lang === "zh" ? `部署 ${target}？` : `Deploy ${target}?`,
       tone: "neutral",
@@ -428,17 +444,16 @@ export function DeployWorkspace({
             ? "会提交到当前 Luma Control 集群。同名应用会被更新而不是新建。"
             : "Submits to the current Luma Control cluster. An application with the same name is updated, not created alongside."}</p>
           <p><code>{[mode === "service" ? (lang === "zh" ? "单服务" : "single service") : "compose", region, ...configFacts].filter(Boolean).join(" · ")}</code></p>
+          {request.skipDns || request.skipOrchestrator ? <p>{[request.skipDns && (lang === "zh" ? "跳过 DNS 更新" : "Skip DNS updates"), request.skipOrchestrator && (lang === "zh" ? "跳过调度器提交" : "Skip orchestrator submission")].filter(Boolean).join(" · ")}</p> : null}
         </>
       ),
       confirmLabel: lang === "zh" ? "部署" : "Deploy",
     });
-    if (!ok) return;
+    if (!ok) { setStatus("idle"); return; }
     setStatus("deploying");
     try {
       await deployStream(
-        mode === "service"
-          ? { token, manifest: serviceYaml, sourceName, skipDns: serviceDraft.skipDns, skipOrchestrator: serviceDraft.skipOrchestrator }
-          : { token, manifest: sidecarYaml, composeContent: composeYaml, sourceName, skipDns: composeDraft.skipDns, skipOrchestrator: composeDraft.skipOrchestrator },
+        request,
         mode,
         (step) => setSteps((current) => [...current, step]),
       );
@@ -486,7 +501,7 @@ export function DeployWorkspace({
           ) : null}
           {!templateLanding ? (
             <div className="deploy-editor-tabs">
-              <button type="button" className={editorMode === "form" ? "active" : ""} onClick={() => setEditorMode("form")}>
+              <button type="button" className={editorMode === "form" ? "active" : ""} disabled={yamlDirty || status !== "idle"} onClick={() => setEditorMode("form")}>
                 <ListChecks size={15} aria-hidden="true" />
                 {lang === "zh" ? "配置表单" : "Form"}
               </button>
@@ -527,8 +542,17 @@ export function DeployWorkspace({
               ))}
             </nav>
           ) : null}
+          {editorMode === "yaml" ? <fieldset className="deploy-request-options" disabled={status !== "idle"}>
+            <legend>{lang === "zh" ? "部署选项" : "Deployment options"}</legend>
+            <label><input type="checkbox" checked={mode === "service" ? serviceDraft.skipDns : composeDraft.skipDns} onChange={(event) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipDns: event.target.checked }) : setComposeDraft({ ...composeDraft, skipDns: event.target.checked })} />{lang === "zh" ? "跳过 DNS 更新" : "Skip DNS updates"}</label>
+            <label><input type="checkbox" checked={mode === "service" ? serviceDraft.skipOrchestrator : composeDraft.skipOrchestrator} onChange={(event) => mode === "service" ? setServiceDraft({ ...serviceDraft, skipOrchestrator: event.target.checked }) : setComposeDraft({ ...composeDraft, skipOrchestrator: event.target.checked })} />{lang === "zh" ? "跳过调度器提交" : "Skip orchestrator submission"}</label>
+          </fieldset> : null}
           <div className={`deploy-workspace-grid ${editorMode === "yaml" ? "yaml-active" : ""}`}>
             <main className="deploy-config-main">
+              {yamlDirty ? <div className="alert" role="status"><p>{lang === "zh" ? "当前以 YAML 为准：摘要、校验和部署均使用下方文件。表单不会覆盖手动编辑。" : "YAML is the source of truth for summary, validation and deployment. The form cannot overwrite manual edits."}</p><button type="button" className="ghost" disabled={status !== "idle"} onClick={async () => {
+                if (!await confirm({ title: lang === "zh" ? "恢复表单配置？" : "Restore form configuration?", body: lang === "zh" ? "这会丢弃手动 YAML 修改，使用表单当前值重新生成文件。" : "This discards manual YAML edits and regenerates documents from the form.", confirmLabel: lang === "zh" ? "恢复表单" : "Restore form" })) return;
+                setServiceYaml(serviceDraftToYaml(serviceDraft)); setComposeYaml(composeDraft.dockerComposeYaml); setSidecarYaml(composeDraftToSidecarYaml(composeDraft)); setYamlDirty(false); setEditorMode("form"); setPreview(null);
+              }}>{lang === "zh" ? "丢弃 YAML 修改并恢复表单" : "Discard YAML edits and restore form"}</button></div> : null}
               {editorMode === "form" ? (
                 mode === "service"
                   ? <SingleServiceDeployForm lang={lang} draft={serviceDraft} nodes={nodes} storageClasses={storageClasses} regions={regions} onChange={updateServiceDraft} />
@@ -545,8 +569,9 @@ export function DeployWorkspace({
                 />
               )}
             </main>
-            <DeploySummary lang={lang} mode={mode} serviceDraft={serviceDraft} composeDraft={composeDraft} preview={preview} steps={steps} errors={allErrors} />
+            <DeploySummary lang={lang} mode={mode} serviceDraft={serviceDraft} composeDraft={composeDraft} preview={preview} steps={steps} errors={allErrors} submission={submitted.summary} />
           </div>
+          {steps.length ? <button type="button" className="ghost" onClick={() => router.navigate(`/deployments?app=${encodeURIComponent(submitted.summary?.name || configTitle)}`)}>{lang === "zh" ? "查看应用交付记录" : "View application delivery records"}</button> : null}
           <div className="deploy-action-bar">
             <div>
               <strong>{yamlDirty ? (lang === "zh" ? "YAML 已手动编辑" : "YAML edited manually") : (lang === "zh" ? "表单同步 YAML" : "Form syncs to YAML")}</strong>
@@ -560,7 +585,7 @@ export function DeployWorkspace({
               <ListChecks size={16} aria-hidden="true" />
               {status === "previewing" ? (lang === "zh" ? "校验中..." : "Validating...") : (lang === "zh" ? "校验" : "Validate")}
             </button>
-            <button type="button" className="primary" disabled={status !== "idle" || validationErrors.length > 0} onClick={() => void runDeploy()}>
+            <button type="button" className="primary" disabled={status !== "idle" || validationErrors.length > 0 || Boolean(submitted.error)} onClick={() => void runDeploy()}>
               <Rocket size={16} aria-hidden="true" />
               {status === "deploying" ? (lang === "zh" ? "部署中..." : "Deploying...") : (lang === "zh" ? "部署" : "Deploy")}
             </button>
