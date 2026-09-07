@@ -156,7 +156,9 @@ class ControlClient:
         return self.request("POST", "/v1/auth/login/verify", {})
 
     def health(self) -> Dict[str, Any]:
-        return self.request("GET", "/v1/health")
+        result = self.request("GET", "/v1/health")
+        self._build_queue_supported = "build-queue-v1" in (result.get("capabilities") or [])
+        return result
 
     def status(self) -> Dict[str, Any]:
         return self.request("GET", "/v1/status")
@@ -670,7 +672,7 @@ class ControlClient:
                 compose_sidecar, label="composeSidecar"
             )
             self._require_repository_compose_sidecar()
-        return self.request("POST", "/v1/builds", self._build_body(locals()), timeout=timeout)
+        return self.request("POST", "/v1/builds", self._with_build_queue(self._build_body(locals())), timeout=timeout)
 
     def build_deploy_events(
         self,
@@ -701,7 +703,7 @@ class ControlClient:
                 compose_sidecar, label="composeSidecar"
             )
             self._require_repository_compose_sidecar()
-        return self.stream("POST", "/v1/builds/stream", self._build_body(locals()), timeout=timeout)
+        return self.stream("POST", "/v1/builds/stream", self._with_build_queue(self._build_body(locals())), timeout=timeout)
 
     def _require_repository_compose_sidecar(self) -> None:
         capabilities = self.health().get("capabilities") or []
@@ -794,8 +796,19 @@ class ControlClient:
     def record_workflow(self, body: Dict[str, Any]) -> Dict[str, Any]:
         return self.request("POST", "/v1/workflows", body)
 
+    def _with_build_queue(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        if not hasattr(self, "_build_queue_supported"):
+            self._build_queue_supported = "build-queue-v1" in (self.health().get("capabilities") or [])
+        if not self._build_queue_supported:
+            return body
+        queued = {**body, "queue": True}
+        workflow = getattr(self, "_queued_workflow", None)
+        if isinstance(workflow, dict):
+            queued["workflow"] = workflow
+        return queued
+
     def prepare_local_build(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        return self.request("POST", "/v1/builds/local/prepare", body)
+        return self.request("POST", "/v1/builds/local/prepare", self._with_build_queue(body))
 
     def complete_local_build(
         self,
@@ -811,7 +824,7 @@ class ControlClient:
         return self.request(
             "POST",
             f"/v1/builds/local/{urllib.parse.quote(build_id, safe='')}/complete",
-            body,
+            self._with_build_queue(body),
             timeout=timeout,
         )
 
@@ -829,7 +842,7 @@ class ControlClient:
         body: Dict[str, Any] = {}
         if env_secrets is not None:
             body["envSecrets"] = env_secrets
-        return self.request("POST", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}/retry", body, timeout=timeout)
+        return self.request("POST", f"/v1/builds/{urllib.parse.quote(build_id, safe='')}/retry", self._with_build_queue(body), timeout=timeout)
 
     def cancel_build(self, build_id: str) -> Dict[str, Any]:
         return self.request(

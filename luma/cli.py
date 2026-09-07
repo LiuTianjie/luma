@@ -209,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.305 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.306 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -3206,9 +3206,64 @@ def _workflow_prepare(args: argparse.Namespace, client: ControlClient, *, name: 
     elif _output_format(args) == "text" and not _quiet(args):
         print("[ok] Workflow matches the saved deployment" if previous else "[ok] No workflow recorded; a successful deployment will create it", flush=True)
     args._deployment_workflow = body
+    client._queued_workflow = {**body, "note": getattr(args, "workflow_note", None)}
+
+
+def _wait_for_queued_build(args: argparse.Namespace, client: ControlClient, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Wait for a durable server job; timeout/disconnect never cancels it."""
+    if result.get("queued") is not True:
+        return result
+    build_id = str(result.get("buildRunId") or "")
+    if not build_id:
+        raise LumaError("Control accepted queued work without a build run ID")
+    deadline = time.monotonic() + args.timeout
+    seen = 0
+    last_state = None
+    while True:
+        detail = client.get_build(build_id, query={"limit": 100})
+        run = detail.get("run") or {}
+        state = (run.get("status"), run.get("queuePosition"), run.get("waitingFor"))
+        if state != last_state:
+            message = f"Build {build_id}: {state[0]}"
+            if state[0] == "queued":
+                message += f"; queue position {state[1] or 1}"
+                if state[2]:
+                    message += f"; waiting for {state[2]}"
+            event = {"name": "Project deployment queue", "status": "start", "message": message, "buildRunId": build_id}
+            if _output_format(args) == "ndjson":
+                _print_json({"type": "event", **event})
+            elif not _quiet(args):
+                _print_deploy_step(event)
+            last_state = state
+        events = list(run.get("events") or [])
+        cursor = (detail.get("eventsPage") or {}).get("nextCursor")
+        while cursor:
+            page = client.get_build(build_id, query={"limit": 100, "cursor": cursor})
+            events.extend((page.get("run") or {}).get("events") or [])
+            cursor = (page.get("eventsPage") or {}).get("nextCursor")
+        for event in events[seen:]:
+            if _output_format(args) == "ndjson":
+                _print_json({"type": "event", **event})
+            elif not _quiet(args):
+                _print_deploy_step(event)
+        seen = len(events)
+        if state[0] == "succeeded" and not run.get("queueExecuting"):
+            return {**(run.get("result") or {}), "buildRunId": build_id}
+        if state[0] in {"failed", "canceled"} and not run.get("queueExecuting"):
+            raise LumaError(f"Build {build_id} {state[0]}: {run.get('message') or 'see build history'}")
+        if time.monotonic() >= deadline:
+            raise LumaError(f"Stopped waiting for {build_id}; the server task continues. Use luma build logs {build_id} or luma build cancel {build_id}")
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
 
 
 def _workflow_finish(args: argparse.Namespace, client: ControlClient, result: Dict[str, Any], *, name: str = "") -> None:
+    recorded = result.get("workflow")
+    if isinstance(recorded, dict) and isinstance(recorded.get("saved"), bool):
+        if not recorded["saved"]:
+            print(f"Warning: deployment succeeded, but workflow recording failed: {recorded.get('warning') or 'unknown error'}", file=sys.stderr)
+        elif _output_format(args) == "text" and not _quiet(args):
+            print("[ok] Workflow saved on Control", flush=True)
+        return
     body = getattr(args, "_deployment_workflow", None)
     if not body:
         return
@@ -3473,7 +3528,8 @@ def cmd_import(args: argparse.Namespace) -> int:
         for event in client.build_deploy_events(**build_kwargs):
             status = str(event.get("status") or "")
             if output_format == "ndjson":
-                _print_json({"type": "event", **event})
+                accepted = status == "done" and isinstance(event.get("result"), dict) and event["result"].get("queued") is True
+                _print_json({"type": "event", **event, **({"status": "queued"} if accepted else {})})
             if status in {"start", "ok", "fail"}:
                 if not quiet:
                     _print_deploy_step(event)
@@ -3506,6 +3562,7 @@ def cmd_import(args: argparse.Namespace) -> int:
                 elif not quiet:
                     _print_deploy_step(step)
 
+    result = _wait_for_queued_build(args, client, result)
     if args.compose_sidecar and result.get("composeSidecar") != args.compose_sidecar:
         raise LumaError(
             "Control did not confirm the selected Compose sidecar; refusing to report import success"
@@ -3606,6 +3663,7 @@ def cmd_build(args: argparse.Namespace) -> int:
             except Exception:
                 pass
             raise
+        result = _wait_for_queued_build(args, client, result)
         _workflow_finish(args, client, result, name=workflow_name)
         if output_format != "text":
             _print_success(args, result)
@@ -3661,6 +3719,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         _workflow_prepare(args, client, name=str(prior_result.get("service") or prior_result.get("deployment") or ""))
         env_secrets = _import_env_secrets(args.deploy_env_file)
         result = client.retry_build(args.id, timeout=args.timeout, env_secrets=env_secrets)
+        result = _wait_for_queued_build(args, client, result)
         _workflow_finish(args, client, result)
         if output_format != "text":
             _print_success(args, result)

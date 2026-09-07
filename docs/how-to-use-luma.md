@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.305 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.306 sh
 ```
 
 For local development from a checkout:
@@ -504,10 +504,24 @@ Mac/ARM 节点时构建 `linux/arm64`，目标区域同时存在 amd64 和 arm64
 构建多架构镜像。显式 `--platform` 只能用于覆盖全部目标架构，不能把镜像
 强制构建成与部署节点不兼容的架构。
 
-同一个项目在任意时刻只允许一个活动构建：Builder import 与本地构建互相
-排斥，不同项目仍可并行。Control 给本地构建分配唯一 tag，并校验完成请求中
-的所有镜像都属于这个项目的 registry 路径，避免两条链路互相覆盖或把产物
-散落到别的仓库。
+Control 支持 `build-queue-v1` 时，新 CLI 自动使用同项目 FIFO 队列：远程
+import / build retry 提交后排队；本地构建可以并行构建和上传，**上传完成后**
+才将部署加入同一队列。顺序按服务端接受排队请求的先后计算，不按本地构建
+开始时间计算。同一项目一次执行一个队列任务；不同项目可使用其它执行槽位，
+但仍受已有 Builder 容量和运行时部署锁约束。前一个成功、失败或取消后，
+后一个继续，不自动覆盖或取消旧任务。
+
+CLI 显示任务 ID、队列位置和等待的任务。`--timeout` 到期或客户端退出只停止
+等待，已接受的任务仍由服务端执行；用 `luma build logs <id>` 查状态，
+`luma build cancel <id>` 取消尚未开始的任务。排队请求持久化，Control 重启后
+保留；正在执行的任务明确标记中断，不自动重放可能已经生效的部署，重试前
+先检查运行时。尚未上传完成的本地构建仍依赖调用者电脑。
+
+环境变量按任务独立保存在私有 Control 状态中，不进入公开构建历史，任务结束
+后清理队列载荷。旧 Control 仍按原来的活动构建互斥规则处理，需要同时升级
+CLI 和 Control 才能使用队列。直接部署预构建镜像的 `deploy` / `compose deploy`
+继续使用已有同步锁。Control 仍为本地上传分配唯一 tag，并校验镜像属于项目
+预留的 registry 路径。
 
 构建节点来自控制面声明的 builder 节点；通常不用传 `--build-node`，只有需要临时覆盖到另一个已声明 builder 时才传。单服务 import 还可用 `--context`（build 上下文目录，默认 `.`）、`--dockerfile`（默认 `Dockerfile`）、`--registry-host`（其它节点拉取用的 registry 主机，默认 `<build-node>:5000`）覆盖仓库里的 `build:` 字段。对 Compose import，`--region` 会覆盖 sidecar 的 region；`--exposure`、`--domain`、`--port` 是单服务覆盖项，会被忽略并打印 warning。Compose 的服务级路由请写在 `luma.compose.yml` 的 `services:` 里。`luma import` 默认等待 `3600` 秒的 build+deploy 响应，用 `--timeout <seconds>` 覆盖。
 

@@ -17,7 +17,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.305"
+python -m pip install "luma-infra==0.1.306"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -34,7 +34,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.305 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.306 sh
 ```
 
 Development checkout:
@@ -65,7 +65,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.305"
+python -m pip install "luma-infra==0.1.306"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -77,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.305"
+python -m pip install "luma-infra==0.1.306"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -317,7 +317,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.305 --timeout 900
+luma update fleet --install-ref v0.1.306 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -627,11 +627,29 @@ node therefore builds `linux/arm64`; a region with both amd64 and arm64 targets
 builds a multi-platform image. An explicit `--platform` is accepted only when
 it covers every resolved target architecture.
 
-Control permits only one active build per project across both lanes. A running
-Builder import blocks a local build for the same repository, and a running local
-build blocks Builder import, while unrelated projects can still build in
-parallel. Local uploads receive a unique Control-assigned tag and are rejected
-if they try to push/deploy outside the reserved project repository.
+With a Control advertising `build-queue-v1`, the CLI automatically submits
+Repository Import and `build retry` to a persistent per-project FIFO. Local
+builds may build and upload concurrently using unique Control-assigned tags;
+**after upload**, their deployment joins the same FIFO. Queue order is submission
+order (upload completion for local builds), not local build start order. Only
+one queued operation per repository project runs at a time; unrelated projects
+can use other worker slots, subject to existing Builder capacity and runtime
+deployment locking. A failed or canceled attempt does not discard later work.
+
+The CLI displays the build ID, queue position and blocking task while waiting.
+`--timeout` bounds the client wait; closing the CLI after acceptance does not
+cancel the server task. Inspect it with `luma build logs <id>` or cancel a waiting
+task with `luma build cancel <id>`. Queued requests survive Control restart.
+Interrupted active tasks are explicitly failed rather than automatically
+replaying deployment side effects; inspect runtime before retrying. Local
+builds that have not finished uploading still require the caller's machine.
+Per-attempt environment values are stored only in private Control state while
+queued/executing, isolated from other attempts and public build history.
+
+Older Control versions retain the previous fail-fast active-build restriction;
+upgrade both Control and CLI to use the queue. Prebuilt-image `deploy` and
+`compose deploy` keep their existing synchronous runtime lock. Local uploads
+are still rejected if images escape the reserved project repository/tag.
 
 or, with a saved Git provider account:
 

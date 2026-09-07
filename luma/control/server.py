@@ -304,9 +304,9 @@ _REGISTRY_AUTOMATION_THREAD: threading.Thread | None = None
 _REGISTRY_AUTOMATION_WAKE = threading.Event()
 _LAE_RUNTIME_DEPLOY_THREAD_LOCK = threading.RLock()
 _LAE_RUNTIME_DEPLOY_THREADS: dict[str, threading.Thread] = {}
-# Repository Import is a request-owned workflow rather than a resumable
-# durable operation.  Persist its owning Control process so a replacement
-# instance can close records whose request thread no longer exists.
+# Active build/deploy execution cannot be blindly replayed after restart.
+# Persist its owning Control process so a replacement can close interrupted
+# attempts. Unstarted management queue entries are durable and resume separately.
 _CONTROL_PROCESS_INSTANCE_ID = f"control-{secrets.token_hex(16)}"
 
 
@@ -1724,7 +1724,7 @@ def _redact_build_request(body: Dict[str, Any]) -> Dict[str, Any]:
         if key == "envSecrets" and isinstance(value, dict):
             result["envSecretNames"] = sorted(str(name) for name in value)
             continue
-        if key in {"gitToken", "registryAuth", "token", "password"}:
+        if key in {"gitToken", "registryAuth", "token", "password", "workflow"}:
             continue
         if isinstance(value, (str, int, float, bool)) or value is None:
             result[key] = value
@@ -1789,6 +1789,8 @@ def _expire_stale_local_build_runs(runs: Dict[str, Any], now: int) -> None:
             continue
         if str(run.get("status") or "") not in {"running", "canceling"}:
             continue
+        if run.get("queueManaged"):
+            continue
         expires_at = int(run.get("expiresAt") or 0)
         if expires_at and expires_at <= now:
             run["status"] = "failed"
@@ -1804,7 +1806,7 @@ def _require_build_project_available(
         return
     active_values = getattr(runs, "active_values", None)
     candidates = (
-        ((str(run.get("id") or ""), run) for run in active_values({"running", "canceling", "finalizing"}))
+        ((str(run.get("id") or ""), run) for run in active_values({"queued", "running", "canceling", "finalizing"}))
         if callable(active_values) else runs.items()
     )
     for run_id, run in candidates:
@@ -1812,7 +1814,7 @@ def _require_build_project_available(
             continue
         if str(run.get("projectKey") or "") != project_key:
             continue
-        if str(run.get("status") or "") in {"running", "canceling", "finalizing"}:
+        if str(run.get("status") or "") in {"queued", "running", "canceling", "finalizing"}:
             raise LumaError(
                 f"project {project_key} already has an active build: {run_id}; "
                 "wait for it to finish or cancel it before starting another build"
@@ -1828,6 +1830,7 @@ def _create_build_run(
     mode: str = "builder",
     expires_at: int = 0,
     retry_of: str = "",
+    queued_work: Dict[str, Any] | None = None,
 ) -> str:
     run_id = f"build-{secrets.token_hex(8)}"
     now = int(time.time())
@@ -1839,9 +1842,10 @@ def _create_build_run(
         if retry_of:
             if not isinstance(parent, dict):
                 raise LumaError(f"build run not found: {retry_of}")
-            if str(parent.get("status") or "") in {"running", "canceling", "finalizing"}:
+            if str(parent.get("status") or "") in {"queued", "running", "canceling", "finalizing"}:
                 raise LumaError("an active build cannot be retried; wait for it to finish or cancel it first")
-        _require_build_project_available(runs, project_key)
+        if queued_work is None and not (mode == "local" and body.get("queue") is True):
+            _require_build_project_available(runs, project_key)
         runs[run_id] = {
             "id": run_id,
             "status": "running",
@@ -1855,6 +1859,9 @@ def _create_build_run(
             "createdAt": now,
             "updatedAt": now,
         }
+        if queued_work is not None:
+            from .build_queue import attach
+            attach(state, runs[run_id], "remote", queued_work)
         if expires_at:
             runs[run_id]["expiresAt"] = int(expires_at)
         if isinstance(parent, dict):
@@ -1917,7 +1924,7 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
 
 def _build_run_result_summary(result: Dict[str, Any]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {}
-    for key in ("service", "deployment", "image", "images", "dns", "orchestrator"):
+    for key in ("service", "deployment", "image", "images", "dns", "orchestrator", "composeSidecar", "revision"):
         value = result.get(key)
         if value not in (None, "", [], {}):
             summary[key] = value
@@ -1966,6 +1973,8 @@ def _reconcile_orphaned_build_runs_after_control_restart() -> int:
                 continue
             status = str(run.get("status") or "")
             if status not in {"running", "canceling"}:
+                continue
+            if run.get("mode") == "local" and run.get("request", {}).get("queue") is True and not run.get("queueManaged"):
                 continue
             if str(run.get("controlProcessInstanceId") or "") == _CONTROL_PROCESS_INSTANCE_ID:
                 continue
@@ -7325,7 +7334,11 @@ def handle_build_run_list(token: str, query: Dict[str, Any] | None = None) -> Di
 
 def handle_build_run_get(token: str, build_id: str, query: Dict[str, Any] | None = None) -> Dict[str, Any]:
     _require_history_token(token)
-    return control_history.get_build(build_id, query)
+    result = control_history.get_build(build_id, query)
+    if result.get("run", {}).get("status") == "queued":
+        from .build_queue import position
+        result["run"].update(position(build_id))
+    return result
 
 
 def _build_run_agent_task(
@@ -7387,6 +7400,12 @@ def handle_build_run_cancel(
         run_status = str(run.get("status") or "")
         if run_status in {"succeeded", "failed", "canceled", "canceling"}:
             return _build_run_public(run), True
+        if run_status == "queued":
+            from .build_queue import discard
+            run.update(status="canceled", message="Canceled while waiting in project deployment queue",
+                       cancelRequestedAt=now, canceledAt=now, completedAt=now, updatedAt=now)
+            discard(current, run)
+            return _build_run_public(run), False
         if run_status == "finalizing":
             raise LumaError("local build upload is already deploying and cannot be canceled")
 
@@ -7470,8 +7489,12 @@ def handle_build_run_retry(
     if not isinstance(run, dict):
         raise LumaError(f"build run not found: {build_id}")
     request = run.get("request") if isinstance(run.get("request"), dict) else {}
-    retry_body = {key: value for key, value in request.items() if key != "envSecretNames"}
-    retry_body.update(_build_run_retry_overrides(body))
+    retry_body = {key: value for key, value in request.items() if key not in {"envSecretNames", "queue"}}
+    retry_body.update(_build_run_retry_overrides({k: v for k, v in (body or {}).items() if k not in {"queue", "workflow"}}))
+    if (body or {}).get("queue") is True:
+        retry_body["queue"] = True
+        if isinstance((body or {}).get("workflow"), dict):
+            retry_body["workflow"] = body["workflow"]
     if not retry_body:
         raise LumaError(f"build run cannot be retried: {build_id}")
     return handle_build_deploy(token, retry_body, progress=progress, build_run_id=build_id)
@@ -8509,7 +8532,10 @@ def _validate_local_build_result(run: Dict[str, Any], build_result: Dict[str, An
         raise LumaError("local build source binding is invalid")
 
 
-def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any], *, _from_queue: bool = False) -> Dict[str, Any]:
+    if body.get("queue") is True and not _from_queue:
+        from .build_queue import submit_local
+        return submit_local(token, build_id, body)
     state = load_state()
     require_token(state, token, token_type="deploy")
     run = _build_runs(state).get(build_id)
@@ -8517,9 +8543,9 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any])
         raise LumaError(f"build run not found: {build_id}")
     if str(run.get("mode") or "") != "local":
         raise LumaError(f"build run is not a local build: {build_id}")
-    if str(run.get("status") or "") != "running":
+    if str(run.get("status") or "") != ("finalizing" if _from_queue else "running"):
         raise LumaError(f"local build run is not active: {build_id}")
-    if int(run.get("expiresAt") or 0) <= int(time.time()):
+    if not _from_queue and int(run.get("expiresAt") or 0) <= int(time.time()):
         _complete_build_run(build_id, "failed", message="local build lease expired before upload completed")
         raise LumaError(f"local build lease expired: {build_id}")
     build_result = body.get("buildResult") if isinstance(body.get("buildResult"), dict) else {}
@@ -8536,7 +8562,8 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any])
         current_run["updatedAt"] = int(time.time())
         return dict(current_run)
 
-    run = _mutate_control_state(claim)
+    if not _from_queue:
+        run = _mutate_control_state(claim)
     request = run.get("request") if isinstance(run.get("request"), dict) else {}
     deploy_request = dict(request)
     if body.get("envSecrets") is not None:
@@ -8657,6 +8684,7 @@ def handle_build_deploy(
     *,
     progress: Callable[[dict[str, str]], None] | None = None,
     build_run_id: str = "",
+    _queued_run_id: str = "",
 ) -> Dict[str, Any]:
     state = load_state()
     require_token(state, token, token_type="deploy")
@@ -8726,13 +8754,24 @@ def handle_build_deploy(
     # A retry is a new attempt. Never reset the parent's request, result or
     # event stream: those explain the failure the operator is retrying.
     retry_of = build_run_id
-    build_run_id = _create_build_run(
-        run_body,
-        source=repo_url,
-        build_node=build_node,
-        project_key=repo,
-        retry_of=retry_of,
-    )
+    if body.get("queue") is True:
+        _request_env_secrets(body)
+    if _queued_run_id:
+        build_run_id = _queued_run_id
+        if _build_run_cancel_requested(build_run_id):
+            raise LumaError("build canceled")
+    else:
+        build_run_id = _create_build_run(
+            run_body,
+            source=repo_url,
+            build_node=build_node,
+            project_key=repo,
+            retry_of=retry_of,
+            queued_work=run_body if body.get("queue") is True else None,
+        )
+        if body.get("queue") is True:
+            return {"queued": True, "buildRunId": build_run_id,
+                    **handle_build_run_get(token, build_run_id)}
     git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
 
     def run_progress(event: dict[str, str]) -> None:
@@ -19369,6 +19408,7 @@ async def _asgi_health(_: Request) -> JSONResponse:
                 "builder-artifact-download-v1",
                 "repository-compose-sidecar-v1",
                 "deployment-workflow-v1",
+                "build-queue-v1",
                 "build-proxy-mode-v1",
                 "lae-runtime-api-v1",
                 "lae-runtime-lifecycle-v1",
@@ -20251,12 +20291,17 @@ async def _asgi_operations_delete(request: Request) -> Response:
 
 @asynccontextmanager
 async def _operations_lifespan(app: Starlette):
+    from .build_queue import BuildQueueWorker
+    queue_worker = BuildQueueWorker()
+    app.state.build_queue_worker = queue_worker
+    queue_worker.start()
     worker = operations_api.OperationsWorker()
     app.state.operations_worker = worker
     worker.start()
     try:
         yield
     finally:
+        await run_in_threadpool(queue_worker.close)
         await run_in_threadpool(worker.close)
 
 

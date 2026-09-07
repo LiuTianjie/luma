@@ -143,7 +143,7 @@ function HistoryDetailPage({ lang, token, selection, initialItem, onClose, onRef
   const item = data?.item || initialItem;
   const retentionNotice = historyRetentionNotice(item, lang);
   const retryable = item?.kind === "build" && ["failed", "failed_partial", "canceled", "cancelled", "interrupted", "error"].includes(item.status || "");
-  const cancelable = item?.kind === "build" && ["running", "canceling"].includes(item.status || "");
+  const cancelable = item?.kind === "build" && ["queued", "running", "canceling"].includes(item.status || "");
   const retryBuild = async () => {
     setAction("retry"); setActionError(""); setActionNotice(""); setRetrySteps([]); setRetryTarget(null);
     try {
