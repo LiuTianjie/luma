@@ -34,7 +34,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, AsyncIterator
+from typing import Any, Callable, Dict, AsyncIterator, Mapping
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
@@ -102,7 +102,7 @@ from ..local_storage import (
     storage_owner_from_job,
 )
 from ..nomad_api import NomadApi, NomadRolloutError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary
-from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job
+from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job, resource_policy_warnings
 from ..registry import (
     docker_registry_auth_header,
     public_registry_url,
@@ -11318,6 +11318,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         )
         target = _resolve_control_path(stack_path(config, service), config_path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        _emit_resource_policy_warnings(steps, progress, service.name, service.resources or {})
         stack_text = _deploy_step(
             steps,
             "Render Nomad job",
@@ -11482,7 +11483,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
             "secrets": [],
         },
         "artifacts": artifacts,
-        "warnings": [],
+        "warnings": resource_policy_warnings(service.resources or {}),
     }
 
 
@@ -13164,6 +13165,11 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
         steps.append(secret_step)
         _emit_progress(progress, secret_step)
     _emit_compose_warnings(steps, progress, deployment)
+    for resource_service_name, resource_service in deployment.compose.get("services", {}).items():
+        _emit_resource_policy_warnings(
+            steps, progress, str(resource_service_name),
+            (resource_service.get("deploy") or {}).get("resources") or {},
+        )
     _mark_compose_deployment(deployment, body, source_name, status="pending", steps=steps)
 
     try:
@@ -13416,7 +13422,11 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
         },
         "artifacts": artifacts,
         "storage": storage_summary(deployment, node_records=_state_nodes(state)),
-        "warnings": deployment.warnings,
+        "warnings": list(deployment.warnings) + [
+            f"{name}: {warning}"
+            for name, spec in deployment.compose.get("services", {}).items()
+            for warning in resource_policy_warnings((spec.get("deploy") or {}).get("resources") or {})
+        ],
     }
 
 
@@ -14225,6 +14235,13 @@ def _managed_volume_relative_path(sub_path: str) -> Path:
     if relative.is_absolute() or ".." in relative.parts or not str(relative):
         raise LumaError(f"managed storage volume path must be relative and cannot contain ..: {sub_path}")
     return relative
+
+
+def _emit_resource_policy_warnings(steps, progress, name: str, resources: Mapping[str, Any]) -> None:
+    for message in resource_policy_warnings(resources):
+        step = {"name": "CPU resource policy", "status": "warning", "message": f"{name}: {message}"}
+        steps.append(step)
+        _emit_progress(progress, step)
 
 
 def _emit_compose_warnings(

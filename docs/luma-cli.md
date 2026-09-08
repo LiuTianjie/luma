@@ -17,7 +17,7 @@ Luma Control is the authentication and orchestration layer. It renders the manif
 CI runners should install the published package instead of running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.307"
+python -m pip install "luma-infra==0.1.308"
 ```
 
 The package distribution name is `luma-infra`, but the installed command is still `luma`.
@@ -34,7 +34,7 @@ The installer uses a GitHub archive, not `git clone`. It installs into `~/.local
 Install a pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.307 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.308 sh
 ```
 
 Development checkout:
@@ -65,7 +65,7 @@ CI can run Luma as a stateless control-plane client. It does not need SSH, Docke
 PR validation:
 
 ```bash
-python -m pip install "luma-infra==0.1.307"
+python -m pip install "luma-infra==0.1.308"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -77,7 +77,7 @@ luma deploy deploy/app.yaml --dry-run --format json
 Main or release deployment:
 
 ```bash
-python -m pip install "luma-infra==0.1.307"
+python -m pip install "luma-infra==0.1.308"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -317,7 +317,7 @@ Update every registered node that has a ready node agent:
 
 ```bash
 luma update fleet
-luma update fleet --install-ref v0.1.307 --timeout 900
+luma update fleet --install-ref v0.1.308 --timeout 900
 luma update fleet --include-manager
 ```
 
@@ -535,7 +535,7 @@ Optional fields:
 - `labels`
 - `networks`
 - `proxy`: when `true`, runtime traffic uses the egress proxy; Luma attaches the egress proxy and default proxy env. Scheduling still follows `region`.
-- `resources`: rendered into the Nomad task's `resources` block; supports `limits` and `reservations` for CPU and memory. Luma converts `cpus` to Nomad CPU MHz, maps memory reservations to `memory`, and maps limits to `memory_max`. Before registering such a job, Control automatically enables Nomad memory oversubscription so the declared limit is the live container hard limit.
+- `resources`: rendered into the Nomad task's `resources` block; CPU uses `reservations.cpus` (default 100 MHz) for elastic scheduling shares; legacy `limits.cpus` is ignored with a warning, not enforced as a hard ceiling. Memory reservations map to `memory` and limits to `memory_max`; limit-only memory reserves min(256 MiB, limit). Before registering such a job, Control automatically enables Nomad memory oversubscription so the declared limit is the live container hard limit.
 - `stackPath`
 - `routePath`
 - `dns.target`

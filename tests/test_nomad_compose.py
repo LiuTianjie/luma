@@ -429,7 +429,7 @@ services:
         self.assertEqual(ports["mysql"], (3306, 3306))
         self.assertEqual(ports["app"], (8888, 8888))
         mysql = next(t for t in job["TaskGroups"][0]["Tasks"] if t["Name"] == "mysql")
-        self.assertEqual(mysql["Resources"]["CPU"], 500)            # 0.50 cores -> 500 MHz
+        self.assertEqual(mysql["Resources"]["CPU"], 100)            # reservation 0.10 -> 100 MHz
         self.assertEqual(mysql["Resources"]["MemoryMB"], 256)        # reservation
         self.assertEqual(mysql["Resources"]["MemoryMaxMB"], 512)     # limit
 

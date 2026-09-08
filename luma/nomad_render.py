@@ -684,19 +684,7 @@ def render_compose_job(
             env.setdefault("HTTP_PROXY", egress_proxy_url)
             env.setdefault("HTTPS_PROXY", egress_proxy_url)
 
-        resources = {"CPU": DEFAULT_CPU_MHZ, "MemoryMB": DEFAULT_MEMORY_MB}
-        rc = (body.get("deploy") or {}).get("resources") or {}
-        limits = rc.get("limits") or {}
-        reservations = rc.get("reservations") or {}
-        cpus_val = limits.get("cpus") or reservations.get("cpus")
-        mem_val = limits.get("memory") or reservations.get("memory")
-        if cpus_val is not None:
-            resources["CPU"] = _cpu_mhz(cpus_val)
-        if mem_val is not None:
-            resources["MemoryMB"] = _memory_mb(mem_val)
-            if limits.get("memory") and reservations.get("memory"):
-                resources["MemoryMaxMB"] = _memory_mb(limits["memory"])
-                resources["MemoryMB"] = _memory_mb(reservations["memory"])
+        resources = _resource_values((body.get("deploy") or {}).get("resources") or {})
 
         task: Dict[str, Any] = {"Name": str(svc_name), "Driver": "docker", "Config": docker_config, "Resources": resources}
         stop_grace_period = body.get("stop_grace_period")
@@ -1418,23 +1406,44 @@ def _apply_volume_mounts(docker_config: Dict[str, Any], service: ServiceSpec) ->
 
 
 def _resources(service: ServiceSpec) -> Dict[str, Any]:
-    cpu = DEFAULT_CPU_MHZ
-    mem = DEFAULT_MEMORY_MB
-    res = service.resources or {}
+    return _resource_values(service.resources or {})
+
+
+def _resource_values(res: Mapping[str, Any]) -> Dict[str, Any]:
+    """CPU is a scheduling share; memory has separate reservation and ceiling.
+
+    Legacy limits.cpus is validated but not used as either a reservation or a
+    fictitious hard ceiling. Deployment progress explicitly warns about it.
+    """
+    if not isinstance(res, Mapping):
+        raise LumaError("resources must be a mapping")
     limits = res.get("limits") or {}
     reservations = res.get("reservations") or {}
-    cpus_val = limits.get("cpus") or reservations.get("cpus")
-    mem_val = limits.get("memory") or reservations.get("memory")
-    if cpus_val is not None:
-        cpu = _cpu_mhz(cpus_val)
-    if mem_val is not None:
-        mem = _memory_mb(mem_val)
-    out = {"CPU": cpu, "MemoryMB": mem}
-    if limits.get("memory") and reservations.get("memory"):
-        # Luma reservations map to Nomad memory, and limits map to memory_max.
-        out["MemoryMaxMB"] = _memory_mb(limits["memory"])
-        out["MemoryMB"] = _memory_mb(reservations["memory"])
-    return out
+    if not isinstance(limits, Mapping) or not isinstance(reservations, Mapping):
+        raise LumaError("resources limits and reservations must be mappings")
+    if limits.get("cpus") is not None:
+        _cpu_mhz(limits["cpus"])
+    cpu = _cpu_mhz(reservations["cpus"]) if reservations.get("cpus") is not None else DEFAULT_CPU_MHZ
+    memory_limit = _memory_mb(limits["memory"]) if limits.get("memory") is not None else None
+    memory = (_memory_mb(reservations["memory"]) if reservations.get("memory") is not None
+              else min(DEFAULT_MEMORY_MB, memory_limit) if memory_limit is not None else DEFAULT_MEMORY_MB)
+    if memory_limit is not None and memory > memory_limit:
+        raise LumaError("resources.reservations.memory must not exceed resources.limits.memory")
+    result = {"CPU": cpu, "MemoryMB": memory}
+    if memory_limit is not None:
+        result["MemoryMaxMB"] = memory_limit
+    return result
+
+
+def resource_policy_warnings(res: Mapping[str, Any]) -> list[str]:
+    resources = _resource_values(res)
+    if (res.get("limits") or {}).get("cpus") is None:
+        return []
+    return [
+        "limits.cpus is not enforced: Luma uses elastic CPU sharing, not an independent CPU hard limit; "
+        f"scheduling reservation is {resources['CPU']} MHz. "
+        "Set reservations.cpus for the scheduling share and remove limits.cpus."
+    ]
 
 
 def _cpu_mhz(value: Any) -> int:
@@ -1444,7 +1453,7 @@ def _cpu_mhz(value: Any) -> int:
         raise LumaError(
             f"invalid resources.cpus value {value!r}: expected a number of CPU cores (e.g. 0.5, 2)"
         ) from exc
-    if cpus <= 0:
+    if isinstance(value, bool) or not math.isfinite(cpus) or cpus <= 0:
         raise LumaError(f"invalid resources.cpus value {value!r}: must be greater than 0")
     return max(1, round(cpus * 1000))
 
@@ -1455,6 +1464,8 @@ def _memory_mb(value: Any) -> int:
     if not m:
         raise LumaError(f"cannot parse memory value: {value!r}")
     num = float(m.group(1))
+    if not math.isfinite(num) or num <= 0:
+        raise LumaError("resources.memory must be greater than 0")
     unit = m.group(2).upper()
     factor = {"": 1 / (1024 * 1024), "K": 1 / 1024, "M": 1.0, "G": 1024.0}[unit]
     return max(1, round(num * factor))

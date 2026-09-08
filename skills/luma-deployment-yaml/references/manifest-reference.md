@@ -28,7 +28,7 @@
 | `storage.<name>.initialize` | no | `empty` | Explicit fresh-path acknowledgement. |
 | `storage.<name>.adopted` | no | boolean | Set after manual migration/adoption verification. |
 | `proxy` | no | boolean | Runtime outbound proxy. When true, Luma adds egress network and default proxy env unless already set. Not used for image pulls. |
-| `resources` | no | map | CPU/memory limits/reservations. Quote `cpus` values as fractional-core strings such as `"0.50"`; Luma converts to the engine's units (Nomad CPU MHz). |
+| `resources` | no | map | Elastic CPU scheduling shares via `reservations.cpus` (`"0.50"` maps to 500 MHz; default 100 MHz). Do not use `limits.cpus`; it is ignored with a warning. Memory reservations and hard limits are separate; limit-only memory reserves min(256 MiB, limit). |
 | `healthcheck` | no | map | Container health check. Public HTTP services should probe `http://127.0.0.1:<port>/healthz` when possible. |
 | `relay.host` | relay override | string | Optional advanced upstream host override. Usually omit. |
 | `relay.url` | relay override | string | Optional full upstream URL override. Usually omit. |
@@ -524,7 +524,7 @@ CI:
 
 ```bash
 # Verify this version is published before installing.
-python -m pip install "luma-infra==0.1.307"
+python -m pip install "luma-infra==0.1.308"
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
 luma validate service.yaml --format json

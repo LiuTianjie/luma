@@ -49,7 +49,7 @@ luma deploy status.yaml
 | `labels` | 否 | string[] | 追加服务标签。公开 Traefik 路由所需的 service tags 会自动生成。 |
 | `networks` | 否 | string[] | 追加网络声明。公开服务的入口由 Traefik Nomad provider 自动发现。 |
 | `proxy` | 否 | boolean | 服务运行时是否需要走 egress proxy。为 `true` 时会自动挂上 egress 代理和代理环境变量。调度仍按 `region`。不是镜像拉取代理。 |
-| `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，用于限制 CPU/内存。支持 `limits` 和 `reservations`。Luma 把 `cpus` 换算成 Nomad CPU MHz，把 reservation 映射到 `memory`、limit 映射到 `memory_max`；首次部署这类任务时会自动启用 Nomad 内存超卖，确保 limit 真正成为容器硬上限。 |
+| `resources` | 否 | map | 渲染到 Nomad task 的 `resources` 块，CPU 使用 `reservations.cpus` 弹性共享，不执行 `limits.cpus`。内存 reservation 映射到 `memory`、limit 映射到 `memory_max`；首次部署这类任务时会自动启用 Nomad 内存超卖，确保 limit 真正成为容器硬上限。 |
 | `healthcheck` | 否 | map | 渲染成 Nomad `check`（脚本/http）。公共 HTTP 服务建议探测本地端口，例如 `http://127.0.0.1:<port>/healthz`。 |
 | `publishPort` | 公开服务可用 | integer | 显式启用 Nomad bridge 端口映射，把宿主机 `publishPort` 转到容器 `port`。Linux 节点可用；Mac/OrbStack 节点不要设置，保持 host mode 并让 route 指向真实 `port`。 |
 | `relay` | tailscale-relay 可选 | map | 覆盖 Tailscale relay 上游。默认跟随实际运行 allocation 所在的 home 节点自动推导。 |
@@ -379,7 +379,7 @@ constraint {
 
 ### 小机器资源限制
 
-如果 manager 只有 2c2g，并且业务服务也部署在 manager 上，建议给每个非核心服务显式设置资源边界。`limits` 是硬上限，`reservations` 用于 Nomad 调度时预留资源（Luma 把 `cpus` 换算成 CPU MHz、把内存后缀串换算成 MB）：
+如果 manager 只有 2c2g，并且业务服务也部署在 manager 上，建议给每个非核心服务显式设置资源边界。CPU 只通过 `reservations.cpus` 声明调度份额，运行时可使用空闲 CPU，不设独立硬上限。`limits.memory` 是内存硬上限，`reservations.memory` 是调度预留量。未填 CPU 预留时使用 100 MHz；只填内存上限时预留 `min(256 MiB, 上限)`。旧 `limits.cpus` 会明确告警并忽略，不再预占调度额度；它不是可执行的 CPU 硬上限：
 
 ```yaml
 name: api
@@ -390,12 +390,15 @@ domain: api.example.com
 port: 3000
 resources:
   limits:
-    cpus: "0.50"
     memory: 512M
   reservations:
     cpus: "0.10"
     memory: 128M
 ```
+
+这些规则在普通服务和 Compose 的 `deploy.resources` 中一致。内存预留不能超过上限；不填内存上限时，保留 Nomad 以内存预留量为容器上限的行为。内存超额分配不等于增加物理内存，多个服务同时冲高仍可能 OOM。
+
+控制面升级只改变后续生成的 Job；已有服务需要重新部署才生效，不需要批量升级 worker。
 
 ### 家里内部服务
 

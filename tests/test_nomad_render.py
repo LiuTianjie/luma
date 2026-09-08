@@ -401,8 +401,8 @@ resources:
 """
         )
         res = job["TaskGroups"][0]["Tasks"][0]["Resources"]
-        # limit cpus 0.5 -> 500 MHz
-        self.assertEqual(res["CPU"], 500)
+        # reservation cpus 0.25 -> 250 MHz; legacy CPU limit is not a reservation
+        self.assertEqual(res["CPU"], 250)
         # reservation memory 128M -> MemoryMB, limit 256M -> MemoryMaxMB
         self.assertEqual(res["MemoryMB"], 128)
         self.assertEqual(res["MemoryMaxMB"], 256)

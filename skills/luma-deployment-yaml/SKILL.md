@@ -95,7 +95,7 @@ luma build local . --platform linux/amd64
 - Nomad node identities are stable across agent restarts, so a node that rejoins keeps its pin without needing constraint rewrites.
 - Use `proxy: true` for container runtime HTTP/HTTPS egress through Luma. Do not hand-write the default `egress` network or default `HTTP_PROXY`/`HTTPS_PROXY`.
 - `proxy: true` is not for image pulls. External image access belongs to Builder's per-process cache task; runtime nodes pull only from Builder Registry.
-- `resources.limits.cpus` and `resources.reservations.cpus` are fractional cores, for example `"0.50"`. Quote them as strings in YAML; Luma converts cores to Nomad CPU MHz.
+- Use `resources.reservations.cpus` for elastic CPU scheduling shares, for example `"0.50"` (Luma maps this to 500 MHz; it is not a dedicated core count). Do not emit `resources.limits.cpus`: it is ignored with a warning, not enforced as a CPU hard limit. CPU reservation defaults to 100 MHz. Memory limit-only declarations reserve min(256 MiB, limit); specify realistic memory reservations and hard limits separately.
 - `healthcheck` is passed to the running container's health check. Public HTTP services should probe the local app port, for example `http://127.0.0.1:<port>/healthz`.
 - `engine` is optional. Omit it to inherit the cluster default. Set `engine: nomad` only when you need an explicit override.
 - New native services use named volumes or bind mounts in `volumes`; persistent writable mounts require `replicas: 1`. Preserve existing sources. Legacy `storage` metadata does not prove that the actual Nomad mount uses NFS; inspect the rendered/running mount before changing it.
@@ -275,7 +275,7 @@ Direct `compose render` with local paths requires an explicit node. Control dry-
 For generic CI, install a published PyPI version; verify publication before using the version example below. A source version bump or a successful Control rollout does not prove PyPI availability. The distribution is `luma-infra`, but the command remains `luma`:
 
 ```bash
-python -m pip install "luma-infra==0.1.307"
+python -m pip install "luma-infra==0.1.308"
 ```
 
 CI should authenticate statelessly and should not run the shell installer, Docker, SSH bootstrap, or Cloudflare setup:
