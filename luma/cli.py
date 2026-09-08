@@ -209,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.306 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.307 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -963,7 +963,7 @@ def _json_dumps(payload: Dict[str, Any]) -> str:
 
 
 def _print_json(payload: Dict[str, Any], *, file: Any = None) -> None:
-    print(_json_dumps(payload), file=file)
+    print(_json_dumps(payload), file=file, flush=True)
 
 
 def _success_payload(args: argparse.Namespace, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -1337,6 +1337,7 @@ def cmd_node(args: argparse.Namespace) -> int:
                 egress_proxy=egress_proxy,
                 emit=log,
                 install_docker_first=False,
+                insecure_registries=result.get("insecureRegistries") or [],
             )
         except LumaError as exc:
             log(f"[start] Roll back node registration: {registered_node_name}")

@@ -302,6 +302,43 @@ class NomadApiTests(unittest.TestCase):
                     slug="app",
                 )
 
+    def test_evaluation_description_explains_memory_and_node_constraints(self):
+        detail = nomad_api._evaluation_description({
+            "StatusDescription": "created to place remaining allocations",
+            "FailedTGAllocs": {"video-test": {
+                "NodesEvaluated": 8, "NodesFiltered": 7, "NodesExhausted": 1,
+                "DimensionExhausted": {"memory": 1},
+                "ConstraintFiltered": {"${meta.luma_node_name} = ppt": 2,
+                                       "${meta.region} = cn": 5},
+                "ResourcesExhausted": {"worker": {"MemoryMB": 16384, "CPU": 0}},
+            }},
+        })
+        for expected in ("created to place remaining allocations", "group video-test",
+                         "nodes evaluated=8", "insufficient memory (1 node(s))",
+                         "constraint ${meta.luma_node_name} = ppt (2 node(s))",
+                         "task worker requested 16384 MiB memory", "before retrying"):
+            self.assertIn(expected, detail)
+        self.assertNotIn("0 MHz CPU", detail)
+        # Evaluation metrics do not contain the node's available capacity.
+        self.assertNotIn("available memory", detail)
+
+    def test_evaluation_description_multiple_groups_and_sparse_metrics(self):
+        detail = nomad_api._evaluation_description({"FailedTGAllocs": {
+            "cpu": {"DimensionExhausted": {"cpu": 2},
+                    "ResourcesExhausted": {"worker": {"CPU": 2000}},
+                    "QuotaExhausted": ["team-limit"]},
+            "empty": None,
+            "sparse": {"ResourcesExhausted": {"worker": None},
+                       "ConstraintFiltered": None},
+        }})
+        self.assertIn("insufficient cpu (2 node(s))", detail)
+        self.assertIn("2000 MHz CPU", detail)
+        self.assertIn("quota exhausted", detail)
+        self.assertIn("task groups: cpu, empty, sparse", detail)
+        self.assertEqual(nomad_api._evaluation_description({}), "")
+        self.assertEqual(nomad_api._evaluation_description({
+            "StatusDescription": "failed", "FailedTGAllocs": None}), "failed")
+
     def test_deploy_rejects_failed_cancelled_or_blocked_deployment(self):
         for status in ("failed", "cancelled", "blocked"):
             with self.subTest(status=status):

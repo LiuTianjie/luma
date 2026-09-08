@@ -131,6 +131,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "luma-update-egress-fallback-v1",
             "manager-update-v1",
             "nomad-join",
+            "nomad-join-registry-v1",
             "nomad-cni-repair",
             "terminal",
             "container-terminal",
@@ -145,6 +146,7 @@ def node_agent_capabilities(os_name: str | None = None) -> list[str]:
             "luma-update-proxy-v1",
             "luma-update-egress-fallback-v1",
             "nomad-join",
+            "nomad-join-registry-v1",
             "terminal",
             "container-terminal",
         ]
@@ -2386,6 +2388,7 @@ def _execute_agent_task_impl(
             server_addr=_required(payload, "serverAddr"),
             tailscale_authkey=str(payload.get("tailscaleAuthKey") or ""),
             egress_proxy=str(payload.get("egressProxy") or ""),
+            insecure_registries=payload.get("insecureRegistries") or [],
         )
     if action == "repair-nomad-cni-hostports":
         return repair_nomad_cni_hostports(ports=payload.get("ports"))
@@ -2646,6 +2649,7 @@ def join_nomad_node(
     server_addr: str,
     tailscale_authkey: str = "",
     egress_proxy: str = "",
+    insecure_registries: list[str] | None = None,
 ) -> Dict[str, Any]:
     from .bootstrap import _tailscale_ip, install_nomad_node, local_nomad_node_info
     from .config import NodeConfig
@@ -2676,6 +2680,7 @@ def join_nomad_node(
         install_docker_first=True,
         egress_proxy=egress_proxy or None,
         tailscale_authkey=tailscale_authkey or None,
+        insecure_registries=insecure_registries or [],
     )
     actual_node_name, nomad_node_id = local_nomad_node_info()
     tailscale_ip = _tailscale_ip(LocalExecutor()) or ""

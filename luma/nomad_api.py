@@ -484,6 +484,41 @@ def _evaluation_description(evaluation: Mapping[str, Any]) -> str:
     if isinstance(failures, dict) and failures:
         groups = ", ".join(sorted(str(group) for group in failures))
         parts.append(f"placement failures in task groups: {groups}")
+        for group, metrics in sorted(failures.items(), key=lambda item: str(item[0])):
+            if not isinstance(metrics, dict):
+                continue
+            details: List[str] = []
+            for field, label in (("NodesEvaluated", "nodes evaluated"),
+                                 ("NodesFiltered", "nodes filtered"),
+                                 ("NodesExhausted", "nodes exhausted")):
+                count = metrics.get(field)
+                if isinstance(count, int) and not isinstance(count, bool):
+                    details.append(f"{label}={count}")
+            for field, label in (("DimensionExhausted", "insufficient"),
+                                 ("ConstraintFiltered", "constraint")):
+                values = metrics.get(field)
+                if isinstance(values, dict):
+                    for key, count in sorted(values.items(), key=lambda item: str(item[0])):
+                        details.append(f"{label} {key} ({count} node(s))")
+            resources = metrics.get("ResourcesExhausted")
+            if isinstance(resources, dict):
+                for task, resource in sorted(resources.items(), key=lambda item: str(item[0])):
+                    if not isinstance(resource, dict):
+                        continue
+                    requested = []
+                    for field, unit in (("MemoryMB", "MiB memory"), ("CPU", "MHz CPU"),
+                                        ("Cores", "CPU cores"), ("DiskMB", "MiB disk")):
+                        value = resource.get(field)
+                        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                            requested.append(f"{value} {unit}")
+                    if requested:
+                        details.append(f"task {task} requested " + ", ".join(requested))
+            if metrics.get("QuotaExhausted"):
+                details.append(f"quota exhausted: {metrics['QuotaExhausted']}")
+            if details:
+                parts.append(f"group {group}: " + ", ".join(details))
+        parts.append("check task resource requests and node constraints; "
+                     "free capacity, resize the node, or select a suitable node before retrying")
     return "; ".join(parts)
 
 

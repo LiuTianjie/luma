@@ -274,3 +274,39 @@ Check DNS and Traefik:
 ```bash
 curl -I https://whoami.example.com
 ```
+
+## Managed registry access when joining workers
+
+Both `luma node join` and agent-driven `luma node nomad-join` configure Luma's
+managed HTTP registries **after Docker/Tailscale setup and before starting Nomad**.
+The Control registration response / agent task carries `insecureRegistries`.
+
+On Linux, this step merges the endpoints into Docker's `insecure-registries`,
+preserves unrelated daemon settings, and adds the endpoints to Docker's effective
+`NO_PROXY` (including daemon JSON proxy settings when present). It validates the
+candidate configuration before writing, uses atomic writes, backs up an existing
+changed `daemon.json`, and restarts Docker only when configuration or activation
+requires it. A repeat run with effective settings already in place does not
+restart Docker. It verifies Docker's active transport/proxy configuration and a
+direct `/v2/` response (200 or authentication-required 401). This proves registry
+transport/reachability, not authorization to pull a particular repository.
+
+Malformed configuration, an unreachable registry, or ineffective Docker settings
+fail the join rather than leaving a worker ready to accept deployments it cannot
+pull. A required daemon change on a node with running containers is refused:
+drain/maintain that node first. Agent-driven setup also refuses manager nodes, so
+Control cannot restart the Docker daemon hosting itself. macOS Nomad exec nodes
+do not use Linux's Docker task driver and do not receive Linux daemon changes.
+
+`luma registry serve` records its HTTP/HTTPS transport for subsequent node joins.
+For pre-existing installations, the configured `build.registryHost` is recognized
+as the legacy internal HTTP registry only when it is a registered node's
+Tailscale IP on port 5000 and has neither an explicit HTTPS policy nor a registry
+credential record. Builder-local `pushHost` values such as `localhost:5000` are
+never propagated to workers. Public registries and arbitrary private TLS
+endpoints are not automatically downgraded to HTTP.
+
+Upgrade Control and the joining CLI/agent to use this path. Agent-driven joins
+with managed HTTP endpoints require `nomad-join-registry-v1`; an older agent must
+be upgraded rather than silently ignoring registry setup. Already joined nodes
+are not restarted automatically by this change.

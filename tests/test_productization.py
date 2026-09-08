@@ -15801,6 +15801,7 @@ class GithubImportTests(unittest.TestCase):
                 ):
                     result = handle_registry_serve(state["deployToken"], {"node": "builder"})
 
+                self.assertEqual(load_state()["managedRegistryTransports"]["100.66.177.70:5000"], "http")
                 self.assertEqual(result["registryHost"], "100.66.177.70:5000")
                 tecent_no_proxy = [
                     payload["noProxy"]

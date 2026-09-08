@@ -44,6 +44,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 import yaml
 
+from ..registry_access import join_insecure_registries
 from ..assets import asset_path
 from ..artifact_leases import (
     ArtifactLeaseBinding,
@@ -7841,6 +7842,7 @@ def handle_node_register(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "region": record["name"],
         "egress": record.get("egress") or "",
         "egressProxy": egress_proxy,
+        "insecureRegistries": join_insecure_registries(state),
         "nomadRpcAddr": nomad_rpc_addr,
         "nomadServerAddr": nomad_rpc_addr,
     }
@@ -8055,6 +8057,10 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     }
     if egress_proxy:
         payload["egressProxy"] = egress_proxy
+    registries = join_insecure_registries(state)
+    if registries:
+        payload["insecureRegistries"] = registries
+        _guard_manager_docker_daemon_change(state, node_name)
 
     result = _run_node_agent_task(
         state,
@@ -8062,7 +8068,7 @@ def handle_node_nomad_join(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
         "join-nomad",
         payload,
         timeout=timeout,
-        required_capability="nomad-join",
+        required_capability="nomad-join-registry-v1" if registries else "nomad-join",
     )
     actual_node_name = str(result.get("nodeName") or node_name).strip()
     nomad_node_id = str(result.get("nodeId") or result.get("nomadNodeId") or "").strip()
@@ -9348,6 +9354,12 @@ def handle_registry_serve(token: str, body: Dict[str, Any], *, progress: Callabl
     deploy_result = handle_deployment(token, deploy_body, progress=progress)
     if isinstance(deploy_result, dict):
         steps.extend(s for s in (deploy_result.get("steps") or []) if isinstance(s, dict))
+
+    # Persist transport policy so nodes joining later receive the same setup.
+    def remember_registry_transport(current: Dict[str, Any]) -> None:
+        current.setdefault("managedRegistryTransports", {})[registry_host] = "https" if secure_public else "http"
+
+    mutate_state(remember_registry_transport)
 
     verification: Dict[str, Any] = {}
     activated = False

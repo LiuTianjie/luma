@@ -1886,6 +1886,7 @@ def install_nomad_node(
     install_docker_first: bool = True,
     egress_proxy: str | None = None,
     tailscale_authkey: str | None = None,
+    insecure_registries: list[str] | None = None,
 ) -> list[str]:
     """Install and start a Nomad agent on the local node.
 
@@ -1913,6 +1914,13 @@ def install_nomad_node(
     )
 
     os_name = nomad_node.detect_os()
+    if insecure_registries:
+        from .registry_access import configure_join_registries
+
+        _step(
+            results, emit, "Configure managed registry access",
+            lambda: configure_join_registries(insecure_registries, executor=remote, os_name=os_name),
+        )
     arch = os.uname().machine
     tailscale_ip = _tailscale_ip(remote) or ""
     if not tailscale_ip:
