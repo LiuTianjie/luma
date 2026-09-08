@@ -20,7 +20,7 @@ from .errors import LumaError
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_ARTIFACT_CHUNK_BYTES = 1024 * 1024
 _REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$")
-_LEASE_ID = re.compile(r"^artdl_[A-Za-z0-9][A-Za-z0-9_-]{31,95}$")
+_LEASE_ID = re.compile(r"^artdl_[A-Za-z0-9_-]{32,96}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ARTIFACTS = {
     "evidence": "application/vnd.lae.evidence+json",

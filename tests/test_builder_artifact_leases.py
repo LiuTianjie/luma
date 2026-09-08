@@ -128,6 +128,17 @@ class BuilderArtifactLeaseTests(unittest.TestCase):
             },
         )
 
+    def test_http_roundtrip_accepts_urlsafe_lease_id_prefixes(self) -> None:
+        for prefix in ("-", "_"):
+            with self.subTest(prefix=prefix), patch(
+                "luma.artifact_leases.secrets.token_urlsafe",
+                side_effect=lambda size: prefix + "a" * (size * 4 // 3),
+            ):
+                state = load_state()
+                state["agentTasks"] = {}
+                save_state(state)
+                self.test_http_issue_upload_download_and_replay_fence()
+
     def test_http_issue_upload_download_and_replay_fence(self) -> None:
         with TestClient(create_app()) as client:
             self.assertIn(
