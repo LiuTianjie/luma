@@ -60,6 +60,28 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(list(self.runtime.glob('.installation-*')), [])
         self.assertEqual((self.runtime / ins.RECORD).stat().st_mode & 0o777, 0o600)
 
+    def test_candidate_permissions_are_normalized_before_publication(self):
+        for mode, expected in ((0o775, 0o755), (0o777, 0o755), (0o700, 0o700)):
+            with self.subTest(mode=oct(mode)):
+                self.runtime.chmod(mode)
+                parent_mode = self.runtime.parent.stat().st_mode
+                record = self.record()
+                self.assertEqual(self.runtime.stat().st_mode & 0o777, expected)
+                self.assertEqual(ins.read_record(self.runtime), record)
+                self.assertEqual(self.runtime.parent.stat().st_mode, parent_mode)
+
+    def test_record_publication_fails_when_reader_rejects_identity(self):
+        with patch.object(ins, 'read_record', side_effect=ValueError('untrusted candidate')):
+            with self.assertRaisesRegex(ValueError, 'untrusted candidate'):
+                self.record()
+
+    def test_runtime_reader_does_not_repair_unsafe_active_runtime(self):
+        self.record()
+        self.runtime.chmod(0o775)
+        with self.assertRaisesRegex(ValueError, 'runtime must not be group/world-writable'):
+            ins.runtime_record(self.runtime)
+        self.assertEqual(self.runtime.stat().st_mode & 0o777, 0o775)
+
     def test_module_invocation_uses_sys_prefix(self):
         self.record()
         with patch.object(sys, 'prefix', str(self.runtime)), patch.object(sys, 'executable', '/usr/bin/python3'):

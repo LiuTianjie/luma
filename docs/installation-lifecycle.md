@@ -23,7 +23,7 @@ and service-path reconciliation flow.
 New managed runtimes are prepared at their final path under
 `<install-root>/releases/candidate.*/{src,venv}`. The installer does not overwrite
 the active source/venv. Dependency installation and runtime validation must pass
-before the command shim is atomically replaced. Managed package installation
+before the command shim is atomically replaced. Candidate preparation removes group/world write permissions from the runtime directory, independent of the caller's umask, and reads the installation record back through the agent's identity validator before publication. Existing runtime diagnosis remains read-only and fails closed on unsafe permissions. Managed package installation
 failures do not fall back to source code plus residual dependencies. An
 installation-scoped lock rejects simultaneous prepares. This is a prepare lock,
 not a durable distributed maintenance lease or a service-health guarantee.

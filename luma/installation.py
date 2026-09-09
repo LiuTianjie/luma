@@ -148,6 +148,10 @@ def write_record(prefix: Path, *, root: Path, bindir: Path, home: Path, source: 
     # Resolve directories, never the venv's Python executable symlink. macOS
     # /tmp and /var aliases otherwise disagree with Python's canonical prefix.
     prefix, root, bindir, home, source = (p.resolve() for p in (prefix, root, bindir, home, source))
+    # venv inherits the operator's umask (commonly 0002 on Linux).
+    # Normalize only the candidate runtime; never relax the reader's checks
+    # or recursively change an existing installation.
+    prefix.chmod(stat.S_IMODE(prefix.stat().st_mode) & ~0o022)
     record = {
         "schemaVersion": SCHEMA, "installationId": hashlib.sha256(str(root).encode()).hexdigest()[:24],
         "installHome": str(root), "binDir": str(bindir), "userHome": str(home),
@@ -168,6 +172,10 @@ def write_record(prefix: Path, *, root: Path, bindir: Path, home: Path, source: 
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+    # Publication must satisfy the same trust checks used by the running
+    # agent, not merely successful imports/version output.
+    if read_record(prefix) != record:
+        raise ValueError("prepared installation identity failed read-back validation")
     return record
 
 
