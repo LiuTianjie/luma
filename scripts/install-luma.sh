@@ -380,15 +380,27 @@ else
   prune_stale_luma_metadata
 fi
 
+# A failed pip install may only fall back to source when the target runtime
+# actually works. Never repoint a healthy agent to a newly created empty venv.
+validate_luma_runtime() {
+  PYTHONPATH="$SOURCE_DIR${PYTHONPATH:+:$PYTHONPATH}" "$VENV_DIR/bin/python" -c '
+import yaml, starlette, uvicorn, websockets, python_socks
+import luma.cli
+' || return 1
+  PYTHONPATH="$SOURCE_DIR${PYTHONPATH:+:$PYTHONPATH}" "$VENV_DIR/bin/python" -m luma.cli node-agent run --help >/dev/null || return 1
+  "$VENV_DIR/bin/python" -m pip check || return 1
+}
+if ! validate_luma_runtime; then
+  echo "Luma runtime validation failed; leaving command shim and node agent service unchanged." >&2
+  exit 1
+fi
+
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
   mkdir -p "$BIN_DIR"
   cat > "$BIN_DIR/luma" <<EOF
 #!/usr/bin/env sh
 PYTHONPATH="$SOURCE_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
 export PYTHONPATH
-if [ -x "$VENV_DIR/bin/luma" ]; then
-  exec "$VENV_DIR/bin/luma" "\$@"
-fi
 exec "$VENV_DIR/bin/python" -m luma.cli "\$@"
 EOF
   chmod +x "$BIN_DIR/luma"

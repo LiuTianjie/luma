@@ -265,3 +265,24 @@ Nomad agents bind to `0.0.0.0` and advertise their Tailscale address. Luma-manag
 `tailscale-relay` is explicit per service. It is suitable for home tools, previews, or low-frequency internal panels that need a public domain.
 
 It is not the default path for normal public traffic.
+
+## Node agent fails after an installer path change
+
+A Nomad node can remain `ready` while its Luma agent is offline. Before installing
+missing Python packages, inspect the service's actual `ExecStart`, its launcher,
+and the Python environment it selects. Hosts may have a working installation
+under `/opt/luma-cli` alongside an incomplete user-local installation.
+
+The installer validates the target runtime before publishing its command shim or
+refreshing the node agent service: dependency imports, CLI/agent command loading,
+and `pip check` must succeed. A failed package installation can use source fallback
+only when these checks pass. The shim runs the validated Python with `-m luma.cli`,
+not an existing console script whose shebang may refer to a different environment.
+Validation failure returns nonzero and does not publish an installation-success
+message, replace the shim, or refresh/restart the service.
+
+This publication gate is not a transactional rollback of source or package changes
+already made inside the target install directory. For an affected existing host,
+restore the service to a verified working environment, then check both systemd
+restart counts and fresh Control heartbeats; a running process alone does not prove
+that the agent has reconnected.
