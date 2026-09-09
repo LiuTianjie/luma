@@ -1,3 +1,4 @@
+# Control /v1/metrics only. Application HTTP/Nomad alerts are observe/.
 # Opt-in Prometheus template. Replace target and credentials_file on the collector.
 global:
   scrape_interval: 30s

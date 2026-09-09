@@ -3,6 +3,7 @@
 Luma 和 LAE 各提供一个给 AI 编码助手（Codex、Cursor、Claude Code 等）用的 Skill。
 
 - **`luma-deployment-yaml`**：超管/运维侧。生成、校验部署 YAML，沿用服务端记录的构建部署方式，并处理部署差异确认。
+- **`luma-observe`**：独立应用可观测栈。Traefik RED / Nomad 失败告警 / OTLP，不进入 Luma Control。
 - **`lae-deploy`**：租户/产品侧。只通过 `lae` CLI 诊断和部署；不要用它去调 Luma management API。
 
 本仓库 checkout 里的副本是权威来源。把 Skill 拷到助手的用户级 skills 目录后，新对话才会稳定加载。
@@ -16,6 +17,11 @@ Luma 与 LAE 技能独立维护。下面的默认安装只更新 Luma 技能，�
 - **SKILL.md**：工作流、region/exposure、Builder Registry、local build、Compose/storage、CI。
 - **references/manifest-reference.md**：完整字段表、import/build 规则、rollback checklist。
 - **references/deployment-workflow.md**：自动检查、无记录放行、差异确认、成功记录与版本兼容边界。
+
+[`skills/luma-observe`](../skills/luma-observe)：
+
+- **SKILL.md**：独立 observe 栈边界、部署命令、loopback 约束。
+- **references/deploy.md**：端口、流量和后续 OTel 约定。
 
 [`lae/skills/lae-deploy`](../lae/skills/lae-deploy)：
 
@@ -37,8 +43,9 @@ Luma 与 LAE 技能独立维护。下面的默认安装只更新 Luma 技能，�
 ```bash
 repo="/path/to/infra-stacks"
 for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest/luma-deployment-yaml"
+  mkdir -p "$dest/luma-deployment-yaml" "$dest/luma-observe"
   cp -R "$repo/skills/luma-deployment-yaml/." "$dest/luma-deployment-yaml/"
+  cp -R "$repo/skills/luma-observe/." "$dest/luma-observe/"
 done
 ```
 
@@ -48,8 +55,9 @@ done
 tmp="$(mktemp -d)"
 git clone --depth 1 https://github.com/LiuTianjie/luma.git "$tmp/luma"
 for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest/luma-deployment-yaml"
+  mkdir -p "$dest/luma-deployment-yaml" "$dest/luma-observe"
   cp -R "$tmp/luma/skills/luma-deployment-yaml/." "$dest/luma-deployment-yaml/"
+  cp -R "$tmp/luma/skills/luma-observe/." "$dest/luma-observe/"
 done
 rm -rf "$tmp"
 ```
@@ -76,6 +84,10 @@ Install the skill from https://github.com/LiuTianjie/luma/tree/main/skills/luma-
    「review 这个部署文件，确认镜像 tag、存储和 Compose sidecar 是否适合生产回滚。」
 5. 沿用构建部署方式
    「按上次的方式部署这个应用；没有记录就正常部署，出现差异先告诉我，确认后再继续。」
+
+### luma-observe
+
+「部署 luma-observe」「给应用做 5xx / Nomad 失败告警」「不要把日志扫描做进 Control」。
 
 ### lae-deploy
 

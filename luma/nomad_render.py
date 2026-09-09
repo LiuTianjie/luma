@@ -67,6 +67,11 @@ CONTROL_MEMORY_MAX_MB = 0
 # practical upper bound of common CI jobs; unlike ``0`` it does not turn an
 # authenticated registry requirement into an unbounded public slow-body slot.
 TRAEFIK_WEBSECURE_READ_TIMEOUT = "6h"
+# Prometheus scrape and OTLP export stay on host loopback so the public
+# edge (80/443) never grows a metrics listener. luma-observe colocates on
+# the ingress node and scrapes/receives over 127.0.0.1.
+TRAEFIK_METRICS_ADDRESS = "127.0.0.1:8082"
+TRAEFIK_OTLP_HTTP_ENDPOINT = "http://127.0.0.1:4318"
 
 EDGE_EXPOSURES = {"cn-edge", "external-edge"}
 HOST_PORT_EXPOSURES = {"tailscale-relay", "tcp-relay"}
@@ -318,6 +323,17 @@ def render_traefik_job(
         "--providers.nomad.watch=true",
         "--accesslog=true",
         "--accesslog.format=json",
+        "--entrypoints.metrics.address=" + TRAEFIK_METRICS_ADDRESS,
+        "--metrics.prometheus=true",
+        "--metrics.prometheus.entryPoint=metrics",
+        "--metrics.prometheus.addRoutersLabels=true",
+        "--metrics.prometheus.addServicesLabels=true",
+        "--metrics.otlp=true",
+        "--metrics.otlp.addRoutersLabels=true",
+        "--metrics.otlp.addServicesLabels=true",
+        "--metrics.otlp.http.endpoint=" + TRAEFIK_OTLP_HTTP_ENDPOINT,
+        "--tracing.otlp=true",
+        "--tracing.otlp.http.endpoint=" + TRAEFIK_OTLP_HTTP_ENDPOINT,
         "--entrypoints.web.address=:80",
         "--entrypoints.websecure.address=:443",
         (
@@ -451,6 +467,33 @@ def _resolve_env_value(value: Any, *, secrets: Mapping[str, str] | None = None, 
     return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", repl, str(value))
 
 
+
+def _compose_host_network(services: Dict[str, Any], deployment: Any) -> bool:
+    """Host networking colocates a Compose group with host listeners such as Traefik.
+
+    Every service in the group must opt in. Mixed bridge/host and any public
+    exposure are rejected so a localhost metrics/OTLP listener cannot leak onto
+    a published edge port mapping.
+    """
+    modes: set[str] = set()
+    for svc_name, body in services.items():
+        if not isinstance(body, dict):
+            continue
+        mode = str(body.get("network_mode") or "bridge").strip() or "bridge"
+        if mode not in {"host", "bridge"}:
+            raise LumaError(f"compose service {svc_name} network_mode must be host or bridge")
+        modes.add(mode)
+        override = deployment.services.get(str(svc_name))
+        exposure = override.exposure if override else "none"
+        if mode == "host" and exposure != "none":
+            raise LumaError("compose network_mode host requires every service exposure: none")
+        if mode == "host" and override is not None and override.publish_port:
+            raise LumaError("compose network_mode host cannot set publishPort")
+    if modes == {"host", "bridge"}:
+        raise LumaError("compose services cannot mix network_mode host and bridge")
+    return modes == {"host"}
+
+
 def render_compose_job(
     config: LumaConfig,
     deployment: Any,  # ComposeDeploymentSpec
@@ -520,6 +563,7 @@ def render_compose_job(
     # service name -> 127.0.0.1 so DSNs referencing sibling service names resolve
     # over the shared group loopback.
     extra_hosts = [f"{svc}:127.0.0.1" for svc in services.keys()]
+    host_network = _compose_host_network(services, deployment)
 
     reserved_ports: List[Dict[str, Any]] = []
     dynamic_ports: List[Dict[str, Any]] = []
@@ -559,7 +603,9 @@ def render_compose_job(
             }
         if body.get("command") is not None:
             docker_config["args"] = _as_args(body["command"])
-        if port and exposure in {"tcp-relay", "tailscale-relay", "cn-edge", "external-edge"}:
+        if host_network:
+            docker_config["network_mode"] = "host"
+        elif port and exposure in {"tcp-relay", "tailscale-relay", "cn-edge", "external-edge"}:
             if exposure in EDGE_EXPOSURES and publish_port is None:
                 dynamic_ports.append({"Label": label, "To": int(port), "HostNetwork": "default"})
             else:
@@ -748,7 +794,7 @@ def render_compose_job(
     # service publishes a port. Without it, an all-exposure:none multi-service
     # stack renders with no Networks block, each task gets its own loopback, and
     # inter-service connections silently fail while the deploy reports healthy.
-    if len(tasks) > 1 or reserved_ports or dynamic_ports:
+    if not host_network and (len(tasks) > 1 or reserved_ports or dynamic_ports):
         network: Dict[str, Any] = {"Mode": "bridge"}
         if reserved_ports:
             network["ReservedPorts"] = reserved_ports

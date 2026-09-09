@@ -55,6 +55,16 @@ volumes:
 
 Control records the selected node. The dashboard scopes new native volume names by deployment. Existing volume names and bind paths retain their identities: replacing a source at the same mount target is blocked until the data is explicitly migrated. A node rename or lost registration must be reconciled with the existing data owner before deployment.
 
+
+## Host networking
+
+Ordinary Compose groups share a Nomad bridge network namespace so sibling
+service names resolve on `127.0.0.1`. A stack that must scrape host-loopback
+listeners (Traefik metrics, local Nomad HTTP) may set `network_mode: host` on
+**every** service. Mixed host/bridge in one group is rejected. Host-network
+Compose requires `exposure: none` and cannot set `publishPort`; it is for
+internal collectors such as [`luma-observe`](../observe/), not public apps.
+
 ## Deploy And Update
 
 ```bash

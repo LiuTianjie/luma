@@ -2,6 +2,23 @@
 
 Luma exposes node/container samples, current task queues, resource history, runtime events, persistent alerts and resumable application logs. These observations are not a measurement of end-user availability. Public-route verification during deploy/restart remains a separate capability.
 
+
+## Application alerts (`luma-observe`)
+
+Control dashboards show node/container samples and live allocation logs. They
+are not application availability.
+
+Application HTTP 5xx, Nomad failed allocations and restart storms are handled
+by the independent [`observe/`](../observe/) stack. It runs on the Traefik
+node with host networking and loopback listeners (`127.0.0.1:8082` Prometheus,
+`127.0.0.1:4318` OTLP). Alerts evaluate in vmalert/Alertmanager and can post
+to Feishu. Control SQLite is not on this path.
+
+Deploy from `observe/` with `luma build local . --platform linux/amd64 --env .env`.
+Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
+so RED rules have a scrape target. Do not bind those ports on the public NIC.
+Do not ship raw access logs or traces off the manager public interface.
+
 ## Dashboard and logs
 
 Dashboard → Observability opens incidents. Metrics and Logs have dedicated pages; rules and notification channels have separate list and edit URLs. Storage governance is under Infrastructure → Storage → Data governance.

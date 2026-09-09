@@ -1,3 +1,4 @@
+# Infrastructure templates for an external Prometheus. App alerts: ../../observe/
 # Opt-in Prometheus alert rules; not a Luma deployment manifest.
 groups:
   - name: luma-infrastructure

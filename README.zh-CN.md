@@ -84,7 +84,7 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.309 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.310 sh
 ```
 
 从源码开发：
@@ -434,7 +434,7 @@ luma secret set DATABASE_URL --scope app
 | [docs/bootstrap.md](docs/bootstrap.md) | manager bootstrap 细节和 profile。 |
 | [docs/node-labels.md](docs/node-labels.md) | 节点标签、region、ingress 标签。 |
 | [docs/operations.md](docs/operations.md) | 日常运维和排障命令。 |
-| [docs/observability.md](docs/observability.md) | 指标、日志、告警规则、飞书通知和独立探测边界。 |
+| [docs/observability.md](docs/observability.md) | Control 样本/日志，以及独立 [`observe/`](observe/) 应用告警。 |
 | [docs/control-storage.md](docs/control-storage.md) | 单 Manager SQLite、历史查询、容量治理、备份和恢复。 |
 | [docs/luma-cli-reference.md](docs/luma-cli-reference.md) | 从当前 argparse 自动生成的命令与参数参考。 |
 | [docs/secrets.md](docs/secrets.md) | secret 和环境变量处理。 |
@@ -452,8 +452,9 @@ Luma 部署 YAML 用 [skills/luma-deployment-yaml](skills/luma-deployment-yaml)�
 
 ```bash
 for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest/luma-deployment-yaml"
+  mkdir -p "$dest/luma-deployment-yaml" "$dest/luma-observe"
   cp -R skills/luma-deployment-yaml/. "$dest/luma-deployment-yaml/"
+  cp -R skills/luma-observe/. "$dest/luma-observe/"
 done
 ```
 

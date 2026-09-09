@@ -1,0 +1,122 @@
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.collector
+    image: luma-observe-collector:local
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - victoria
+      - nomad-exporter
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.10"
+          memory: 192M
+        limits:
+          memory: 256M
+
+  victoria:
+    image: victoriametrics/victoria-metrics:v1.114.0
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --httpListenAddr=127.0.0.1:8428
+      - --retentionPeriod=15d
+      - --storageDataPath=/data
+    volumes:
+      - victoria-data:/data
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.10"
+          memory: 256M
+        limits:
+          memory: 512M
+
+  vmalert:
+    build:
+      context: .
+      dockerfile: Dockerfile.vmalert
+    image: luma-observe-vmalert:local
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - victoria
+      - alertmanager
+    command:
+      - --datasource.url=http://127.0.0.1:8428
+      - --remoteWrite.url=http://127.0.0.1:8428
+      - --notifier.url=http://127.0.0.1:9093
+      - --rule=/etc/vmalert/rules.yml
+      - --httpListenAddr=127.0.0.1:8880
+      - --evaluationInterval=30s
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+        limits:
+          memory: 128M
+
+  alertmanager:
+    build:
+      context: .
+      dockerfile: Dockerfile.alertmanager
+    image: luma-observe-alertmanager:local
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --web.listen-address=127.0.0.1:9093
+      - --storage.path=/alertmanager
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+        limits:
+          memory: 128M
+
+  nomad-exporter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: luma-observe-python:local
+    network_mode: host
+    restart: unless-stopped
+    command: ["/app/nomad_exporter.py"]
+    environment:
+      NOMAD_ADDR: http://127.0.0.1:4646
+      LUMA_OBSERVE_BIND: "127.0.0.1"
+      LUMA_OBSERVE_PORT: "9107"
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+        limits:
+          memory: 96M
+
+  feishu-webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: luma-observe-python:local
+    network_mode: host
+    restart: unless-stopped
+    command: ["/app/feishu_webhook.py"]
+    environment:
+      LUMA_OBSERVE_BIND: "127.0.0.1"
+      LUMA_OBSERVE_PORT: "9095"
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+        limits:
+          memory: 96M
+
+volumes:
+  victoria-data:

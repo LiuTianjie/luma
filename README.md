@@ -74,7 +74,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.309"
+python -m pip install "luma-infra==0.1.310"
 ```
 
 Install without cloning the repository:
@@ -89,7 +89,7 @@ The installer creates a private venv and writes the command shim to `~/.local/bi
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.309 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.310 sh
 ```
 
 Develop from source:
@@ -344,7 +344,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.309"
+python -m pip install "luma-infra==0.1.310"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"
@@ -471,7 +471,7 @@ See [docs/deployment-yaml.md](docs/deployment-yaml.md) for all fields and [examp
 | [docs/bootstrap.md](docs/bootstrap.md) | manager bootstrap details and profiles. |
 | [docs/node-labels.md](docs/node-labels.md) | node labels, regions, and ingress labels. |
 | [docs/operations.md](docs/operations.md) | daily operations and troubleshooting commands. |
-| [docs/observability.md](docs/observability.md) | metrics, logs, alert rules, Feishu delivery and independent monitoring. |
+| [docs/observability.md](docs/observability.md) | Control samples/logs plus independent [`observe/`](observe/) application alerts. |
 | [docs/control-storage.md](docs/control-storage.md) | single Manager SQLite, history queries, capacity governance, backup and recovery. |
 | [docs/luma-cli-reference.md](docs/luma-cli-reference.md) | command/options reference generated from the current CLI parser. |
 | [docs/secrets.md](docs/secrets.md) | secret and environment variable handling. |
@@ -489,8 +489,9 @@ Install or update the Luma skill from this checkout (LAE is separate):
 
 ```bash
 for dest in ~/.claude/skills ~/.codex/skills; do
-  mkdir -p "$dest/luma-deployment-yaml"
+  mkdir -p "$dest/luma-deployment-yaml" "$dest/luma-observe"
   cp -R skills/luma-deployment-yaml/. "$dest/luma-deployment-yaml/"
+  cp -R skills/luma-observe/. "$dest/luma-observe/"
 done
 ```
 

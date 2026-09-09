@@ -9,6 +9,7 @@
 - `global` 是外网能力区域，承载 AI 网关、外网 API 调用、爬虫、代理和 worker。
 - `home` 是非核心区域，承载备份、内部工具和低频测试任务。
 - Luma Control 是统一控制面，部署直连 Nomad HTTP API。
+- 应用级 HTTP/调度告警走独立 `luma-observe`（与 Traefik 同机、仅 loopback），不进入 Control。
 - Nomad server 跑在 manager 上，其余节点是 Nomad client；client 用 `meta`（region / luma_node_name / ingress / egress）声明身份。
 - Tailscale 是控制面私网，也是 `tailscale-relay` 的显式数据通道。
 - `cn-edge` / `external-edge` 通过 Traefik 标签（Nomad provider service tags）接入域名和 HTTPS。

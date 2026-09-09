@@ -22,7 +22,7 @@ This creates a private venv at `~/.local/share/luma/venv`, writes a `luma` comma
 Install a specific tag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.309 sh
+curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.310 sh
 ```
 
 For local development from a checkout:
@@ -596,3 +596,7 @@ dashboard 的 Applications → Versions 也能做同样的回滚。注意这是 
 7. 失败或中断的镜像准备、Control 或节点任务都会保留原因，可在同一页面重试。关闭页面、刷新浏览器或 Control 重启都不会丢失操作结果。
 
 首次接入一个早于托管更新能力的历史 agent 时，Dashboard 会明确显示缺失的 capability；只需对该历史节点做一次 CLI 更新。之后的发布均可在升级中心完成。
+
+## 13. 应用级可观测（luma-observe）
+
+Dashboard 里的 CPU/内存是节点样本，不是应用是否可用。HTTP 5xx、Nomad 失败/重启走独立的 [`observe/`](../observe/) 栈，和 Traefik 同机、只绑 loopback。详见 [Observability](observability.md)。不要把这类告警做进 Control。

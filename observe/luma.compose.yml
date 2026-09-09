@@ -1,0 +1,35 @@
+name: luma-observe
+compose: docker-compose.yml
+region: cn
+
+volumes:
+  victoria-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/victoria
+
+services:
+  collector:
+    node: manager
+    exposure: none
+    replicas: 1
+  victoria:
+    node: manager
+    exposure: none
+    replicas: 1
+  vmalert:
+    node: manager
+    exposure: none
+    replicas: 1
+  alertmanager:
+    node: manager
+    exposure: none
+    replicas: 1
+  nomad-exporter:
+    node: manager
+    exposure: none
+    replicas: 1
+  feishu-webhook:
+    node: manager
+    exposure: none
+    replicas: 1
