@@ -16,9 +16,8 @@ to Feishu. Control SQLite is not on this path.
 
 Deploy from `observe/` with `luma build local . --platform linux/amd64 --env .env`.
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
-so RED rules have a scrape target. Look at Grafana on the manager Tailscale address: `http://100.106.154.3:3000`.
-The charts are Traefik per-router HTTP and Nomad job health, not each
-container's `/metrics`. Do not bind collector ports or Grafana on the public NIC.
+so RED rules have a scrape target. Operators look at Dashboard → Observability → Apps.
+The charts are Traefik per-router HTTP and Nomad job health, not each container's `/metrics`.
 Do not ship raw access logs or traces off the manager public interface.
 
 ## Dashboard and logs

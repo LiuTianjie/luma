@@ -182,6 +182,7 @@ from ..lae_admin_proxy import (
 )
 from .. import __version__
 from .metrics import history_metadata, load_history, record_samples, retention_seconds, sustained_breach
+from .observe import handle_observe_apps
 from .monitoring import CONTENT_TYPE as METRICS_CONTENT_TYPE, render_metrics, require_metrics_token
 from . import operations as operations_api
 from .workflows import handle_workflow_check, handle_workflow_get, handle_workflow_list, handle_workflow_record
@@ -18681,6 +18682,14 @@ class ControlHandler(BaseHTTPRequestHandler):
                     raise LumaError("window must be a number") from exc
                 self._json(200, handle_metrics_history(token, kind, name, window=window))
                 return
+            if parsed_path == "/v1/dashboard/observe/apps":
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                try:
+                    window = int(str((query.get("window") or ["3600"])[0]) or "3600")
+                except ValueError as exc:
+                    raise LumaError("window must be a number") from exc
+                self._json(200, handle_observe_apps(token, window=window))
+                return
             if parsed_path == "/v1/dashboard/logs/stream":
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 service = str((query.get("service") or [""])[0])
@@ -19716,6 +19725,12 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             except ValueError as exc:
                 raise LumaError("window must be a number") from exc
             return _json_response(200, await run_in_threadpool(handle_metrics_history, token, kind, name, window=window))
+        if parsed_path == "/v1/dashboard/observe/apps":
+            try:
+                window = int(str(request.query_params.get("window") or "3600") or "3600")
+            except ValueError as exc:
+                raise LumaError("window must be a number") from exc
+            return _json_response(200, await run_in_threadpool(handle_observe_apps, token, window=window))
         if parsed_path == "/v1/dashboard/logs/stream":
             service = str(request.query_params.get("service") or "")
             since = str(request.query_params.get("since") or "")

@@ -13,13 +13,9 @@ except for tiny Feishu posts.
 - Traefik OTLP on `127.0.0.1:4318` (optional traces → span metrics)
 - Nomad job failed / running / restart counts via a local exporter
 
-Open Grafana on the manager Tailscale address (not the public IP):
-
-http://100.106.154.3:3000
-
-Anonymous Viewer is on. Dashboards: HTTP apps (Traefik routers) and Nomad jobs.
-This is **not** each container's `/metrics`. It is edge request/5xx plus Nomad
-failed/restart health. App-internal metrics need later OTLP.
+Look in Luma Dashboard → 可观测性 → 应用. That page reads luma-observe through
+Control. It is public HTTP entrypoints and Nomad job health, not container
+`/metrics`.
 
 It does not scrape application stdout and does not evaluate alerts inside Control.
 
@@ -48,6 +44,6 @@ as soon as this stack is running.
 | 9093 | Alertmanager |
 | 9107 | nomad-exporter |
 | 9095 | feishu-webhook |
-| 3000 | Grafana UI on Tailscale `100.106.154.3` |
+| 3000 | Grafana on 127.0.0.1 only |
 
 Do not publish these on `0.0.0.0` or the public NIC.

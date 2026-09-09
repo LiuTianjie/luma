@@ -880,6 +880,7 @@ def render_control_job(
                 "Config": {
                     "image": image,
                     "ports": ["http"],
+                    "extra_hosts": ["host.docker.internal:host-gateway"],
                     # Keep the complete Luma state tree on one bind mount.  Route
                     # files are staged in /opt/luma/.luma-route-staging and then
                     # renamed into /opt/luma/routes; separate nested bind mounts

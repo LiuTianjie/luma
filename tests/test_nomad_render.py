@@ -578,6 +578,7 @@ port: 3000
         self.assertIn("/var/run/docker.sock", sources)
         self.assertIn("/opt/luma", sources)
         self.assertNotIn("/opt/luma/control", sources)
+        self.assertEqual(task["Config"].get("extra_hosts"), ["host.docker.internal:host-gateway"])
         self.assertNotIn("/opt/luma/routes", sources)
 
     def test_control_job_only_forwards_allowlisted_lae_file_url_and_timeout_values(self):
