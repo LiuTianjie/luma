@@ -57,7 +57,12 @@ export function ObserveAppsPanel({ lang, token }: { lang: Lang; token: string })
         <small>{zh ? "公网入口请求和 Nomad 任务健康，不是容器内部 /metrics。" : "Public HTTP entrypoints and Nomad job health, not container /metrics."}</small>
       </div>
       {error && !payload ? <small className="history-status history-status-warning">{error}</small> : null}
-      {payload && !payload.available ? <small className="history-status history-status-warning">{payload.message || (zh ? "luma-observe 暂不可用" : "luma-observe is unavailable")}</small> : null}
+      {payload && !payload.available ? (
+        <section className="panel">
+          <div className="panel-heading"><h2>{zh ? "应用可观测未启用" : "Application observability is off"}</h2></div>
+          <p className="history-status">{payload.message || (zh ? "luma-observe 是可选组件。用 Luma 部署 observe/ 之后，这里会显示公网入口和 Nomad 任务健康。" : "luma-observe is optional. Deploy observe/ with Luma to see public HTTP and Nomad job health here.")}</p>
+        </section>
+      ) : null}
       {payload?.available ? (
         <>
           <section className="panel">

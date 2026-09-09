@@ -201,4 +201,3 @@ class HostGatewayTests(unittest.TestCase):
         gateway = load_observe("host_gateway.py", "host_gateway")
         with patch.object(gateway, "ipv4_of_interface", side_effect=lambda name: {"nomad": "172.26.64.1", "docker0": "172.17.0.1"}.get(name)):
             self.assertEqual(gateway.gateway_bind_ips(["nomad", "docker0"]), ["172.26.64.1", "172.17.0.1"])
-

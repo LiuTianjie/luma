@@ -85,9 +85,9 @@ def _query_range(base: str, expr: str, *, window: int, now: float) -> list[dict[
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        raise LumaError("luma-observe metrics are unavailable") from exc
+        raise LumaError("luma-observe is not deployed") from exc
     if payload.get("status") != "success":
-        raise LumaError("luma-observe metrics are unavailable")
+        raise LumaError("luma-observe is not deployed")
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     rows = data.get("result") if isinstance(data.get("result"), list) else []
     series: list[dict[str, Any]] = []

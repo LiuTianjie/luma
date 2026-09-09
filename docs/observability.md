@@ -8,13 +8,15 @@ Luma exposes node/container samples, current task queues, resource history, runt
 Control dashboards show node/container samples and live allocation logs. They
 are not application availability.
 
-Application HTTP 5xx, Nomad failed allocations and restart storms are handled
-by the independent [`observe/`](../observe/) stack. It runs on the Traefik
-node with host networking and loopback listeners (`127.0.0.1:8082` Prometheus,
-`127.0.0.1:4318` OTLP). A host-gateway proxy also binds VictoriaMetrics onto
-the Nomad/docker0 bridge IPs so the bridge-mode Control job can query it.
-Do not bind 8428/3000 on eth0 or Tailscale. Alerts evaluate in
-vmalert/Alertmanager and can post to Feishu. Control SQLite is not on this path.
+Application HTTP 5xx, Nomad failed allocations and restart storms are an
+optional [`observe/`](../observe/) Compose app. Deploy it with Luma; skip it
+and Control still runs. Operators look at Dashboard → Observability → Apps,
+which is a Control page that reads observe when present. The stack uses host
+networking and loopback listeners (`127.0.0.1:8082` Prometheus,
+`127.0.0.1:4318` OTLP). `host-gateway` is part of that app so Control can
+query VictoriaMetrics without a public scrape port. Grafana on `127.0.0.1:3100`
+is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite
+is not on this path.
 
 Deploy from `observe/` with `luma build local . --platform linux/amd64 --env .env`.
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags

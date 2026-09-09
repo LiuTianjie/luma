@@ -1,7 +1,8 @@
 # luma-observe
 
-Independent application observability for a Luma cluster. It is a normal
-Compose deployment, not part of Luma Control.
+Optional application observability for a Luma cluster. Deploy it with Luma
+like any other Compose app. Control and other clusters keep working if it
+is absent.
 
 It colocates with Traefik on the manager host network and only binds loopback
 listeners. Public 80/443 traffic and Aliyun outbound billing are unchanged
@@ -13,9 +14,10 @@ except for tiny Feishu posts.
 - Traefik OTLP on `127.0.0.1:4318` (optional traces → span metrics)
 - Nomad job failed / running / restart counts via a local exporter
 
-Look in Luma Dashboard → 可观测性 → 应用. That page reads luma-observe through
-Control. It is public HTTP entrypoints and Nomad job health, not container
-`/metrics`.
+After it is deployed, look in Luma Dashboard → 可观测性 → 应用.
+That page is part of Control: it reads luma-observe through the management
+API. Grafana stays on manager loopback port 3100 for local debug and is
+not the operator UI. Do not open Grafana on Tailscale or the public IP.
 
 It does not scrape application stdout and does not evaluate alerts inside Control.
 
@@ -47,6 +49,6 @@ as soon as this stack is running.
 | 3000 | Grafana on 127.0.0.1 only |
 
 Do not publish these on `0.0.0.0` or the public NIC.
-Control is a Nomad-bridge container, so `host-gateway` proxies 8428 onto the
-`nomad`/`docker0` bridge IPs only. Operators still use Dashboard → 可观测性 → 应用.
-Do not open Grafana or VictoriaMetrics on Tailscale or the public IP.
+`host-gateway` is part of this optional stack: it exposes VictoriaMetrics on
+the Nomad/docker0 bridge so Control can query it after a normal Luma deploy.
+Port 3000 is left alone (it is already itool.tech on this manager).

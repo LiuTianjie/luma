@@ -42,7 +42,7 @@ class ObserveQueryTests(unittest.TestCase):
         self.assertEqual(result["jobs"][0]["failed"], 21)
 
     def test_unavailable_observe_is_explicit(self):
-        with patch.object(observe, "require_token"), patch.object(observe, "load_state", return_value={"nodes": {}}), patch.object(observe, "_query_range", side_effect=LumaError("luma-observe metrics are unavailable")):
+        with patch.object(observe, "require_token"), patch.object(observe, "load_state", return_value={"nodes": {}}), patch.object(observe, "_query_range", side_effect=LumaError("luma-observe is not deployed")):
             result = observe.handle_observe_apps("token")
         self.assertFalse(result["available"])
         self.assertEqual(result["http"], [])
