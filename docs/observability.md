@@ -11,7 +11,7 @@ are not application availability.
 Application HTTP 5xx, Nomad failed allocations and restart storms are an
 optional [`observe/`](../observe/) Compose app. Deploy it with Luma; skip it
 and Control still runs. Operators look at Dashboard → Observability → Apps,
-which is a Control page that reads observe when present. The stack uses host
+which embeds Grafana at `/grafana` on the Control domain. The stack uses host
 networking and loopback listeners (`127.0.0.1:8082` Prometheus,
 `127.0.0.1:4318` OTLP). Control uses host networking and queries `http://127.0.0.1:8428` when observe is present. Grafana on `127.0.0.1:3100`
 is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite

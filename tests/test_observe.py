@@ -201,3 +201,15 @@ class HostGatewayTests(unittest.TestCase):
         gateway = load_observe("host_gateway.py", "host_gateway")
         with patch.object(gateway, "ipv4_of_interface", side_effect=lambda name: {"nomad": "172.26.64.1", "docker0": "172.17.0.1"}.get(name)):
             self.assertEqual(gateway.gateway_bind_ips(["nomad", "docker0"]), ["172.26.64.1", "172.17.0.1"])
+
+
+class GrafanaRouteTests(unittest.TestCase):
+    def test_grafana_route_is_on_the_control_domain(self):
+        from luma.observe_grafana import grafana_route_yaml
+        text = grafana_route_yaml("luma.itool.tech")
+        self.assertIn("Host(`luma.itool.tech`) && PathPrefix(`/grafana`)", text)
+        self.assertIn("priority: 1000", text)
+        self.assertIn("url: http://127.0.0.1:3100", text)
+        self.assertNotIn("100.106.154.3:3000", text)
+        self.assertNotIn(":3000", text.split("url:")[-1])
+

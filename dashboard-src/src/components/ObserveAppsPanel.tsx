@@ -1,107 +1,37 @@
-import { useEffect, useState } from "react";
-import { fetchObserveApps, type ObserveAppsPayload } from "../observeApi";
+import { useState } from "react";
 import type { Lang } from "../types";
-import { TrendChart } from "./charts";
 import "./ObservabilityPanel.css";
 
-const WINDOWS = [900, 3600, 21600];
+const VIEWS = [
+  { id: "http", src: "/grafana/d/luma-http-apps?orgId=1&kiosk=tv", zh: "HTTP 应用", en: "HTTP apps" },
+  { id: "nomad", src: "/grafana/d/luma-nomad-jobs?orgId=1&kiosk=tv", zh: "Nomad", en: "Nomad" },
+  { id: "grafana", src: "/grafana/?orgId=1", zh: "Grafana", en: "Grafana" },
+] as const;
 
-function formatRate(value: number) {
-  if (value >= 10) return value.toFixed(1);
-  if (value >= 1) return value.toFixed(2);
-  return value.toFixed(3);
-}
-
-function formatRatio(value: number) {
-  return `${(value * 100).toFixed(2)}%`;
-}
-
-export function ObserveAppsPanel({ lang, token }: { lang: Lang; token: string }) {
+export function ObserveAppsPanel({ lang }: { lang: Lang; token: string }) {
   const zh = lang === "zh";
-  const [windowSec, setWindowSec] = useState(3600);
-  const [payload, setPayload] = useState<ObserveAppsPayload | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    let cancelled = false;
-    async function load() {
-      try {
-        const next = await fetchObserveApps(token, windowSec, controller.signal);
-        if (!cancelled) {
-          setPayload(next);
-          setError("");
-        }
-      } catch (err) {
-        if (!cancelled && !controller.signal.aborted) setError(err instanceof Error ? err.message : String(err));
-      }
-    }
-    void load();
-    const timer = window.setInterval(() => void load(), 15000);
-    return () => {
-      cancelled = true;
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [token, windowSec]);
+  const [view, setView] = useState<(typeof VIEWS)[number]["id"]>("http");
+  const current = VIEWS.find((item) => item.id === view) || VIEWS[0];
   return (
-    <div className="metrics-workspace">
-      <div className="history-toolbar">
-        <label>
-          {zh ? "时间范围" : "Time range"}
-          <select value={windowSec} onChange={(event) => setWindowSec(Number(event.target.value))}>
-            {WINDOWS.map((value) => (
-              <option value={value} key={value}>{value < 3600 ? `${value / 60} min` : `${value / 3600} h`}</option>
-            ))}
-          </select>
-        </label>
-        <small>{zh ? "公网入口请求和 Nomad 任务健康，不是容器内部 /metrics。" : "Public HTTP entrypoints and Nomad job health, not container /metrics."}</small>
+    <div className="metrics-workspace grafana-embed">
+      <div className="history-toolbar grafana-toolbar">
+        <div className="grafana-view-switch" role="tablist" aria-label={zh ? "Grafana 面板" : "Grafana dashboards"}>
+          {VIEWS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="ghost"
+              role="tab"
+              aria-selected={view === item.id}
+              onClick={() => setView(item.id)}
+            >
+              {zh ? item.zh : item.en}
+            </button>
+          ))}
+        </div>
+        <small>{zh ? "Grafana 嵌在控制面域名 /grafana，observe 未部署时这里会空白。" : "Grafana is embedded at /grafana on the Control domain. Empty if observe is not deployed."}</small>
       </div>
-      {error && !payload ? <small className="history-status history-status-warning">{error}</small> : null}
-      {payload && !payload.available ? (
-        <section className="panel">
-          <div className="panel-heading"><h2>{zh ? "应用可观测未启用" : "Application observability is off"}</h2></div>
-          <p className="history-status">{payload.message || (zh ? "luma-observe 是可选组件。用 Luma 部署 observe/ 之后，这里会显示公网入口和 Nomad 任务健康。" : "luma-observe is optional. Deploy observe/ with Luma to see public HTTP and Nomad job health here.")}</p>
-        </section>
-      ) : null}
-      {payload?.available ? (
-        <>
-          <section className="panel">
-            <div className="panel-heading"><h2>{zh ? "公网入口" : "Public HTTP"}</h2></div>
-            {!payload.http.length ? <small className="history-status">{zh ? "还没有 Traefik 请求样本" : "No Traefik request samples yet"}</small> : null}
-            {payload.http.map((item) => (
-              <div className="service-history-detail" key={item.id}>
-                <strong>{item.id}</strong>
-                <div className="metrics-summary">
-                  <span><small>QPS</small><strong>{formatRate(item.requestRate)}</strong></span>
-                  <span><small>5xx</small><strong>{formatRate(item.errorRate)}</strong></span>
-                  <span><small>5xx %</small><strong>{formatRatio(item.errorRatio)}</strong></span>
-                </div>
-                <div className="service-history-charts">
-                  <div><h3>{zh ? "请求" : "Requests"}</h3><TrendChart points={item.requests} format={formatRate} height={120} emptyLabel={zh ? "等待采样" : "Waiting"} /></div>
-                  <div><h3>5xx</h3><TrendChart points={item.errors} format={formatRate} height={120} emptyLabel={zh ? "等待采样" : "Waiting"} /></div>
-                </div>
-              </div>
-            ))}
-          </section>
-          <section className="panel">
-            <div className="panel-heading"><h2>Nomad</h2></div>
-            {!payload.jobs.length ? <small className="history-status">{zh ? "还没有 job 样本" : "No job samples yet"}</small> : null}
-            {payload.jobs.map((item) => (
-              <div className="service-history-detail" key={item.id}>
-                <strong>{item.id}</strong>
-                <div className="metrics-summary">
-                  <span><small>{zh ? "运行中" : "Running"}</small><strong>{item.running}</strong></span>
-                  <span><small>Failed</small><strong>{item.failed}</strong></span>
-                </div>
-                <div className="service-history-charts">
-                  <div><h3>{zh ? "运行中" : "Running"}</h3><TrendChart points={item.runningPoints} format={(value) => String(Math.round(value))} height={120} emptyLabel={zh ? "等待采样" : "Waiting"} /></div>
-                  <div><h3>Failed</h3><TrendChart points={item.failedPoints} format={(value) => String(Math.round(value))} height={120} emptyLabel={zh ? "等待采样" : "Waiting"} /></div>
-                </div>
-              </div>
-            ))}
-          </section>
-        </>
-      ) : null}
+      <iframe title={zh ? current.zh : current.en} src={current.src} allow="fullscreen" />
     </div>
   );
 }

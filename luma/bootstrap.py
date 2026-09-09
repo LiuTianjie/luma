@@ -1651,6 +1651,13 @@ def _write_control_route(remote: Executor, config: LumaConfig, domain: str, node
         f"set -e; install -d -m 755 {ROOT}/routes; "
         f"echo {b64} | base64 -d > {ROOT}/routes/luma-control.yml"
     )
+    from .observe_grafana import grafana_route_yaml
+    grafana_yaml = grafana_route_yaml(domain, entrypoint=entrypoint, cert_resolver=cert_resolver)
+    grafana_b64 = base64.b64encode(grafana_yaml.encode("utf-8")).decode("ascii")
+    remote.sudo(
+        f"set -e; install -d -m 755 {ROOT}/routes; "
+        f"echo {grafana_b64} | base64 -d > {ROOT}/routes/luma-observe-grafana.yml"
+    )
     return f"Control route written: {domain} -> {target}:8080"
 
 

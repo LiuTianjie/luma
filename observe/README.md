@@ -15,9 +15,9 @@ except for tiny Feishu posts.
 - Nomad job failed / running / restart counts via a local exporter
 
 After it is deployed, look in Luma Dashboard → 可观测性 → 应用.
-That page is part of Control: it reads luma-observe through the management
-API. Grafana stays on manager loopback port 3100 for local debug and is
-not the operator UI. Do not open Grafana on Tailscale or the public IP.
+That tab embeds Grafana at `/grafana` on the Control domain. Luma writes
+the Traefik route; you do not add a second domain. Do not open Grafana on
+Tailscale or port 3000.
 
 It does not scrape application stdout and does not evaluate alerts inside Control.
 

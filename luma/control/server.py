@@ -20370,7 +20370,20 @@ def serve(host: str, port: int) -> None:
     import uvicorn
 
     _start_registry_automation()
+    _ensure_observe_grafana_route()
     uvicorn.run(create_app(), host=host, port=port, log_level=os.environ.get("LUMA_CONTROL_LOG_LEVEL", "info"))
+
+
+def _ensure_observe_grafana_route() -> None:
+    try:
+        current = load_state()
+        domain = str(current.get("domain") or "").strip()
+        if not domain:
+            return
+        from ..observe_grafana import write_grafana_route
+        write_grafana_route(Path("/opt/luma/routes"), domain)
+    except Exception:
+        return
 
 
 def main(argv: list[str] | None = None) -> int:
