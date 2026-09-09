@@ -491,6 +491,9 @@ def _update_agent_heartbeat(
             "version": str(body.get("version") or agent.get("version") or __version__),
         }
     )
+    if isinstance(body.get("activeTaskId"), str):
+        agent["activeTaskId"] = body["activeTaskId"].strip()
+        agent["activeTaskObservedAt"] = int(time.time())
     if isinstance(metrics, dict):
         agent["metrics"] = _agent_metrics(metrics)
         agent["metricsCollectedAt"] = int(time.time())
@@ -1917,7 +1920,7 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
         run["updatedAt"] = now
         run["completedAt"] = now
         if final_status == "canceled":
-            run["message"] = "build canceled"
+            run["message"] = "Superseded by " + run["supersededBy"] if run.get("supersededBy") else "build canceled"
             run["canceledAt"] = now
             run.pop("result", None)
         elif message:
@@ -2135,11 +2138,19 @@ def _prune_agent_tasks(state: Dict[str, Any], *, now: int | None = None) -> None
     for node_name in sorted(unregistered_running_nodes):
         _reconcile_interrupted_agent_tasks(state, node_name, "", now=now)
 
+    # Keep the completion receipt until its queue owner has consumed it and
+    # released the project fence, even when history retention has elapsed.
+    protected = set()
+    for build_id in state.get("buildQueue") or {}:
+        run = _build_runs(state).get(build_id)
+        if isinstance(run, dict) and run.get("queueExecuting"):
+            protected.add(run.get("agentTaskId"))
     terminal = {"succeeded", "failed", "timeout", "canceled"}
     stale = [
         task_id
         for task_id, task in tasks.items()
         if isinstance(task, dict)
+        and task_id not in protected
         and str(task.get("status") or "") in terminal
         and int(task.get("completedAt") or task.get("updatedAt") or 0) < (
             now - 30 * 24 * 3600 if task.get("action") == "builder-storage" else cutoff
@@ -3075,8 +3086,12 @@ def _wait_node_agent_task(
     queue_deadline = _agent_task_wait_deadline({}, wait_started, execution_timeout)
     cursor = 0
     while True:
-        current = load_state()
-        task = (current.get("agentTasks") if isinstance(current.get("agentTasks"), dict) else {}).get(task_id)
+        from .state import load_entity
+        task = load_entity("agentTasks", task_id)
+        if task is None:
+            # Unwind the consumer; queue cleanup retains the execution fence
+            # until an authenticated agent observation confirms child exit.
+            raise LumaError(f"node agent task receipt missing on {node_name}: {task_id}")
         status = "missing"
         if isinstance(task, dict):
             task_progress = task.get("progress") if isinstance(task.get("progress"), list) else []
@@ -7402,8 +7417,8 @@ def _build_run_agent_task(
 
 
 def _build_run_cancel_requested(build_id: str) -> bool:
-    state = load_state()
-    run = _build_runs(state).get(build_id)
+    from .state import load_entity
+    run = load_entity("buildRuns", build_id)
     return isinstance(run, dict) and str(run.get("status") or "") in {"canceling", "canceled"}
 
 
@@ -8616,6 +8631,8 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any],
     )
 
     def run_progress(event: dict[str, str]) -> None:
+        if event.get("status") == "start" and _build_run_cancel_requested(build_id):
+            raise LumaError("build canceled")
         _append_build_run_event(build_id, event)
 
     try:
@@ -8804,6 +8821,8 @@ def handle_build_deploy(
     git_source = _git_source_from_build_body(run_body, repo_url=repo_url, build_node=build_node, build_run_id=build_run_id)
 
     def run_progress(event: dict[str, str]) -> None:
+        if event.get("status") == "start" and _build_run_cancel_requested(build_run_id):
+            raise LumaError("build canceled")
         _append_build_run_event(build_run_id, event)
         _emit_progress(progress, event)
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import posixpath
 import threading
 import time
 from typing import Any
@@ -47,6 +48,65 @@ def _digest(body: State) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def replacement_key(run: State, body: State) -> str:
+    """Only replace a known deployment target, never every build in a repo."""
+    sidecar = str(body.get("composeSidecar") or "").strip()
+    if sidecar:
+        path = posixpath.normpath(sidecar)
+        if path.startswith("/") or path == ".." or path.startswith("../"):
+            raise LumaError("composeSidecar must be a repository-relative path")
+        return json.dumps(["sidecar", run.get("source"), path], separators=(",", ":"))
+    manifest = body.get("manifest") or (body.get("buildResult") or {}).get("manifest")
+    if isinstance(manifest, str) and manifest.strip():
+        import yaml
+        from ..service import slugify
+        data = yaml.safe_load(manifest)
+        if isinstance(data, dict) and isinstance(data.get("name"), str) and data["name"].strip():
+            return json.dumps(["manifest", slugify(data["name"])], separators=(",", ":"))
+    # Bare repository imports do not identify a service before source analysis.
+    return ""
+
+
+def _request_stop(state: State, run: State, now: int) -> None:
+    task = (state.get("agentTasks") or {}).get(run.get("agentTaskId"))
+    if isinstance(task, dict):
+        if task.get("status") == "queued":
+            task.update(status="canceled", message="Superseded before execution",
+                        completedAt=now, updatedAt=now, cancelRequestedAt=now)
+        elif task.get("status") == "running":
+            task.setdefault("cancelRequestedAt", now)
+
+
+def _safe_to_release(state: State, run: State) -> bool:
+    """A worker unwind is not proof that a dispatched remote child has stopped."""
+    task_id = run.get("agentTaskId")
+    if not task_id:
+        return True
+    task = (state.get("agentTasks") or {}).get(task_id)
+    if isinstance(task, dict) and task.get("status") in {"succeeded", "failed", "canceled"}:
+        return True
+    if isinstance(task, dict) and task.get("status") in {"queued", "running"}:
+        _request_stop(state, run, int(time.time()))
+        return task.get("status") == "canceled"
+    # Missing/expired receipt: require a fresh authenticated heartbeat proving
+    # this serial agent no longer owns the child. Offline is not stopped.
+    from . import server as srv
+    node = srv._node_record_for_name(state.get("nodes") or {}, str(run.get("buildNode") or ""))
+    if not isinstance(node, dict) or not srv._node_agent_is_ready(node):
+        return False
+    agent = node.get("agent") or {}
+    return ("activeTaskId" in agent
+            and int(agent.get("activeTaskObservedAt") or 0) > int(run.get("queueOwnerReleasedAt") or run.get("updatedAt") or 0)
+            and str(agent.get("activeTaskId") or "") != task_id)
+
+
+def reconcile_released(state: State) -> None:
+    for build_id in list(state.setdefault("buildQueue", {})):
+        run = _runs(state).get(build_id)
+        if isinstance(run, dict) and run.get("queueOwnerReleased") and _safe_to_release(state, run):
+            discard(state, run)
+
+
 def attach(state: State, run: State, kind: str, body: State) -> None:
     # Called inside the same transaction that creates/claims the build record.
     private = dict(body)
@@ -54,6 +114,27 @@ def attach(state: State, run: State, kind: str, body: State) -> None:
     for key in ("token", "gitToken", "registryAuth", "password"):
         private.pop(key, None)  # credentials are resolved from Control at execution
     state.setdefault("buildQueue", {})[run["id"]] = {"kind": kind, "body": private}
+    key = replacement_key(run, body)
+    if key:
+        run["replacementKey"] = key
+        now = int(time.time())
+        runs = _runs(state)
+        for older_id, older_payload in list(state["buildQueue"].items()):
+            older = runs.get(older_id)
+            if older_id == run["id"] or not isinstance(older, dict):
+                continue
+            older_key = older.get("replacementKey") or replacement_key(older, older_payload.get("body") or {})
+            if older_key != key or older.get("status") in TERMINAL and not older.get("queueExecuting"):
+                continue
+            older.update(supersededBy=run["id"], cancelRequestedAt=now,
+                         updatedAt=now, message="Superseded by " + run["id"])
+            if older.get("queueExecuting"):
+                if older.get("status") not in TERMINAL:
+                    older["status"] = "canceling"
+                _request_stop(state, older, now)
+            else:
+                older.update(status="canceled", completedAt=now, canceledAt=now)
+                discard(state, older)
     order = int(state.get("buildQueueSequence") or 0) + 1
     state["buildQueueSequence"] = order
     run.update(status="queued", queueOrder=order, queueManaged=True,
@@ -63,6 +144,8 @@ def attach(state: State, run: State, kind: str, body: State) -> None:
 def discard(state: State, run: State) -> None:
     state.setdefault("buildQueue", {}).pop(run["id"], None)
     run.pop("queueExecuting", None)
+    run.pop("queueOwnerReleased", None)
+    run.pop("queueOwnerReleasedAt", None)
 
 
 def submit_local(token: str, build_id: str, body: State) -> State:
@@ -111,6 +194,7 @@ def claim() -> WorkItem | None:
     def mutate(state):
         runs = _runs(state)
         srv._expire_stale_local_build_runs(runs, int(time.time()))
+        reconcile_released(state)
         active = _active(runs)
         # queueExecuting also fences a worker whose progress event set failed
         # before it has actually unwound its runtime mutation.
@@ -175,7 +259,10 @@ def execute(item: WorkItem) -> None:
         def cleanup(state):
             run = _runs(state).get(build_id)
             if isinstance(run, dict):
-                discard(state, run)
+                run["queueOwnerReleased"] = True
+                run.setdefault("queueOwnerReleasedAt", int(time.time()))
+                if _safe_to_release(state, run):
+                    discard(state, run)
         mutate_state(cleanup)
 
 
@@ -198,7 +285,10 @@ def recover() -> None:
             if run.get("status") not in TERMINAL:
                 run.update(status="failed", message="Deployment interrupted by Control restart; inspect runtime before retrying",
                            completedAt=int(time.time()), updatedAt=int(time.time()))
-            discard(state, run)
+            run["queueOwnerReleased"] = True
+            run.setdefault("queueOwnerReleasedAt", int(time.time()))
+            if _safe_to_release(state, run):
+                discard(state, run)
     mutate_state(mutate)
 
 

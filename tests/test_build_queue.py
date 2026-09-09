@@ -58,16 +58,115 @@ class BuildQueueTests(unittest.TestCase):
         self.finish(next(item for item in claims if item and item[0] == first), 'failed')
         self.assertEqual(queue.claim()[0], second)
 
-    def test_local_uploads_can_build_together_and_join_fifo_on_submission(self):
+    def test_local_uploads_replace_same_target_on_submission(self):
         a, b = self.prepare(), self.prepare()
         remote = self.remote()
         self.submit(b)
         self.submit(a)
         self.assertEqual(queue.claim()[0], remote)
         self.finish((remote, {}))
-        self.assertEqual(queue.claim()[0], b['run']['id'])
-        self.finish((b['run']['id'], {}))
+        self.assertEqual(load_state()['buildRuns'][b['run']['id']]['status'], 'canceled')
         self.assertEqual(queue.claim()[0], a['run']['id'])
+
+    def test_same_sidecar_only_latest_survives(self):
+        first = self.remote(composeSidecar='deploy/prod/luma.compose.yml')
+        second = self.remote(composeSidecar='deploy/prod/luma.compose.yml')
+        latest = self.remote(composeSidecar='deploy/prod/luma.compose.yml')
+        state = load_state()
+        for old in (first, second):
+            self.assertEqual(state['buildRuns'][old]['status'], 'canceled')
+            self.assertNotIn(old, state['buildQueue'])
+        self.assertEqual(queue.claim()[0], latest)
+
+    def test_different_sidecars_remain_fifo(self):
+        first = self.remote(composeSidecar='deploy/prod/luma.compose.yml')
+        second = self.remote(composeSidecar='deploy/test/luma.compose.yml')
+        self.assertEqual(queue.claim()[0], first)
+        self.finish((first, {}))
+        self.assertEqual(queue.claim()[0], second)
+
+    def test_replacement_waits_for_owner_and_remote_child(self):
+        first = self.remote(composeSidecar='deploy/prod.yml')
+        item = queue.claim()
+        state = load_state()
+        state['buildRuns'][first]['agentTaskId'] = 'child'
+        state['agentTasks'] = {'child': {'status': 'running', 'nodeName': 'builder'}}
+        save_state(state)
+        second = self.remote(composeSidecar='deploy/prod.yml')
+        latest = self.remote(composeSidecar='deploy/prod.yml')
+        self.assertIsNone(queue.claim())
+        with patch.object(srv, 'handle_build_deploy', side_effect=LumaError('canceled')):
+            queue.execute(item)
+        state = load_state()
+        self.assertTrue(state['buildRuns'][first]['queueOwnerReleased'])
+        self.assertTrue(state['agentTasks']['child']['cancelRequestedAt'])
+        self.assertEqual(state['buildRuns'][second]['status'], 'canceled')
+        self.assertIsNone(queue.claim())
+        state['agentTasks']['child']['status'] = 'canceled'
+        save_state(state)
+        self.assertEqual(queue.claim()[0], latest)
+        self.assertNotIn('queueExecuting', load_state()['buildRuns'][first])
+
+    def test_missing_receipt_requires_explicit_fresh_idle_observation(self):
+        first = self.remote()
+        item = queue.claim()
+        second = self.remote()
+        state = load_state()
+        state['buildRuns'][first]['agentTaskId'] = 'missing-child'
+        state['buildRuns'][first]['status'] = 'canceled'
+        save_state(state)
+        with patch.object(srv, 'handle_build_deploy', side_effect=LumaError('missing receipt')):
+            queue.execute(item)
+        state = load_state()
+        released = state['buildRuns'][first]['queueOwnerReleasedAt']
+        state['nodes']['builder'] = {'name': 'builder', 'agent': {'lastSeen': released + 2}}
+        save_state(state)
+        with patch.object(srv, '_node_agent_is_ready', return_value=True):
+            self.assertIsNone(queue.claim())  # Missing activeTaskId is NOT idle.
+            state['nodes']['builder']['agent'].update(activeTaskId='missing-child', activeTaskObservedAt=released + 2)
+            save_state(state)
+            self.assertIsNone(queue.claim())
+            state['nodes']['builder']['agent']['activeTaskId'] = ''
+            state['nodes']['builder']['agent']['activeTaskObservedAt'] = released
+            save_state(state)
+            self.assertIsNone(queue.claim())  # An old observation is not proof.
+            state['nodes']['builder']['agent']['activeTaskObservedAt'] = released + 2
+            save_state(state)
+            self.assertEqual(queue.claim()[0], second)
+
+    def test_retention_preserves_unconsumed_completion_receipt(self):
+        first = self.remote()
+        queue.claim()
+        state = load_state()
+        state['buildRuns'][first]['agentTaskId'] = 'child'
+        state['agentTasks'] = {'child': {'status': 'canceled', 'completedAt': 1}}
+        srv._prune_agent_tasks(state, now=100000)
+        self.assertIn('child', state['agentTasks'])
+        queue.discard(state, state['buildRuns'][first])
+        srv._prune_agent_tasks(state, now=100000)
+        self.assertNotIn('child', state['agentTasks'])
+
+    def test_missing_receipt_unwinds_without_waiting_for_build_timeout(self):
+        with patch.object(srv, 'load_state', side_effect=AssertionError('full history read')), patch.object(srv.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(LumaError, 'receipt missing'):
+                srv._wait_node_agent_task('missing', 'builder', 'build-image', timeout=7200)
+            sleep.assert_not_called()
+
+    def test_recovery_retains_remote_child_fence(self):
+        first = self.remote()
+        queue.claim()
+        second = self.remote()
+        state = load_state()
+        state['buildRuns'][first].update(status='canceled', agentTaskId='child')
+        state['agentTasks'] = {'child': {'status': 'running', 'nodeName': 'builder'}}
+        save_state(state)
+        with patch.object(srv, '_CONTROL_PROCESS_INSTANCE_ID', 'restarted'):
+            queue.recover()
+        self.assertIsNone(queue.claim())
+        state = load_state()
+        state['agentTasks']['child']['status'] = 'canceled'
+        save_state(state)
+        self.assertEqual(queue.claim()[0], second)
 
     def test_cancel_queued_does_not_cancel_active_or_leak_payload(self):
         first = self.remote(envSecrets={'PASSWORD': 'first-value'})

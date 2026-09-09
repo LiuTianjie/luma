@@ -114,6 +114,7 @@ def _build_summary(run: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(run.get("id") or ""), "status": str(run.get("status") or ""),
         "queueExecuting": bool(run.get("queueExecuting")),
+        "supersededBy": str(run.get("supersededBy") or ""),
         "source": str(run.get("source") or request.get("repoUrl") or request.get("repository") or ""),
         "buildNode": str(run.get("buildNode") or request.get("buildNode") or ""),
         "mode": str(run.get("mode") or "builder"), "projectKey": str(run.get("projectKey") or ""),

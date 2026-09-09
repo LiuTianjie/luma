@@ -114,6 +114,17 @@ def load_runtime_state() -> Dict[str, Any]:
         return read_state(conn, kinds={"nodes", "agentTasks", "builderTasks"})
 
 
+def load_entity(kind: str, identifier: str) -> Dict[str, Any] | None:
+    """Read one task/receipt without loading unrelated history or event streams."""
+    from .database import ensure_initialized, read_entity, transaction
+    ensure_initialized()
+    with transaction(immediate=False) as conn:
+        try:
+            return read_entity(conn, kind, identifier)
+        except KeyError:
+            return None
+
+
 def load_auth_state() -> Dict[str, Any]:
     """Read authentication/config keys without hydrating task/build history."""
     from .database import database_path, ensure_initialized, transaction
