@@ -1621,7 +1621,7 @@ def bootstrap_manager_local(config: LumaConfig, node: NodeConfig, profile: Profi
 def _write_control_route(remote: Executor, config: LumaConfig, domain: str, node: NodeConfig) -> str:
     """Write the Traefik file-provider route for luma-control (Nomad engine).
 
-    The control job runs bridge :8080 on the manager; Traefik reaches it over the
+    The control job listens on host :8080 on the manager; Traefik reaches it over the
     manager's Tailscale IP. Without this route the control domain is unreachable
     (the job has no nomad-provider tags), so this closes the bootstrap gap.
     """

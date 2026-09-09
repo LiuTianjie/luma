@@ -17,14 +17,10 @@ Exposure mapping:
   - none : worker, no service/port unless the manifest declares one.
 """
 
-import fcntl
 import hashlib
-import ipaddress
 import json
 import math
 import re
-import socket
-import struct
 import urllib.parse
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, Mapping, Sequence
@@ -272,43 +268,6 @@ def _control_job_lae_config(name: str, value: str) -> str:
         return candidate
     raise LumaError(f"{name} is not an allowlisted LAE Control setting")
 
-
-
-def _ipv4_of_interface(name: str) -> str | None:
-    """Return the IPv4 address of a Linux host interface, if present."""
-    if not name or any(character in name for character in ("\0", "/", " ")):
-        return None
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            encoded = struct.pack("256s", name.encode("ascii")[:15])
-            raw = fcntl.ioctl(sock.fileno(), 0x8915, encoded)  # SIOCGIFADDR
-        finally:
-            sock.close()
-    except (OSError, UnicodeEncodeError, struct.error):
-        return None
-    candidate = socket.inet_ntoa(raw[20:24])
-    try:
-        parsed = ipaddress.IPv4Address(candidate)
-    except ipaddress.AddressValueError:
-        return None
-    if parsed.is_loopback or parsed.is_unspecified or parsed.is_multicast:
-        return None
-    return str(parsed)
-
-
-def control_host_gateway_ip() -> str | None:
-    """Host IP reachable from a Nomad-bridge Control container.
-
-    Control uses Nomad CNI (`nomad` bridge), not Docker's default `docker0`.
-    Nomad extra_hosts only accepts a real IPv4, never Docker Compose's
-    ``host-gateway`` token.
-    """
-    for name in ("nomad", "docker0"):
-        address = _ipv4_of_interface(name)
-        if address:
-            return address
-    return None
 
 
 def control_job_environment(values: Mapping[str, str] | None) -> Dict[str, str]:
@@ -870,14 +829,15 @@ def render_control_job(
     allow_auto_revert: bool = True,
     as_json: bool = True,
 ) -> str | Dict[str, Any]:
-    """Render the luma-control infrastructure job (bridge mode, port 8080).
+    """Render the luma-control infrastructure job (host network, port 8080).
 
     It mounts the manager's /opt/luma state + docker.sock as host binds (mount
     blocks, NOT the docker `volumes` shorthand; see _apply_volume_mounts for
     why). Pinned to the manager node. Routing is handled separately by the
-    Traefik file route. Callers performing an incompatible state migration
-    must disable auto-revert so Nomad cannot restart the previous image
-    against the migrated state.
+    Traefik file route. Host networking lets Control reach optional
+    luma-observe on 127.0.0.1 without publishing scrape ports. Callers
+    performing an incompatible state migration must disable auto-revert so
+    Nomad cannot restart the previous image against the migrated state.
     """
     environment = {
         "DOCKER_API_VERSION": "1.44",
@@ -885,9 +845,7 @@ def render_control_job(
         "LUMA_CONTROL_STATE_DIR": "/opt/luma/control",
         **control_job_environment(control_environment),
     }
-    gateway_ip = control_host_gateway_ip()
-    if gateway_ip:
-        environment.setdefault("LUMA_OBSERVE_URL", f"http://{gateway_ip}:8428")
+    environment.setdefault("LUMA_OBSERVE_URL", "http://127.0.0.1:8428")
     job = {
         "ID": "luma-control",
         "Name": "luma-control",
@@ -904,7 +862,7 @@ def render_control_job(
             "Name": "luma-control",
             "Count": 1,
             "MaxClientDisconnect": 3_600_000_000_000,
-            "Networks": [{"Mode": "bridge", "ReservedPorts": [{"Label": "http", "Value": 8080, "To": 8080}]}],
+            "Networks": [{"Mode": "host", "ReservedPorts": [{"Label": "http", "Value": 8080}]}],
             "Services": [{
                 "Name": "luma-control",
                 "PortLabel": "http",
@@ -924,7 +882,7 @@ def render_control_job(
                 "Driver": "docker",
                 "Config": {
                     "image": image,
-                    "ports": ["http"],
+                    "network_mode": "host",
                     # Keep the complete Luma state tree on one bind mount.  Route
                     # files are staged in /opt/luma/.luma-route-staging and then
                     # renamed into /opt/luma/routes; separate nested bind mounts
