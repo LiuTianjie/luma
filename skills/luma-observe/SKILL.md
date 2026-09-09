@@ -22,10 +22,14 @@ Do not use this skill for Dashboard node CPU/disk presets, Nomad job YAML for or
 
 - Pin the stack to the Traefik node (`node: manager` on this cluster).
 - Every Compose service uses `network_mode: host` and `exposure: none`.
-- Listeners bind `127.0.0.1` only. Never publish 4318/8082/8428 on the public NIC.
+- Collectors bind `127.0.0.1` only. Never publish 4318/8082/8428 on the public NIC.
+- Grafana is the look surface: Tailscale `http://100.106.154.3:3000` only, not the Aliyun public IP.
 - Alert evaluation is vmalert + Alertmanager + optional Feishu webhook.
 - Auto-instrumentation is opt-in later via official OTel env vars. Do not create a Luma telemetry SDK.
 - Fail open: Collector/Feishu down must not block user requests.
+
+Look at Grafana, not the Luma Dashboard alerting page. The data is Traefik
+per-router HTTP and Nomad job health, not application container `/metrics`.
 
 ## Deploy
 

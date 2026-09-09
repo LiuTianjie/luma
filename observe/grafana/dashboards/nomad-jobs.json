@@ -1,0 +1,84 @@
+{
+  "uid": "luma-nomad-jobs",
+  "title": "Nomad jobs",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": [
+    "luma-observe",
+    "nomad"
+  ],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Failed allocations",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoria"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "luma_observe_job_failed",
+          "legendFormat": "{{job}}/{{task_group}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Running allocations",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoria"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "luma_observe_job_running",
+          "legendFormat": "{{job}}/{{task_group}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Task restarts",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoria"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "luma_observe_alloc_restarts",
+          "legendFormat": "{{job}} {{task}} {{alloc}}"
+        }
+      ]
+    }
+  ]
+}

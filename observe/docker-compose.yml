@@ -118,5 +118,33 @@ services:
         limits:
           memory: 96M
 
+  grafana:
+    build:
+      context: .
+      dockerfile: Dockerfile.grafana
+    image: luma-observe-grafana:local
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - victoria
+    environment:
+      GF_SERVER_HTTP_ADDR: "100.106.154.3"
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_SERVER_ROOT_URL: "http://100.106.154.3:3000"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "luma-observe"
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.10"
+          memory: 128M
+        limits:
+          memory: 256M
+
 volumes:
   victoria-data:

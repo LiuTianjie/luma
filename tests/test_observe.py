@@ -117,6 +117,8 @@ class RepoManifestTests(unittest.TestCase):
         job = render_compose_job(cfg(), dep, as_json=False, resolve_secrets=False)["Job"]
         self.assertEqual(dep.name, "luma-observe")
         self.assertNotIn("Networks", job["TaskGroups"][0])
+        names = {task["Name"] for task in job["TaskGroups"][0]["Tasks"]}
+        self.assertIn("grafana", names)
         self.assertTrue(all(task["Config"].get("network_mode") == "host" for task in job["TaskGroups"][0]["Tasks"]))
         victoria = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "victoria")
         self.assertEqual(victoria["Config"]["mount"][0]["source"], "/srv/luma/data/luma-observe/victoria")

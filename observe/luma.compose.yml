@@ -33,3 +33,8 @@ services:
     node: manager
     exposure: none
     replicas: 1
+  grafana:
+    node: manager
+    exposure: none
+    replicas: 1
+
