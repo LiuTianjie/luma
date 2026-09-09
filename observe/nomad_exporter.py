@@ -3,6 +3,11 @@
 
 Reads the local Nomad HTTP API. Intended to run on the manager host network
 so it can use 127.0.0.1:4646 without exposing Nomad publicly.
+
+Job names are Luma apps. Traefik router names are mapped to those apps so
+Grafana can aggregate HTTP RED by application instead of raw router ids.
+Failed gauges count currently desired-run failures, not Nomad's lifetime
+JobSummary.Failed counter.
 """
 from __future__ import annotations
 
@@ -12,7 +17,10 @@ import sys
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterable
+
+ROUTES_DIR = Path(os.environ.get("LUMA_ROUTES_DIR", "/opt/luma/routes"))
 
 
 def _num(value: Any) -> float:
@@ -40,24 +48,112 @@ def fetch_json(addr: str, path: str, token: str, timeout: float = 4.0) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def collect(addr: str, token: str) -> str:
+def app_id(job: dict[str, Any]) -> str:
+    return str(job.get("Name") or job.get("ID") or "").strip()
+
+
+def compose_job(job: dict[str, Any]) -> bool:
+    meta = job.get("Meta") if isinstance(job.get("Meta"), dict) else {}
+    return str(meta.get("luma.compose") or "").lower() == "true"
+
+
+def job_active(job: dict[str, Any]) -> bool:
+    if bool(job.get("Stop")):
+        return False
+    return str(job.get("Status") or "").lower() == "running"
+
+
+def file_route_stems(routes_dir: Path = ROUTES_DIR) -> list[str]:
+    try:
+        names = sorted(path.stem for path in routes_dir.glob("*.yml") if path.is_file())
+    except OSError:
+        return []
+    return [name for name in names if name and not name.startswith(".")]
+
+
+def tasks_by_job(allocations: Iterable[Any]) -> dict[str, set[str]]:
+    grouped: dict[str, set[str]] = {}
+    for alloc in allocations:
+        if not isinstance(alloc, dict):
+            continue
+        job = str(alloc.get("JobID") or "")
+        if not job:
+            continue
+        states = alloc.get("TaskStates") if isinstance(alloc.get("TaskStates"), dict) else {}
+        grouped.setdefault(job, set()).update(str(name) for name in states)
+    return grouped
+
+
+def router_mappings(jobs: Iterable[Any], allocations: Iterable[Any], route_stems: Iterable[str] | None = None) -> list[dict[str, str]]:
+    """Map Traefik router labels onto Luma app names."""
+    tasks = tasks_by_job(allocations)
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(app: str, service: str, router: str) -> None:
+        app, service, router = app.strip(), service.strip(), router.strip()
+        key = (app, service, router)
+        if not app or not router or key in seen:
+            return
+        seen.add(key)
+        rows.append({"app": app, "service": service or app, "router": router})
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        app = app_id(job)
+        if not app:
+            continue
+        add(app, app, f"{app}@nomad")
+        add(app, app, f"{app}@file")
+        if compose_job(job):
+            for task in sorted(tasks.get(app, ())):
+                add(app, task, f"{app}-{task}@nomad")
+    for stem in route_stems if route_stems is not None else file_route_stems():
+        app = "luma-observe" if str(stem).startswith("luma-observe") else str(stem)
+        add(app, str(stem), f"{stem}@file")
+    return rows
+
+
+def current_failed(allocations: Iterable[Any]) -> dict[tuple[str, str], int]:
+    counts: dict[tuple[str, str], int] = {}
+    for alloc in allocations:
+        if not isinstance(alloc, dict):
+            continue
+        if str(alloc.get("DesiredStatus") or "") != "run":
+            continue
+        if str(alloc.get("ClientStatus") or "") not in {"failed", "lost"}:
+            continue
+        job = str(alloc.get("JobID") or "")
+        group = str(alloc.get("TaskGroup") or "")
+        if not job:
+            continue
+        key = (job, group)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def collect(addr: str, token: str, *, routes_dir: Path | None = None) -> str:
     lines = [
         "# HELP luma_observe_nomad_up Whether the Nomad API was reachable from luma-observe.",
         "# TYPE luma_observe_nomad_up gauge",
     ]
     try:
-        jobs = fetch_json(addr, "/v1/jobs", token)
+        jobs = fetch_json(addr, "/v1/jobs?meta=true", token)
         allocations = fetch_json(addr, "/v1/allocations?resources=false", token)
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError):
         return "\n".join(lines + ["luma_observe_nomad_up 0", ""])
     if not isinstance(jobs, list) or not isinstance(allocations, list):
         return "\n".join(lines + ["luma_observe_nomad_up 0", ""])
 
+    failed_now = current_failed(allocations)
     lines.append("luma_observe_nomad_up 1")
     lines += [
+        "# HELP luma_observe_job_active 1 if the Nomad job is supposed to be running.",
+        "# TYPE luma_observe_job_active gauge",
         "# HELP luma_observe_job_running Running allocations reported by Nomad job summary.",
         "# TYPE luma_observe_job_running gauge",
-        "# HELP luma_observe_job_failed Failed allocations reported by Nomad job summary.",
+        "# HELP luma_observe_job_failed Currently failed allocations that Nomad still wants to run.",
         "# TYPE luma_observe_job_failed gauge",
         "# HELP luma_observe_job_queued Queued allocations reported by Nomad job summary.",
         "# TYPE luma_observe_job_queued gauge",
@@ -65,23 +161,27 @@ def collect(addr: str, token: str) -> str:
         "# TYPE luma_observe_allocs gauge",
         "# HELP luma_observe_alloc_restarts Task restart count on a live allocation.",
         "# TYPE luma_observe_alloc_restarts gauge",
+        "# HELP luma_observe_router_app Maps a Traefik router label to a Luma app.",
+        "# TYPE luma_observe_router_app gauge",
     ]
     for job in jobs:
         if not isinstance(job, dict):
             continue
-        name = str(job.get("Name") or job.get("ID") or "")
+        name = app_id(job)
         if not name:
             continue
         summary = job.get("JobSummary") if isinstance(job.get("JobSummary"), dict) else {}
         groups = summary.get("Summary") if isinstance(summary.get("Summary"), dict) else {}
         if not groups:
             groups = {"": {}}
+        active = 1 if job_active(job) else 0
         for group, counts in groups.items():
             if not isinstance(counts, dict):
                 counts = {}
-            labels = _labels(job=name, task_group=group)
+            labels = _labels(app=name, job=name, task_group=str(group))
+            lines.append(f"luma_observe_job_active{labels} {active}")
             lines.append(f"luma_observe_job_running{labels} {_num(counts.get('Running')):g}")
-            lines.append(f"luma_observe_job_failed{labels} {_num(counts.get('Failed')):g}")
+            lines.append(f"luma_observe_job_failed{labels} {failed_now.get((name, str(group)), 0)}")
             lines.append(f"luma_observe_job_queued{labels} {_num(counts.get('Queued')):g}")
 
     status_counts: dict[tuple[str, str, str], int] = {}
@@ -96,6 +196,8 @@ def collect(addr: str, token: str) -> str:
             continue
         key = (job, group, status)
         status_counts[key] = status_counts.get(key, 0) + 1
+        if status != "running":
+            continue
         states = alloc.get("TaskStates") if isinstance(alloc.get("TaskStates"), dict) else {}
         alloc_id = str(alloc.get("ID") or "")[:8]
         for task, state in states.items():
@@ -103,12 +205,20 @@ def collect(addr: str, token: str) -> str:
                 continue
             restart_lines.append(
                 "luma_observe_alloc_restarts"
-                + _labels(job=job, task_group=group, alloc=alloc_id, task=task)
+                + _labels(app=job, job=job, task_group=group, alloc=alloc_id, task=str(task))
                 + f" {_num(state.get('Restarts')):g}"
             )
     for (job, group, status), count in sorted(status_counts.items()):
-        lines.append(f"luma_observe_allocs{_labels(job=job, task_group=group, status=status)} {count}")
+        lines.append(
+            f"luma_observe_allocs{_labels(app=job, job=job, task_group=group, status=status)} {count}"
+        )
     lines.extend(restart_lines)
+    for row in router_mappings(jobs, allocations, file_route_stems(routes_dir or ROUTES_DIR)):
+        lines.append(
+            "luma_observe_router_app"
+            + _labels(app=row["app"], service=row["service"], router=row["router"])
+            + " 1"
+        )
     return "\n".join(lines) + "\n"
 
 

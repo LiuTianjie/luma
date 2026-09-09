@@ -132,7 +132,9 @@ class NomadExporterTests(unittest.TestCase):
             {
                 "ID": "granary",
                 "Name": "granary",
-                "JobSummary": {"Summary": {"granary": {"Running": 0, "Failed": 21, "Queued": 0}}},
+                "Status": "running",
+                "Meta": {"luma.managed": "true", "luma.compose": "true"},
+                "JobSummary": {"Summary": {"granary": {"Running": 1, "Failed": 21, "Queued": 0}}},
             }
         ]
         allocations = [
@@ -140,24 +142,62 @@ class NomadExporterTests(unittest.TestCase):
                 "ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
                 "JobID": "granary",
                 "TaskGroup": "granary",
+                "ClientStatus": "running",
+                "DesiredStatus": "run",
+                "TaskStates": {"app": {"Restarts": 6}, "mysql": {"Restarts": 0}},
+            },
+            {
+                "ID": "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "JobID": "granary",
+                "TaskGroup": "granary",
                 "ClientStatus": "failed",
-                "TaskStates": {"app": {"Restarts": 6}},
-            }
+                "DesiredStatus": "stop",
+                "TaskStates": {"app": {"Restarts": 3}},
+            },
         ]
 
         def fake_fetch(addr, path, token, timeout=4.0):
             self.assertEqual(addr, "http://127.0.0.1:4646")
             if path.startswith("/v1/jobs"):
+                self.assertIn("meta=true", path)
                 return jobs
             return allocations
 
         with patch.object(exporter, "fetch_json", side_effect=fake_fetch):
-            text = exporter.collect("http://127.0.0.1:4646", "")
+            text = exporter.collect("http://127.0.0.1:4646", "", routes_dir=Path("/tmp/missing-luma-routes"))
         self.assertIn("luma_observe_nomad_up 1", text)
-        self.assertIn('luma_observe_job_failed{job="granary",task_group="granary"} 21', text)
-        self.assertIn('luma_observe_job_running{job="granary",task_group="granary"} 0', text)
-        self.assertIn('luma_observe_allocs{job="granary",task_group="granary",status="failed"} 1', text)
-        self.assertIn('luma_observe_alloc_restarts{job="granary",task_group="granary",alloc="aaaaaaaa",task="app"} 6', text)
+        self.assertIn('luma_observe_job_failed{app="granary",job="granary",task_group="granary"} 0', text)
+        self.assertIn('luma_observe_job_running{app="granary",job="granary",task_group="granary"} 1', text)
+        self.assertIn('luma_observe_job_active{app="granary",job="granary",task_group="granary"} 1', text)
+        self.assertIn('luma_observe_allocs{app="granary",job="granary",task_group="granary",status="failed"} 1', text)
+        self.assertIn('luma_observe_alloc_restarts{app="granary",job="granary",task_group="granary",alloc="aaaaaaaa",task="app"} 6', text)
+        self.assertIn('luma_observe_router_app{app="granary",service="app",router="granary-app@nomad"} 1', text)
+        self.assertIn('luma_observe_router_app{app="granary",service="granary",router="granary@nomad"} 1', text)
+        self.assertNotIn('alloc="bbbbbbbb"', text)
+
+    def test_current_failed_counts_desired_run_only(self):
+        exporter = load_observe("nomad_exporter.py", "nomad_exporter")
+        jobs = [{
+            "ID": "word2pdf",
+            "Name": "word2pdf",
+            "Status": "running",
+            "Meta": {"luma.compose": "true"},
+            "JobSummary": {"Summary": {"word2pdf": {"Running": 0, "Failed": 9, "Queued": 0}}},
+        }]
+        allocations = [{
+            "ID": "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "JobID": "word2pdf",
+            "TaskGroup": "word2pdf",
+            "ClientStatus": "failed",
+            "DesiredStatus": "run",
+            "TaskStates": {"web": {"Restarts": 1}},
+        }]
+        def fake_fetch(addr, path, token, timeout=4.0):
+            return jobs if path.startswith("/v1/jobs") else allocations
+        with patch.object(exporter, "fetch_json", side_effect=fake_fetch):
+            text = exporter.collect("http://127.0.0.1:4646", "", routes_dir=Path("/tmp/missing-luma-routes"))
+        self.assertIn('luma_observe_job_failed{app="word2pdf",job="word2pdf",task_group="word2pdf"} 1', text)
+        self.assertIn('luma_observe_router_app{app="word2pdf",service="web",router="word2pdf-web@nomad"} 1', text)
 
     def test_nomad_down_is_explicit(self):
         exporter = load_observe("nomad_exporter.py", "nomad_exporter")

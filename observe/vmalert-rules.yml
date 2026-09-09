@@ -2,20 +2,33 @@ groups:
   - name: luma-observe-apps
     interval: 30s
     rules:
+      - record: luma_app:http_requests:rate5m
+        expr: |
+          sum by (app) (
+            rate(traefik_router_requests_total[5m])
+            * on (router) group_left(app) luma_observe_router_app
+          )
+
+      - record: luma_app:http_errors:rate5m
+        expr: |
+          sum by (app) (
+            rate(traefik_router_requests_total{code=~"5.."}[5m])
+            * on (router) group_left(app) luma_observe_router_app
+          )
+
       - alert: LumaAppHTTPErrorRate
         expr: |
-          (
-            sum by (router) (rate(traefik_router_requests_total{code=~"5.."}[5m]))
-            /
-            clamp_min(sum by (router) (rate(traefik_router_requests_total[5m])), 0.001)
-          ) > 0.05
+          luma_app:http_errors:rate5m
+          /
+          clamp_min(luma_app:http_requests:rate5m, 0.001)
+          > 0.05
         for: 5m
         labels:
           severity: warning
           source: luma-observe
         annotations:
-          summary: "Router {{ $labels.router }} 5xx ratio is above 5%"
-          description: "Public HTTP errors for this Traefik router stayed high for 5 minutes."
+          summary: "App {{ $labels.app }} 5xx ratio is above 5%"
+          description: "Public HTTP errors for this Luma app stayed high for 5 minutes."
 
       - alert: LumaJobFailedAllocations
         expr: luma_observe_job_failed > 0
@@ -24,27 +37,30 @@ groups:
           severity: warning
           source: luma-observe
         annotations:
-          summary: "Job {{ $labels.job }} has failed allocations"
-          description: "Nomad summary reports failed allocations; this is application health, not node CPU."
+          summary: "App {{ $labels.app }} has failed allocations"
+          description: "Nomad still wants this job to run, but allocations are failed or lost."
 
       - alert: LumaJobNotRunning
-        expr: luma_observe_job_running == 0 and luma_observe_job_queued == 0
+        expr: |
+          luma_observe_job_active == 1
+          and luma_observe_job_running == 0
+          and luma_observe_job_queued == 0
         for: 5m
         labels:
           severity: critical
           source: luma-observe
         annotations:
-          summary: "Job {{ $labels.job }} has no running allocations"
-          description: "The Nomad job is not running and not queued."
+          summary: "App {{ $labels.app }} has no running allocations"
+          description: "The Nomad job is active but not running and not queued."
 
       - alert: LumaAllocRestartStorm
-        expr: max by (job, task) (luma_observe_alloc_restarts) > 5
+        expr: max by (app, job, task) (luma_observe_alloc_restarts) > 5
         for: 10m
         labels:
           severity: warning
           source: luma-observe
         annotations:
-          summary: "Job {{ $labels.job }} task {{ $labels.task }} is restarting"
+          summary: "App {{ $labels.app }} task {{ $labels.task }} is restarting"
           description: "A live allocation exceeded 5 restarts."
 
       - alert: LumaObserveNomadDown

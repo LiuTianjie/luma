@@ -1,9 +1,9 @@
 {
   "uid": "luma-http-apps",
-  "title": "HTTP apps (Traefik)",
+  "title": "HTTP apps",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "tags": [
     "luma-observe",
@@ -14,13 +14,30 @@
     "to": "now"
   },
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "app",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "victoria"
+        },
+        "query": "label_values(luma_observe_router_app, app)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "label": "App"
+      }
+    ]
   },
   "panels": [
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Request rate by router",
+      "title": "Request rate by app",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -40,15 +57,15 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (router) (rate(traefik_router_requests_total[5m]))",
-          "legendFormat": "{{router}}"
+          "expr": "sum by (app) (luma_app:http_requests:rate5m{app=~\"$app\"})",
+          "legendFormat": "{{app}}"
         }
       ]
     },
     {
       "id": 2,
       "type": "timeseries",
-      "title": "5xx rate by router",
+      "title": "5xx rate by app",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -68,15 +85,15 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (router) (rate(traefik_router_requests_total{code=~\"5..\"}[5m]))",
-          "legendFormat": "{{router}}"
+          "expr": "sum by (app) (luma_app:http_errors:rate5m{app=~\"$app\"})",
+          "legendFormat": "{{app}}"
         }
       ]
     },
     {
       "id": 3,
       "type": "timeseries",
-      "title": "5xx ratio by router",
+      "title": "5xx ratio by app",
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -115,8 +132,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (router) (rate(traefik_router_requests_total{code=~\"5..\"}[5m])) / clamp_min(sum by (router) (rate(traefik_router_requests_total[5m])), 0.001)",
-          "legendFormat": "{{router}}"
+          "expr": "sum by (app) (luma_app:http_errors:rate5m{app=~\"$app\"}) / clamp_min(sum by (app) (luma_app:http_requests:rate5m{app=~\"$app\"}), 0.001)",
+          "legendFormat": "{{app}}"
         }
       ]
     }

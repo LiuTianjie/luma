@@ -10,9 +10,13 @@ except for tiny Feishu posts.
 
 ## What it watches
 
-- Traefik Prometheus on `127.0.0.1:8082` (per-router HTTP 5xx)
+- Traefik Prometheus on `127.0.0.1:8082` (public HTTP RED)
 - Traefik OTLP on `127.0.0.1:4318` (optional traces → span metrics)
-- Nomad job failed / running / restart counts via a local exporter
+- Nomad job running / current failed / live restarts via a local exporter
+
+App names are the Luma stack/job names already in Nomad. Deploying observe
+maps Traefik routers onto those names. Existing apps do not need a redeploy,
+extra YAML, or an SDK.
 
 After it is deployed, look in Luma Dashboard → 可观测性 → 应用.
 That tab embeds Grafana at `/grafana` on the Control domain. Luma writes

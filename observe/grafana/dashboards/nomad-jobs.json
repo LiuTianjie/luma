@@ -3,7 +3,7 @@
   "title": "Nomad jobs",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "tags": [
     "luma-observe",
@@ -13,11 +13,31 @@
     "from": "now-6h",
     "to": "now"
   },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "victoria"
+        },
+        "query": "label_values(luma_observe_job_running, app)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "label": "App"
+      }
+    ]
+  },
   "panels": [
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Failed allocations",
+      "title": "Failed allocations now",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -31,8 +51,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "luma_observe_job_failed",
-          "legendFormat": "{{job}}/{{task_group}}"
+          "expr": "sum by (app) (luma_observe_job_failed{app=~\"$app\"})",
+          "legendFormat": "{{app}}"
         }
       ]
     },
@@ -53,15 +73,15 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "luma_observe_job_running",
-          "legendFormat": "{{job}}/{{task_group}}"
+          "expr": "sum by (app) (luma_observe_job_running{app=~\"$app\"})",
+          "legendFormat": "{{app}}"
         }
       ]
     },
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Task restarts",
+      "title": "Live task restarts",
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -75,8 +95,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "luma_observe_alloc_restarts",
-          "legendFormat": "{{job}} {{task}} {{alloc}}"
+          "expr": "sum by (app, task) (luma_observe_alloc_restarts{app=~\"$app\"})",
+          "legendFormat": "{{app}} {{task}}"
         }
       ]
     }

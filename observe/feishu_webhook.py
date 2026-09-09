@@ -28,7 +28,7 @@ def format_text(payload: dict[str, Any]) -> str:
         annotations = alert.get("annotations") if isinstance(alert.get("annotations"), dict) else {}
         name = str(labels.get("alertname") or "alert")
         summary = str(annotations.get("summary") or annotations.get("description") or "")
-        target = str(labels.get("router") or labels.get("job") or labels.get("service") or "")
+        target = str(labels.get("app") or labels.get("router") or labels.get("job") or labels.get("service") or "")
         bits = [name]
         if target:
             bits.append(target)

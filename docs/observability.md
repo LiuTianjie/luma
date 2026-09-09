@@ -11,8 +11,10 @@ are not application availability.
 Application HTTP 5xx, Nomad failed allocations and restart storms are an
 optional [`observe/`](../observe/) Compose app. Deploy it with Luma; skip it
 and Control still runs. Operators look at Dashboard → Observability → Apps,
-which embeds Grafana at `/grafana` on the Control domain. The stack uses host
-networking and loopback listeners (`127.0.0.1:8082` Prometheus,
+which embeds Grafana at `/grafana` on the Control domain. HTTP and Nomad series are labeled with the Luma app/stack name as soon as
+observe is deployed; applications do not opt in. Failed gauges are the
+allocations Nomad still wants to run, not lifetime failure counters.
+The stack uses host networking and loopback listeners (`127.0.0.1:8082` Prometheus,
 `127.0.0.1:4318` OTLP). Control uses host networking and queries `http://127.0.0.1:8428` when observe is present. Grafana on `127.0.0.1:3100`
 is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite
 is not on this path.
@@ -20,7 +22,7 @@ is not on this path.
 Deploy from `observe/` with `luma build local . --platform linux/amd64 --env .env`.
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
 so RED rules have a scrape target. Operators look at Dashboard → Observability → Apps.
-The charts are Traefik per-router HTTP and Nomad job health, not each container's `/metrics`.
+The charts are per Luma app (Traefik HTTP + Nomad health), not each container's `/metrics`.
 Do not ship raw access logs or traces off the manager public interface.
 
 ## Dashboard and logs

@@ -12,7 +12,7 @@ Do not add log scanners, OTLP receivers, or app 5xx rules to Control.
 ## When to use
 
 - Deploy, update, or debug `luma-observe`
-- Application-level alerts (HTTP 5xx, Nomad failed/restarts)
+- Application-level alerts (HTTP 5xx, Nomad failed/restarts) labeled by Luma app name automatically
 - Traefik Prometheus/OTLP loopback listeners
 - Questions about auto-instrumentation or an observe SDK
 
@@ -28,8 +28,9 @@ Do not use this skill for Dashboard node CPU/disk presets, Nomad job YAML for or
 - Auto-instrumentation is opt-in later via official OTel env vars. Do not create a Luma telemetry SDK.
 - Fail open: Collector/Feishu down must not block user requests.
 
-Operators look at Dashboard → Observability → Apps. That tab is luma-observe
-data (Traefik HTTP + Nomad jobs), not Control node CPU and not container /metrics.
+Operators look at Dashboard → Observability → Apps. Traefik routers and Nomad
+jobs are mapped to Luma app/stack names by observe itself. Do not ask apps to
+add labels, sidecars, or a Luma SDK for this view.
 
 ## Deploy
 
