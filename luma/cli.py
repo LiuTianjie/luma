@@ -35,6 +35,8 @@ from .envfile import load_env_file, parse_env_file
 from .errors import LumaError
 from .io import dump_yaml, write_yaml
 from .installer import luma_installer_command
+from .installation import runtime_record, installer_environment, installation_diagnostics
+from .node_readiness import wait_for_node_readiness
 from .local import LocalExecutor
 from .manager import manager_ip_change
 from .profiles import PROFILES
@@ -209,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
             "when local manager state exists; "
             "clients and workers update CLI only."
         ),
-        epilog="Examples: luma update | luma update --install-ref v0.1.316 | luma update manager --domain luma.example.com",
+        epilog="Examples: luma update | luma update --install-ref v0.1.317 | luma update manager --domain luma.example.com",
     )
     _add_update_manager_arguments(update)
     _add_control_arguments(update)
@@ -227,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="Check authentication and remote Control/node readiness")
     _add_control_arguments(doctor)
     _add_output_arguments(doctor)
+    doctor.add_argument("--local", action="store_true", help="Inspect local installation identity and dependency policy without contacting Control or changing state")
     doctor.add_argument("--deep", action="store_true", help="Run slower live checks")
 
     manager_ops = sub.add_parser("manager", help="Manager recovery and maintenance operations")
@@ -1372,7 +1375,13 @@ def cmd_node(args: argparse.Namespace) -> int:
             )
             print("[ok] Luma node agent installed")
         else:
-            print("[skip] Luma node agent not installed: manager control API did not return node agent credentials; update the manager first")
+            raise LumaError("Node join incomplete: Control did not issue agent credentials. Update the manager, then rerun node join; the registered node was not removed.")
+        print("[start] Verify node agent heartbeat with Control")
+        verification = wait_for_node_readiness(
+            ControlClient(args.endpoint, agent_token, insecure=args.insecure, resolve_ip=args.resolve_ip),
+            node_name=str(label_result.get("nodeName") or args.name), node_id=actual_node_id,
+        )
+        print(f"[ok] Node agent ready: {verification.get('agentVersion') or 'unknown version'}")
         print("Node join complete")
         return 0
     if args.node_command == "exit":
@@ -2170,6 +2179,10 @@ def _run_luma_installer(*, install_ref: str | None = None, skip_node_agent_refre
     env = os.environ.copy()
     command, exact_ref = luma_installer_command(install_ref, environ=env)
     env["LUMA_INSTALL_REF"] = exact_ref
+    try:
+        env = installer_environment(env, runtime_record())
+    except (ValueError, OSError) as exc:
+        raise LumaError(f"Cannot prepare Luma installation: {exc}") from exc
     # A manager update can be launched from the root-owned node-agent terminal
     # even though the supported Luma installation belongs to the operator. Keep
     # the running executable's layout instead of silently creating /root/.local
@@ -2237,7 +2250,9 @@ def _start_detached_manager_update(args: argparse.Namespace) -> int:
             "LUMA_BIN_DIR",
             "LUMA_INSTALL_OWNER",
             "LUMA_PIP_BUILD_ISOLATION",
-            "PIP_NO_INDEX",
+            "LUMA_PIP_INDEX_URL",
+            "LUMA_PIP_WHEELHOUSE",
+            "LUMA_PIP_CA_BUNDLE",
         )
         invocation = [
             "systemd-run",
@@ -2291,7 +2306,19 @@ def _manager_update_needs_transient_unit() -> bool:
 
 
 def _reexec_after_luma_update() -> None:
-    command = _current_luma_command()
+    # Managed updates preserve the old interpreter/source. Re-running sys.argv
+    # or python -m would therefore execute the old release, not the candidate.
+    try:
+        identity = runtime_record()
+    except (ValueError, OSError) as exc:
+        raise LumaError(f"Cannot restart the updated Luma installation: {exc}") from exc
+    if identity:
+        shim = Path(identity["binDir"]) / "luma"
+        if not shim.is_file() or not os.access(shim, os.X_OK):
+            raise LumaError("Updated Luma command is unavailable; refusing to continue with the old runtime")
+        command = [str(shim)]
+    else:
+        command = _current_luma_command()
     if not command:
         print("[warn] Unable to re-exec updated Luma CLI; continuing in current process")
         return
@@ -4264,6 +4291,25 @@ def _control_node_records_for_local(args: argparse.Namespace, *, required: bool 
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
+    if getattr(args, "local", False):
+        result = installation_diagnostics()
+        if _output_format(args) != "text":
+            _print_success(args, result)
+        else:
+            print(f"Runtime: {result['runtime']}")
+            installation = result.get("installation") or {}
+            print(f"Installation: {installation.get('mode', 'development/unmanaged')}")
+            print(f"Install root: {installation.get('installHome', '-')}")
+            print(f"Command directory: {installation.get('binDir', '-')}")
+            policy = result.get("dependencyPolicy") or {}
+            print(f"Dependency source: {policy.get('wheelhouse') or policy.get('indexUrl') or 'invalid'}")
+            print("Host pip configuration: ignored by managed installation")
+            for check in result["checks"]:
+                print(f"{check['name']}: {'ok' if check['ok'] else 'fail'}")
+                if check.get("detail"):
+                    print(f"  {check['detail']}")
+            print("Local checks only; agent/Control health was not verified. Run luma doctor for remote checks.")
+        return 0 if result["healthy"] else 1
     checks: list[tuple[str, bool, str]] = []
     checks.append(("Control credentials", False, "Use --control-url and LUMA_DEPLOY_TOKEN, or run luma login"))
     try:

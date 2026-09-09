@@ -10,13 +10,13 @@ class InstallerRuntimeValidationTests(unittest.TestCase):
     def test_runtime_gate_precedes_shim_and_service_publication(self):
         script = (Path(__file__).resolve().parents[1] / 'scripts/install-luma.sh').read_text()
         gate = script.index('if ! validate_luma_runtime; then')
-        self.assertLess(gate, script.index('cat > "$BIN_DIR/luma"'))
+        self.assertLess(gate, script.index('mv -f "$shim_tmp" "$BIN_DIR/luma"'))
         self.assertLess(gate, script.rindex('    refresh_node_agent_service'))
 
     def test_runtime_failure_never_reaches_publication(self):
         script = (Path(__file__).resolve().parents[1] / 'scripts/install-luma.sh').read_text()
         start = script.index('validate_luma_runtime() {')
-        end = script.index('if [ "$LOCAL_CHECKOUT" -eq 0 ]; then\n  mkdir -p "$BIN_DIR"', start)
+        end = script.index('if [ "$LOCAL_CHECKOUT" -eq 0 ]; then', start)
         gate = script[start:end]
         for failure in ('import', 'cli', 'check', 'none'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
@@ -75,13 +75,16 @@ esac
 
     def test_shim_uses_the_validated_python_not_stale_console_entry(self):
         script = (Path(__file__).resolve().parents[1] / 'scripts/install-luma.sh').read_text()
-        start = script.index('  cat > "$BIN_DIR/luma" <<EOF')
-        end = script.index('\nEOF', start) + len('\nEOF')
+        import sys
+        from unittest.mock import patch
+        from luma import installation
+        import contextlib
+        import io
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bindir = root / 'shim'
             bindir.mkdir()
-            runtime = root / 'venv'
+            runtime = root / 'venv with spaces'
             (runtime / 'bin').mkdir(parents=True)
             python = runtime / 'bin/python'
             python.write_text('#!/bin/sh\nprintf "validated-python:%s\\n" "$*"\n')
@@ -89,11 +92,11 @@ esac
             stale = runtime / 'bin/luma'
             stale.write_text('#!/bin/sh\necho WRONG-ENVIRONMENT\nexit 99\n')
             stale.chmod(0o755)
-            subprocess.run(['sh', '-c', script[start:end]], check=True,
-                           env={**os.environ, 'SOURCE_DIR': tmp, 'BIN_DIR': str(bindir),
-                                'VENV_DIR': str(runtime)})
-            result = subprocess.run(['sh', str(bindir / 'luma'), 'node-agent', 'run', '--help'],
-                                    text=True, capture_output=True)
+            out = io.StringIO()
+            with patch.object(sys, 'prefix', str(runtime)), patch.object(sys, 'argv', ['installation.py', 'shim']), patch.dict(os.environ, {'SOURCE_DIR': tmp}), contextlib.redirect_stdout(out):
+                self.assertEqual(installation.main(), 0)
+            (bindir / 'luma').write_text(out.getvalue())
+            result = subprocess.run(['sh', str(bindir / 'luma'), 'node-agent', 'run', '--help'], text=True, capture_output=True)
             self.assertEqual(result.returncode, 0)
             self.assertIn('validated-python:-m luma.cli node-agent run --help', result.stdout)
             self.assertNotIn('WRONG-ENVIRONMENT', result.stdout)

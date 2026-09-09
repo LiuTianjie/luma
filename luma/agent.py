@@ -40,6 +40,7 @@ from .builder_executor import (
 from .errors import LumaError
 from .builder_storage import execution_guard as builder_storage_execution_guard
 from .installer import luma_installer_command
+from .installation import runtime_record, installer_environment
 from .local import LocalExecutor, LocalResult
 from .registry_management import RegistryHttpClient, validate_digest, validate_repository
 from .service import slugify
@@ -1262,6 +1263,12 @@ def _install_layout_from_executable(executable: str) -> tuple[Path, Path, Path] 
 
 
 def _current_install_layout() -> tuple[Path, Path, Path] | None:
+    try:
+        record = runtime_record()
+    except (ValueError, OSError) as exc:
+        raise LumaError(f"Invalid Luma installation identity: {exc}") from exc
+    if record:
+        return tuple(Path(record[key]) for key in ("userHome", "installHome", "binDir"))
     for executable in (_current_executable(), shutil.which("luma") or ""):
         layout = _install_layout_from_executable(executable)
         if layout:
@@ -4409,6 +4416,13 @@ def update_luma_install(
         env["no_proxy"] = no_proxy_value
     command, exact_ref = luma_installer_command(install_ref, environ=env)
     env["LUMA_INSTALL_REF"] = exact_ref
+    try:
+        env = installer_environment(env, runtime_record())
+    except (ValueError, OSError) as exc:
+        raise LumaError(f"Cannot prepare Luma installation: {exc}") from exc
+    # This function owns service refresh. The bootstrap must not also schedule
+    # a restart which can kill the in-flight agent task before result reporting.
+    env["LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH"] = "1"
     layout = _current_install_layout()
     if layout:
         user_home, install_home, bin_dir = layout

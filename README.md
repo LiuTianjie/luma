@@ -74,7 +74,7 @@ A public `cn-edge` domain does not bypass the server and jump directly to a cont
 For CI runners, install the published Python package. It provides the `luma` command without running the shell installer:
 
 ```bash
-python -m pip install "luma-infra==0.1.316"
+python -m pip install "luma-infra==0.1.317"
 ```
 
 Install without cloning the repository:
@@ -86,10 +86,14 @@ curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/instal
 
 The installer creates a private venv and writes the command shim to `~/.local/bin/luma`. You can use `~/.local/bin/luma` immediately, or open a new shell / run `exec $SHELL -l` before using the shorter `luma`.
 
+Managed-runtime identity, dependency-source policy and read-only `luma doctor --local` diagnostics are documented in [Installation lifecycle](docs/installation-lifecycle.md), including the current implementation and rollout limits.
+
+
 Install a tagged release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LiuTianjie/luma/main/scripts/install-luma.sh | LUMA_INSTALL_REF=v0.1.316 sh
+export LUMA_INSTALL_REF=v0.1.317
+curl -fsSL "https://raw.githubusercontent.com/LiuTianjie/luma/$LUMA_INSTALL_REF/scripts/install-luma.sh" -o /tmp/install-luma.sh && sh /tmp/install-luma.sh
 ```
 
 Develop from source:
@@ -344,7 +348,7 @@ luma deploy status.yaml
 In CI, pass the control endpoint and management token through environment variables instead of creating a login context:
 
 ```bash
-python -m pip install "luma-infra==0.1.316"
+python -m pip install "luma-infra==0.1.317"
 
 export LUMA_CONTROL_URL="https://luma.example.com"
 export LUMA_DEPLOY_TOKEN="$CI_LUMA_MANAGEMENT_TOKEN"

@@ -724,7 +724,7 @@ arguments:
 ## `luma doctor`
 
 ```text
-usage: luma doctor [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [--deep]
+usage: luma doctor [-h] [--control-context CONTROL_CONTEXT] [--control-url CONTROL_URL] [--token TOKEN] [--insecure] [--resolve-ip RESOLVE_IP] [--format {text,json,ndjson}] [--quiet] [--local] [--deep]
 
 arguments:
   -h, --help            show this help message and exit
@@ -739,6 +739,8 @@ arguments:
   --format {text,json,ndjson}
                         Output format
   --quiet               Print only the final result or error
+  --local               Inspect local installation identity and dependency policy without contacting
+                        Control or changing state
   --deep                Run slower live checks
 ```
 

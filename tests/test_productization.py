@@ -1291,8 +1291,8 @@ class ProductConfigTests(unittest.TestCase):
         self.assertIn("prune_stale_luma_metadata()", installer)
         self.assertIn('luma_infra-*.dist-info', installer)
         self.assertIn('expected="luma_infra-${source_version}.dist-info"', installer)
-        self.assertIn('PYTHONPATH="$SOURCE_DIR\\${PYTHONPATH:+:\\$PYTHONPATH}"', installer)
-        self.assertIn('exec "$VENV_DIR/bin/python" -m luma.cli', installer)
+        self.assertIn('"$SOURCE_DIR/luma/installation.py" shim > "$shim_tmp"', installer)
+        self.assertIn('mv -f "$shim_tmp" "$BIN_DIR/luma"', installer)
 
     def test_installer_refreshes_existing_node_agent_service_to_shim(self):
         root = Path(__file__).resolve().parents[1]
@@ -1336,7 +1336,7 @@ class ProductConfigTests(unittest.TestCase):
         )
         self.assertLess(
             installer.index("repair_install_ownership"),
-            installer.index('rm -rf "$INSTALL_HOME/src"'),
+            installer.index('CANDIDATE_DIR="$(mktemp -d'),
         )
 
     def test_public_port_guards_install_docker_user_proxy_guard(self):
@@ -3529,7 +3529,7 @@ class CliTests(unittest.TestCase):
                             "global-sg-1",
                         ]
                     )
-                self.assertEqual(code, 0)
+                self.assertEqual(code, 1)  # Missing agent credentials must not report a completed join.
                 client.register_node.assert_called_once_with(node_name="global-sg-1", region="global")
                 client.label_node.assert_called_once_with(
                     node_name="worker-1",
@@ -3617,7 +3617,7 @@ class CliTests(unittest.TestCase):
                             "home-mac-mini",
                         ]
                     )
-                self.assertEqual(code, 0)
+                self.assertEqual(code, 1)  # Missing agent credentials must not report a completed join.
                 client.register_node.assert_called_once_with(node_name="home-mac-mini", region="home")
                 client.label_node.assert_called_once_with(
                     node_name="docker-home",
@@ -3662,7 +3662,7 @@ class CliTests(unittest.TestCase):
                     "luma.cli._local_tailscale_ip", return_value="100.80.0.20"
                 ), patch(
                     "luma.cli._install_node_agent_from_token"
-                ) as install_agent:
+                ) as install_agent, patch("luma.cli.wait_for_node_readiness", return_value={"agentVersion": "test"}) as verify:
                     code = main(
                         [
                             "node",
@@ -3680,6 +3680,7 @@ class CliTests(unittest.TestCase):
                     )
 
                 self.assertEqual(code, 0)
+                verify.assert_called_once_with(client, node_name="bot", node_id="nomad-node-id")
                 client.register_node.assert_called_once_with(node_name="bot", region="global")
                 install_nomad.assert_called_once()
                 install_kwargs = install_nomad.call_args.kwargs

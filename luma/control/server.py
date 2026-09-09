@@ -412,6 +412,9 @@ def _issue_node_agent_token(state: Dict[str, Any], node_name: str, *, node_id: s
     agent.update(
         {
             "tokenHash": _hash_agent_token(token),
+            # Keep existing liveness for compatibility, but a rejoin must prove
+            # a heartbeat authenticated with this new credential generation.
+            "joinVerified": False,
             "status": str(agent.get("status") or "provisioned"),
             "updatedAt": int(time.time()),
         }
@@ -480,6 +483,7 @@ def _update_agent_heartbeat(
     agent.update(
         {
             "status": "online",
+            "joinVerified": True,
             "lastSeen": int(time.time()),
             "os": str(body.get("os") or agent.get("os") or ""),
             "arch": str(body.get("arch") or agent.get("arch") or ""),
@@ -2651,6 +2655,24 @@ def handle_node_agent_lease(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
     entry = _node_record_entry_for_name_or_id(state.get("nodes") if isinstance(state.get("nodes"), dict) else {}, node_name, node_id)
     _record_metrics_history(entry[0] if entry else node_name, body, config=config, state=state)
     return {"task": leased}
+
+
+def handle_node_agent_readiness(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Read-only and scoped to this node's agent credential; never makes it ready."""
+    node_name = str(body.get("nodeName") or "").strip()
+    node_id = str(body.get("nodeId") or "").strip()
+    if not node_name or not node_id:
+        raise LumaError("nodeName and nodeId are required")
+    state = load_runtime_state()
+    canonical, record = _require_node_agent_token_entry(state, token, node_name, node_id=node_id)
+    agent = _node_agent_record(record)
+    ready = bool(agent.get("joinVerified")) and _node_agent_is_ready(record)
+    return {
+        "nodeName": canonical, "nodeId": node_id, "ready": ready,
+        "agentVersion": str(agent.get("version") or ""),
+        "lastSeen": int(agent.get("lastSeen") or 0),
+        "reason": "" if ready else "waiting for a fresh heartbeat using the current agent credentials",
+    }
 
 
 def handle_node_agent_heartbeat(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -18924,6 +18946,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/node-agent/lease":
                 self._json(200, handle_node_agent_lease(token, body))
                 return
+            if self.path == "/v1/node-agent/readiness":
+                self._json(200, handle_node_agent_readiness(token, body))
+                return
             if self.path == "/v1/node-agent/heartbeat":
                 self._json(200, handle_node_agent_heartbeat(token, body))
                 return
@@ -20002,6 +20027,7 @@ async def _asgi_authenticated_post(request: Request) -> Response:
             "/v1/nodes/nomad-join": handle_node_nomad_join,
             "/v1/nodes/agent-token": handle_node_agent_token,
             "/v1/node-agent/lease": handle_node_agent_lease,
+            "/v1/node-agent/readiness": handle_node_agent_readiness,
             "/v1/node-agent/heartbeat": handle_node_agent_heartbeat,
             "/v1/node-agent/tasks/complete": handle_node_agent_complete,
             "/v1/node-agent/tasks/progress": handle_node_agent_progress,

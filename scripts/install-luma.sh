@@ -197,19 +197,51 @@ download_source() {
     echo "Downloaded archive did not contain a source directory." >&2
     exit 1
   fi
-  rm -rf "$INSTALL_HOME/src"
-  cp -R "$extracted" "$INSTALL_HOME/src"
+  # Never replace source imported by the running agent. Create the candidate at
+  # its final path (Python venv console scripts contain absolute shebangs).
+  mkdir -p "$INSTALL_HOME/releases"
+  CANDIDATE_DIR="$(mktemp -d "$INSTALL_HOME/releases/candidate.XXXXXXXX")"
+  cp -R "$extracted" "$CANDIDATE_DIR/src"
   rm -rf "$tmp_dir"
-  SOURCE_DIR="$INSTALL_HOME/src"
+  SOURCE_DIR="$CANDIDATE_DIR/src"
 }
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "Python 3.9+ and venv support are required before installing Luma." >&2
+  exit 1
+fi
+
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
+  # Serialize standalone CLI and agent-driven installers on the installation,
+  # not on a user HOME. flock releases automatically even on process failure.
+  mkdir -p "$INSTALL_HOME"
+  repair_install_ownership
+  # Keep the open file description in this shell. Python only acquires flock
+  # on the inherited descriptor: no re-exec, so curl | sh works as well.
+  # Append mode does not truncate a pre-existing lock target before validation.
+  exec 9>> "$INSTALL_HOME/.installer.lock"
+  python3 - "$INSTALL_HOME/.installer.lock" <<'PYLOCK'
+import fcntl, os, stat, sys
+path_info = os.lstat(sys.argv[1])
+fd_info = os.fstat(9)
+if (not stat.S_ISREG(path_info.st_mode)
+        or (path_info.st_dev, path_info.st_ino) != (fd_info.st_dev, fd_info.st_ino)):
+    sys.exit("Luma installer lock must be a regular, non-symlink file")
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    sys.exit("Another Luma installation is in progress; wait for that operation.")
+PYLOCK
+  if [ -n "${LUMA_VENV_DIR:-}" ]; then
+    echo "LUMA_VENV_DIR is only supported for development checkouts; managed installs use isolated candidates." >&2
+    exit 1
+  fi
   download_source
 fi
 
 cd "$SOURCE_DIR"
 
-if [ -f .env ]; then
+if [ "$LOCAL_CHECKOUT" -eq 1 ] && [ -f .env ]; then
   set -a
   # shellcheck disable=SC1091
   . ./.env
@@ -324,7 +356,7 @@ if [ "$LOCAL_CHECKOUT" -eq 1 ]; then
   VENV_DIR="${LUMA_VENV_DIR:-$SOURCE_DIR/.venv}"
   INSTALL_MODE="-e"
 else
-  VENV_DIR="${LUMA_VENV_DIR:-$INSTALL_HOME/venv}"
+  VENV_DIR="$CANDIDATE_DIR/venv"
   INSTALL_MODE=""
 fi
 
@@ -338,9 +370,24 @@ if ! python3 -m venv "$VENV_DIR"; then
     exit 1
   fi
 fi
+# A caller's Python path must not supply missing candidate dependencies.
+unset PYTHONHOME PYTHONPATH
+export PYTHONNOUSERSITE=1
 . "$VENV_DIR/bin/activate"
-python -m pip install --upgrade pip || echo "[warn] pip upgrade failed; continuing with existing pip"
-python -m pip install --upgrade "setuptools>=77" wheel || echo "[warn] build backend install failed; continuing with existing build backend"
+export SOURCE_DIR INSTALL_HOME BIN_DIR LUMA_USER_HOME
+# One dependency policy for bootstrap, CLI and Dashboard. Do not inherit host
+# pip.conf/PIP_EXTRA_INDEX_URL/trusted-host settings in the managed runtime.
+pip() {
+  "$VENV_DIR/bin/python" "$SOURCE_DIR/luma/installation.py" pip "$@"
+}
+pip install --upgrade pip || echo "[warn] pip upgrade failed; continuing with existing pip"
+if ! pip install --upgrade "setuptools>=77" wheel; then
+  if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
+    echo "Luma dependency preparation failed (build backend); old runtime and entry unchanged. Set LUMA_PIP_INDEX_URL or LUMA_PIP_WHEELHOUSE to a reachable approved source." >&2
+    exit 1
+  fi
+  echo "[warn] build backend install failed; continuing with existing build backend"
+fi
 
 pip_install_luma() {
   set +e
@@ -375,6 +422,10 @@ else
   fi
 fi
 if [ "$INSTALL_SUCCEEDED" -eq 0 ]; then
+  if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
+    echo "Luma dependency preparation failed (package); old runtime and entry unchanged. Inspect the configured dependency source and candidate log." >&2
+    exit 1
+  fi
   echo "[warn] package install failed; using source checkout with existing venv dependencies"
 else
   prune_stale_luma_metadata
@@ -396,14 +447,16 @@ if ! validate_luma_runtime; then
 fi
 
 if [ "$LOCAL_CHECKOUT" -eq 0 ]; then
+  # Persist the final intended owner, including root preparing an operator's runtime.
+  if [ -n "$OWNER_SPEC" ]; then
+    chown -R "$OWNER_SPEC" "$CANDIDATE_DIR"
+  fi
+  "$VENV_DIR/bin/python" "$SOURCE_DIR/luma/installation.py" record
   mkdir -p "$BIN_DIR"
-  cat > "$BIN_DIR/luma" <<EOF
-#!/usr/bin/env sh
-PYTHONPATH="$SOURCE_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
-export PYTHONPATH
-exec "$VENV_DIR/bin/python" -m luma.cli "\$@"
-EOF
-  chmod +x "$BIN_DIR/luma"
+  shim_tmp="$(mktemp "$BIN_DIR/.luma.XXXXXXXX")"
+  "$VENV_DIR/bin/python" "$SOURCE_DIR/luma/installation.py" shim > "$shim_tmp"
+  chmod 755 "$shim_tmp"
+  mv -f "$shim_tmp" "$BIN_DIR/luma"
   ensure_path
   if [ "${LUMA_SKIP_NODE_AGENT_SERVICE_REFRESH:-0}" = "1" ]; then
     echo "Luma node agent service refresh deferred"
