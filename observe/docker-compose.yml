@@ -118,6 +118,30 @@ services:
         limits:
           memory: 96M
 
+
+  host-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: luma-observe-python:local
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - victoria
+    command: ["/app/host_gateway.py"]
+    environment:
+      LUMA_OBSERVE_UPSTREAM_HOST: "127.0.0.1"
+      LUMA_OBSERVE_UPSTREAM_PORT: "8428"
+      LUMA_OBSERVE_PORT: "8428"
+      LUMA_OBSERVE_GATEWAY_IFACES: "nomad,docker0"
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+        limits:
+          memory: 64M
+
   grafana:
     build:
       context: .

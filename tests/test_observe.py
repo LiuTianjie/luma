@@ -119,6 +119,7 @@ class RepoManifestTests(unittest.TestCase):
         self.assertNotIn("Networks", job["TaskGroups"][0])
         names = {task["Name"] for task in job["TaskGroups"][0]["Tasks"]}
         self.assertIn("grafana", names)
+        self.assertIn("host-gateway", names)
         self.assertTrue(all(task["Config"].get("network_mode") == "host" for task in job["TaskGroups"][0]["Tasks"]))
         victoria = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "victoria")
         self.assertEqual(victoria["Config"]["mount"][0]["source"], "/srv/luma/data/luma-observe/victoria")
@@ -188,3 +189,16 @@ class FeishuWebhookTests(unittest.TestCase):
         webhook = load_observe("feishu_webhook.py", "feishu_webhook")
         with patch.dict("os.environ", {"FEISHU_WEBHOOK_URL": "", "FEISHU_APP_ID": ""}, clear=False):
             self.assertEqual(webhook.deliver({"status": "firing", "alerts": []}), "skipped")
+
+
+class HostGatewayTests(unittest.TestCase):
+    def test_skips_loopback_and_unknown_ifaces(self):
+        gateway = load_observe("host_gateway.py", "host_gateway")
+        with patch.object(gateway, "ipv4_of_interface", side_effect=lambda name: "127.0.0.1" if name == "lo" else None):
+            self.assertEqual(gateway.gateway_bind_ips(["lo", "missing"]), [])
+
+    def test_binds_nomad_then_docker0(self):
+        gateway = load_observe("host_gateway.py", "host_gateway")
+        with patch.object(gateway, "ipv4_of_interface", side_effect=lambda name: {"nomad": "172.26.64.1", "docker0": "172.17.0.1"}.get(name)):
+            self.assertEqual(gateway.gateway_bind_ips(["nomad", "docker0"]), ["172.26.64.1", "172.17.0.1"])
+

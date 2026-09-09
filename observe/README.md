@@ -39,7 +39,7 @@ as soon as this stack is running.
 | --- | --- |
 | 8082 | Traefik Prometheus |
 | 4318 / 4317 | Collector OTLP HTTP / gRPC |
-| 8428 | VictoriaMetrics |
+| 8428 | VictoriaMetrics on 127.0.0.1; host-gateway also binds Nomad/docker0 so Control can scrape |
 | 8880 | vmalert |
 | 9093 | Alertmanager |
 | 9107 | nomad-exporter |
@@ -47,3 +47,6 @@ as soon as this stack is running.
 | 3000 | Grafana on 127.0.0.1 only |
 
 Do not publish these on `0.0.0.0` or the public NIC.
+Control is a Nomad-bridge container, so `host-gateway` proxies 8428 onto the
+`nomad`/`docker0` bridge IPs only. Operators still use Dashboard → 可观测性 → 应用.
+Do not open Grafana or VictoriaMetrics on Tailscale or the public IP.

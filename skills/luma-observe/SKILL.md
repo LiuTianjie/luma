@@ -22,7 +22,7 @@ Do not use this skill for Dashboard node CPU/disk presets, Nomad job YAML for or
 
 - Pin the stack to the Traefik node (`node: manager` on this cluster).
 - Every Compose service uses `network_mode: host` and `exposure: none`.
-- Collectors bind `127.0.0.1` only. Never publish 4318/8082/8428 on the public NIC.
+- Collectors bind `127.0.0.1` only, except VictoriaMetrics which is also proxied to the Nomad/docker0 bridge so Control can read it. Never publish 4318/8082/8428/3000 on eth0 or Tailscale.
 - Look at Dashboard → Observability → Apps. Do not open Grafana on a Tailscale/public IP.
 - Alert evaluation is vmalert + Alertmanager + optional Feishu webhook.
 - Auto-instrumentation is opt-in later via official OTel env vars. Do not create a Luma telemetry SDK.

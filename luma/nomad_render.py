@@ -17,10 +17,14 @@ Exposure mapping:
   - none : worker, no service/port unless the manifest declares one.
 """
 
+import fcntl
 import hashlib
+import ipaddress
 import json
 import math
 import re
+import socket
+import struct
 import urllib.parse
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, Mapping, Sequence
@@ -267,6 +271,44 @@ def _control_job_lae_config(name: str, value: str) -> str:
             raise LumaError(f"{name} is invalid")
         return candidate
     raise LumaError(f"{name} is not an allowlisted LAE Control setting")
+
+
+
+def _ipv4_of_interface(name: str) -> str | None:
+    """Return the IPv4 address of a Linux host interface, if present."""
+    if not name or any(character in name for character in ("\0", "/", " ")):
+        return None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            encoded = struct.pack("256s", name.encode("ascii")[:15])
+            raw = fcntl.ioctl(sock.fileno(), 0x8915, encoded)  # SIOCGIFADDR
+        finally:
+            sock.close()
+    except (OSError, UnicodeEncodeError, struct.error):
+        return None
+    candidate = socket.inet_ntoa(raw[20:24])
+    try:
+        parsed = ipaddress.IPv4Address(candidate)
+    except ipaddress.AddressValueError:
+        return None
+    if parsed.is_loopback or parsed.is_unspecified or parsed.is_multicast:
+        return None
+    return str(parsed)
+
+
+def control_host_gateway_ip() -> str | None:
+    """Host IP reachable from a Nomad-bridge Control container.
+
+    Control uses Nomad CNI (`nomad` bridge), not Docker's default `docker0`.
+    Nomad extra_hosts only accepts a real IPv4, never Docker Compose's
+    ``host-gateway`` token.
+    """
+    for name in ("nomad", "docker0"):
+        address = _ipv4_of_interface(name)
+        if address:
+            return address
+    return None
 
 
 def control_job_environment(values: Mapping[str, str] | None) -> Dict[str, str]:
@@ -843,6 +885,9 @@ def render_control_job(
         "LUMA_CONTROL_STATE_DIR": "/opt/luma/control",
         **control_job_environment(control_environment),
     }
+    gateway_ip = control_host_gateway_ip()
+    if gateway_ip:
+        environment.setdefault("LUMA_OBSERVE_URL", f"http://{gateway_ip}:8428")
     job = {
         "ID": "luma-control",
         "Name": "luma-control",
@@ -880,7 +925,6 @@ def render_control_job(
                 "Config": {
                     "image": image,
                     "ports": ["http"],
-                    "extra_hosts": ["host.docker.internal:host-gateway"],
                     # Keep the complete Luma state tree on one bind mount.  Route
                     # files are staged in /opt/luma/.luma-route-staging and then
                     # renamed into /opt/luma/routes; separate nested bind mounts

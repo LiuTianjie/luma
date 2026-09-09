@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from luma.config import LumaConfig
 from luma.errors import LumaError
@@ -578,8 +579,27 @@ port: 3000
         self.assertIn("/var/run/docker.sock", sources)
         self.assertIn("/opt/luma", sources)
         self.assertNotIn("/opt/luma/control", sources)
-        self.assertEqual(task["Config"].get("extra_hosts"), ["host.docker.internal:host-gateway"])
+        self.assertNotIn("extra_hosts", task["Config"])
+        self.assertNotIn("host-gateway", str(task["Config"]))
         self.assertNotIn("/opt/luma/routes", sources)
+
+    def test_control_job_observe_url_uses_real_bridge_ip(self):
+        from luma.nomad_render import render_control_job
+        with patch("luma.nomad_render.control_host_gateway_ip", return_value="172.26.64.1"):
+            job = render_control_job(image="ghcr.io/example/luma-control:test", node_name="manager", as_json=False)["Job"]
+        env = job["TaskGroups"][0]["Tasks"][0]["Env"]
+        config = job["TaskGroups"][0]["Tasks"][0]["Config"]
+        self.assertEqual(env.get("LUMA_OBSERVE_URL"), "http://172.26.64.1:8428")
+        self.assertNotIn("extra_hosts", config)
+        self.assertNotIn("host-gateway", str(config))
+
+    def test_control_job_starts_without_observe_gateway(self):
+        from luma.nomad_render import render_control_job
+        with patch("luma.nomad_render.control_host_gateway_ip", return_value=None):
+            job = render_control_job(image="ghcr.io/example/luma-control:test", node_name="manager", as_json=False)["Job"]
+        env = job["TaskGroups"][0]["Tasks"][0]["Env"]
+        self.assertNotIn("LUMA_OBSERVE_URL", env)
+        self.assertNotIn("extra_hosts", job["TaskGroups"][0]["Tasks"][0]["Config"])
 
     def test_control_job_only_forwards_allowlisted_lae_file_url_and_timeout_values(self):
         canary = "inline-control-secret-must-not-enter-job"
