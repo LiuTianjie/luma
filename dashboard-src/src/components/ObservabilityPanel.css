@@ -52,5 +52,6 @@
 .grafana-embed .grafana-toolbar { align-items: center; }
 .grafana-view-switch { display:flex; gap:4px; }
 .grafana-view-switch button[aria-selected="true"] { color: var(--text); border-bottom: 2px solid var(--accent); }
+.grafana-embed .grafana-app-filter { width: auto; min-width: 140px; max-width: 220px; }
 .grafana-embed iframe { width: 100%; height: 100%; border: 0; border-radius: 12px; background: #111827; }
 .grafana-embed > small, .grafana-embed .grafana-toolbar > small { color: var(--text-muted); }

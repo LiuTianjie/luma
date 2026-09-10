@@ -3,7 +3,7 @@
   "title": "Traces",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "refresh": "30s",
   "tags": [
     "luma-observe",
@@ -25,7 +25,7 @@
         "query": "label_values(luma_observe_router_app, app)",
         "includeAll": true,
         "multi": false,
-        "allValue": ".*",
+        "allValue": ".+",
         "current": {
           "text": "All",
           "value": "$__all"
@@ -38,9 +38,9 @@
     {
       "id": 1,
       "type": "table",
-      "title": "Recent traces",
+      "title": "Ingress traces (Traefik)",
       "gridPos": {
-        "h": 16,
+        "h": 10,
         "w": 24,
         "x": 0,
         "y": 0
@@ -66,7 +66,43 @@
           },
           "queryType": "traceql",
           "tableType": "traces",
-          "query": "{ resource.service.name = \"traefik\" || resource.luma.stack =~ \"$app\" }",
+          "query": "{ resource.service.name = \"traefik\" }",
+          "limit": 20
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "App traces",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "tableType": "traces",
+          "query": "{ resource.luma.stack =~ \"$app\" }",
           "limit": 20
         }
       ]

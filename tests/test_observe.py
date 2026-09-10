@@ -290,12 +290,21 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("uid: tempo", sources)
         dashboard = json.loads((ROOT / "observe" / "grafana" / "dashboards" / "traces.json").read_text(encoding="utf-8"))
         self.assertEqual(dashboard["uid"], "luma-traces")
-        panel = dashboard["panels"][0]
-        self.assertEqual(panel["type"], "table")
-        query = panel["targets"][0]["query"]
-        self.assertEqual(panel["targets"][0]["tableType"], "traces")
-        self.assertIn("resource.service.name = \"traefik\"", query)
-        self.assertIn("resource.luma.stack", query)
+        ingress, apps = dashboard["panels"]
+        self.assertEqual(ingress["type"], "table")
+        self.assertEqual(ingress["targets"][0]["tableType"], "traces")
+        self.assertIn("resource.service.name = \"traefik\"", ingress["targets"][0]["query"])
+        self.assertNotIn("$app", ingress["targets"][0]["query"])
+        self.assertIn('resource.luma.stack =~ "$app"', apps["targets"][0]["query"])
+
+    def test_apps_traces_tab_embeds_tempo_explore_without_kiosk(self):
+        text = (ROOT / "dashboard-src" / "src" / "components" / "ObserveAppsPanel.tsx").read_text(encoding="utf-8")
+        self.assertIn("/grafana/explore?orgId=1&schemaVersion=1&panes=", text)
+        self.assertNotRegex(text, r"explore\?[^\"'\s]*kiosk")
+        self.assertIn('queryType: "traceql"', text)
+        self.assertIn('uid: "tempo"', text)
+        self.assertIn("resource.luma.stack", text)
+        self.assertIn("grafana-app-filter", text)
 
 
 class GrafanaRouteTests(unittest.TestCase):
