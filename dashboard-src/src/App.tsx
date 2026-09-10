@@ -4,7 +4,7 @@ import type { ApplicationUpdateRequest } from "./components/ApplicationManagemen
 import { appToComposeDraft, serviceToDraft } from "./components/applicationModel";
 import { LoginPanel } from "./components/LoginPanel";
 import { Topbar } from "./components/Topbar";
-import { AppRoutes } from "./AppRoutes";
+import { AppRoutes, preloadPage } from "./AppRoutes";
 import { Sidebar } from "./Sidebar";
 import { nodePath, servicePath, terminalPath, updatePath, parseObjectRoute } from "./objectRoutes";
 import { ResourceDetailPage } from "./pages/ResourceDetailPage";
@@ -23,6 +23,7 @@ const TerminalDrawer = lazy(() => import("./components/TerminalDrawer").then((mo
 
 const LANG_KEY = "luma.dashboard.lang";
 const SIDEBAR_KEY = "luma.dashboard.sidebar";
+const EMPTY_DASHBOARD_PAYLOAD = {};
 
 export function App() {
   const router = useRouter();
@@ -61,6 +62,13 @@ export function App() {
 
   const resolvedPage = pageForPath(router.path);
   const activeNavPage: NavPage = resolvedPage === "notfound" ? "overview" : resolvedPage;
+  // These pages fetch their own data and can render while the overview payload
+  // is still in flight. Keeping this gate narrow avoids making their first paint
+  // wait on nodes, services, metrics, and issue history.
+  const pageCanRenderWithoutDashboard = resolvedPage === "deployments"
+    || resolvedPage === "credentials"
+    || resolvedPage === "registry"
+    || resolvedPage === "lae";
 
   useEffect(() => {
     document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
@@ -146,6 +154,7 @@ export function App() {
         activeNavPage={activeNavPage}
         sidebarCollapsed={sidebarCollapsed}
         onNavigate={navigate}
+        onPrefetch={preloadPage}
         onToggle={toggleSidebar}
       />
 
@@ -172,7 +181,7 @@ export function App() {
           ) : (
             <>
               <ErrorBanner errors={errors} />
-              {payload ? (
+              {payload || pageCanRenderWithoutDashboard ? (
                 terminalTarget ? <Suspense fallback={<PageLoading lang={lang} />}><TerminalDrawer key={router.path} lang={lang} target={terminalTarget} token={token} onClose={closeTerminal} inline /></Suspense>
                 : objectRoute && objectRoute.kind !== "update" ? (routeNode || routeService ? <ResourceDetailPage lang={lang} node={routeNode} service={routeService} services={vm.services} applicationNames={vm.applications.map(app => app.stack)} onTerminal={() => { if (routeNode) openNodeTerminal(routeNode); else if (routeService) openServiceTerminal(routeService, routeService.stack || ""); }} />
                   : <section className="detail-page"><h1>{lang === "zh" ? "对象不存在或已移除" : "Object not found or removed"}</h1><button onClick={() => navigate("overview")}>{lang === "zh" ? "返回总览" : "Back to overview"}</button></section>)
@@ -182,7 +191,7 @@ export function App() {
                   lang={lang}
                   token={token}
                   theme={theme}
-                  payload={payload}
+                  payload={payload || EMPTY_DASHBOARD_PAYLOAD}
                   vm={vm}
                   updateContext={updateContext}
                   updateContextNode={updateContextNode}

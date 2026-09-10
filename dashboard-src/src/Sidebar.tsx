@@ -13,6 +13,7 @@ export function Sidebar({
   activeNavPage,
   sidebarCollapsed,
   onNavigate,
+  onPrefetch,
   onToggle,
 }: {
   lang: Lang;
@@ -20,6 +21,7 @@ export function Sidebar({
   activeNavPage: NavPage;
   sidebarCollapsed: boolean;
   onNavigate: (page: NavPage) => void;
+  onPrefetch?: (page: NavPage) => void;
   onToggle: () => void;
 }) {
   const groups: NavGroup[] = buildNavGroups(lang, vm);
@@ -71,6 +73,8 @@ export function Sidebar({
                     event.preventDefault();
                     onNavigate(item.id);
                   }}
+                  onPointerEnter={() => onPrefetch?.(item.id)}
+                  onFocus={() => onPrefetch?.(item.id)}
                 >
                   <Icon size={16} aria-hidden="true" />
                   <span>

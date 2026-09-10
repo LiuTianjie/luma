@@ -55,6 +55,12 @@ export type StorageClassesPayload = {
   storageClasses?: DashboardStorageClass[];
 };
 
+export type ControlResourcesPayload = SecretsPayload & RegistriesPayload & GitProvidersPayload & StorageClassesPayload;
+
+export async function fetchControlResources({ token, signal }: { token: string; signal?: AbortSignal }): Promise<ControlResourcesPayload> {
+  return apiGet<ControlResourcesPayload>("/v1/control-resources", token, signal);
+}
+
 export async function fetchSecrets({ token, signal }: { token: string; signal?: AbortSignal }): Promise<SecretsPayload> {
   return apiGet<SecretsPayload>("/v1/secrets", token, signal);
 }

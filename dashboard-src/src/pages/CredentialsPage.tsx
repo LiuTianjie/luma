@@ -2,10 +2,7 @@ import "./resourceWorkspaces.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, GitBranch, KeyRound, LockKeyhole, PackageCheck, ShieldCheck } from "lucide-react";
 import {
-  fetchGitProviders,
-  fetchRegistries,
-  fetchSecrets,
-  fetchStorageClasses,
+  fetchControlResources,
   removeGitProvider,
   removeRegistry,
   removeSecret,
@@ -169,17 +166,12 @@ export function CredentialsPage({
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const [secrets, registries, gitProviders, storage] = await Promise.all([
-        fetchSecrets({ token, signal }),
-        fetchRegistries({ token, signal }),
-        fetchGitProviders({ token, signal }),
-        fetchStorageClasses({ token, signal }),
-      ]);
+      const resources = await fetchControlResources({ token, signal });
       setState({
-        secrets: secrets.secrets || [],
-        registries: registries.registries || [],
-        gitProviders: gitProviders.providers || [],
-        storageClasses: storage.storageClasses || vm.storageClasses,
+        secrets: resources.secrets || [],
+        registries: resources.registries || [],
+        gitProviders: resources.providers || [],
+        storageClasses: resources.storageClasses || vm.storageClasses,
         loading: false,
         error: "",
       });

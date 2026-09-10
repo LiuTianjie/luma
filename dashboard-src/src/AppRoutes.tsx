@@ -7,11 +7,16 @@ import type { ResolvedPage } from "./routes";
 import type { DashboardNode, DashboardPayload, DashboardService, Lang } from "./types";
 import type { DashboardViewModel, NavPage } from "./dashboardViewModel";
 
-const ApplicationsPage = lazy(() => import("./pages/ApplicationsPage").then((module) => ({ default: module.ApplicationsPage })));
-const BuilderPage = lazy(() => import("./pages/BuilderPage").then((module) => ({ default: module.BuilderPage })));
-const DeploymentsPage = lazy(() => import("./pages/DeploymentsPage").then((module) => ({ default: module.DeploymentsPage })));
-const DeployPage = lazy(() => import("./pages/DeployPage").then((module) => ({ default: module.DeployPage })));
-const CredentialsPage = lazy(() => import("./pages/CredentialsPage").then((module) => ({ default: module.CredentialsPage })));
+const loadApplicationsPage = () => import("./pages/ApplicationsPage").then((module) => ({ default: module.ApplicationsPage }));
+const loadBuilderPage = () => import("./pages/BuilderPage").then((module) => ({ default: module.BuilderPage }));
+const loadDeploymentsPage = () => import("./pages/DeploymentsPage").then((module) => ({ default: module.DeploymentsPage }));
+const loadDeployPage = () => import("./pages/DeployPage").then((module) => ({ default: module.DeployPage }));
+const loadCredentialsPage = () => import("./pages/CredentialsPage").then((module) => ({ default: module.CredentialsPage }));
+const ApplicationsPage = lazy(loadApplicationsPage);
+const BuilderPage = lazy(loadBuilderPage);
+const DeploymentsPage = lazy(loadDeploymentsPage);
+const DeployPage = lazy(loadDeployPage);
+const CredentialsPage = lazy(loadCredentialsPage);
 const NodesPage = lazy(() => import("./pages/NodesPage").then((module) => ({ default: module.NodesPage })));
 const LaeAdminPage = lazy(() => import("./pages/LaeAdminPage").then((module) => ({ default: module.LaeAdminPage })));
 const NotFound = lazy(() => import("./pages/NotFound").then((module) => ({ default: module.NotFound })));
@@ -42,6 +47,19 @@ export type AppRoutesProps = {
   onCloseUpdate: () => void;
   onTemplateLandingChange: (isLanding: boolean) => void;
 };
+
+// Start route chunk downloads while the user is pointing at a destination. The
+// promise is cached by the module loader, so rendering the lazy component later
+// reuses the same request.
+export function preloadPage(page: NavPage): void {
+  const loader = page === "deployments" ? loadDeploymentsPage
+    : page === "credentials" ? loadCredentialsPage
+    : page === "applications" ? loadApplicationsPage
+    : page === "builder" ? loadBuilderPage
+    : page === "deploy" ? loadDeployPage
+    : null;
+  if (loader) void loader();
+}
 
 // Resolve the current page to its view. When an update request is active it takes over
 // the DeployPage in update mode, mirroring the pre-router `activePage === "update"` path.

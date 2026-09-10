@@ -13839,9 +13839,44 @@ def handle_storage_apply(token: str, body: Dict[str, Any], *, progress: Callable
 
 
 def handle_storage_list(token: str) -> Dict[str, Any]:
-    state = load_state()
+    state = load_auth_state()
     require_token(state, token, token_type="deploy")
     return {"storageClasses": _storage_classes_summary(state)}
+
+
+def handle_credentials_resources_list(token: str) -> Dict[str, Any]:
+    """Return all settings lists from one config-only state snapshot."""
+    state = load_auth_state()
+    require_token(state, token, token_type="deploy")
+    secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
+    scoped = state.get("scopedSecrets") if isinstance(state.get("scopedSecrets"), dict) else {}
+    secret_names = sorted(str(key) for key in secrets)
+    for scope, values in scoped.items():
+        if isinstance(values, dict):
+            secret_names.extend(f"{scope}/{key}" for key in sorted(str(key) for key in values))
+    registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
+    registry_items = [
+        {
+            "host": str(host),
+            "serverAddress": str(item.get("serverAddress") or host),
+            "username": str(item.get("username") or ""),
+            "configured": bool(item.get("username") and item.get("password")),
+        }
+        for host, item in sorted(registries.items())
+        if isinstance(item, dict)
+    ]
+    providers = state.get("gitProviders") if isinstance(state.get("gitProviders"), dict) else {}
+    provider_items = [
+        _git_provider_public_item(str(provider_id), item)
+        for provider_id, item in sorted(providers.items())
+        if isinstance(item, dict)
+    ]
+    return {
+        "secrets": sorted(secret_names),
+        "registries": registry_items,
+        "providers": provider_items,
+        "storageClasses": _storage_classes_summary(state),
+    }
 
 
 def handle_storage_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -14961,7 +14996,7 @@ def _validate_storage_class_record(name: str, item: Dict[str, Any], state: Dict[
 
 
 def handle_secret_list(token: str) -> Dict[str, Any]:
-    state = load_state()
+    state = load_auth_state()
     require_token(state, token, token_type="deploy")
     secrets = state.get("secrets") if isinstance(state.get("secrets"), dict) else {}
     scoped = state.get("scopedSecrets") if isinstance(state.get("scopedSecrets"), dict) else {}
@@ -15038,7 +15073,7 @@ def handle_secret_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def handle_registry_list(token: str) -> Dict[str, Any]:
-    state = load_state()
+    state = load_auth_state()
     require_token(state, token, token_type="deploy")
     registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
     items = []
@@ -15083,7 +15118,7 @@ def handle_registry_set(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def handle_registry_remove(token: str, body: Dict[str, Any]) -> Dict[str, Any]:
-    state = load_state()
+    state = load_auth_state()
     require_token(state, token, token_type="deploy")
     host = normalize_registry_host(str(body.get("host") or ""))
     registries = state.get("registries") if isinstance(state.get("registries"), dict) else {}
@@ -15248,7 +15283,7 @@ def _normalized_repository_item(provider: Dict[str, Any], raw: Dict[str, Any]) -
 
 
 def handle_git_provider_list(token: str) -> Dict[str, Any]:
-    state = load_state()
+    state = load_auth_state()
     require_token(state, token, token_type="deploy")
     providers = state.get("gitProviders") if isinstance(state.get("gitProviders"), dict) else {}
     items = []
@@ -15297,7 +15332,7 @@ def handle_git_provider_remove(token: str, body: Dict[str, Any]) -> Dict[str, An
     provider_id = str(body.get("id") or "").strip()
     if not provider_id:
         provider_id = _git_provider_id(str(body.get("type") or ""), str(body.get("account") or ""))
-    state = load_state()
+    state = load_auth_state()
     require_token(state, token, token_type="deploy")
     providers = state.get("gitProviders") if isinstance(state.get("gitProviders"), dict) else {}
     removed = bool(providers.get(provider_id))
@@ -18929,6 +18964,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             if parsed_path == "/v1/git-providers":
                 self._json(200, handle_git_provider_list(token))
                 return
+            if parsed_path == "/v1/control-resources":
+                self._json(200, handle_credentials_resources_list(token))
+                return
             git_repos_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories", parsed_path)
             if git_repos_match:
                 provider_id = urllib.parse.unquote(git_repos_match.group(1))
@@ -20003,6 +20041,8 @@ async def _asgi_authenticated_get(request: Request) -> Response:
             )
         if parsed_path == "/v1/git-providers":
             return _json_response(200, await run_in_threadpool(handle_git_provider_list, token))
+        if parsed_path == "/v1/control-resources":
+            return _json_response(200, await run_in_threadpool(handle_credentials_resources_list, token))
         git_repos_match = re.fullmatch(r"/v1/git-providers/([^/]+)/repositories", parsed_path)
         if git_repos_match:
             provider_id = urllib.parse.unquote(git_repos_match.group(1))
