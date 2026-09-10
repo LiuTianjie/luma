@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ReactNode } from "react";
 import type { ApplicationUpdateRequest } from "./components/ApplicationManagementPanel";
 import type { DeployUpdateContext } from "./pages/DeployPage";
+import { OverviewPage } from "./pages/OverviewPage";
 import { PageLoading } from "./pages/PageLoading";
 import type { ResolvedPage } from "./routes";
 import type { DashboardNode, DashboardPayload, DashboardService, Lang } from "./types";
@@ -15,7 +16,6 @@ const NodesPage = lazy(() => import("./pages/NodesPage").then((module) => ({ def
 const LaeAdminPage = lazy(() => import("./pages/LaeAdminPage").then((module) => ({ default: module.LaeAdminPage })));
 const NotFound = lazy(() => import("./pages/NotFound").then((module) => ({ default: module.NotFound })));
 const ObservabilityPage = lazy(() => import("./pages/ObservabilityPage").then((module) => ({ default: module.ObservabilityPage })));
-const OverviewPage = lazy(() => import("./pages/OverviewPage").then((module) => ({ default: module.OverviewPage })));
 const StoragePage = lazy(() => import("./pages/StoragePage").then((module) => ({ default: module.StoragePage })));
 const RegistryPage = lazy(() => import("./pages/RegistryPage").then((module) => ({ default: module.RegistryPage })));
 

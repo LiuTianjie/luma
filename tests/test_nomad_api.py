@@ -500,6 +500,72 @@ class NomadApiTests(unittest.TestCase):
             with self.assertRaises(LumaError):
                 nomad_api.revert_job(cfg(), {}, slug="app")
 
+    def test_status_summary_uses_node_list_without_per_node_gets(self):
+        fake = _FakeApi({
+            "GET /v1/status/leader": "192.0.2.10:4647",
+            "GET /v1/nodes": [
+                {
+                    "ID": "node-1",
+                    "Name": "iZexample",
+                    "Address": "192.0.2.10",
+                    "Status": "ready",
+                    "SchedulingEligibility": "eligible",
+                    "Drain": False,
+                }
+            ],
+            "GET /v1/node/node-1": Exception("per-node fetch should not run"),
+        })
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            summary = nomad_api.nomad_status_summary(cfg(), {})
+        self.assertTrue(summary["available"])
+        self.assertEqual(summary["nodes"][0]["hostname"], "iZexample")
+        self.assertEqual(summary["nodes"][0]["address"], "192.0.2.10")
+        self.assertTrue(summary["nodes"][0]["leader"])
+        self.assertFalse(any(path.startswith("/v1/node/") for _method, path, _body in fake.calls))
+
+    def test_services_summary_uses_cluster_allocation_list(self):
+        responses = {
+            "GET /v1/jobs": [
+                {
+                    "ID": "app",
+                    "Name": "app",
+                    "Type": "service",
+                    "Status": "running",
+                    "Meta": {"luma.region": "home"},
+                    "JobSummary": {"Summary": {"app": {"Running": 1}}},
+                }
+            ],
+            "GET /v1/allocations": [
+                {
+                    "ID": "alloc-1",
+                    "JobID": "app",
+                    "TaskGroup": "app",
+                    "DesiredStatus": "run",
+                    "ClientStatus": "running",
+                    "NodeName": "lab",
+                }
+            ],
+            "GET /v1/job/app": {
+                "ID": "app",
+                "Meta": {"luma.region": "home"},
+                "TaskGroups": [
+                    {
+                        "Name": "app",
+                        "Count": 1,
+                        "Tasks": [
+                            {"Name": "app", "Config": {"image": "app:latest"}, "Resources": {"CPU": 100, "MemoryMB": 256}},
+                        ],
+                    }
+                ],
+            },
+            "GET /v1/job/app/allocations": Exception("per-job allocations should not run"),
+        }
+        fake = _FakeApi(responses)
+        with mock.patch.object(nomad_api, "NomadApi", return_value=fake):
+            services = nomad_api.nomad_services_summary(cfg(), {})
+        self.assertEqual(services[0]["tasks"][0]["nodes"], ["lab"])
+        self.assertFalse(any(path.endswith("/allocations") and path.startswith("/v1/job/") for _method, path, _body in fake.calls))
+
     def test_services_summary_expands_compose_job_tasks(self):
         responses = {
             "GET /v1/jobs": [

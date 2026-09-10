@@ -3234,7 +3234,11 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     errors: list[str] = []
 
     engine = _require_nomad_engine(str(config.defaults.get("engine") or "nomad"))
-    nomad_summary = nomad_status_summary(config, state)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        status_future = pool.submit(nomad_status_summary, config, state)
+        services_future = pool.submit(nomad_services_summary, config, state)
+        nomad_summary = status_future.result()
+        nomad_services = services_future.result()
     raw_nodes = nomad_summary.get("nodes", [])
     if not isinstance(raw_nodes, list):
         raw_nodes = []
@@ -3244,7 +3248,7 @@ def handle_dashboard(token: str) -> Dict[str, Any]:
     nodes = _dashboard_nodes(registered_nodes, raw_nodes, terminal_nodes=TERMINAL_BROKER.connected_nodes())
 
     route_files = _dashboard_route_files(config, config_path, errors)
-    services = _dashboard_nomad_services(nomad_services_summary(config, state), route_files, state=state)
+    services = _dashboard_nomad_services(nomad_services, route_files, state=state)
     service_stats = _service_stats_by_name(registered_nodes, config=config, state=state)
     for service in services:
         _attach_service_actual_resources(service, service_stats.get(str(service.get("fullName") or ""), []))
@@ -16423,14 +16427,27 @@ def _dashboard_nodes(
 ) -> list[Dict[str, Any]]:
     merged: dict[str, Dict[str, Any]] = {}
     connected_terminals = terminal_nodes or set()
+    hostnames: dict[str, str] = {}
     for node in registered_nodes:
         name = str(node.get("name") or "")
         if not name:
             continue
         merged.setdefault(name, {})["registered"] = node
+        hostname = str(node.get("hostname") or "").strip()
+        if hostname:
+            hostnames.setdefault(hostname, name)
     for raw_node in raw_nodes:
         node = raw_node
-        name = str(node.get("lumaNode") or node.get("rawId") or node.get("id") or "")
+        hostname = str(node.get("hostname") or "").strip()
+        name = str(
+            node.get("lumaNode")
+            or hostnames.get(hostname)
+            or (hostname if hostname in merged else "")
+            or node.get("rawId")
+            or node.get("id")
+            or hostname
+            or ""
+        )
         if not name:
             continue
         merged.setdefault(name, {})["orchestrator"] = node

@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Mapping
 
 from .config import LumaConfig
@@ -852,7 +853,12 @@ def job_versions(config: LumaConfig, state: Dict[str, Any], *, slug: str) -> Lis
 
 
 def nomad_status_summary(config: LumaConfig, state: Dict[str, Any]) -> Dict[str, Any]:
-    """Cluster + node summary from Nomad for status/dashboard consumers."""
+    """Cluster + node summary from Nomad for status/dashboard consumers.
+
+    Uses the node list stub only. Per-node GETs used to run in series for Meta
+    (region / luma_node_name); the dashboard merges those from Control's
+    registered-node records by hostname instead.
+    """
     client = NomadApi(nomad_addr(config, state), token=_token(state))
     try:
         leader = client.request("GET", "/v1/status/leader")
@@ -867,22 +873,13 @@ def nomad_status_summary(config: LumaConfig, state: Dict[str, Any]) -> Dict[str,
         if not isinstance(n, dict):
             continue
         node_addr = str(n.get("Address") or "")
-        region, luma_name = "", ""
-        try:
-            detail = client.request("GET", f"/v1/node/{_q(str(n.get('ID')))}")
-            meta = detail.get("Meta") if isinstance(detail, dict) else None
-            if isinstance(meta, dict):
-                region = str(meta.get("region") or "")
-                luma_name = str(meta.get("luma_node_name") or "")
-            if not node_addr and isinstance(detail, dict):
-                node_addr = str((detail.get("Attributes") or {}).get("unique.network.ip-address") or "")
-        except LumaError:
-            pass
+        hostname = str(n.get("Name") or "")
         items.append({
-            "name": luma_name or str(n.get("Name") or ""),
-            "lumaNode": luma_name,
-            "hostname": str(n.get("Name") or ""),
-            "region": region,
+            "name": hostname,
+            "lumaNode": "",
+            "hostname": hostname,
+            "id": str(n.get("ID") or ""),
+            "region": "",
             # `state` is kept as a display alias; `status` is the canonical key.
             "state": str(n.get("Status") or ""),
             "status": str(n.get("Status") or ""),
@@ -906,20 +903,24 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
     """
     client = NomadApi(nomad_addr(config, state), token=_token(state))
     try:
-        jobs = client.request("GET", "/v1/jobs")
+        jobs = client.request("GET", "/v1/jobs?meta=true")
     except LumaError:
         return []
     if not isinstance(jobs, list):
         return []
+    service_jobs = [
+        job
+        for job in jobs
+        if isinstance(job, dict)
+        and str(job.get("Type") or "") in {"service", ""}
+        and str(job.get("ID") or job.get("Name") or "")
+    ]
+    allocations_by_job = _allocations_by_job(client)
+    job_ids = [str(job.get("ID") or job.get("Name") or "") for job in service_jobs]
+    details = _job_details_by_id(client, job_ids)
     out: List[Dict[str, Any]] = []
-    for j in jobs:
-        if not isinstance(j, dict):
-            continue
-        if str(j.get("Type") or "") not in {"service", ""}:
-            continue
+    for j in service_jobs:
         job_id = str(j.get("ID") or j.get("Name") or "")
-        if not job_id:
-            continue
         summary = (j.get("JobSummary") or {}).get("Summary") or {}
         running = 0
         for grp in summary.values():
@@ -937,10 +938,7 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
             if str(meta.get("luma.lae") or "").lower() == "true"
             else "",
         }
-        try:
-            detail = client.request("GET", f"/v1/job/{_q(job_id)}")
-        except LumaError:
-            detail = {}
+        detail = details.get(job_id) or {}
         if isinstance(detail, dict):
             detail_meta = detail.get("Meta") if isinstance(detail.get("Meta"), dict) else {}
             if detail_meta:
@@ -948,10 +946,13 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
                 item["compose"] = str(detail_meta.get("luma.compose") or item.get("compose") or "").lower() == "true"
                 if str(detail_meta.get("luma.lae") or "").lower() == "true":
                     item["managedBy"] = "lae"
-        try:
-            allocations = client.request("GET", f"/v1/job/{_q(job_id)}/allocations")
-        except LumaError:
-            allocations = []
+        if allocations_by_job is None:
+            try:
+                allocations = client.request("GET", f"/v1/job/{_q(job_id)}/allocations")
+            except LumaError:
+                allocations = []
+        else:
+            allocations = allocations_by_job.get(job_id, [])
         tasks = _job_task_summaries(
             job_id,
             detail if isinstance(detail, dict) else {},
@@ -964,6 +965,45 @@ def nomad_services_summary(config: LumaConfig, state: Dict[str, Any]) -> List[Di
         out.append(item)
     out.sort(key=lambda s: s.get("name") or "")
     return out
+
+
+def _allocations_by_job(client: "NomadApi") -> Dict[str, List[Any]] | None:
+    """One cluster-wide allocation list, or None to fall back per job."""
+    try:
+        allocations = client.request("GET", "/v1/allocations")
+    except LumaError:
+        return None
+    if not isinstance(allocations, list):
+        return None
+    grouped: Dict[str, List[Any]] = {}
+    for allocation in allocations:
+        if not isinstance(allocation, dict):
+            continue
+        job_id = str(allocation.get("JobID") or "")
+        if not job_id:
+            continue
+        grouped.setdefault(job_id, []).append(allocation)
+    return grouped
+
+
+def _job_details_by_id(client: "NomadApi", job_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Fetch job specs concurrently. TaskGroups are not on the jobs list stub."""
+    details: Dict[str, Dict[str, Any]] = {}
+    if not job_ids:
+        return details
+
+    def fetch(job_id: str) -> tuple[str, Dict[str, Any]]:
+        try:
+            payload = client.request("GET", f"/v1/job/{_q(job_id)}")
+        except LumaError:
+            return job_id, {}
+        return job_id, payload if isinstance(payload, dict) else {}
+
+    workers = min(8, len(job_ids))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for job_id, detail in pool.map(fetch, job_ids):
+            details[job_id] = detail
+    return details
 
 
 def _job_task_summaries(

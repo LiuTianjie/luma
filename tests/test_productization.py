@@ -7031,6 +7031,34 @@ class ControlApiTests(unittest.TestCase):
         self.assertEqual(rows[0]["terminalStatus"], "connected")
         self.assertEqual(rows[0]["agentVersion"], "0.1.173")
 
+    def test_dashboard_nodes_merge_orchestrator_by_hostname(self):
+        from luma.control.server import _dashboard_nodes
+
+        rows = _dashboard_nodes(
+            [
+                {
+                    "name": "manager",
+                    "displayName": "manager",
+                    "hostname": "iZmanager",
+                    "region": "cn",
+                    "agentStatus": "ready",
+                }
+            ],
+            [
+                {
+                    "hostname": "iZmanager",
+                    "state": "ready",
+                    "availability": "eligible",
+                    "leader": True,
+                }
+            ],
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "manager")
+        self.assertEqual(rows[0]["state"], "ready")
+        self.assertTrue(rows[0]["leader"])
+        self.assertEqual(rows[0]["region"], "cn")
+
     def test_state_nodes_expands_aliases_for_internal_resolution(self):
         state = {
             "nodes": {
