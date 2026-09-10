@@ -42,5 +42,7 @@ query_frontend:
   search:
     max_duration: 336h
 
+stream_over_http_enabled: true
+
 usage_report:
   reporting_enabled: false

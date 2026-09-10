@@ -283,13 +283,17 @@ class ObserveTraceStackTests(unittest.TestCase):
         self.assertIn("block_retention: 336h", text)
         self.assertIn("http_listen_port: 3200", text)
         self.assertIn("127.0.0.1:4418", text)
+        self.assertIn("stream_over_http_enabled: true", text)
 
     def test_grafana_has_tempo_and_traces_dashboard(self):
         sources = (ROOT / "observe" / "grafana" / "provisioning" / "datasources" / "datasource.yml").read_text(encoding="utf-8")
         self.assertIn("uid: tempo", sources)
         dashboard = json.loads((ROOT / "observe" / "grafana" / "dashboards" / "traces.json").read_text(encoding="utf-8"))
         self.assertEqual(dashboard["uid"], "luma-traces")
-        query = dashboard["panels"][0]["targets"][0]["query"]
+        panel = dashboard["panels"][0]
+        self.assertEqual(panel["type"], "table")
+        query = panel["targets"][0]["query"]
+        self.assertEqual(panel["targets"][0]["tableType"], "traces")
         self.assertIn("resource.service.name = \"traefik\"", query)
         self.assertIn("resource.luma.stack", query)
 

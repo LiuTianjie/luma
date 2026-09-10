@@ -1916,6 +1916,8 @@ def _complete_build_run(run_id: str, status: str, *, result: Dict[str, Any] | No
         if not isinstance(run, dict):
             return
         current_status = str(run.get("status") or "")
+        if current_status in {"succeeded", "failed", "canceled"}:
+            return
         final_status = "canceled" if current_status in {"canceling", "canceled"} and status != "canceled" else status
         run["status"] = final_status
         run["updatedAt"] = now
@@ -7439,8 +7441,22 @@ def handle_build_run_cancel(
         if not isinstance(run, dict):
             raise LumaError(f"build run not found: {build_id}")
         run_status = str(run.get("status") or "")
-        if run_status in {"succeeded", "failed", "canceled", "canceling"}:
+        if run_status in {"succeeded", "failed", "canceled"}:
             return _build_run_public(run), True
+        if run_status == "canceling":
+            from .build_queue import discard
+            run.update(
+                status="canceled",
+                message="Canceled after operator retry",
+                cancelRequestedAt=run.get("cancelRequestedAt") or now,
+                canceledAt=now,
+                completedAt=now,
+                updatedAt=now,
+                queueOwnerReleased=True,
+            )
+            run.setdefault("queueOwnerReleasedAt", now)
+            discard(current, run)
+            return _build_run_public(run), False
         if run_status == "queued":
             from .build_queue import discard
             run.update(status="canceled", message="Canceled while waiting in project deployment queue",
@@ -7448,7 +7464,13 @@ def handle_build_run_cancel(
             discard(current, run)
             return _build_run_public(run), False
         if run_status == "finalizing":
-            raise LumaError("local build upload is already deploying and cannot be canceled")
+            run.update(
+                status="canceling",
+                cancelRequestedAt=now,
+                updatedAt=now,
+                message="cancel requested during queued deployment",
+            )
+            return _build_run_public(run), False
 
         task_id, task = _build_run_agent_task(current, run)
         task_status = str(task.get("status") or "") if isinstance(task, dict) else ""
@@ -8633,7 +8655,7 @@ def handle_local_build_complete(token: str, build_id: str, body: Dict[str, Any],
     )
 
     def run_progress(event: dict[str, str]) -> None:
-        if event.get("status") == "start" and _build_run_cancel_requested(build_id):
+        if _build_run_cancel_requested(build_id):
             raise LumaError("build canceled")
         _append_build_run_event(build_id, event)
 

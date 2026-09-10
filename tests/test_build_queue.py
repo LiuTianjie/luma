@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -167,6 +168,49 @@ class BuildQueueTests(unittest.TestCase):
         state['agentTasks']['child']['status'] = 'canceled'
         save_state(state)
         self.assertEqual(queue.claim()[0], second)
+
+    def test_stale_finalizing_is_failed_on_claim(self):
+        first = self.remote()
+        second = self.remote()
+        item = queue.claim()
+        self.assertEqual(item[0], first)
+        state = load_state()
+        state['buildRuns'][first].update(status='finalizing', updatedAt=int(time.time()) - queue.FINALIZING_STALE_SECONDS - 1)
+        save_state(state)
+        claimed = queue.claim()
+        self.assertEqual(claimed[0], second)
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'failed')
+        self.assertIn('stalled without progress', load_state()['buildRuns'][first]['message'])
+
+    def test_stale_canceling_is_released_on_claim(self):
+        first = self.remote()
+        second = self.remote()
+        queue.claim()
+        now = int(time.time())
+        state = load_state()
+        state['buildRuns'][first].update(
+            status='canceling', cancelRequestedAt=now - queue.CANCELING_STALE_SECONDS - 1, updatedAt=now - queue.CANCELING_STALE_SECONDS - 1,
+        )
+        save_state(state)
+        self.assertEqual(queue.claim()[0], second)
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'canceled')
+
+    def test_operator_can_finish_stuck_canceling(self):
+        first = self.remote()
+        queue.claim()
+        state = load_state()
+        state['buildRuns'][first]['status'] = 'canceling'
+        save_state(state)
+        public = srv.handle_build_run_cancel(self.token, first)
+        self.assertEqual(public['run']['status'] if 'run' in public else public.get('status'), 'canceled')
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'canceled')
+
+    def test_complete_does_not_resurrect_failed_run(self):
+        first = self.remote()
+        queue.claim()
+        srv._complete_build_run(first, 'failed', message='stalled')
+        srv._complete_build_run(first, 'succeeded', message='late success')
+        self.assertEqual(load_state()['buildRuns'][first]['status'], 'failed')
 
     def test_cancel_queued_does_not_cancel_active_or_leak_payload(self):
         first = self.remote(envSecrets={'PASSWORD': 'first-value'})

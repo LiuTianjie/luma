@@ -21,6 +21,10 @@ from .state import is_initialized, load_state, mutate_state, require_token
 LOG = logging.getLogger(__name__)
 TERMINAL = {"succeeded", "failed", "canceled"}
 ACTIVE = {"running", "canceling", "finalizing"}
+# A queue worker that stops emitting progress is treated as dead. Nomad rollouts
+# still send events; silence longer than this is a stuck thread, not a slow job.
+FINALIZING_STALE_SECONDS = 600
+CANCELING_STALE_SECONDS = 180
 State = dict[str, Any]
 WorkItem = tuple[str, dict[str, Any]]
 
@@ -101,10 +105,47 @@ def _safe_to_release(state: State, run: State) -> bool:
 
 
 def reconcile_released(state: State) -> None:
+    reap_stale(state)
     for build_id in list(state.setdefault("buildQueue", {})):
         run = _runs(state).get(build_id)
         if isinstance(run, dict) and run.get("queueOwnerReleased") and _safe_to_release(state, run):
             discard(state, run)
+
+
+def reap_stale(state: State, *, now: int | None = None) -> None:
+    """Fail queue owners that stopped making progress so later work can claim."""
+    current = int(now if now is not None else time.time())
+    for run in list(_active(_runs(state))):
+        if not isinstance(run, dict):
+            continue
+        status = str(run.get("status") or "")
+        updated = int(run.get("updatedAt") or run.get("createdAt") or 0)
+        if status == "canceling":
+            requested = int(run.get("cancelRequestedAt") or updated)
+            if current - max(requested, 0) < CANCELING_STALE_SECONDS:
+                continue
+            run.update(
+                status="canceled",
+                completedAt=current,
+                canceledAt=current,
+                updatedAt=current,
+                message="Canceled after waiting for queue unwind",
+                queueOwnerReleased=True,
+            )
+            run.setdefault("queueOwnerReleasedAt", current)
+            if _safe_to_release(state, run):
+                discard(state, run)
+        elif status == "finalizing" and updated and current - updated >= FINALIZING_STALE_SECONDS:
+            run.update(
+                status="failed",
+                completedAt=current,
+                updatedAt=current,
+                message="Queued deployment stalled without progress",
+                queueOwnerReleased=True,
+            )
+            run.setdefault("queueOwnerReleasedAt", current)
+            if _safe_to_release(state, run):
+                discard(state, run)
 
 
 def attach(state: State, run: State, kind: str, body: State) -> None:

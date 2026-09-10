@@ -18,3 +18,5 @@ datasources:
         datasourceUid: victoria
       serviceMap:
         datasourceUid: victoria
+      streamingEnabled:
+        search: true
