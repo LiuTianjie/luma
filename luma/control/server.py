@@ -16428,6 +16428,7 @@ def _dashboard_nodes(
     merged: dict[str, Dict[str, Any]] = {}
     connected_terminals = terminal_nodes or set()
     hostnames: dict[str, str] = {}
+    node_ids: dict[str, str] = {}
     for node in registered_nodes:
         name = str(node.get("name") or "")
         if not name:
@@ -16436,21 +16437,27 @@ def _dashboard_nodes(
         hostname = str(node.get("hostname") or "").strip()
         if hostname:
             hostnames.setdefault(hostname, name)
+        for alias in node.get("aliases") or []:
+            alias_name = str(alias or "").strip()
+            if alias_name:
+                hostnames.setdefault(alias_name, name)
+        node_id = str(node.get("nodeId") or "").strip()
+        if node_id:
+            node_ids.setdefault(node_id, name)
     for raw_node in raw_nodes:
         node = raw_node
         hostname = str(node.get("hostname") or "").strip()
+        nomad_id = str(node.get("id") or node.get("rawId") or "").strip()
         name = str(
             node.get("lumaNode")
             or hostnames.get(hostname)
+            or node_ids.get(nomad_id)
             or (hostname if hostname in merged else "")
-            or node.get("rawId")
-            or node.get("id")
-            or hostname
             or ""
         )
-        if not name:
+        if name not in merged:
             continue
-        merged.setdefault(name, {})["orchestrator"] = node
+        merged[name]["orchestrator"] = node
 
     rows: list[Dict[str, Any]] = []
     for name in sorted(merged):

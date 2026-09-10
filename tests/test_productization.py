@@ -7059,6 +7059,63 @@ class ControlApiTests(unittest.TestCase):
         self.assertTrue(rows[0]["leader"])
         self.assertEqual(rows[0]["region"], "cn")
 
+    def test_dashboard_nodes_ignore_unmatched_nomad_ids(self):
+        from luma.control.server import _dashboard_nodes
+
+        rows = _dashboard_nodes(
+            [
+                {
+                    "name": "manager",
+                    "displayName": "manager",
+                    "hostname": "iZmanager",
+                    "aliases": ["iZmanager"],
+                    "region": "cn",
+                    "agentStatus": "ready",
+                }
+            ],
+            [
+                {
+                    "hostname": "iZmanager",
+                    "state": "ready",
+                    "leader": True,
+                },
+                {
+                    "id": "24e56d1b-82b0-bec6-cca5-598fde372832",
+                    "hostname": "24e56d1b-82b0-bec6-cca5-598fde372832",
+                    "state": "ready",
+                    "availability": "eligible",
+                },
+            ],
+        )
+        self.assertEqual([row["name"] for row in rows], ["manager"])
+
+    def test_dashboard_nodes_merge_orchestrator_by_nomad_id(self):
+        from luma.control.server import _dashboard_nodes
+
+        rows = _dashboard_nodes(
+            [
+                {
+                    "name": "ppt",
+                    "displayName": "ppt",
+                    "hostname": "ppt-host",
+                    "nodeId": "24e56d1b-82b0-bec6-cca5-598fde372832",
+                    "region": "cn",
+                    "agentStatus": "ready",
+                }
+            ],
+            [
+                {
+                    "id": "24e56d1b-82b0-bec6-cca5-598fde372832",
+                    "hostname": "other-name",
+                    "state": "ready",
+                    "availability": "eligible",
+                }
+            ],
+        )
+        self.assertEqual([row["name"] for row in rows], ["ppt"])
+        self.assertEqual(rows[0]["state"], "ready")
+        self.assertEqual(rows[0]["availability"], "eligible")
+
     def test_state_nodes_expands_aliases_for_internal_resolution(self):
         state = {
             "nodes": {
