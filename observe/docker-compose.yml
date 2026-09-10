@@ -9,6 +9,7 @@ services:
     depends_on:
       - victoria
       - nomad-exporter
+      - tempo
     deploy:
       resources:
         reservations:
@@ -16,6 +17,23 @@ services:
           memory: 192M
         limits:
           memory: 256M
+
+  tempo:
+    build:
+      context: .
+      dockerfile: Dockerfile.tempo
+    image: luma-observe-tempo:local
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - tempo-data:/data
+    deploy:
+      resources:
+        reservations:
+          cpus: "0.10"
+          memory: 256M
+        limits:
+          memory: 512M
 
   victoria:
     image: victoriametrics/victoria-metrics:v1.114.0
@@ -151,6 +169,7 @@ services:
     restart: unless-stopped
     depends_on:
       - victoria
+      - tempo
     environment:
       GF_SERVER_HTTP_ADDR: "127.0.0.1"
       GF_SERVER_HTTP_PORT: "3100"
@@ -177,3 +196,4 @@ services:
 
 volumes:
   victoria-data:
+  tempo-data:

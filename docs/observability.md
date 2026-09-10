@@ -8,21 +8,22 @@ Luma exposes node/container samples, current task queues, resource history, runt
 Control dashboards show node/container samples and live allocation logs. They
 are not application availability.
 
-Application HTTP 5xx, Nomad failed allocations and restart storms are an
+Application HTTP 5xx, latency (p90/p95/p99), Nomad failed allocations, restart storms and traces are an
 optional [`observe/`](../observe/) Compose app. Deploy it with Luma; skip it
 and Control still runs. Operators look at Dashboard → Observability → Apps,
-which embeds Grafana at `/grafana` on the Control domain. HTTP and Nomad series are labeled with the Luma app/stack name as soon as
+which embeds Grafana at `/grafana` on the Control domain. HTTP, Nomad and trace series are labeled with the Luma app/stack name as soon as
 observe is deployed; applications do not opt in. Failed gauges are the
 allocations Nomad still wants to run, not lifetime failure counters.
 The stack uses host networking and loopback listeners (`127.0.0.1:8082` Prometheus,
-`127.0.0.1:4318` OTLP). Control uses host networking and queries `http://127.0.0.1:8428` when observe is present. Grafana on `127.0.0.1:3100`
+`127.0.0.1:4318` OTLP, `127.0.0.1:3200` Tempo). Application tasks send traces to the manager Tailscale mesh listener on port 4319 with a Control-issued bearer token. Control uses host networking and queries `http://127.0.0.1:8428` when observe is present. Grafana on `127.0.0.1:3100`
 is local debug only. Alerts evaluate in vmalert/Alertmanager. Control SQLite
-is not on this path.
+is not on this path. Trace and metric storage both retain 15 days.
 
 Deploy from `observe/` with `luma build local . --platform linux/amd64 --env .env`.
 Refresh Traefik after the current CLI includes the loopback metrics/OTLP flags
 so RED rules have a scrape target. Operators look at Dashboard → Observability → Apps.
-The charts are per Luma app (Traefik HTTP + Nomad health), not each container's `/metrics`.
+The charts are per Luma app (Traefik HTTP rate, 5xx and p90/p95/p99 latency + Nomad health), not each container's `/metrics`. Traefik histogram buckets are `0.05,0.1,0.25,0.5,1,2.5,5,10` seconds so those quantiles are distinguishable.
+Selecting observe also injects official OpenTelemetry environment variables into later Luma deploys (`OTEL_SERVICE_NAME`, `luma.stack` / `luma.task` / `luma.region`, OTLP HTTP to the mesh listener). Apps that already ship an OpenTelemetry distro emit spans without a Luma SDK. Redeploy existing apps after observe is first enabled. Trace export is sampled at 10% (`parentbased_traceidratio`) and fail-open.
 Do not ship raw access logs or traces off the manager public interface.
 
 ## Dashboard and logs

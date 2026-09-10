@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 from .config import LumaConfig
 from .compose import render_storage_class_volume, resolve_storage_mounts
 from .errors import LumaError
+from .observe_instrument import apply_env as apply_observe_env
 from .registry import normalize_registry_host
 from .service import ServiceSpec, slugify, tcp_entrypoint_name, tcp_relay_publish_port
 
@@ -329,6 +330,7 @@ def render_traefik_job(
         "--metrics.prometheus.entryPoint=metrics",
         "--metrics.prometheus.addRoutersLabels=true",
         "--metrics.prometheus.addServicesLabels=true",
+        "--metrics.prometheus.buckets=0.05,0.1,0.25,0.5,1,2.5,5,10",
         "--metrics.otlp=true",
         "--metrics.otlp.addRoutersLabels=true",
         "--metrics.otlp.addServicesLabels=true",
@@ -507,6 +509,7 @@ def render_compose_job(
     node_records: Dict[str, Any] | None = None,
     admitted_nodes: Sequence[str] = (),
     render_storage: bool = True,
+    observe_otlp: Mapping[str, str] | None = None,
 ) -> str | Dict[str, Any]:
     """Render a Luma compose deployment into a single multi-task Nomad job.
 
@@ -730,6 +733,13 @@ def render_compose_job(
             # *.service.consul name (Luma runs no Consul → it never resolves).
             env.setdefault("HTTP_PROXY", egress_proxy_url)
             env.setdefault("HTTPS_PROXY", egress_proxy_url)
+        apply_observe_env(
+            env,
+            stack=name,
+            task=str(svc_name),
+            region=region,
+            observe_otlp=observe_otlp,
+        )
 
         resources = _resource_values((body.get("deploy") or {}).get("resources") or {})
 
@@ -917,6 +927,7 @@ def render_nomad_job(
     secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
     egress_proxy_url: str | None = None,
+    observe_otlp: Mapping[str, str] | None = None,
 ) -> str | Dict[str, Any]:
     """Render a ServiceSpec to a Nomad job. Returns JSON text (default) or the dict.
 
@@ -936,6 +947,7 @@ def render_nomad_job(
         secrets=secrets,
         resolve_secrets=resolve_secrets,
         egress_proxy_url=egress_proxy_url,
+        observe_otlp=observe_otlp,
     )
     wrapped = {"Job": job}
     if as_json:
@@ -952,6 +964,7 @@ def _build_job(
     secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
     egress_proxy_url: str | None = None,
+    observe_otlp: Mapping[str, str] | None = None,
 ) -> Dict[str, Any]:
     name = service.slug
 
@@ -977,7 +990,7 @@ def _build_job(
         if nomad_service.get("Address") == NOMAD_TAILSCALE_SERVICE_ADDRESS:
             constraints.append(_tailscale_service_address_constraint())
 
-    tasks = [_app_task(config, service, port_label, registry_auth=registry_auth, secrets=secrets, resolve_secrets=resolve_secrets, egress_proxy_url=egress_proxy_url)]
+    tasks = [_app_task(config, service, port_label, registry_auth=registry_auth, secrets=secrets, resolve_secrets=resolve_secrets, egress_proxy_url=egress_proxy_url, observe_otlp=observe_otlp)]
     sidecar = _cloudflared_task(service, secrets=secrets, resolve_secrets=resolve_secrets)
     if sidecar is not None:
         tasks.append(sidecar)
@@ -1362,6 +1375,7 @@ def _app_task(
     secrets: Mapping[str, str] | None = None,
     resolve_secrets: bool = True,
     egress_proxy_url: str | None = None,
+    observe_otlp: Mapping[str, str] | None = None,
 ) -> Dict[str, Any]:
     docker_config: Dict[str, Any] = {"image": service.image}
     if registry_auth and registry_auth.get("username") and registry_auth.get("password"):
@@ -1392,6 +1406,13 @@ def _app_task(
         # so that name never resolves and every proxied request fails silently.
         env.setdefault("HTTP_PROXY", egress_proxy_url)
         env.setdefault("HTTPS_PROXY", egress_proxy_url)
+    apply_observe_env(
+        env,
+        stack=service.slug,
+        task=service.slug,
+        region=service.region,
+        observe_otlp=observe_otlp,
+    )
 
     task: Dict[str, Any] = {
         "Name": service.slug,

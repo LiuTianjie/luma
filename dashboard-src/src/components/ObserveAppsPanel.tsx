@@ -5,6 +5,7 @@ import "./ObservabilityPanel.css";
 const VIEWS = [
   { id: "http", src: "/grafana/d/luma-http-apps?orgId=1&kiosk=tv", zh: "HTTP 应用", en: "HTTP apps" },
   { id: "nomad", src: "/grafana/d/luma-nomad-jobs?orgId=1&kiosk=tv", zh: "Nomad", en: "Nomad" },
+  { id: "traces", src: "/grafana/d/luma-traces?orgId=1&kiosk=tv", zh: "链路", en: "Traces" },
   { id: "grafana", src: "/grafana/?orgId=1", zh: "Grafana", en: "Grafana" },
 ] as const;
 

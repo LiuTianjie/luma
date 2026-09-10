@@ -10,8 +10,9 @@ except for tiny Feishu posts.
 
 ## What it watches
 
-- Traefik Prometheus on `127.0.0.1:8082` (public HTTP RED)
-- Traefik OTLP on `127.0.0.1:4318` (optional traces → span metrics)
+- Traefik Prometheus on `127.0.0.1:8082` (public HTTP rate, 5xx, p90/p95/p99)
+- Traefik OTLP on `127.0.0.1:4318` (traces stored in Tempo, 15 days)
+- Application OTLP on the manager Tailscale IP port `4319` (bearer token from Control)
 - Nomad job running / current failed / live restarts via a local exporter
 
 App names are the Luma stack/job names already in Nomad. Deploying observe
@@ -24,6 +25,9 @@ the Traefik route; you do not add a second domain. Do not open Grafana on
 Tailscale or port 3000.
 
 It does not scrape application stdout and does not evaluate alerts inside Control.
+Deploying this stack is the observability component: later Luma app deploys
+receive official OTel env vars automatically. Redeploy existing apps to pick
+them up. There is no Luma SDK.
 
 ## Deploy
 
@@ -44,7 +48,10 @@ as soon as this stack is running.
 | Port | Process |
 | --- | --- |
 | 8082 | Traefik Prometheus |
-| 4318 / 4317 | Collector OTLP HTTP / gRPC |
+| 4318 / 4317 | Collector OTLP HTTP / gRPC (loopback, Traefik) |
+| 4319 | Collector OTLP HTTP on the manager Tailscale IP (apps, bearer auth) |
+| 3200 / 3201 | Tempo query (loopback) |
+| 4418 / 4417 | Tempo OTLP ingest (loopback) |
 | 8428 | VictoriaMetrics on 127.0.0.1; host-gateway also binds Nomad/docker0 so Control can scrape |
 | 8880 | vmalert |
 | 9093 | Alertmanager |

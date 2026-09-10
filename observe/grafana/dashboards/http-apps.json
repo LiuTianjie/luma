@@ -3,7 +3,7 @@
   "title": "HTTP apps",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "30s",
   "tags": [
     "luma-observe",
@@ -96,7 +96,7 @@
       "title": "5xx ratio by app",
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 8
       },
@@ -134,6 +134,44 @@
           "refId": "A",
           "expr": "sum by (app) (luma_app:http_errors:rate5m{app=~\"$app\"}) / clamp_min(sum by (app) (luma_app:http_requests:rate5m{app=~\"$app\"}), 0.001)",
           "legendFormat": "{{app}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Latency by app",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoria"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "luma_app:http_duration_seconds:p90{app=~\"$app\"}",
+          "legendFormat": "{{app}} p90"
+        },
+        {
+          "refId": "B",
+          "expr": "luma_app:http_duration_seconds:p95{app=~\"$app\"}",
+          "legendFormat": "{{app}} p95"
+        },
+        {
+          "refId": "C",
+          "expr": "luma_app:http_duration_seconds:p99{app=~\"$app\"}",
+          "legendFormat": "{{app}} p99"
         }
       ]
     }

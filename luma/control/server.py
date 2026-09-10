@@ -103,6 +103,7 @@ from ..local_storage import (
 )
 from ..nomad_api import NomadApi, NomadRolloutError, deploy_to_nomad, remove_from_nomad, revert_job, job_versions, nomad_addr, nomad_status_summary, nomad_services_summary
 from ..nomad_render import EDGE_EXPOSURES, render_nomad_job, render_compose_job, resource_policy_warnings
+from ..observe_instrument import OBSERVE_STACK, manager_tailscale_ip, mint_otlp_token, otlp_mesh_endpoint
 from ..registry import (
     docker_registry_auth_header,
     public_registry_url,
@@ -4494,6 +4495,7 @@ def _lae_runtime_render_job(
         node_records=_state_nodes(state),
         admitted_nodes=(placement.candidate_node_names if placement else ()),
         render_storage=False,
+        observe_otlp=_observe_otlp_settings(state, spec.slug),
     )
     if not isinstance(rendered, dict) or not isinstance(rendered.get("Job"), dict):
         raise _lae_runtime_unavailable("Luma runtime renderer is unavailable")
@@ -11096,6 +11098,29 @@ def _compose_deployment_record(state: Dict[str, Any], name: str) -> Dict[str, An
     return record if isinstance(record, dict) else None
 
 
+def _observe_otlp_settings(state: Dict[str, Any], stack: str) -> Dict[str, str] | None:
+    slug = slugify(stack)
+    record = _compose_deployment_record(state, OBSERVE_STACK)
+    if slug != OBSERVE_STACK and (not isinstance(record, dict) or str(record.get("status") or "") != "active"):
+        return None
+    token = str(state.get("observeOtlpToken") or "")
+    if len(token) < 32:
+        token = mint_otlp_token()
+
+        def mutate(current: Dict[str, Any]) -> None:
+            if len(str(current.get("observeOtlpToken") or "")) < 32:
+                current["observeOtlpToken"] = token
+
+        mutate_state(mutate)
+        state["observeOtlpToken"] = token
+    mesh_bind = manager_tailscale_ip(state.get("nodes") if isinstance(state.get("nodes"), dict) else {})
+    return {
+        "token": token,
+        "mesh_bind": mesh_bind,
+        "endpoint": otlp_mesh_endpoint(mesh_bind),
+    }
+
+
 def _local_storage_previous_node(
     config: LumaConfig, state: Dict[str, Any], slug: str, previous: Dict[str, Any], *, inspect_runtime: bool,
     expected_mounts: list[dict[str, str]] | None = None,
@@ -11366,7 +11391,7 @@ def handle_deployment(token: str, body: Dict[str, Any], *, progress: Callable[[d
         stack_text = _deploy_step(
             steps,
             "Render Nomad job",
-            lambda: render_nomad_job(runtime_config, service, registry_auth=registry_auth, secrets=secrets, egress_proxy_url=_egress_proxy_for_region(config, state, service.region)),
+            lambda: render_nomad_job(runtime_config, service, registry_auth=registry_auth, secrets=secrets, egress_proxy_url=_egress_proxy_for_region(config, state, service.region), observe_otlp=_observe_otlp_settings(state, service.slug)),
             progress=progress,
         )
         _deploy_step(steps, "Write Nomad job", lambda: target.write_text(stack_text, encoding="utf-8"), progress=progress)
@@ -11493,6 +11518,7 @@ def handle_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[str, Any
         service,
         registry_auth=_registry_auth_for_service(state, service),
         resolve_secrets=False,
+        observe_otlp=_observe_otlp_settings(state, service.slug),
     )
     artifacts = [
         {
@@ -13511,6 +13537,7 @@ def handle_compose_deployment(token: str, body: Dict[str, Any], *, progress: Cal
                 secrets=secrets,
                 egress_proxy_url=_egress_proxy_for_region(config, state, deployment.region),
                 node_records=_state_nodes(state),
+                observe_otlp=_observe_otlp_settings(state, deployment.slug),
             ),
             progress=progress,
         )
@@ -13678,6 +13705,7 @@ def handle_compose_deployment_preview(token: str, body: Dict[str, Any]) -> Dict[
         registry_auth_resolver=lambda image: _registry_auth_for_image(state, image),
         resolve_secrets=False,
         node_records=_state_nodes(state),
+        observe_otlp=_observe_otlp_settings(state, deployment.slug),
     )
     storage_guard = "skipped: nomad job preview"
     route_texts: Dict[str, str] = {}

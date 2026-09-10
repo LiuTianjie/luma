@@ -7,6 +7,11 @@ volumes:
     local:
       node: manager
       path: /srv/luma/data/luma-observe/victoria
+  tempo-data:
+    local:
+      node: manager
+      path: /srv/luma/data/luma-observe/tempo
+    initialize: empty
 
 services:
   collector:
@@ -14,6 +19,10 @@ services:
     exposure: none
     replicas: 1
   victoria:
+    node: manager
+    exposure: none
+    replicas: 1
+  tempo:
     node: manager
     exposure: none
     replicas: 1

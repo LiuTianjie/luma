@@ -5,6 +5,13 @@ receivers:
         endpoint: 127.0.0.1:4318
       grpc:
         endpoint: 127.0.0.1:4317
+  otlp/mesh:
+    protocols:
+      http:
+        endpoint: ${env:LUMA_OTLP_MESH_BIND}:4319
+        include_metadata: true
+        auth:
+          authenticator: bearertokenauth
   prometheus:
     config:
       scrape_configs:
@@ -23,6 +30,8 @@ processors:
   memory_limiter:
     check_interval: 2s
     limit_mib: 180
+  probabilistic_sampler:
+    sampling_percentage: 10
   batch:
     timeout: 5s
     send_batch_size: 1024
@@ -31,21 +40,31 @@ connectors:
   spanmetrics:
     namespace: traces.span.metrics
 
+extensions:
+  bearertokenauth:
+    scheme: Bearer
+    token: ${env:LUMA_OTLP_TOKEN}
+
 exporters:
   prometheusremotewrite:
     endpoint: http://127.0.0.1:8428/api/v1/write
     resource_to_telemetry_conversion:
       enabled: true
+  otlphttp/tempo:
+    endpoint: http://127.0.0.1:4418
+    tls:
+      insecure: true
 
 service:
+  extensions: [bearertokenauth]
   telemetry:
     logs:
       level: info
   pipelines:
     traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [spanmetrics]
+      receivers: [otlp, otlp/mesh]
+      processors: [memory_limiter, probabilistic_sampler, batch]
+      exporters: [spanmetrics, otlphttp/tempo]
     metrics/span:
       receivers: [spanmetrics]
       processors: [memory_limiter, batch]

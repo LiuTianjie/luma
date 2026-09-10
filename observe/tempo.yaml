@@ -1,0 +1,46 @@
+server:
+  http_listen_address: 127.0.0.1
+  http_listen_port: 3200
+  grpc_listen_address: 127.0.0.1
+  grpc_listen_port: 3201
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 127.0.0.1:4418
+        grpc:
+          endpoint: 127.0.0.1:4417
+
+ingester:
+  lifecycler:
+    address: 127.0.0.1
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+  trace_idle_period: 10s
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 336h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /data/wal
+    local:
+      path: /data/blocks
+
+querier:
+  max_concurrent_queries: 8
+
+query_frontend:
+  search:
+    max_duration: 336h
+
+usage_report:
+  reporting_enabled: false

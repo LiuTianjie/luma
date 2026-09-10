@@ -16,6 +16,22 @@ groups:
             * on (router) group_left(app) luma_observe_router_app
           )
 
+      - record: luma_app:http_duration_seconds_bucket:rate5m
+        expr: |
+          sum by (app, le) (
+            rate(traefik_router_request_duration_seconds_bucket[5m])
+            * on (router) group_left(app) luma_observe_router_app
+          )
+
+      - record: luma_app:http_duration_seconds:p90
+        expr: histogram_quantile(0.90, luma_app:http_duration_seconds_bucket:rate5m)
+
+      - record: luma_app:http_duration_seconds:p95
+        expr: histogram_quantile(0.95, luma_app:http_duration_seconds_bucket:rate5m)
+
+      - record: luma_app:http_duration_seconds:p99
+        expr: histogram_quantile(0.99, luma_app:http_duration_seconds_bucket:rate5m)
+
       - alert: LumaAppHTTPErrorRate
         expr: |
           luma_app:http_errors:rate5m

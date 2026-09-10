@@ -6,7 +6,10 @@ from unittest.mock import patch
 
 from luma.errors import LumaError
 from luma.nomad_render import render_compose_job, render_traefik_job
-from tests.test_nomad_compose import cfg, write_deployment
+try:
+    from test_nomad_compose import cfg, write_deployment
+except ImportError:
+    from tests.test_nomad_compose import cfg, write_deployment
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +31,7 @@ class TraefikObserveRenderTests(unittest.TestCase):
         self.assertIn("--entrypoints.metrics.address=127.0.0.1:8082", args)
         self.assertIn("--metrics.prometheus=true", args)
         self.assertIn("--metrics.prometheus.addRoutersLabels=true", args)
+        self.assertIn("--metrics.prometheus.buckets=0.05,0.1,0.25,0.5,1,2.5,5,10", args)
         self.assertIn("--metrics.otlp.http.endpoint=http://127.0.0.1:4318", args)
         self.assertIn("--tracing.otlp.http.endpoint=http://127.0.0.1:4318", args)
         self.assertFalse(any(value.startswith("--entrypoints.metrics.address=0.0.0.0") for value in args))
@@ -120,6 +124,7 @@ class RepoManifestTests(unittest.TestCase):
         names = {task["Name"] for task in job["TaskGroups"][0]["Tasks"]}
         self.assertIn("grafana", names)
         self.assertIn("host-gateway", names)
+        self.assertIn("tempo", names)
         self.assertTrue(all(task["Config"].get("network_mode") == "host" for task in job["TaskGroups"][0]["Tasks"]))
         victoria = next(task for task in job["TaskGroups"][0]["Tasks"] if task["Name"] == "victoria")
         self.assertEqual(victoria["Config"]["mount"][0]["source"], "/srv/luma/data/luma-observe/victoria")
@@ -241,6 +246,50 @@ class HostGatewayTests(unittest.TestCase):
         gateway = load_observe("host_gateway.py", "host_gateway")
         with patch.object(gateway, "ipv4_of_interface", side_effect=lambda name: {"nomad": "172.26.64.1", "docker0": "172.17.0.1"}.get(name)):
             self.assertEqual(gateway.gateway_bind_ips(["nomad", "docker0"]), ["172.26.64.1", "172.17.0.1"])
+
+
+class ObserveHttpLatencyTests(unittest.TestCase):
+    def test_recording_rules_join_duration_buckets_to_app(self):
+        text = (ROOT / "observe" / "vmalert-rules.yml").read_text(encoding="utf-8")
+        self.assertIn("luma_app:http_duration_seconds_bucket:rate5m", text)
+        self.assertIn("traefik_router_request_duration_seconds_bucket", text)
+        self.assertIn("* on (router) group_left(app) luma_observe_router_app", text)
+        self.assertIn("histogram_quantile(0.90, luma_app:http_duration_seconds_bucket:rate5m)", text)
+        self.assertIn("histogram_quantile(0.95, luma_app:http_duration_seconds_bucket:rate5m)", text)
+        self.assertIn("histogram_quantile(0.99, luma_app:http_duration_seconds_bucket:rate5m)", text)
+
+    def test_http_dashboard_plots_p90_p95_p99(self):
+        dashboard = json.loads((ROOT / "observe" / "grafana" / "dashboards" / "http-apps.json").read_text(encoding="utf-8"))
+        panel = next(item for item in dashboard["panels"] if item["title"] == "Latency by app")
+        exprs = [target["expr"] for target in panel["targets"]]
+        self.assertEqual(panel["fieldConfig"]["defaults"]["unit"], "s")
+        self.assertIn('luma_app:http_duration_seconds:p90{app=~"$app"}', exprs)
+        self.assertIn('luma_app:http_duration_seconds:p95{app=~"$app"}', exprs)
+        self.assertIn('luma_app:http_duration_seconds:p99{app=~"$app"}', exprs)
+
+
+class ObserveTraceStackTests(unittest.TestCase):
+    def test_collector_writes_sampled_traces_to_tempo(self):
+        text = (ROOT / "observe" / "collector.yaml").read_text(encoding="utf-8")
+        self.assertIn("otlphttp/tempo", text)
+        self.assertIn("http://127.0.0.1:4418", text)
+        self.assertIn("probabilistic_sampler", text)
+        self.assertIn("otlp/mesh", text)
+        self.assertIn("bearertokenauth", text)
+        self.assertIn("${env:LUMA_OTLP_MESH_BIND}:4319", text)
+
+    def test_tempo_retains_fifteen_days(self):
+        text = (ROOT / "observe" / "tempo.yaml").read_text(encoding="utf-8")
+        self.assertIn("block_retention: 336h", text)
+        self.assertIn("http_listen_port: 3200", text)
+        self.assertIn("127.0.0.1:4418", text)
+
+    def test_grafana_has_tempo_and_traces_dashboard(self):
+        sources = (ROOT / "observe" / "grafana" / "provisioning" / "datasources" / "datasource.yml").read_text(encoding="utf-8")
+        self.assertIn("uid: tempo", sources)
+        dashboard = json.loads((ROOT / "observe" / "grafana" / "dashboards" / "traces.json").read_text(encoding="utf-8"))
+        self.assertEqual(dashboard["uid"], "luma-traces")
+        self.assertIn("resource.luma.stack", dashboard["panels"][0]["targets"][0]["query"])
 
 
 class GrafanaRouteTests(unittest.TestCase):
